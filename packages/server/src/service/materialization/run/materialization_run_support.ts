@@ -18,7 +18,6 @@
  */
 
 import { declaredDestination, storageWritable } from "../domain/placement";
-import { exactTableKey, instructedTable } from "../domain/physical_table";
 import { generatedNameOwner } from "../plan/build_file_generator";
 import {
    isPersistedResultSourceID,
@@ -38,7 +37,6 @@ import {
    recordStorageTableRetained,
 } from "../../../materialization_metrics";
 import {
-   BuildInstruction,
    isLegacyFailedEntry,
    MaterializationStatus,
    ManifestEntry,
@@ -1014,24 +1012,6 @@ export const VALID_TRANSITIONS: Record<
 };
 
 /**
- * The key a ledger entry and the instruction that builds its table must agree
- * on. The connection and destination are separate namespaces that may share a
- * name, so the parts are NUL-delimited: connection `lake` and destination
- * `lake` must not produce one key.
- */
-export function tableKeyOf(
-   connectionName: string,
-   storageDestinationName: string | undefined,
-   physicalTableName: string,
-): string {
-   return [
-      connectionName,
-      storageDestinationName ?? "",
-      physicalTableName,
-   ].join("\u0000");
-}
-
-/**
  * Name the stored tables a failed run wrote and did not reclaim. Otherwise
  * there is no record at all (no manifest committed, and the host's orphan
  * sweep does not cover storage destinations; see
@@ -1087,20 +1067,6 @@ export function reportRetainedStorageTables(
  */
 export function isReclaimableStorageTable(entry: ManifestEntry): boolean {
    return !!entry.storageDestinationName && entry.refresh === undefined;
-}
-
-/**
- * The physical table an instruction writes, as a comparable key: which table it
- * IS, where `sourceEntityId` says what it CONTAINS. JSON-encoded because a
- * physical name can contain a space. Exact-match, so `Foo`, `foo` and `"foo"`
- * are distinct here though one table on a case-folding engine (the same
- * blind spot as Package.persistenceCollisionWarnings).
- */
-export function physicalTargetKey(
-   instruction: BuildInstruction,
-   connectionName: string,
-): string {
-   return exactTableKey(instructedTable(instruction, connectionName));
 }
 
 /**

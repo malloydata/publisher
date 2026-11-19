@@ -11,6 +11,7 @@
  * its store.
  */
 
+import { leafKey } from "../domain/physical_table";
 import { MaterializationConflictError } from "../../../errors";
 import { logger } from "../../../logger";
 import { ResourceRepository } from "../../../storage/DatabaseInterface";
@@ -18,7 +19,6 @@ import { errMessage } from "../../../utils";
 import {
    isVersionOwnedRun,
    SUPERSEDED_TABLES_KEY,
-   tableIdentity,
    tableNamesIn,
    WRITES_TABLES_KEY,
    WRITES_TARGETS_KEY,
@@ -68,8 +68,8 @@ export class TableClaims {
       excludeId: string | undefined,
       instructed: boolean,
    ): Promise<void> {
-      // Compared by what a name names (see tableIdentity), not its spelling.
-      const wanted = new Set(tables.map(tableIdentity));
+      // Compared by what a name names (see leafKey), not its spelling.
+      const wanted = new Set(tables.map(leafKey));
       if (wanted.size === 0) return;
       // Read under the table lock, never from a run's snapshot: what other
       // runs claim is what changes between a run's start and its claim.
@@ -81,7 +81,7 @@ export class TableClaims {
          if (m.id === excludeId) continue;
          if (!isActiveRun(m.status)) continue;
          const clash = tableNamesIn(m.metadata, WRITES_TABLES_KEY).find((t) =>
-            wanted.has(tableIdentity(t)),
+            wanted.has(leafKey(t)),
          );
          if (clash !== undefined) {
             throw new MaterializationConflictError(
@@ -108,7 +108,7 @@ export class TableClaims {
                (e) => e.physicalTableName,
             ),
          );
-      const clash = shared.find((t) => wanted.has(tableIdentity(t)));
+      const clash = shared.find((t) => wanted.has(leafKey(t)));
       if (clash !== undefined) {
          throw new MaterializationConflictError(
             `Table ${clash} is one the versions of package ${packageName} share, which only an auto-run of its latest version rebuilds; name tables of your own in buildInstructions.`,
@@ -175,10 +175,10 @@ export class TableClaims {
       id: string,
       instructions: BuildInstruction[],
    ): Promise<void> {
-      // Keyed by what a name names (see tableIdentity), not its spelling.
+      // Keyed by what a name names (see leafKey), not its spelling.
       const rebuilt = new Map<string, Set<string>>();
       for (const i of instructions) {
-         const table = tableIdentity(i.physicalTableName);
+         const table = leafKey(i.physicalTableName);
          const addresses = rebuilt.get(table) ?? new Set<string>();
          addresses.add(i.sourceEntityId);
          rebuilt.set(table, addresses);
@@ -189,10 +189,10 @@ export class TableClaims {
       )) {
          if (m.id === id) continue;
          const marked = tableNamesIn(m.metadata, SUPERSEDED_TABLES_KEY);
-         const already = new Set(marked.map(tableIdentity));
+         const already = new Set(marked.map(leafKey));
          const stale = Object.values(m.manifest?.entries ?? {})
             .filter((e) => {
-               const table = tableIdentity(e.physicalTableName);
+               const table = leafKey(e.physicalTableName);
                const addresses = rebuilt.get(table);
                return (
                   addresses !== undefined &&

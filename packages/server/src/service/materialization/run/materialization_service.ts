@@ -14,6 +14,7 @@
  * store's unique index; every table write goes through its collaborators.
  */
 
+import { leafKey } from "../domain/physical_table";
 import {
    BadRequestError,
    BuildInstructionsInvalidError,
@@ -49,7 +50,6 @@ import { resolveEnvironmentId } from "../../resolve_environment";
 import {
    ownedVersionOf,
    ServingReader,
-   tableIdentity,
    tableNamesIn,
    WRITES_TABLES_KEY,
 } from "../../versions/materialization_scope";
@@ -814,7 +814,7 @@ export class MaterializationService {
             // one's rows under both definitions.
             const seen = new Set<string>();
             for (const i of buildInstructions) {
-               const table = tableIdentity(i.physicalTableName);
+               const table = leafKey(i.physicalTableName);
                if (seen.has(table)) {
                   throw new BuildInstructionsInvalidError(
                      `buildInstructions name table ${i.physicalTableName} more than once; give each source a table of its own.`,

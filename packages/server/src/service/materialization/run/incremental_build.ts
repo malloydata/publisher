@@ -22,6 +22,7 @@
  * ledger in the run store; logs and counts each step.
  */
 
+import { ledgerRowKey } from "../domain/physical_table";
 import { logger } from "../../../logger";
 import {
    persistSourceDeclaredColumns,
@@ -134,20 +135,6 @@ export interface IncrementalRunContext {
 }
 
 /**
- * The caller-ledger index key: a boundary is a fact about a TABLE. Connection and
- * destination are separate NUL-delimited fields because they are separate
- * namespaces: a connection and a destination both called `lake` are different
- * warehouses.
- */
-function ledgerTableKey(table: LedgerTableIdentity): string {
-   return [
-      table.connectionName,
-      table.storageDestinationName ?? "",
-      table.physicalTableName,
-   ].join("\u0000");
-}
-
-/**
  * Index a caller-supplied ledger by table (the same key the local store uses),
  * converting each wire entry into the boundary shape the planner reads. Every
  * field is one the publisher reported on a manifest entry, echoed back.
@@ -158,7 +145,7 @@ export function indexCallerLedger(
    const index = new Map<string, RecordedBoundary>();
    for (const entry of entries) {
       index.set(
-         ledgerTableKey({
+         ledgerRowKey({
             connectionName: entry.connectionName,
             storageDestinationName: entry.storageDestinationName,
             physicalTableName: entry.physicalTableName,
@@ -343,7 +330,7 @@ export async function planSourceRefresh(params: {
       // No fallback to the local store for a table the caller omitted: a
       // worker's own row may be a generation stale, which is why this mode
       // exists. No entry means the ordinary `no_boundary` seed.
-      ledgerEntry = context.callerLedger.get(ledgerTableKey(lineage)) ?? null;
+      ledgerEntry = context.callerLedger.get(ledgerRowKey(lineage)) ?? null;
    } else {
       try {
          ledgerEntry = await context.ledger.getIncrementalLedgerEntry(

@@ -44,7 +44,6 @@ import {
    isVersionOwnedRun,
    newestServingEntries,
    readsRun,
-   tableIdentity,
    type ServingReader,
    tableNamesIn,
    WRITES_TABLES_KEY,
@@ -66,7 +65,6 @@ import {
    statementRunOptions,
    isActiveRun,
    redactConnectionSecrets,
-   tableKeyOf,
 } from "./materialization_run_support";
 import {
    dropLeftoverNameViews,
@@ -91,7 +89,12 @@ import {
 } from "./table_site";
 import { capabilitiesOf } from "../domain/dialect";
 import type { RunLifecycle } from "./run_lifecycle";
-import { leafKey, mayBeSameTable } from "../domain/physical_table";
+import {
+   entryTable,
+   leafKey,
+   mayBeSameTable,
+   tableKey,
+} from "../domain/physical_table";
 import { previousDestinationOf, type RenamedTable } from "./run_instructions";
 import { hasReservedTableSuffix } from "../domain/table_name";
 
@@ -106,11 +109,6 @@ const DATABASE = new DatabaseTier();
 // Only its drop. A build goes through the service's adapter, which routes a
 // chained build through the run's collaborators; this one would not.
 const STORAGE: Pick<StorageBuildStrategy, "drop"> = new StorageBuildStrategy();
-
-/** A physical table's key for drop bookkeeping: where it lives, and its name. */
-function tableKey(destination: string, physicalTableName: string): string {
-   return `${destination}:${physicalTableName}`;
-}
 
 /**
  * Where a run records the tables it built under new names or in new places
@@ -189,7 +187,7 @@ export function keptTablesResolverFor(
 
 /** One kept table, wherever it is listed. */
 function keptKey(t: KeptTable): string {
-   return `${t.connectionName}\u0000${t.storageDestinationName ?? ""}\u0000${t.physicalTableName}`;
+   return tableKey(entryTable(t));
 }
 
 /** The {@link RenamedTable}s a run's metadata records, or empty. */
@@ -233,7 +231,13 @@ function renamedKey(
       | "previousPlace"
    >,
 ): string {
-   return `${t.connectionName}\u0000${previousDestinationOf(t) ?? ""}\u0000${t.previousName}`;
+   return tableKey(
+      entryTable({
+         connectionName: t.connectionName,
+         storageDestinationName: previousDestinationOf(t),
+         physicalTableName: t.previousName,
+      }),
+   );
 }
 
 /** When a committed run committed; the serving line is ordered by it. */
@@ -251,21 +255,9 @@ function committedAt(m: Materialization): number {
  */
 function reclaimableEntries(m: Materialization): ManifestEntry[] {
    const entries = Object.values(m.manifest?.entries ?? {});
-   const named = new Set(
-      entries.map((e) =>
-         tableKeyOf(
-            e.connectionName ?? "",
-            e.storageDestinationName,
-            e.physicalTableName,
-         ),
-      ),
-   );
+   const named = new Set(entries.map((e) => tableKey(entryTable(e))));
    for (const target of writeTargetsIn(m.metadata ?? null)) {
-      const key = tableKeyOf(
-         target.connectionName,
-         target.storageDestinationName,
-         target.physicalTableName,
-      );
+      const key = tableKey(entryTable(target));
       if (named.has(key)) continue;
       named.add(key);
       entries.push({
@@ -482,9 +474,8 @@ function tablesStillReferenced(
       if (!include(other)) continue;
       if (other.status !== "MANIFEST_FILE_READY") continue;
       for (const e of Object.values(other.manifest?.entries ?? {})) {
-         const dest = e.storageDestinationName ?? e.connectionName;
-         if (dest && e.physicalTableName) {
-            stillReferenced.add(tableKey(dest, e.physicalTableName));
+         if (e.physicalTableName) {
+            stillReferenced.add(tableKey(entryTable(e)));
             stillReferenced.add(leafReferenceKey(e.physicalTableName));
          }
       }
@@ -508,7 +499,11 @@ async function keptInPlace(
    materializationId: string,
 ): Promise<boolean> {
    const destForKey = entry.storageDestinationName ?? connectionName;
-   if (stillReferenced.has(tableKey(destForKey, physicalTableName))) {
+   if (
+      stillReferenced.has(
+         tableKey(entryTable({ ...entry, connectionName, physicalTableName })),
+      )
+   ) {
       logger.info(
          "Skipping drop: table still referenced by another materialization",
          {
@@ -944,7 +939,7 @@ export class Reclaimer {
             const table = entry.physicalTableName;
             if (!dest || !table) continue;
             if (
-               stillReferenced.has(tableKey(dest, table)) ||
+               stillReferenced.has(tableKey(entryTable(entry))) ||
                stillReferenced.has(leafReferenceKey(table))
             ) {
                logger.info(
@@ -1199,7 +1194,7 @@ export class Reclaimer {
    ): Promise<void> {
       const { environment, environmentId, connectionName, physicalTableName } =
          request;
-      const identity = tableIdentity(physicalTableName);
+      const identity = leafKey(physicalTableName);
       const copies: { label: string; names: string[] }[] = [];
       for (const pkg of environment.getLoadedPackages()) {
          copies.push({
@@ -1220,7 +1215,7 @@ export class Reclaimer {
          });
       }
       const bound = copies.find((c) =>
-         c.names.some((name) => tableIdentity(name) === identity),
+         c.names.some((name) => leafKey(name) === identity),
       );
       if (bound) {
          throw new MaterializedTableDropRefusedError(

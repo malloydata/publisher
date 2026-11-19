@@ -16,7 +16,11 @@
  */
 
 import { instructionTier } from "../domain/placement";
-import { instructedTable, placedLeafKey } from "../domain/physical_table";
+import {
+   instructedTable,
+   placedLeafKey,
+   tableKey,
+} from "../domain/physical_table";
 import { BuildCancelledError } from "../domain/build_cancelled";
 import { keyCheckCompilerKey } from "../domain/key_check";
 import {
@@ -115,7 +119,6 @@ import {
    upstreamEntryIsCurrent,
    isReclaimableStorageTable,
    manifestExcludingStorage,
-   physicalTargetKey,
    refusalRecord,
    reportRetainedStorageTables,
    selfAssignTableName,
@@ -240,7 +243,7 @@ interface GatedSource {
    orchestrated: boolean;
    /** The source's CONTENT address, which keys the manifest. */
    sourceEntityId: string;
-   /** The physical table it writes ({@link physicalTargetKey}). */
+   /** The physical table it writes ({@link tableKey}). */
    target: string;
 }
 
@@ -1038,7 +1041,9 @@ export class InstructedBuild {
       // refused unless PERSIST_COLLISION_ENFORCE=false) by
       // assertNoTableCollisions, so reaching here means the deployment opted
       // out, to warn and write anyway.
-      const target = physicalTargetKey(instruction, graphConnectionName);
+      const target = tableKey(
+         instructedTable(instruction, graphConnectionName),
+      );
       const written = run.writtenTargets.get(target);
       if (written && written.sourceEntityId === sourceEntityId) {
          // Another route to the same table: nothing to build or record.

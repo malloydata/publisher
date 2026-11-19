@@ -17,7 +17,12 @@ import { freshnessOf } from "../domain/freshness";
 import type { PersistSource } from "@malloydata/malloy";
 import * as path from "path";
 import { fileURLToPath } from "url";
-import { mayBeSameTable } from "../domain/physical_table";
+import {
+   entryTable,
+   ledgerRowKey,
+   mayBeSameTable,
+   placedLeafKey,
+} from "../domain/physical_table";
 import { tableNamesFoldCase } from "../domain/storage_table_path";
 import {
    authorModelPath,
@@ -39,7 +44,6 @@ import { recordEligibilityRefused } from "../../../materialization_metrics";
 import { errMessage } from "../../../utils";
 import {
    packageTableSuffix,
-   tableIdentity,
    versionedTableName,
    versionTableSuffix,
    type WriteTarget,
@@ -79,7 +83,6 @@ import {
    resolveStorageDestination,
    selfAssignTableName,
    STAGING_ID_LEN,
-   tableKeyOf,
 } from "./materialization_run_support";
 import { hasAuthorTableName } from "./table_ownership";
 
@@ -553,10 +556,12 @@ function freshTableNames(
          naming,
       );
       freshNames.set(sourceEntityId, fresh);
-      const key = tableKeyOf(
-         persistSource.connectionName,
-         destination,
-         tableIdentity(fresh),
+      const key = placedLeafKey(
+         entryTable({
+            connectionName: persistSource.connectionName,
+            storageDestinationName: destination,
+            physicalTableName: fresh,
+         }),
       );
       takenFresh.set(
          key,
@@ -568,10 +573,12 @@ function freshTableNames(
       takenByAnother: (persistSource, destination, name, sourceEntityId) =>
          [
             ...(takenFresh.get(
-               tableKeyOf(
-                  persistSource.connectionName,
-                  destination,
-                  tableIdentity(name),
+               placedLeafKey(
+                  entryTable({
+                     connectionName: persistSource.connectionName,
+                     storageDestinationName: destination,
+                     physicalTableName: name,
+                  }),
                ),
             ) ?? []),
          ].some((address) => address !== sourceEntityId),
@@ -851,10 +858,12 @@ export function deriveSelfInstructions(
             naming,
          );
       if (naming && !named) {
-         const key = tableKeyOf(
-            persistSource.connectionName,
-            destination,
-            tableIdentity(tableName),
+         const key = placedLeafKey(
+            entryTable({
+               connectionName: persistSource.connectionName,
+               storageDestinationName: destination,
+               physicalTableName: tableName,
+            }),
          );
          const holder = derived.get(key);
          if (holder !== undefined && holder !== sourceEntityId) {
@@ -1101,11 +1110,11 @@ export function validateInstructions(
             : undefined) ?? byAddress.get(instruction.sourceEntityId);
       if (!planSource) continue; // Unreachable: every instruction matched above.
       instructed.set(
-         tableKeyOf(
-            planSource.connectionName,
-            instruction.destination,
-            instruction.physicalTableName,
-         ),
+         ledgerRowKey({
+            connectionName: planSource.connectionName,
+            storageDestinationName: instruction.destination,
+            physicalTableName: instruction.physicalTableName,
+         }),
          {
             sourceEntityId: planSource.sourceEntityId,
             refresh: planSource.refresh ?? null,
@@ -1114,22 +1123,17 @@ export function validateInstructions(
       );
       if (instruction.destination) {
          instructedIntoStorage.add(
-            tableKeyOf(
-               planSource.connectionName,
-               undefined,
-               instruction.physicalTableName,
-            ),
+            ledgerRowKey({
+               connectionName: planSource.connectionName,
+               physicalTableName: instruction.physicalTableName,
+            }),
          );
       }
    }
 
    const seen = new Set<string>();
    for (const entry of ledger) {
-      const key = tableKeyOf(
-         entry.connectionName,
-         entry.storageDestinationName,
-         entry.physicalTableName,
-      );
+      const key = ledgerRowKey(entry);
       const table =
          `'${entry.physicalTableName}' ` +
          (entry.storageDestinationName
@@ -1148,11 +1152,10 @@ export function validateInstructions(
          // build's index keys on the destination, so it finds no boundary).
          // An entry naming a DIFFERENT destination is refused below.
          const storedHere = instructedIntoStorage.has(
-            tableKeyOf(
-               entry.connectionName,
-               undefined,
-               entry.physicalTableName,
-            ),
+            ledgerRowKey({
+               connectionName: entry.connectionName,
+               physicalTableName: entry.physicalTableName,
+            }),
          );
          if (entry.storageDestinationName === undefined && storedHere) {
             continue;

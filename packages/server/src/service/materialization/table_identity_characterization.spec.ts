@@ -7,8 +7,11 @@
  * unification onto one domain key (exact, leaf, may-be-same) shows its change
  * as a diff of the tables below rather than as a silent move.
  *
- * - exact: `physicalTargetKey` (a run's duplicate-target skip and failed-target
- *   reuse) and `tableKeyOf` (the ledger key): the name as written;
+ * - written: `tableKey` (a run's duplicate-target skip and failed-target
+ *   reuse, a name collision, a reclaim's bookkeeping): every segment unquoted
+ *   and case-folded, the whole path compared;
+ * - ledger: `ledgerRowKey` (a ledger row, matched as the store matches it):
+ *   the name as written;
  * - identity: `tableIdentity` (claims, superseding, the owned-name lock),
  *   `tableIdentityKey` (the uniqueness ledger; the run's
  *   `writtenTableIdentity` is this key over the instruction's place) and
@@ -17,8 +20,9 @@
  * - may-be-one: `mayBeSameTable` (a rename's reclaim): every segment
  *   unquoted and case-folded, containers matched by suffix.
  *
- * The keys now live in `domain/physical_table.ts`; the older names
- * (`physicalTargetKey`, `tableIdentity`, `tableIdentityKey`) delegate to it.
+ * The keys live in `domain/physical_table.ts`; `tableIdentity` and
+ * `tableIdentityKey` delegate to it. The written key folded case and quotes
+ * in the run refactor (approved): `Foo` and `foo` were two targets before.
  */
 
 import { describe, expect, it } from "bun:test";
@@ -26,17 +30,41 @@ import { makeInstruction } from "../../test_helpers/materialization_test_fixture
 import { tableIdentity } from "../versions/materialization_scope";
 import { tableIdentityKey } from "./run/inline_uniqueness";
 import {
-   physicalTargetKey,
-   tableKeyOf,
-} from "./run/materialization_run_support";
-import { leafKey, mayBeSameTable } from "./domain/physical_table";
+   instructedTable,
+   leafKey,
+   ledgerRowKey,
+   mayBeSameTable,
+   tableKey,
+} from "./domain/physical_table";
+import type { BuildInstruction } from "./domain/types";
+
+/** The run's written-table key for an instruction on `connectionName`. */
+function physicalTargetKey(
+   instruction: BuildInstruction,
+   connectionName: string,
+): string {
+   return tableKey(instructedTable(instruction, connectionName));
+}
+
+/** A ledger row's key on a connection, in a destination when given. */
+function tableKeyOf(
+   connectionName: string,
+   storageDestinationName: string | undefined,
+   physicalTableName: string,
+): string {
+   return ledgerRowKey({
+      connectionName,
+      storageDestinationName,
+      physicalTableName,
+   });
+}
 
 /** Each key's answer to "are `a` and `b` one table", in one place. */
 function sameUnder(a: string, b: string) {
    const instruction = (name: string) =>
       makeInstruction({ physicalTableName: name });
    return {
-      exact:
+      written:
          physicalTargetKey(instruction(a), "duckdb") ===
          physicalTargetKey(instruction(b), "duckdb"),
       ledger:
@@ -54,7 +82,7 @@ function sameUnder(a: string, b: string) {
 
 type Answers = ReturnType<typeof sameUnder>;
 const all = (v: boolean): Answers => ({
-   exact: v,
+   written: v,
    ledger: v,
    identity: v,
    uniqueness: v,
@@ -62,8 +90,10 @@ const all = (v: boolean): Answers => ({
    anywhere: v,
    mayBeOne: v,
 });
-/** Exact keys say two tables; every folding key says one. */
-const FOLDED: Answers = { ...all(true), exact: false, ledger: false };
+/** The ledger's exact key says two tables; every folding key says one. */
+const FOLDED: Answers = { ...all(true), ledger: false };
+/** Spelled with other containers: the written key compares the whole path. */
+const QUALIFIED: Answers = { ...FOLDED, written: false };
 
 const PAIRS: [string, string, Answers][] = [
    ["orders", "orders", all(true)],
@@ -74,14 +104,14 @@ const PAIRS: [string, string, Answers][] = [
    ["orders", "[orders]", FOLDED],
    ['"Orders"', '"orders"', FOLDED],
    // Schema qualification: one table in the connection's defaults, maybe.
-   ["orders", "main.orders", FOLDED],
-   ["main.orders", "memory.main.orders", FOLDED],
+   ["orders", "main.orders", QUALIFIED],
+   ["main.orders", "memory.main.orders", QUALIFIED],
    ['"Main"."Orders"', "main.orders", FOLDED],
    // Two schemas: the leaf keys fold them together; may-be-one does not.
-   ["a.orders", "b.orders", { ...FOLDED, mayBeOne: false }],
-   ["x.a.orders", "y.a.orders", { ...FOLDED, mayBeOne: false }],
+   ["a.orders", "b.orders", { ...QUALIFIED, mayBeOne: false }],
+   ["x.a.orders", "y.a.orders", { ...QUALIFIED, mayBeOne: false }],
    // A quoted name holding a dot is split on it like any other dot.
-   ['"a.orders"', "orders", { ...FOLDED, mayBeOne: true }],
+   ['"a.orders"', "orders", { ...QUALIFIED, mayBeOne: true }],
    ['"a.orders"', '"a"."orders"', FOLDED],
    // Spaces are kept; case is folded around them.
    ['"Order Lines"', "order lines", FOLDED],
@@ -153,6 +183,15 @@ describe("where a table lives, per key", () => {
          '["destination","lake","t"]',
       );
       expect(
+         physicalTargetKey(
+            makeInstruction({
+               physicalTableName: '"Main"."T"',
+               destination: "lake",
+            }),
+            "pg",
+         ),
+      ).toBe('["destination","lake","main.t"]');
+      expect(
          physicalTargetKey(makeInstruction({ physicalTableName: "t" }), "pg"),
       ).toBe('["connection","pg","t"]');
    });
@@ -167,6 +206,6 @@ describe("where a table lives, per key", () => {
       expect(tableIdentityKey("connection", "a", "t")).not.toBe(
          tableIdentityKey("connection", "b", "t"),
       );
-      expect(tableKeyOf("duckdb", "lake", "t")).toBe("duckdb\u0000lake\u0000t");
+      expect(tableKeyOf("duckdb", "lake", "t")).toBe('["duckdb","lake","t"]');
    });
 });
