@@ -410,6 +410,36 @@ export function duckDBInstanceOf(connection: unknown): object | undefined {
       | undefined;
 }
 
+/** A number per native instance, for logs: two lines naming one are one instance. */
+const instanceIds = new WeakMap<object, number>();
+let lastInstanceId = 0;
+
+/** {@link duckDBInstanceOf}'s number for logs; undefined before it opens. */
+export function duckDBInstanceId(connection: unknown): number | undefined {
+   const instance = duckDBInstanceOf(connection);
+   if (!instance) return undefined;
+   let id = instanceIds.get(instance);
+   if (id === undefined) {
+      id = ++lastInstanceId;
+      instanceIds.set(instance, id);
+   }
+   return id;
+}
+
+/**
+ * Whether anything besides `connection` holds its native instance: another
+ * connection object (a draining generation's), or an open still joining it.
+ */
+export function duckDBInstanceHasOtherHolders(connection: unknown): boolean {
+   const shareKey = (connection as { shareKey?: string }).shareKey;
+   if (!shareKey) return false;
+   const own = (connection as { connection?: unknown }).connection;
+   const holders = DuckDBConnectionClass.activeDBs[shareKey]?.connections as
+      | unknown[]
+      | undefined;
+   return (holders ?? []).some((holder) => holder !== own);
+}
+
 /** Record that `connection`'s instance is locked. */
 export function markInstanceLocked(connection: unknown): void {
    const instance = duckDBInstanceOf(connection);

@@ -25,6 +25,7 @@
  * and runs the cell's own compile with the model's pinned manifest.
  */
 
+import { DUCKLAKE_CATALOG_UNAVAILABLE } from "./ducklake_catalog_unavailable";
 import {
    EMPTY_BUILD_MANIFEST,
    Annotations,
@@ -942,6 +943,9 @@ export class ModelServing {
                  : "Storage-served query failed at run time; falling back to live (freshnessFallback=live)",
             {
                modelPath: this.host.modelPath,
+               ...(isDestinationCatalogUnavailableError(error)
+                  ? { code: DUCKLAKE_CATALOG_UNAVAILABLE }
+                  : {}),
                error: error instanceof Error ? error.message : String(error),
             },
          );

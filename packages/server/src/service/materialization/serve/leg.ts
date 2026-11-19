@@ -32,7 +32,7 @@
  * {@link makeLegs}, and its rows in `domain/leg_decline.ts`.
  */
 
-import { DUCKLAKE_CATALOG_UNAVAILABLE } from "../../ducklake_catalog_unavailable";
+import { isDuckLakeCatalogUnavailable } from "../../ducklake_catalog_unavailable";
 import type { Leg as LegName } from "../domain/vocabulary";
 import type {
    GivenValue,
@@ -417,19 +417,17 @@ export function canDegradeToLive(
 }
 
 /**
- * Whether `error` is a stored read finding its destination's catalog missing:
- * the lookup's own check ({@link DUCKLAKE_CATALOG_UNAVAILABLE}), or DuckDB
- * binding the read on an instance without the catalog. The stored table is an
- * optimisation and the fault is the worker's, not the model's or the
- * caller's, so such an answer degrades to live whatever the bindings'
- * `freshnessFallback` says; the path report names it `READ_FAILED`.
+ * Whether `error` is a stored read finding its destination's catalog missing
+ * from the worker's instance: the lookup's own check, or a read whose binder
+ * error the connection confirmed by checking the instance
+ * (DuckLakeCatalogUnavailableError, connection.ts). A binder error naming a
+ * catalog that is there, a misbinding, is not one. The stored table is an
+ * optimisation and the fault is the worker's, so such an answer degrades to
+ * live whatever the bindings' `freshnessFallback` says; the path report names
+ * it `READ_FAILED`.
  */
 export function isDestinationCatalogUnavailableError(error: unknown): boolean {
-   if ((error as { code?: unknown })?.code === DUCKLAKE_CATALOG_UNAVAILABLE) {
-      return true;
-   }
-   const message = error instanceof Error ? error.message : String(error);
-   return /Binder Error: Catalog "[^"]+" does not exist/.test(message);
+   return isDuckLakeCatalogUnavailable(error);
 }
 
 /**

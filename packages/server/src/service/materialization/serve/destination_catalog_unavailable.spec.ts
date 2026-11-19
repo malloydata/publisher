@@ -8,9 +8,10 @@ import { isDestinationCatalogUnavailableError } from "./leg";
 
 /**
  * A stored read whose destination catalog the worker lost degrades to live
- * whatever the binding's fallback says: the lookup's own typed error, or
- * DuckDB binding the read on an instance without the catalog. A missing table
- * in a catalog that is there does not.
+ * whatever the binding's fallback says. Only the typed error says so: the
+ * lookup raises it, and the connection raises it for a binder error once the
+ * instance confirms the catalog is gone (connection.ts). A bare binder error
+ * naming a catalog, which a misbinding also produces, is not one.
  */
 describe("isDestinationCatalogUnavailableError", () => {
    let db: DuckDBConnection;
@@ -30,32 +31,27 @@ describe("isDestinationCatalogUnavailableError", () => {
       throw new Error(`expected ${sql} to fail`);
    }
 
-   it("reads the lookup's typed error", () => {
+   it("reads the typed error, and an error it caused", async () => {
+      const typed = new DuckLakeCatalogUnavailableError("credible", {
+         cause: await errorOf(`SELECT count(*) FROM credible.main.t`),
+      });
+      expect(isDestinationCatalogUnavailableError(typed)).toBe(true);
       expect(
          isDestinationCatalogUnavailableError(
-            new DuckLakeCatalogUnavailableError("credible"),
+            new Error("query failed", { cause: typed }),
          ),
       ).toBe(true);
    });
 
-   it("reads DuckDB's missing-catalog binder error", async () => {
-      expect(
-         isDestinationCatalogUnavailableError(
-            await errorOf(`SELECT count(*) FROM credible.main.t`),
-         ),
-      ).toBe(true);
-   });
-
-   it("does not read a missing table or any other error as one", async () => {
-      expect(
-         isDestinationCatalogUnavailableError(
-            await errorOf(`SELECT count(*) FROM memory.main.no_such_table`),
-         ),
-      ).toBe(false);
-      expect(
-         isDestinationCatalogUnavailableError(
-            await errorOf(`SELECT CAST('x' AS INTEGER)`),
-         ),
-      ).toBe(false);
+   it("does not read a bare binder error, a missing table or any other error as one", async () => {
+      for (const sql of [
+         `SELECT count(*) FROM credible.main.t`,
+         `SELECT count(*) FROM memory.main.no_such_table`,
+         `SELECT CAST('x' AS INTEGER)`,
+      ]) {
+         expect(isDestinationCatalogUnavailableError(await errorOf(sql))).toBe(
+            false,
+         );
+      }
    });
 });

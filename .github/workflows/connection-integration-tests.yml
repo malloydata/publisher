@@ -12,6 +12,8 @@ on:
       - "packages/server/src/service/ducklake_init_race.spec.ts"
       - "packages/server/src/service/ducklake_attach_race_postgres.spec.ts"
       - "packages/server/src/service/duckdb_lockdown.ts"
+      - "packages/server/src/service/duckdb_instance_sharing.ts"
+      - "packages/server/src/service/ducklake_catalog_unavailable.ts"
       - "packages/server/src/service/proxy.ts"
       # The harnesses and fixtures every spec below is built on.
       - "packages/server/src/test_helpers/**"
@@ -54,6 +56,8 @@ on:
       - "packages/server/src/service/ducklake_init_race.spec.ts"
       - "packages/server/src/service/ducklake_attach_race_postgres.spec.ts"
       - "packages/server/src/service/duckdb_lockdown.ts"
+      - "packages/server/src/service/duckdb_instance_sharing.ts"
+      - "packages/server/src/service/ducklake_catalog_unavailable.ts"
       - "packages/server/src/service/proxy.ts"
       # The harnesses and fixtures every spec below is built on.
       - "packages/server/src/test_helpers/**"

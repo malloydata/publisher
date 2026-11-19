@@ -19,6 +19,7 @@ import type { components } from "../api";
 import { buildEnvironmentMalloyConfig } from "./connection";
 import { DuckLakeCatalogUnavailableError } from "./ducklake_catalog_unavailable";
 import { isInstanceLocked } from "./duckdb_lockdown";
+import { logger } from "../logger";
 
 type ApiConnection = components["schemas"]["Connection"];
 
@@ -55,6 +56,8 @@ interface FakeInstance {
    detached: string[];
    locked: boolean;
    externalAccess: boolean;
+   /** How many times a lookup asked whether the catalog is attached. */
+   catalogChecks: number;
 }
 
 /**
@@ -68,6 +71,7 @@ function stubDuckLake(hooks: {
    beforeSecret?: (n: number) => Promise<void>;
    onAttach?: (n: number) => void;
    onLock?: () => void;
+   beforeCatalogCheck?: (n: number) => Promise<void>;
 }): { stateOf: (c: DuckDBConnection) => FakeInstance } {
    const states = new WeakMap<object, FakeInstance>();
    // The connection's native instance, opened for real (only its statements
@@ -90,6 +94,7 @@ function stubDuckLake(hooks: {
             detached: [],
             locked: false,
             externalAccess: true,
+            catalogChecks: 0,
          };
          states.set(key, state);
       }
@@ -97,6 +102,7 @@ function stubDuckLake(hooks: {
    };
    let secrets = 0;
    let attachCount = 0;
+   let catalogCheckCount = 0;
    // Typed as the stubbed method returns, from rows the stub makes up.
    const rows = (r: Record<string, unknown>[]) =>
       ({ rows: r, totalRows: r.length }) as unknown as MalloyQueryData;
@@ -138,6 +144,11 @@ function stubDuckLake(hooks: {
             q,
          );
       if (alias) {
+         await hooks.beforeCatalogCheck?.(++catalogCheckCount);
+         if ((this as unknown as { closed?: boolean }).closed) {
+            throw new Error(`DuckDB connection "${this.name}" is closed`);
+         }
+         state.catalogChecks++;
          return rows(
             [...state.attached]
                .filter((n) => n.toLowerCase() === alias[1].toLowerCase())
@@ -153,6 +164,11 @@ function stubDuckLake(hooks: {
             return rows([{ v: state.externalAccess }]);
          }
          return rows([{ v: "" }]);
+      }
+      // A read of a catalog's table binds only when the catalog is attached.
+      const read = /FROM "?([A-Za-z_]+)"?\.main\./.exec(q);
+      if (read && !state.attached.has(read[1])) {
+         throw new Error(`Binder Error: Catalog "${read[1]}" does not exist!`);
       }
       if (q === "SET enable_external_access=false") {
          state.externalAccess = false;
@@ -263,6 +279,168 @@ describe("concurrent first lookups of a DuckLake destination", () => {
          expect(healed).not.toBe(first);
          expect(stateOf(healed).attached.has("credible")).toBe(true);
          expect(isInstanceLocked(healed)).toBe(true);
+      } finally {
+         await env.releaseConnections().catch(() => {});
+      }
+   });
+   it("checks a locked instance's catalog once, not on every lookup", async () => {
+      const { stateOf } = stubDuckLake({});
+      const env = buildEnvironmentMalloyConfig([DESTINATION], root, false, {
+         origin: "storage-destination",
+      });
+      try {
+         let connection: DuckDBConnection | undefined;
+         for (let i = 0; i < 5; i++) {
+            connection = (await env.malloyConfig.connections.lookupConnection(
+               "credible",
+            )) as DuckDBConnection;
+         }
+         expect(stateOf(connection!).catalogChecks).toBe(1);
+      } finally {
+         await env.releaseConnections().catch(() => {});
+      }
+   });
+
+   it("reads a binder error as a lost catalog only when the instance confirms it", async () => {
+      const { stateOf } = stubDuckLake({});
+      const env = buildEnvironmentMalloyConfig([DESTINATION], root, false, {
+         origin: "storage-destination",
+      });
+      try {
+         const connection =
+            (await env.malloyConfig.connections.lookupConnection(
+               "credible",
+            )) as DuckDBConnection;
+         const state = stateOf(connection);
+         // A misbinding: another catalog, while this one is attached.
+         const misbound = await connection
+            .runSQL("SELECT count(*) FROM wrong_catalog.main.t")
+            .then(
+               () => undefined,
+               (error: unknown) => error,
+            );
+         expect(misbound).not.toBeInstanceOf(DuckLakeCatalogUnavailableError);
+         expect(String(misbound)).toContain('Catalog "wrong_catalog"');
+
+         // The catalog itself gone: confirmed, typed, and the next lookup
+         // checks again (and reopens).
+         state.attached.delete("credible");
+         const lost = await connection
+            .runSQL("SELECT count(*) FROM credible.main.t")
+            .then(
+               () => undefined,
+               (error: unknown) => error,
+            );
+         expect(lost).toBeInstanceOf(DuckLakeCatalogUnavailableError);
+         const checksBefore = state.catalogChecks;
+         await expect(
+            env.malloyConfig.connections.lookupConnection("credible"),
+         ).rejects.toBeInstanceOf(DuckLakeCatalogUnavailableError);
+         expect(state.catalogChecks).toBe(checksBefore + 1);
+         const healed = (await env.malloyConfig.connections.lookupConnection(
+            "credible",
+         )) as DuckDBConnection;
+         expect(healed).not.toBe(connection);
+         expect(
+            await healed.runSQL("SELECT count(*) FROM credible.main.t"),
+         ).toBeDefined();
+      } finally {
+         await env.releaseConnections().catch(() => {});
+      }
+   });
+
+   it("waits for a draining holder of the instance before reopening, reporting the loss once", async () => {
+      const { stateOf } = stubDuckLake({});
+      const reopened: string[] = [];
+      const env = buildEnvironmentMalloyConfig([DESTINATION], root, false, {
+         origin: "storage-destination",
+         onDuckLakeReopened: (name) => reopened.push(name),
+      });
+      const errorLog = sinon.spy(logger, "error");
+      try {
+         const first = (await env.malloyConfig.connections.lookupConnection(
+            "credible",
+         )) as DuckDBConnection;
+         stateOf(first).attached.delete("credible");
+         // Another generation's connection still holds the instance.
+         const shareKey = (first as unknown as { shareKey: string }).shareKey;
+         const holders = (
+            DuckDBConnection.activeDBs as Record<
+               string,
+               { connections: unknown[] }
+            >
+         )[shareKey].connections;
+         const draining = {};
+         holders.push(draining);
+         try {
+            for (let i = 0; i < 3; i++) {
+               await expect(
+                  env.malloyConfig.connections.lookupConnection("credible"),
+               ).rejects.toBeInstanceOf(DuckLakeCatalogUnavailableError);
+            }
+            // Not reopened onto the same instance, and reported once.
+            expect(reopened).toEqual([]);
+            expect(
+               errorLog
+                  .getCalls()
+                  .filter((c) =>
+                     String(c.args[0]).includes("missing from its locked"),
+                  ),
+            ).toHaveLength(1);
+         } finally {
+            holders.splice(holders.indexOf(draining), 1);
+         }
+
+         // The other holder released: this lookup reopens, once.
+         await expect(
+            env.malloyConfig.connections.lookupConnection("credible"),
+         ).rejects.toBeInstanceOf(DuckLakeCatalogUnavailableError);
+         expect(reopened).toEqual(["credible"]);
+         const healed = (await env.malloyConfig.connections.lookupConnection(
+            "credible",
+         )) as DuckDBConnection;
+         expect(healed).not.toBe(first);
+         expect(stateOf(healed).attached.has("credible")).toBe(true);
+         expect(reopened).toEqual(["credible"]);
+      } finally {
+         await env.releaseConnections().catch(() => {});
+      }
+   });
+
+   it("looks up again, rather than return it, when a concurrent lookup reopened the connection", async () => {
+      const reopenedSignal = signal();
+      // The first locked lookup's check runs at once and finds the catalog
+      // gone; the second's waits until that lookup has reopened, so it runs
+      // on the closed connection.
+      const { stateOf } = stubDuckLake({
+         beforeCatalogCheck: async (n) => {
+            if (n === 2) await within(reopenedSignal.promise, 2000);
+         },
+      });
+      const env = buildEnvironmentMalloyConfig([DESTINATION], root, false, {
+         origin: "storage-destination",
+         onDuckLakeReopened: () => reopenedSignal.fire(),
+      });
+      try {
+         const first = (await env.malloyConfig.connections.lookupConnection(
+            "credible",
+         )) as DuckDBConnection;
+         stateOf(first).attached.delete("credible");
+         const [detecting, concurrent] = await Promise.allSettled([
+            env.malloyConfig.connections.lookupConnection("credible"),
+            env.malloyConfig.connections.lookupConnection("credible"),
+         ]);
+         expect(detecting.status).toBe("rejected");
+         expect((detecting as PromiseRejectedResult).reason).toBeInstanceOf(
+            DuckLakeCatalogUnavailableError,
+         );
+         // The concurrent lookup found its connection closed and looked up
+         // again, onto a fresh instance.
+         expect(concurrent.status).toBe("fulfilled");
+         const fresh = (concurrent as PromiseFulfilledResult<DuckDBConnection>)
+            .value;
+         expect(fresh).not.toBe(first);
+         expect(stateOf(fresh).attached.has("credible")).toBe(true);
       } finally {
          await env.releaseConnections().catch(() => {});
       }

@@ -180,11 +180,11 @@ source: daily is orders -> {
       expect(JSON.stringify(path)).not.toContain("no_such_table");
    });
 
-   // A worker can lose a destination's catalog (a DuckLake catalog missing
-   // from its locked instance). The stored table is an optimisation and the
-   // fault is the worker's, so the query answers live whatever the binding's
-   // fallback says, rather than a 400 the caller cannot fix.
-   it("answers live, as READ_FAILED, when the destination's catalog is missing, whatever the fallback", async () => {
+   // A binder error naming a catalog the destination does not hold is a
+   // misbinding, not a worker that lost its catalog (connection.ts confirms
+   // that against the instance, and only then answers live whatever the
+   // fallback): it keeps the binding's fallback.
+   it("keeps the fallback for a binder error naming a catalog the destination does not hold", async () => {
       for (const freshnessFallback of [undefined, "fail" as const]) {
          fixture.setBindings(
             fixture.bindings.map((b) => {
@@ -196,22 +196,11 @@ source: daily is orders -> {
                };
             }),
          );
-         const { rows, path, servedFrom } = await fixture.runAsIs(
-            "run: daily -> { group_by: region; aggregate: t is total.sum() }",
-         );
-         expect(servedFrom).toBe("live_fallback");
-         expect(rows.length).toBe(2);
-         expect(path?.servedBy).toEqual({ kind: "live" });
-         expect(path?.considered).toEqual([
-            {
-               tableId: daily,
-               kind: "materialized",
-               origin: "persist",
-               outcome: "skipped",
-               reason: "READ_FAILED",
-            },
-         ]);
-         expect(JSON.stringify(path)).not.toContain("lost_catalog");
+         await expect(
+            fixture.runAsIs(
+               "run: daily -> { group_by: region; aggregate: t is total.sum() }",
+            ),
+         ).rejects.toThrow(/Catalog "lost_catalog" does not exist/);
       }
    });
 

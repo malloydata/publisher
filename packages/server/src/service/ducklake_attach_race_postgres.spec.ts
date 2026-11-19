@@ -191,8 +191,28 @@ describe.skipIf(!PG_URL)(
             expect(isInstanceLocked(first)).toBe(true);
             // The state the race used to leave: locked, catalog detached.
             await first.runSQL(`DETACH "credible"`);
-            await expect(readCountOn(first)).rejects.toThrow(
-               /Catalog "credible" does not exist/,
+            // The read's binder error, confirmed against the instance, is
+            // raised as the typed error a routed query answers live.
+            const read = await readCountOn(first).then(
+               () => undefined,
+               (error: unknown) => error,
+            );
+            expect(read).toBeInstanceOf(DuckLakeCatalogUnavailableError);
+            expect(String((read as Error).cause)).toContain(
+               'Catalog "credible" does not exist',
+            );
+            // A misbinding on the same connection keeps its own error.
+            await first
+               .runSQL(`DETACH IF EXISTS "nope"`)
+               .catch(() => undefined);
+            const misbound = await first
+               .runSQL("SELECT count(*) FROM nope.main.t")
+               .then(
+                  () => undefined,
+                  (error: unknown) => error,
+               );
+            expect(misbound).not.toBeInstanceOf(
+               DuckLakeCatalogUnavailableError,
             );
 
             const lost = await env.malloyConfig.connections

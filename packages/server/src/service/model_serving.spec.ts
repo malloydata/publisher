@@ -26,6 +26,7 @@ import {
    servedFromOf,
 } from "./materialization/serve/leg";
 import { InvalidQueryRequestError } from "../errors";
+import { DuckLakeCatalogUnavailableError } from "./ducklake_catalog_unavailable";
 import { ModelServing, type ModelServingHost } from "./model_serving";
 import type { QueryPrivileges } from "./model_query_request";
 
@@ -361,6 +362,75 @@ describe("the query pipeline over a fake leg list", () => {
          bypassAlreadyNoted: true,
       });
    });
+
+   // A destination catalog the worker lost answers live whatever the
+   // fallback; a bare binder error (a misbinding) keeps the fallback.
+   for (const [label, thrown, answersLive] of [
+      [
+         "a lost destination catalog answers live with no fallback declared",
+         () =>
+            new DuckLakeCatalogUnavailableError("credible", {
+               cause: new Error(
+                  'Binder Error: Catalog "credible" does not exist!',
+               ),
+            }),
+         true,
+      ],
+      [
+         "a bare missing-catalog binder error keeps a binding with no fallback failing",
+         () => new Error('Binder Error: Catalog "credible" does not exist!'),
+         false,
+      ],
+   ] as const) {
+      it(`run: ${label}`, async () => {
+         const result = { data: { rowCount: 1 } };
+         const failing = {
+            getPreparedResult: async () => {
+               throw thrown();
+            },
+         } as unknown as QueryMaterializer;
+         const live = {
+            getPreparedResult: async () => ({
+               resultExplore: { limit: undefined },
+               connectionName: "duckdb",
+            }),
+            run: async () => result,
+         } as unknown as QueryMaterializer;
+         const s = stages(host([]).host);
+         const routedAnswer: Answer = {
+            leg: "served",
+            considered: [{ kind: "served", outcome: "used" }],
+            answer: answer({
+               runnable: failing,
+               virtualMap,
+               shapeBindings: [binding("orders")],
+            }),
+            pastEntryPointGate: false,
+            runFailed: false,
+            databaseRead: new Set(),
+         };
+         const ran = s.execute(ctxOf(), {
+            pinned: s.pin(),
+            viewManifest: undefined,
+            admitted,
+            prepared: { ...prepared, liveRunnable: live },
+            answer: routedAnswer,
+            governed: {
+               runnable: failing,
+               request: { ceiling: undefined },
+               decision: { grafts: [], enforced: [] },
+               compiledSource: "orders",
+            },
+         });
+         if (answersLive) {
+            const done = await ran;
+            expect(done.run.result).toBe(result);
+            expect(servedFromOf(done.answer)).toBe("live_fallback");
+         } else {
+            await expect(ran).rejects.toThrow(/Catalog "credible"/);
+         }
+      });
+   }
 
    it("run: only an answer a leg ran is rounded as live on Postgres rounds it, never a live answer or the live retry of a failed one", async () => {
       // 2^53 + 1, which live on Postgres answers as 2^53.
