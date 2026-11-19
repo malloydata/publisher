@@ -177,9 +177,9 @@ export interface ResolvedTable extends ViewTable {
     */
    leftOut?: readonly string[];
    /**
-    * A database table stored as of its build: its binding in the pinned
-    * snapshot says so (`Binding.asOfBuild`), so read admission declines an
-    * access decision over it.
+    * A database table stored as of its build: its manifest entry in the
+    * pinned snapshot says so (`FreshnessAwareManifestEntry.asOfBuild`), so
+    * read admission declines an access decision over it.
     */
    asOfBuild?: true;
 }
@@ -450,11 +450,7 @@ export class PersistedViewServe {
          return { ...withId, tier: "database", built: false, stale: false };
       }
       const dataAsOf = bound.dataAsOf ? { dataAsOf: bound.dataAsOf } : {};
-      const asOfBuild = pinned.snapshot.bindings.some(
-         (b) => b.virtualHandle === tableId && b.asOfBuild === true,
-      )
-         ? { asOfBuild: true as const }
-         : {};
+      const asOfBuild = bound.asOfBuild ? { asOfBuild: true as const } : {};
       const fresh = freshManifest?.entries[tableId]?.tableName;
       const leftOut = bound.leftOutColumns?.length
          ? { leftOut: bound.leftOutColumns }

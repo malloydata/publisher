@@ -262,12 +262,11 @@ describe("PersistedViewServe (database)", () => {
 
    it("marks a table stored as of its build, so read admission declines an access decision over it", async () => {
       // The other checks keep access decisions off this leg today; this
-      // backstop must decline one on its own, so it has to see the flag.
-      const asOfBuild = storedViewBinding(
-         f.buildSourceIDOf("orders__by_region__view"),
-         { tier: "database", virtualHandle: tableId, asOfBuild: true },
-      );
-      const pinned = pinnedOf([asOfBuild], built);
+      // backstop must decline one on its own, so it has to see the flag. A
+      // database view's table has no binding: its manifest entry carries it.
+      const pinned = pinnedOf([], {
+         [tableId]: { tableName: STORED, asOfBuild: true },
+      });
       const query = {
          queryString: "run: orders -> by_region",
          givens: undefined,

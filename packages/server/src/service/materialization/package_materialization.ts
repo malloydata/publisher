@@ -419,7 +419,7 @@ export class PackageMaterialization {
          drifted: observed.drifted,
          unread: observed.unread,
       };
-      const asOfBuild = this.asOfBuildBinding();
+      const { addresses, binding: asOfBuild } = this.asOfBuildTables();
       const bindings = [
          ...this.storageBindings.map((b) => {
             const kind = kindOf(b);
@@ -428,24 +428,38 @@ export class PackageMaterialization {
          ...observed.bindings,
       ].map((b) => (asOfBuild(b) ? { ...b, asOfBuild: true } : b));
       const signature = JSON.stringify(bindings);
+      const entries = this.observedColumns
+         ? observed.entries
+         : (this.databaseEntries ?? {});
       const snapshot = makeSnapshot(
          memo && memo.signature === signature
             ? memo.snapshot.bindings
             : Object.freeze(bindings),
-         this.observedColumns ? observed.entries : (this.databaseEntries ?? {}),
+         addresses.size === 0
+            ? entries
+            : Object.fromEntries(
+                 Object.entries(entries).map(([id, e]) => [
+                    id,
+                    addresses.has(id) ? { ...e, asOfBuild: true } : e,
+                 ]),
+              ),
       );
       this.snapshotMemo = { key, snapshot, signature };
       return snapshot;
    }
 
    /**
-    * Whether a binding reads a table stored as of its build: one of its
-    * sources, or its content address, is one the plan marks `asOfBuild`.
-    * Read admission answers an access decision over it live.
+    * The tables the plan marks `asOfBuild`, by content address, for the
+    * database manifest entries; and whether a binding reads one (one of its
+    * sources, or its content address, is one). Read admission answers an
+    * access decision over such a table live.
     */
-   private asOfBuildBinding(): (b: Binding) => boolean {
+   private asOfBuildTables(): {
+      addresses: ReadonlySet<string>;
+      binding: (b: Binding) => boolean;
+   } {
       const ids = new Set(Object.keys(this.plan.asOfBuild));
-      if (ids.size === 0) return () => false;
+      if (ids.size === 0) return { addresses: new Set(), binding: () => false };
       const sources = this.plan.buildPlan?.sources ?? {};
       const addresses = new Set(
          [...ids].flatMap((id) => {
@@ -453,9 +467,12 @@ export class PackageMaterialization {
             return address ? [address] : [];
          }),
       );
-      return (b) =>
-         addresses.has(b.virtualHandle) ||
-         (b.sourceIDs ?? []).some((id) => ids.has(id));
+      return {
+         addresses,
+         binding: (b) =>
+            addresses.has(b.virtualHandle) ||
+            (b.sourceIDs ?? []).some((id) => ids.has(id)),
+      };
    }
 
    /**
