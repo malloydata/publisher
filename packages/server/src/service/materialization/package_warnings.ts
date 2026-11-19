@@ -910,7 +910,7 @@ function servedCopyProblemMessage(
 }
 
 /** The code of the warning for a bound database table the bind could not read. */
-export const DATABASE_TABLE_UNREAD_CODE = "database-table-unread";
+const DATABASE_TABLE_UNREAD_CODE = "database-table-unread";
 
 /** What a `database-table-unread` warning says of each reason. */
 const UNREAD_REASON_TEXT: Readonly<Record<UnreadReason, string>> = {

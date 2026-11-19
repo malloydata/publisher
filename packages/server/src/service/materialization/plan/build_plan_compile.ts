@@ -124,7 +124,7 @@ function addKeyCheckInputs(
  * each stored source's key checked at its own build instead. Compiles
  * queries, so only a run's plan pays for it: no load reads any of it.
  */
-export async function compileRunKeyChecks(
+async function compileRunKeyChecks(
    parts: BuildPlanParts,
    inputs: KeyCheckInputs,
 ): Promise<void> {

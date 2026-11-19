@@ -273,7 +273,7 @@ const INEXACT_GATE_TYPE =
    /\b(DOUBLE|FLOAT[0-9]*|REAL|HUGEINT|UHUGEINT|U?INT128)\b/i;
 
 /** Whether a gate compares a column stored as `type` as live compares it. */
-export function gateColumnTypeExact(type: string): boolean {
+function gateColumnTypeExact(type: string): boolean {
    return !INEXACT_GATE_TYPE.test(type);
 }
 
