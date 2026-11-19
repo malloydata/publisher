@@ -229,8 +229,14 @@ export class PackageMaterialization {
     * a later clear leaves the version live, not back on this server's store.
     */
    private hostOwned = false;
-   /** The declined bindings already warned of ({@link logDecline}). */
-   private readonly warnedDeclines = new Set<string>();
+   /**
+    * The declined bindings already warned of under the plan they were
+    * judged by ({@link logDecline}); a new plan warns afresh.
+    */
+   private warnedDeclines: { plan: unknown; keys: Set<string> } = {
+      plan: undefined,
+      keys: new Set(),
+   };
    /**
     * The type findings of the bound `storage=` tables a model's own
     * `#@ persist` check does not make ({@link boundTableTypeFindings}), as of
@@ -819,12 +825,13 @@ export class PackageMaterialization {
       for (const decline of admitted.declined) {
          recordSourceDeclined(decline.reason);
          this.logDecline(
-            `database\u0000${decline.sourceEntityId}\u0000${decline.detail}`,
+            `database\u0000${decline.sourceEntityId}\u0000${decline.reason}`,
             "Refusing a database serve binding: the source is not eligible to be served from a materialized table",
             {
                packageName: this.owner.packageName(),
                sourceEntityId: decline.sourceEntityId,
-               reason: decline.detail,
+               // The decline's code: its text can name a host's table.
+               reason: decline.reason,
             },
          );
       }
@@ -842,20 +849,25 @@ export class PackageMaterialization {
    }
 
    /**
-    * Log a declined binding: warned the first time, then at debug, since a
-    * rebind of an unchanged manifest (a poll) declines the same entries
-    * again.
+    * Log a declined binding: warned the first time under a plan, then at
+    * debug, since a rebind of an unchanged manifest (a poll) declines the
+    * same entries again. A new plan (a reload, a refresh) warns again, so a
+    * decline that comes back after a fix is seen.
     */
    private logDecline(
       key: string,
       message: string,
       fields: Record<string, unknown>,
    ): void {
-      if (this.warnedDeclines.has(key)) {
+      const plan = this.plan.buildPlan;
+      if (this.warnedDeclines.plan !== plan) {
+         this.warnedDeclines = { plan, keys: new Set() };
+      }
+      if (this.warnedDeclines.keys.has(key)) {
          logger.debug(message, fields);
          return;
       }
-      this.warnedDeclines.add(key);
+      this.warnedDeclines.keys.add(key);
       logger.warn(message, fields);
    }
 
@@ -891,14 +903,15 @@ export class PackageMaterialization {
       for (const decline of admitted.declined) {
          recordSourceDeclined(decline.reason);
          this.logDecline(
-            `storage\u0000${decline.sourceName}\u0000${decline.detail}`,
+            `storage\u0000${decline.sourceName}\u0000${decline.reason}`,
             "Refusing a storage serve binding: the source is not eligible to be served from a materialized table",
             {
                packageName: this.owner.packageName(),
                sourceName: decline.sourceName,
                // A generated rollup name means nothing to an operator alone.
                ...(decline.rollup ? { kind: "pre-aggregation rollup" } : {}),
-               reason: decline.detail,
+               // The decline's code: its text can name a host's table.
+               reason: decline.reason,
             },
          );
       }

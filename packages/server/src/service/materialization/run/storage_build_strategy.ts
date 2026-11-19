@@ -1022,15 +1022,16 @@ export class StorageBuildStrategy
          ...params,
          physicalTableName: ctx.physicalTableName,
       };
-      const declined = (detail: string) => {
+      // Logged by a code: a decline's text can name a host's table.
+      const declined = (code: string) => {
          logger.warn(
             "A storage= rollup did not build over its base's stored table; it builds from the warehouse",
-            { sourceName: persistSource.name, destinationName, detail },
+            { sourceName: persistSource.name, destinationName, code },
          );
          return { stacked: false };
       };
       if (!environment.chainBuildText) {
-         return declined("this package has no served copy to write it from");
+         return declined("no_served_copy");
       }
       const text = environment.chainBuildText({
          downstream: {
@@ -1049,7 +1050,7 @@ export class StorageBuildStrategy
          ],
          rollup: { baseSourceID: base.baseSourceID, companion: base.companion },
       });
-      if ("declined" in text) return declined(text.declined);
+      if ("declined" in text) return declined("chain_text_declined");
       try {
          const result = await withStatementUsage(
             {
@@ -1085,7 +1086,7 @@ export class StorageBuildStrategy
          return { result, stacked: true };
       } catch (err) {
          if (!(err instanceof MaterializationEligibilityError)) throw err;
-         return declined(errMessage(err));
+         return declined(errorCodeOf(err));
       }
    }
 
