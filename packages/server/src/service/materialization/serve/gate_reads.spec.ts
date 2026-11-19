@@ -1,5 +1,7 @@
-import { describe, expect, it } from "bun:test";
-import { gateReads } from "./gate_reads";
+import { DuckDBConnection } from "@malloydata/db-duckdb";
+import { type Connection, SingleConnectionRuntime } from "@malloydata/malloy";
+import { afterAll, describe, expect, it } from "bun:test";
+import { gateReads, gateReadsOfQuery } from "./gate_reads";
 
 /** `where: <path> > 0` as Malloy's IR holds it. */
 const termOn = (...path: string[]) => ({
@@ -436,5 +438,89 @@ describe("gateReads: a stage output of a stored source is a stored column", () =
       expect(reads.equalityOnly).toBe(false);
       expect(reads.entryPathsComplete).toBe(false);
       expect(reads.columns).toEqual([["tenant", "category"]]);
+   });
+});
+
+/**
+ * Time arithmetic makes a time or a number of its operands alone, so a scope
+ * or gate built of `now`, time literals, `± N <unit>` offsets, truncations
+ * and extractions compares no string, while one whose operand reads a string
+ * (a cast, a `pick`, a string given, a function over a string column) still
+ * does. Compiled by Malloy, so the walk reads the IR the server reads.
+ *
+ * Only a `where:` is read from its IR. A gate is read from its text, which
+ * names `now` and a unit as fields it cannot find, so a gate written with
+ * time arithmetic still fails closed.
+ */
+describe("gateReads: time arithmetic", () => {
+   const db = new DuckDBConnection("duckdb", ":memory:");
+   afterAll(async () => {
+      await db.close();
+   });
+   const TABLE = `duckdb.sql("""SELECT 1 AS id, TIMESTAMP '2021-01-01' AS created_at, DATE '2021-01-01' AS d, 'x' AS region""")`;
+
+   /** The reads of `run: s -> …` where `s` is scoped by `where`, or gated by `gate`. */
+   const readsOf = async (scope: { where?: string; gate?: string }) => {
+      const model = `##! experimental { givens access_modifiers }
+given: S :: string
+given: N :: number
+${scope.gate ? `#(access_filter) ${scope.gate}\n` : ""}source: s is ${TABLE} extend {
+  dimension: cut is pick @2020-01-01 00:00 when region = 'a' else @2021-01-01 00:00
+  ${scope.where ? `where: ${scope.where}` : ""}
+}`;
+      const q = new SingleConnectionRuntime({
+         connection: db as unknown as Connection,
+      })
+         .loadModel(model)
+         .loadQuery("run: s -> { group_by: id }");
+      const reads = await gateReadsOfQuery(q as never);
+      expect(reads, model).toBeDefined();
+      return reads!;
+   };
+
+   const NOT_STRING = [
+      "created_at >= now - 3650 days",
+      "d >= @2020-01-01 + 1 month",
+      "created_at >= @2020-01-01 00:00 + 1 month",
+      "created_at.month > @2020-01",
+      "created_at >= now.day",
+      "created_at.day = now.day",
+      "day(now) > 0",
+      "created_at < now",
+      "created_at >= now - $N days",
+      "created_at > @2020-01-01 10:00:00[America/New_York]",
+   ];
+   for (const where of NOT_STRING) {
+      it(`compares no string: ${where}`, async () => {
+         const reads = await readsOf({ where });
+         expect(reads.unresolved).toBe(false);
+         expect(reads.comparesNoString).toBe(true);
+      });
+   }
+
+   const READS_STRING = [
+      "created_at > region::timestamp",
+      "created_at > (region::timestamp + 1 day)",
+      "created_at.month > (region::timestamp).month",
+      "day(region::timestamp) > 3",
+      "created_at > cut",
+      "(pick @2020-01-01 00:00 when region = 'a' else @2021-01-01 00:00) < created_at",
+      "created_at > $S::timestamp",
+      "created_at >= now - $S::number days",
+      "created_at >= now - length(region) days",
+   ];
+   for (const where of READS_STRING) {
+      it(`still reads a string: ${where}`, async () => {
+         const reads = await readsOf({ where });
+         expect(reads.comparesNoString).toBe(false);
+         expect(reads.equalityOnly).toBe(false);
+      });
+   }
+
+   // A gate is read from its text, not its IR: one that reads a string given
+   // through a cast still compares a string.
+   it("still reads a string through a gate over a string given cast to a timestamp", async () => {
+      const reads = await readsOf({ gate: "created_at > $S::timestamp" });
+      expect(reads.comparesNoString).toBe(false);
    });
 });
