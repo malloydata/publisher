@@ -429,6 +429,11 @@ export function connect(args: {
    settings: ConnectSettings;
    /** The request's scope, applied to the in-cluster pool. */
    allow: (node: CatalogNode) => boolean;
+   /**
+    * The partition key the caller's givens name for a dimension's source
+    * (callerKeyOf). A value stored under a key matches only that key.
+    */
+   callerKey?: (dimension: string) => string | undefined;
 }): ConnectResult {
    const { index, found, settings } = args;
    if (settings.connect === "list") return connectList(args);
@@ -473,6 +478,7 @@ export function connect(args: {
                   pool,
                   settings,
                   args.valueMeaning,
+                  args.callerKey,
                ),
             );
          }
@@ -656,12 +662,14 @@ function rankInCluster(
    pool: ReadonlyMap<string, ReachEntry>,
    settings: ConnectSettings,
    valueMeaning?: boolean,
+   callerKey?: (dimension: string) => string | undefined,
 ): ClusterCandidate[] {
    const ranked = rankTarget(index, target, query, inPool, {
       keyword: settings.keyword,
       values: settings.values,
       depth: Number.MAX_SAFE_INTEGER,
       ...(valueMeaning ? { valueMeaning } : {}),
+      ...(callerKey ? { callerKey } : {}),
    });
    return ranked.all
       .map((c) => {

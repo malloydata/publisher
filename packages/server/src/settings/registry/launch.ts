@@ -49,7 +49,7 @@ export const launch = [
       default: false,
       kind: "launch",
       description: "Wipe persisted storage and re-sync it from the config.",
-      notes: "Set to `true` (or pass `--init`) to **wipe persisted storage** (`publisher_data/`) and re-sync it from the config on boot. A first boot with empty storage loads the config automatically, so you only need this to reset state or pick up config changes. Also exposed as the `start:init` / `start:dev:init` scripts.",
+      notes: "Set to `true` (or pass `--init`) to **wipe persisted storage** (`publisher_data/`) and re-sync it from the config on boot. A first boot with empty storage loads the config automatically, so you only need this to reset state or pick up config changes. The search index (stored value reads, embeddings and LLM output) is kept, since each entry is reused only while what it was built from is unchanged; the rows of a package the config no longer lists are deleted. Also exposed as the `start:init` / `start:dev:init` scripts.",
       shortFlags: ["--init"],
       aliases: {
          env: ["INITIALIZE_STORAGE"],

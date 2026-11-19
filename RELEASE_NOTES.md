@@ -21,6 +21,30 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — Value search: index a report-gated model locally by listing the reports you work on
+
+**A source gated by `#(access_filter) report_id = $REPORT_ID` can now have its values indexed on a local server.** Until now any gated source was skipped, so on a per-report model like this, `dimensional_value` searches found nothing locally. List the reports to index in `publisher.config.json`:
+
+```json
+"retrieval": { "dimensionValues": { "givens": { "my-package": { "REPORT_ID": [123, 456] } } } }
+```
+
+Each `#(index)` dimension is read once per listed report, through its gate, and each value is stored with its report. A `get_context` call returns a value only when its `givens` name that report, as hosted Credible does. A source that filters on a given with a plain `where:` and no default is read with these givens too.
+
+A source with an `#(authorize)` lock is read the same way, and at search time its lock is checked against the caller's `givens` with the same check a query runs, so a caller the lock refuses gets none of its values. A source is read once for each combination of listed givens it actually names, so a source that names none is read once.
+
+With nothing listed, these sources are still skipped, and the server log now names the setting. Nothing reads every report at once: on a production model that scans the whole table, and the 5,000-value cap would leave almost every report with no values. The setting lives in the local server's config, so publishing a package never carries it. See "Dimension value search" in `docs/configuration.md`.
+
+**A model edit no longer reads every value again.** Each read is now stored in `publisher.db`, per dimension and per listed report, and reused by later builds: after a model edit, a reload or a restart. A read is reused while it is less than 24 hours old, its source's compiled definition is unchanged, and its connections point where they did; a rotated password or token does not count. Docs and line positions don't count, so editing a doc reads nothing. Changing anything else in a source reads that source's `#(index)` dimensions again, and listing one more report reads only that report. Before, every save in watch mode read every dimension again: about a minute against Snowflake on a 48-dimension model.
+
+**`--init` keeps the search index.** `--init` still resets environments, connections, packages and materialization records from `publisher.config.json`. It no longer drops the stored value reads, embeddings and LLM output, because each is reused only while what it was built from is unchanged. A restart with `--init` used to read every value and embed everything again. It now deletes only the rows of a package the config no longer lists. To start the index from nothing, stop the server and delete `publisher.db`.
+
+## [Unreleased] — Value search: `#(index)` alone decides whether values go to your provider, and 5,000 are kept per dimension
+
+**Your `#(index)` values now go to your embedding provider and LLM without a second switch.** Until now, a local Publisher sent the values of `#(index)` dimensions to the embedding provider and the LLM only when `publisher.config.json` set `retrieval.egress.preset` to `"full"`. With only `EMBEDDING_API_KEY` set, values were matched by spelling alone, and the reason appeared only in the server log. Now the `#(index)` tag decides, as it does on a hosted index: once a provider is configured, those values are embedded, so a phrase finds a value by meaning (`sneakers` finds `Athletic Shoes`), and the LLM that picks fields sees the values that matched. Values of a gated source are still never read at index time or sent anywhere, unless it is a report-gated or `#(authorize)`-locked source whose givens you list (see the note above). To keep values on the machine, set `retrieval.dimensionValues.enabled` to `false` in `publisher.config.json`. Leaving `EMBEDDING_API_KEY` unset, or setting `retrieval.fcj.valueEmbeddings` to `false` in the package's `publisher.json`, only stops values being embedded: a configured LLM still sees the values that matched when it picks fields, and the questions it writes for a dimension at index time. An existing `retrieval.egress` block still loads, does nothing, and logs a warning at startup saying so.
+
+**At most 5,000 values are kept per dimension, down from 50,000.** The most frequent are kept. Measured on local DuckDB, 50,000 embedded values took 5.6 minutes and about 1 GB of `publisher.db`. A package that needs more sets `retrieval.fcj.valueCap` in its `publisher.json`.
+
 ## [Unreleased] — the serve verdict reports a zoned gate column on a storage= table as queries see it
 
 **Changed: the status verdict for a `storage=` table whose own gate column is stored with a zone.** A query past such a source's row-level gate is already answered live: the column is stored as `TIMESTAMP WITH TIME ZONE`, which the destination compares in its own session zone rather than the source's. The source's serve verdict (`serveVerdicts`) still reported that table as keeping the gate, so it could say `serves` for a gated source whose every query was answered live. It now says `live` with reason `row_level_gate`, the decline it reports for any other gate a table cannot keep, matching what queries do. **Who is affected:** a status reader whose package stores a gate column zoned on a `storage=` table, with the gated-sources switch on, or with the table admitted past its own gate or holding only ungated rows. Query answers do not change.

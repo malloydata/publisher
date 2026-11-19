@@ -12,7 +12,7 @@ export async function initializeSchema(
 
    if (force) {
       logger.info(
-         "Reinitializing database schema dropping and recreating all tables",
+         "Reinitializing database schema: dropping and recreating every table but the retrieval caches",
       );
       await dropAllTables(db);
    } else if (!initialized) {
@@ -892,7 +892,8 @@ export async function createCatalogTables(db: DuckDBConnection): Promise<void> {
     )
   `);
    // The engine's value index (retrieval/index/values_index.ts): stored values of
-   // `#(index)` dimensions on ungated sources, and value lists from docs.
+   // `#(index)` dimensions on ungated sources and on sources keyed by the
+   // configured givens, and value lists from docs.
    // Rewritten at each load; the engine searches its in-memory copy.
    await db.run(`
     CREATE TABLE IF NOT EXISTS dimension_values (
@@ -909,7 +910,8 @@ export async function createCatalogTables(db: DuckDBConnection): Promise<void> {
    // The embeddings of those values (`retrieval.fcj.valueEmbeddings`): one row
    // per distinct value string (node_key is the value, facet is "value"), the
    // same columns and sync rule as catalog_embeddings, so a reload embeds only
-   // values it has not seen. A gated source's values are never here.
+   // values it has not seen. A gated source's values are here only when its
+   // gate is keyed and its keys are configured.
    await db.run(`
     CREATE TABLE IF NOT EXISTS value_embeddings (
       environment_name VARCHAR NOT NULL,
@@ -922,6 +924,24 @@ export async function createCatalogTables(db: DuckDBConnection): Promise<void> {
       embedding FLOAT[] NOT NULL,
       updated_at TIMESTAMP NOT NULL,
       PRIMARY KEY (environment_name, package_name, node_key, facet)
+    )
+  `);
+   // Each read of an `#(index)` dimension, once per combination of the
+   // configured givens (`givens` is that combination as JSON, "" with none),
+   // so a later build reuses it while `read_key` matches and it is younger
+   // than the reuse limit (values_index.ts). `read_values` is a JSON list of
+   // [value, count] or [value, count, key].
+   await db.run(`
+    CREATE TABLE IF NOT EXISTS dimension_value_reads (
+      environment_name VARCHAR NOT NULL,
+      package_name VARCHAR NOT NULL,
+      dimension_key VARCHAR NOT NULL,
+      givens VARCHAR NOT NULL,
+      read_key VARCHAR NOT NULL,
+      truncated BOOLEAN NOT NULL,
+      read_values VARCHAR NOT NULL,
+      read_at TIMESTAMP NOT NULL,
+      PRIMARY KEY (environment_name, package_name, dimension_key, givens)
     )
   `);
 }
@@ -957,6 +977,56 @@ async function dropLegacyProjectSchema(db: DuckDBConnection): Promise<void> {
    }
 }
 
+/**
+ * What retrieval derived from the models and the warehouse: value reads,
+ * embeddings and LLM output. `--init` keeps them. Each row is reused only
+ * while what it was built from is unchanged (a source's definition hash, the
+ * embedded text, an LLM input hash), so a kept row is never served stale, and
+ * dropping them would only repeat the warehouse reads and provider calls.
+ * Holds every table in ENGINE_TABLES (retrieval/index/catalog_store.ts).
+ */
+export const RETRIEVAL_CACHE_TABLES = [
+   "catalog_nodes",
+   "catalog_edges",
+   "doc_parts",
+   "node_questions",
+   "catalog_embeddings",
+   "dimension_values",
+   "value_embeddings",
+   "dimension_value_reads",
+   "source_summaries",
+] as const;
+
+/**
+ * After `--init`, delete the retrieval rows of every package the config no
+ * longer serves. A package removed from the config is never deleted through
+ * the API, so nothing else would remove them, and some hold warehouse values.
+ */
+export async function deleteUnconfiguredRetrievalRows(
+   db: DuckDBConnection,
+   configured: { environment: string; packages: string[] }[],
+): Promise<void> {
+   const pairs = configured.flatMap((e) =>
+      e.packages.map((p) => [e.environment, p]),
+   );
+   const keep =
+      pairs.length === 0
+         ? "FALSE"
+         : `(environment_name, package_name) IN (${pairs.map(() => "(?, ?)").join(", ")})`;
+   for (const table of RETRIEVAL_CACHE_TABLES) {
+      try {
+         await db.run(`DELETE FROM ${table} WHERE NOT ${keep}`, pairs.flat());
+      } catch (err) {
+         // Empty the table rather than keep a removed package's values.
+         logger.warn(
+            `Could not delete the rows of unconfigured packages from ${table}; emptying it`,
+            err,
+         );
+         await db.run(`DELETE FROM ${table}`);
+      }
+   }
+}
+
 async function dropAllTables(db: DuckDBConnection): Promise<void> {
    const tables = [
       "build_manifests",
@@ -969,16 +1039,9 @@ async function dropAllTables(db: DuckDBConnection): Promise<void> {
       "environments",
       "themes",
       "workload_log",
+      // Written by an earlier release's index; nothing reads them now.
       "entity_embeddings",
       "entity_keyphrases",
-      "source_summaries",
-      "catalog_nodes",
-      "catalog_edges",
-      "doc_parts",
-      "node_questions",
-      "catalog_embeddings",
-      "dimension_values",
-      "value_embeddings",
    ];
 
    logger.info("Dropping tables:", tables.join(", "));
