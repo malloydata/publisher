@@ -56,13 +56,11 @@
  * fails on any change, naming the review.
  */
 
-/** The deployment switches gate keeping reads, as one value. */
-export interface GateSwitches {
-   /** `materialize.enabled` (`PUBLISHER_MATERIALIZE`). */
-   readonly materialize: boolean;
-   /** `materialize.gatedSources` (`PUBLISHER_MATERIALIZE_GATED_SOURCES`). */
-   readonly gatedSources: boolean;
-}
+import type { Switches } from "./switches";
+import { type Leg, type TableKind, TIERS } from "./vocabulary";
+
+/** The deployment switches gate keeping reads (a part of {@link Switches}). */
+export type GateSwitches = Pick<Switches, "materialize" | "gatedSources">;
 
 /** Every switch gate keeping reads, one entry per field of {@link GateSwitches}. */
 export const GATE_SWITCH_KEYS = {
@@ -77,11 +75,11 @@ export const GATE_KINDS = [
    "pair",
    "rollup",
    "view",
-] as const;
+] as const satisfies readonly TableKind[];
 type GateKind = (typeof GATE_KINDS)[number];
 
 /** Where a stored table lives. */
-export const GATE_TIERS = ["database", "storage"] as const;
+export const GATE_TIERS = TIERS;
 type GateTier = (typeof GATE_TIERS)[number];
 
 /** A stored table over a gated source, as the policy reads it. */
@@ -204,7 +202,11 @@ export function tableKeepsGates(t: GatedTable, s: GateSwitches): boolean {
 }
 
 /** A routed leg. */
-export const GATE_LEGS = ["view", "rollup", "served"] as const;
+export const GATE_LEGS = [
+   "view",
+   "rollup",
+   "served",
+] as const satisfies readonly Leg[];
 type GateLeg = (typeof GATE_LEGS)[number];
 
 /** What the router's caller adds to the switches. */

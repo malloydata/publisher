@@ -12,6 +12,7 @@
  * miss by the author's source. Counts each chained storage build.
  */
 
+import { instructionTier } from "../domain/placement";
 import { plannedModelDefOf } from "../../governance/ir/compiled_model";
 import type {
    Connection as MalloyConnection,
@@ -74,7 +75,7 @@ function renderBuildSQL(
    planFacts: ChainedPlanFacts,
 ) {
    const isStorageBuild =
-      !!instruction.destination && getPersistStorageMode() !== "off";
+      instructionTier(instruction, getPersistStorageMode()) === "storage";
    // Warehouse-executed build SQL cannot see a storage upstream's
    // DuckDB/DuckLake table, so storage upstreams are excluded from the build
    // manifest: non-strict they INLINE (recompute from raw); under

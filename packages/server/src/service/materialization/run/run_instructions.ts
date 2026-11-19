@@ -12,10 +12,12 @@
  * refuses. A source the eligibility gate refuses is returned as refused and serves live.
  */
 
+import { storageWritable } from "../domain/placement";
 import { freshnessOf } from "../domain/freshness";
 import type { PersistSource } from "@malloydata/malloy";
 import * as path from "path";
 import { fileURLToPath } from "url";
+import { mayBeSameTable } from "../domain/physical_table";
 import { tableNamesFoldCase } from "../domain/storage_table_path";
 import {
    authorModelPath,
@@ -25,7 +27,6 @@ import {
    sourceLabel,
    hasReservedTableSuffix,
    tableNameParts,
-   tableNamesMeet,
 } from "../domain/table_name";
 import { isPersistedQuerySourceID } from "../domain/table_plans";
 import { getPersistStorageMode } from "../../../config";
@@ -125,42 +126,6 @@ export interface RenamedTable {
    previousPlace?: { storageDestinationName?: string };
 }
 
-/**
- * Whether two written names, in one place, may be one table: compared
- * unquoted and case-folded, with {@link tableNamesMeet}'s container rule. The
- * conservative answer, for deciding a table is NOT another: an over-wide
- * match only keeps a table.
- */
-export function mayBeOneTable(a: string, b: string): boolean {
-   const canon = (name: string) =>
-      name
-         .split(".")
-         .map((s) => s.replace(/["`[\]]/g, "").toLowerCase())
-         .join(".");
-   return tableNamesMeet(canon(a), canon(b));
-}
-
-/**
- * A written name's table segment, unquoted and case-folded: the key a
- * reclaim or a run's delete compares names by. Containers are left out, since
- * a container does not say which table a name reaches (on DuckDB a two-part
- * name may be a catalog's or a schema's: `memory.t` and `main.t` are one
- * table), and nor does a place (two names for one DuckLake).
- */
-export function tableLeafKey(name: string): string {
-   const parts = name.split(".");
-   return parts[parts.length - 1].replace(/["`[\]]/g, "").toLowerCase();
-}
-
-/**
- * Whether two written names may be one table wherever each is, compared by
- * table segment alone ({@link tableLeafKey}). The conservative answer for
- * deciding whether to drop a table: an over-wide match only keeps one.
- */
-export function mayBeOneTableAnywhere(a: string, b: string): boolean {
-   return tableLeafKey(a) === tableLeafKey(b);
-}
-
 /*
  * A run's build instructions: derived by auto-run from the compiled plan, or
  * checked when a caller supplies them, and where each instructed table lives.
@@ -215,7 +180,7 @@ function gateSources(
          // Package.storageWarnings reports it. A plain `#@ persist` is
          // unaffected; database is its intent.
          if (
-            getPersistStorageMode() === "off" &&
+            !storageWritable(getPersistStorageMode()) &&
             declaredStorage(persistSource)
          ) {
             continue;
@@ -713,7 +678,7 @@ function supersededTable(
    // name=, so neither reclaimed nor listed.
    if (
       !hasReservedTableSuffix(prior.physicalTableName) &&
-      mayBeOneTable(
+      mayBeSameTable(
          tableNameParts(prior.physicalTableName).leaf,
          persistSource.name,
       )
@@ -722,7 +687,7 @@ function supersededTable(
    }
    const before = prior.storageDestinationName ?? undefined;
    const moved = before !== destination;
-   if (!moved && mayBeOneTable(prior.physicalTableName, built)) {
+   if (!moved && mayBeSameTable(prior.physicalTableName, built)) {
       return undefined;
    }
    return {
@@ -772,7 +737,7 @@ function notWrittenThisRun(
          (w) =>
             w.connectionName === t.connectionName &&
             (w.storageDestinationName ?? undefined) === where &&
-            mayBeOneTable(w.physicalTableName, t.previousName),
+            mayBeSameTable(w.physicalTableName, t.previousName),
       );
    });
 }

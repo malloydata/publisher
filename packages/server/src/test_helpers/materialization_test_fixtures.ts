@@ -12,10 +12,12 @@ import {
    BuildPlan,
 } from "../service/materialization/domain/types";
 import {
+   type BuildPlanOutcome,
    CompiledBuildPlan,
    setTestAddressForTarget,
    plannedSources,
 } from "../service/materialization/plan/build_plan";
+import type { WorkerBuildPlan } from "../package_load/protocol";
 import type {
    PersistSourceGateOutcome,
    TablePlan,
@@ -390,4 +392,79 @@ export function gatesIn(
 /** Each planned table's stored-table key check, by sourceID. */
 export function storedKeyChecksIn(plan: Planned): Record<string, string> {
    return fieldIn(plan, "storedKeyCheck");
+}
+
+/**
+ * A two-source wire plan over two connections (`conn_a`, `conn_b`), for the
+ * specs that need sources on more than one connection: `a@m.malloy` at
+ * address `addr-a` on `conn_a`, and `b@m.malloy` at `addr-b` on `conn_b`.
+ */
+export function makeTwoConnectionPlan(): BuildPlan {
+   const source = (name: string, connectionName: string) => ({
+      name,
+      sourceID: `${name}@m.malloy`,
+      connectionName,
+      dialect: "duckdb",
+      sourceEntityId: `addr-${name}`,
+      sql: "SELECT 1",
+      columns: [],
+   });
+   return makeBuildPlan({
+      graphs: [],
+      sources: {
+         "a@m.malloy": source("a", "conn_a"),
+         "b@m.malloy": source("b", "conn_b"),
+      },
+   });
+}
+
+/**
+ * A package build plan outcome as the load worker hands it over, every side
+ * table empty unless given: what `PlanLifecycle.load` adopts.
+ */
+export function makePlanOutcome(
+   overrides: Partial<BuildPlanOutcome> = {},
+): BuildPlanOutcome {
+   return {
+      plan: makeBuildPlan(),
+      droppedPersistSources: [],
+      annotationFindings: [],
+      modelGateLines: { preaggregate: [], nearMiss: [] },
+      sourceEligibility: { eligible: [], refused: {} },
+      databaseSourceEligibility: { eligibleEntityIds: new Set(), refused: {} },
+      incrementalDeclarations: {},
+      buildConnectionNames: [],
+      materializePlans: {},
+      rollupsKeepingGates: [],
+      refusedRollups: {},
+      refusalNotices: {},
+      compilerKeys: {},
+      ...overrides,
+   };
+}
+
+/** The load worker's plan, derived. */
+export function okWorkerPlan(
+   outcome: BuildPlanOutcome = makePlanOutcome(),
+): WorkerBuildPlan {
+   return {
+      ok: true,
+      outcome,
+      durationMs: 1,
+      digestSkipped: [],
+      eligibilityRefused: {},
+   };
+}
+
+/** The load worker's plan, failed in the compute. */
+export function failedWorkerPlan(
+   error = "the plan compute failed",
+): WorkerBuildPlan {
+   return {
+      ok: false,
+      error,
+      durationMs: 1,
+      digestSkipped: [],
+      eligibilityRefused: {},
+   };
 }

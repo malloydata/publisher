@@ -14,6 +14,7 @@
  * the run; the run's record says what is served.
  */
 
+import { storageWritable } from "../domain/placement";
 import { redactStorageUrls } from "../../../pg_helpers";
 import { boundNativeSchemaOf, boundSchemaOf } from "../stored_column_types";
 import { getPersistStorageMode } from "../../../config";
@@ -637,7 +638,7 @@ export class ManifestCommitter {
                   // Database: re-derive (or clear) regardless of mode.
                   database: tableNameManifest,
                   // Storage=: only meaningful when the tier is not off.
-                  ...(getPersistStorageMode() !== "off"
+                  ...(storageWritable(getPersistStorageMode())
                      ? { storage: storageEntries }
                      : {}),
                };

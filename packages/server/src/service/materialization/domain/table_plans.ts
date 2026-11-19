@@ -18,6 +18,7 @@
  * Pure.
  */
 
+import type { TableKind as StoredTableKind } from "./vocabulary";
 import type { BuildTarget, PersistSource } from "@malloydata/malloy";
 import type {
    GivenReadTerm,
@@ -654,7 +655,7 @@ export interface PersistSourceGateOutcome {
  * build, its telemetry and the binding: never re-derived from which other
  * plan a source also has, nor from a name.
  */
-type TableKind = "persist" | "materialize" | "pair" | "rollup" | "view";
+type TableKind = Exclude<StoredTableKind, "query">;
 
 /**
  * The mechanism that declared a stored table, in its annotation's words: the
@@ -664,12 +665,7 @@ type TableKind = "persist" | "materialize" | "pair" | "rollup" | "view";
  * a view or a named query, and `rollup` is a rollup (`#(rollup)`, or v1's
  * `#@ preaggregate`).
  */
-export type TableOrigin =
-   | "persist"
-   | "materialize"
-   | "view"
-   | "query"
-   | "rollup";
+export type TableOrigin = Exclude<StoredTableKind, "pair">;
 
 /**
  * Whether an `origin` names a rollup: `rollup`, or `preaggregate`, the word

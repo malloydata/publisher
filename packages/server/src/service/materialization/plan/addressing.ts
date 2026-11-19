@@ -9,6 +9,7 @@
  * hashed with. The one place an address is computed.
  */
 
+import { storageWritable } from "../domain/placement";
 import type {
    BuildManifest,
    BuildTarget,
@@ -367,7 +368,7 @@ export function compilerBuildId(
  */
 export function addressDestination(source: PersistSource): string | undefined {
    if (!getPersistAddressIncludesDestination()) return undefined;
-   if (getPersistStorageMode() === "off") return undefined;
+   if (!storageWritable(getPersistStorageMode())) return undefined;
    try {
       return declaredStorage(source);
    } catch {
@@ -704,7 +705,7 @@ export function foldDistinctTableNames(
  * twin of anything. An unreadable annotation reads as database.
  */
 function storedTierOf(source: PersistSource): string {
-   if (getPersistStorageMode() === "off") return "";
+   if (!storageWritable(getPersistStorageMode())) return "";
    try {
       return declaredStorage(source)?.trim() ?? "";
    } catch {

@@ -103,7 +103,11 @@ import {
 import type { WatermarkBound } from "./incremental_apply";
 import type { LateRows } from "../domain/types";
 import { storageDestinationRoot } from "../../connection_config";
-import { lockDownDuckDBSession } from "../../duckdb_lockdown";
+import {
+   allowedForLockdown,
+   hasUrlScheme,
+   lockDownDuckDBSession,
+} from "../../duckdb_lockdown";
 import {
    DEFAULT_DESTINATION_SCHEMA,
    destinationSchemaOf,
@@ -761,6 +765,12 @@ export async function withDestinationSession<T>(
        * DuckDB's next poll and nothing after it runs.
        */
       signal?: AbortSignal;
+      /**
+       * `"caller"`: the caller confines the session itself, after setup of
+       * its own (a build that federates its source first). By default the
+       * session is confined to the destination before `fn` runs.
+       */
+      lockdown?: "caller";
    },
    fn: (session: DuckDBConnection) => Promise<T>,
 ): Promise<T> {
@@ -801,7 +811,68 @@ export async function withDestinationSession<T>(
          }
          await pinSessionToUTC(session);
       }
+      if (options.build) {
+         // A build writes table files here: its local data path must exist
+         // before the session is locked, whoever locks it.
+         createLocalDataPaths(session, destinationAllowlist(destination));
+      }
+      if (options.lockdown !== "caller") {
+         // Setup done (the destination attached): confine the session to it
+         // (duckdb_lockdown.ts) before any of its work runs.
+         await lockDownDestinationSession(
+            session,
+            destinationAllowlist(destination),
+         );
+      }
       return fn(session);
+   }
+}
+
+/**
+ * Confine a destination session to `allow` and the paths its setup recorded
+ * (duckdb_lockdown.ts). The configuration is left unlocked: a build sets
+ * per-step options (threads around a partitioned write, a search path).
+ */
+export async function lockDownDestinationSession(
+   session: DuckDBConnection,
+   allow: readonly string[],
+): Promise<void> {
+   await lockDownDuckDBSession(session, {
+      allow: [...allow],
+      lockConfiguration: false,
+   });
+}
+
+/**
+ * Create each local directory among `allow` and the paths the session's
+ * attaches have recorded so far, for a session that writes table files into
+ * its destination: once locked, a session may create directories only inside
+ * an allowed path, never the path itself, so the first write into a fresh
+ * local DuckLake data path would fail. Called after the destination's attach
+ * and before any other (a copy's source, a build's federation), so only the
+ * destination's own paths are created. An object-store prefix is left alone.
+ *
+ * Best effort: a path that cannot be created here (a read-only or foreign
+ * mount, a path recorded on another host) is logged and skipped, and the
+ * lock proceeds; a write that needs it is still refused by DuckDB.
+ */
+export function createLocalDataPaths(
+   session: DuckDBConnection,
+   allow: readonly string[],
+): void {
+   for (const dir of new Set([...allow, ...allowedForLockdown(session)])) {
+      if (dir === "" || hasUrlScheme(dir)) continue;
+      try {
+         mkdirSync(dir, { recursive: true });
+      } catch (err) {
+         logger.debug(
+            "Could not create a destination's local data path; locking without it",
+            {
+               path: dir,
+               code: (err as NodeJS.ErrnoException).code,
+            },
+         );
+      }
    }
 }
 
@@ -1050,7 +1121,12 @@ export async function buildSourceIntoStorage(params: {
    try {
       return await withDestinationSession(
          params,
-         { purpose: "build", build: true, signal: params.signal },
+         {
+            purpose: "build",
+            build: true,
+            signal: params.signal,
+            lockdown: "caller",
+         },
          async (session) => {
             const federated = await federate(
                session,
@@ -1076,10 +1152,10 @@ export async function buildSourceIntoStorage(params: {
             // per-step options (threads around a partitioned write); no caller
             // or author SQL runs in DuckDB here, as the build's SQL runs in the
             // source warehouse through the passthrough.
-            await lockDownDuckDBSession(session, {
-               allow: destinationAllowlist(params),
-               lockConfiguration: false,
-            });
+            await lockDownDestinationSession(
+               session,
+               destinationAllowlist(params),
+            );
             try {
                return await buildOnFederatedSession(
                   params,
@@ -1293,13 +1369,9 @@ async function buildSameCatalogIntoStorage(params: {
       params,
       { purpose: "build", attachAs: alias, build: true, signal: params.signal },
       async (session) => {
+         // Confined to the catalog before the build's SQL runs (by
+         // withDestinationSession), the configuration unlocked for this.
          await session.runSQL(managedSearchPathSql(alias));
-         // Confined to the catalog before the build's SQL runs, unlocked for the
-         // build's own per-step options (see buildSourceIntoStorage).
-         await lockDownDuckDBSession(session, {
-            allow: destinationAllowlist(params),
-            lockConfiguration: false,
-         });
          const target = quoteManifestTablePath(
             storageTablePath(
                alias,
@@ -1783,6 +1855,10 @@ export async function listStorageTables(params: {
             `ATTACH '${escapeSQL(dbPath)}' AS ${quoteIdentifier(destinationName, STORAGE_DIALECT)} (READ_ONLY)`,
          );
       }
+      await lockDownDestinationSession(
+         session,
+         destinationAllowlist({ destinationConnection, environmentPath }),
+      );
       const rows = resultRows(
          await session.runSQL(
             `SELECT table_name FROM duckdb_tables() ` +
@@ -1840,6 +1916,10 @@ export async function cleanupStorageFiles(params: {
 
    return withIsolatedSession(`cleanup_${destinationName}`, async (session) => {
       await attachDuckLakeReadWrite(session, destinationName, cfg);
+      // Confined to the catalog's data path (and what the attach recorded)
+      // before the cleanup deletes any file there.
+      const dataPath = cfg.storage?.bucketUrl;
+      await lockDownDestinationSession(session, dataPath ? [dataPath] : []);
       const catalog = escapeSQL(destinationName);
       const expired = resultRows(
          await session.runSQL(

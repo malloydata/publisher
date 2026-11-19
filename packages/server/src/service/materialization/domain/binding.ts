@@ -25,6 +25,7 @@
  * Pure: the caller passes the instant.
  */
 
+import type { TableKind, Tier } from "./vocabulary";
 import { isRollupOrigin } from "./table_plans";
 import { freshnessOf, type Freshness } from "./freshness";
 import { storageTablePath } from "./storage_table_path";
@@ -36,15 +37,10 @@ import type {
 } from "./types";
 
 /** What a stored table holds, from the plan: never read off a name. */
-export type BindingKind =
-   | "persist"
-   | "materialize"
-   | "rollup"
-   | "view"
-   | "query";
+export type BindingKind = Exclude<TableKind, "pair">;
 
 /** Where a stored table lives: the source's own warehouse, or a storage destination. */
-type BindingTier = "database" | "storage";
+type BindingTier = Tier;
 
 /**
  * One stored table as serving reads it, under one source name.
