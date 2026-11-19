@@ -2934,9 +2934,14 @@ export class Environment {
          environmentId,
          new VersionStore(this.environmentPath),
          {
-            loadVersion: (packageName, versionPath, version) =>
+            loadVersion: (packageName, versionPath, version, options) =>
                this.trackPackageLoad(packageName, () =>
-                  this.loadVersionPackage(packageName, versionPath, version),
+                  this.loadVersionPackage(
+                     packageName,
+                     versionPath,
+                     version,
+                     options?.refreshSchemas === true,
+                  ),
                ),
             trackPublish: (packageName, fn) =>
                this.trackPackageLoad(packageName, fn),
@@ -3034,6 +3039,7 @@ export class Environment {
          sourceLocation: string | null;
          hostOwned: boolean;
       },
+      refreshSchemas: boolean = false,
    ): Promise<Package> {
       // A failed load names the version's files package-relative, as a
       // failed reload does, never this server's version folder.
@@ -3058,6 +3064,7 @@ export class Environment {
                   (fetched) => fetched.tableNameManifest,
                   () => undefined,
                ),
+               ...(refreshSchemas ? { refreshSchemas } : {}),
             },
          );
          this.attachDestinationServeConfig(loaded);
@@ -3485,9 +3492,15 @@ export class Environment {
       /**
        * `versionId`: which version to read; absent means `latest`. A
        * malformed one is refused (400) only when this environment has
-       * versions to consult.
+       * versions to consult. `refreshSchemas`: a reload refetches the
+       * schemas the package reads (an explicit reload; a watch-mode reload
+       * keeps them).
        */
-      options: { allowAdmission?: boolean; versionId?: VersionRef } = {},
+      options: {
+         allowAdmission?: boolean;
+         versionId?: VersionRef;
+         refreshSchemas?: boolean;
+      } = {},
    ): Promise<Package> {
       // The sink-side check (path_safety.ts); the brand says it already ran.
       assertSafePackageName(packageName);
@@ -3555,7 +3568,11 @@ export class Environment {
             );
             if (versioned) return versioned.loaded;
          }
-         return this._loadOrGetPackageLocked(packageName, reload);
+         return this._loadOrGetPackageLocked(
+            packageName,
+            reload,
+            options.refreshSchemas === true,
+         );
       });
    }
 
@@ -3563,6 +3580,7 @@ export class Environment {
    private async _loadOrGetPackageLocked(
       packageName: string,
       reload: boolean = false,
+      refreshSchemas: boolean = false,
    ): Promise<Package> {
       const existingPackage = this.packages.get(packageName);
       if (existingPackage !== undefined && !reload) {
@@ -3570,7 +3588,8 @@ export class Environment {
       }
       await this.assertNotVersionedLocked(packageName, existingPackage);
 
-      const load = () => this.loadPackageLocked(packageName, existingPackage);
+      const load = () =>
+         this.loadPackageLocked(packageName, existingPackage, refreshSchemas);
       if (!reload) return load();
       return withSpan(
          "publisher.package.reload",
@@ -3586,6 +3605,7 @@ export class Environment {
    private loadPackageLocked(
       packageName: string,
       existingPackage: Package | undefined,
+      refreshSchemas: boolean = false,
    ): Promise<Package> {
       return this.trackPackageLoad(packageName, async () => {
          this.transition(packageName, { type: "beginLoad" });
@@ -3607,6 +3627,8 @@ export class Environment {
                      packageName,
                      packagePath,
                      () => this.malloyConfig.malloyConfig,
+                     false,
+                     refreshSchemas ? { refreshSchemas } : {},
                   );
                   this.attachDestinationServeConfig(created);
                   await this.commitLoadedPackage(packageName, created, {
@@ -3686,7 +3708,8 @@ export class Environment {
 
    public async addPackage(
       packageName: string,
-      options: { allowAdmission?: boolean } = {},
+      /** `refreshSchemas`: a publish refetches the schemas the package reads. */
+      options: { allowAdmission?: boolean; refreshSchemas?: boolean } = {},
    ) {
       assertSafePackageName(packageName);
       const packagePath = safeJoinUnderRoot(this.environmentPath, packageName);
@@ -3714,12 +3737,13 @@ export class Environment {
       );
 
       return this.withPackageLock(packageName, () =>
-         this._addPackageLocked(packageName),
+         this._addPackageLocked(packageName, options.refreshSchemas === true),
       );
    }
 
    private async _addPackageLocked(
       packageName: string,
+      refreshSchemas: boolean,
    ): Promise<Package | undefined> {
       const packagePath = safeJoinUnderRoot(this.environmentPath, packageName);
       const existingPackage = this.packages.get(packageName);
@@ -3736,6 +3760,8 @@ export class Environment {
                packageName,
                packagePath,
                () => this.malloyConfig.malloyConfig,
+               false,
+               refreshSchemas ? { refreshSchemas } : {},
             );
             this.attachDestinationServeConfig(addedPackage);
             await this.commitLoadedPackage(packageName, addedPackage, {
@@ -3957,6 +3983,10 @@ export class Environment {
             ...(options.versionId !== undefined
                ? { versionId: options.versionId }
                : {}),
+            // A publish, a PATCH that reinstalls, a reload from a location
+            // and their dry run are all explicit, so each reads its tables'
+            // columns as the warehouse holds them now.
+            refreshSchemas: true,
          },
       );
       this.attachDestinationServeConfig(pkg);

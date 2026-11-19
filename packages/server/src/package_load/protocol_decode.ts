@@ -294,6 +294,17 @@ export function checkLoadPackageResult(raw: unknown): LoadPackageResult {
          `a load-package-result is missing loadDurationMs or timings`,
       );
    }
+   if (
+      raw.refreshedSchemaKeys !== undefined &&
+      !(
+         Array.isArray(raw.refreshedSchemaKeys) &&
+         raw.refreshedSchemaKeys.every((key) => typeof key === "string")
+      )
+   ) {
+      throw new PackageLoadProtocolError(
+         `a load-package-result has refreshedSchemaKeys that are not strings`,
+      );
+   }
    for (const model of raw.models) decodeSerializedModel(model);
    return raw as unknown as LoadPackageResult;
 }
