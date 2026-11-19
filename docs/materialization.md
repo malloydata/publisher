@@ -803,8 +803,8 @@ again with backoff (after 1 second, doubling to at most a
 minute, ten times), and by any later poll of an unchanged manifest, until a read succeeds, when the
 warning clears. A change made after a bind is read at the next one.
 
-**Columns with no Malloy basic type.** A `storage=` build stores an array column (a BigQuery
-`ARRAY`, a DuckDB or Postgres list, a persisted query's `nest:`) as a DuckDB list of its element type
+**Columns with no Malloy basic type.** A `storage=` build stores an array column, public or hidden
+(a BigQuery `ARRAY`, a DuckDB or Postgres list, a persisted query's `nest:`), as a DuckDB list of its element type
 (`VARCHAR[]`, `BIGINT[]`, `STRUCT(…)[]`). A stored list or struct column is declared as Malloy's array
 or record type, so it reads back as it does live, when the source's field is one; a column Malloy has
 no faithful declaration for (a MAP, UNION, ENUM, BLOB, INTERVAL or JSON column, a list or struct

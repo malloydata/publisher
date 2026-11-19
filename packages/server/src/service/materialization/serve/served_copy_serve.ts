@@ -760,9 +760,12 @@ export class ServedCopyServe {
                         const reasons = [...sourceIDs]
                            .map((id) => compiled.leftOutWhy?.get(id)?.get(c))
                            .filter((w): w is string => w !== undefined);
+                        // Every re-root records why for each column it
+                        // leaves out; one that did not is never named, as
+                        // it may be hidden.
                         return reasons.length > 0
                            ? reasons
-                           : [noCastPhrase(`column \`${c}\``)];
+                           : [noCastPhrase("a stored column")];
                      }),
                   ),
                ];
@@ -1368,6 +1371,7 @@ export class ServedCopyServe {
          const nativeCast = ownReads.get(c.name);
          if (nativeCast) return [{ ...c, nativeCast }];
          columnsLeftOut.push(c.name);
+         subject.leftOutWhy.set(c.name, leftOutPhraseOf(subject, c));
          return [];
       });
       // A stored scalar whose field live types as a warehouse-native type
@@ -1383,6 +1387,7 @@ export class ServedCopyServe {
             return [c];
          }
          columnsLeftOut.push(c.name);
+         subject.leftOutWhy.set(c.name, leftOutPhraseOf(subject, c));
          return [];
       });
       if (columns.length === 0) {
@@ -2777,6 +2782,15 @@ function leftOutPhrase(
    return (
       `${ref} (${declared ? `${declared}, ` : ""}stored as ${storedType}) ` +
       "has no declaration that reads it back as live answers it"
+   );
+}
+
+/** {@link leftOutPhrase} for one of the re-root's stored columns. */
+function leftOutPhraseOf(subject: RerootSubject, c: ServedColumn): string {
+   return leftOutPhrase(
+      subject.columnRef(c.name),
+      subject.fieldsByName.get(c.name),
+      c.type,
    );
 }
 

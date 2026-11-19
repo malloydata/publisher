@@ -87,7 +87,7 @@ const BIGQUERY_SCHEMA = {
    ],
 };
 
-const MODEL = `##! experimental.persistence
+const MODEL = `##! experimental { persistence access_modifiers }
 // The reference: live answers over the same rows.
 source: ref is warehouse.sql("""${ROWS}""") extend {
   primary_key: sid
@@ -114,6 +114,36 @@ source: p_list is ref -> { select: sid, v, lr }
 source: p_nest is ref -> {
   group_by: org
   nest: by_sid is { group_by: sid; order_by: sid }
+}
+
+// Hidden lists a measure reads: private and internal, each with its live
+// twin. Each reads its own SQL, so no two share a table.
+source: h_ref is warehouse.sql("""SELECT * FROM (${ROWS}) AS h_ref""") include { private: v; public: * } extend {
+  primary_key: sid
+  measure: n is count()
+  measure: nv is count(v.each)
+}
+
+#(materialize) storage="lake"
+source: h_private is warehouse.sql("""SELECT * FROM (${ROWS}) AS h_private""") include { private: v; public: * } extend {
+  primary_key: sid
+  measure: n is count()
+  measure: nv is count(v.each)
+}
+
+// A hidden column live types as warehouse-native (a UUID), left out per query.
+#(materialize) storage="lake"
+source: h_uuid is warehouse.sql("""SELECT sid, org, ('00000000-0000-0000-0000-00000000000' || sid)::UUID AS u FROM (${ROWS}) AS h_uuid""") include { private: u; public: * } extend {
+  primary_key: sid
+  measure: n is count()
+  view: by_u is { group_by: u; aggregate: n }
+}
+
+#(materialize) storage="lake"
+source: h_internal is warehouse.sql("""SELECT * FROM (${ROWS}) AS h_internal""") include { internal: v; public: * } extend {
+  primary_key: sid
+  measure: n is count()
+  measure: nv is count(v.each)
 }
 `;
 
@@ -158,6 +188,13 @@ const PERSISTED: [string, string][] = [
       "run: p_nest -> { select: org, by_sid; order_by: org }",
       "run: ref -> { group_by: org; nest: by_sid is { group_by: sid; order_by: sid }; order_by: org }",
    ],
+];
+
+/** Queries over a source whose measure reads its hidden list `v`. */
+const HIDDEN_LIST = (source: string) => [
+   `run: ${source} -> { aggregate: nv }`,
+   `run: ${source} -> { group_by: org; aggregate: nv, n; order_by: org }`,
+   `run: ${source} -> { aggregate: n }`,
 ];
 
 /** Rows with every integer a number: BigQuery's INT64 reads as a bigint. */
@@ -527,11 +564,66 @@ describe.skipIf(process.platform === "win32")(
          },
       );
 
-      it("raises no served-copy-not-served warning: no source answers live whole", () => {
+      it.each(["h_private", "h_internal"])(
+         "stores %s's hidden list",
+         (source) => {
+            const types = Object.fromEntries(
+               storedSchema(source).map((c) => [c.name, c.type]),
+            );
+            expect(types.v).toBe("VARCHAR[]");
+         },
+      );
+
+      for (const source of ["h_private", "h_internal"]) {
+         it.each(HIDDEN_LIST(source))(
+            "serves a measure over a hidden list from the table, equal to live: %s",
+            async (malloy) => {
+               const live = await ask(malloy.replace(source, "h_ref"));
+               expect(live.servedBy.kind).toBe("live");
+               const answer = await ask(malloy);
+               expect(answer.servedFrom).toBe("storage");
+               expect(plain(answer.rows)).toEqual(plain(live.rows));
+            },
+         );
+      }
+
+      it.each(["h_ref", "h_private", "h_internal"])(
+         "refuses a query naming %s's hidden list, live or served",
+         async (source) => {
+            await expect(
+               ask(`run: ${source} -> { select: sid, v }`),
+            ).rejects.toThrow();
+         },
+      );
+
+      it("names a hidden column only as a hidden column, in the warning and the path", async () => {
+         // `h_uuid`'s own view reads its private UUID, which no declaration
+         // reads back as live, so the source answers live as a whole.
+         const answer = await ask("run: h_uuid -> by_u");
+         expect(answer.servedBy.kind).toBe("live");
+         const warnings = (pkg.getPackageMetadata().warnings ?? []).filter(
+            (w) => w.code === "served-copy-not-served",
+         );
+         expect(warnings.map((w) => [w.subject, w.message])).toEqual([
+            [
+               "h_uuid",
+               expect.stringContaining(
+                  "a hidden column (declared `sql native`, stored as UUID)",
+               ),
+            ],
+         ]);
+         const text = JSON.stringify([warnings, answer.path]);
+         expect(text).not.toContain("`u`");
+         expect(text).not.toContain("column `u");
+      });
+
+      it("raises no served-copy-not-served warning for a list: none answers live whole", () => {
          const warnings = pkg.getPackageMetadata().warnings ?? [];
          expect(
-            warnings.filter((w) => w.code === "served-copy-not-served"),
-         ).toEqual([]);
+            warnings
+               .filter((w) => w.code === "served-copy-not-served")
+               .map((w) => w.subject),
+         ).toEqual(["h_uuid"]);
       });
    },
 );

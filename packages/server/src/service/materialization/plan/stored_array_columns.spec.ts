@@ -26,7 +26,10 @@ import {
    duckdbTestConnections,
    tempBuildPlanPackages,
 } from "../../../test_helpers/incremental_test_harness";
-import { sourcesIn } from "../../../test_helpers/materialization_test_fixtures";
+import {
+   materializePlansIn,
+   sourcesIn,
+} from "../../../test_helpers/materialization_test_fixtures";
 import { installSettings } from "../../../test_helpers/settings_env";
 import { projectToStoredColumns, storedColumnNames } from "./build_plan";
 import { compilePackageBuildPlan } from "./build_plan_compile";
@@ -76,8 +79,8 @@ afterAll(() => {
 });
 afterEach(() => packages.cleanup());
 
-/** The planned persist source named `name`, compiled from `model`. */
-async function planned(model: string, name: string): Promise<PersistSource> {
+/** The compiled plan of `model`, over `bq` and `duckdb`. */
+async function compiled(model: string) {
    const { duckdb } = duckdbTestConnections();
    const connections = new FixedConnectionMap(
       new Map<string, Connection>([
@@ -89,7 +92,12 @@ async function planned(model: string, name: string): Promise<PersistSource> {
    const config = new MalloyConfig({ connections: {} });
    config.wrapConnections(() => connections);
    const pkg = await packages.create(model, { getMalloyConfig: () => config });
-   const plan = await compilePackageBuildPlan(pkg);
+   return compilePackageBuildPlan(pkg);
+}
+
+/** The planned persist source named `name`, compiled from `model`. */
+async function planned(model: string, name: string): Promise<PersistSource> {
+   const plan = await compiled(model);
    const source = Object.values(sourcesIn(plan)).find((s) => s.name === name);
    if (!source) throw new Error(`${name} was not planned`);
    return source;
@@ -150,5 +158,25 @@ source: p_list is raw -> { select: sid, v }
          "sid",
          "v",
       ]);
+   });
+
+   it("include a hidden list, as a hidden dimension is, marked with its access", async () => {
+      const model = `##! experimental { access_modifiers }
+#(materialize) storage="lake"
+source: h is duckdb.sql("select 1 as sid, ['a', 'b'] as v, 2 as amount") include {
+  private: v, amount
+  public: *
+} extend {
+  measure: nv is count(v.each)
+}
+`;
+      const plan = Object.values(materializePlansIn(await compiled(model)))[0];
+      expect(plan.columns).toContainEqual(
+         expect.objectContaining({ column: "v", access: "private" }),
+      );
+      expect(plan.columns).toContainEqual(
+         expect.objectContaining({ column: "amount", access: "private" }),
+      );
+      expect(storedColumnNames(await planned(model, "h"))).toContain("v");
    });
 });
