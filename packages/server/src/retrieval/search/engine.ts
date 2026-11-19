@@ -64,7 +64,7 @@ import {
 } from "./find";
 import type { AccessIdentity } from "../../service/access_record";
 import type { FcjIndex } from "../index/index_build";
-import { callerKeyOf } from "../index/values_index";
+import { callerKeyOf, lockedSourcesFor } from "../index/values_index";
 import { connect, type ConnectResult } from "./connect";
 import type { RetrievalRegistry } from "../registry";
 import { dropBesideRoutes, dropTwins, judge, type JudgeVerdict } from "./judge";
@@ -400,7 +400,13 @@ async function runFcjSearch(args: FcjQueryArgs): Promise<SearchResult> {
          },
       );
    }
-   const callerKey = callerKeyOf(index.catalog, request.givens);
+   const callerKey = callerKeyOf(
+      index.catalog,
+      request.givens,
+      await lockedSourcesFor(index.catalog, request.givens, (path) =>
+         pkg.getModel?.(path),
+      ),
+   );
    const foundAll = withPinnedDimensions(
       index,
       find({

@@ -10,17 +10,22 @@
  * value list in a doc ("one of DTC, B2B, Amazon") seeds its dimension even
  * without a tag.
  *
- * Governance. Values are data, so only sources with no gate are read, and
- * they are read once at load through the ordinary query path with no givens,
- * so a source the query path would refuse contributes nothing. A gated
- * source's values are never stored here and never embedded; they are
+ * Governance. Values are data, and every read goes through the ordinary
+ * query path and every gate, so a source the query path would refuse
+ * contributes nothing. An ungated source is read with no givens, or the
+ * listed givens its definition names. A gated source is read only when its
+ * gate splits rows by a key (CatalogSource.partitionKey), once per key that
+ * `retrieval.dimensionValues.givens` lists, and each value is stored with
+ * its key: a search returns it only to a caller whose givens name that key
+ * and whom the source's own `#(authorize)` admits. Any other gated source is
  * reachable only through the query-time lookup with the caller's givens
  * (../search/values.ts). Tagging a dimension `#(index)` is the author's
- * consent for its values to be searched, so the values read from ungated
- * sources go to whatever provider the operator configured: the judge sees
- * them, the `values` question wording shows them to the LLM, and
- * `retrieval.fcj.valueEmbeddings` (on by default) embeds them. With no
- * provider configured they are matched by spelling alone and sent nowhere.
+ * consent for its values to be searched, so the stored values go to
+ * whatever provider the operator configured: the judge sees those that
+ * matched, `retrieval.fcj.valueEmbeddings` (on by default) embeds them, and
+ * the `values` question wording shows the LLM those stored under no key.
+ * With no provider configured they are matched by spelling alone and sent
+ * nowhere.
  *
  * Two ways to match, each giving the find stage its own ranked list:
  *
@@ -39,10 +44,12 @@
  * store that value, the same idea as rare-word weighting in keyword search.
  */
 
+import type { GivenValue } from "@malloydata/malloy";
 import { createHash } from "crypto";
 import { QueryTimeoutError, ServiceUnavailableError } from "../../errors";
 import { logger } from "../../logger";
 import type { PackageLookup } from "../../service/environment_ports";
+import { parseEnvironmentName } from "../../service/identity";
 import type { DuckDBConnection } from "../../storage/duckdb/DuckDBConnection";
 import {
    editDistance,
@@ -55,7 +62,7 @@ import {
    usableValue,
    type ValueQueryDeps,
 } from "../search/values";
-import type { Catalog, CatalogNode } from "../model/catalog";
+import type { Catalog, CatalogNode, PartitionKey } from "../model/catalog";
 import type { DocParts } from "./doc_parts";
 import { dot } from "./vectors";
 
@@ -84,21 +91,28 @@ export type ValueAllow = (dimension: string, key?: string) => boolean;
 
 /**
  * One part of a partition key as text, so the database's value and the
- * caller's given compare equal: `362023`, `362023.0` and `"362023"` are one
- * key, and a one-element list is its element. Hosted Credible keys the same
- * way (canonical_key_part).
+ * caller's given compare equal. A one-element list is its element. Only a
+ * `number` given is read as a number, so `362023`, `362023.0` and
+ * `"362023"` are one key, and an integer past 2^53 keeps every digit. Any
+ * other given keeps its text: for a string given `'001'` and `'1'` are
+ * different rows, so they are different keys.
  */
-export function partitionKeyPart(raw: unknown): string | undefined {
+export function partitionKeyPart(
+   raw: unknown,
+   type: string,
+): string | undefined {
    const v = Array.isArray(raw) && raw.length === 1 ? raw[0] : raw;
    if (v === null || v === undefined || Array.isArray(v)) return undefined;
    if (v instanceof Date) {
       const iso = v.toISOString();
       return iso.endsWith("T00:00:00.000Z") ? iso.slice(0, 10) : iso;
    }
-   if (typeof v === "number" || typeof v === "bigint") return String(Number(v));
-   const text = String(v);
+   if (type !== "number") return String(v);
+   if (typeof v === "bigint") return v.toString();
+   const text = String(v).trim();
+   if (/^[+-]?\d+$/.test(text)) return BigInt(text).toString();
    const n = Number(text);
-   return text.trim() !== "" && Number.isFinite(n) ? String(n) : text;
+   return text !== "" && Number.isFinite(n) ? String(n) : text;
 }
 
 /**
@@ -110,22 +124,63 @@ export function partitionKeyPart(raw: unknown): string | undefined {
 export function callerKeyOf(
    catalog: Catalog,
    givens: Readonly<Record<string, unknown>> | undefined,
+   /** Sources whose `#(authorize)` refused the caller (lockedSourcesFor). */
+   refused: ReadonlySet<string> = new Set(),
 ): (dimension: string) => string | undefined {
    return (dimension) => {
       const node = catalog.nodes.get(dimension);
-      const key = node && catalog.sources.get(node.sourceKey)?.partitionKey;
+      if (!node || refused.has(node.sourceKey)) return undefined;
+      const key = catalog.sources.get(node.sourceKey)?.partitionKey;
       if (!key) return undefined;
-      return partitionKeyText(key.map((p) => givens?.[p.given]));
+      return partitionKeyText(
+         key.map((p) => givens?.[p.given]),
+         key.map((p) => p.type),
+      );
    };
+}
+
+/**
+ * The keys of the sources whose `#(authorize)` lock refuses a caller with
+ * `givens`, decided by the same check a query runs (Model.assertAuthorized).
+ * A lock that cannot be decided refuses, as it does for a query.
+ */
+export async function lockedSourcesFor(
+   catalog: Catalog,
+   givens: Readonly<Record<string, unknown>> | undefined,
+   modelOf: (modelPath: string) =>
+      | {
+           assertAuthorized(
+              source: string,
+              givens: Record<string, GivenValue>,
+           ): Promise<void>;
+        }
+      | undefined,
+): Promise<Set<string>> {
+   const refused = new Set<string>();
+   for (const source of catalog.sources.values()) {
+      if (!source.hasAuthorize || !source.partitionKey) continue;
+      const model = modelOf(source.modelPaths[0]);
+      try {
+         if (!model) throw new Error("no model");
+         await model.assertAuthorized(
+            source.name,
+            (givens ?? {}) as Record<string, GivenValue>,
+         );
+      } catch {
+         refused.add(source.key);
+      }
+   }
+   return refused;
 }
 
 /** A whole partition key as text, or undefined when a part is missing. */
 export function partitionKeyText(
    parts: readonly unknown[],
+   types: readonly string[],
 ): string | undefined {
    const out: string[] = [];
-   for (const raw of parts) {
-      const part = partitionKeyPart(raw);
+   for (const [i, raw] of parts.entries()) {
+      const part = partitionKeyPart(raw, types[i] ?? "string");
       if (part === undefined) return undefined;
       out.push(part);
    }
@@ -153,6 +208,8 @@ export interface IndexValueRequest {
    givens?: Record<string, unknown>;
    /** Return each value's key; see DistinctValueQuery.partitionColumns. */
    partitionColumns?: readonly string[];
+   /** The declared type of each partition column's given, for its key text. */
+   partitionTypes?: readonly string[];
 }
 
 export type IndexValueFetcher = (
@@ -220,6 +277,7 @@ export const indexValueFetcherFor =
          // A row whose key is null belongs to no caller: drop it.
          const key = partitionKeyText(
             Array.from({ length: keyCount }, (_, i) => row[`k${i}`]),
+            request.partitionTypes ?? [],
          );
          if (key === undefined) continue;
          values.push({ value: text, count: Number(row.n) || 0, key });
@@ -741,9 +799,9 @@ export async function buildValueIndex(args: {
          : new Map<string, StoredRead>();
    /** Every read this build holds, reused or new: what is stored at the end. */
    const reads: StoredRead[] = [];
+   const connections = args.read ? await connectionsDigest(args.read) : "";
    const values: IndexedValue[] = [];
    const givenCombinations = combinationsOf(args.givens);
-   const givenIds = givenCombinations.map(givensId);
    const report: ValueBuildReport = {
       dimensionsRead: 0,
       dimensionsReused: 0,
@@ -790,8 +848,20 @@ export async function buildValueIndex(args: {
       const source = args.catalog.sources.get(node.sourceKey);
       const partitionKey = source?.partitionKey;
       const readKey = source?.readDefinition
-         ? readKeyOf(source.readDefinition, node, args.cap, partitionKey)
+         ? readKeyOf(
+              source.readDefinition,
+              node,
+              args.cap,
+              partitionKey,
+              connections,
+           )
          : undefined;
+      const combinations = combinationsFor(
+         givenCombinations,
+         source?.readGivens,
+         partitionKey,
+      );
+      const givenIds = combinations.map(givensId);
       const now = Date.now();
       const kept = givenIds.map((id) => {
          const old = stored.get(`${node.key}\u0000${id}`);
@@ -812,13 +882,17 @@ export async function buildValueIndex(args: {
       const fetcher = args.read.fetcher;
       try {
          const got = await readEachCombination(
-            givenCombinations,
+            combinations,
             async (givens, i) => {
                const old = kept[i];
                if (old) {
                   reads.push(old);
                   return { values: old.values, truncated: old.truncated };
                }
+               // Checked before every read, so a dimension with many
+               // combinations cannot run far past the budget. The reads
+               // already made are stored, so the retry reads only the rest.
+               if (Date.now() - started >= budgetMs) throw new BudgetSpent();
                const fresh = await fetcher({
                   environmentStore: args.read!.environmentStore,
                   environmentName: args.read!.environmentName,
@@ -830,7 +904,10 @@ export async function buildValueIndex(args: {
                   timeoutMs: VALUE_READ_TIMEOUT_MS,
                   ...(givens ? { givens } : {}),
                   ...(partitionKey
-                     ? { partitionColumns: partitionKey.map((p) => p.column) }
+                     ? {
+                          partitionColumns: partitionKey.map((p) => p.column),
+                          partitionTypes: partitionKey.map((p) => p.type),
+                       }
                      : {}),
                });
                if (readKey) {
@@ -850,7 +927,17 @@ export async function buildValueIndex(args: {
          else report.dimensionsRead += 1;
          if (got.truncated)
             report.cut.push({ dimension: node.key, kept: got.values.length });
-         for (const { value, count, key } of got.values) {
+         for (const { value, count, key: readKeyText } of got.values) {
+            // A keyed source's value always carries a key, so a search checks
+            // the caller's key and lock before returning it. One whose only
+            // gate is a lock has one key, empty. A keyed value without one
+            // belongs to no caller.
+            const key = !partitionKey
+               ? undefined
+               : partitionKey.length === 0
+                 ? ""
+                 : readKeyText;
+            if (partitionKey && key === undefined) continue;
             const normalized = normalizeText(value);
             if (!normalized) continue;
             values.push({
@@ -864,6 +951,13 @@ export async function buildValueIndex(args: {
             report.valuesFromData += 1;
          }
       } catch (error) {
+         if (error instanceof BudgetSpent) {
+            report.failed.push({
+               dimension: node.key,
+               reason: `not read in full: this build's value reads used their ${Math.round(budgetMs / 1000)} s budget`,
+            });
+            continue;
+         }
          const message = error instanceof Error ? error.message : String(error);
          const unset = /Given '([^']+)' has no value and no default/.exec(
             message,
@@ -913,12 +1007,75 @@ function givensId(givens: Record<string, unknown> | undefined): string {
    );
 }
 
+/** Thrown before a read once the build's read budget is spent. */
+class BudgetSpent extends Error {}
+
+/**
+ * The combinations one source is read with: each listed combination cut to
+ * the givens the source can depend on, duplicates dropped. A source that
+ * reads no given is read once, with none.
+ */
+function combinationsFor(
+   combinations: ReadonlyArray<Record<string, unknown> | undefined>,
+   readGivens: readonly string[] | undefined,
+   partitionKey: PartitionKey | undefined,
+): Array<Record<string, unknown> | undefined> {
+   // Unknown when the model has no compiled definition: read them all.
+   if (!readGivens) return [...combinations];
+   const needed = new Set([
+      ...readGivens,
+      ...(partitionKey ?? []).map((p) => p.given),
+   ]);
+   const out = new Map<string, Record<string, unknown> | undefined>();
+   for (const c of combinations) {
+      const kept = Object.entries(c ?? {}).filter(([k]) => needed.has(k));
+      const projected = kept.length ? Object.fromEntries(kept) : undefined;
+      const id = givensId(projected);
+      if (!out.has(id)) out.set(id, projected);
+   }
+   return [...out.values()];
+}
+
+/** Keys of a connection's config that hold a credential, not where it points. */
+const CREDENTIAL_KEY =
+   /pass|secret|token|private|credential|apikey|api_key|accesskey/i;
+
+/**
+ * A digest of where the environment's connections point: every setting but
+ * the credentials, so a rotated token keeps the stored reads while a
+ * connection pointed at another database, account or role reads again.
+ */
+async function connectionsDigest(read: {
+   environmentStore: PackageLookup;
+   environmentName: string;
+}): Promise<string> {
+   try {
+      const environment = await read.environmentStore.getEnvironment(
+         parseEnvironmentName(read.environmentName),
+      );
+      const text = JSON.stringify(
+         environment.listApiConnections(),
+         (key, value: unknown) =>
+            key && CREDENTIAL_KEY.test(key) ? undefined : value,
+      );
+      return createHash("sha256").update(text, "utf8").digest("hex");
+   } catch (error) {
+      // Unknown: a key no stored read matches, so every read runs again.
+      logger.warn(
+         "[get_context fcj] The connections could not be read for the value read key; every dimension is read",
+         { error: error instanceof Error ? error.message : String(error) },
+      );
+      return `unknown-${Date.now()}`;
+   }
+}
+
 /** What a stored read of `node` must match to be reused. */
 function readKeyOf(
    readDefinition: string,
    node: CatalogNode,
    cap: number,
-   partitionKey: ReadonlyArray<{ column: string }> | undefined,
+   partitionKey: PartitionKey | undefined,
+   connections: string,
 ): string {
    return createHash("sha256")
       .update(
@@ -928,7 +1085,8 @@ function readKeyOf(
             node.source,
             node.name,
             cap,
-            (partitionKey ?? []).map((p) => p.column),
+            (partitionKey ?? []).map((p) => [p.column, p.type]),
+            connections,
          ]),
          "utf8",
       )

@@ -12,8 +12,9 @@
  * (see docOnlyText), rules included. On a connection with `dbmeta` on the doc
  * can be the database's description rather than the model's. For a value
  * target the judge sees the stored values that matched, which come only from
- * `#(index)` dimensions on ungated sources; authored expressions are not sent
- * at all.
+ * `#(index)` dimensions: on ungated sources, and on gated sources keyed by
+ * the givens `retrieval.dimensionValues.givens` lists, only the values under
+ * the key the caller's givens name. Authored expressions are not sent at all.
  *
  * In a list with `listRoutes` above 0, each candidate field is followed by up
  * to that many routes to it from the other listed sources, shortest first,

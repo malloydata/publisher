@@ -679,19 +679,28 @@ edit, a reload or a restart. A stored read is reused while it is less than 24 ho
 compiled definition is unchanged, apart from docs and line positions. So editing a doc reads nothing.
 Changing anything else in a source (its table, a `where:`, a join, any field, a gate) reads that source's
 `#(index)` dimensions again, and other sources keep theirs. Listing one more report reads only that
-report. `--init` keeps stored reads, apart from those of a package the config no longer lists.
+report. A source is read once for each combination of the listed givens it names, so a source that
+names none is read once. A read is also redone when a connection is pointed at another database,
+account or role; a rotated password or token does not count. `--init` keeps stored reads, apart from
+those of a package the config no longer lists.
 
 **Access.** A value is data, and a gate applies to it as it does to `execute_query`.
 
 - **A source whose only gate splits rows by a given** is indexed for the values of that given you list
   in `retrieval.dimensionValues.givens` (below), and skipped otherwise, with a server log line that names
-  the setting. That means every `#(access_filter)` term is `column = $GIVEN` over a scalar given, with no
-  `#(authorize)`, and no `#(authorize)` or secure given anywhere in the package. An example is
-  `#(access_filter) report_id = $REPORT_ID`. Each listed report is read through the gate, like any query
-  for that report, and each value is stored with its report id. A search returns a value only to a caller
-  whose `givens` name that report, as hosted Credible does. Nothing reads every report at once: on a
-  production model that is a scan of the whole table, and the cap would keep values for almost none of
-  the reports.
+  the setting. That means every `#(access_filter)` term is `column = $GIVEN` over a scalar given, no
+  given in the source's model is secure, and no source it joins has an `#(authorize)` or a secure given.
+  An example is `#(access_filter) report_id = $REPORT_ID`. Each listed report is read through the gate,
+  like any query for that report, and each value is stored with its report id. A search returns a value
+  only to a caller whose `givens` name that report, as hosted Credible does. A number given's report id
+  is compared as a number (`7` and `"7.0"` match); any other given's is compared as text (`"001"` and
+  `"1"` do not). Nothing reads every report at once: on a production model that is a scan of the whole
+  table, and the cap would keep values for almost none of the reports.
+- **A source with an `#(authorize)` lock**, under the same rules, is read with the givens you list, and
+  its values are stored. A lock decides only whether a caller may query the source, never which rows,
+  so at search time the lock is checked against the caller's `givens` with the same check a query runs.
+  A caller it refuses gets none of the source's stored values. If the listed givens do not pass the
+  lock, the read is refused and the source is skipped.
 - **Any other gated source** is never read at index time and its values are never embedded. When a
   `dimensional_value` target reaches one of its dimensions, because the target is scoped to it or because
   the search picked it by its name or doc, the values are read when asked, through the query path, with

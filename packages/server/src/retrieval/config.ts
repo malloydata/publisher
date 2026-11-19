@@ -30,7 +30,7 @@ import {
  * loads and does nothing.
  */
 export const RETIRED_EGRESS_WARNING =
-   "retrieval.egress is no longer read and is ignored. The values of #(index) dimensions on ungated sources are now sent to the configured embedding provider and LLM whenever one is configured. To keep them on this machine, leave EMBEDDING_API_KEY unset, set retrieval.fcj.valueEmbeddings to false in the package's publisher.json, or set retrieval.dimensionValues.enabled to false. Remove the egress block to silence this warning.";
+   "retrieval.egress is no longer read and is ignored. The values of #(index) dimensions are now sent to the configured embedding provider and LLM whenever one is configured. To keep them on this machine, set retrieval.dimensionValues.enabled to false in publisher.config.json. Leaving EMBEDDING_API_KEY unset, or setting retrieval.fcj.valueEmbeddings to false, only stops values being embedded: a configured LLM still sees them. Remove the egress block to silence this warning.";
 
 export {
    DEFAULT_LLM_CONCURRENCY,
