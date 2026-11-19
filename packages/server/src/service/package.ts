@@ -1324,6 +1324,49 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    }
 
    /**
+    * Every model's compile errors in the package at `packagePath`, compiled
+    * as a load compiles it but without stopping at the first model that
+    * fails, for check mode's report on a package that did not load. Serves
+    * nothing and keeps nothing: the package's own DuckDB is closed before
+    * this returns. Each model's `problems` are Malloy's (with `at.url` and a
+    * zero-based `at.range`), or one `{severity, message}` when the compiler
+    * gave none. Throws what the worker throws for a package it cannot read
+    * at all, such as an unusable `publisher.json`.
+    */
+   public static async compileErrorsOf(
+      environmentName: string,
+      packageName: string,
+      packagePath: string,
+      getEnvironmentMalloyConfig: () => MalloyConfig,
+   ): Promise<{ modelPath: string; problems: unknown[] }[]> {
+      const malloyConfig = Package.buildPackageMalloyConfig(
+         packagePath,
+         getEnvironmentMalloyConfig,
+      );
+      try {
+         const outcome = await getPackageLoadPool().loadPackage({
+            packagePath,
+            packageName,
+            environmentName,
+            malloyConfig,
+            defaultConnectionName: "duckdb",
+            collectProblems: true,
+         });
+         return outcome.models.flatMap((model) => {
+            const error = model.compilationError;
+            if (!error) return [];
+            const problems =
+               error.malloyProblems && error.malloyProblems.length > 0
+                  ? error.malloyProblems
+                  : [{ severity: "error", message: error.message }];
+            return [{ modelPath: model.modelPath, problems }];
+         });
+      } finally {
+         await closeMalloyConfig(malloyConfig).catch(() => undefined);
+      }
+   }
+
+   /**
     * The render-tag and report findings a reload of this outcome would put on
     * `warnings`, for the package-scope compile. Runs the reload's own steps on
     * a throwaway Package, so a what-if never touches the served one.

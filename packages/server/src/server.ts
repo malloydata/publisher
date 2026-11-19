@@ -64,6 +64,13 @@ const { assertServerApis } = await import("./server_apis");
 const apis = getServerApiSettings();
 assertServerApis(apis);
 
+if (loaded.get("check")) {
+   // Check mode: load and compile every configured package, print what is
+   // wrong, and exit; nothing binds. See check.ts.
+   const { runCheck } = await import("./check");
+   process.exit(await runCheck(loaded));
+}
+
 if (apis.servingApiEnabled) {
    // The composition root: builds every service once, then binds REST, MCP
    // and (when configured) admin.

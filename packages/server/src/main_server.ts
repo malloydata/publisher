@@ -138,23 +138,30 @@ function prometheusMetricsHandler() {
 }
 
 /**
+ * What every boot that loads packages does first, the server's and check
+ * mode's alike: read the settings whose getters throw on an invalid value, so
+ * a typo fails startup instead of later requests (package metadata,
+ * publishes, and for the query-metadata mode every query and build); and,
+ * before any compile on this thread, accept the bundled experimental
+ * dialects, without which a package load on the main thread would refuse a
+ * SQL Server model.
+ */
+export function prepareBoot(): void {
+   getPersistStorageMode();
+   getPersistCollisionEnforce();
+   getQueryMetadataMode();
+   isPackageInlineFieldsEnabled();
+   acceptBundledExperimentalDialects();
+}
+
+/**
  * Build the main server from `settings`: validate the boot settings (a bad
  * value throws here, before anything binds), log the posture it boots with,
  * build the environment store and every service once, wire the store's hooks,
  * and build the REST, MCP and admin apps over those instances. Binds nothing.
  */
 export async function buildApp(settings: AppSettings): Promise<BuiltApp> {
-   // These getters throw on an invalid value. Read once at boot so a typo fails
-   // startup instead of later requests: package metadata, publishes, and (for the
-   // query-metadata mode) every query and build.
-   getPersistStorageMode();
-   getPersistCollisionEnforce();
-   getQueryMetadataMode();
-   isPackageInlineFieldsEnabled();
-
-   // Before any compile on this thread: a connection-test, an MCP compile or a
-   // package load on the main thread would otherwise refuse a SQL Server model.
-   acceptBundledExperimentalDialects();
+   prepareBoot();
 
    const PUBLISHER_PORT = settings.get("port");
    const PUBLISHER_HOST = settings.get("host");
@@ -434,7 +441,9 @@ export async function buildApp(settings: AppSettings): Promise<BuiltApp> {
    const adminApp =
       ADMIN_PORT === null
          ? null
-         : createAdminApp(ADMIN_CATALOGS, watchModeController);
+         : createAdminApp(ADMIN_CATALOGS, watchModeController, undefined, () =>
+              environmentStore.getLoadProblems(),
+           );
 
    function listen(): RunningServers {
       const mainServer = longTimeouts(

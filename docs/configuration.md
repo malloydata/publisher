@@ -110,6 +110,8 @@ and this table is generated from it. The names are today's; the configuration de
 | `config` | `PUBLISHER_CONFIG` | `--config <path>` | `PUBLISHER_CONFIG_PATH` | _unset_ | Path to the `publisher.config.json` to read, instead of the one in the server root. A path that does not exist is reported at startup, and the server starts with no environments. |
 | `useBundledDefault` | `PUBLISHER_USE_BUNDLED_DEFAULT` | `--use-bundled-default`, `--no-use-bundled-default` |  | on unless `root` or `config` is given; never in tests | Set to `true` to fall back to the sample config bundled inside the installed package when neither `--config` is passed nor a `publisher.config.json` exists at the server root. The server sets this itself on a zero-flag start (so a bare `npx @malloy-publisher/server` boots the samples); passing `--config` or `--server_root` leaves it unset. Because the bundled config lives inside the install, relative package locations resolve against the server root in this mode rather than the config's directory. |
 | `initializeStorage` | `PUBLISHER_INITIALIZE_STORAGE` | `--initialize-storage`, `--no-initialize-storage`, `--init` | `INITIALIZE_STORAGE` | `false` | Set to `true` (or pass `--init`) to **wipe persisted storage** (`publisher_data/`) and re-sync it from the config on boot. A first boot with empty storage loads the config automatically, so you only need this to reset state or pick up config changes. Also exposed as the `start:init` / `start:dev:init` scripts. |
+| `check` | `PUBLISHER_CHECK` | `--check`, `--no-check` |  | `false` | For CI. Boots as the server would with the same flags (`--config`, `--root`, `--init`), loads and compiles every configured package, prints one line per problem to stdout (`<file>:<line>:<col>: error: <message> [<env>/<package>]`), then a `PUBLISHER_CHECK_OK` or `PUBLISHER_CHECK_FAILED` summary line to stderr, and exits `0` when every environment and package loaded or `1` when any did not. Binds no port and writes no `.mcp.json`. It checks what this boot would serve: with an existing `publisher.db` in the server root that is the stored environments, so check a fresh root, or pass `--init`, to check the config as written. See [Check mode](#check-mode-for-ci). |
+| `checkFailOnWarnings` | `PUBLISHER_CHECK_FAIL_ON_WARNINGS` | `--check-fail-on-warnings`, `--no-check-fail-on-warnings` |  | `false` | With `check`, also fail (exit `1`) when a package that loaded carries a `warn`-severity entry in its `warnings` (a render tag the renderer cannot apply, a refused `#@ persist`, a report that does not resolve, and the like). Off, those are printed as `warning:` lines and counted, and do not fail the check. A finding with severity `error` fails the check either way. Has no effect without `check`. |
 | `watchEnvironments` | `PUBLISHER_WATCH_ENVIRONMENTS` | `--watch-environments <name>`, `--watch-env <name>` | `PUBLISHER_WATCH` | _none_ | Dev only. Mount the named environment's local-dir packages in place (a symlink, not a copy) and watch them, so edits to your source recompile that package and live-reload any open pages. Repeat the flag or use a comma-separated list to mount several in place; only the first one auto-reloads. Leave unset in production, where packages are copied and stay decoupled from their source. |
 | `mcp.port` | `PUBLISHER_MCP_PORT` | `--mcp-port <n>` | `MCP_PORT`, `--mcp_port` | `4040` | MCP HTTP port. Serves the MCP tools (`list_packages`, `get_context`, `execute_query`, `compile_model`, `reload_package`, `get_status`, `search_malloy_docs`, `search_database_schema`, `get_skill`, `get_agent`, `list_reports`, `show_report`, and the panel-only `report_api`) and the agent skills as MCP prompts. `list_packages` is listed first because it is where an agent starts: `get_context` requires an environment and package in its `scopes`, and those names come from there. |
 | `mcp.host` | `PUBLISHER_MCP_HOST` | `--mcp-host <addr>` | `MCP_HOST`, `--mcp_host` | `host` when given, else `127.0.0.1` | Host binding for the MCP server. Takes precedence over `PUBLISHER_HOST`. Set `0.0.0.0` to expose MCP on the network, behind an authenticating gateway. |
@@ -984,3 +986,73 @@ PUBLISHER_READY url=http://localhost:4000 mcp=http://localhost:4040 environments
   and exits non-zero before binding anything, so a script waiting on `PUBLISHER_READY` fails fast
   instead of hanging. Every `@malloydata/*` dependency shares that floor; older runtimes are untested
   and have failed in ways that never mention Node.
+- In [check mode](#check-mode-for-ci) neither `PUBLISHER_READY` nor a listener appears: the run ends
+  with `PUBLISHER_CHECK_OK` or `PUBLISHER_CHECK_FAILED` instead.
+
+### Readiness probes
+
+Every listener (REST, MCP, and admin when it is on) answers three Kubernetes-style probes:
+
+| Probe | Answers |
+| --- | --- |
+| `GET /health/liveness` | `200 {"status":"UP"}` while the process is up. |
+| `GET /health/readiness` | `200 {"status":"UP"}` once initialization finished and until SIGTERM, `503 {"status":"DOWN"}` otherwise. A package that failed to load does not fail it, so one broken package never takes a pod's healthy packages out of rotation. |
+| `GET /health/readiness?strict=true` | As above, and also `503` while any configured environment or package failed to load, or a package serves a stale model after a reload that did not compile. The body names each one under `loadErrors`, with the same entries `/api/v0/status` reports there: `{"status":"DOWN","loadErrors":[{"environment":"prod","package":"sales","message":"…"}]}`. |
+
+`strict` takes `true` or `false` only; any other value answers `400`, as every boolean query
+parameter does. Use the strict form where a failed package should hold a rollout or fail a smoke test
+(a deploy gate, a CI job that boots the server); keep the plain form for the probe that routes
+traffic. On the standalone admin server, which loads no packages, the two are the same.
+
+## Check mode for CI
+
+`--check` (or `PUBLISHER_CHECK=true`) boots exactly as the server would with the same flags, loads and
+compiles every configured package, prints what is wrong, and exits. It binds no port, prints no
+`PUBLISHER_READY`, and writes no `.mcp.json`, so it runs anywhere a CI job can run Node or Bun:
+
+```bash
+npx @malloy-publisher/server@latest --check --config ./publisher.config.json --server_root "$(mktemp -d)"
+# from a clone, after `bun run build`
+bun run start --check
+```
+
+It prints one line per problem to stdout, then one summary line to stderr:
+
+```
+models/sales/orders.malloy:3:1: error: unexpected '}' (syntax-error) [prod/sales]
+models/sales/customers.malloy:12:20: error: 'region_nme' is not defined (field-not-found) [prod/sales]
+models/marketing/funnel.malloy: warning: events -> by_week: Unknown render tag 'subtitle' on field 'root' [prod/marketing]
+PUBLISHER_CHECK_FAILED environments=1 packages=1 load_errors=1 errors=2 warnings=1
+```
+
+- **A problem line** is `<file>:<line>:<col>: <severity>: <message> [<environment>/<package>]`. The
+  file is relative to the working directory when it is inside it, so a CI annotation lands on the
+  file in the checkout, and absolute otherwise. Line and column are one-based. A Malloy diagnostic
+  code, when there is one, follows the message in parentheses.
+- **Every model's errors, not only the first.** A package that fails to load stops at its first model
+  that does not compile. When the package's `location` is a local directory, check mode compiles every
+  model there and reports each error at its position. A package fetched from git, GCS or S3, or one
+  that failed for a reason other than a compile error (an unusable `publisher.json`, an invalid
+  `#@ persist`), is reported by its load error, on one line led by `<environment>/<package>:`.
+- **Warnings** are the `warnings` of each package that loaded (render tags the renderer cannot apply, a
+  refused `#@ persist`, a report that does not resolve, and the rest the `Package` schema lists). One
+  with severity `error` fails the check; one with severity `warn` is printed as `warning:` and fails it
+  only with `--check-fail-on-warnings` (`PUBLISHER_CHECK_FAIL_ON_WARNINGS=true`). They carry a model,
+  not a position.
+- **The summary line** is `PUBLISHER_CHECK_OK` or `PUBLISHER_CHECK_FAILED`, then `environments` and
+  `packages` (what loaded), `load_errors` (what did not, as `PUBLISHER_READY` counts them), `errors`
+  and `warnings` (problem lines by severity).
+- **The exit code** is `0` when the check passed and `1` when it did not: an environment or package
+  failed to load, a problem line is an error, initialization failed (storage that cannot be opened, a
+  config that cannot be read), or there was nothing to check because no config was found. A setting
+  that does not parse exits `1` before the check starts, with `PUBLISHER_INIT_FAILED`, as it does for
+  the server.
+
+A boot loads what its server root holds: a root with an existing `publisher.db` restores the
+environments stored there instead of reading the config. A CI checkout starts empty, so this only
+matters locally: check against a fresh `--server_root`, as above, or pass `--init` to wipe the root and
+load the config as written. A stale model cannot occur in check mode, since nothing has reloaded; the
+strict readiness probe above covers that on a running server.
+
+[deployment.md](deployment.md#checking-packages-in-ci) has a GitHub Actions workflow that runs it on
+every pull request.

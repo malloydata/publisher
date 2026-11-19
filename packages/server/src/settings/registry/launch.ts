@@ -57,6 +57,24 @@ export const launch = [
       },
    }),
    setting({
+      key: "check",
+      type: boolean(),
+      default: false,
+      kind: "launch",
+      description:
+         "Load and compile every configured package, print each problem, and exit: 0 when everything loaded, 1 otherwise. Binds no port.",
+      notes: "For CI. Boots as the server would with the same flags (`--config`, `--root`, `--init`), loads and compiles every configured package, prints one line per problem to stdout (`<file>:<line>:<col>: error: <message> [<env>/<package>]`), then a `PUBLISHER_CHECK_OK` or `PUBLISHER_CHECK_FAILED` summary line to stderr, and exits `0` when every environment and package loaded or `1` when any did not. Binds no port and writes no `.mcp.json`. It checks what this boot would serve: with an existing `publisher.db` in the server root that is the stored environments, so check a fresh root, or pass `--init`, to check the config as written. See [Check mode](#check-mode-for-ci).",
+   }),
+   setting({
+      key: "checkFailOnWarnings",
+      type: boolean(),
+      default: false,
+      kind: "launch",
+      description:
+         "With {check}, also exit 1 when a package that loaded reports a warning.",
+      notes: "With `check`, also fail (exit `1`) when a package that loaded carries a `warn`-severity entry in its `warnings` (a render tag the renderer cannot apply, a refused `#@ persist`, a report that does not resolve, and the like). Off, those are printed as `warning:` lines and counted, and do not fail the check. A finding with severity `error` fails the check either way. Has no effect without `check`.",
+   }),
+   setting({
       key: "watchEnvironments",
       type: list(),
       default: [],
