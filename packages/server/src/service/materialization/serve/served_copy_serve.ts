@@ -21,6 +21,7 @@
  * reported as a coded package warning.
  */
 
+import { CompiledCopyLanes } from "./served_copy_lanes";
 import { createHash } from "crypto";
 import { requireUnique, verdictOf } from "../domain/key_check";
 import {
@@ -613,75 +614,6 @@ function rerootFailureKey(
    return `${packagePath}\0${modelPath}\0${hash.digest("hex")}`;
 }
 
-/**
- * What a served copy's compile reads of a binding: everything but how fresh
- * the table is (`freshAsOf`, its window and fallback, which decide only
- * whether the pin reads it) and what the router reads of it beside the copy
- * (`ownGateKept`, `holdsOnlyUngatedRows`, `retypedColumns`, a rollup's key
- * check). A field added to `Binding` is read
- * here until it is listed, so a new input recompiles rather than reuses.
- * Memoized per binding, which is replaced, never edited.
- */
-const compileInputs = new WeakMap<Binding, string>();
-export function compileInputOf(b: Binding): string {
-   let input = compileInputs.get(b);
-   if (input === undefined) {
-      const {
-         freshAsOf: _freshAsOf,
-         freshnessWindowSeconds: _window,
-         freshnessFallback: _fallback,
-         ownGateKept: _gateKept,
-         holdsOnlyUngatedRows: _ungated,
-         retypedColumns: _retyped,
-         rollupKey: _rollupKey,
-         ...read
-      } = b;
-      input = JSON.stringify(read);
-      compileInputs.set(b, input);
-   }
-   return input;
-}
-
-/** The compile key of the bindings a copy is compiled over, in any order. */
-function compileKeyOf(bindings: readonly Binding[]): string {
-   return bindings.map(compileInputOf).sort().join("\u0000");
-}
-
-/** Whether two binding lists are the same bindings, by identity, in order. */
-function sameBindings(a: readonly Binding[], b: readonly Binding[]): boolean {
-   return a.length === b.length && a.every((x, i) => x === b[i]);
-}
-
-/**
- * `compiled` answering for `bindings`, whose compile key is its own: the same
- * compile, with each binding it reports (re-rooted, aliased) replaced by the
- * one of `bindings` that reads alike, so an answer reports the pin's
- * freshness, never the compile's. Undefined when two of `bindings` read
- * alike, since which is which cannot be told.
- */
-function reboundTo(
-   compiled: Compiled,
-   bindings: readonly Binding[],
-): Compiled | undefined {
-   const byInput = new Map<string, Binding>();
-   for (const b of bindings) {
-      const input = compileInputOf(b);
-      if (byInput.has(input)) return undefined;
-      byInput.set(input, b);
-   }
-   const now = (b: Binding): Binding => byInput.get(compileInputOf(b)) ?? b;
-   const rerooted = compiled.rerooted.map(now);
-   return {
-      ...compiled,
-      over: bindings,
-      rerooted,
-      aliased: rerooted.map((b, i) => ({
-         ...b,
-         destinationName: compiled.aliased[i].destinationName,
-      })),
-   };
-}
-
 /** One model's served copy. */
 export class ServedCopyServe {
    private packagePath?: string;
@@ -689,25 +621,11 @@ export class ServedCopyServe {
    private materializePlans: Readonly<Record<string, MaterializePlan>> = {};
    /** A declaration's definition from the package model that holds it. */
    private declarationOf?: (sourceID: string) => unknown;
-   /**
-    * The compiled copy for each block a multi-path pair table is read for
-    * (lane 0, compiled at bind, reads every table's first block; another is
-    * compiled the first time a query reads that block).
-    */
-   private compiledLanes = new Map<number, Compiled>();
-   private inFlightLanes = new Map<
-      number,
-      {
-         key: string;
-         generation: number;
-         promise: Promise<Compiled>;
-      }
-   >();
-   /** Bumped on every invalidation, so a compile started before it is never kept. */
-   private generation = 0;
-   /** Requests for a compiled copy so far, and the latest whose copy each lane keeps. */
-   private turns = 0;
-   private keptTurn = new Map<number, number>();
+   /** The compiled copy per pair-table block, and the compiles in flight. */
+   private readonly lanes = new CompiledCopyLanes<Compiled>(
+      (key, generation, bindings, lane, asOfMs) =>
+         this.compile(key, generation, bindings, lane, asOfMs),
+   );
 
    constructor(private readonly host: ServedCopyHost) {}
 
@@ -767,9 +685,7 @@ export class ServedCopyServe {
 
    /** Drop the compiled copy (bindings, destinations or the model changed). */
    invalidate(): void {
-      this.generation++;
-      this.compiledLanes.clear();
-      this.inFlightLanes.clear();
+      this.lanes.invalidate();
    }
 
    /**
@@ -778,7 +694,7 @@ export class ServedCopyServe {
     * first compile.
     */
    rerootedSourceIDs(): ReadonlySet<string> | undefined {
-      const compiled = this.compiledLanes.get(0);
+      const compiled = this.lanes.kept(0);
       if (!compiled) return undefined;
       return new Set(compiled.rerooted.flatMap((b) => b.sourceIDs ?? []));
    }
@@ -791,7 +707,7 @@ export class ServedCopyServe {
     * load-time checks flag: those are declined at query time.
     */
    servedThroughBaseSourceIDs(): ReadonlySet<string> {
-      const compiled = this.compiledLanes.get(0);
+      const compiled = this.lanes.kept(0);
       if (!compiled?.throughBase) return new Set();
       const ids = new Set(compiled.rerooted.flatMap((b) => b.sourceIDs ?? []));
       const names = new Set(compiled.rerooted.map((b) => b.sourceName));
@@ -816,7 +732,7 @@ export class ServedCopyServe {
     * ({@link gateCannotGraft}): their queries are declined and answered live.
     */
    gateDeclinedSourceIDs(): ReadonlySet<string> {
-      const compiled = this.compiledLanes.get(0);
+      const compiled = this.lanes.kept(0);
       const out = new Set<string>();
       if (!compiled || !this.mayHaveRowLevelGates(compiled)) return out;
       for (const b of compiled.rerooted) {
@@ -868,7 +784,7 @@ export class ServedCopyServe {
 
    /** Why the last compile left sources unserved; empty before the first. */
    problems(): readonly ServedCopyProblem[] {
-      return this.compiledLanes.get(0)?.problems ?? [];
+      return this.lanes.kept(0)?.problems ?? [];
    }
 
    /** The served copy's compiled model, compiling it first; for reading only. */
@@ -1388,96 +1304,17 @@ export class ServedCopyServe {
    }
 
    /**
-    * The compiled copy for `lane`: every pair table that stores several
-    * inlined paths is read for its block of that number (its last, past its
-    * own count), the rest of the copy as at lane 0. Lane 0 is the copy a
-    * query is first compiled in; another is compiled only when a query reads
-    * that block, and kept like lane 0 until the next invalidation.
+    * The compiled copy for `lane` ({@link CompiledCopyLanes.ensure}): every
+    * pair table that stores several inlined paths is read for its block of
+    * that number (its last, past its own count), the rest of the copy as at
+    * lane 0.
     */
-   private async ensureCompiled(pinned: Pinned, lane = 0): Promise<Compiled> {
-      // Each request's turn: a compile an older request awaited never
-      // replaces the copy a newer one kept.
-      const turn = ++this.turns;
-      const keep = (compiled: Compiled): void => {
-         if ((this.keptTurn.get(lane) ?? 0) > turn) return;
-         this.keptTurn.set(lane, turn);
-         this.compiledLanes.set(lane, compiled);
-      };
-      const bindings = this.freshBindings(pinned);
-      const generation = this.generation;
-      const current = this.compiledLanes.get(lane);
-      // The same bindings as the copy compiled over, by identity: no key to
-      // read (a query's usual case).
-      if (
-         current &&
-         current.generation === generation &&
-         sameBindings(current.over, bindings)
-      ) {
-         // Kept again under this turn: an older request still compiling
-         // must not replace the copy this one answered from.
-         keep(current);
-         return current;
-      }
-      const key = compileKeyOf(bindings);
-      if (current && current.key === key && current.generation === generation) {
-         const reused = reboundTo(current, bindings);
-         if (reused) {
-            keep(reused);
-            return reused;
-         }
-      }
-      let inFlight = this.inFlightLanes.get(lane);
-      if (
-         !inFlight ||
-         inFlight.key !== key ||
-         inFlight.generation !== generation
-      ) {
-         const started = {
-            key,
-            generation,
-            promise: this.compile(
-               key,
-               generation,
-               bindings,
-               lane,
-               pinned.asOf.getTime(),
-            ),
-         };
-         this.inFlightLanes.set(lane, started);
-         // The callers that await `started.promise` see its rejection; this
-         // derived promise only clears the slot, so its own is dropped.
-         started.promise
-            .finally(() => {
-               if (this.inFlightLanes.get(lane) === started) {
-                  this.inFlightLanes.delete(lane);
-               }
-            })
-            .catch(() => {});
-         inFlight = started;
-      }
-      const awaited = await inFlight.promise;
-      // A compile this pin joined over bindings that differ only in what the
-      // compile does not read answers with this pin's bindings.
-      const rebound = sameBindings(awaited.over, bindings)
-         ? awaited
-         : reboundTo(awaited, bindings);
-      // Two of this pin's bindings read alike, so which is which cannot be
-      // told: compile over them as they are.
-      const compiled =
-         rebound ??
-         (await this.compile(
-            key,
-            generation,
-            bindings,
-            lane,
-            pinned.asOf.getTime(),
-         ));
-      // An invalidation while it compiled makes it stale: keep it only when
-      // it is still the current generation's. A copy over another snapshot
-      // is kept too, unless a later request kept its own: the latest
-      // request's copy is what the warnings report.
-      if (compiled.generation === this.generation) keep(compiled);
-      return compiled;
+   private ensureCompiled(pinned: Pinned, lane = 0): Promise<Compiled> {
+      return this.lanes.ensure(
+         this.freshBindings(pinned),
+         lane,
+         pinned.asOf.getTime(),
+      );
    }
 
    /**

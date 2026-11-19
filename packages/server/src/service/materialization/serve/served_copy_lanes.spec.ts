@@ -2,16 +2,17 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * Characterization of the served copy's compile cache
- * (`ServedCopyServe.ensureCompiled`): which compile a pin reuses, joins,
+ * The served copy's compile cache (`CompiledCopyLanes`, which
+ * `ServedCopyServe.ensureCompiled` asks): which compile a pin reuses, joins,
  * rebinds or starts, and which compiled copy a lane keeps when requests and
- * invalidations interleave. The compile itself is replaced by one the spec
- * settles by hand (the one seam replaced, in {@link servedCopy}), so the
- * ordering is exact and nothing is compiled for real.
+ * invalidations interleave. The compile is one the spec settles by hand
+ * (handed to the cache, as the served copy hands its own), so the ordering
+ * is exact and nothing is compiled for real.
  */
 
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
 import { type Binding, makeSnapshot, type Pinned } from "../domain/binding";
+import { CompiledCopyLanes, type LaneCompiled } from "./served_copy_lanes";
 import { ServedCopyServe } from "./served_copy_serve";
 
 /** A database table binding; `fresh` varies only what the compile ignores. */
@@ -47,62 +48,48 @@ interface CompileCall {
    fail(err: Error): void;
 }
 
+type Copy = LaneCompiled & { lane: number; modelDef: { tag: string } };
+
 /**
- * A served copy whose compile waits for the spec: each call is recorded and
- * settled with {@link CompileCall.finish}, which reports `tag` as the
- * compiled copy's model and its one problem.
+ * A compile cache whose compile waits for the spec: each call is recorded
+ * and settled with {@link CompileCall.finish}, which reports `tag` as the
+ * compiled copy's model.
  */
 function servedCopy() {
-   const serve = new ServedCopyServe({
-      modelPath: () => "m.malloy",
-      modelDef: () => ({ contents: {} }),
-      serveDestinationConfig: () => undefined,
-   } as never);
    const calls: CompileCall[] = [];
-   // Replaces the private `compile`: ServedCopyServe has no public seam for
-   // it yet, and a rename of it fails this spec only at run time. PR 4 of
-   // the refactor must move this onto a public seam.
-   (serve as unknown as { compile: unknown }).compile = (
-      key: string,
-      generation: number,
-      bindings: Binding[],
-      lane = 0,
-   ) =>
-      new Promise((resolve, reject) => {
-         calls.push({
-            key,
-            generation,
-            bindings,
-            lane,
-            finish: (tag) =>
-               resolve({
-                  key,
-                  generation,
-                  over: bindings,
-                  lane,
-                  rerooted: [],
-                  aliased: [],
-                  modelDef: { tag },
-                  problems: [{ reason: tag, detail: tag }],
-               }),
-            fail: reject,
-         });
-      });
+   const lanes = new CompiledCopyLanes<Copy>(
+      (key, generation, bindings, lane) =>
+         new Promise((resolve, reject) => {
+            calls.push({
+               key,
+               generation,
+               bindings,
+               lane,
+               finish: (tag) =>
+                  resolve({
+                     key,
+                     generation,
+                     over: bindings,
+                     lane,
+                     rerooted: [],
+                     aliased: [],
+                     modelDef: { tag },
+                  }),
+               fail: reject,
+            });
+         }),
+   );
    /** The compiled copy a pin is answered from, on `lane`. */
    const compiled = (pin: Pinned, lane = 0) =>
-      (
-         serve as unknown as {
-            ensureCompiled(
-               p: Pinned,
-               lane?: number,
-            ): Promise<{ modelDef: { tag: string } }>;
-         }
-      )
-         .ensureCompiled(pin, lane)
+      lanes
+         .ensure([...pin.fresh], lane, pin.asOf.getTime())
          .then((c) => c.modelDef.tag);
-   /** The copy lane 0 keeps, as the warnings read it. */
-   const kept = () => serve.problems().map((p) => String(p.detail));
-   return { serve, calls, compiled, kept };
+   /** The copy lane 0 keeps, as the served copy's warnings read it. */
+   const kept = () => {
+      const copy = lanes.kept(0);
+      return copy ? [copy.modelDef.tag] : [];
+   };
+   return { serve: lanes, calls, compiled, kept };
 }
 
 /** Let the queued microtasks run. */
@@ -110,7 +97,7 @@ async function ticks(): Promise<void> {
    for (let i = 0; i < 20; i++) await Promise.resolve();
 }
 
-describe("ServedCopyServe.ensureCompiled", () => {
+describe("CompiledCopyLanes", () => {
    it("reuses the kept copy for the same bindings, without compiling again", async () => {
       const { calls, compiled, kept } = servedCopy();
       const pin = pinned([binding("a")]);
@@ -227,21 +214,6 @@ describe("ServedCopyServe.ensureCompiled", () => {
       expect(kept()).toEqual(["fresh"]);
    });
 
-   it("invalidates on a new context, so the next request compiles", async () => {
-      const { serve, calls, compiled } = servedCopy();
-      const pin = pinned([binding("a")]);
-      const first = compiled(pin);
-      await ticks();
-      calls[0].finish("one");
-      await first;
-      serve.setContext("/pkg", {} as never);
-      const second = compiled(pin);
-      await ticks();
-      expect(calls).toHaveLength(2);
-      calls[1].finish("two");
-      expect(await second).toBe("two");
-   });
-
    it("keeps each lane's copy apart: a pair table's other block compiles once, beside lane 0", async () => {
       const { calls, compiled, kept } = servedCopy();
       const pin = pinned([binding("a")]);
@@ -269,5 +241,18 @@ describe("ServedCopyServe.ensureCompiled", () => {
       expect(calls).toHaveLength(2);
       calls[1].finish("two");
       expect(await second).toBe("two");
+   });
+});
+
+describe("ServedCopyServe", () => {
+   it("invalidates its compiled copies on a new context", () => {
+      const serve = new ServedCopyServe({
+         modelPath: () => "m.malloy",
+         modelDef: () => ({ contents: {} }),
+         serveDestinationConfig: () => undefined,
+      } as never);
+      const invalidate = spyOn(serve, "invalidate");
+      serve.setContext("/pkg", {} as never);
+      expect(invalidate).toHaveBeenCalledTimes(1);
    });
 });
