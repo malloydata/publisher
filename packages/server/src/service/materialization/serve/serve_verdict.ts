@@ -197,6 +197,11 @@ export interface ServeVerdictFacts {
     * (`storageLookupOf`).
     */
    boundStorageIds: ReadonlySet<string>;
+   /**
+    * The sourceIDs a storage binding still within its freshness window (or
+    * whose fallback serves stale) stores. Absent: every bound one is.
+    */
+   freshStorageIds?: ReadonlySet<string>;
    /** Storage: the source names some model kept a binding for. */
    servedStorageNames: ReadonlySet<string>;
    /** Storage: the bound source names still fresh. Absent: every bound one is. */
@@ -267,20 +272,38 @@ function originOf(
 }
 
 /**
- * The tier a plan source's table lives in, as a query reads it
- * (`storageLookupOf`): a storage binding storing its sourceID decides it,
- * since a host may place a source with no `storage=` in a storage
- * destination; with none, the `storage=` annotation does.
+ * The tier a plan source's table lives in, as a query reads it: a storage
+ * binding storing its sourceID decides it (`storageLookupOf`), since a host
+ * may place a source with no `storage=` in a storage destination; with none,
+ * the `storage=` annotation does. The served copy (every source but a rollup,
+ * persisted view or persisted query) reads a fresh table over a stale one, so
+ * a source whose storage tables are all stale while its database table is
+ * fresh is read from the database.
  */
 function planTier(
    sourceID: string,
    source: PersistSourcePlan,
-   facts: Pick<ServeVerdictFacts, "boundStorageIds">,
+   servedCopy: boolean,
+   facts: Pick<
+      ServeVerdictFacts,
+      | "boundStorageIds"
+      | "freshStorageIds"
+      | "boundEntityIds"
+      | "freshEntityIds"
+   >,
 ): "database" | "storage" {
-   return facts.boundStorageIds.has(sourceID) ||
-      source.annotationFields?.storage?.trim()
-      ? "storage"
-      : "database";
+   if (facts.boundStorageIds.has(sourceID)) {
+      const storageStale =
+         facts.freshStorageIds !== undefined &&
+         !facts.freshStorageIds.has(sourceID);
+      const databaseFresh =
+         facts.boundEntityIds.has(source.sourceEntityId) &&
+         (facts.freshEntityIds?.has(source.sourceEntityId) ?? true);
+      return servedCopy && storageStale && databaseFresh
+         ? "database"
+         : "storage";
+   }
+   return source.annotationFields?.storage?.trim() ? "storage" : "database";
 }
 
 /**
@@ -460,7 +483,12 @@ function verdictSubjectOf(
    // Read once, for the deployment facts and the storage branch: one
    // name-keyed lookup. The tier is the sourceID's.
    const storageBound = facts.boundStorageNames.has(source.name);
-   const tier = planTier(sourceID, source, facts);
+   // A rollup, persisted view or persisted query is read through its own
+   // leg (`storageLookupOf`); everything else through the served copy.
+   const servedCopy =
+      !isRollupOrigin(source.origin) &&
+      facts.persistedViewOf(sourceID) === undefined;
+   const tier = planTier(sourceID, source, servedCopy, facts);
    const base: Omit<ServeVerdict, "verdict" | "message"> = {
       sourceName: source.name,
       sourceID,

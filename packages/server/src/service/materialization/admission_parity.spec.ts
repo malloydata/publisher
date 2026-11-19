@@ -129,21 +129,64 @@ describe("admission and the serve verdict agree with the frozen gate policy", ()
       expect([...outcomes].sort()).toEqual([false, true]);
    });
 
-   it("a rollup keeps its gates where the rollup leg may pass one and its plan proved the variant", () => {
+   it("a rollup keeps its gates where its plan proved the variant and the frozen rollup rows keep its own table", () => {
       const wrong: string[] = [];
       const outcomes = new Set<boolean>();
       for (const sw of switches()) {
          const label = switchesLabel(sw);
-         for (const keptAtPlan of [false, true]) {
-            const said = verdictKeepsGate({ rollup: true, keptAtPlan }, sw);
-            outcomes.add(said);
-            if (said !== (keptAtPlan && mayPass("rollup", label))) {
-               wrong.push(`keptAtPlan=${keptAtPlan} ${label}: ${said}`);
+         for (const [read, tables] of Object.entries({
+            ...GATE_READS,
+            ...ZONED,
+         })) {
+            // The verdict asks of one table: the rollup's own.
+            if (tables.length !== 1) continue;
+            for (const keptAtPlan of [false, true]) {
+               const said = verdictKeepsGate(
+                  { rollup: true, keptAtPlan, table: tables[0] },
+                  sw,
+               );
+               outcomes.add(said);
+               const expected =
+                  keptAtPlan &&
+                  mayPass("rollup", label) &&
+                  !read.endsWith("+zoned") &&
+                  keeps("rollup", read, label);
+               if (said !== expected) {
+                  wrong.push(
+                     `read=${read} keptAtPlan=${keptAtPlan} ${label}: ${said}`,
+                  );
+               }
             }
          }
       }
       expect(wrong).toEqual([]);
       expect([...outcomes].sort()).toEqual([false, true]);
+   });
+
+   // A rollup whose base's gate reads a column the rollup stores inexactly
+   // (`#(access_filter) w = $W` over a DOUBLE `w`): the router declines the
+   // read on either placement, a `storage=` rollup's and one a host placed in
+   // storage, and so does the verdict, whatever its plan proved.
+   it("a storage rollup whose gate column is stored inexactly keeps no gate, as admitRead declines it", () => {
+      for (const sw of switches()) {
+         for (const marks of [
+            {},
+            { ownGateKept: true },
+            { holdsOnlyUngatedRows: true },
+         ]) {
+            const table: TableRead = {
+               tier: "storage",
+               gateColumnTypes: ["DOUBLE"],
+               ...marks,
+            };
+            expect(admitRead("rollup", [table], EXACT, sw).admit).not.toBe(
+               true,
+            );
+            expect(
+               verdictKeepsGate({ rollup: true, keptAtPlan: true, table }, sw),
+            ).toBe(false);
+         }
+      }
    });
 
    // F-45: a database-origin source (no `storage=`) a host placed in a

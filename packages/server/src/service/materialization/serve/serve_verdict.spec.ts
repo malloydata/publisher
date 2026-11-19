@@ -199,6 +199,35 @@ describe("computeServeVerdicts", () => {
       ]);
    });
 
+   it("reads a served-copy source from its fresh database table when its storage table is stale, and a rollup from its storage binding", () => {
+      const persisted = plan("orders");
+      const rollup = plan("orders_rollup_1", { origin: "rollup" });
+      const both = {
+         boundStorageNames: new Set(["orders", "orders_rollup_1"]),
+         servedStorageNames: new Set(["orders", "orders_rollup_1"]),
+         boundStorageIds: new Set([persisted[0], rollup[0]]),
+         freshStorageIds: new Set<string>(),
+         freshStorageNames: new Set<string>(),
+         boundEntityIds: new Set(["entity-orders", "entity-orders_rollup_1"]),
+         freshEntityIds: new Set(["entity-orders", "entity-orders_rollup_1"]),
+      };
+      const verdicts = computeServeVerdicts(facts([persisted, rollup], both));
+      expect(verdicts.map((v) => [v.sourceName, v.tier, v.verdict])).toEqual([
+         ["orders", "database", "serves"],
+         // A rollup's leg reads its storage binding, stale or not.
+         ["orders_rollup_1", "storage", "live"],
+      ]);
+      // A fresh storage table is still the one read.
+      const [fresh] = computeServeVerdicts(
+         facts([persisted], {
+            ...both,
+            freshStorageIds: new Set([persisted[0]]),
+            freshStorageNames: new Set(["orders"]),
+         }),
+      );
+      expect([fresh.tier, fresh.verdict]).toEqual(["storage", "serves"]);
+   });
+
    it("names no storage= to drop for a host's storage binding while the storage mode is off", () => {
       const [verdict] = computeServeVerdicts(
          facts([plan("orders")], {

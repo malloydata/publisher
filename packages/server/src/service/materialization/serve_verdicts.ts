@@ -345,33 +345,84 @@ export class ServeVerdicts {
       // reads, for the policy's exactness rule; the router reads each
       // query's. A table not bound yet has none to read, and is judged once
       // it is bound.
-      const ownGateColumnTypes = (sourceID: string): string[] | undefined => {
+      //
+      // A rollup's gates are its base's, read off the base's def in the
+      // rollup's model (the file that declares the base), with whether they
+      // read no column at all (locks only), as the router marks a read.
+      const storageGateRead = (
+         sourceID: string,
+      ): Pick<TableRead, "gateColumnTypes" | "gatesReadNoColumn"> => {
          const bound = storageBindings.filter((b) =>
             b.sourceIDs?.includes(sourceID),
          );
-         if (bound.length === 0) return [];
-         for (const model of models.values()) {
-            const modelDef = model.getModelDef();
-            const def = modelDef
-               ? SourceMap.of(modelDef).node(sourceID)?.def
+         if (bound.length === 0) return { gateColumnTypes: [] };
+         const planned = buildPlan?.sources?.[sourceID];
+         const base = planned?.preaggregate?.baseSourceName;
+         const defs: { def: unknown; modelDef: unknown }[] = [];
+         if (isRollupOrigin(planned?.origin)) {
+            const modelDef = planned?.modelPath
+               ? models.get(planned.modelPath)?.getModelDef()
                : undefined;
-            if (def === undefined) continue;
-            const exprs = entryPointGateExprs(def, modelDef);
-            const reads =
-               exprs === undefined
-                  ? undefined
-                  : // Its own `where:` terms were applied by the build.
-                    gateReads(def, exprs, modelDef, new Set([sourceID]));
-            const types = gateColumnTypesOf(
-               reads,
-               bound.map((b) => b.schema),
-            );
-            return types.some((t) => t === undefined)
-               ? undefined
-               : types.flatMap((t) => t ?? []);
+            const contents = (
+               modelDef as { contents?: Record<string, unknown> } | undefined
+            )?.contents;
+            const def = base !== undefined ? contents?.[base] : undefined;
+            if (def !== undefined) defs.push({ def, modelDef });
+         } else {
+            for (const model of models.values()) {
+               const modelDef = model.getModelDef();
+               const def = modelDef
+                  ? SourceMap.of(modelDef).node(sourceID)?.def
+                  : undefined;
+               if (def !== undefined) {
+                  defs.push({ def, modelDef });
+                  break;
+               }
+            }
          }
-         return undefined;
+         const [found] = defs;
+         if (found === undefined) return { gateColumnTypes: undefined };
+         const exprs = entryPointGateExprs(found.def, found.modelDef);
+         const reads =
+            exprs === undefined
+               ? undefined
+               : // Its own `where:` terms were applied by the build.
+                 gateReads(
+                    found.def,
+                    exprs,
+                    found.modelDef,
+                    new Set([sourceID]),
+                 );
+         const types = gateColumnTypesOf(
+            reads,
+            bound.map((b) => b.schema),
+         );
+         const readsNoColumn =
+            reads !== undefined &&
+            !reads.unresolved &&
+            reads.columns.length === 0 &&
+            reads.names.size === 0;
+         return {
+            gateColumnTypes: types.some((t) => t === undefined)
+               ? undefined
+               : types.flatMap((t) => t ?? []),
+            ...(readsNoColumn ? { gatesReadNoColumn: true } : {}),
+         };
       };
+      // The table a source's answer reads past a gate, as the router
+      // judges it, on the verdict's tier.
+      const tableRead = (
+         sourceID: string,
+         tier: "database" | "storage",
+      ): TableRead =>
+         tier === "storage"
+            ? {
+                 tier,
+                 ownGateKept: ownGateKept(sourceID),
+                 holdsOnlyUngatedRows: holdsOnlyUngatedRows(sourceID),
+                 ...storageGateRead(sourceID),
+              }
+            : { tier };
       const switches = gateSwitches();
       // Pinned now: freshness is read once, as a query reads it.
       const pinned = pin(host.snapshot(), new Date());
@@ -404,21 +455,9 @@ export class ServeVerdicts {
                   ? {
                        rollup: true,
                        keptAtPlan: plan.rollupsKeepingGates.has(sourceID),
+                       table: tableRead(sourceID, tier),
                     }
-                  : {
-                       rollup: false,
-                       table: {
-                          tier,
-                          ownGateKept:
-                             tier === "storage" && ownGateKept(sourceID),
-                          holdsOnlyUngatedRows:
-                             tier === "storage" &&
-                             holdsOnlyUngatedRows(sourceID),
-                          ...(tier === "storage"
-                             ? { gateColumnTypes: ownGateColumnTypes(sourceID) }
-                             : {}),
-                       },
-                    },
+                  : { rollup: false, table: tableRead(sourceID, tier) },
                switches,
             ),
          refusedAtBind: (sourceID, source, tier) =>
@@ -426,6 +465,11 @@ export class ServeVerdicts {
          boundEntityIds: new Set(Object.keys(host.databaseEntries() ?? {})),
          freshEntityIds: new Set(Object.keys(pinned.compilerManifest.entries)),
          boundStorageNames: new Set(storageBindings.map((b) => b.sourceName)),
+         freshStorageIds: new Set(
+            pinned.fresh
+               .filter((b) => b.tier === "storage")
+               .flatMap((b) => b.sourceIDs ?? []),
+         ),
          boundStorageIds: new Set(
             storageBindings.flatMap((b) => b.sourceIDs ?? []),
          ),
@@ -891,18 +935,25 @@ function servePathOf(
 /**
  * Whether a source's own table keeps its entry point's gates, as the serve
  * verdict reports it: the router's own question, asked before any query. A
- * rollup is asked of its leg past a gate, with its variant proven at plan
- * (`keptAtPlan`); any other table of the served copy's leg over that table,
- * read exactly.
+ * rollup is asked of its leg past a gate over its own table, with its variant
+ * proven at plan (`keptAtPlan`); any other table of the served copy's leg
+ * over that table, read exactly.
  */
 export function verdictKeepsGate(
    source:
-      | { rollup: true; keptAtPlan: boolean }
+      | { rollup: true; keptAtPlan: boolean; table: TableRead }
       | { rollup: false; table: TableRead },
    switches: GateSwitches,
 ): boolean {
    if (source.rollup) {
-      return mayAttempt("rollup", switches) && source.keptAtPlan;
+      // The variant proven at plan, and the rollup's own table read past
+      // the gate as the router judges it (its tier, marks, and the stored
+      // types of the columns the gate reads).
+      return (
+         mayAttempt("rollup", switches) &&
+         source.keptAtPlan &&
+         keepsGatesWhenReadExact("rollup", [source.table], switches)
+      );
    }
    return keepsGatesWhenReadExact("served", [source.table], switches);
 }
