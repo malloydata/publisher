@@ -86,8 +86,9 @@ info:
     write takes its own resource's writable fields; an action that takes input (`:query`, `:compile`, `:run-sql`) takes
     an `…Request` body, since it creates no resource, and `:reload`, `:load` and `:unload` take none.
 
-    - Every mutable resource but a report carries a `revision`, returned as `ETag` on reads; every `PATCH` and `DELETE`
-    accepts `If-Match` and answers 412 when the resource has moved on. A report is revisioned by its `contentHash`,
+    - Every mutable resource but a report carries a `revision`, returned as `ETag` on reads; every `PATCH` and every
+    `DELETE` of a revisioned resource accepts `If-Match` and answers 412 when the resource has moved on (`drop-table`
+    takes none: a table has no revision). A report is revisioned by its `contentHash`,
     which is the report write's precondition in place of `If-Match`: a stale one answers 409 `CONTENT_CHANGED`, since
     the precondition travels in the body, not a header.
 
@@ -182,7 +183,8 @@ info:
     - The server takes the caller's `X-Request-Id`, else the trace id of a W3C `traceparent`, else makes one; every
     response carries it as `X-Request-Id`, and every error body repeats it as `requestId`.
 
-    - Lowercase snake_case, except a `reason`, which is always a code from a closed list in UPPER_SNAKE (an error's, an
+    - Enum values are lowercase snake_case, except a `reason`, which is always a code from a closed list in UPPER_SNAKE
+    (an error's, an
     index's, a refused source's; free text is a `message`), a warning's or problem's `code`, a stable kebab-case name of
     the check that made the finding (`render-tag`, `report-layout-unknown`; the set is open), a value that echoes a
     setting's own value (`versionPromotion: on-publish`), values that name a response field (`include:
@@ -221,7 +223,9 @@ info:
     resource write under `resources.readOnly` and on an `#(authorize)` gate, `410` when it uses an archived version's
     content (a content read, an action on it, the report write, a run, or `latestVersionId`'s target), never on that
     version's record, its status, its `PATCH`, `DELETE` or `:unload`, or the index, and `424`, `502` and `504` when it
-    loads a version or reaches a warehouse (424 `VERSION_LOAD_FAILED` on every operation that loads one).
+    loads a version or reaches a warehouse (424 `VERSION_LOAD_FAILED` on every operation that loads one), or fetches a
+    package location (`publish-version`: `PACKAGE_FETCH_FAILED`, 424 when the location or its credentials fail, 502
+    when its host cannot be reached).
 
 
     Headers a gateway must strip: `x-publisher-bypass-authorize`. When the deployment sets
@@ -1059,8 +1063,9 @@ paths:
       tags:
         - versions
       summary: Publish a new version of the package
-      description: "Fetches a source and publishes the version its `publisher.json` declares, or `<parent>+republish.N`
-        (`origin: republish`) when that version already exists with other content, whichever source it came from,
+      description: "Fetches the package location and publishes the version its `publisher.json` declares, or
+        `<parent>+republish.N`
+        (`origin: republish`) when that version already exists with other content, whichever location it came from,
         re-applying the overlay of report writes. With no body it fetches the package's recorded `source` again, which
         is how a package published from a git branch or an object-store prefix picks up a change; when the fetched tree
         matches the current version (by git commit sha, object etag or md5, or the tree's hash) nothing is made and it
@@ -1071,9 +1076,10 @@ paths:
         that moves the package's `source` or `latestVersionId` advances the package's `revision`. A live package answers
         409 `PACKAGE_IS_LIVE` (use `:reload`). A declared version that differs from a stored one only by letter case or
         leading zeros answers 409 `VERSION_CONFLICT`; a `publisher.json` with no `version` answers 400
-        `PACKAGE_VERSION_MISSING`, and one that is not a semantic version 400 `PACKAGE_VERSION_INVALID`. A source that
-        cannot be fetched answers `PACKAGE_FETCH_FAILED`: 424 when the branch, prefix or object is missing or the source
-        refused the credentials, 502 when the source's host cannot be reached; the `message` says which. With `dryRun`,
+        `PACKAGE_VERSION_MISSING`, and one that is not a semantic version 400 `PACKAGE_VERSION_INVALID`. A package
+        location that cannot be fetched answers `PACKAGE_FETCH_FAILED`: 424 when the branch, prefix or object is missing
+        or the location refused the credentials, 502 when the location's host cannot be reached; the `message` says
+        which. With `dryRun`,
         every publish check runs and nothing is stored; the answer is always 200, with no `Location` and no `ETag`: the
         `Version` the publish would make, with no `resource`, `revision` or timestamps since nothing is stored, or the
         current `Version` when it would make nothing. The load's warnings are on the version's status (`GET
@@ -1157,7 +1163,8 @@ paths:
           $ref: "#/components/responses/Internal"
         "502":
           $ref: "#/components/responses/DatabaseUnreachable"
-          description: "The database, or the host the source is fetched from, could not be reached, so nothing was made.
+          description: "The database, or the host the package location is fetched from, could not be reached, so nothing
+            was made.
             Retry
             once, then report it. `reason`: `CONNECTION_FAILED`, `PACKAGE_FETCH_FAILED`."
         "503":
@@ -1652,8 +1659,7 @@ paths:
           $ref: "#/components/responses/NotModified"
         "400":
           $ref: "#/components/responses/BadRequest"
-          description: "The request is malformed, or the Malloy or SQL in it was refused. `reason`: `INVALID_REQUEST`,
-            `COMPILE_ERROR`."
+          description: "The request is malformed, or the Malloy or SQL in it was refused. `reason`: `INVALID_REQUEST`."
         "404":
           $ref: "#/components/responses/NotFound"
           description: "Something the request names does not exist. `reason`: `NOT_FOUND`, `VERSION_NOT_FOUND`."
@@ -1813,7 +1819,8 @@ paths:
           $ref: "#/components/responses/Unavailable"
         "504":
           $ref: "#/components/responses/GatewayTimeout"
-      description: "Loads the version when it is not loaded (a hydrate when the compiled-model store has an entry). A model
+      description: "Loads the version when it is not loaded (a hydrate when the compiled-model store has an entry). A
+        model
         in the path that does not exist answers 404 `NOT_FOUND`, at every scope. Publisher honours
         `x-publisher-bypass-authorize`, which skips every gate for an internal service that holds the deployment's bypass
         secret; a gateway strips it from every inbound request (see the info text)."
@@ -7261,8 +7268,11 @@ components:
       description: "Rows and their columns always; the full Malloy result only when asked for. Each value is JSON by its
         column's Malloy type, the one encoding every result uses: `string` a string; `number` a JSON number, except an
         integer beyond 2^53 or a decimal a double cannot hold exactly, which is a string of its digits; `boolean` a
-        boolean; `date` a `YYYY-MM-DD` string; `timestamp` and `timestamptz` an RFC 3339 string; a nest an array of
-        objects (a `record`, one object); `null` for a missing value. A client must not rely on the order of `rows` and
+        boolean; `date` a `YYYY-MM-DD` string; `timestamp` and `timestamptz` an RFC 3339 string; `json` the JSON value
+        itself, not its text; `sql_native` (a
+        warehouse type Malloy does not model) the value as the driver returns it, a string when it has no JSON form; a
+        nest an array of objects (a `record`, one object); `null` for a missing value. A client must not rely on the
+        order of `rows` and
         `metadata` in the body, so a later release can stream `rows`."
       required:
         - rows

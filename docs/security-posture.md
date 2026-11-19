@@ -238,8 +238,8 @@ Concretely:
   the value of `PUBLISHER_BYPASS_AUTHORIZE_SECRET` skips gate evaluation on BOTH routes outright —
   the `#(authorize)` lock as well as the `#(access_filter)` filter — for trusted data-management
   callers (indexers). With that variable unset the bypass is refused, so
-  the default is closed; a deployment that configures the secret and reaches untrusted callers
-  should still strip the header at its edge — see
+  the default is closed; a deployment that configures the secret removes the header from every
+  inbound request at its gateway (see "Headers a gateway must strip" above) — see
   [authorize-bypass-deployment.md](authorize-bypass-deployment.md). It is the one place where a
   request, not a model, decides whether governance applies.
 
