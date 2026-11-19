@@ -12,7 +12,6 @@
  * a caller's reader options as typed literals, never spliced text.
  */
 
-import { lockDownDuckDBSession } from "../../duckdb_lockdown";
 import type { DuckDBConnection } from "@malloydata/db-duckdb";
 import path from "path";
 import { components } from "../../../api";
@@ -32,6 +31,7 @@ import {
    type PartitionKey,
 } from "../../connection";
 import {
+   lockDownDestinationSession,
    withIsolatedSession,
    writePartitionedTable,
 } from "./materialization_build_session";
@@ -201,10 +201,10 @@ export async function loadStorageTable(params: {
       }
       // The reader takes caller options: confine it to the catalog's data path
       // (recorded by the attach) before it runs (duckdb_lockdown.ts).
-      await lockDownDuckDBSession(session, {
-         allow: configuredPath ? [configuredPath] : [],
-         lockConfiguration: false,
-      });
+      await lockDownDestinationSession(
+         session,
+         configuredPath ? [configuredPath] : [],
+      );
       return await writeTableAs(session, params, reader, (error) =>
          readerRefusal(error, params.uri),
       );
@@ -329,13 +329,13 @@ export async function copyStorageTable(params: {
       }
       // Confined to the two catalogs' data paths (configured, or recorded by
       // the attaches) before it reads or writes (duckdb_lockdown.ts).
-      await lockDownDuckDBSession(session, {
-         allow: [destinationConnection, source.connection].flatMap((conn) => {
+      await lockDownDestinationSession(
+         session,
+         [destinationConnection, source.connection].flatMap((conn) => {
             const dataPath = conn.ducklakeConnection?.storage?.bucketUrl;
             return dataPath ? [dataPath] : [];
          }),
-         lockConfiguration: false,
-      });
+      );
       const from = [sourceAlias, source.schemaName, source.tableName]
          .map((part) => quoteIdentifier(part, STORAGE_DIALECT))
          .join(".");

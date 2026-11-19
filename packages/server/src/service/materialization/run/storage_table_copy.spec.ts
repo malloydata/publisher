@@ -3,7 +3,7 @@
 
 import type { DuckDBConnection } from "@malloydata/db-duckdb";
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync } from "fs";
+import { existsSync, mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import type { components } from "../../../api";
@@ -99,11 +99,7 @@ describe("copyStorageTable on file catalogs", () => {
             `ATTACH 'ducklake:${join(dir, `${name}.ducklake`)}' AS "${alias}" ` +
                `(DATA_PATH '${join(dir, name)}/'${readOnly ? ", READ_ONLY" : ""})`,
          );
-         if (record) {
-            // A locked session creates no directory above the allowed path.
-            mkdirSync(join(dir, name, "main"), { recursive: true });
-            allowForLockdown(session, join(dir, name));
-         }
+         if (record) allowForLockdown(session, join(dir, name));
       };
 
    // Each test has its own catalogs, and every session that attached one is
@@ -157,6 +153,15 @@ describe("copyStorageTable on file catalogs", () => {
          ],
          partitionedBy: [{ column: "kind", transform: "identity" }],
       });
+   });
+
+   it("copies into a fresh catalog whose local data path does not exist yet", async () => {
+      // The session is locked before the write, and a locked session creates
+      // no directory above an allowed path: the copy creates the data path
+      // first.
+      expect(existsSync(join(dir, "dest"))).toBe(false);
+      expect((await copyStorageTable(base)).rowCount).toBe(3);
+      expect(existsSync(join(dir, "dest"))).toBe(true);
    });
 
    it("copies within one catalog to another name", async () => {
