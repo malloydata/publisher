@@ -460,6 +460,32 @@ source: t is s extend {
       }
    });
 
+   it("ignores the order a warehouse lists a table's columns in", async () => {
+      const { pkg } = await compileModelFiles({
+         "m.malloy": base("One row per city."),
+      });
+      const def = (
+         pkg as {
+            getModel: (p: string) => {
+               getModelDef: () => Record<string, never>;
+            };
+         }
+      )
+         .getModel("m.malloy")
+         .getModelDef();
+      const plain = readDefinitionOf(def as never, "s");
+      const source = (
+         def as unknown as { contents: Record<string, { fields: unknown[] }> }
+      ).contents.s;
+      expect(source.fields.length).toBeGreaterThan(1);
+      source.fields.reverse();
+      try {
+         expect(readDefinitionOf(def as never, "s")).toBe(plain);
+      } finally {
+         source.fields.reverse();
+      }
+   });
+
    it("ignores docs and moved lines, and changes with the rows or the gate", async () => {
       const plain = await hashOf(base("One row per city."));
       expect(plain).toBeDefined();
