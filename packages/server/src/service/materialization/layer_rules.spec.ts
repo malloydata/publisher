@@ -780,6 +780,31 @@ function vocabularyRestatements(sf: ts.SourceFile): number {
    return n;
 }
 
+/** The non-spec files among `files` that reach the frozen gate-policy rows. */
+function frozenRowsImporters(files: string[]): string[] {
+   const target = /gate_policy_frozen_rows["'`]/;
+   return files
+      .filter((f) => {
+         const sf = parse(f);
+         let reached = false;
+         const visit = (n: ts.Node): void => {
+            const spec =
+               (ts.isImportDeclaration(n) || ts.isExportDeclaration(n)) &&
+               n.moduleSpecifier
+                  ? n.moduleSpecifier
+                  : ts.isCallExpression(n) &&
+                      n.expression.kind === ts.SyntaxKind.ImportKeyword
+                    ? n.arguments[0]
+                    : undefined;
+            if (spec && target.test(spec.getText(sf))) reached = true;
+            ts.forEachChild(n, visit);
+         };
+         visit(sf);
+         return reached;
+      })
+      .map(srcRel);
+}
+
 describe("the domain model's ratchets", () => {
    it("the switches are read only by config.ts, the facade and the query pipeline", () => {
       // The rule is materialization's: its modules and the shells beside
@@ -924,6 +949,14 @@ describe("the domain model's ratchets", () => {
       const listed = lists.RATCHET_ADMISSION_IMPORTS as Record<string, string>;
       expectExact("admission imports", actual, listed);
       for (const step of Object.values(listed)) expect(step).toMatch(STEP);
+   });
+
+   it("the frozen gate-policy rows are read only by specs", () => {
+      // Spec data: a module that read them would make the frozen list a
+      // runtime input, editable without the security review.
+      expect(
+         frozenRowsImporters(walk(SRC_DIR).filter((f) => !isSpec(f))),
+      ).toEqual([]);
    });
 
    it("kinds, tiers and legs are spelled out only in domain/vocabulary.ts", () => {
