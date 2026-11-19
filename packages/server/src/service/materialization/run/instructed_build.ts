@@ -43,6 +43,7 @@ import {
    assertPlacementNamed,
    assertTierEligible,
    buildSQLOf,
+   compilerBuildId,
    computeSourceEntityId,
    presentAs,
    type RunPlan,
@@ -119,6 +120,7 @@ import {
    BuildEnvironment,
    chainedPlanFacts,
    manifestExcludingStorage,
+   manifestForCompiler,
    upstreamEntryIsCurrent,
 } from "./build_upstreams";
 import {
@@ -145,7 +147,7 @@ import {
    TableOwnershipError,
    type OwnedTableTarget,
 } from "./table_ownership";
-import type { SourceBuildOptions } from "./source_build";
+import { persistedReach, type SourceBuildOptions } from "./source_build";
 import type { KeyCheckRecord } from "./tier";
 import {
    buildKindOf,
@@ -1721,13 +1723,29 @@ async function storedJoinOf(
          run.planFacts,
       );
       if (!(address in reduced.entries)) return undefined;
-      const withTable = { ...reduced, strict: false };
-      const withoutTable = {
-         ...withTable,
-         entries: Object.fromEntries(
-            Object.entries(reduced.entries).filter(([id]) => id !== address),
-         ),
-      };
+      // Each also under the compiler's own keys, which it looks tables up
+      // by; a key the parent reads holds only its own upstream's table.
+      const { reachedIds } = persistedReach(
+         parent,
+         run.environment,
+         run.planFacts,
+      );
+      const withTable = manifestForCompiler(
+         { ...reduced, strict: false },
+         run.planFacts,
+         reachedIds,
+      );
+      const withoutTable = manifestForCompiler(
+         {
+            ...reduced,
+            strict: false,
+            entries: Object.fromEntries(
+               Object.entries(reduced.entries).filter(([id]) => id !== address),
+            ),
+         },
+         run.planFacts,
+         reachedIds,
+      );
       const target = compiled.tables[parent.sourceID]?.target;
       if (
          buildSQLOf(parent, withTable, target) ===
@@ -2280,6 +2298,10 @@ export function buildsPlannedTable(
    if (table === undefined) return false;
    const only = new Manifest();
    only.update(at.baseAddress, { tableName: table });
+   // Also under the compiler's own key for the base, which differs from
+   // its address when the address folds in a `name=`, projection or
+   // destination.
+   only.update(compilerBuildId(buildSource), { tableName: table });
    if (!readsTable(buildSQLOf(variant.source, only.buildManifest), table)) {
       return false;
    }
