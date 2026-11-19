@@ -49,8 +49,9 @@ info:
     - Paths are kebab-case; parameters and fields are camelCase. `{xName}` is a named resource, `{versionId}` and
     `{runId}` are ids, and `{path}` is a file's version-relative path (relative to the version's root, `/`-separated;
     every path in a body is version-relative too, but a data app's `path`, relative to `public/`, and a skill file's,
-    relative to its skill's directory). `{path}` spans segments: send its `/` literally, never as `%2F`, and a `:verb`
-    follows its last segment. A path has no empty, `.` or `..` segment, no leading `/`, and no `\`, `:` or control
+    relative to its skill's directory). `{path}` spans segments: send its `/` literally (the server also decodes `%2F`
+    within it as `/`, for generated clients that encode it), and a `:verb` follows its last segment. A path has no
+    empty, `.` or `..` segment, no leading `/`, and no `\`, `:` or control
     character.
 
     - A `GET` changes no record. It may load the version, or start work a `profile=light` publish deferred, which only
@@ -67,7 +68,9 @@ info:
     `VersionStatus.status` reads `failed`; the next such operation tries the load again. `:reload` is the exception:
     compiling is what it is asked to do, so a compile that fails is its 400 `COMPILE_ERROR`, and the version keeps
     serving its last good compile with `VersionStatus.stale` and `error` set. `:load`, `:unload` and `:reload` each
-    answer the version's `VersionStatus`, whose `warnings` are the load's non-fatal findings.
+    answer the version's `VersionStatus`, whose `warnings` are the load's non-fatal findings. A version loads whole: no
+    listing shows a model that failed while the rest serve. A `{path}` that names no file of the version answers 404
+    `NOT_FOUND` on every operation, `:compile` at every scope included.
 
     - State changes are fields: `PATCH …/versions/{versionId}` with `archived`, `pinned` or `manifestLocation`; `PATCH
     …/packages/{packageName}` with `latestVersionId`; `PATCH …/runs/{runId}` with `status: "cancelled"`. What is not a
@@ -88,29 +91,44 @@ info:
     which is the report write's precondition in place of `If-Match`: a stale one answers 409 `CONTENT_CHANGED`, since
     the precondition travels in the body, not a header.
 
-    - What only the server sets is `readOnly` (`resource`, `revision`, timestamps, and every run field but `versionId`,
-    `trigger`, `callerRunId`, `options`, `buildInstructions` and `status`), and a write that sends it back as read
-    ignores it, so a client can `PATCH` a resource it just read. A field set on create is writable on create and never
-    changes after (`x-immutable`): a `name`, a package's and a version's `source`, and a run's `versionId`, `trigger`,
-    `callerRunId`, `options` and `buildInstructions`. A write that sends an `x-immutable` field with a different value
-    answers 400 `INVALID_REQUEST` naming it; the same value is accepted, so a read can be sent back. A field with a
-    `default` need not be sent on create. A run's `status` is the one field a client changes later. One field is both
+    - What only the server sets is `readOnly` and says "Set by the server" (`resource`, `revision`, timestamps, and
+    every run field but `versionId`, `trigger`, `callerRunId`, `options`, `buildInstructions` and `status`). A request
+    that sends a server-set field answers 400 `INVALID_REQUEST` naming it in `details.field`, so a read-modify-write
+    strips the server-set fields before it sends a read back. A field set on create is writable on create and never
+    changes after (`x-immutable`): a `name`, a package's and a version's `source`, a destination's `destinationSchema`,
+    and a run's `versionId`, `trigger`, `callerRunId`, `options` and `buildInstructions`. A write that sends an
+    `x-immutable` field with a different value answers 400 `INVALID_REQUEST` naming it; the same value is accepted. A
+    field with a `default` need not be sent on create. A run's `status` is the one field a client changes later. One
+    field is both
     set by the server and sent back: a report's `contentHash`, the precondition of the report write. An object schema no
     request can carry is `readOnly` as a whole.
 
-    - A write body is the resource itself, one schema for reading and writing it. `required` describes a read: what
-    every read of the object carries. In a request, a `readOnly` field is ignored and never required (OpenAPI 3.0's
-    rule, adopted here because 3.1 dropped it), a field with a `default` is never `required` and a request may leave it
-    out, though every read carries it, and a write-only field is never in `required`: a field a create needs says
-    "Required on create." in its description. A `PATCH` body is a JSON merge-patch of the resource: any subset of its
-    writable fields, `null` clearing an optional one; no schema spells `null`, since a read never returns it. Generated
-    clients get request and response types from the one schema (openapi-typescript's `--read-write-markers
-    --default-non-nullable false`).
+    - A write body is the resource itself, one schema for reading and writing it. `required` names only what a client
+    sends: a server-set field is never in it, nor a field with a `default`, though every read carries both, and a
+    write-only field is never in it either (a field a create needs says "Required on create." in its description). So
+    every generator we ship (typescript-axios, openapi-python-client, openapi-typescript) types requests and responses
+    from the one schema, with no read-write markers; a generated read type marks the server-set fields optional, and
+    their descriptions say every read carries them. A `PATCH` body is a JSON merge-patch of the resource: any subset of
+    its writable fields, `null` clearing an optional one; no schema spells `null`, since a read never returns it.
+
+    - Cross-field rules are prose in the schema that carries them and are checked by the server, never encoded as
+    `oneOf`, `anyOf` or a discriminator, so every generator reads the schemas alike: a connection's `type` selecting its
+    block, each block's `authMethod` selecting its credentials, a `TableAddress`'s exactly-one, `QueryRequest`'s two
+    shapes, `CompileRequest`'s per-scope fields, a report tile's two kinds and `GivenSuggest`'s three forms. A body that
+    breaks one answers 400 `INVALID_REQUEST` naming the field in `details.field`. The `Connection` and `Destination`
+    envelopes and every block reject a field they do not define.
 
     - Every `POST` that creates or starts something (an environment, a connection, a package, a version, a run), and the
     report write, accepts an `Idempotency-Key` header: a retry with the same key and body within 24 hours answers with
     the first response and does nothing again, and the same key with a different body answers 409
-    `IDEMPOTENCY_KEY_REUSED`.
+    `IDEMPOTENCY_KEY_REUSED`. The same body is the same JSON value, whatever its key order or whitespace. A duplicate
+    that arrives while the first is in flight waits for it and answers with its response. A 429 or 503 is not stored
+    against the key, so a retry after one runs the request.
+
+    - Each guarantee holds where its state lives: an `Idempotency-Key` is remembered by the server that answered it, so
+    behind several replicas a gateway sends a key's retries to the same one; a `revision`, and the `ETag` made from it,
+    is the catalog's, so servers sharing a catalog share it. A version id is never reused, even after its version is
+    deleted (the catalog keeps a tombstone), so a cached read of a stored version's files never goes stale.
 
     - A delete that would delete other resources with it (an environment's packages, connections and destinations, a
     package's versions) requires `?force=true`, and answers 409 `RESOURCE_NOT_EMPTY` without it.
@@ -134,13 +152,16 @@ info:
     relative to the API's base: no leading slash, and the resolved version id in place of `latest`
     (`environments/acme/packages/sales/versions/1.4.0/models/orders.malloy`). A list item carries it when its item has a
     `GET` of its own, so a data app, whose page is served outside the API, carries none. Relative, so it stays right
-    behind a gateway that serves the API under another prefix; a link and a stable key, never parsed.
+    behind a gateway that serves the API under another prefix, and percent-encoded per segment; a link and a stable key,
+    never parsed.
 
     - A resource read two ways is `X` from its own `GET` and `XSummary` in its list, and its list is `XList`; nothing
     else is named `…Summary`.
 
     - Every read but `/status` answers with an `ETag` and takes `If-None-Match`, answering 304 with no body when nothing
-    changed. `Cache-Control` is `no-store` on `/status` and, on every other read, `private, no-cache`, because a
+    changed: the `revision` of a revisioned resource, and otherwise a digest of the representation, always computed
+    (no setting turns it off). `Cache-Control` is `no-store` on `/status` and, on every other read, `private, no-cache`,
+    because a
     compiled model under a concrete version can still change with `:reload`, and a read through `latest` or `live` can
     resolve differently next time.
 
@@ -171,18 +192,22 @@ info:
     name or path ascending, except versions and runs, newest first, and a connection's schemas and tables, in the
     warehouse's order. `/status` is the one unpaged snapshot.
 
-    - Query results are typed: `rows` always, and Malloy's full result, with column types and render metadata, only on
-    request. Nothing is a JSON string inside JSON.
+    - Query results are typed: `rows` and their ordered `columns`, with each column's Malloy type, always, each value
+    encoded as `QueryResult` states once for every type (an integer beyond 2^53 or a wide decimal as a string, a date as
+    `YYYY-MM-DD`, a timestamp in RFC 3339), and Malloy's full result, with render metadata, only on request. Nothing is
+    a JSON string inside JSON. A client must not rely on the order of `rows` and `metadata` in a body, so a later
+    release can stream `rows`.
 
     - Every error is `{status, reason, message, requestId, details?}`. Branch on `status` and `reason`, never on
     `message`; treat a reason you do not know as the status's generic case. Each operation's error responses list the
-    reasons it answers, and `details` has one shape per reason a client acts on. An error inside a successful response
+    reasons it answers, and for a reason a client acts on, `details` is the component `Error.details` names for that
+    reason: a plain object, read by `reason`, not a union. An error inside a successful response
     is an `EmbeddedError` (`message`, and a `reason` from that use's own list); every diagnostic, a compile problem, a
     load warning or a render log message, is a `Problem`, located by `modelPath` and a 0-based `range`.
 
     - A dry run (`?dryRun=true`) runs every check and stores nothing, and answers 200 with no `Location`, ignoring
     `Idempotency-Key`: a connection's answers its test result, a publish's the `Version` it would make, with no
-    `resource`, `revision` or timestamps, although `Version` requires them, and with no `ETag`.
+    `resource`, `revision` or timestamps, and with no `ETag`.
 
     - Booleans are JSON `true`/`false` in bodies and `true`/`false` in query strings; anything else is 400
     `INVALID_REQUEST`.
@@ -197,6 +222,13 @@ info:
     content (a content read, an action on it, the report write, a run, or `latestVersionId`'s target), never on that
     version's record, its status, its `PATCH`, `DELETE` or `:unload`, or the index, and `424`, `502` and `504` when it
     loads a version or reaches a warehouse (424 `VERSION_LOAD_FAILED` on every operation that loads one).
+
+
+    Headers a gateway must strip: `x-publisher-bypass-authorize`. When the deployment sets
+    `PUBLISHER_BYPASS_AUTHORIZE_SECRET`, a request carrying that secret in this header skips the `#(authorize)` gate on
+    `:query` and `:compile`, the one input that turns a gate's 403 into a 200. It exists for an internal service the
+    deployment trusts, so the gateway removes it from every inbound request and only that service, behind the gateway,
+    sets it. It is not part of any operation's parameters and no generated client offers it.
 servers:
   - url: /api/v1
     description: This server
@@ -397,11 +429,16 @@ paths:
       tags:
         - environments
       summary: Update an environment's fields
-      description: JSON merge-patch. `connections` and `destinations` are lists, so each replaces the stored list when
-        present, which is how an orchestrator pushes its desired state; an entry with a name and no configuration keeps
-        that stored connection or destination, so a push need not resend credentials the server withholds. Use the
-        connection routes to change one connection. Any change to the environment's connections or destinations, by this
-        route or the connection routes, advances its `revision`.
+      description: "JSON merge-patch. `connections` and `destinations` are lists, so each replaces the stored list when
+        present, which is how an orchestrator pushes its desired state: a stored entry the list does not name is deleted.
+        Each entry the list names merges into the stored one as `update-connection` does: matched by `name`, a withheld
+        field (a credential, `setupSql`) is kept unless the entry sends it or sends `null`, and an entry that is exactly
+        `{name}` keeps the stored entry whole, `configStamp` included. So an environment read and sent back, its
+        server-set
+        fields stripped, keeps every credential, and a destination's one secret is rotated by sending it alone. Use the
+        connection routes to change one
+        connection. Any change to the environment's connections or destinations, by this route or the connection routes,
+        advances its `revision`."
       parameters:
         - $ref: "#/components/parameters/ifMatch"
         - $ref: "#/components/parameters/requestId"
@@ -641,8 +678,12 @@ paths:
         even when the body resends the dialect block or the `attachedDatabases` list that holds it; an
         `attachedDatabases` entry is matched to its stored one by `name`, and an entry without a `name` keeps only what
         was sent. So a client resends nothing it could not read. A withheld field sent replaces; sent `null`, it is
-        cleared, as is everything withheld inside an object sent as `null`. `configStamp` is the other exception: left
-        out, it is cleared."
+        cleared, as is everything withheld inside an object sent as `null`. Changing a block's `authMethod` clears the
+        withheld fields of the method it leaves, so a stored key never outlives a switch to a password. `configStamp` is
+        the other exception: left out, it is cleared, except in an environment push entry that is exactly `{name}`.
+        Cross-field rules (one dialect block, matching `type`; one method's credentials, matching `authMethod`; the
+        fields each block marks as required by another) are checked by the server, not encoded in the schema: a body
+        that breaks one answers 400 `INVALID_REQUEST` naming the field in `details.field`."
       parameters:
         - $ref: "#/components/parameters/ifMatch"
         - $ref: "#/components/parameters/dryRun"
@@ -871,8 +912,11 @@ paths:
       tags:
         - packages
       summary: Update a package's fields
-      description: "JSON merge-patch over `description` and `latestVersionId`. Send `If-Match` to make moving
-        `latestVersionId` a compare-and-swap; the target must exist (404) and not be archived (410). `source` is set on
+      description: "JSON merge-patch over `description` and `latestVersionId`. Send only the fields you are changing: a
+        read
+        sent back without `If-Match` after a publish would move `latestVersionId` back. Send `If-Match` to make moving
+        `latestVersionId` a compare-and-swap; the target must exist (404) and not be archived (410), and
+        `latestVersionId: null` answers 400 `INVALID_REQUEST`. `source` is set on
         create and moves only with a publish from a new source (`POST …/versions` with a body `source`); a `PATCH` that
         changes it answers 400. Content fields are not here: scope and schedule come from a version's `publisher.json`."
       parameters:
@@ -1026,7 +1070,9 @@ paths:
         that moves the package's `source` or `latestVersionId` advances the package's `revision`. A live package answers
         409 `PACKAGE_IS_LIVE` (use `:reload`). A declared version that differs from a stored one only by letter case or
         leading zeros answers 409 `VERSION_CONFLICT`; a `publisher.json` with no `version` answers 400
-        `PACKAGE_VERSION_MISSING`, and one that is not a semantic version 400 `PACKAGE_VERSION_INVALID`. With `dryRun`,
+        `PACKAGE_VERSION_MISSING`, and one that is not a semantic version 400 `PACKAGE_VERSION_INVALID`. A source that
+        cannot be fetched answers `PACKAGE_FETCH_FAILED`: 424 when the branch, prefix or object is missing or the source
+        refused the credentials, 502 when the source's host cannot be reached; the `message` says which. With `dryRun`,
         every publish check runs and nothing is stored; the answer is always 200, with no `Location` and no `ETag`: the
         `Version` the publish would make, with no `resource`, `revision` or timestamps since nothing is stored, or the
         current `Version` when it would make nothing. The load's warnings are on the version's status (`GET
@@ -1102,13 +1148,17 @@ paths:
         "424":
           $ref: "#/components/responses/DependencyFailed"
           description: "Something the operation depends on failed, so nothing changed. Fix the dependency; retrying fails the same
-            way. `reason`: `CONNECTION_AUTH_FAILED`, `CONNECTION_NOT_FOUND`, `MANIFEST_UNAVAILABLE`."
+            way. `reason`: `CONNECTION_AUTH_FAILED`, `CONNECTION_NOT_FOUND`, `MANIFEST_UNAVAILABLE`,
+            `PACKAGE_FETCH_FAILED`."
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/Internal"
         "502":
           $ref: "#/components/responses/DatabaseUnreachable"
+          description: "The database, or the host the source is fetched from, could not be reached, so nothing was made.
+            Retry
+            once, then report it. `reason`: `CONNECTION_FAILED`, `PACKAGE_FETCH_FAILED`."
         "503":
           $ref: "#/components/responses/Unavailable"
         "504":
@@ -1127,7 +1177,8 @@ paths:
       summary: Recompile a version from its files against the warehouse's current schemas, and wait
       description: "Recompiles the version now, with the schema cache bypassed, replaces its compiled-model store entry, and
         answers when it is done, with the compile errors if it failed (the version then keeps serving its last good
-        compile, and its status says `stale`). It answers the version's status, as `:load` and `:unload` do: for a live
+        compile, and its status says `stale`); a version whose stored content cannot be read answers 424
+        `VERSION_LOAD_FAILED`. It answers the version's status, as `:load` and `:unload` do: for a live
         package, the receipt that the edit is served (`contentHash`, `loadId`), with the load's `warnings`. It changes
         no record, so it sends no `ETag`; a `PATCH` after it sends the `ETag` of `GET …/versions/{versionId}`. A compile
         that fails answers 400 `COMPILE_ERROR`, not 424, because compiling is what a reload is asked to do. On a live
@@ -1161,7 +1212,7 @@ paths:
         "424":
           $ref: "#/components/responses/DependencyFailed"
           description: "Something the operation depends on failed, so nothing changed. Fix the dependency; retrying fails the same
-            way. `reason`: `CONNECTION_AUTH_FAILED`, `CONNECTION_NOT_FOUND`."
+            way. `reason`: `CONNECTION_AUTH_FAILED`, `CONNECTION_NOT_FOUND`, `VERSION_LOAD_FAILED`."
         "429":
           $ref: "#/components/responses/RateLimited"
         "500":
@@ -1187,7 +1238,7 @@ paths:
         - versions
       summary: Read a version's serving state on this server
       description: "The version's serving state, with the fields `/status` leaves out (`loadId`, `contentHash`, `bindings`,
-        `warnings`). Loads nothing: an unloaded version answers `status: unloaded`."
+        `warnings`). Loads nothing: a version not loaded here answers `status: not_started`."
       responses:
         "200":
           description: The serving state.
@@ -1196,6 +1247,8 @@ paths:
               schema:
                 $ref: "#/components/schemas/VersionStatus"
           headers:
+            Retry-After:
+              $ref: "#/components/headers/RetryAfter"
             X-Request-Id:
               $ref: "#/components/headers/RequestId"
             ETag:
@@ -1384,13 +1437,13 @@ paths:
         - versions
       summary: Load a version on this server, and wait
       description: "Loads the version into this server's memory if it is not loaded, without reading any content and without
-        changing it, and answers when it is serving (as a hydrate when the compiled-model store has an entry). A loaded
+        changing it, and answers when it is `ready` (as a hydrate when the compiled-model store has an entry). A loaded
         version answers at once. Changes no record: memory state is `VersionStatus.status`. A version that cannot load
         answers 424 `VERSION_LOAD_FAILED` with `details.problems`, and its status reads `failed`. `live` answers 409
         `PACKAGE_IS_LIVE`, since a watched package is loaded while it is watched."
       responses:
         "200":
-          description: Loaded; the version's status, `serving`.
+          description: Loaded; the version's status, `ready`.
           content:
             application/json:
               schema:
@@ -1442,7 +1495,7 @@ paths:
         run is building it; `live` answers 409 `PACKAGE_IS_LIVE`.
       responses:
         "200":
-          description: Unloaded; the version's status, `unloaded`.
+          description: Unloaded; the version's status, `not_started`.
           content:
             application/json:
               schema:
@@ -1483,6 +1536,19 @@ paths:
         - $ref: "#/components/parameters/limit"
         - $ref: "#/components/parameters/after"
         - $ref: "#/components/parameters/includeHidden"
+        - name: include
+          in: query
+          style: form
+          explode: false
+          schema:
+            type: array
+            items:
+              type: string
+              enum:
+                - sources
+          description: "Larger parts to include. `sources`: each model's `sources`, as `get-model` lists them with no
+            `givens`
+            filter, so a catalog of every source in the version is one call."
         - $ref: "#/components/parameters/requestId"
         - $ref: "#/components/parameters/ifNoneMatch"
       responses:
@@ -1644,8 +1710,10 @@ paths:
             `COMPILE_ERROR`, `QUERY_REJECTED`."
         "403":
           $ref: "#/components/responses/Forbidden"
-          description: "Refused. `reason`: `ACCESS_DENIED`, a gate (`#(authorize)` or `#(access_filter)`) refused this caller (supply the givens it reads,
-            `Source.gates`); `STORAGE_ACCESS_DENIED`, the database ran the query and storage the environment configures
+          description: "Refused. `reason`: `ACCESS_DENIED`, a gate (`#(authorize)` or `#(access_filter)`) refused this
+            caller, or
+            a given it reads is missing (supply the givens it reads, `Source.gates`); `STORAGE_ACCESS_DENIED`, the
+            database ran the query and storage the environment configures
             (a DuckLake data path) refused its read, so the query is fine and the database's storage credentials are
             not; `PATH_ACCESS_DENIED`, a path the query itself reads refused access, so the query or its grant is at
             fault. The body never names a storage path."
@@ -1674,7 +1742,13 @@ paths:
           $ref: "#/components/responses/Unavailable"
         "504":
           $ref: "#/components/responses/GatewayTimeout"
-      description: Loads the version when it is not loaded (a hydrate when the compiled-model store has an entry).
+      description: "Loads the version when it is not loaded (a hydrate when the compiled-model store has an entry). A
+        given
+        that is missing or does not parse as its type answers 400 `INVALID_REQUEST` with `details.field: givens.<name>`,
+        except a given a gate reads: a missing gate given answers 403 `ACCESS_DENIED`, as an unsatisfied gate does, so
+        the answer does not reveal the gate. Publisher honours `x-publisher-bypass-authorize`, which skips the
+        `#(authorize)` gate for an internal service that holds the deployment's bypass secret; a gateway strips it from
+        every inbound request (see the info text)."
 
 
   /environments/{environmentName}/packages/{packageName}/versions/{versionId}/models/{path}:compile:
@@ -1738,7 +1812,11 @@ paths:
           $ref: "#/components/responses/Unavailable"
         "504":
           $ref: "#/components/responses/GatewayTimeout"
-      description: Loads the version when it is not loaded (a hydrate when the compiled-model store has an entry).
+      description: "Loads the version when it is not loaded (a hydrate when the compiled-model store has an
+        entry). A model in the path that does not exist answers 404 `NOT_FOUND`,
+        at every scope. Publisher honours `x-publisher-bypass-authorize`, which skips the `#(authorize)` gate for an
+        internal service that holds the deployment's bypass secret; a gateway strips it from every inbound request (see
+        the info text)."
 
 
   /environments/{environmentName}/packages/{packageName}/versions/{versionId}/reports:
@@ -1880,18 +1958,29 @@ paths:
       description: "The report builder's save. The text must carry a model-level `## artifact` tag. The root `index.malloy`,
         anything under `public/`, a file that is not a report, and a report whose `readOnly` is set answer 409
         `FILE_NOT_WRITABLE`. The text is compiled first (400 `COMPILE_ERROR` with `problems`). On a stored version the
-        write makes version `<parent>+edit.N` and moves `latestVersionId` to it unless `ServerStatus.versionPromotion`
-        is `explicit`; on a live package it writes through to the author's directory. The body is a `Report`: `content`,
-        the file's text, and `contentHash` as read; the rest is read-only and ignored. Without `contentHash` it creates
+        write makes version `<root>+edit.N`, where `<root>` is the parent's semantic version without build metadata and
+        `N`
+        counts the edits made from that root, so an edit of `1.4.0+edit.3` is `1.4.0+edit.4` and never has two `+` groups
+        (the parent is `Version.parentVersionId`); it moves `latestVersionId` to it unless
+        `ServerStatus.versionPromotion`
+        is `explicit`; on a live package it writes through to the author's directory. The body is a `Report` with only
+        its two
+        writable fields: `content`, the file's text, and `contentHash` as read; a body that sends a server-set field
+        (`path`, `title`, `layout`, …) answers 400 `INVALID_REQUEST`. Without `contentHash` it creates
         the file (201; 409 `FILE_EXISTS` if one is there); with it, it replaces the file (200; 409 `CONTENT_CHANGED`,
         with the current hash in `details`, when the file no longer hashes to it). Either way it answers with the report
         as it now reads in the version the write made, which its `resource` and the `Location` header name. A write
         whose `content` equals the file's current text answers 200 with the current report and makes no version, so a
-        retried write that already succeeded is a no-op; it also accepts `Idempotency-Key`. Only the package's latest
-        version (named directly, as `latest`, or `live`) can be written: any other answers 409 `VERSION_NOT_LATEST`, so
-        a write never forks an older version or moves `latestVersionId` back. An archived version answers 410
-        `VERSION_ARCHIVED`, which comes before any 409, as on every content operation. Loads the version when it is not
-        loaded (a hydrate when the compiled-model store has an entry)."
+        retried write that already succeeded is a no-op; it also accepts `Idempotency-Key`. Only the writable version can
+        be written: the tip of the edit chain from `latest`, which is `latest` itself, or under `versionPromotion:
+        explicit` the newest report-write version descending from it that has no child (`live` on a live package). The
+        write's compare-and-swap is on that tip, so a second save chains onto the first, and of two concurrent writes on
+        one parent the second answers 409 `VERSION_NOT_LATEST` instead of forking a sibling; any other version answers
+        409 `VERSION_NOT_LATEST` too, so a write never forks an older version or moves `latestVersionId` back. The checks
+        run in this order: 410 `VERSION_ARCHIVED`; `content` equal to the current text, a 200 no-op; 409 `FILE_EXISTS`;
+        409 `CONTENT_CHANGED`; 409 `VERSION_NOT_LATEST`. A replace whose file is gone from the writable version answers
+        409 `CONTENT_CHANGED` with no `currentContentHash`, and a write without `contentHash` recreates it. Loads the
+        version when it is not loaded (a hydrate when the compiled-model store has an entry)."
       parameters:
         - $ref: "#/components/parameters/idempotencyKey"
         - $ref: "#/components/parameters/requestId"
@@ -2033,7 +2122,8 @@ paths:
         - data-files
       summary: List the version's embedded data files
       description: Under `profile=light`, the first list read starts the deferred row counts; a file not counted yet says
-        `rowCountStatus` `deferred`. Loads the version when it is not loaded (a hydrate when the compiled-model store
+        `rowCountStatus` `not_started` or `in_progress`, and the 200 carries `Retry-After`. Loads the version when it is
+        not loaded (a hydrate when the compiled-model store
         has an entry).
       parameters:
         - $ref: "#/components/parameters/limit"
@@ -2048,6 +2138,8 @@ paths:
               schema:
                 $ref: "#/components/schemas/DataFileList"
           headers:
+            Retry-After:
+              $ref: "#/components/headers/RetryAfter"
             X-Request-Id:
               $ref: "#/components/headers/RequestId"
             ETag:
@@ -2461,7 +2553,8 @@ paths:
       summary: Read the state of the version's discovery index
       description: Never loads a version. Until the derived store is keyed by content, the state is the package's latest
         loaded version's, whatever the path names; `versionId` and `resource` name the version whose state it is. With
-        no version of the package loaded, `status` is `lexical` and `versionId` is absent. An archived path version is
+        no version of the package loaded, `status` is `not_started` and `versionId` is absent. An archived path version
+        is
         no exception, since the state never came from it.
       responses:
         "200":
@@ -2471,6 +2564,8 @@ paths:
               schema:
                 $ref: "#/components/schemas/DiscoveryIndex"
           headers:
+            Retry-After:
+              $ref: "#/components/headers/RetryAfter"
             X-Request-Id:
               $ref: "#/components/headers/RequestId"
             ETag:
@@ -2514,6 +2609,8 @@ paths:
               schema:
                 $ref: "#/components/schemas/BuildPlan"
           headers:
+            Retry-After:
+              $ref: "#/components/headers/RetryAfter"
             X-Request-Id:
               $ref: "#/components/headers/RequestId"
             ETag:
@@ -2694,6 +2791,13 @@ paths:
           style: form
           explode: false
           description: Only runs in one of these statuses.
+        - name: callerRunId
+          in: query
+          schema:
+            type: string
+          description: Only the run the caller created with this `callerRunId`. A `callerRunId` is unique within the
+            package,
+            so the page holds at most one run.
         - $ref: "#/components/parameters/requestId"
         - $ref: "#/components/parameters/ifNoneMatch"
       responses:
@@ -2733,9 +2837,15 @@ paths:
         - $ref: "#/components/parameters/idempotencyKey"
         - $ref: "#/components/parameters/requestId"
       description: "Loads the version first if it is not loaded, so a run (a re-run of a failed version among them) needs no
-        separate load. 409 `RUN_ACTIVE` while another run is building the slot; 409 `TABLE_OWNED_ELSEWHERE` when an
-        instruction names a table another package or slot owns; 409 `VERSION_NOT_LATEST` for a run with `mode: auto` of
-        a non-latest version under `scope: package`."
+        separate load. With `buildInstructions`, `versionId` must be a concrete version id, so the run is pinned to the
+        plan it was written from: `latest` or `live` answers 400 `INVALID_REQUEST` with `details.field: versionId`, and
+        an
+        instruction whose `sourceEntityId` the version's build plan does not have answers 400 `INVALID_REQUEST` naming it
+        in `details.field`. A `callerRunId` is unique within the package: one already taken answers 409 `CONFLICT` with
+        `details.field: callerRunId`, and `list-runs?callerRunId=` finds the run that holds it. 409 `RUN_ACTIVE` while
+        another run is building the slot; 409 `TABLE_OWNED_ELSEWHERE` when an instruction names a table another package
+        or slot owns (with no `details`: the answer does not name the holder, which the server logs); 409
+        `VERSION_NOT_LATEST` for a run with `mode: auto` of a non-latest version under `scope: package`."
       requestBody:
         required: true
         content:
@@ -2765,7 +2875,7 @@ paths:
         "409":
           $ref: "#/components/responses/Conflict"
           description: "The request conflicts with the state of what it names. `reason`: `RUN_ACTIVE`, `TABLE_OWNED_ELSEWHERE`,
-            `VERSION_NOT_LATEST`, `IDEMPOTENCY_KEY_REUSED`."
+            `VERSION_NOT_LATEST`, `CONFLICT`, `IDEMPOTENCY_KEY_REUSED`."
         "410":
           $ref: "#/components/responses/Gone"
         "413":
@@ -2803,6 +2913,8 @@ paths:
         "200":
           description: The run.
           headers:
+            Retry-After:
+              $ref: "#/components/headers/RetryAfter"
             X-Request-Id:
               $ref: "#/components/headers/RequestId"
             ETag:
@@ -2885,9 +2997,10 @@ paths:
       tags:
         - materialization
       summary: Delete a settled run's record
-      description: "Deletes the record only: no table is dropped, whichever versions its manifest's tables serve. Dropping a
-        table the caller no longer wants is the caller's, through the connection's own SQL, and there is no option to
-        have the server do it. An unsettled run (`pending` or `running`) answers 409 `RUN_ACTIVE`; cancel it first."
+      description: "Deletes the record only. Deleting a run never drops a table. To drop a table no version serves, use
+        `drop-table`, before deleting the record of the run that built it. An unsettled run (`pending` or `running`)
+        answers 409 `RUN_ACTIVE`; cancel it first. A run that any version's binding names (a `Binding.runId`) answers 409
+        `RUN_BOUND`, so `Binding.runId` always resolves: delete a run's record once nothing it built is served."
       parameters:
         - $ref: "#/components/parameters/ifMatch"
         - $ref: "#/components/parameters/requestId"
@@ -2905,7 +3018,7 @@ paths:
           description: "Something the request names does not exist. `reason`: `NOT_FOUND`."
         "409":
           $ref: "#/components/responses/Conflict"
-          description: "The request conflicts with the state of what it names. `reason`: `RUN_ACTIVE`."
+          description: "The request conflicts with the state of what it names. `reason`: `RUN_ACTIVE`, `RUN_BOUND`."
         "412":
           $ref: "#/components/responses/PreconditionFailed"
         "429":
@@ -2957,6 +3070,72 @@ paths:
       parameters:
         - $ref: "#/components/parameters/requestId"
         - $ref: "#/components/parameters/ifNoneMatch"
+
+
+  /environments/{environmentName}/packages/{packageName}/tables/{tableId}:
+    parameters:
+      - $ref: "#/components/parameters/environmentName"
+      - $ref: "#/components/parameters/packageName"
+      - $ref: "#/components/parameters/tableId"
+    delete:
+      operationId: drop-table
+      tags:
+        - materialization
+      summary: Drop a table the package's runs built
+      description: "Drops one table a run of this package built and no version serves, addressed by its `tableId`: a
+        `database` table in one of the package's connections or a `storage` table in one of the environment's
+        destinations, with the staging and backup copies a crashed build can leave beside it. Deleting a run never drops
+        a table; this is the drop a caller makes before deleting the record of the run that built it. It works where the
+        connection's own SQL cannot drop (a locked-down DuckDB, DuckLake or MotherDuck connection runs no DDL).
+
+
+        Publisher does not authenticate the caller: the gateway decides who may call this route, and should allow only
+        the
+        operator that owns the package's materialization lifecycle. The route refuses any table it cannot prove is this
+        package's and unused, under the package's run lock, so no run starts, commits or claims the table between the
+        checks and the drop. 204 when the table was dropped, or is already gone while a run record of the package still
+        records it, so a retried drop succeeds. 404 `TABLE_NOT_FOUND` when no run record of the package records the
+        `tableId`. 409 `RUN_ACTIVE` while a run of the package is active; retry once it settles. 409 `TABLE_IN_USE` when
+        a
+        version binds the table (a `Binding.tableId`), a committed run other than the one that recorded it names it, or
+        the warehouse refused because other objects depend on it. 409 `TABLE_OWNED_ELSEWHERE` when the table carries
+        another package's ownership mark, or the warehouse refused because the connection may not drop it or the name
+        holds something other than a table; the answer carries no `details` and does not name the holder, which the
+        server logs. 409 `TABLE_OWNERSHIP_UNVERIFIED` when the table carries no ownership mark naming this package and
+        its
+        current location, and who holds the name cannot be proven from the run records."
+      parameters:
+        - $ref: "#/components/parameters/requestId"
+      responses:
+        "204":
+          description: Dropped, or already gone while a run record of the package records it.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+          description: "The request is malformed, or the Malloy or SQL in it was refused. `reason`: `INVALID_REQUEST`."
+        "404":
+          $ref: "#/components/responses/NotFound"
+          description: "Something the request names does not exist. `reason`: `NOT_FOUND`, `TABLE_NOT_FOUND`."
+        "409":
+          $ref: "#/components/responses/Conflict"
+          description: "The request conflicts with the state of what it names. `reason`: `RUN_ACTIVE`, `TABLE_IN_USE`,
+            `TABLE_OWNED_ELSEWHERE`, `TABLE_OWNERSHIP_UNVERIFIED`."
+        "424":
+          $ref: "#/components/responses/DependencyFailed"
+          description: "Something the operation depends on failed, so nothing changed. Fix the dependency; retrying fails the same
+            way. `reason`: `CONNECTION_AUTH_FAILED`, `CONNECTION_NOT_FOUND`."
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/Internal"
+        "502":
+          $ref: "#/components/responses/DatabaseUnreachable"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+        "504":
+          $ref: "#/components/responses/GatewayTimeout"
 
 
   /environments/{environmentName}/connections/{connectionName}/schemas:
@@ -3496,6 +3675,16 @@ components:
         type: string
         minLength: 1
       description: "The run's id, as `Run.runId` returned it: opaque, assigned by the server."
+    tableId:
+      name: tableId
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+      description: "A built table's stable identity, as a run manifest entry's `tableId` (or a `Binding.tableId`)
+        returned
+        it: opaque, assigned by the server."
     agentName:
       name: agentName
       in: path
@@ -3518,8 +3707,10 @@ components:
         $ref: "#/components/schemas/PathPattern"
       x-multi-segment: true
       description: "A file's version-relative path, as the listing returned it. It spans the remaining segments: send each `/`
-        literally, never as `%2F`, and percent-encode only within a segment (a space as `%20`). An action's `:verb`
-        follows the last segment."
+        literally and percent-encode only within a segment (a space as `%20`). The server decodes `%2F` within `{path}`
+        as
+        `/` and accepts both spellings, since most generated clients encode a path parameter whole; clients should send
+        `/` literally. An action's `:verb` follows the last segment."
     dryRun:
       name: dryRun
       in: query
@@ -3643,7 +3834,10 @@ components:
       schema:
         type: string
     RetryAfter:
-      description: Seconds to wait before retrying.
+      description: "Seconds to wait before retrying: on a 429 or 503, before sending the request again; on a 200 that
+        reports
+        an unsettled state (a run `pending` or `running`, a version `in_progress`, a build plan, discovery index or row
+        count `not_started` or `in_progress`), before reading again. A hint; the state may settle sooner."
       schema:
         type: integer
         minimum: 0
@@ -3654,9 +3848,16 @@ components:
       schema:
         type: string
     Location:
-      description: "The resource the write made, relative to the API's base path as `resource` is and equal to the body's
-        `resource`: the created resource, or for the report write the report in the version the write made, which on a
-        stored version is not the URL written to."
+      description: "The resource the write made, as a relative reference resolved against the request URI (RFC 9110
+        §10.2.2),
+        so it is right behind any gateway prefix: on a create, the collection's last segment and the new id
+        (`connections/wh` on `POST …/environments/acme/connections`, `versions/1.4.0` on `POST
+        …/packages/sales/versions`).
+        On the report write, the report in the version the write made, which on a stored version is not the URL written
+        to: `PUT …/versions/1.4.0/reports/dir/q3.malloy` that makes `1.4.0+edit.1` answers
+        `../../../1.4.0+edit.1/reports/dir/q3.malloy`. The body's `resource` names the same resource relative to the
+        API's
+        base; it is the stable key, and `Location` is for following."
       schema:
         type: string
 
@@ -3945,11 +4146,86 @@ components:
             - s3
             - azure
         bigquery:
-          $ref: "#/components/schemas/BigqueryConnection"
+          type: object
+          description: "A BigQuery project attached read-only. The attach authenticates only with a service account key,
+            whose
+            project it attaches; impersonation, a byte cap and a timeout are not honoured here, so the block does not
+            carry them."
+          required:
+            - serviceAccountKeyJson
+          properties:
+            serviceAccountKeyJson:
+              type: string
+              writeOnly: true
+              description: JSON string containing Google Cloud service account credentials. Required on create.
+          additionalProperties: false
         snowflake:
-          $ref: "#/components/schemas/SnowflakeConnection"
+          type: object
+          description: "A Snowflake database attached read-only. The attach authenticates only with a password (no key
+            pair), so
+            `password` is required on create."
+          required:
+            - account
+            - username
+          properties:
+            account:
+              type: string
+            username:
+              type: string
+            password:
+              type: string
+              writeOnly: true
+              description: Required on create.
+            database:
+              type: string
+            warehouse:
+              type: string
+            schema:
+              type: string
+            role:
+              type: string
+          additionalProperties: false
         postgres:
-          $ref: "#/components/schemas/PostgresConnection"
+          type: object
+          description: "A Postgres database attached read-only: `PostgresConnection`'s fields but `proxy`, which an
+            attach does not honour."
+          properties:
+            authMethod:
+              type: string
+              enum:
+                - password
+                - connection_string
+              default: password
+              description: As on `PostgresConnection`.
+            host:
+              type: string
+            port:
+              type: integer
+              minimum: 1
+              maximum: 65535
+            database:
+              type: string
+            user:
+              type: string
+            password:
+              type: string
+              writeOnly: true
+            connectionString:
+              type: string
+              writeOnly: true
+            sslmode:
+              type: string
+              enum:
+                - disable
+                - no-verify
+                - verify-ca
+                - verify-full
+              description: As on `PostgresConnection`; ignored when `connectionString` is set.
+            statementTimeoutMs:
+              type: integer
+              minimum: 1
+              maximum: 2147483647
+          additionalProperties: false
         gcs:
           $ref: "#/components/schemas/GcsConnection"
         s3:
@@ -3966,12 +4242,15 @@ components:
       description: Azure Data Lake Storage (ADLS Gen2) or Blob Storage connection configuration. Supports `https://`,
         `http://`, `abfss://` and `az://` URLs.
       properties:
-        authType:
+        authMethod:
           type: string
           enum:
             - service_principal
             - sas_token
-          description: Authentication method for Azure Storage
+          description: "How the connection authenticates to Azure Storage: `service_principal` with `tenantId`,
+            `clientId` and
+            `clientSecret`, or `sas_token` with `sasToken`. A credential of the other method answers 400
+            `INVALID_REQUEST`; changing it clears the other method's withheld fields."
         tenantId:
           type: string
           description: Azure AD tenant ID (required for service_principal)
@@ -3987,7 +4266,8 @@ components:
           description: Azure Storage account name, for `service_principal` auth. Required only when `fileUrl` names no account.
         fileUrl:
           type: string
-          description: The Azure file URL to query, without a SAS token, for either `authType`. Supports a single file, a
+          description: The Azure file URL to query, without a SAS token, for either `authMethod`. Supports a single
+            file, a
             directory glob (`*.ext`) or a recursive (`**`) pattern, for example
             `https://account.blob.core.windows.net/container/path/**`. It reads back as sent, so a `sas_token`
             connection shows where it reads.
@@ -3997,7 +4277,7 @@ components:
           description: The SAS token (the query string after `?` in a SAS URL), for `sas_token` auth. Write-only; required on
             create for `sas_token`.
       required:
-        - authType
+        - authMethod
       additionalProperties: false
 
     BigqueryConnection:
@@ -4037,6 +4317,7 @@ components:
           description: Copy table and column descriptions from BigQuery onto the schema as `#(dbmeta)` annotations.
         queryTimeoutMs:
           type: integer
+          minimum: 1
           description: Query timeout in milliseconds.
       additionalProperties: false
 
@@ -4182,17 +4463,36 @@ components:
         status:
           type: string
           enum:
+            - not_started
+            - in_progress
             - ready
-            - empty
-            - deferred
-            - unavailable
-          description: "`ready`: the plan is present. `empty`: the version declares no persist source. `deferred`: the version was
-            published with `profile=light` and the plan is being derived now that it was read; read again.
-            `unavailable`: the plan could not be derived at load (see `error`); reload the version to derive it again."
+            - failed
+          description: "The derived-state words `DiscoveryIndex.status`, `DataFile.rowCountStatus` and
+            `VersionStatus.status`
+            share. `ready`: the plan is present; a version that declares no persist source has a `ready` plan with no
+            `sources`. `not_started`: the version was published with `profile=light` and nothing has read its plan; a
+            read
+            starts the derivation and answers `in_progress`. `in_progress`: the plan is being derived; the 200 carries
+            `Retry-After`, so read again then. `failed`: the plan could not be derived at load (see `error`); `:reload`
+            derives it again."
         error:
-          $ref: "#/components/schemas/EmbeddedError"
-          description: Why the plan is `unavailable`.
           readOnly: true
+          description: Why the plan is `failed`.
+          allOf:
+            - $ref: "#/components/schemas/EmbeddedError"
+            - type: object
+              required:
+                - reason
+              properties:
+                reason:
+                  type: string
+                  enum:
+                    - VERSION_LOAD_FAILED
+                    - CONNECTION_AUTH_FAILED
+                  description: "The reasons `Run.error` uses that can stop a plan: `VERSION_LOAD_FAILED`, the version's
+                    content
+                    could not be read or compiled; `CONNECTION_AUTH_FAILED`, a connection the plan reads refused its
+                    credentials."
         sources:
           type: object
           description: "The plan per persisted source, keyed by its `sourceEntityId`: the source's content-addressed build
@@ -4296,21 +4596,18 @@ components:
       type: object
       description: The document a compiled text describes, in the shape it serves once saved. Present only when the text
         carries a model-level `## artifact` tag and compiled far enough to read.
-      required:
-        - layout
-        - title
-        - tiles
-        - givens
-        - preamble
       properties:
         layout:
+          description: Set by the server; every read carries it.
           $ref: "#/components/schemas/ReportLayout"
           readOnly: true
         title:
           type: string
-          description: "The report's title: the `## artifact` tag's title, else the file's `#\"` doc comment, else the file's name."
+          description: "Set by the server; every read carries it. The report's title: the `## artifact` tag's title,
+            else the file's `#\"` doc comment, else the file's name."
           readOnly: true
         tiles:
+          description: Set by the server; every read carries it.
           type: array
           items:
             $ref: "#/components/schemas/ReportTile"
@@ -4331,13 +4628,14 @@ components:
           readOnly: true
         givens:
           type: array
-          description: The control row, one entry per given the tiles read.
+          description: Set by the server; every read carries it. The control row, one entry per given the tiles read.
           items:
             $ref: "#/components/schemas/Given"
           readOnly: true
         preamble:
           type: string
-          description: "The text a tile's `run:` is appended to when it is run or exported on its own: the document's definitions,
+          description: "Set by the server; every read carries it. The text a tile's `run:` is appended to when it is run
+            or exported on its own: the document's definitions,
             in file order. Never an `import`, a `##!` flag or a `given:`, which the model supplies, and never a
             definition the caller may not read. Empty when the document defines nothing."
           readOnly: true
@@ -4392,9 +4690,8 @@ components:
             parses as a continuation of the model's last statement, is refused with a 400, because the check reads the
             submitted text by itself. Wrap a view body in a top-level query:, or a field in a throwaway source: check is
             <source> extend { … }. Compiling at "append" also requires the model named in the URL to load: a model that
-            does not compile is a 400 carrying that model's own problems, and a model that does not exist is a 400 that
-            deliberately says only that it could not be loaded. An invalid scope value is rejected with a 400 naming the
-            valid set.
+            does not compile is a 400 carrying that model's own problems. An invalid scope value is rejected with a 400
+            naming the valid set. These per-scope rules are checked by the server, not encoded in the schema.
 
             "append" text that carries a model-level `## artifact` tag is a document, which other viewers run, and is
             also refused with a 400 for `# image`, `# link`, markup in a `# label`, `@env.` in an annotation, an
@@ -4467,17 +4764,16 @@ components:
       description: "A warehouse handle the models read. Builds write to destinations, which are not connections
         (`Environment.destinations`). Credential fields are write-only: accepted on create and update, never returned,
         and named in `withheldFields` so an editor can tell a set credential from an absent one. The dialect block named
-        by `type` (`postgres` for `type: postgres`, …) carries the configuration; a block rejects a field it does not
-        define."
+        by `type` (`postgres` for `type: postgres`, …) carries the configuration; the envelope and every block reject a
+        field they do not define, and a block other than the one `type` names answers 400 `INVALID_REQUEST` naming it in
+        `details.field`. The rule is checked by the server, not encoded as a union."
       required:
-        - resource
         - name
         - type
-        - createdAt
-        - updatedAt
-        - revision
+      additionalProperties: false
       properties:
         resource:
+          description: Set by the server; every read carries it.
           $ref: "#/components/schemas/ResourcePath"
           readOnly: true
         name:
@@ -4537,8 +4833,6 @@ components:
             front; Publisher does not authenticate it. The server's own context (`class`, `environment`, `query_id`, …)
             still wins over it. Same contract and 20-property budget as `queryMetadata`; a write that violates the
             contract answers 400."
-        proxy:
-          $ref: "#/components/schemas/ConnectionProxy"
         postgres:
           $ref: "#/components/schemas/PostgresConnection"
         bigquery:
@@ -4562,15 +4856,18 @@ components:
         publisher:
           $ref: "#/components/schemas/PublisherConnection"
         revision:
+          description: Set by the server; every read carries it.
           $ref: "#/components/schemas/Revision"
           readOnly: true
         createdAt:
           type: string
           format: date-time
           readOnly: true
-          description: "For the version's `duckdb` sandbox (`scope: version`), the version's own, or on `live`, which has no
+          description: "Set by the server; every read carries it. For the version's `duckdb` sandbox (`scope: version`),
+            the version's own, or on `live`, which has no
             record, the package's; likewise `updatedAt` and `revision`."
         updatedAt:
+          description: Set by the server; every read carries it.
           type: string
           format: date-time
           readOnly: true
@@ -4594,11 +4891,15 @@ components:
 
     ConnectionProxy:
       type: object
-      description: Optional network proxy through which the connection is reached. Applies to any connection type whose
-        database is not directly reachable (e.g. behind a bastion). The proxy is established below the driver, so the
-        driver connects to a local endpoint transparently. Modeled as a discriminated union on `type` so additional
-        proxy mechanisms can be added later. The trust control is host-key pinning (fail-closed); a proxy is authorized
-        by whoever configures the connection, not by an env-flag gate.
+      description: "Optional network proxy through which a Postgres connection is reached when its database is not
+        directly
+        reachable (behind a bastion). Only `PostgresConnection` carries it, the one type the server proxies, and only
+        with
+        `host` and `port`: a `proxy` beside `connectionString` answers 400 `INVALID_REQUEST`. The proxy is established
+        below the driver, so the driver connects to a local endpoint transparently. `type` names the mechanism, so
+        another
+        can be added later. The trust control is host-key pinning (fail-closed); a proxy is authorized by whoever
+        configures the connection, not by an env-flag gate."
       required:
         - type
       properties:
@@ -4637,13 +4938,12 @@ components:
     ContentChangedDetails:
       type: object
       description: "`details` of a `CONTENT_CHANGED`: the hash the file has now. Read the report again, merge, and write with
-        this `contentHash`."
-      required:
-        - currentContentHash
+        this `contentHash`; when the file is gone from the writable version, `currentContentHash` is absent, and the
+        write that recreates it sends no `contentHash`."
       properties:
         currentContentHash:
           type: string
-          description: SHA-256 (hex) of the file's current text.
+          description: SHA-256 (hex) of the file's current text. Absent when the file no longer exists.
       readOnly: true
 
     Cursor:
@@ -4753,23 +5053,28 @@ components:
           description: The file's format, from its extension (`.jsonl` and `.ndjson` are `ndjson`).
         rowCount:
           type: integer
-          description: Rows in the file. Absent while `rowCountStatus` is `deferred`, and when `error` is present.
+          format: int64
+          description: Rows in the file. Absent until `rowCountStatus` is `ready`.
         rowCountStatus:
           type: string
           enum:
+            - not_started
+            - in_progress
             - ready
-            - deferred
+            - failed
           default: ready
-          description: "`ready`: `rowCount` is counted. `deferred`: the version was published with `profile=light` and the file is
-            not counted yet; the count starts on this list read, so read again. The same word as `BuildPlan.status` and
-            `DiscoveryIndex.status`."
+          description: "The derived-state words `BuildPlan.status` shares. `ready`: `rowCount` is counted.
+            `not_started`: the
+            version was published with `profile=light` and the file is not counted yet; this list read starts the count.
+            `in_progress`: the count is running; the 200 carries `Retry-After`, so read again then. `failed`: the file
+            could not be read (`error` says why); `rowCount` and `columns` are absent."
         columns:
           type: array
           items:
             $ref: "#/components/schemas/Column"
         error:
           $ref: "#/components/schemas/EmbeddedError"
-          description: Present when the file could not be read; `rowCount` and `columns` are then absent.
+          description: Present when `rowCountStatus` is `failed`.
           readOnly: true
         versionId:
           $ref: "#/components/schemas/VersionId"
@@ -4794,10 +5099,13 @@ components:
       type: object
       description: "Where `#@ persist storage=<name>` builds write and their tables are served from. Not a connection: models
         cannot name it, the connection routes cannot reach it, and its name is independent of the connections'.
-        Credential fields are write-only and named in `withheldFields`, as on a connection."
+        Credential fields are write-only and named in `withheldFields`, as on a connection. The envelope rejects a field
+        it
+        does not define, and a block other than the one `type` names answers 400 `INVALID_REQUEST`."
       required:
         - name
         - type
+      additionalProperties: false
       properties:
         name:
           x-immutable: true
@@ -4823,7 +5131,8 @@ components:
       description: The state of a semantic discovery index, which `get_context` ranks against. Until the derived store is
         keyed by content, it is the package's latest loaded version's index whatever the path names, and `versionId` and
         `resource` name that version, which may differ from the path. With no version of the package loaded, `status` is
-        `lexical` and `versionId` is absent.
+        `not_started` and `versionId` is absent. A build starts when a version loads (for a `profile=light` publish, on
+        the index's first use), and `:reload` on the version starts a failed one again.
       required:
         - resource
         - status
@@ -4834,23 +5143,26 @@ components:
         status:
           type: string
           enum:
-            - lexical
-            - deferred
-            - indexing
+            - not_started
+            - in_progress
             - ready
             - failed
-          description: "`lexical`: retrieval ranks lexically, with no semantic index; the steady state when no embedding provider
-            is configured, the state with no version loaded, and the state after a build that stopped short (`error`
-            says why). `deferred`: the version was published with `profile=light` and its build starts on first use;
-            read again. `indexing`: a build is in progress. `ready`: the semantic index serves. `failed`: the build
-            failed (`error` says why)."
+          description: "The derived-state words `BuildPlan.status` shares. `not_started`: no version is loaded, or the
+            version was
+            published with `profile=light` and nothing has used the index yet; retrieval ranks lexically.
+            `in_progress`: a
+            build is running and retrieval ranks lexically meanwhile; the 200 carries `Retry-After`. `ready`: the index
+            serves; with no embedding provider configured it is lexical, its steady state, and `builtAt` is absent.
+            `failed`: the build failed or stopped short (`error` says why) and retrieval ranks lexically; `:reload` on
+            the
+            version builds it again, or wait for `retryAt`."
         builtAt:
           type: string
           format: date-time
           description: When the semantic index last finished building. Absent when none has.
           readOnly: true
         error:
-          description: Present when `status` is `failed`, or when the last build stopped short and the index serves `lexical`.
+          description: Present when `status` is `failed`.
           allOf:
             - $ref: "#/components/schemas/EmbeddedError"
             - type: object
@@ -4862,8 +5174,10 @@ components:
                   enum:
                     - INDEX_COOLDOWN
                     - PROVIDER_ERROR
-                  description: "`INDEX_COOLDOWN`: the embedding provider is rate-limiting; retry at `retryAt`. `PROVIDER_ERROR`: the
-                    provider failed. (The index has no entity cap: `retrieval.indexing.maxEntities` no longer does
+                  description: "`INDEX_COOLDOWN`: the embedding provider is rate-limiting; the server builds again at
+                    `retryAt`,
+                    or `:reload` starts it sooner. `PROVIDER_ERROR`: the provider failed. (The index has no entity
+                    cap: `retrieval.indexing.maxEntities` no longer does
                     anything, so there is no reason for exceeding one.)"
                 retryAt:
                   type: string
@@ -4904,12 +5218,54 @@ components:
     DucklakeCatalog:
       type: object
       required:
-        - postgres
-      description: The database that holds a DuckLake catalog's metadata; today a Postgres database.
+        - type
+      description: "The database that holds a DuckLake catalog's metadata. `type` names it and the block of that name
+        configures it; today the one type is `postgres`, and another is an additive value with a block of its own. A
+        block
+        other than the one `type` names answers 400 `INVALID_REQUEST`."
       properties:
+        type:
+          type: string
+          enum:
+            - postgres
+          description: The kind of database that holds the catalog's metadata.
         postgres:
-          $ref: "#/components/schemas/PostgresConnection"
-          description: The Postgres database holding the catalog's metadata.
+          type: object
+          description: "The Postgres database holding the catalog's metadata: `PostgresConnection`'s fields but
+            `statementTimeoutMs` and `proxy`, which a catalog attach does not honour."
+          properties:
+            authMethod:
+              type: string
+              enum:
+                - password
+                - connection_string
+              default: password
+              description: As on `PostgresConnection`.
+            host:
+              type: string
+            port:
+              type: integer
+              minimum: 1
+              maximum: 65535
+            database:
+              type: string
+            user:
+              type: string
+            password:
+              type: string
+              writeOnly: true
+            connectionString:
+              type: string
+              writeOnly: true
+            sslmode:
+              type: string
+              enum:
+                - disable
+                - no-verify
+                - verify-ca
+                - verify-full
+              description: As on `PostgresConnection`; ignored when `connectionString` is set.
+          additionalProperties: false
         metadataSchema:
           type: string
           description: >-
@@ -4980,12 +5336,13 @@ components:
           $ref: "#/components/schemas/DucklakeCatalog"
         destinationSchema:
           type: string
+          x-immutable: true
           description: "The schema a destination builds its tables into and binds them from, so an orchestrator can keep the
             tables it owns apart from a catalog's `main` (where people put their own). Absent means `main`, the
             pre-existing layout. The schema must already exist in the catalog: a build does not create it. A `#@ persist
             name=` that already names a schema keeps that schema. Must be a plain identifier (`[A-Za-z_][A-Za-z0-9_]*`).
-            Serving reads the schema configured now, not the one a table was built into, so changing it on a destination
-            re-points every bound table at once: rebuild or rebind as you change it."
+            Set on create and never changed, since serving reads it to find every bound table: a write that changes it
+            answers 400 `INVALID_REQUEST`, and a new schema is a new destination."
       additionalProperties: false
 
     DucklakeStorage:
@@ -5034,10 +5391,14 @@ components:
     EncodedGivenValues:
       type: object
       description: "Given values encoded as strings, the form that survives a URL: a map of given name to value. Every value
-        is a string whatever the given's type, and a `filter<…>` value is the filter body (`WN`), not the `f'…'` literal
-        (`f'WN'`). `Given.default` differs: it is the default as Malloy source, exactly as the model writes it.
-        `Report.startingGivens` and `CompiledDocument.startingGivens` carry this shape, URL parameters override it, and
-        the result is decoded against the declarations into `GivenValues`."
+        is a string whatever the given's type: a scalar is its text (`2003`, `true`, `2024-01-01`); a `filter<…>` value
+        is
+        the filter body (`WN`), not the `f'…'` literal (`f'WN'`); an array (`T[]`) or a record (`{name: T, …}`) is its
+        JSON
+        text (`[\"a\",\"b\"]`, `{\"from\":\"2024-01-01\"}`); and `null` is the literal `null`, so a `string` given whose
+        value is the word null spells it quoted, `\"null\"`. `Given.default` is in this form too. `Report.startingGivens`
+        and `CompiledDocument.startingGivens` carry this shape, URL parameters override it, and the result is decoded
+        against the declarations into `GivenValues`."
       additionalProperties:
         type: string
 
@@ -5189,13 +5550,10 @@ components:
       type: object
       description: A namespace for packages and connections; the unit of tenancy.
       required:
-        - resource
         - name
-        - createdAt
-        - updatedAt
-        - revision
       properties:
         resource:
+          description: Set by the server; every read carries it.
           $ref: "#/components/schemas/ResourcePath"
           readOnly: true
         name:
@@ -5222,11 +5580,13 @@ components:
             $ref: "#/components/schemas/Destination"
         revision:
           $ref: "#/components/schemas/Revision"
-          description: The environment's revision. It advances on any change to the environment's own fields, its connections or
+          description: Set by the server; every read carries it. The environment's revision. It advances on any change
+            to the environment's own fields, its connections or
             its destinations, whichever route made it, so `If-None-Match` never answers 304 over a changed connection
             and an `If-Match` push fails with 412 after a concurrent connection edit.
           readOnly: true
         createdAt:
+          description: Set by the server; every read carries it.
           type: string
           format: date-time
           readOnly: true
@@ -5234,7 +5594,8 @@ components:
           type: string
           format: date-time
           readOnly: true
-          description: When the environment, one of its connections or one of its destinations last changed.
+          description: Set by the server; every read carries it. When the environment, one of its connections or one of
+            its destinations last changed.
 
     EnvironmentList:
       type: object
@@ -5306,22 +5667,17 @@ components:
           type: string
           description: What went wrong, for a person.
         details:
-          description: "Typed per reason, for the reasons a client acts on; absent for the rest. `COMPILE_ERROR`:
-            `CompileErrorDetails`. `REVISION_MISMATCH`: `RevisionMismatchDetails`. `INVALID_TRANSITION`:
-            `InvalidTransitionDetails`. `TABLE_OWNED_ELSEWHERE`: `TableOwnedElsewhereDetails`. `INVALID_REQUEST`:
-            `InvalidRequestDetails`, when one field is at fault. `RESULT_TOO_LARGE`: `ResultTooLargeDetails`.
-            `CONTENT_CHANGED`: `ContentChangedDetails`. `VERSION_LOAD_FAILED`: `VersionLoadFailedDetails`. Pick the
-            shape by `reason`; the shapes are not mutually exclusive (`COMPILE_ERROR` and `VERSION_LOAD_FAILED` share
-            one), so the union is `anyOf`."
-          anyOf:
-            - $ref: "#/components/schemas/CompileErrorDetails"
-            - $ref: "#/components/schemas/RevisionMismatchDetails"
-            - $ref: "#/components/schemas/InvalidTransitionDetails"
-            - $ref: "#/components/schemas/TableOwnedElsewhereDetails"
-            - $ref: "#/components/schemas/InvalidRequestDetails"
-            - $ref: "#/components/schemas/ResultTooLargeDetails"
-            - $ref: "#/components/schemas/ContentChangedDetails"
-            - $ref: "#/components/schemas/VersionLoadFailedDetails"
+          type: object
+          description: "Present for the reasons a client acts on, absent for the rest; its shape is the named component
+            for the
+            `reason`, so a client reads `reason` first and then reads `details` as that component. `COMPILE_ERROR`:
+            `CompileErrorDetails`. `VERSION_LOAD_FAILED`: `VersionLoadFailedDetails`. `REVISION_MISMATCH`:
+            `RevisionMismatchDetails`. `INVALID_TRANSITION`: `InvalidTransitionDetails`. `INVALID_REQUEST`:
+            `InvalidRequestDetails`, when one field is at fault. `CONFLICT`: `InvalidRequestDetails`, when one field's
+            value is taken. `RESULT_TOO_LARGE`: `ResultTooLargeDetails`. `CONTENT_CHANGED`: `ContentChangedDetails`. Any
+            other reason, a new one included, carries no `details` a client should read. The schema is a plain object,
+            not
+            a union, so every generator reads it the same way."
       readOnly: true
 
     ErrorReason:
@@ -5369,7 +5725,11 @@ components:
         - FILE_EXISTS
         - FILE_NOT_WRITABLE
         - RUN_ACTIVE
+        - RUN_BOUND
+        - TABLE_IN_USE
         - TABLE_OWNED_ELSEWHERE
+        - TABLE_OWNERSHIP_UNVERIFIED
+        - PACKAGE_FETCH_FAILED
 
     FieldKind:
       type: string
@@ -5439,7 +5799,11 @@ components:
           description: Name as declared in the model
         type:
           type: string
-          description: Rendered Malloy type for the given (e.g. string, number, boolean, date, timestamp, filter<string>)
+          description: "The given's Malloy type, in Malloy's type grammar: `string`, `number`, `boolean`, `date`,
+            `timestamp`,
+            `timestamptz`, an array `T[]`, a record `{name: T, …}`, or `filter<T>` over a scalar `T`. Its value is
+            encoded as
+            `EncodedGivenValues` says."
         annotations:
           type: array
           description: Annotations attached to the given declaration
@@ -5451,9 +5815,11 @@ components:
             control only when it edits a document held as text; a saved report renders it as before. Absent otherwise."
         default:
           type: string
-          description: The given's default value as a Malloy source literal (e.g. `'WN'`, `2003`, `@2024-01-01`, `f'WN'`), exactly
-            as written in the model. Omitted when the given declares no default. Consumers render or prefill it per the
-            given's `type` (e.g. unquote a string literal for a text input).
+          description: "The given's default value in the encoded form `EncodedGivenValues` defines (`WN`, `2003`,
+            `2024-01-01`, a
+            filter's body `WN`, an array's JSON text), so a client prefills a control with it as it is. Omitted when the
+            given declares no default. Not the Malloy source literal the model writes (`'WN'`, `@2024-01-01`, `f'WN'`),
+            which v0 returns."
         label:
           type: string
           description: Display label from the declaration's `# label=` tag
@@ -5524,7 +5890,11 @@ components:
         Values are decoded and must match the declared type: a `number` given
         takes a JSON number, a `date` takes a bare `YYYY-MM-DD` string, a
         `timestamp` an ISO string with no zone, a `timestamptz` a full ISO
-        string. `EncodedGivenValues` is the string-encoded counterpart.
+        string, an array a JSON array, a record a JSON object, and `null` is
+        JSON `null`. `EncodedGivenValues` is the string-encoded counterpart.
+        A missing or ill-typed value for a given the query reads answers 400
+        `INVALID_REQUEST` with `details.field: givens.<name>`, but for a given
+        a gate reads, which answers 403 `ACCESS_DENIED`.
       additionalProperties: true
 
     IdentifierPattern:
@@ -5575,7 +5945,8 @@ components:
 
     IncrementalBoundaryInput:
       description: An `IncrementalBoundary` a previous run reported, with the table it belongs to and the source definition it
-        was measured under, as a caller that owns the ledger sends it back.
+        was measured under, as a caller that owns the ledger sends it back, without `advancedByRunId` and `advancedAt`,
+        which the server sets.
       allOf:
         - $ref: "#/components/schemas/TableAddress"
         - type: object
@@ -5584,9 +5955,19 @@ components:
           properties:
             sourceEntityId:
               type: string
-              description: The source's content address when the boundary was measured, the manifest entry's `sourceEntityId`. A
-                boundary is applied only while it still matches, so it never applies to a table whose definition has
-                moved on.
+              description: "The source's content address when the boundary was measured, the manifest entry's
+                `sourceEntityId`. A
+                boundary applies only when its `sourceEntityId`, `watermark` and `mergeKeys` all match the version's
+                plan for
+                the source (matched by `sourceEntityId`, not by table address); otherwise the source is rebuilt
+                (`refreshed: full`), so a boundary never applies to a table whose definition, watermark or merge keys
+                have
+                moved on. `reseed` overrides it either way."
+            tableId:
+              type: string
+              description: The table's stable identity, the `tableId` of the manifest entry the boundary was reported
+                on, when the
+                caller has it.
         - $ref: "#/components/schemas/IncrementalBoundary"
 
     IndexFingerprint:
@@ -5612,7 +5993,8 @@ components:
 
     InvalidRequestDetails:
       type: object
-      description: "`details` of an `INVALID_REQUEST` that one field caused."
+      description: "`details` of an `INVALID_REQUEST` that one field caused, or of a `CONFLICT` over one field's value (a
+        `callerRunId` already taken in the package)."
       required:
         - field
       properties:
@@ -5656,12 +6038,34 @@ components:
             - type: object
               required:
                 - failedAt
+                - reason
               properties:
                 failedAt:
                   type: string
                   format: date-time
                   readOnly: true
                   description: When the load or compile failed.
+                reason:
+                  type: string
+                  enum:
+                    - COMPILE_ERROR
+                    - CONNECTION_AUTH_FAILED
+                    - CONNECTION_FAILED
+                    - CONNECTION_NOT_FOUND
+                    - INTERNAL
+                  description: "Why, in `ErrorReason`'s words: `COMPILE_ERROR`, a model did not compile (`problems`
+                    locates it);
+                    `CONNECTION_AUTH_FAILED`, `CONNECTION_FAILED` or `CONNECTION_NOT_FOUND`, a connection the load reads
+                    refused its credentials, could not be reached or does not exist; `INTERNAL`, the stored content
+                    could not
+                    be read."
+                problems:
+                  type: array
+                  description: The located diagnostics, as `CompileErrorDetails.problems` carries them. Absent when the
+                    failure has
+                    no location.
+                  items:
+                    $ref: "#/components/schemas/Problem"
         stale:
           type: boolean
           description: The version still serves its last successful compile; `error` says why the newer content did not compile.
@@ -5669,9 +6073,12 @@ components:
 
     ManifestBinding:
       type: object
-      description: Whether a version serves from materialized tables, and from which manifest.
+      description: "Whether a version serves from materialized tables, and what bound them. `Run.bind` says what one
+        run's
+        bind did; this says what the version serves now."
       required:
         - status
+        - boundFrom
       properties:
         status:
           type: string
@@ -5679,12 +6086,29 @@ components:
             - unbound
             - bound
             - bind_failed
-          description: "`unbound`: no manifest, the version serves from the warehouse. `bound`: the configured manifest was
-            applied. `bind_failed`: the configured manifest could not be fetched or bound, so the version keeps serving
-            the binding before, which `location` names."
+          description: "`unbound`: nothing is bound (`boundFrom: none`), and the version serves from the warehouse.
+            `bound`: the
+            tables `boundFrom` names are applied. `bind_failed`: the configured manifest could not be fetched or bound,
+            so
+            the version keeps serving the binding it had, which `boundFrom` with `runId` or `location` names."
+        boundFrom:
+          type: string
+          enum:
+            - run
+            - external
+            - none
+          description: "What the served binding came from. `run`: a committed run of this server bound its manifest
+            (`runId`
+            names it). `external`: a host bound the manifest `Version.manifestLocation` names (`location` names the one
+            applied); it holds until `manifestLocation` is cleared, no run of this server rebinds the version meanwhile,
+            and after a clear the version serves live, through reloads and restarts too. `none`: nothing is bound."
+        runId:
+          type: string
+          description: "The run whose manifest is bound. Present exactly when `boundFrom` is `run`."
         location:
           type: string
-          description: The manifest actually bound, which after a failed rebind differs from the configured one.
+          description: "The manifest actually bound, which after a failed rebind differs from the configured one. Present
+            exactly when `boundFrom` is `external`."
         entryCount:
           type: integer
           description: The entries of the bound manifest the version serves.
@@ -5694,15 +6118,15 @@ components:
       description: "One source a run built, and the table it landed in. An external manifest, the file `manifestLocation`
         names, is a JSON array of these with the read-only fields left out: each entry carries the table's address
         (`tableName`, and `connectionName` or `destinationName`), `sourceEntityId`, `sourceName` and `realization`, and
-        may carry `modelPath`, `kind`, `columns`, `rowCount` and `callerTableId`. The server sets the rest, `tableId`
-        when it binds the file."
+        may carry `modelPath`, `kind`, `columns`, `rowCount` and `callerTableId`, so the file validates against this
+        schema. The server sets the rest, `tableId` when it binds the file; a run's manifest carries `tableId` on every
+        entry."
       allOf:
         - $ref: "#/components/schemas/TableAddress"
         - type: object
           required:
             - sourceEntityId
             - sourceName
-            - tableId
             - realization
           properties:
             sourceEntityId:
@@ -5720,8 +6144,9 @@ components:
             tableId:
               type: string
               readOnly: true
-              description: The physical table's stable identity across the runs that write it; `tableName` is its name in the
-                warehouse.
+              description: "The physical table's stable identity across the runs that write it; `tableName` is its name
+                in the
+                warehouse. Set by the server, and present on every entry of a run's manifest; `drop-table` takes it."
             callerTableId:
               type: string
               description: "The caller's own id for the table, from the build instruction that made it; absent for a run with `mode:
@@ -5735,6 +6160,7 @@ components:
                 $ref: "#/components/schemas/Column"
             rowCount:
               type: integer
+              format: int64
               description: Rows in the built table. Absent when not counted.
             buildDurationMs:
               type: integer
@@ -5742,6 +6168,7 @@ components:
               description: How long this source's build took, in milliseconds.
             scannedBytes:
               type: integer
+              format: int64
               readOnly: true
               description: Warehouse bytes the build scanned, as the backend reported them. Absent when not reported.
             upstreamReuse:
@@ -5785,6 +6212,45 @@ components:
                 bounded range (`delta`), rebuilt it (`full`, which every fallback such as a missing boundary or `reseed`
                 also reports), or applied nothing because the watermark had not moved (`none`; the boundary in
                 `incremental` stays in force). Present exactly when the source refreshes incrementally.'
+            lateRows:
+              type: object
+              readOnly: true
+              required:
+                - count
+                - from
+                - to
+              description: "For a source this run advanced by a delta (`refreshed: delta`): rows the source holds below
+                where the
+                delta started reading that the stored table lacks. A delta reads from the newest watermark the table
+                holds
+                (less the source's `lookback=`), so a row stamped below that, landing after the rows above it were
+                stored,
+                is never read, and the table undercounts it until it is rebuilt. The check reads one window directly
+                below
+                the delta's start, as wide as the delta's own range and capped, for a date or timestamp watermark, at
+                seven
+                days or the source's `lookback=`, whichever is longer. Carried until the source is rebuilt in full: a
+                later
+                delta or skip reports what earlier ones found, with its own findings added to `count` and `to` moved up,
+                so
+                `count` is a lower bound. Absent when nothing was found since the last full rebuild. Best-effort: not run
+                for a pair table, a string watermark or a `storage=` source on BigQuery, and a check that fails or runs
+                past
+                60 seconds leaves what was carried. While the manifest is bound, the version warns with code
+                `persist-incremental-late-rows`. The same field as v0's."
+              properties:
+                count:
+                  type: integer
+                  format: int64
+                  description: Source rows in the window the stored table lacks.
+                from:
+                  type: string
+                  description: "Where the window starts (inclusive), as the watermark's value: ISO-8601 for a date or
+                    timestamp,
+                    decimal text for a number."
+                to:
+                  type: string
+                  description: "Where it ends (exclusive): the delta's lower bound, spelled as `from` is."
 
     MaterializationConfig:
       type: object
@@ -5962,7 +6428,9 @@ components:
 
     ModelSummary:
       type: object
-      description: One model file as the version's model list shows it.
+      description: "One model file as the version's model list shows it. A version loads whole, so a listed model
+        compiled:
+        a version with a model that does not compile does not list at all, and answers 424 `VERSION_LOAD_FAILED`."
       required:
         - resource
         - path
@@ -5981,10 +6449,11 @@ components:
         report:
           type: boolean
           description: True when the file carries an `## artifact` tag and is also listed under `reports`.
-        error:
-          $ref: "#/components/schemas/EmbeddedError"
-          description: Present when the file did not compile.
-          readOnly: true
+        sources:
+          type: array
+          description: "The model's sources, as `get-model` lists them. Present only with `include: [\"sources\"]`."
+          items:
+            $ref: "#/components/schemas/Source"
         versionId:
           $ref: "#/components/schemas/VersionId"
           readOnly: true
@@ -6049,14 +6518,11 @@ components:
         fields (`description`, `latestVersionId`); `source` is set on create and moves only with a publish from a new
         source."
       required:
-        - resource
         - name
         - source
-        - createdAt
-        - updatedAt
-        - revision
       properties:
         resource:
+          description: Set by the server; every read carries it.
           $ref: "#/components/schemas/ResourcePath"
           readOnly: true
         name:
@@ -6065,9 +6531,11 @@ components:
           $ref: "#/components/schemas/IdentifierPattern"
         description:
           type: string
-          description: On a read, the description set with `PATCH`, or, while none is set, the latest version's `publisher.json`
-            description, which the server resolves so a reader needs no fallback of its own. `PATCH` sets it; `null`
-            clears the one set, and reads show the latest version's again.
+          description: "The description a client set with `PATCH`, and only that: absent while none is set, so a read
+            sent back (its
+            server-set fields stripped) never pins derived text. The latest version's `publisher.json` description is
+            `Version.description`; a reader
+            that wants a fallback reads it there. `null` clears the one set."
         source:
           $ref: "#/components/schemas/PackageSource"
           x-immutable: true
@@ -6079,15 +6547,19 @@ components:
           description: The version served when a request names `latest`. Who moves it is `ServerStatus.versionPromotion`; under
             `explicit` it is absent until one is set. Moved with `PATCH`, which with `If-Match` is a compare-and-swap;
             moving it back to a parent version is the undo of a server-made version. A create that sends it answers 400
-            `INVALID_REQUEST`, since no version exists yet.
+            `INVALID_REQUEST`, since no version exists yet, and so does `null`, since a latest once set is moved, never
+            cleared.
         revision:
+          description: Set by the server; every read carries it.
           $ref: "#/components/schemas/Revision"
           readOnly: true
         createdAt:
+          description: Set by the server; every read carries it.
           type: string
           format: date-time
           readOnly: true
         updatedAt:
+          description: Set by the server; every read carries it.
           type: string
           format: date-time
           readOnly: true
@@ -6240,6 +6712,17 @@ components:
           description: "The annotation's `merge_key=` dimensions, in declared order, none of them the watermark: the row identity
             of a source whose rows are restated with a later watermark, which selects a merge; absent, a delta replaces
             its range. Validated at publish. Neither this nor `watermark` is part of `sourceEntityId`."
+        asOfBuild:
+          type: boolean
+          default: false
+          description: "True when the source's stored relation reads the current time (`now`, or a relative time filter
+            string
+            such as `f'last 7 days'`), so its table holds the rows as of its build and its answers are as of that build
+            (a
+            `#@ persist` source, a persisted view or a persisted named query; the version carries a
+            `persist-reads-current-time` warning for it). Unchanged SQL does not mean unchanged rows, so such a table is
+            rebuilt on every run: a host that reuses a ready table by `sourceEntityId` must not reuse this one, and a run
+            never carries it forward. As v0's field of the same name."
       description: One persisted source's build plan, the value of `BuildPlan.sources` under its `sourceEntityId`.
       readOnly: true
 
@@ -6262,6 +6745,17 @@ components:
       type: object
       description: PostgreSQL database connection configuration
       properties:
+        authMethod:
+          type: string
+          enum:
+            - password
+            - connection_string
+          default: password
+          description: "How the connection authenticates: `password` with `host`, `port`, `database`, `user` and
+            `password`, or
+            `connection_string`, whose `connectionString` describes the whole connection. A credential of the other
+            method
+            answers 400 `INVALID_REQUEST`; changing it clears the other method's withheld fields."
         host:
           type: string
           description: PostgreSQL server hostname or IP address
@@ -6276,8 +6770,10 @@ components:
           writeOnly: true
         connectionString:
           type: string
-          description: Complete PostgreSQL connection string (alternative to individual parameters)
+          description: "Complete PostgreSQL connection string, for `authMethod: connection_string`."
           writeOnly: true
+        proxy:
+          $ref: "#/components/schemas/ConnectionProxy"
         sslmode:
           type: string
           enum:
@@ -6298,8 +6794,7 @@ components:
             adds the hostname check without narrowing CA trust. The server defaults it to `no-verify` when a proxy is
             set (so a force-SSL target isn't rejected for plaintext) — a server-applied default, not a schema default.
             On a direct connection the same modes apply against the configured host; when omitted, the deployment
-            PGSSLMODE applies. Ignored when connectionString is set, which carries its own sslmode. Applies to a
-            DuckLake catalog connection as well.
+            PGSSLMODE applies. Ignored when connectionString is set, which carries its own sslmode.
         database:
           type: string
           description: Name of the PostgreSQL database
@@ -6311,8 +6806,7 @@ components:
           minimum: 1
           maximum: 2147483647
           description: Maximum run time of each statement on the database, in milliseconds. The database cancels a statement that
-            exceeds it. When omitted, the database's own statement_timeout applies. Not applied to a DuckLake catalog
-            connection.
+            exceeds it. When omitted, the database's own statement_timeout applies.
       additionalProperties: false
 
     RollupPlan:
@@ -6424,7 +6918,9 @@ components:
         code:
           type: string
           description: "A stable kebab-case name of the check that made the problem (for example `field-not-found`,
-            `report-layout-unknown`, or `render-tag` on every render-tag finding; a report finding whose check names
+            `report-layout-unknown`, `persist-reads-current-time` on a stored source served as of its build (see
+            `PersistSourcePlan.asOfBuild`), or `render-tag` on every render-tag finding; a report finding whose check
+            names
             none carries `report-lint`). Absent when the check names none. The set is open: treat a code you do not know
             as a problem like any other."
         modelPath:
@@ -6482,18 +6978,6 @@ components:
         - name
       readOnly: true
 
-    QueryClass:
-      type: string
-      enum:
-        - interactive
-        - materialize
-        - index
-        - ops
-      description: "The class of work a statement belongs to, attached as the `class` query-metadata property: `interactive`
-        (a user or application query), `materialize` (a persist-source build), `index` (a build or scan of a Malloy
-        `#(index)` dimension index, not the discovery index), `ops` (platform maintenance). Attribution's primary axis:
-        a backend bill separates traffic from builds only if every statement says which it is."
-
     QueryMetadata:
       type: object
       maxProperties: 20
@@ -6529,8 +7013,13 @@ components:
         declaration: a package block, a model file or a `#@ persist` annotation declaring one has it DROPPED rather than
         attached. Context only overwrites a name it has a value for, and a served query has no `source`, `trigger` or
         `run_id` — so a declared one would otherwise ride interactive traffic and read, in the backend's own history,
-        exactly like a build. A connection default and a per-request bag are not covered: a request setting `queryClass`
-        is a caller describing its own call, while a model-side declaration rides every query against that source,
+        exactly like a build. The server sets `class` from what it is doing, and no caller sets it: `interactive` for
+        `:query`, `materialize` for a run's build statements, `index` for a build or scan of a Malloy `#(index)`
+        dimension
+        index (not the discovery index), and `ops` for the SQL operations and platform maintenance, so a backend bill
+        separates traffic from builds. A connection default and a per-request bag are not covered by the reservation:
+        a per-request bag is a caller describing its own call, while a model-side declaration rides every query against
+        that source,
         including ones its author never sees. Put no secrets or personal data here: a tag is visible to anyone who can
         read the backend's query history, and on a backend with no native tag mechanism it is visible in the statement
         text.
@@ -6730,7 +7219,9 @@ components:
     QueryRequest:
       type: object
       description: "One of two shapes: `query` alone (ad-hoc Malloy compiled in the model's context), or `queryName` without
-        `query` (a view when `sourceName` is set, a model-level named query when it is not). `givens` ride on either."
+        `query` (a view when `sourceName` is set, a model-level named query when it is not). `givens` ride on either. The
+        server checks the shape, not the schema: both or neither answers 400 `INVALID_REQUEST` naming the field in
+        `details.field`. Every query is `interactive` work; a caller does not set its class."
       properties:
         query:
           type: string
@@ -6745,11 +7236,17 @@ components:
           $ref: "#/components/schemas/GivenValues"
         queryMetadata:
           $ref: "#/components/schemas/QueryMetadata"
-        queryClass:
-          $ref: "#/components/schemas/QueryClass"
         rowLimit:
           type: integer
-          description: Cap pushed into the SQL. The query's own limit or the server default applies when omitted.
+          minimum: 1
+          description: "Cap pushed into the SQL. When the query has its own `limit:`, the smaller of the two wins; when
+            omitted,
+            the query's own limit or the server's default applies. A value above the server's row cap is reduced to the
+            cap,
+            not refused: `metadata.rowLimit` reads the cap and `metadata.rowLimitSource` stays `request`. The server
+            reads
+            one row past the limit to set `metadata.rowLimitHit`. A nested result (`nest:`) is cut by the query's own
+            limits only, and its truncation is not reported."
         include:
           type: array
           description: Larger parts of the result to include. `malloyResult` is the full Malloy result the renderer needs.
@@ -6761,17 +7258,30 @@ components:
 
     QueryResult:
       type: object
-      description: Rows always; the full Malloy result only when asked for.
+      description: "Rows and their columns always; the full Malloy result only when asked for. Each value is JSON by its
+        column's Malloy type, the one encoding every result uses: `string` a string; `number` a JSON number, except an
+        integer beyond 2^53 or a decimal a double cannot hold exactly, which is a string of its digits; `boolean` a
+        boolean; `date` a `YYYY-MM-DD` string; `timestamp` and `timestamptz` an RFC 3339 string; a nest an array of
+        objects (a `record`, one object); `null` for a missing value. A client must not rely on the order of `rows` and
+        `metadata` in the body, so a later release can stream `rows`."
       required:
         - rows
+        - columns
         - metadata
       properties:
         rows:
           type: array
-          description: One object per row, keyed by column name. Nested results are nested arrays of objects.
+          description: One object per row, keyed by the names `columns` lists. Nested results are nested arrays of
+            objects.
           items:
             type: object
             additionalProperties: true
+        columns:
+          type: array
+          description: The result's columns in order, present when `rows` is empty too, so a client draws the header and
+            reads each value's type without the Malloy result.
+          items:
+            $ref: "#/components/schemas/ResultColumn"
         metadata:
           title: QueryResultMetadataWithVersion
           allOf:
@@ -6789,6 +7299,30 @@ components:
         sql:
           type: string
           description: 'The SQL that ran. Present only with `include: ["sql"]`.'
+      readOnly: true
+
+    ResultColumn:
+      type: object
+      description: "One column of a query's result. Not `Column`, whose `type` is the warehouse's own type name: this
+        `type` is
+        the Malloy type, which says how the value is encoded."
+      required:
+        - name
+        - type
+      properties:
+        name:
+          type: string
+          description: The column's name, the key its values have in each row.
+        type:
+          type: string
+          description: "The column's Malloy type: `string`, `number`, `boolean`, `date`, `timestamp`, `timestamptz`,
+            `json`,
+            `sql_native`, `array` or `record`. The encoding of each is on `QueryResult`."
+        fields:
+          type: array
+          description: For an `array` of records or a `record` (a `nest:`), its columns, in order. Absent otherwise.
+          items:
+            $ref: "#/components/schemas/ResultColumn"
       readOnly: true
 
     QueryResultMetadata:
@@ -6813,8 +7347,9 @@ components:
             - query
             - request
             - server_default
-          description: "Where `rowLimit` came from: the query's own limit (`query`), the request's `rowLimit` (`request`), or the
-            server's default (`server_default`)."
+          description: "Where `rowLimit` came from: the query's own limit (`query`), the request's `rowLimit`
+            (`request`, which
+            reads the server's row cap when the request asked for more), or the server's default (`server_default`)."
         rowLimitHit:
           type: boolean
           description: True when the result stopped at `rowLimit`, so the query has more rows than it holds.
@@ -6830,6 +7365,7 @@ components:
           readOnly: true
         scannedBytes:
           type: integer
+          format: int64
           description: Warehouse bytes scanned, as the backend reported them. Absent when not reported, never zero.
         queryCorrelationId:
           type: string
@@ -6998,27 +7534,25 @@ components:
     ReportSummary:
       type: object
       description: A `.malloy` file carrying an `## artifact` tag, wherever it lives in the version.
-      required:
-        - resource
-        - path
-        - layout
-        - title
-        - versionId
       properties:
         resource:
+          description: Set by the server; every read carries it.
           $ref: "#/components/schemas/ResourcePath"
           readOnly: true
         path:
           $ref: "#/components/schemas/PathPattern"
-          description: The report's version-relative path, its identity. A client that shows a short label takes the basename of
+          description: Set by the server; every read carries it. The report's version-relative path, its identity. A
+            client that shows a short label takes the basename of
             `path` itself.
           readOnly: true
         layout:
+          description: Set by the server; every read carries it.
           $ref: "#/components/schemas/ReportLayout"
           readOnly: true
         title:
           type: string
-          description: "The report's title: the `## artifact` tag's title, else the file's `#\"` doc comment, else the file's name."
+          description: "Set by the server; every read carries it. The report's title: the `## artifact` tag's title,
+            else the file's `#\"` doc comment, else the file's name."
           readOnly: true
         description:
           type: string
@@ -7045,7 +7579,7 @@ components:
         versionId:
           $ref: "#/components/schemas/VersionId"
           readOnly: true
-          description: The version that answered, with `latest` resolved.
+          description: Set by the server; every read carries it. The version that answered, with `latest` resolved.
 
     ReportTile:
       type: object
@@ -7146,7 +7680,8 @@ components:
         with no leading slash and with the resolved version id in place of `latest` (for example
         `environments/acme/packages/sales/versions/1.4.0/models/orders.malloy`). A `GET` of the base path joined with it
         reads the resource. It is relative so that it stays right behind a gateway that serves the API under another
-        prefix. Use it as a link and a stable key; never parse it.
+        prefix. Each segment is percent-encoded (a path's space as `%20`), so it is a valid URL reference and holds no
+        whitespace. Use it as a link and a stable key; never parse it.
 
     ResultTooLargeDetails:
       type: object
@@ -7161,8 +7696,9 @@ components:
             - rows
             - bytes
             - unserializable
-          description: "`rows`: the server's row cap. `bytes`: the server's result-size cap. `unserializable`: a value the result
-            holds cannot be written as JSON."
+          description: "`rows`: the server's row cap. `bytes`: the server's result-size cap, which the error's `message`
+            names
+            in bytes. `unserializable`: a value the result holds cannot be written as JSON."
       readOnly: true
 
     Revision:
@@ -7187,16 +7723,11 @@ components:
 
     Run:
       type: object
-      description: One attempt to build a slot's persisted sources.
+      description: "One attempt to build a slot's persisted sources. Every read carries `resource`, `runId`, `mode`,
+        `scope`,
+        `status`, `createdAt`, `updatedAt` and `revision`, which the server sets."
       required:
-        - resource
-        - runId
         - versionId
-        - mode
-        - scope
-        - createdAt
-        - updatedAt
-        - revision
       properties:
         resource:
           $ref: "#/components/schemas/ResourcePath"
@@ -7204,6 +7735,7 @@ components:
         runId:
           type: string
           readOnly: true
+          description: Set by the server.
         versionId:
           $ref: "#/components/schemas/VersionRef"
           x-immutable: true
@@ -7212,8 +7744,10 @@ components:
         status:
           $ref: "#/components/schemas/RunStatus"
           default: pending
-          description: "`committed` is the only success: the run built and its manifest is recorded. Whether the version now
-            serves the run's tables is `bind`, a separate outcome. Ignored on create; a `PATCH` may set only `cancelled`."
+          description: "`committed` is the only success: the run built at least one source and its manifest is recorded,
+            with
+            `RunManifest.failures` listing any source that did not build. Whether the version now serves the run's tables
+            is `bind`, a separate outcome. Ignored on create; a `PATCH` may set only `cancelled`."
         bind:
           $ref: "#/components/schemas/RunBind"
           readOnly: true
@@ -7266,12 +7800,36 @@ components:
           readOnly: true
           description: "When the run settled: `committed`, `failed` or `cancelled`. Absent until then."
         error:
-          $ref: "#/components/schemas/EmbeddedError"
           readOnly: true
-          description: Present when the run failed.
+          description: Present when the run failed, or was cancelled by a shutdown.
+          allOf:
+            - $ref: "#/components/schemas/EmbeddedError"
+            - type: object
+              required:
+                - reason
+              properties:
+                reason:
+                  type: string
+                  enum:
+                    - LEASE_EXPIRED
+                    - VERSION_LOAD_FAILED
+                    - CONNECTION_AUTH_FAILED
+                    - ALL_SOURCES_FAILED
+                    - CANCELLED_BY_SHUTDOWN
+                  description: "`LEASE_EXPIRED`: the server building the run stopped renewing its lease (it crashed or
+                    lost the
+                    catalog), and the run was failed so the slot frees. `VERSION_LOAD_FAILED`: the version could not
+                    load, so
+                    nothing was built. `CONNECTION_AUTH_FAILED`: a connection the build needs refused its credentials.
+                    `ALL_SOURCES_FAILED`: every source the run set out to build failed or was refused;
+                    `RunManifest.failures`
+                    lists each. `CANCELLED_BY_SHUTDOWN`: the server was shutting down, and the run settled `cancelled`."
         summary:
           readOnly: true
           $ref: "#/components/schemas/RunOutcome"
+          description: What the run did, per source. Present on every settled run (`committed`, `failed` or
+            `cancelled`), with
+            what it had done when it stopped; absent while it is `pending` or `running`.
         revision:
           readOnly: true
           $ref: "#/components/schemas/Revision"
@@ -7324,8 +7882,9 @@ components:
         forceRefresh:
           type: boolean
           default: false
-          description: Build even when a source's `sourceEntityId` is unchanged. Never re-seeds an incremental source; ask for
-            that with `reseed`.
+          description: Build even when a source's `sourceEntityId` is unchanged. A source whose plan entry has
+            `asOfBuild` is
+            rebuilt on every run without it. Never re-seeds an incremental source; ask for that with `reseed`.
         reseed:
           type: boolean
           default: false
@@ -7341,7 +7900,9 @@ components:
 
     RunOutcome:
       type: object
-      description: What a run did, counted per source. Each count is 0 when none.
+      description: What a run did, counted per source; each source the run set out to build is counted once, in exactly
+        one
+        count. Each count is 0 when none. On a cancelled or failed run, what it had done when it stopped.
       required:
         - builtCount
         - reusedCount
@@ -7356,13 +7917,13 @@ components:
           description: "Sources whose table an earlier run built and this run kept, unchanged (`refreshed: none` included)."
         refusedCount:
           type: integer
-          description: "Sources the eligibility check refused. On a run with `mode: auto` they are the version's
-            `BuildPlan.refusedSources` and are not in `RunManifest.failures`; on an orchestrated run each is an
-            instructed source, in `RunManifest.failures` with its `reason`, and counted in `failedCount` too."
+          description: "Sources the eligibility check refused, counted only here. On a run with `mode: auto` they are the
+            version's `BuildPlan.refusedSources` and are not in `RunManifest.failures`; on an orchestrated run each is an
+            instructed source, in `RunManifest.failures` with its `reason`."
         failedCount:
           type: integer
-          description: Sources whose build failed, an orchestrated run's refused sources among them; each is in
-            `RunManifest.failures`.
+          description: Sources whose build failed; each is in `RunManifest.failures`. A refused source is counted only in
+            `refusedCount`.
       readOnly: true
 
     RunStatus:
@@ -7373,9 +7934,13 @@ components:
         - committed
         - failed
         - cancelled
-      description: "Where a run is. `pending` and `running` are unsettled; `committed` is the only success, meaning the run
-        built and its manifest is recorded, and `failed` and `cancelled` are the other settled states. Whether a committed
-        run's tables are served is `Run.bind`, never the status."
+      description: "Where a run is. `pending` and `running` are unsettled. `committed` is the only success: the run
+        built at
+        least one source and recorded its manifest, and `RunManifest.failures` lists any source that did not build. A
+        run where nothing built is `failed` (`Run.error.reason` `ALL_SOURCES_FAILED` when every source failed or was
+        refused). `cancelled` is written once work has stopped, so a cancelled run builds and commits nothing more.
+        Whether a committed run's tables are served is
+        `Run.bind`, never the status."
 
     RunBind:
       type: string
@@ -7391,29 +7956,31 @@ components:
       type: object
       description: AWS S3 connection configuration for DuckDB
       properties:
-        provider:
+        authMethod:
           type: string
           enum:
             - config
             - credential_chain
           default: config
-          description: How credentials are obtained. `config` uses the accessKeyId and secretAccessKey on this object, which are
+          description: How credentials are obtained; changing it clears the other method's withheld fields. `config`
+            uses the accessKeyId and secretAccessKey on this object, which are
             then required. `credential_chain` resolves them from the host instead (an instance profile, a web-identity
             token, or the environment), so no key is stored, and supplying one is rejected. Chain resolution happens
             when the connection is attached, so a host that cannot supply credentials fails there rather than on first
             object access.
         chain:
           type: string
-          description: "Ordered list of credential providers to try, semicolon-separated, for `provider: credential_chain`
+          description: "Ordered list of credential providers to try, semicolon-separated, for
+            `authMethod: credential_chain`
             (DuckDB's CHAIN). Recognized providers are env, config, sts, instance, sso, process, and web_identity. Omit
             to use Publisher's default order, which covers the environment, a web-identity token, and an instance
-            profile. Rejected under `provider: config`, where the key pair beside it is what grants access."
+            profile. Rejected under `authMethod: config`, where the key pair beside it is what grants access."
         accessKeyId:
           type: string
-          description: "AWS access key ID (required for `provider: config`)"
+          description: "AWS access key ID (required for `authMethod: config`)"
         secretAccessKey:
           type: string
-          description: "AWS secret access key (required for `provider: config`)"
+          description: "AWS secret access key (required for `authMethod: config`)"
           writeOnly: true
         region:
           type: string
@@ -7423,7 +7990,7 @@ components:
         endpoint:
           type: string
           description: "Custom S3-compatible endpoint (optional, for MinIO, etc.): `host[:port]`, `https://host[:port]`, or
-            `http://host[:port]`, which is the one form that turns TLS off and is refused with `provider:
+            `http://host[:port]`, which is the one form that turns TLS off and is refused with `authMethod:
             credential_chain`, whose requests carry the host's credentials. No userinfo, query, fragment or whitespace."
         sessionToken:
           type: string
@@ -7702,6 +8269,16 @@ components:
       type: object
       description: Snowflake database connection configuration
       properties:
+        authMethod:
+          type: string
+          enum:
+            - password
+            - private_key
+          default: password
+          description: "How the connection authenticates: `password`, or `private_key` with `privateKey` and, for an
+            encrypted
+            key, `privateKeyPass`. A credential of the other method answers 400 `INVALID_REQUEST`; changing it clears the
+            other method's withheld fields."
         account:
           type: string
           description: Snowflake account identifier
@@ -7736,6 +8313,7 @@ components:
           description: Snowflake role name
         queryTimeoutMs:
           type: integer
+          minimum: 1
           description: Query response timeout in milliseconds
       additionalProperties: false
 
@@ -7763,6 +8341,13 @@ components:
             the server decides, per request, whether a caller passes. Absent when the source has no gate.
           items:
             $ref: "#/components/schemas/EntityGate"
+        exported:
+          type: boolean
+          default: false
+          description: True when the model file exports the source (its Malloy `export` list, or every source of a file
+            that
+            declares none), so another file that imports the model, and a report over it, can name it. False for a source
+            the file only imports or keeps to itself.
       required:
         - name
       readOnly: true
@@ -7919,27 +8504,34 @@ components:
           default: run
           description: "`run` executes and returns rows. `describe` compiles the statement and returns its result columns without
             running it."
-        queryClass:
-          $ref: "#/components/schemas/QueryClass"
         queryMetadata:
           $ref: "#/components/schemas/QueryMetadata"
         rowLimit:
           type: integer
-          description: Cap on rows returned by `run`. The server's default applies when omitted.
+          minimum: 1
+          description: Cap on rows returned by `run`. The server's default applies when omitted; a value above the
+            server's row
+            cap is reduced to it, as on a query.
 
     SqlResult:
       type: object
       description: What a SQL statement returned, or for `describe` the columns it would return.
       required:
         - columns
+        - metadata
       properties:
         columns:
           type: array
+          description: "The result's columns in order, by the names the rows use: a name the statement returns more than
+            once is
+            suffixed from its second occurrence (`id`, `id_2`, `id_3`), so no column is lost."
           items:
             $ref: "#/components/schemas/Column"
         rows:
           type: array
-          description: "Present for `run`: one object per row, keyed by column name."
+          description: "Present for `run`: one object per row, keyed by the names `columns` lists. A client must not
+            rely on the
+            order of `rows` and `metadata` in the body."
           items:
             type: object
             additionalProperties: true
@@ -7966,8 +8558,9 @@ components:
           type: integer
           minimum: 1
           maximum: 65535
-          default: 1433
-          description: TCP port. Not used when `instanceName` is set.
+          description: TCP port; the server uses 1433 when it is absent. Not used when `instanceName` is set, and
+            omitted with
+            it.
         database:
           type: string
           description: Name of the database to open
@@ -8077,18 +8670,23 @@ components:
       properties:
         contentCount:
           type: integer
+          format: int64
           description: Content blobs no version references.
         checkoutCount:
           type: integer
+          format: int64
           description: Checkout directories no version's tree names.
         tableCount:
           type: integer
+          format: int64
           description: Built tables no manifest entry references.
         derivedCount:
           type: integer
+          format: int64
           description: Derived rows (compiled models, index artifacts) for content no version references.
         tempDirectoryCount:
           type: integer
+          format: int64
           description: Temporary directories left by builds that did not finish.
       readOnly: true
 
@@ -8107,6 +8705,7 @@ components:
                 $ref: "#/components/schemas/Column"
             rowCount:
               type: integer
+              format: int64
               description: Absent when the warehouse does not report it.
       readOnly: true
 
@@ -8114,7 +8713,8 @@ components:
       type: object
       description: "Where a built table lives: its `tableName`, and exactly one of `connectionName` (a `database` table, in
         the source's own connection) or `destinationName` (a `storage` table, in a destination). Which one is set is the
-        table's tier."
+        table's tier. A request that sets both or neither answers 400 `INVALID_REQUEST` naming the field in
+        `details.field`; the rule is checked by the server, not encoded in the schema."
       required:
         - tableName
       properties:
@@ -8123,7 +8723,9 @@ components:
           description: "The table's name in the warehouse, schema-qualified where the connection has schemas (`analytics.orders`):
             what a reader outside Publisher queries, and what an orchestrator sends in a build instruction. Unlike a
             connection's `Table`, read under its schema in the path, a materialized table is named by this one qualified
-            string."
+            string. A part that itself contains `.` is quoted as the warehouse quotes an identifier
+            (`analytics.\"orders.v2\"`
+            on Postgres, backticks on BigQuery and MySQL), so the parts are what the unquoted dots separate."
         connectionName:
           type: string
           description: The connection a `database` table lives in. Absent for a `storage` table.
@@ -8142,21 +8744,6 @@ components:
             $ref: "#/components/schemas/TableSummary"
         nextCursor:
           $ref: "#/components/schemas/Cursor"
-      readOnly: true
-
-    TableOwnedElsewhereDetails:
-      type: object
-      description: "`details` of a `TABLE_OWNED_ELSEWHERE`: who owns the table the instruction named."
-      required:
-        - ownerPackageName
-      properties:
-        ownerPackageName:
-          type: string
-          description: The package whose slot owns the table.
-        ownerVersionId:
-          $ref: "#/components/schemas/VersionId"
-          description: "The version whose slot owns the table, present exactly when that slot is a version (`scope: version`);
-            absent when the package owns it (`scope: package`)."
       readOnly: true
 
     TableSummary:
@@ -8186,6 +8773,16 @@ components:
       type: object
       description: Trino database connection configuration
       properties:
+        authMethod:
+          type: string
+          enum:
+            - password
+            - peaka_key
+          default: password
+          description: "How the connection authenticates: `password` with `user` and `password`, or `peaka_key`, a
+            Peaka-hosted
+            cluster's `peakaKey`, which is used alone. A credential of the other method answers 400 `INVALID_REQUEST`;
+            changing it clears the other method's withheld fields."
         server:
           type: string
           description: The coordinator's URL (`http://` or `https://`).
@@ -8224,24 +8821,23 @@ components:
             sourceEntityId:
               type: string
               description: The upstream source's content address.
+            tableId:
+              type: string
+              description: The table's stable identity, the `tableId` of the manifest entry that built it, when the
+                caller has it.
 
     Version:
       type: object
       description: "An immutable snapshot of a package's content. Its content never changes; its lifecycle fields (`archived`,
         `pinned`, `manifestLocation`) do, through `PATCH`. Whether a server holds it in memory is not on the record:
         that is `VersionStatus.status`, changed with `:load` and `:unload`."
-      required:
-        - resource
-        - versionId
-        - origin
-        - createdAt
-        - updatedAt
-        - revision
       properties:
         resource:
+          description: Set by the server; every read carries it.
           $ref: "#/components/schemas/ResourcePath"
           readOnly: true
         versionId:
+          description: Set by the server; every read carries it.
           readOnly: true
           $ref: "#/components/schemas/VersionId"
         origin:
@@ -8252,8 +8848,10 @@ components:
             - edit
             - migration
           readOnly: true
-          description: "`publish`: the author's. `republish`: a publish whose declared version already existed with other content,
-            named `<parent>+republish.N`. `edit`: a report write. `migration`: imported from a pre-v1 store."
+          description: "Set by the server; every read carries it. `publish`: the author's. `republish`: a publish whose
+            declared version already existed with other content,
+            named `<parent>+republish.N`. `edit`: a report write, named `<root>+edit.N` with `N` counted against the root
+            semantic version. `migration`: imported from a pre-v1 store."
         parentVersionId:
           $ref: "#/components/schemas/VersionId"
           readOnly: true
@@ -8294,9 +8892,11 @@ components:
           readOnly: true
           description: The git commit the version was published from. Absent for a source that is not git.
         revision:
+          description: Set by the server; every read carries it.
           $ref: "#/components/schemas/Revision"
           readOnly: true
         createdAt:
+          description: Set by the server; every read carries it.
           type: string
           format: date-time
           readOnly: true
@@ -8304,7 +8904,8 @@ components:
           type: string
           format: date-time
           readOnly: true
-          description: When the version's record (archived, pinned, its manifest binding) last changed; its content never does,
+          description: Set by the server; every read carries it. When the version's record (archived, pinned, its
+            manifest binding) last changed; its content never does,
             and loading or unloading it is not a change of the record.
         archivedAt:
           type: string
@@ -8376,14 +8977,18 @@ components:
         status:
           type: string
           enum:
-            - loading
-            - serving
-            - unloaded
+            - not_started
+            - in_progress
+            - ready
             - failed
-          description: "The version's one serving state on this server, which is also what a content read will cost. `serving`: a
-            compiled copy answers queries here now, even while a recompile runs. `loading`: the first load is in
-            progress and nothing answers yet. `unloaded`: this server knows the version but has not loaded it, or
-            unloaded it (`:unload`); the next content read or `:load` loads it. `failed`: the last load failed and
+          description: "The version's one serving state on this server, which is also what a content read will cost, in
+            the
+            derived-state words `BuildPlan.status` shares. `ready`: a compiled copy answers queries here now, even while
+            a
+            recompile runs. `in_progress`: the first load is in progress and nothing answers yet; the 200 carries
+            `Retry-After`. `not_started`: this server knows the version but has not loaded it, or unloaded it
+            (`:unload`);
+            the next content read or `:load` loads it. `failed`: the last load failed and
             nothing answers; `error` says why, and `/status` names it under `loadErrors`. A content read or `:load` of a
             `failed` version tries the load again, so a fixed dependency recovers with no other step, and answers 424
             `VERSION_LOAD_FAILED` when it fails again. Memory state is not on the version's record: `Version` carries
@@ -8429,7 +9034,7 @@ components:
         stale:
           type: boolean
           description: True while the version serves a model older than its content because the newer content failed to compile;
-            `status` stays `serving` and `error` says why. As `LoadError.stale` on `/status`.
+            `status` stays `ready` and `error` says why. As `LoadError.stale` on `/status`.
         error:
           description: "Present when the last load or compile failed: with `status: failed`, why nothing answers; with `stale`,
             why the newer content did not compile while the last good compile keeps serving. Absent otherwise.
@@ -8439,12 +9044,34 @@ components:
             - type: object
               required:
                 - failedAt
+                - reason
               properties:
                 failedAt:
                   type: string
                   format: date-time
                   readOnly: true
                   description: When the load or compile failed.
+                reason:
+                  type: string
+                  enum:
+                    - COMPILE_ERROR
+                    - CONNECTION_AUTH_FAILED
+                    - CONNECTION_FAILED
+                    - CONNECTION_NOT_FOUND
+                    - INTERNAL
+                  description: "Why, in `ErrorReason`'s words: `COMPILE_ERROR`, a model did not compile (`problems`
+                    locates it);
+                    `CONNECTION_AUTH_FAILED`, `CONNECTION_FAILED` or `CONNECTION_NOT_FOUND`, a connection the load reads
+                    refused its credentials, could not be reached or does not exist; `INTERNAL`, the stored content
+                    could not
+                    be read."
+                problems:
+                  type: array
+                  description: The located diagnostics, as `CompileErrorDetails.problems` carries them. Absent when the
+                    failure has
+                    no location.
+                  items:
+                    $ref: "#/components/schemas/Problem"
         loadId:
           type: string
           description: "On a version's own status read (`GET …/versions/{versionId}/status`) and in the answers of `:load` and
