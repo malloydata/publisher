@@ -9,9 +9,10 @@
 # was canceled." or, when the shutdown interrupted a step, "Process completed with exit code 130." (the
 # step's SIGINT). A cancellation by a person or by `concurrency` concludes `cancelled`, so it never
 # matches. A timeout also ends "The operation was canceled.", after "exceeded the maximum execution
-# time", which tells it apart. The run is rerun only when every failed job lost its runner: a run with a
-# test failure or a timeout in it stays red, so neither gets a second try along with the lost job. Only
-# a first attempt is rerun, so a run that keeps failing is not retried forever.
+# time", which tells it apart. The run is rerun only when every failed job lost its runner, or is a gate
+# that failed because a job it gathers did: a run with a test failure or a timeout in it stays red, so
+# neither gets a second try along with the lost job. Only a first attempt is rerun, so a run that keeps
+# failing is not retried forever.
 #
 # A pull request's run is rerun only while its commit is still the pull request's head. A newer push has
 # its own run in the same concurrency group, and rerunning the older one would cancel it.
@@ -76,6 +77,12 @@ jobs:
               other="$other $name"
             elif grep -qE 'The operation was canceled\.|A task was canceled\.|exit code 130\.' <<<"$msgs"; then
               lost="$lost $name"
+            elif [ "$name" = "Cross Platform Tests / Platform: (ubuntu-latest)" ] \
+              || [ "$name" = "Playwright (packages/app)" ]; then
+              # A gate over sharded jobs (cross-platform-tests.yml's Linux gate, app-playwright.yml's
+              # roll-up), which fails when a shard does: the shards decide. By job name, so a rename
+              # there must change here.
+              :
             else
               other="$other $name"
             fi
