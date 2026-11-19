@@ -6,13 +6,13 @@
  * judges each declaration against the author's compiled model, on the load
  * worker, compiling and never running:
  *
- * - **Caller-dependent (P14).** A view whose result reads the current time,
+ * - **Caller-dependent.** A view whose result reads the current time,
  *   through its own stages, its source's `where:` or a field it reads, differs
  *   per read: not built. (A view that reads a given is refused by the build
  *   plan, from Malloy's own `readsGivens` on its build target.)
  * - **Nested results on `storage=`.** A destination's `type:` declaration
  *   cannot declare a nested result, so such a view is stored only database.
- * - **Access filters (question 3).** A row-level gate on the view's source is
+ * - **Access filters.** A row-level gate on the view's source is
  *   re-applied to the stored rows at read (route, then govern), which is exact
  *   only when every field the gate reads is one the view groups by, under its
  *   own name, in a single grouping stage with no `limit:`, no ungrouped

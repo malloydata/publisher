@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * The path report (D1): what answered a query and why.
+ * The path report: what answered a query and why.
  *
  * Built after the query runs, from three things Publisher already has:
  *
@@ -14,7 +14,7 @@
  *   router. Read from Malloy's own lookup, never from the SQL text;
  * - the package's catalog of materialized tables (its build plan, bound
  *   manifest and `storage=` bindings), read against the queried source's
- *   chain, with the serve verdict (D2) of every table no query can be answered
+ *   chain, with the serve verdict of every table no query can be answered
  *   from, so a skip says why the table will not serve rather than only that it
  *   did not.
  *
@@ -212,7 +212,7 @@ export interface QueryPathInput {
    rollups: readonly ModelRollup[];
    /**
     * The bases of the rollups the query could read through one of its
-    * source's joins (A7, join-to-rollup): named as the query's own rollups.
+    * source's joins (join-to-rollup): named as the query's own rollups.
     */
    joinedRollupBases?: ReadonlySet<string>;
    /** The router's decision; empty when no candidate existed. */
@@ -245,9 +245,9 @@ export interface QueryPathInput {
     */
    rollupMember?: string;
    /**
-    * The table of the persisted view the query calls (`#@ persist` on a view,
-    * P14), or of the persisted named query it calls (`kind: "query"`), when
-    * it calls one: tried before every other table (R1).
+    * The table of the persisted view the query calls (`#@ persist` on a view),
+    * or of the persisted named query it calls (`kind: "query"`), when
+    * it calls one: tried before every other table.
     */
    view?: {
       kind?: "query";
@@ -479,7 +479,7 @@ function pathTally(): PathTally {
 }
 
 /**
- * A persisted view's table, first (R1). When it answered, nothing after
+ * A persisted view's table, first. When it answered, nothing after
  * it was tried, so nothing after it is named: the report is returned.
  */
 function viewTableDecision(

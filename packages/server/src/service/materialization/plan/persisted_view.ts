@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * `#@ persist` on a view (P14): reading the
+ * `#@ persist` on a view: reading the
  * declarations and writing their build file.
  *
  *     source: ops is duckdb.table('flights') extend {
@@ -47,7 +47,7 @@
  * compiled them (`build_plan.ts`): a view that reads a given or the current
  * time (its result differs per caller or per read), a nested result on
  * either tier (the view leg cannot rebuild a nest's rows exactly), and a
- * gated source whose gate the view's result cannot keep (question 3).
+ * gated source whose gate the view's result cannot keep.
  *
  * Behind `PUBLISHER_MATERIALIZE`. Every name in the generated text goes
  * through `malloy_text`; the author's own `#@` line is copied verbatim.
@@ -371,6 +371,44 @@ export function persistedViewRefusalFinding(
          outcome.refused,
          refusal.storage,
       ),
+   };
+}
+
+/** Why a persisted view or query whose result reads a given is not built. */
+const READS_A_GIVEN =
+   "its result reads a given, so it differs per caller and a table holds one caller's result";
+
+/** The refusal of a planned persisted view whose result reads a given. */
+export function persistedViewReadsGivenRefusal(
+   plan: Pick<
+      PersistedViewPlan,
+      "sourceID" | "sourceName" | "viewName" | "storage"
+   >,
+): PersistedViewRefusal {
+   return {
+      sourceID: plan.sourceID,
+      sourceName: plan.sourceName,
+      viewName: plan.viewName,
+      reason: READS_A_GIVEN,
+      outcome: { refused: "reads_given" },
+      ...(plan.storage !== undefined ? { storage: plan.storage } : {}),
+   };
+}
+
+/**
+ * The refusal of a planned persisted query whose result reads a given: the
+ * query's own stages, its source's own given-reading `where:`, or one it
+ * inherits.
+ */
+export function persistedQueryReadsGivenRefusal(
+   plan: Pick<PersistedQueryPlan, "queryName" | "declaringURL" | "storage">,
+): PersistedQueryRefusal {
+   return {
+      queryName: plan.queryName,
+      reason: READS_A_GIVEN,
+      refusal: "reads_given",
+      declaringURL: plan.declaringURL,
+      ...(plan.storage !== undefined ? { storage: plan.storage } : {}),
    };
 }
 

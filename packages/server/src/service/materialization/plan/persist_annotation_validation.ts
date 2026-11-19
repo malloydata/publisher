@@ -13,7 +13,6 @@
  */
 
 import type { PersistNameProblem } from "../domain/package_plan";
-import { BadRequestError } from "../../../errors";
 import { codedLine, PERSIST_INVALID_CODE } from "../../annotation_reader";
 import type { Annotations } from "@malloydata/malloy";
 import { hasEnvReference, routeReadsEnv } from "../../motly";
@@ -145,17 +144,6 @@ export function persistNameProblems(
       }
    }
    return problems;
-}
-
-/** {@link persistNameProblems}, thrown as one 400 when there are any. */
-export function assertPersistNamesQuoted(
-   modelSource: string,
-   modelPath: string,
-): void {
-   const problems = persistNameProblems(modelSource, modelPath);
-   if (problems.length > 0) {
-      throw new BadRequestError(problems.map((p) => p.line).join("\n"));
-   }
 }
 
 /**

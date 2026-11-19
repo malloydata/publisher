@@ -238,7 +238,8 @@ export async function compileInMemory(
  */
 export interface CompanionFailure {
    kind: CompanionKind;
-   error: string;
+   /** What failed, which the caller logs by its code, never its text. */
+   error: unknown;
 }
 
 /** {@link CompanionFailure} of `error`. */
@@ -246,10 +247,7 @@ export function companionFailure(
    kind: CompanionKind,
    error: unknown,
 ): CompanionFailure {
-   return {
-      kind,
-      error: error instanceof Error ? error.message : String(error),
-   };
+   return { kind, error };
 }
 
 /** The kinds of generated companion a plan compiles. */

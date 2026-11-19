@@ -24,7 +24,7 @@
  *   be evaluated at *b* + the refresh interval, which a build on demand does
  *   not know. With no interval the widest set is every row that exists at
  *   build time, so the term is LEFT OUT of the build, as a given-reading term
- *   is (P2): the build copy replaces its text with `true` wherever the
+ *   is: the build copy replaces its text with `true` wherever the
  *   source's declaring file writes it, its own or inherited. The served copy re-applies it at
  *   every read. Stamping the interval to trim the table is a possible later
  *   optimisation, not built.

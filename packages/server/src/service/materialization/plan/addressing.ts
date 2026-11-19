@@ -364,7 +364,7 @@ export function compilerBuildId(
  * `PUBLISHER_PERSIST_ADDRESS_INCLUDES_DESTINATION` is on and
  * `PERSIST_STORAGE_MODE` is not `off` (off, `storage=` is inert and the source
  * builds in the database tier). Undefined for every database source, so turning the
- * switch on moves no database address (P12).
+ * switch on moves no database address.
  */
 export function addressDestination(source: PersistSource): string | undefined {
    if (!getPersistAddressIncludesDestination()) return undefined;
@@ -379,7 +379,7 @@ export function addressDestination(source: PersistSource): string | undefined {
 
 /**
  * Fold what the target's `sql` cannot carry into the text a source's address
- * is computed from: (P12, behind a switch) the storage destination it builds
+ * is computed from: (behind a switch) the storage destination it builds
  * into, and the author's `name=` (or stored projection) where another source
  * of the same build names (or stores) another table
  * ({@link foldDistinctTableNames}). The target's `sql` carries no annotation

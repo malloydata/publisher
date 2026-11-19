@@ -31,7 +31,7 @@
  * A view without the mark, or marked for another package, is never touched.
  */
 
-import { errorCodeOf } from "./error_code";
+import { errorCodeOf } from "../../../error_code";
 import { logger } from "../../../logger";
 import type { ManifestEntry } from "../domain/types";
 import {

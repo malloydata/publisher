@@ -14,11 +14,12 @@ import { isRollupOrigin, originOf } from "./domain/table_plans";
 import { isSourceDef, type SourceDef } from "@malloydata/malloy";
 import { gateSwitches, getPersistStorageMode } from "../../config";
 import { logger } from "../../logger";
-import { errMessage } from "../../utils";
+import { errorCodeOf } from "../../error_code";
 import type { Model } from "../model";
 import { collectEntryPointGates } from "../gate_classification";
 import { structsReachedFrom } from "../governance/ir/source_graph";
 import { keepsGatesWhenReadExact, mayAttempt } from "./domain/admission";
+import type { GateSwitches, TableRead } from "./domain/gate_policy";
 import { type Binding, pin, type Snapshot } from "./domain/binding";
 import { storageTablePath } from "./domain/storage_table_path";
 import type { FreshnessManifest } from "./domain/types";
@@ -62,7 +63,7 @@ function declaresMaterialize(def: unknown): boolean {
 
 /**
  * What the environment answers about where a package's tables can be written
- * (P13), read live. `undefined` from either means "not known", which never
+ *, read live. `undefined` from either means "not known", which never
  * warns.
  */
 export interface DeploymentFacts {
@@ -141,24 +142,37 @@ export class ServeVerdicts {
    private entryPointMemo:
       | { models: Map<string, Model>; index: EntryPointIndex | undefined }
       | undefined;
+   /**
+    * The plan whose verdicts last failed to compute: a status poll asks again
+    * and again, so each plan's failure is warned once and then logged at
+    * debug.
+    */
+   private verdictFailureWarnedFor: object | undefined;
 
    constructor(private readonly host: ServeVerdictsHost) {}
 
    /**
-    * Each materialized source's serve verdict (D2), read from the plan and the
+    * Each materialized source's serve verdict, read from the plan and the
     * binding as they stand now. `views` adds per-view verdicts (a preview).
     * Reporting only: one that cannot be computed is logged and none is
     * returned, so the dry run, package read or status poll never fails here.
     */
    verdicts(views?: ReadonlyMap<string, ViewServeVerdict[]>): ServeVerdict[] {
-      if (!this.host.plan.buildPlan) return [];
+      const plan = this.host.plan.buildPlan;
+      if (!plan) return [];
       try {
          return this.compute(views);
       } catch (error) {
-         logger.warn("Could not compute serve verdicts", {
+         const fields = {
             packageName: this.host.packageName(),
-            error: errMessage(error),
-         });
+            code: errorCodeOf(error),
+         };
+         if (this.verdictFailureWarnedFor === plan) {
+            logger.debug("Could not compute serve verdicts", fields);
+         } else {
+            this.verdictFailureWarnedFor = plan;
+            logger.warn("Could not compute serve verdicts", fields);
+         }
          return [];
       }
    }
@@ -232,7 +246,7 @@ export class ServeVerdicts {
       } catch (error) {
          logger.warn("Could not declare the preview's serve bindings", {
             packageName: packageName(),
-            error: errMessage(error),
+            code: errorCodeOf(error),
          });
          bindings = [];
       }
@@ -249,7 +263,7 @@ export class ServeVerdicts {
             } catch (error) {
                logger.debug("Could not preview a model's storage views", {
                   packageName: packageName(),
-                  error: errMessage(error),
+                  code: errorCodeOf(error),
                });
             }
          }
@@ -260,7 +274,7 @@ export class ServeVerdicts {
       } catch (error) {
          logger.warn("Could not preview the v1 cutover's serve paths", {
             packageName: packageName(),
-            error: errMessage(error),
+            code: errorCodeOf(error),
          });
          return verdicts;
       }
@@ -306,9 +320,9 @@ export class ServeVerdicts {
             buildPlan?.sources?.[sourceID]?.sourceEntityId ?? "",
          );
       };
-      // A `storage=` table that holds only ungated rows (g-mixed), read the
-      // same way: off the bound bindings, or, not bound yet, by the bind's
-      // own rule.
+      // A `storage=` table that holds only ungated rows (the ungated-rows
+      // rule), read the same way: off the bound bindings, or, not bound yet, by
+      // the bind's own rule.
       const ungatedTables = ungatedTableAddresses(
          plan.sourceEligibility?.ungated,
          buildPlan?.sources ?? {},
@@ -384,29 +398,29 @@ export class ServeVerdicts {
          // The router's own question, asked of the source's own table: a
          // rollup's leg past a gate, with its variant proven at plan; the
          // served copy over a table it keeps the gate on.
-         keepsGate: (sourceID, tier) => {
-            if (isRollupOrigin(buildPlan?.sources?.[sourceID]?.origin)) {
-               return (
-                  mayAttempt("rollup", switches) &&
-                  plan.rollupsKeepingGates.has(sourceID)
-               );
-            }
-            return keepsGatesWhenReadExact(
-               "served",
-               [
-                  {
-                     tier,
-                     ownGateKept: tier === "storage" && ownGateKept(sourceID),
-                     holdsOnlyUngatedRows:
-                        tier === "storage" && holdsOnlyUngatedRows(sourceID),
-                     ...(tier === "storage"
-                        ? { gateColumnTypes: ownGateColumnTypes(sourceID) }
-                        : {}),
-                  },
-               ],
+         keepsGate: (sourceID, tier) =>
+            verdictKeepsGate(
+               isRollupOrigin(buildPlan?.sources?.[sourceID]?.origin)
+                  ? {
+                       rollup: true,
+                       keptAtPlan: plan.rollupsKeepingGates.has(sourceID),
+                    }
+                  : {
+                       rollup: false,
+                       table: {
+                          tier,
+                          ownGateKept:
+                             tier === "storage" && ownGateKept(sourceID),
+                          holdsOnlyUngatedRows:
+                             tier === "storage" &&
+                             holdsOnlyUngatedRows(sourceID),
+                          ...(tier === "storage"
+                             ? { gateColumnTypes: ownGateColumnTypes(sourceID) }
+                             : {}),
+                       },
+                    },
                switches,
-            );
-         },
+            ),
          refusedAtBind: (sourceID, source, tier) =>
             this.refusedAtBind(sourceID, source, tier),
          boundEntityIds: new Set(Object.keys(host.databaseEntries() ?? {})),
@@ -712,7 +726,7 @@ export class ServeVerdicts {
       } catch (error) {
          logger.debug("Could not read which sources the entry points reach", {
             packageName: this.host.packageName(),
-            error: errMessage(error),
+            code: errorCodeOf(error),
          });
          index = undefined;
       }
@@ -869,4 +883,23 @@ function servePathOf(
       path: "live",
       reason: preview.problems.get(v.sourceID) ?? v.reason ?? "not_rerooted",
    };
+}
+
+/**
+ * Whether a source's own table keeps its entry point's gates, as the serve
+ * verdict reports it: the router's own question, asked before any query. A
+ * rollup is asked of its leg past a gate, with its variant proven at plan
+ * (`keptAtPlan`); any other table of the served copy's leg over that table,
+ * read exactly.
+ */
+export function verdictKeepsGate(
+   source:
+      | { rollup: true; keptAtPlan: boolean }
+      | { rollup: false; table: TableRead },
+   switches: GateSwitches,
+): boolean {
+   if (source.rollup) {
+      return mayAttempt("rollup", switches) && source.keptAtPlan;
+   }
+   return keepsGatesWhenReadExact("served", [source.table], switches);
 }

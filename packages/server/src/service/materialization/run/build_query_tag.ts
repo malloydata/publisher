@@ -19,7 +19,7 @@
  * Pinned to @malloydata/malloy 0.0.427.
  */
 
-import { errorCodeOf } from "./error_code";
+import { errorCodeOf } from "../../../error_code";
 import { snowflakeSetQueryTagStatement } from "./warehouse_sql";
 import type { components } from "../../../api";
 import { logger } from "../../../logger";

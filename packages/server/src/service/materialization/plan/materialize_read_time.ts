@@ -69,7 +69,7 @@ export function declarationOf(def: SourceDefLike): TermUse | undefined {
 /**
  * The given-reading `where:` terms of a materialized source (the `given` kind
  * of its classified terms, {@link classifyWhereTerms}), each one its own
- * declaration writes and over stored columns only, or why one is not (P2).
+ * declaration writes and over stored columns only, or why one is not.
  * See the module comment for why each refusal is one. A term that reads both
  * a given and the current time is not this function's: rolling_window.ts
  * refuses it.

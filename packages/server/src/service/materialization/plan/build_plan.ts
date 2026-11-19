@@ -23,6 +23,7 @@
  */
 
 import { refusalKey, tierOf } from "./refusal_key";
+import { errorCodeOf } from "../../../error_code";
 import type { KeyCheckCompiler } from "../domain/key_check";
 import {
    exploreOf,
@@ -125,8 +126,10 @@ export {
 } from "./materialize_compile";
 import {
    PERSIST_VIEW_NOT_BUILT,
+   persistedQueryReadsGivenRefusal,
    persistedQueryRefusalFinding,
    persistedQueryRefusalKey,
+   persistedViewReadsGivenRefusal,
    persistedViewRefusalFinding,
    planModelPersistedViews,
 } from "./persisted_view";
@@ -145,8 +148,12 @@ import {
    type MaterializedBases,
 } from "./rollup_compile";
 import { compileV1BuildCompanion } from "./v1_build_companion";
-import { measureRefusalKey, rollupGateEnforcedAtRead } from "./rollup_plan";
-import { rollupRefusalFinding } from "./rollup_plan";
+import {
+   measureRefusalKey,
+   rollupGateEnforcedAtRead,
+   rollupReadsGivenRefusal,
+   rollupRefusalFinding,
+} from "./rollup_plan";
 import {
    getMaterializeEnabled,
    getPersistCollisionEnforce,
@@ -418,7 +425,7 @@ export async function resolvePackageConnections(
          map.set(name, await pkg.getMalloyConnection(name));
       } catch (err) {
          logger.warn(`Failed to resolve connection ${name}`, {
-            error: errMessage(err),
+            code: errorCodeOf(err),
          });
       }
    }
@@ -592,7 +599,7 @@ export async function classifyPersistSourceGate(
    } catch (err) {
       logger.warn("Failed to classify persist source gate; refusing", {
          sourceID: persistSource.sourceID,
-         error: errMessage(err),
+         code: errorCodeOf(err),
       });
       return { classification: "rejected", attributed: false };
    }
@@ -817,7 +824,8 @@ async function collectGeneratedMaterialize(
          givens: authorDef.givens ?? {},
          sourceRegistry: (authorDef as { sourceRegistry?: unknown })
             .sourceRegistry,
-         // P9's probes compile against the author's model, never run.
+         // The caller-dependence probes compile against the author's model,
+         // never run.
          probe: args.materializer,
       });
    addCompanionOutcome(
@@ -849,7 +857,7 @@ async function collectGeneratedMaterialize(
    const generatedPlans = new Map<PersistSource, MaterializePlan>();
    const rename = new Map<string, string>();
    // A build source of another file's companion, which a cross-file
-   // extension's build reads (P10): that file plans its table, and this
+   // extension's build reads: that file plans its table, and this
    // model's builds name it by the author's source, so the extension orders
    // after it.
    const ownIDs = new Set(generated.plans.map((p) => p.sourceID));
@@ -865,7 +873,7 @@ async function collectGeneratedMaterialize(
    }
    // A source declared in a generated file that no plan names (a parent an
    // extension's build copy re-roots on its build source, and the extension
-   // over it, P10) is on that build source's table: not a build of its own.
+   // over it) is on that build source's table: not a build of its own.
    const unplannedGenerated = (id: string) =>
       !rename.has(id) &&
       generated.generatedURLs.has(splitSourceID(id)?.url ?? "");
@@ -967,24 +975,7 @@ async function collectGeneratedRollups(
          addAnnotationFinding(
             parts,
             rollupRefusalFinding(
-               {
-                  tier: "unservable",
-                  code: ROLLUP_NOT_BUILT_CODE,
-                  message:
-                     `#(rollup) rollup of source "${plan.baseSourceName}" at ` +
-                     `(${plan.grainDimensions.join(", ")}) is not built, so its measures ` +
-                     "are served live: its rows read a given, and a table holds one " +
-                     "value's rows.",
-                  sourceName: plan.baseSourceName,
-                  refused: {
-                     sourceID: source.sourceID,
-                     name: source.name,
-                     tier: tierOf(plan.storage),
-                     // A given read while the stored relation is built,
-                     // as every other mechanism names it.
-                     reason: "reads_given",
-                  },
-               },
+               rollupReadsGivenRefusal(plan, source),
                args.modelPath,
             ),
          );
@@ -1025,7 +1016,7 @@ async function collectGeneratedRollups(
 }
 
 /**
- * The `#@ persist` views (P14) a model declares:
+ * The `#@ persist` views a model declares:
  * one generated build source per view, planned only in the model that
  * declares the view's source, so a view is listed once however many models
  * import it. Each keeps its compiled `sourceID`
@@ -1079,8 +1070,6 @@ async function collectGeneratedPersistedViews(
    const queryByID = new Map(
       generated.queries.map((p) => [p.buildSourceID, p]),
    );
-   const readsAGiven =
-      "its result reads a given, so it differs per caller and a table holds one caller's result";
    const targets = withoutGivenReadingTargets(
       await generated.runtime.getBuildTargets(generated.model),
       (source) => {
@@ -1090,29 +1079,15 @@ async function collectGeneratedPersistedViews(
             addAnnotationFinding(
                parts,
                persistedViewRefusalFinding(
-                  {
-                     ...plan,
-                     reason: readsAGiven,
-                     outcome: { refused: "reads_given" },
-                  },
+                  persistedViewReadsGivenRefusal(plan),
                   args.modelPath,
                ),
             );
          } else if (query) {
-            // The query's own stages, its source's own given-reading
-            // `where:`, or one it inherits: a build would read the given.
             addAnnotationFinding(
                parts,
                persistedQueryRefusalFinding(
-                  {
-                     queryName: query.queryName,
-                     reason: readsAGiven,
-                     refusal: "reads_given",
-                     declaringURL: query.declaringURL,
-                     ...(query.storage !== undefined
-                        ? { storage: query.storage }
-                        : {}),
-                  },
+                  persistedQueryReadsGivenRefusal(query),
                   args.modelPath,
                ),
             );
@@ -1446,7 +1421,7 @@ async function collectGeneratedTables(
          keyCheckCompilers,
          crossFileCompanions,
       });
-      // `#@ persist` on a view (P14), under the same switch.
+      // `#@ persist` on a view, under the same switch.
       await collectGeneratedPersistedViews(parts, {
          modelPath,
          packagePath,
@@ -1574,19 +1549,23 @@ function reportPersistLineFindings(
    args: CollectArgs & { planModel: MalloyModel },
 ): void {
    const { modelPath, packagePath, malloyModel, planModel } = args;
-   const parseErrors = targets.tagParseLog.filter((msg) => {
-      logger.warn("Persist annotation issue", {
+   // Logged at debug, by Malloy's code: an error is also a finding below,
+   // which is what an operator sees.
+   for (const msg of targets.tagParseLog) {
+      logger.debug("Persist annotation issue", {
          modelPath,
-         message: msg.message,
+         code: msg.code,
          severity: msg.severity,
       });
-      return msg.severity === "error";
-   });
+   }
+   const parseErrors = targets.tagParseLog.filter(
+      (msg) => msg.severity === "error",
+   );
 
    // A `#@` line that does not parse is reported by what it cost. Malloy drops
    // a source only when none of its `#@` lines parse; when another does, the
    // source is still planned, built without the broken line's directives.
-   // A location in the build copy (D3) sits one line below the author's,
+   // A location in the build copy sits one line below the author's,
    // since the copy opens with the flag: the finding names the author's line.
    // The copy's own location still matches the planned sources' notes.
    const companionURL =
@@ -1703,8 +1682,18 @@ async function planV1PersistSources(
                model: declaredIn,
             });
          }
-      } catch {
-         // No findings for a source whose annotations cannot be read.
+      } catch (err) {
+         // The source is still planned, so its gate is classified below;
+         // only its annotation findings are lost, which this line reports.
+         logger.warn(
+            "Failed to read a persist source's annotations; planned without their findings",
+            {
+               modelPath,
+               sourceID,
+               sourceName: source.name,
+               code: errorCodeOf(err),
+            },
+         );
       }
       classificationCtx ??= {
          modelDef: modelDefOf(malloyModel),
@@ -1799,7 +1788,7 @@ export function deriveBuildPlan(
             sourceID,
             sourceName: source.name,
             reason,
-            error: errMessage(err),
+            code: errorCodeOf(err),
          });
          omitted.push({ sourceID, reason });
       }
@@ -2438,7 +2427,7 @@ export function collectIncrementalDeclarations(
          // declaration it can read.
          logger.warn("Failed to resolve a source's incremental declaration", {
             sourceID,
-            error: errMessage(err),
+            code: errorCodeOf(err),
          });
       }
    }

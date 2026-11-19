@@ -11,7 +11,7 @@
  * its store.
  */
 
-import { errorCodeOf } from "./error_code";
+import { errorCodeOf } from "../../../error_code";
 import { leafKey } from "../domain/physical_table";
 import { MaterializationConflictError } from "../../../errors";
 import { logger } from "../../../logger";

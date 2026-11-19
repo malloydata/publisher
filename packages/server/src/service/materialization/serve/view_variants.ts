@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * Persisted-view variants (P14): the router's view leg for `#@ persist` on a
+ * Persisted-view variants: the router's view leg for `#@ persist` on a
  * view.
  *
  * A persisted view's table holds the view's result, so it answers a query
@@ -38,8 +38,8 @@
  *
  * Route, then govern: the source's row-level gates are written on the
  * variant's source, so `govern()` grafts and proves them on the variant as on
- * live (R3). Only a view whose gate fields it groups by is ever built
- * (question 3, `persisted_view_compile.ts`), and a gated entry point is tried
+ * live. Only a view whose gate fields it groups by is ever built
+ * (`persisted_view_compile.ts`), and a gated entry point is tried
  * only with `PUBLISHER_MATERIALIZE_GATED_SOURCES` on.
  *
  * Behind `materialize.enabled`.
@@ -145,7 +145,7 @@ export interface ViewAnswer {
       tablePath?: string;
       destinationName?: string;
    };
-   /** Where `govern()` grafts the source's gates on the variant (R3). */
+   /** Where `govern()` grafts the source's gates on the variant. */
    graftScope: GraftScope;
 }
 
@@ -632,7 +632,7 @@ export async function compilePersistedResultVariant(args: {
    const read = table.binding
       ? storedColumnCasts(
            // Matched by a unique case fold too, as the served copy matches:
-           // a warehouse that folded the build's quoted aliases (P3-06..09).
+           // a warehouse that folded the build's quoted aliases.
            canonicalStoredSchema(
               table.binding.schema,
               shape.columns.map((c) => c.name),
@@ -714,6 +714,9 @@ export async function compilePersistedResultVariant(args: {
    });
 }
 
+/** The failed variants {@link readStoredVariant} has warned of. */
+const warnedFailures = new WeakSet<object>();
+
 /**
  * Compile the caller's text on a compiled variant and check that its SQL
  * reads the stored table, or throw a {@link LegDecline}: the tail every
@@ -755,11 +758,14 @@ export async function readStoredVariant(args: {
            }
          : args.buildManifest;
    if (!variant.materializer || !variant.modelDef) {
-      logger.warn("A persisted-view variant did not compile", {
-         modelPath: args.modelPath,
-         view: args.subject,
-         error: variant.error,
-      });
+      // Warned once per compiled variant: the leg asks on every query.
+      const fields = { modelPath: args.modelPath, view: args.subject };
+      if (warnedFailures.has(variant)) {
+         logger.debug("A persisted-view variant did not compile", fields);
+      } else {
+         warnedFailures.add(variant);
+         logger.warn("A persisted-view variant did not compile", fields);
+      }
       throw new LegDecline(
          "view_missing_field",
          "the query does not compile against the stored view",

@@ -23,7 +23,7 @@
  * served copy answers the table's big-integer columns live.
  */
 
-import { errorCodeOf } from "./error_code";
+import { errorCodeOf } from "../../../error_code";
 import { logger } from "../../../logger";
 import { nativeTypeCatalogRead, type NativeColumn } from "./warehouse_sql";
 

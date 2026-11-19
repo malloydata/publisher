@@ -8,7 +8,7 @@
  * The package facade (`PackageMaterialization`), the run's services
  * (`MaterializationService`, `Reclaimer`, `MaterializationScheduler`) and the
  * host port's types. Callers outside the module still reach past it into the
- * layers; each is listed in the import-direction allowlist (R10) with the
+ * layers; each is listed in the import-direction allowlist with the
  * step that moves it here, and the list only shrinks.
  *
  * Re-exports only.

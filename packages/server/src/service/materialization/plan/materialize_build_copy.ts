@@ -48,7 +48,7 @@ import {
 
 /**
  * Ends the name of a build copy: the author's file with one materialized
- * source's given-reading `where:` terms taken out (P2).
+ * source's given-reading `where:` terms taken out.
  */
 const MATERIALIZE_BUILD_COPY_SUFFIX = ".materialize-build.malloy";
 
@@ -63,12 +63,12 @@ export function buildCopyName(modelFileName: string, index: number): string {
 
 /**
  * The build copy of one planned source's declaring file: `text` with that
- * source's left-out read-time terms replaced by `true` (P2, and a current-time
+ * source's left-out read-time terms replaced by `true` (and a current-time
  * upper bound), so a query over the
  * copy's source applies every `where:` but those, or why a term cannot be
  * placed (see {@link termSpans}), which refuses the source rather than guess.
  *
- * With `liftAccess` (P3), the source's own access modifiers are lifted too
+ * With `liftAccess`, the source's own access modifiers are lifted too
  * ({@link accessLiftEdits}) and the declaration is wrapped in
  * `include { public: * }`, which lifts the `internal` fields it inherits, so
  * the build can select its hidden fields. A field private on a source it
@@ -82,7 +82,7 @@ export function buildCopyName(modelFileName: string, index: number): string {
  * reads that one's given, and the eligibility gate refuses its build
  * (`reads_given`).
  *
- * For an extension table (P10), `chain` names its parent's plan and the file
+ * For an extension table, `chain` names its parent's plan and the file
  * the parent's build source is imported from: the copy also re-roots the
  * parent's declaration on that build source ({@link rerootOnBuildSource}) and
  * imports it, so the extension, as written, reads the parent's table.
@@ -223,7 +223,7 @@ export function buildCopyDeclarationAt(
    return undefined;
 }
 
-/** Lifts the `internal` fields a build copy's source inherits (P3). */
+/** Lifts the `internal` fields a build copy's source inherits. */
 const LIFT_INHERITED = " include { public: * }";
 
 /** The compiler flag `include { … }` needs, as the build copy's first line. */
@@ -235,11 +235,11 @@ const ACCESS_NOT_LIFTED =
 
 /**
  * The edits {@link buildCopyText} makes to `text`: the plan's given-reading
- * terms (P2) and its current-time terms that hold an upper bound (Rolling
+ * terms and its current-time terms that hold an upper bound (Rolling
  * windows), its own or inherited, replaced by `true`; with `parent`, the parent's declaration
- * re-rooted on its build source (P10); and with `liftAccess`, the plan's own
+ * re-rooted on its build source; and with `liftAccess`, the plan's own
  * declaration's access modifiers lifted and the declaration wrapped in
- * `include { public: * }` (P3), with the flag `include` needs as the copy's
+ * `include { public: * }`, with the flag `include` needs as the copy's
  * first line. The lift edits only the plan's own declaration, so a chained
  * extension's build sees its hidden fields lifted over its parent's re-root
  * exactly as over the raw chain.
@@ -358,7 +358,7 @@ export function chainCopyName(
 
 /**
  * The build copy of an extension table whose parent is declared in another
- * file (P10 across files), as two texts:
+ * file (across files), as two texts:
  *
  *  - `parentCopy`, the parent's file with the parent re-rooted on its build
  *    source ({@link rerootOnBuildSource}), which it imports from
@@ -473,7 +473,7 @@ export function storedSourceCopyText(
 }
 
 /**
- * A parent's declaration in an extension's build copy (P10): `<name> is
+ * A parent's declaration in an extension's build copy: `<name> is
  * <build source>`, then the blocks that undo its renames
  * ({@link inverseRenameBlocks}), then its own trailing `extend` run less each
  * computed dimension its table stores, so the stored column stands in for it,

@@ -16,7 +16,7 @@
  */
 
 import { tableNamesFoldCase } from "../domain/storage_table_path";
-import { errorCodeOf } from "./error_code";
+import { errorCodeOf } from "../../../error_code";
 import { instructionTier } from "../domain/placement";
 import {
    instructedTable,
@@ -177,7 +177,7 @@ async function checkBuiltKeys(
    entry: ManifestEntry,
 ): Promise<void> {
    const { compiled } = run;
-   // A rollup's key checks (known limitation 29). Auto-run only; never
+   // A rollup's key checks. Auto-run only; never
    // fails the build.
    if (!orchestrated && run.uniqueness) {
       await checkRollupKeys(
@@ -194,7 +194,7 @@ async function checkBuiltKeys(
    // A pair table (an inlined join_many): its leaf's key unique and never
    // NULL, checked over the leaf source's rows on the source's own
    // connection, which the served copy needs before it serves a count
-   // through the path (known limitation 40). Never fails the build.
+   // through the path. Never fails the build.
    if (!orchestrated && run.uniqueness) {
       await checkPairLeafKeys(
          run.uniqueness,
@@ -536,7 +536,7 @@ export class InstructedBuild {
          await this.buildEveryTable(run, builds, tables, connections);
          // Stopped during the last source: the loop has nothing left to
          // check before, so the run settles CANCELLED here rather than
-         // committing a partial manifest that would serve (P5-10).
+         // committing a partial manifest that would serve.
          if (run.signal?.aborted) throw new BuildCancelledError();
 
          settled = settleRefusals(run);
@@ -591,7 +591,7 @@ export class InstructedBuild {
       }
 
       // A rollup this run carried keeps its key check's record while its
-      // table stands as that check found it (known limitation 29).
+      // table stands as that check found it.
       if (uniqueness) carryRollupKeys(run, uniqueness);
 
       return {
@@ -1126,7 +1126,7 @@ export class InstructedBuild {
               )
             : undefined;
 
-         // An inlined join_one must match at most one row (P8): checked on
+         // An inlined join_one must match at most one row: checked on
          // the source's own connection before anything is written.
          // Auto-run skips one whose joined table provably did not change
          // since it last passed (inline_uniqueness.ts).
@@ -1770,7 +1770,7 @@ async function storedJoinOf(
 
 /**
  * The key checks of a rollup just built, recorded against the table written:
- * its own (a join_one keyed on its grain, known limitation 29) and its base's
+ * its own (a join_one keyed on its grain) and its base's
  * primary key, both over the base's rows on the source's own connection, the
  * rows a build from the author's definition groups; and the primary key of
  * each query source that reads a database rollup through a join_many on it.
@@ -1830,7 +1830,7 @@ async function checkRollupKeys(
    );
 }
 
-/** The key check a run builds for the rollup `sourceID`, if any (known limitation 29). */
+/** The key check a run builds for the rollup `sourceID`, if any. */
 function rollupKeyCheckOf(
    compiled: RunPlan,
    sourceID: string,
@@ -2250,7 +2250,7 @@ async function overStoredBaseSource(
  *    over the base's entry alone must read that table, and its columns must
  *    be the planned rollup's, by name, type and numeric subtype. The rows
  *    are the base's either way, as an extension's build over its parent's
- *    table (P10).
+ *    table.
  *
  * The three `#(materialize)` checks are defensive: a compile that re-roots
  * the base as planned passes all three, so none is false in practice. Each

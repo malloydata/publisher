@@ -224,7 +224,7 @@ function emitRollupBuildSource(plan: RollupVariantPlan): string {
       .join("\n");
    // A grain an `internal` gate field is in reads it through
    // `include { public: * }`, which lifts the fields the base hides from a
-   // query (A4); the SQL, and so the table's address, is the same.
+   // query; the SQL, and so the table's address, is the same.
    const base = identifier(rollupBaseAlias(plan.baseDeclaredName));
    const from =
       (plan.internalGrain ?? []).length > 0

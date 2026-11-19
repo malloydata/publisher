@@ -25,7 +25,7 @@ import { instructionTier } from "../domain/placement";
 import { AsyncLocalStorage } from "async_hooks";
 import { getPersistStorageMode } from "../../../config";
 import { causeChain } from "../../../driver_errors";
-import { errorCodeOf } from "./error_code";
+import { errorCodeOf } from "../../../error_code";
 import { logger } from "../../../logger";
 import {
    type BuildKind,

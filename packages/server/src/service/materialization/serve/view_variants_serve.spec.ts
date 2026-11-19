@@ -247,10 +247,11 @@ describe("PersistedViewServe (database)", () => {
          );
          const [message, meta] = warn.firstCall.args as unknown as [
             string,
-            { error?: string },
+            Record<string, unknown>,
          ];
          expect(message).toBe("A persisted-view variant did not compile");
-         expect(meta.error).toBe("no context");
+         // The compile's text never reaches the log.
+         expect(meta).not.toHaveProperty("error");
       } finally {
          warn.restore();
       }

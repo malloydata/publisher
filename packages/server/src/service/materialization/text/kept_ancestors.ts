@@ -124,7 +124,7 @@ interface LocatedAncestor extends KeptAncestor {
  * The ancestors of `sourceID` whose blocks its re-root can keep, nearest
  * first, from the compiled model: up `extend` and rename hops, each in
  * whatever file declares it, so an extension declared in a file that imports
- * its base's file keeps that base's blocks too (P2-22). A query-shaped
+ * its base's file keeps that base's blocks too. A query-shaped
  * ancestor (`x is y -> { … } extend { … }`) is kept, and the walk stops
  * there: its trailing run is over its query's output, which is what its
  * extensions' tables store. Each ancestor's renames are the ones declared in
@@ -166,7 +166,7 @@ export function keptAncestorChain(
  * one only when the extension holds every field of its base: an `except:`
  * drops one, so `no_region is orders extend { except: region }` gets no
  * edge, and a measure, view or join `orders` declares was lost from the
- * re-root (F-08, `fields_not_carried`). Its base is the source of the name
+ * re-root (`fields_not_carried`). Its base is the source of the name
  * the declaration reads (`<name> is <base> extend …`), in its own file or
  * one it imports, when that is a table-backed source on the same table and
  * every field the source has that its own statement does not declare is
@@ -315,7 +315,7 @@ export function confirmedAncestors(
 
 /**
  * Whether `runText`, written in the file at `ancestorURL`, reads every name
- * the same way compiled in the file at `childURL` (P2-22, review).
+ * the same way compiled in the file at `childURL` (review).
  *
  * The guarantee is structural, from two conditions:
  *

@@ -3,7 +3,7 @@
 
 /**
  * A stored answer's big integers, as live gives them on a dialect whose live
- * answer rounds them (known limitation 12).
+ * answer rounds them.
  *
  * Live on Postgres reads its rows through JSON, so an integer past 2^53
  * becomes the nearest JavaScript number, and Malloy gives a field it types
@@ -30,7 +30,7 @@ import { capabilitiesOf } from "./dialect";
 
 /**
  * Whether live rounds a source's big integers through JSON in the one way
- * measured (Postgres, by the R4 big-integer and rollup parity specs): to the
+ * measured (Postgres, by the r4 big-integer and rollup parity specs): to the
  * nearest double, as a BigInt below 1e21 and a number from it. A `storage=`
  * answer on such a source is read exactly and rounded after it runs as
  * live's is ({@link roundBigIntegersAsLive}). The other dialects whose live

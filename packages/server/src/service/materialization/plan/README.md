@@ -7,8 +7,8 @@ runs: on the package-load worker its connection refuses SQL.
 
 ## What it produces
 
-One `TablePlan` per planned table (`domain/table_plans.ts`), in
-`CompiledBuildPlan.tables`, keyed by `sourceID`: the planned source, its
+One `TablePlan` per planned table (`domain/table_plans.ts`), in the compiled
+plan's `tables`, keyed by `sourceID`: the planned source, its
 build target, its declaring model, its classified gate, its stored-table key
 check, and its kind, fixed by the planner that made it:
 
@@ -28,7 +28,13 @@ tables into the wire `BuildPlan`; `derivePackagePlan` into the
 `PackagePlan` (`domain/package_plan.ts`): every planned table as data, the
 wire plan and what serving and the load gate read beside it, the one plan
 shape that crosses the load worker. The worker and the main thread finish a
-package's parts through the one tail (`finishPackagePlan`).
+package's parts through the one tail (`finishPackagePlan`). The facade holds
+the adopted plan as one immutable record (`PlanState`, in `plan_lifecycle.ts`),
+and a load, a re-derivation, a run and a package compile read one load-gate
+text off it (`load_gate_text.ts`). A run reads the plan only through
+`run/run_plan.ts`, which compiles the package and derives its `PackagePlan`
+as a load does; only a run's plan compiles the key checks its builds run
+(`compileRunKeyChecks`).
 
 ## The build path
 
@@ -88,8 +94,9 @@ Of materialization's layers, it may import `domain/`, `text/` and
 `governance/ir`; it also reads server modules outside materialization (the
 configuration, the annotation reader, the gate classification and the like).
 It must not import `run/`, `serve/` or `service/model.ts` (rule R7), and
-plan, run and serve never import one another (R8); its logging and metrics
-are being moved out (H5). The edges that remain are listed, each with the step
+plan, run and serve never import one another (R8); the planners that still
+log or count are listed (H5), and each logs an error by its code, never its
+text (`never_log_rule.spec.ts`). The edges that remain are listed, each with the step
 that removes it, in `materialization_allowlists.mjs`.
 
 ## Where things are added

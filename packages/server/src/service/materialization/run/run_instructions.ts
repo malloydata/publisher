@@ -227,7 +227,9 @@ function gateSources(
                // A refused rollup never fails the run: the author asked for
                // nothing they can see.
                if (!isRollup) refusals.push(err);
-               logger.warn(
+               // Info, not warn: a refusal is a property of the model, the
+               // same on every run, and its package warning already says so.
+               logger.info(
                   "Skipping a persist source the eligibility gate refuses",
                   {
                      sourceName: persistSource.name,
