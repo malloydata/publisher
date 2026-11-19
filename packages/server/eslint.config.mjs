@@ -498,11 +498,16 @@ const moduleHeaderRule = {
 export const HISTORY_IN_COMMENT =
    /#\d{3,}\b|\bphase \d|\bstep \d+[a-z]?\b|\bpull request \d|\b20\d\d-\d\d-\d\d\b|\bknown limitation \d|\bquestion \d|\bg-mixed\b|\bPR \d|\b\w+\/\w+#\d/gi;
 /**
- * A plan or review label standing for a concept (`P10`, `G3`, `A7`, `R3`,
- * `P2-41`, `F-08`). Case-sensitive, so a duration (`2d`) or a directory
- * (`r4`) is not one.
+ * A plan or review label standing for a concept, from the plan's own
+ * series: the plan audit's P1–P14, the gate findings G1–G8, the architecture
+ * audit's A1–A7, D1–D3, H1–H6 and R3–R10, a finding id (`P2-41`, `F-08`).
+ * Labels that collide with ordinary words (R1/R2, the leaks L1–L3, a
+ * question Qn) count only in parentheses, as the plan cites them (`(R2)`);
+ * a percentile (`P95`), a quarter (`Q1`) or a cache level (`L2`) do not.
+ * Case-sensitive, so a duration (`2d`) or a directory (`r4`) is not one.
  */
-export const LABEL_IN_COMMENT = /\b[PRGADHQL]\d{1,2}(?:-\d+)?\b|\bF-\d+\b/g;
+export const LABEL_IN_COMMENT =
+   /\b(?:P(?:1[0-4]|[1-9])|G[1-8]|A[1-7]|D[1-3]|H[1-6]|R(?:10|[3-9]))(?:-\d+)?\b|\((?:R[12]|L[1-3]|Q\d{1,2})\)|\bF-\d{2}\b/g;
 const noHistoryCommentsRule = {
    meta: {
       type: "suggestion",

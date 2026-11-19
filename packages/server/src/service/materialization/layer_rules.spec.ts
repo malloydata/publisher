@@ -173,6 +173,29 @@ describe("H1 and H2: the documentation lint rules", () => {
       expect(history?.message).toContain("has 7");
    });
 
+   it("H2 does not read an ordinary word as a plan label", async () => {
+      // A percentile, a quarter, a cache level and a bare R2 bucket; the
+      // ambiguous series count only cited in parentheses, as the plan does.
+      const [clean] = await eslint.lintText(
+         "/** Header. */\n// The P95 latency in Q1, an L2 cache, an R2 bucket.\nexport const x = 1;\n",
+         { filePath: path.join(MZ_DIR, "plan", "__planted__.ts") },
+      );
+      expect(
+         clean.messages.filter(
+            (m) => m.ruleId === "publisher/no-history-comments",
+         ),
+      ).toEqual([]);
+      const [cited] = await eslint.lintText(
+         "/** Header. */\n// Refinement (R2), leak (L2), question (Q14).\nexport const x = 1;\n",
+         { filePath: path.join(MZ_DIR, "plan", "__planted__.ts") },
+      );
+      expect(
+         cited.messages.find(
+            (m) => m.ruleId === "publisher/no-history-comments",
+         )?.message,
+      ).toContain("has 3");
+   });
+
    it("H1: the modules with no header are exactly the seeded ones", () => {
       expectExact(
          "H1",
@@ -441,6 +464,23 @@ function matchesIn(lines: string[], pattern: RegExp): number {
    return n;
 }
 
+/**
+ * file → how many matches of `pattern` its code holds read as one text, so
+ * an expression broken over lines still counts.
+ */
+function countTextMatches(
+   files: string[],
+   pattern: RegExp,
+): Record<string, number> {
+   const out: Record<string, number> = {};
+   for (const file of files) {
+      const text = codeLines(file).join("\n");
+      const n = (text.match(new RegExp(pattern.source, "g")) ?? []).length;
+      if (n > 0) out[srcRel(file)] = n;
+   }
+   return out;
+}
+
 /** file → how many code lines match `pattern`, over `files`. */
 function countMatches(
    files: string[],
@@ -677,10 +717,11 @@ const SWITCH_READ =
 
 /**
  * A tier decided in place: a `? "storage" : "database"` ternary (either
- * way round), or a destination tested beside a storage mode.
+ * way round, over line breaks), or a destination tested beside the storage
+ * mode (not beside any other mode, such as a run's).
  */
 const TIER_DECISION =
-   /\?\s*["'`](storage|database)["'`]\s*:\s*["'`](database|storage)["'`]|\bdestination\w*\s*&&[^;]*\b\w*[mM]ode\b/;
+   /\?\s*["'`](storage|database)["'`]\s*:\s*["'`](database|storage)["'`]|\bdestination\w*\s*&&[^;\n]*(\bgetPersistStorageMode\(|\b\w*[sS]torageMode\b)/;
 
 /**
  * A table name compared outside the identity module: case-folded, its quotes
@@ -688,7 +729,7 @@ const TIER_DECISION =
  */
 const TABLE_IDENTITY = new RegExp(
    [
-      String.raw`\b\w*(?:[tT]able|tablePath)\w*\??\.toLowerCase\(\)`,
+      String.raw`\b\w*(?:[tT]able|tablePath)\w*\??\.to(?:Locale)?(?:Lower|Upper)Case\(`,
       String.raw`\b\w*(?:[tT]able|tablePath)\w*\??\.replace\(\s*\/[^/\n]*["'\x60][^/\n]*\/g?\s*,\s*(?:""|''|\x60\x60)\s*\)`,
       String.raw`\$\{[^}]*[tT]able\w*[^}]*\}(?:\\u0000|:)\$\{`,
       String.raw`(?:\\u0000|:)\$\{[^}]*[tT]able\w*[^}]*\}`,
@@ -699,8 +740,8 @@ const TABLE_IDENTITY = new RegExp(
 const STORED_TYPE_PATTERN =
    /\/(?:[^/\n\\]|\\.)*\b(DOUBLE|FLOAT|INT128|HUGEINT|TIMESTAMPTZ|VARCHAR)\b(?:[^/\n\\]|\\.)*\/[gimsuy]*/;
 
-/** SQL or a connection reached from serve/. */
-const SERVE_IO = /\.runSQL\(|\blookupConnection\(/;
+/** SQL or a connection reached from serve/, in any of the runner's forms. */
+const SERVE_IO = /\.run(?:Raw)?SQL\w*\(|\blookupConnection\(/;
 
 /** The words of domain/vocabulary.ts: a kind, a tier or a leg. */
 const VOCABULARY = new Set<string>([...TABLE_KINDS, ...TIERS, ...LEGS]);
@@ -741,8 +782,9 @@ function vocabularyRestatements(sf: ts.SourceFile): number {
 
 describe("the domain model's ratchets", () => {
    it("the switches are read only by config.ts, the facade and the query pipeline", () => {
+      // The rule is materialization's: its modules and the shells beside
+      // them. Elsewhere in the server a switch is read where it is used.
       const free = new Set([
-         "config.ts",
          "service/materialization/package_materialization.ts",
          "service/model.ts",
          "service/query_serving.ts",
@@ -750,7 +792,9 @@ describe("the domain model's ratchets", () => {
       expectCounts(
          "switch reads",
          countMatches(
-            serverFiles().filter((f) => !free.has(srcRel(f))),
+            [...mzFiles(), ...SHELLS.map((f) => path.join(SRC_DIR, f))].filter(
+               (f) => !free.has(srcRel(f)),
+            ),
             SWITCH_READ,
          ),
          lists.RATCHET_SWITCH_READS,
@@ -766,7 +810,7 @@ describe("the domain model's ratchets", () => {
       );
       expectCounts(
          "tier decisions",
-         countMatches(files, TIER_DECISION),
+         countTextMatches(files, TIER_DECISION),
          lists.RATCHET_TIER_DECISIONS,
       );
    });
@@ -823,19 +867,59 @@ describe("the domain model's ratchets", () => {
          admitRead: "service/materialization/serve/read_admission.ts",
       };
       const actual: Record<string, true> = {};
+      // The modules that define them; a namespace import, a re-export or a
+      // dynamic import of one reaches them as surely as a named import.
+      const homes = /\/domain\/(gate_policy|admission)["'`]$/;
       for (const file of serverFiles()) {
          const sf = parse(file);
+         const rel = srcRel(file);
+         const reach = (name: string) => {
+            if (name in owners && owners[name] !== rel) {
+               actual[`${rel}#${name}`] = true;
+            }
+         };
          for (const st of sf.statements) {
-            if (!ts.isImportDeclaration(st)) continue;
-            const b = st.importClause?.namedBindings;
-            if (!b || !ts.isNamedImports(b)) continue;
-            for (const e of b.elements) {
-               const name = (e.propertyName ?? e.name).text;
-               if (name in owners && owners[name] !== srcRel(file)) {
-                  actual[`${srcRel(file)}#${name}`] = true;
+            if (ts.isImportDeclaration(st)) {
+               const b = st.importClause?.namedBindings;
+               if (b && ts.isNamedImports(b)) {
+                  for (const e of b.elements)
+                     reach((e.propertyName ?? e.name).text);
+               } else if (
+                  b &&
+                  ts.isNamespaceImport(b) &&
+                  homes.test(st.moduleSpecifier.getText(sf))
+               ) {
+                  const ns = b.name.text;
+                  const text = sf.getFullText();
+                  for (const name of Object.keys(owners)) {
+                     if (new RegExp(`\\b${ns}\\.${name}\\b`).test(text))
+                        reach(name);
+                  }
+               }
+            }
+            if (ts.isExportDeclaration(st) && st.moduleSpecifier) {
+               const b = st.exportClause;
+               if (b && ts.isNamedExports(b)) {
+                  for (const e of b.elements)
+                     reach((e.propertyName ?? e.name).text);
+               } else if (!b && homes.test(st.moduleSpecifier.getText(sf))) {
+                  for (const name of Object.keys(owners)) reach(name);
                }
             }
          }
+         const visit = (n: ts.Node): void => {
+            if (
+               ts.isCallExpression(n) &&
+               n.expression.kind === ts.SyntaxKind.ImportKeyword &&
+               n.arguments[0] &&
+               homes.test(n.arguments[0].getText(sf)) &&
+               !Object.values(owners).includes(rel)
+            ) {
+               actual[`${rel}#import()`] = true;
+            }
+            ts.forEachChild(n, visit);
+         };
+         visit(sf);
       }
       const listed = lists.RATCHET_ADMISSION_IMPORTS as Record<string, string>;
       expectExact("admission imports", actual, listed);
@@ -904,6 +988,18 @@ describe("the domain model's ratchets", () => {
          TIER_DECISION.test(`destinations && getPersistStorageMode() === "on"`),
       ).toBe(true);
       expect(TIER_DECISION.test(`tier: placement.tier,`)).toBe(false);
+      expect(
+         TIER_DECISION.test(`tier: d\n   ? "storage"\n   : "database",`),
+      ).toBe(true);
+      expect(
+         TIER_DECISION.test(`destinationName && run.mode === "orchestrated"`),
+      ).toBe(false);
+      expect(TIER_DECISION.test(`destination && storageMode !== "off"`)).toBe(
+         true,
+      );
+      expect(TABLE_IDENTITY.test("tableName.toLocaleLowerCase()")).toBe(true);
+      expect(SERVE_IO.test("connection.runSQLStream(sql)")).toBe(true);
+      expect(SERVE_IO.test("connection.runRawSQL(sql)")).toBe(true);
       expect(TABLE_IDENTITY.test("physicalTableName.toLowerCase()")).toBe(true);
       expect(TABLE_IDENTITY.test(`tableName.replace(/["\`]/g, "")`)).toBe(true);
       expect(TABLE_IDENTITY.test("`${conn}\\u0000${physicalTableName}`")).toBe(

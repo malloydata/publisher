@@ -186,8 +186,6 @@ export const RATCHET_DIALECT_LITERALS = {
 export const RATCHET_LONG_FUNCTIONS = {};
 /** Switch reads outside config.ts, the facade and the query pipeline, per file. */
 export const RATCHET_SWITCH_READS = {
-   "main_server.ts": { count: 1, step: "2q" },
-   "service/annotation_near_miss.ts": { count: 2, step: "2q" },
    "service/environment.ts": { count: 2, step: "2q" },
    "service/materialization/plan/addressing.ts": { count: 3, step: "2q" },
    "service/materialization/plan/build_plan.ts": { count: 3, step: "2q" },
@@ -218,12 +216,16 @@ export const RATCHET_SWITCH_READS = {
  * record that carries it should read the record's `tier`.
  */
 export const RATCHET_TIER_DECISIONS = {
+   "service/materialization/plan/materialization_eligibility.ts": {
+      count: 1,
+      step: "2q",
+   },
    "service/materialization/plan/eligibility_collect.ts": {
       count: 2,
       step: "2q",
    },
    "service/materialization/plan/refusal_key.ts": { count: 1, step: "2q" },
-   "service/materialization/plan/rollup_plan.ts": { count: 1, step: "2q" },
+   "service/materialization/plan/rollup_plan.ts": { count: 2, step: "2q" },
    "service/materialization/run/instructed_build.ts": { count: 2, step: "2q" },
    "service/materialization/run/materialization_service.ts": {
       count: 2,
@@ -231,7 +233,7 @@ export const RATCHET_TIER_DECISIONS = {
    },
    "service/materialization/run/run_instructions.ts": { count: 3, step: "2q" },
    "service/materialization/run/source_build.ts": { count: 1, step: "2q" },
-   "service/materialization/serve/leg.ts": { count: 3, step: "2q" },
+   "service/materialization/serve/leg.ts": { count: 4, step: "2q" },
    "service/materialization/serve/query_path.ts": { count: 3, step: "2q" },
    "service/materialization/serve/serve_verdict.ts": { count: 2, step: "2q" },
    "service/model.ts": { count: 1, step: "2q" },

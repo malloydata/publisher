@@ -36,12 +36,44 @@ const RAW_ERROR = new RegExp(
       String.raw`\$\{\s*${ERR}\s*\}`,
       String.raw`\b${ERR}\.toString\(`,
       String.raw`JSON\.stringify\(\s*${ERR}\s*[,)]`,
+      String.raw`\binspect\(\s*${ERR}\b`,
       String.raw`\.cause\b`,
       // A field whose value is a property holding an error (`result.error`),
       // not a type (`as NodeJS.ErrnoException`) or a code's argument.
       String.raw`\w+:\s*[\w.]+\.(?=[a-z])${ERR}\s*[,}]`,
    ].join("|"),
 );
+
+/**
+ * The same forms over a caught error whatever it is named (`catch (failure)`,
+ * `.catch((problem) => …)`), which {@link ERR}'s naming convention misses.
+ */
+function rawErrorOf(name: string): RegExp {
+   return new RegExp(
+      [
+         String.raw`[{,]\s*${name}\s*[,}]`,
+         String.raw`\w+:\s*${name}\s*[,}]`,
+         String.raw`logger\.\w+\(\s*("[^"]*"|'[^']*'|\x60[^\x60]*\x60)\s*,\s*${name}\s*[,)]`,
+         String.raw`String\(\s*${name}\s*\)`,
+         String.raw`\$\{\s*${name}\s*\}`,
+         String.raw`\b${name}\.(message|stack|cause|toString)\b`,
+         String.raw`(JSON\.stringify|inspect)\(\s*${name}\b`,
+         String.raw`errMessage\(\s*${name}\b`,
+      ].join("|"),
+   );
+}
+
+/** Every name a catch clause or a `.catch` callback binds in `text`. */
+function caughtNames(text: string): string[] {
+   const names = new Set<string>();
+   for (const m of text.matchAll(/\bcatch\s*\(\s*(\w+)/g)) names.add(m[1]);
+   for (const m of text.matchAll(
+      /\.catch\(\s*(?:async\s*)?\(?\s*(\w+)\s*\)?\s*=>/g,
+   )) {
+      names.add(m[1]);
+   }
+   return [...names];
+}
 
 /**
  * Each logger call in `text`, `logger.<level>(...)` or with its level
@@ -88,12 +120,42 @@ describe("materialization logs an error's code, never its text", () => {
       const offenders: string[] = [];
       for (const file of modules()) {
          const text = fs.readFileSync(path.join(__dirname, file), "utf8");
+         const caught = caughtNames(text).map(rawErrorOf);
          for (const call of loggerCalls(text)) {
-            if (RAW_ERROR.test(call.text))
+            if (
+               RAW_ERROR.test(call.text) ||
+               caught.some((raw) => raw.test(call.text))
+            ) {
                offenders.push(`${file}:${call.line}`);
+            }
          }
       }
       expect(offenders).toEqual([]);
+   });
+
+   it("logs through the logger, never the console", () => {
+      const consoled = modules().filter((file) =>
+         /\bconsole\.\w+\(/.test(
+            fs.readFileSync(path.join(__dirname, file), "utf8"),
+         ),
+      );
+      expect(consoled).toEqual([]);
+   });
+
+   it("follows a caught error whatever it is named", () => {
+      const text =
+         "try { f(); } catch (failure) { logger.warn('x', { failure }); }\n" +
+         "p.catch((problem) => logger.warn('y', { detail: problem.message }));\n" +
+         "q.catch((oops) => logger.warn('z', { code: errorCodeOf(oops) }));";
+      const caught = caughtNames(text);
+      expect(caught.sort()).toEqual(["failure", "oops", "problem"]);
+      const flagged = loggerCalls(text).filter((c) =>
+         caught.map(rawErrorOf).some((raw) => raw.test(c.text)),
+      );
+      expect(flagged.map((c) => c.text)).toEqual([
+         "logger.warn('x', { failure })",
+         "logger.warn('y', { detail: problem.message })",
+      ]);
    });
 
    it("recognises each way an error's text reaches a log call", () => {
@@ -120,6 +182,8 @@ describe("materialization logs an error's code, never its text", () => {
          "logger[level]('x', { error: errMessage(err) })",
          "logger.error('x', error)",
          "logger.warn('x', { reason: String(ex) })",
+         "logger.warn('x', { detail: inspect(err) })",
+         "logger.warn('x', { detail: util.inspect(error) })",
          "logger.warn('x', { error: variant.error })",
       ];
       expect(raw.filter((t) => !RAW_ERROR.test(t))).toEqual([]);
