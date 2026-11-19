@@ -1195,14 +1195,14 @@ function declarationRefusal(
       };
    }
    const timeRead = facts.windowed
-      ? "the source's rows read the current time (a `where:` with `now`, a rolling window)"
+      ? "the source's rows read the current time (a `where:` with `now` or a relative time filter such as `f'last 7 days'`, a rolling window)"
       : timeFields.has(decl.measure)
-        ? "the measure reads the current time (`now`)"
+        ? "the measure reads the current time (`now`, or a relative time filter)"
         : decl.grain
              .filter((g) => timeFields.has(g))
              .map(
                 (g) =>
-                   `its grain dimension \`${g}\` reads the current time (\`now\`)`,
+                   `its grain dimension \`${g}\` reads the current time (\`now\`, or a relative time filter)`,
              )[0];
    if (timeRead) {
       return unservable(

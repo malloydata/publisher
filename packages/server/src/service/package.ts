@@ -2161,6 +2161,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          ...this.mz.annotationFindingWarnings(),
          ...this.annotationNearMissWarnings(),
          ...this.mz.persistRefusalWarnings(),
+         ...this.mz.asOfBuildWarnings(),
          // One verdict pass: unreachable, and the deployment facts (P13).
          ...this.mz.verdictWarnings(),
          // Not in exploresWarnings: an import-only file must not block publish.

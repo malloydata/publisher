@@ -124,10 +124,25 @@ export interface ReadFacts {
    readonly resultOrder?: ResultOrderFacts;
    /** The probes' answers, by comparison, as far as they were asked. */
    readonly probes?: Partial<Record<Comparison, ComparisonProbes>>;
+   /**
+    * Whether the query is an access decision: it carries a gate or reads a
+    * given, in the model or in the caller's own text. Asked only when an
+    * answer reads a table stored as of its build; absent reads true there
+    * (fail closed).
+    */
+   readonly readsAccess?: boolean;
+   /**
+    * Whether the answer reads a table stored as of its build
+    * (`Binding.asOfBuild`) anywhere: its gate tables, its result's table, or
+    * any other table it read. Absent reads false.
+    */
+   readonly readsAsOfBuild?: boolean;
 }
 
 /** Why a read is declined. */
 type AdmissionDecline =
+   /** An access decision reads a table stored as of its build. */
+   | "as_of_build_access"
    /** Past an entry-point gate, the answer does not keep the gates. */
    | "row_level_gate"
    /** A row scope reads a column a stored table does not hold exactly. */
@@ -348,6 +363,18 @@ export function admitRead(
    facts: ReadFacts,
    s: GateSwitches,
 ): AdmissionVerdict {
+   // First, whatever else holds: a table stored as of its build holds the
+   // rows its build saw, so an access decision (a gate, or a given that
+   // selects what a caller may see) over it would read a grant past its time.
+   if (
+      facts.readsAsOfBuild === true &&
+      (facts.pastEntryPointGate || facts.readsAccess !== false)
+   ) {
+      return decline(
+         "as_of_build_access",
+         "the query carries a gate or reads a given, and reads a table stored as of its build",
+      );
+   }
    const scope = rowScopeVerdict(leg, tables, facts);
    if (scope !== undefined) return scope;
    const filters = queryFilterVerdict(facts);
