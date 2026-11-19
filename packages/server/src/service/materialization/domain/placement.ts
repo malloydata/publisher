@@ -49,18 +49,34 @@ export function instructsUnwritableDestination(
 }
 
 /**
+ * The served copy re-roots a source on one table: of the bindings it may read
+ * for that source (fresh, and a storage one only under `on`), the storage
+ * table over the database one, as the rollup, persisted view and persisted
+ * query legs read a storage binding first (`storageLookupOf`). Whether a
+ * `tier` candidate stands beside the others that re-root the same source.
+ */
+export function servedCopyReadsTier(tier: Tier, others: readonly Tier[]) {
+   return tier === "storage" || !others.includes("storage");
+}
+
+/**
  * The tier a query reads a planned source's table in, as the serve verdict
  * judges it: a storage binding storing the source decides it
  * (`storageLookupOf`), since a host may place a source with no `storage=` in
  * a storage destination; with none, a declared `storage=` does. The served
  * copy (every source but a rollup, persisted view or persisted query, which
- * read their storage binding through their own leg) reads a fresh table over
- * a stale one, so a source whose storage table is stale while its database
- * table is fresh is read from the database.
+ * read their storage binding through their own leg) reads the storage table
+ * when it may ({@link servedCopyReadsTier}): fresh, and under `on`. Else a
+ * database table bound beside it: under another mode, whatever its
+ * freshness, which the verdict then judges; under `on`, a fresh one beside a
+ * stale storage table.
  */
 export function readTier(facts: {
    storageBound: boolean;
    storageFresh: boolean;
+   /** PERSIST_STORAGE_MODE lets a query read a storage table ({@link storageServes}). */
+   storageServed: boolean;
+   databaseBound: boolean;
    databaseFresh: boolean;
    servedCopy: boolean;
    declaredStorage: boolean;
@@ -68,9 +84,11 @@ export function readTier(facts: {
    if (!facts.storageBound) {
       return facts.declaredStorage ? "storage" : "database";
    }
-   return facts.servedCopy && !facts.storageFresh && facts.databaseFresh
-      ? "database"
-      : "storage";
+   if (!facts.servedCopy) return "storage";
+   if (!facts.storageServed) {
+      return facts.databaseBound ? "database" : "storage";
+   }
+   return !facts.storageFresh && facts.databaseFresh ? "database" : "storage";
 }
 
 /**

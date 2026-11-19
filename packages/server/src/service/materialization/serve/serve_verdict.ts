@@ -18,7 +18,8 @@
  */
 
 import type { components } from "../../../api";
-import { readTier } from "../domain/placement";
+import { readTier, storageServes } from "../domain/placement";
+import type { StorageMode } from "../domain/switches";
 import type { Tier } from "../domain/vocabulary";
 import {
    isPersistedQuerySourceID,
@@ -280,17 +281,21 @@ function planTier(
    servedCopy: boolean,
    facts: Pick<
       ServeVerdictFacts,
+      | "storageMode"
       | "boundStorageIds"
       | "freshStorageIds"
       | "boundEntityIds"
       | "freshEntityIds"
    >,
 ): Tier {
+   const databaseBound = facts.boundEntityIds.has(source.sourceEntityId);
    return readTier({
       storageBound: facts.boundStorageIds.has(sourceID),
       storageFresh: facts.freshStorageIds?.has(sourceID) ?? true,
+      storageServed: storageServes(facts.storageMode as StorageMode),
+      databaseBound,
       databaseFresh:
-         facts.boundEntityIds.has(source.sourceEntityId) &&
+         databaseBound &&
          (facts.freshEntityIds?.has(source.sourceEntityId) ?? true),
       servedCopy,
       declaredStorage: !!source.annotationFields?.storage?.trim(),

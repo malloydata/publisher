@@ -108,6 +108,8 @@ import {
    type Pinned,
    type Snapshot,
 } from "../domain/binding";
+import { servedCopyReadsTier } from "../domain/placement";
+import type { Tier } from "../domain/vocabulary";
 import {
    authorModelLiftContext,
    type DerivedSourceDef,
@@ -1715,6 +1717,19 @@ export class ServedCopyServe {
             });
          }
       }
+      // A source bound in both tiers is re-rooted on one table: two re-roots
+      // of one declaration splice it twice, and both are refused.
+      const tiersOf = new Map<string, Tier[]>();
+      const keyOf = (c: (typeof candidates)[number]) =>
+         rerootKey(c.reroot.url, c.reroot.sourceName);
+      for (const c of candidates) {
+         const tiers = tiersOf.get(keyOf(c)) ?? [];
+         tiers.push(c.binding.tier);
+         tiersOf.set(keyOf(c), tiers);
+      }
+      candidates = candidates.filter((c) =>
+         servedCopyReadsTier(c.binding.tier, tiersOf.get(keyOf(c)) ?? []),
+      );
       // An extension of a re-rooted source reads it by name already, and
       // re-rooting the extension too would replace the base it inherits its
       // parent's fields from. Leave it as written, unless it is an extension

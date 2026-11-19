@@ -28,7 +28,9 @@ import {
    switches,
    switchesLabel,
 } from "./domain/gate_policy_frozen_rows";
-import { LEGS } from "./domain/vocabulary";
+import { servedCopyReadsTier, storageServes } from "./domain/placement";
+import type { StorageMode } from "./domain/switches";
+import { LEGS, type Tier } from "./domain/vocabulary";
 import { computeServeVerdicts } from "./serve/serve_verdict";
 import { verdictKeepsGate } from "./serve_verdicts";
 
@@ -259,5 +261,95 @@ describe("admission and the serve verdict agree with the frozen gate policy", ()
       }
       expect(wrong).toEqual([]);
       expect([...outcomes].sort()).toEqual(["live", "serves"]);
+   });
+
+   // A database-origin source bound in both tiers, both tables fresh: the
+   // served copy re-roots it on the one table `servedCopyReadsTier` picks of
+   // those it may read under the mode, so the verdict names that tier and
+   // keeps a gate exactly where admitRead admits the read of that table.
+   it("judges a source bound fresh in both tiers on the tier the served copy reads, as admitRead does", () => {
+      const sourceID = "orders@file:///pkg/m.malloy";
+      const plan = {
+         graphs: [],
+         sources: {
+            [sourceID]: {
+               name: "orders",
+               sourceID,
+               connectionName: "duckdb",
+               sourceEntityId: "entity-orders",
+               sql: "SELECT 1",
+               columns: [],
+               modelPath: "m.malloy",
+            },
+         },
+      };
+      const wrong: string[] = [];
+      const tiersSaid = new Set<string>();
+      const outcomes = new Set<string>();
+      for (const mode of ["on", "write-only", "off"] as const) {
+         // The tiers whose binding the served copy may read under `mode`.
+         const readable: Tier[] = storageServes(mode as StorageMode)
+            ? ["database", "storage"]
+            : ["database"];
+         const read = readable.find((t) => servedCopyReadsTier(t, readable));
+         if (!read) throw new Error(`no tier read under ${mode}`);
+         for (const sw of switches()) {
+            const label = switchesLabel(sw);
+            for (const gated of [false, true]) {
+               const asked: string[] = [];
+               const [verdict] = computeServeVerdicts({
+                  plan: plan as never,
+                  storageMode: mode,
+                  reachable: () => true,
+                  gated: () => gated,
+                  keepsGate: (_id, tier) => {
+                     asked.push(tier);
+                     return verdictKeepsGate(
+                        {
+                           rollup: false,
+                           table: { tier, ...EXACT_TABLE[tier] },
+                        },
+                        sw,
+                     );
+                  },
+                  refusedAtBind: () => undefined,
+                  boundEntityIds: new Set(["entity-orders"]),
+                  freshEntityIds: new Set(["entity-orders"]),
+                  boundStorageNames: new Set(["orders"]),
+                  boundStorageIds: new Set([sourceID]),
+                  freshStorageIds: new Set([sourceID]),
+                  servedStorageNames: new Set(["orders"]),
+                  freshStorageNames: new Set(["orders"]),
+                  materialize: () => undefined,
+                  persistedViewOf: () => undefined,
+                  destinationConfigured: () => undefined,
+                  connectionCanHoldTable: () => undefined,
+               });
+               tiersSaid.add(verdict.tier);
+               outcomes.add(verdict.verdict);
+               const admitted =
+                  admitRead(
+                     "served",
+                     [{ tier: read, ...EXACT_TABLE[read] }],
+                     EXACT,
+                     sw,
+                  ).admit === true;
+               const expected = gated && !admitted ? "live" : "serves";
+               if (verdict.tier !== read || verdict.verdict !== expected) {
+                  wrong.push(
+                     `mode=${mode} gated=${gated} ${label}: ${verdict.tier} ${verdict.verdict} ${verdict.reason ?? ""}`,
+                  );
+               }
+               if (asked.some((t) => t !== read)) {
+                  wrong.push(
+                     `mode=${mode} gated=${gated} ${label}: asked ${asked}`,
+                  );
+               }
+            }
+         }
+      }
+      expect(wrong).toEqual([]);
+      expect([...tiersSaid].sort()).toEqual(["database", "storage"]);
+      expect(outcomes.has("serves")).toBe(true);
    });
 });
