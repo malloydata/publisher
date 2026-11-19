@@ -39,6 +39,7 @@ import {
    Connection,
    contextOverlay,
    MalloyConfig,
+   type QueryRecord,
    TableSourceDef,
 } from "@malloydata/malloy";
 import type { LookupConnection } from "@malloydata/malloy/connection";
@@ -3121,31 +3122,78 @@ class DuckLakeConnection extends DuckDBConnection {
       try {
          return await super.runSQL(sql, options);
       } catch (error) {
-         // The renewal's own statement runs through this method; the flag stops
-         // a failure there from recursing.
-         const renew = this.storageSecretRenewer;
-         if (
-            !shouldRenewStorageSecret({
-               error,
-               hasRenewer: !!renew,
-               alreadyRenewing: this.renewingStorageSecret,
-            }) ||
-            !renew
-         ) {
+         if (!(await this.renewedStorageSecretAfter(error))) {
             throw await this.catalogUnavailableOr(error);
-         }
-         logger.info(
-            "Object-storage credential expired; re-resolving and retrying once",
-            { connection: this.connectionName },
-         );
-         this.renewingStorageSecret = true;
-         try {
-            await renew();
-         } finally {
-            this.renewingStorageSecret = false;
          }
          return await super.runSQL(sql, options);
       }
+   }
+
+   /**
+    * Streams SQL (the raw `sqlQuery` route) with {@link runSQL}'s recovery:
+    * an expired credential is renewed and the statement run again once, and a
+    * lost catalog is confirmed and reported typed. Both errors arrive before
+    * the first row (DuckDB binds and opens the scan before it yields), so only
+    * the first pull is checked, and nothing is buffered. An error after a row
+    * has been yielded is thrown as it is: running again would repeat rows the
+    * caller already has.
+    */
+   async *runSQLStream(
+      sql: string,
+      options?: Parameters<DuckDBConnection["runSQLStream"]>[1],
+   ): AsyncIterableIterator<QueryRecord> {
+      let rows = super.runSQLStream(sql, options);
+      let first: IteratorResult<QueryRecord>;
+      try {
+         first = await rows.next();
+      } catch (error) {
+         if (!(await this.renewedStorageSecretAfter(error))) {
+            throw await this.catalogUnavailableOr(error);
+         }
+         rows = super.runSQLStream(sql, options);
+         first = await rows.next();
+      }
+      if (first.done) return;
+      // A consumer that stops early (a cap, an abort) returns this stream; the
+      // driver's must be returned too, or its statement is never released.
+      // `yield*` forwards that, but not while the first row is held here.
+      try {
+         yield first.value;
+         yield* rows;
+      } finally {
+         await rows.return?.(undefined);
+      }
+   }
+
+   /**
+    * Re-resolve the storage credential when `error` is an expired one, so
+    * the caller runs its statement again; false, renewing nothing, otherwise.
+    */
+   private async renewedStorageSecretAfter(error: unknown): Promise<boolean> {
+      // The renewal's own statement runs through runSQL; the flag stops a
+      // failure there from recursing.
+      const renew = this.storageSecretRenewer;
+      if (
+         !renew ||
+         !shouldRenewStorageSecret({
+            error,
+            hasRenewer: !!renew,
+            alreadyRenewing: this.renewingStorageSecret,
+         })
+      ) {
+         return false;
+      }
+      logger.info(
+         "Object-storage credential expired; re-resolving and retrying once",
+         { connection: this.connectionName },
+      );
+      this.renewingStorageSecret = true;
+      try {
+         await renew();
+      } finally {
+         this.renewingStorageSecret = false;
+      }
+      return true;
    }
 
    /**
