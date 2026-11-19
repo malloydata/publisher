@@ -171,6 +171,6 @@ describe("stored relations that read the current time, by route", () => {
       const warning = fixture.warnings.find(
          (w) => w.subject === "grants" && w.code === "persist-not-built",
       );
-      expect(warning?.message).toContain("a gated source joins it");
+      expect(warning?.message).toContain("feed an access decision");
    });
 });
