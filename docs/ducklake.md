@@ -299,7 +299,7 @@ record names no sink; a log collector maps it. Its fields, each left out when th
 | `package` | The package served or built. |
 | `duration_ms` | Wall-clock milliseconds the statement ran. |
 | `rows` | Rows returned or written, when the result reports a count. |
-| `bytes_out` | UTF-8 bytes of the response Publisher returned for the statement: the serialized result of a model query (`serve`), a notebook cell or raw SQL (`sql`). Absent on a build, a load or a copy, on a failed statement, and when a row or byte cap refused the result. The record of a statement that answered goes out once its response is serialized; `duration_ms` is still the statement's own. |
+| `bytes_out` | UTF-8 bytes of the statement's result as Publisher serialized it for the caller, in the shape asked for: a model query's `result` (`serve`, full or compact; MCP's `execute_query` asks for compact), a notebook cell's `result`, raw SQL's `data` (`sql`). The envelope around it (the HTTP response's other fields, an MCP answer's metadata) is not counted. Absent on a build, a load or a copy, on a failed statement, and when a row or byte cap refused the result. The record of a statement that answered goes out once its result is serialized; `duration_ms` is still the statement's own. |
 | `status` | `ok` or `error`. |
 | `threads` | The `duckdb.threads` setting: the thread count a DuckDB instance of the process opens with. Left out under `off`, and when the cap could not be applied (a `@malloydata/db-duckdb` release that changed the internals Publisher patches, which Publisher logs at startup); a connection that sets its own `threads` is not reflected. |
 | `worker` | The host name of the process that ran it: the pod's name in Kubernetes. |

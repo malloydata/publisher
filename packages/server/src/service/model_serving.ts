@@ -1158,7 +1158,9 @@ export class ModelServing {
             source: "model_query",
             compact: (request.responseShape ?? "full") === "compact",
          });
-      ran.run.usage?.emit(responseBytes(serializedResult));
+      // Emitted with this size just before report() returns, once nothing left
+      // can fail the answer; runQuery's finally covers every earlier throw.
+      const servedBytes = responseBytes(serializedResult);
       const metricAttributes = this.queryMetricAttributes({
          environment: queryMetadataInput?.environment,
          queryName,
@@ -1227,6 +1229,7 @@ export class ModelServing {
       // No report at all (it could not be assembled), as against a report
       // that says live with nothing considered, which records no `path`.
       if (!path) audit.pathUnavailable = true;
+      ran.run.usage?.emit(servedBytes);
       return {
          result: wrappedResult,
          serializedResult,

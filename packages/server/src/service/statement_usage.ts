@@ -34,16 +34,20 @@ export interface StatementUsage {
    durationMs: number;
    rows?: number;
    /**
-    * UTF-8 bytes of the response Publisher returned for the statement: the
-    * serialized result of a model query, a notebook cell or raw SQL. Absent on
-    * a build, a load or a copy (they return no rows), on a failed statement,
-    * and when the result was never serialized (a cap refused it).
+    * UTF-8 bytes of the statement's result as Publisher serialized it for the
+    * caller, in the shape the caller asked for: a model query's `result` (full
+    * or compact; MCP's `execute_query` asks for compact), a notebook cell's
+    * `result`, raw SQL's `data`. The envelope around it is not counted: the
+    * other fields of the HTTP response, or the metadata of an MCP tool's
+    * answer. Absent on a build, a load or a copy (they return no rows), on a
+    * failed statement, and when the result was never serialized (a cap
+    * refused it).
     */
    bytesOut?: number;
    status: "ok" | "error";
 }
 
-/** The UTF-8 size of a serialized response, as `bytes_out` counts it. */
+/** The UTF-8 size of a serialized result, as `bytes_out` counts it. */
 export function responseBytes(serialized: string): number {
    return Buffer.byteLength(serialized, "utf8");
 }

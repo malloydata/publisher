@@ -28,6 +28,11 @@ on:
       - "packages/server/src/service/catalog_admin.ts"
       - "packages/server/src/service/statement_usage.ts"
       - "packages/server/tests/integration/admin_catalogs/**"
+      # statement_usage records on a real server, against this job's Postgres.
+      - "packages/server/src/service/query_execution.ts"
+      - "packages/server/src/service/model_serving.ts"
+      - "packages/server/src/controller/connection.controller.ts"
+      - "packages/server/tests/integration/statement_usage/**"
       # Materialization: the manifest's read-cost value, each dialect's
       # catalog read of a database table's column types, and the specs that
       # need a real Postgres (a DuckLake catalog, a Postgres warehouse, the run
@@ -72,6 +77,11 @@ on:
       - "packages/server/src/service/catalog_admin.ts"
       - "packages/server/src/service/statement_usage.ts"
       - "packages/server/tests/integration/admin_catalogs/**"
+      # statement_usage records on a real server, against this job's Postgres.
+      - "packages/server/src/service/query_execution.ts"
+      - "packages/server/src/service/model_serving.ts"
+      - "packages/server/src/controller/connection.controller.ts"
+      - "packages/server/tests/integration/statement_usage/**"
       # Materialization: the manifest's read-cost value, each dialect's
       # catalog read of a database table's column types, and the specs that
       # need a real Postgres (a DuckLake catalog, a Postgres warehouse, the run
@@ -277,6 +287,16 @@ jobs:
         run: |
           cd packages/server
           bun test --timeout 120000 ./tests/integration/admin_catalogs
+
+      # Each metered statement's statement_usage record, read from a real
+      # server's log: one per statement, and bytes_out equal to the bytes of the
+      # result it returned, on a managed DuckLake connection over this Postgres.
+      - name: Run statement usage integration tests
+        env:
+          PUBLISHER_TEST_POSTGRES_URL: "postgresql://postgres:postgres@localhost:5432/malloy_test"
+        run: |
+          cd packages/server
+          bun test --timeout 300000 ./tests/integration/statement_usage
 
       # Each dialect's catalog read of a database table's column types, and the
       # big-integer cast it feeds, served against live on real Postgres, MySQL
