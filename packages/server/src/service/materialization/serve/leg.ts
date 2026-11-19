@@ -103,6 +103,14 @@ export interface LegAnswer {
    readonly rollupMember?: string;
    /** For a view or query answer: the persisted view's or named query's table. */
    readonly viewTable?: ViewTable & { readonly kind?: "query" };
+   /**
+    * For a database view or query answer: the table its later stages read,
+    * for the check that their filters compare as live's do.
+    */
+   readonly resultTableRead?: TableRead & {
+      readonly tablePath?: string;
+      readonly destinationName?: string;
+   };
 }
 
 /** How one query was served. */
@@ -212,6 +220,9 @@ function persistedResultLeg(
             graftScope: answer.graftScope,
             viewTable:
                kind === "query" ? { ...answer.table, kind } : answer.table,
+            ...(answer.databaseTableRead
+               ? { resultTableRead: answer.databaseTableRead }
+               : {}),
          };
       },
    };

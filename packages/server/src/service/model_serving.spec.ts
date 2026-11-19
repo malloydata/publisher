@@ -161,7 +161,7 @@ const prepared = {
       // scope from: an ungated source with no `where:`, so a leg reading a
       // storage table is judged on nothing it scopes.
       getPreparedQuery: async () => ({
-         _query: { structRef: "orders" },
+         _query: { structRef: "orders", pipeline: [] },
          _modelDef: {
             name: "m",
             exports: [],
