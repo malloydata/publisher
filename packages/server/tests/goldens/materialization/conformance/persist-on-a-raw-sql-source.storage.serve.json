@@ -56,6 +56,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "persist",
             "outcome": "used",
             "tableId": "1e1f98e3727ab4f0ce7de85d34d4f237f7a11123dd46e7b8a969abec8bbe672e"
           }
@@ -73,7 +74,10 @@
         },
         "servedBy": {
           "kind": "materialized",
-          "tableId": "1e1f98e3727ab4f0ce7de85d34d4f237f7a11123dd46e7b8a969abec8bbe672e"
+          "origin": "persist",
+          "tableId": "1e1f98e3727ab4f0ce7de85d34d4f237f7a11123dd46e7b8a969abec8bbe672e",
+          "tier": "storage",
+          "via": "served_copy"
         },
         "warnings": []
       },
@@ -125,6 +129,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "persist",
             "outcome": "used",
             "tableId": "1e1f98e3727ab4f0ce7de85d34d4f237f7a11123dd46e7b8a969abec8bbe672e"
           }
@@ -142,7 +147,9 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "persist",
           "tableId": "1e1f98e3727ab4f0ce7de85d34d4f237f7a11123dd46e7b8a969abec8bbe672e",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []

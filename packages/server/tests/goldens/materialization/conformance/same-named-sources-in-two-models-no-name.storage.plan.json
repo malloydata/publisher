@@ -22,6 +22,10 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "summary@<pkg>/a.malloy": "persist",
+      "summary@<pkg>/b.malloy": "persist"
+    },
     "materializePlans": {},
     "rollupPlans": {},
     "sourceGateOutcomes": {
@@ -39,11 +43,7 @@
       "summary@<pkg>/b.malloy": "b.malloy"
     }
   },
-  "loadWarnings": [
-    {
-      "message": "#@ persist sources \"summary\", \"summary\" all resolve to the same materialized table \"summary\" in destination \"lake\". Distinct sources must not share a physical target — the second build would overwrite the first, and a serve binding or GC drop for one would affect the other, so none is served from it and queries on them are answered live. Give each a distinct #@ persist name=."
-    }
-  ],
+  "loadWarnings": [],
   "wirePlan": {
     "graphs": [
       {
@@ -69,6 +69,8 @@
         ]
       }
     ],
+    "omittedFiles": [],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "summary@<pkg>/a.malloy": {

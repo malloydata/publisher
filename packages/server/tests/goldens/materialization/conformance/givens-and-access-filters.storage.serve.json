@@ -5,25 +5,18 @@
       {
         "name": "scoped",
         "tier": "storage"
+      },
+      {
+        "name": "gated",
+        "tier": "storage"
       }
     ],
     "verdicts": [
       "scoped:serves",
-      "gated_ext:live:refused",
-      "gated:live:refused"
+      "gated_ext:serves",
+      "gated:serves"
     ],
-    "warnings": [
-      {
-        "code": "persist-source-refused",
-        "message": "Source 'gated_ext' cannot be materialized into a storage destination: it is protected by a gate — #(authorize) or #(access_filter), its own or a joined source's. Both are evaluated per request; a materialized-once table served frozen carries no gate, so it would be served to everyone, bypassing authorization. This is refused for safety. Serve this source live (drop 'storage=').",
-        "subject": "gated_ext"
-      },
-      {
-        "code": "persist-source-refused",
-        "message": "Source 'gated' cannot be materialized into a storage destination: it is protected by a gate — #(authorize) or #(access_filter), its own or a joined source's. Both are evaluated per request; a materialized-once table served frozen carries no gate, so it would be served to everyone, bypassing authorization. This is refused for safety. Serve this source live (drop 'storage=').",
-        "subject": "gated"
-      }
-    ]
+    "warnings": []
   },
   "queries": [
     {
@@ -74,11 +67,21 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "persist",
             "outcome": "used",
             "tableId": "439322f15aaa7b722da31ed15c9726c991147a06d9a3d3ee61b698b270b2f4f9"
           }
         ],
-        "notConsidered": [],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "origin": "persist",
+            "relationship": "sibling",
+            "sourceName": "gated",
+            "tableId": "8c98767eac2f2caa728cf31081e45f40c637955c2a62deaea2247369207b6792"
+          }
+        ],
         "query": {
           "filteredBy": [],
           "groupedBy": [
@@ -91,7 +94,10 @@
         },
         "servedBy": {
           "kind": "materialized",
-          "tableId": "439322f15aaa7b722da31ed15c9726c991147a06d9a3d3ee61b698b270b2f4f9"
+          "origin": "persist",
+          "tableId": "439322f15aaa7b722da31ed15c9726c991147a06d9a3d3ee61b698b270b2f4f9",
+          "tier": "storage",
+          "via": "served_copy"
         },
         "warnings": []
       },
@@ -148,11 +154,21 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "persist",
             "outcome": "used",
             "tableId": "439322f15aaa7b722da31ed15c9726c991147a06d9a3d3ee61b698b270b2f4f9"
           }
         ],
-        "notConsidered": [],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "origin": "persist",
+            "relationship": "sibling",
+            "sourceName": "gated",
+            "tableId": "8c98767eac2f2caa728cf31081e45f40c637955c2a62deaea2247369207b6792"
+          }
+        ],
         "query": {
           "filteredBy": [],
           "groupedBy": [
@@ -165,7 +181,10 @@
         },
         "servedBy": {
           "kind": "materialized",
-          "tableId": "439322f15aaa7b722da31ed15c9726c991147a06d9a3d3ee61b698b270b2f4f9"
+          "origin": "persist",
+          "tableId": "439322f15aaa7b722da31ed15c9726c991147a06d9a3d3ee61b698b270b2f4f9",
+          "tier": "storage",
+          "via": "served_copy"
         },
         "warnings": []
       },
@@ -227,14 +246,22 @@
       "path": {
         "considered": [
           {
-            "code": "refused",
             "kind": "materialized",
-            "outcome": "skipped",
-            "reason": "WARNED",
+            "origin": "persist",
+            "outcome": "used",
             "tableId": "439322f15aaa7b722da31ed15c9726c991147a06d9a3d3ee61b698b270b2f4f9"
           }
         ],
-        "notConsidered": [],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "origin": "persist",
+            "relationship": "sibling",
+            "sourceName": "gated",
+            "tableId": "8c98767eac2f2caa728cf31081e45f40c637955c2a62deaea2247369207b6792"
+          }
+        ],
         "query": {
           "filteredBy": [],
           "groupedBy": [
@@ -246,20 +273,17 @@
           "sourceName": "gated_ext"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "origin": "persist",
+          "tableId": "439322f15aaa7b722da31ed15c9726c991147a06d9a3d3ee61b698b270b2f4f9",
+          "tier": "storage",
+          "via": "served_copy"
         },
-        "warnings": [
-          {
-            "code": "refused",
-            "message": "The package refuses to serve this table, so its queries are answered live; the package's warnings say why.",
-            "sourceName": "gated_ext",
-            "tableId": "439322f15aaa7b722da31ed15c9726c991147a06d9a3d3ee61b698b270b2f4f9"
-          }
-        ]
+        "warnings": []
       },
       "query": "an access-filtered extension",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -311,11 +335,19 @@
       ],
       "malloy": "run: gated -> { group_by: region; aggregate: total }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "origin": "persist",
+            "outcome": "used",
+            "tableId": "8c98767eac2f2caa728cf31081e45f40c637955c2a62deaea2247369207b6792"
+          }
+        ],
         "notConsidered": [
           {
             "built": true,
             "kind": "materialized",
+            "origin": "persist",
             "relationship": "sibling",
             "sourceName": "scoped",
             "tableId": "439322f15aaa7b722da31ed15c9726c991147a06d9a3d3ee61b698b270b2f4f9"
@@ -332,13 +364,17 @@
           "sourceName": "gated"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "origin": "persist",
+          "tableId": "8c98767eac2f2caa728cf31081e45f40c637955c2a62deaea2247369207b6792",
+          "tier": "storage",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "an access-filtered persisted source",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -390,11 +426,19 @@
       ],
       "malloy": "run: gated -> { group_by: region; aggregate: total }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "origin": "persist",
+            "outcome": "used",
+            "tableId": "8c98767eac2f2caa728cf31081e45f40c637955c2a62deaea2247369207b6792"
+          }
+        ],
         "notConsidered": [
           {
             "built": true,
             "kind": "materialized",
+            "origin": "persist",
             "relationship": "sibling",
             "sourceName": "scoped",
             "tableId": "439322f15aaa7b722da31ed15c9726c991147a06d9a3d3ee61b698b270b2f4f9"
@@ -411,13 +455,17 @@
           "sourceName": "gated"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "origin": "persist",
+          "tableId": "8c98767eac2f2caa728cf31081e45f40c637955c2a62deaea2247369207b6792",
+          "tier": "storage",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "an access-filtered persisted source, another caller",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -473,14 +521,22 @@
       "path": {
         "considered": [
           {
-            "code": "refused",
             "kind": "materialized",
-            "outcome": "skipped",
-            "reason": "WARNED",
+            "origin": "persist",
+            "outcome": "used",
             "tableId": "439322f15aaa7b722da31ed15c9726c991147a06d9a3d3ee61b698b270b2f4f9"
           }
         ],
-        "notConsidered": [],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "origin": "persist",
+            "relationship": "sibling",
+            "sourceName": "gated",
+            "tableId": "8c98767eac2f2caa728cf31081e45f40c637955c2a62deaea2247369207b6792"
+          }
+        ],
         "query": {
           "filteredBy": [],
           "groupedBy": [
@@ -492,20 +548,17 @@
           "sourceName": "gated_ext"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "origin": "persist",
+          "tableId": "439322f15aaa7b722da31ed15c9726c991147a06d9a3d3ee61b698b270b2f4f9",
+          "tier": "storage",
+          "via": "served_copy"
         },
-        "warnings": [
-          {
-            "code": "refused",
-            "message": "The package refuses to serve this table, so its queries are answered live; the package's warnings say why.",
-            "sourceName": "gated_ext",
-            "tableId": "439322f15aaa7b722da31ed15c9726c991147a06d9a3d3ee61b698b270b2f4f9"
-          }
-        ]
+        "warnings": []
       },
       "query": "an access-filtered extension, another caller",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -556,11 +609,21 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "persist",
             "outcome": "used",
             "tableId": "439322f15aaa7b722da31ed15c9726c991147a06d9a3d3ee61b698b270b2f4f9"
           }
         ],
-        "notConsidered": [],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "origin": "persist",
+            "relationship": "sibling",
+            "sourceName": "gated",
+            "tableId": "8c98767eac2f2caa728cf31081e45f40c637955c2a62deaea2247369207b6792"
+          }
+        ],
         "query": {
           "filteredBy": [],
           "groupedBy": [
@@ -573,7 +636,9 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "persist",
           "tableId": "439322f15aaa7b722da31ed15c9726c991147a06d9a3d3ee61b698b270b2f4f9",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []
@@ -631,11 +696,21 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "persist",
             "outcome": "used",
             "tableId": "439322f15aaa7b722da31ed15c9726c991147a06d9a3d3ee61b698b270b2f4f9"
           }
         ],
-        "notConsidered": [],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "origin": "persist",
+            "relationship": "sibling",
+            "sourceName": "gated",
+            "tableId": "8c98767eac2f2caa728cf31081e45f40c637955c2a62deaea2247369207b6792"
+          }
+        ],
         "query": {
           "filteredBy": [],
           "groupedBy": [
@@ -648,7 +723,9 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "persist",
           "tableId": "439322f15aaa7b722da31ed15c9726c991147a06d9a3d3ee61b698b270b2f4f9",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []
@@ -711,14 +788,22 @@
       "path": {
         "considered": [
           {
-            "code": "refused",
             "kind": "materialized",
-            "outcome": "skipped",
-            "reason": "WARNED",
+            "origin": "persist",
+            "outcome": "used",
             "tableId": "439322f15aaa7b722da31ed15c9726c991147a06d9a3d3ee61b698b270b2f4f9"
           }
         ],
-        "notConsidered": [],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "origin": "persist",
+            "relationship": "sibling",
+            "sourceName": "gated",
+            "tableId": "8c98767eac2f2caa728cf31081e45f40c637955c2a62deaea2247369207b6792"
+          }
+        ],
         "query": {
           "filteredBy": [],
           "groupedBy": [
@@ -730,20 +815,17 @@
           "sourceName": "gated_ext"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "origin": "persist",
+          "tableId": "439322f15aaa7b722da31ed15c9726c991147a06d9a3d3ee61b698b270b2f4f9",
+          "tier": "storage",
+          "via": "served_copy"
         },
-        "warnings": [
-          {
-            "code": "refused",
-            "message": "The package refuses to serve this table, so its queries are answered live; the package's warnings say why.",
-            "sourceName": "gated_ext",
-            "tableId": "439322f15aaa7b722da31ed15c9726c991147a06d9a3d3ee61b698b270b2f4f9"
-          }
-        ]
+        "warnings": []
       },
       "query": "an access-filtered extension",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "on"
     },
     {
@@ -795,11 +877,19 @@
       ],
       "malloy": "run: gated -> { group_by: region; aggregate: total }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "origin": "persist",
+            "outcome": "used",
+            "tableId": "8c98767eac2f2caa728cf31081e45f40c637955c2a62deaea2247369207b6792"
+          }
+        ],
         "notConsidered": [
           {
             "built": true,
             "kind": "materialized",
+            "origin": "persist",
             "relationship": "sibling",
             "sourceName": "scoped",
             "tableId": "439322f15aaa7b722da31ed15c9726c991147a06d9a3d3ee61b698b270b2f4f9"
@@ -816,13 +906,17 @@
           "sourceName": "gated"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "origin": "persist",
+          "tableId": "8c98767eac2f2caa728cf31081e45f40c637955c2a62deaea2247369207b6792",
+          "tier": "storage",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "an access-filtered persisted source",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "on"
     },
     {
@@ -874,11 +968,19 @@
       ],
       "malloy": "run: gated -> { group_by: region; aggregate: total }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "origin": "persist",
+            "outcome": "used",
+            "tableId": "8c98767eac2f2caa728cf31081e45f40c637955c2a62deaea2247369207b6792"
+          }
+        ],
         "notConsidered": [
           {
             "built": true,
             "kind": "materialized",
+            "origin": "persist",
             "relationship": "sibling",
             "sourceName": "scoped",
             "tableId": "439322f15aaa7b722da31ed15c9726c991147a06d9a3d3ee61b698b270b2f4f9"
@@ -895,13 +997,17 @@
           "sourceName": "gated"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "origin": "persist",
+          "tableId": "8c98767eac2f2caa728cf31081e45f40c637955c2a62deaea2247369207b6792",
+          "tier": "storage",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "an access-filtered persisted source, another caller",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "on"
     },
     {
@@ -957,14 +1063,22 @@
       "path": {
         "considered": [
           {
-            "code": "refused",
             "kind": "materialized",
-            "outcome": "skipped",
-            "reason": "WARNED",
+            "origin": "persist",
+            "outcome": "used",
             "tableId": "439322f15aaa7b722da31ed15c9726c991147a06d9a3d3ee61b698b270b2f4f9"
           }
         ],
-        "notConsidered": [],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "origin": "persist",
+            "relationship": "sibling",
+            "sourceName": "gated",
+            "tableId": "8c98767eac2f2caa728cf31081e45f40c637955c2a62deaea2247369207b6792"
+          }
+        ],
         "query": {
           "filteredBy": [],
           "groupedBy": [
@@ -976,20 +1090,17 @@
           "sourceName": "gated_ext"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "origin": "persist",
+          "tableId": "439322f15aaa7b722da31ed15c9726c991147a06d9a3d3ee61b698b270b2f4f9",
+          "tier": "storage",
+          "via": "served_copy"
         },
-        "warnings": [
-          {
-            "code": "refused",
-            "message": "The package refuses to serve this table, so its queries are answered live; the package's warnings say why.",
-            "sourceName": "gated_ext",
-            "tableId": "439322f15aaa7b722da31ed15c9726c991147a06d9a3d3ee61b698b270b2f4f9"
-          }
-        ]
+        "warnings": []
       },
       "query": "an access-filtered extension, another caller",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "on"
     }
   ]

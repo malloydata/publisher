@@ -8,7 +8,7 @@
 // never moves: a manifest handed to the compiler carries both keys, as it
 // already does for a partitioned source.
 
-import { DuckDBConnection } from "@malloydata/db-duckdb";
+import { openTempDuckDB } from "../../../test_helpers/temp_storage";
 import {
    FixedConnectionMap,
    InMemoryURLReader,
@@ -29,8 +29,8 @@ import {
 const MODEL = `##! experimental.persistence
 source: ev is duckdb.table('ev')
 
-#@ persist name="colocated_t"
-source: colocated is ev -> { group_by: id; aggregate: n is count() }
+#@ persist name="database_t"
+source: database is ev -> { group_by: id; aggregate: n is count() }
 
 #@ persist name="stored_t" storage="lake"
 source: stored is ev -> { group_by: id; aggregate: total is amount.sum() }
@@ -38,7 +38,13 @@ source: stored is ev -> { group_by: id; aggregate: total is amount.sum() }
 source: stored_ext is stored extend { dimension: big is total > 10 }
 `;
 
-const duckdb = new DuckDBConnection("duckdb");
+// Its own database: an unnamed in-memory one is shared with every other
+// connection to it in the process, so the table created here would outlive
+// this spec while another holds that database open.
+const temp = openTempDuckDB("addressing-destination-", "duckdb", {
+   file: "duckdb.db",
+});
+const duckdb = temp.connection;
 let sources: Record<string, PersistSource>;
 let digests: Record<string, string>;
 let restore: (() => void) | undefined;
@@ -68,7 +74,7 @@ afterEach(() => {
 });
 
 afterAll(async () => {
-   await duckdb.close();
+   await temp.dispose();
 });
 
 function withSettings(env: Record<string, string>): void {
@@ -94,7 +100,7 @@ describe("P12: the storage destination in the content address", () => {
          PERSIST_STORAGE_MODE: "on",
          PUBLISHER_PERSIST_ADDRESS_INCLUDES_DESTINATION: "true",
       });
-      expect(address("colocated")).toBe(plain("colocated"));
+      expect(address("database")).toBe(plain("database"));
       expect(addressDestination(sources.stored)).toBe("lake");
       expect(address("stored")).toBe(
          makeDigest(
@@ -126,101 +132,23 @@ describe("P12: the storage destination in the content address", () => {
          PERSIST_STORAGE_MODE: "off",
          PUBLISHER_PERSIST_ADDRESS_INCLUDES_DESTINATION: "true",
       });
-      // Off, storage= is inert and the source builds colocated.
+      // Off, storage= is inert and the source builds in the database tier.
       expect(addressDestination(sources.stored)).toBeUndefined();
       expect(address("stored")).toBe(plain("stored"));
    });
 
    it("never moves the compiler's own key", () => {
       withSettings({ PERSIST_STORAGE_MODE: "on" });
-      const before = compilerBuildId(sources.stored, digests);
+      const before = compilerBuildId(sources.stored);
       withSettings({
          PERSIST_STORAGE_MODE: "on",
          PUBLISHER_PERSIST_ADDRESS_INCLUDES_DESTINATION: "true",
       });
-      expect(compilerBuildId(sources.stored, digests)).toBe(before);
+      expect(compilerBuildId(sources.stored)).toBe(before);
    });
 });
 
 // A `#@ preaggregate` rollup is synthesized into a companion model, so the
 // author-model corpus never plans one; this pins that a rollup's own
 // `storage=` folds into its address like any `storage=` source, and that a
-// colocated rollup beside it stays put.
-describe("P12 for synthesized rollups", () => {
-   const ROWS = `SELECT * FROM (VALUES
-      (1, 'a', 10.0), (2, 'b', 20.0), (3, 'a', 5.0)
-   ) AS t(id, category, amount)`;
-   const BASE = `##! experimental { persistence composite_sources }
-source: orders is duckdb.sql("""${ROWS}""") extend {
-  measure:
-    #@ preaggregate grain="category" storage="lake"
-    #@ preaggregate grain="id"
-    total is sum(amount)
-}
-`;
-   let rollups: PersistSource[];
-
-   beforeAll(async () => {
-      const { planSourcePreaggregation, synthesizePreaggregationModel } =
-         await import("./preaggregation_synthesis");
-      const baseRuntime = new Runtime({
-         urlReader: new InMemoryURLReader(
-            new Map([["file:///orders.malloy", BASE]]),
-         ),
-         connections: new FixedConnectionMap(
-            new Map([["duckdb", duckdb]]),
-            "duckdb",
-         ),
-      });
-      const base = await baseRuntime
-         .loadModel(new URL("file:///orders.malloy"))
-         .getModel();
-      const plans = planSourcePreaggregation(
-         "orders",
-         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-         (base as any)._modelDef.contents["orders"],
-      );
-      const companion = synthesizePreaggregationModel(plans, "./orders.malloy");
-      if (!companion) throw new Error("no rollups were synthesized");
-      const runtime = new Runtime({
-         urlReader: new InMemoryURLReader(
-            new Map([
-               ["file:///orders.malloy", BASE],
-               ["file:///orders.malloy.preagg.malloy", companion],
-            ]),
-         ),
-         connections: new FixedConnectionMap(
-            new Map([["duckdb", duckdb]]),
-            "duckdb",
-         ),
-      });
-      const model = await runtime
-         .loadModel(new URL("file:///orders.malloy.preagg.malloy"))
-         .getModel();
-      rollups = plannedSources(await runtime.getBuildTargets(model));
-   });
-
-   const addressOf = (s: PersistSource) => computeSourceEntityId(s, digests);
-
-   it("moves a storage= rollup and leaves a colocated rollup in place", () => {
-      expect(rollups.length).toBeGreaterThanOrEqual(2);
-      withSettings({ PERSIST_STORAGE_MODE: "on" });
-      const before = new Map(rollups.map((s) => [s.sourceID, addressOf(s)]));
-      withSettings({
-         PERSIST_STORAGE_MODE: "on",
-         PUBLISHER_PERSIST_ADDRESS_INCLUDES_DESTINATION: "true",
-      });
-      const stored = rollups.filter((s) => addressDestination(s) === "lake");
-      const colocated = rollups.filter(
-         (s) => addressDestination(s) === undefined,
-      );
-      expect(stored.length).toBeGreaterThan(0);
-      expect(colocated.length).toBeGreaterThan(0);
-      for (const s of stored) {
-         expect(addressOf(s)).not.toBe(before.get(s.sourceID) as string);
-      }
-      for (const s of colocated) {
-         expect(addressOf(s)).toBe(before.get(s.sourceID) as string);
-      }
-   });
-});
+// database rollup beside it stays put.

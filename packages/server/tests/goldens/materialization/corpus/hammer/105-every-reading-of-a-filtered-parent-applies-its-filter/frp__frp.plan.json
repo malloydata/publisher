@@ -10,24 +10,18 @@
           "deals_alias@<hammer>/frp/frp.malloy": [],
           "pipeline_now@<hammer>/frp/frp.malloy": [],
           "w@<hammer>/frp/frp.malloy": [
-            "deals@<hammer>/frp/frp.malloy",
-            "pipeline_now@<hammer>/frp/frp.malloy",
-            "deals_alias@<hammer>/frp/frp.malloy"
+            "deals@<hammer>/frp/frp.malloy"
           ],
           "x@<hammer>/frp/frp.malloy": [
             "deals@<hammer>/frp/frp.malloy",
-            "pipeline_now@<hammer>/frp/frp.malloy",
-            "deals_alias@<hammer>/frp/frp.malloy"
+            "pipeline_now@<hammer>/frp/frp.malloy"
           ],
           "y@<hammer>/frp/frp.malloy": [
             "deals@<hammer>/frp/frp.malloy",
-            "pipeline_now@<hammer>/frp/frp.malloy",
             "deals_alias@<hammer>/frp/frp.malloy"
           ],
           "z@<hammer>/frp/frp.malloy": [
-            "deals@<hammer>/frp/frp.malloy",
-            "pipeline_now@<hammer>/frp/frp.malloy",
-            "deals_alias@<hammer>/frp/frp.malloy"
+            "deals@<hammer>/frp/frp.malloy"
           ]
         },
         "order": [
@@ -42,6 +36,15 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "deals@<hammer>/frp/frp.malloy": "persist",
+      "deals_alias@<hammer>/frp/frp.malloy": "persist",
+      "pipeline_now@<hammer>/frp/frp.malloy": "persist",
+      "w@<hammer>/frp/frp.malloy": "persist",
+      "x@<hammer>/frp/frp.malloy": "persist",
+      "y@<hammer>/frp/frp.malloy": "persist",
+      "z@<hammer>/frp/frp.malloy": "persist"
+    },
     "materializePlans": {},
     "rollupPlans": {},
     "sourceGateOutcomes": {
@@ -85,7 +88,6 @@
     }
   },
   "rollupsKeepingGates": [],
-  "rollupsOverStoredBase": [],
   "wirePlan": {
     "graphs": [
       {
@@ -107,32 +109,26 @@
             {
               "dependsOn": [
                 "deals@<hammer>/frp/frp.malloy",
-                "pipeline_now@<hammer>/frp/frp.malloy",
-                "deals_alias@<hammer>/frp/frp.malloy"
+                "pipeline_now@<hammer>/frp/frp.malloy"
               ],
               "sourceID": "x@<hammer>/frp/frp.malloy"
             },
             {
               "dependsOn": [
                 "deals@<hammer>/frp/frp.malloy",
-                "pipeline_now@<hammer>/frp/frp.malloy",
                 "deals_alias@<hammer>/frp/frp.malloy"
               ],
               "sourceID": "y@<hammer>/frp/frp.malloy"
             },
             {
               "dependsOn": [
-                "deals@<hammer>/frp/frp.malloy",
-                "pipeline_now@<hammer>/frp/frp.malloy",
-                "deals_alias@<hammer>/frp/frp.malloy"
+                "deals@<hammer>/frp/frp.malloy"
               ],
               "sourceID": "z@<hammer>/frp/frp.malloy"
             },
             {
               "dependsOn": [
-                "deals@<hammer>/frp/frp.malloy",
-                "pipeline_now@<hammer>/frp/frp.malloy",
-                "deals_alias@<hammer>/frp/frp.malloy"
+                "deals@<hammer>/frp/frp.malloy"
               ],
               "sourceID": "w@<hammer>/frp/frp.malloy"
             }
@@ -140,6 +136,8 @@
         ]
       }
     ],
+    "omittedFiles": [],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "deals@<hammer>/frp/frp.malloy": {

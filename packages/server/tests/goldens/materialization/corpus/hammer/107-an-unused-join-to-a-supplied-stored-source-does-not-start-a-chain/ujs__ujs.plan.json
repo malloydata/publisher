@@ -21,6 +21,11 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "counts@<hammer>/ujs/ujs.malloy": "persist",
+      "daily@<hammer>/ujs/ujs.malloy": "persist",
+      "rollup@<hammer>/ujs/ujs.malloy": "persist"
+    },
     "materializePlans": {},
     "rollupPlans": {},
     "sourceGateOutcomes": {
@@ -44,7 +49,6 @@
     }
   },
   "rollupsKeepingGates": [],
-  "rollupsOverStoredBase": [],
   "wirePlan": {
     "graphs": [
       {
@@ -70,6 +74,8 @@
         ]
       }
     ],
+    "omittedFiles": [],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "counts@<hammer>/ujs/ujs.malloy": {

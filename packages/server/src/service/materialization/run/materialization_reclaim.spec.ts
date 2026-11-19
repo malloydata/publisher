@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { internalErrorToHttpError } from "../../../errors";
 import { unrecordedAudit } from "../../access_record";
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "fs";
@@ -10,9 +11,7 @@ import { PackageController } from "../../../controller/package.controller";
 import { VersionController } from "../../../controller/version.controller";
 import type { Materialization } from "../../../storage/DatabaseInterface";
 import { DuckDBConnection } from "../../../storage/duckdb/DuckDBConnection";
-import { createDuckDBRepository } from "../../../storage/duckdb/DuckDBRepository";
 import type { ResourceRepository } from "../../../storage/DatabaseInterface";
-import { initializeSchema } from "../../../storage/duckdb/schema";
 import {
    failInterruptedMaterializations,
    INTERRUPTED_RUN_ERROR,
@@ -21,12 +20,16 @@ import { Environment } from "../../environment";
 import { EnvironmentStore } from "../../environment_store";
 import { installSettings } from "../../../test_helpers/settings_env";
 import { logger } from "../../../logger";
-import { MaterializationService } from "./materialization_service";
+import {
+   MaterializationService,
+   type RunCollaboratorOverrides,
+   type RunCollaborators,
+} from "./materialization_service";
 import {
    storageBindingResolverFor,
-   versionTableSuffix,
    writeTargetsIn,
 } from "../../versions/materialization_scope";
+import { autoRunTableName } from "../../../test_helpers/readable_table_name";
 import { writePackageFiles } from "../../../test_helpers/temp_package";
 import {
    parseEnvironmentName,
@@ -35,6 +38,13 @@ import {
 } from "../../identity";
 import { startedStore } from "../../../test_helpers/started_store";
 import { testRetrieval } from "../../../test_helpers/test_retrieval";
+import {
+   openTempStorage,
+   disposeTempStorage,
+} from "../../../test_helpers/temp_storage";
+import { serviceOverEnvironment } from "../../../test_helpers/materialization_service_harness";
+import { startMetricsHarness } from "../../../test_helpers/metrics_harness";
+import { resetMaterializationTelemetryForTesting } from "../../../materialization_metrics";
 
 // What archiving a version reclaims, and what it must leave alone: the keep
 // rules of MaterializationService.reclaimVersionTables (a table another
@@ -56,7 +66,13 @@ const versionTable = (
    version: string,
    packageName = PKG,
    base = "summary",
-) => `${base}${versionTableSuffix({ environmentName, packageName, version })}`;
+) =>
+   autoRunTableName(environmentName, packageName, base, {
+      modelPath: "model.malloy",
+      version,
+      // Each source is declared with `persist name="<base>"`.
+      prefix: base,
+   });
 
 /**
  * A package whose persisted `summary` answers `answer`; with `detail`, a
@@ -213,28 +229,51 @@ describe("reclaiming an archived version's tables", () => {
       return created;
    }
 
-   /** A MaterializationService over `environment`, its archives reclaiming. */
-   function newService(environment: Environment): MaterializationService {
-      const store = {
-         storageManager: { getRepository: () => repo },
-         getEnvironment: async () => environment,
-         getLoadedEnvironments: () => [environment],
-      } as unknown as EnvironmentStore;
-      const created = new MaterializationService(store);
+   /**
+    * A MaterializationService over `environment`, its archives reclaiming,
+    * with any run collaborators a case replaces.
+    */
+   function newService(
+      environment: Environment,
+      collaborators: RunCollaboratorOverrides = {},
+   ): MaterializationService {
+      const created = serviceOverEnvironment(
+         () => repo,
+         () => environment,
+         collaborators,
+      );
       environment.setVersionArchivedHook((packageName, versionId) => {
          reclaims.push(
-            created.reclaimVersionTables(ENV, packageName, versionId),
+            created.reclaimer.reclaimVersionTables(ENV, packageName, versionId),
          );
       });
       environment.setVersionDeletedHook((packageName, versionId) => {
          reclaims.push(
-            created.cleanUpDeletedVersion(ENV, packageName, versionId),
+            created.reclaimer.cleanUpDeletedVersion(
+               ENV,
+               packageName,
+               versionId,
+            ),
          );
       });
       environment.setOwedReclaimHook((packageName, versionId) =>
-         created.reclaimOwedNow(environment, packageName, versionId),
+         created.reclaimer.reclaimOwedNow(environment, packageName, versionId),
       );
       return created;
+   }
+
+   /** Run collaborators whose first commit the store refuses. */
+   function failingFirstCommit(
+      real: RunCollaborators,
+   ): Partial<RunCollaborators> {
+      let failed = false;
+      return {
+         commitManifest: async (...args) => {
+            if (failed) return real.commitManifest(...args);
+            failed = true;
+            throw new Error("the store refused the commit");
+         },
+      };
    }
 
    /** A restart: a fresh Environment and service over the same store. */
@@ -341,20 +380,14 @@ describe("reclaiming an archived version's tables", () => {
       (await repo.getMaterializationById(id))?.status ?? null;
 
    beforeEach(async () => {
-      root = fs.realpathSync(
-         fs.mkdtempSync(path.join(os.tmpdir(), "materialization-reclaim-")),
-      );
-      envPath = path.join(root, "env");
+      ({ root, envPath, db, repo } = await openTempStorage(
+         "materialization-reclaim-",
+         {
+            id: ENV_ID,
+            name: ENV,
+         },
+      ));
       sourcesPath = path.join(root, "sources");
-      fs.mkdirSync(envPath);
-      db = new DuckDBConnection(":memory:");
-      await db.initialize();
-      await initializeSchema(db);
-      await db.run(
-         "INSERT INTO environments (id, name, path, created_at, updated_at) VALUES (?, ?, ?, now(), now())",
-         [ENV_ID, ENV, envPath],
-      );
-      repo = createDuckDBRepository(db);
       reclaims = [];
       env = await newEnvironment();
       service = newService(env);
@@ -364,8 +397,7 @@ describe("reclaiming an archived version's tables", () => {
       for (const environment of environments.splice(0)) {
          await environment.closeAllConnections().catch(() => undefined);
       }
-      await db.close();
-      fs.rmSync(root, { recursive: true, force: true });
+      await disposeTempStorage({ db, root });
    });
 
    it("drops a table only the archived version's runs reference, and keeps one another committed run still serves", async () => {
@@ -380,23 +412,25 @@ describe("reclaiming an archived version's tables", () => {
       expect(host.status).toBe("MANIFEST_FILE_READY");
       expect(await tablesIn(env)).toEqual([DETAIL_V1, TABLE_V1]);
 
-      // 2.0.0 serves `summary` from that table.
+      // The host built 2.0.0, so it owns it: with no manifest bound, 2.0.0
+      // serves live, never what this server's store holds for it.
       await restart();
       await tamper(TABLE_V1, 202);
-      expect(await answerOf("2.0.0")).toBe(202);
+      expect(await answerOf("2.0.0")).toBe(2);
 
       await archive("1.0.0");
 
       // `detail`'s table was 1.0.0's alone: dropped. `summary`'s is still
-      // referenced by 2.0.0's run: kept, and still served.
+      // referenced by 2.0.0's run: kept, for the host to bind.
       expect(await tablesIn(env)).toEqual([TABLE_V1]);
-      expect(await answerOf("2.0.0")).toBe(202);
+      expect(await answerOf("2.0.0")).toBe(2);
       // The archived version's run is reclaimed; the other run is untouched.
       expect(await statusOf(v1.id)).toBeNull();
       expect(await statusOf(host.id)).toBe("MANIFEST_FILE_READY");
-      // And 2.0.0 binds it again after a restart.
+      // And it is still there, and 2.0.0 still live, after a restart.
       await restart();
-      expect(await answerOf("2.0.0")).toBe(202);
+      expect(await tablesIn(env)).toEqual([TABLE_V1]);
+      expect(await answerOf("2.0.0")).toBe(2);
    });
 
    it("never drops the tables an orchestrated run of the archived version built, and keeps its record", async () => {
@@ -455,16 +489,8 @@ describe("reclaiming an archived version's tables", () => {
       await publish("2.0.0", 2, "version");
       // The run builds both tables, then cannot commit: it ends FAILED with
       // no manifest, the shape a cancelled or crashed run leaves too.
-      const commit = spyOn(
-         service as unknown as {
-            commitManifest: (...args: unknown[]) => Promise<void>;
-         },
-         "commitManifest",
-      ).mockImplementationOnce(async () => {
-         throw new Error("the store refused the commit");
-      });
+      service = newService(env, failingFirstCommit);
       const failed = await build({ versionId: VersionRef.parse("1.0.0") });
-      commit.mockRestore();
       expect(failed.status).toBe("FAILED");
       expect(Object.keys(failed.manifest?.entries ?? {})).toEqual([]);
       expect((await tablesIn(env)).sort()).toEqual(
@@ -489,27 +515,27 @@ describe("reclaiming an archived version's tables", () => {
       await publish("1.0.0", 1, "version", { detail: true });
       await publish("2.0.0", 2, "version");
       // The run builds both tables; the commit never comes back.
-      const commit = spyOn(
-         service as unknown as {
-            commitManifest: (...args: unknown[]) => Promise<void>;
-         },
-         "commitManifest",
-      ).mockImplementationOnce(async () => {
-         throw new Error("the store refused the commit");
-      });
+      service = newService(env, failingFirstCommit);
       const built = await build({ versionId: VersionRef.parse("1.0.0") });
-      commit.mockRestore();
       // As the process died mid-run: the record still says it is running and
       // holds its version's slot. Nothing in this process tracks it.
       await db.run(
          "UPDATE materializations SET status = 'MANIFEST_ROWS_READY', active_key = ?, completed_at = NULL, error = NULL WHERE id = ?",
          [`${ENV_ID}|${PKG}@1.0.0`, built.id],
       );
-      await expect(
-         service.createMaterialization(ENV, PKG, {
+      const active = await service
+         .createMaterialization(ENV, PKG, {
             versionId: VersionRef.parse("1.0.0"),
-         }),
-      ).rejects.toThrow("already has an active materialization");
+         })
+         .then(
+            () => new Error("not refused"),
+            (error: unknown) => error as Error,
+         );
+      expect(active.message).toContain("already has an active materialization");
+      expect(internalErrorToHttpError(active).json).toMatchObject({
+         code: 409,
+         reason: "MATERIALIZATION_CONFLICT",
+      });
       // A record still running keeps its tables through an archive.
       await archive("1.0.0");
       expect(await statusOf(built.id)).toBe("MANIFEST_ROWS_READY");
@@ -523,7 +549,7 @@ describe("reclaiming an archived version's tables", () => {
       const settled = (await repo.getMaterializationById(built.id))!;
       expect(settled.status).toBe("FAILED");
       expect(settled.error).toBe(INTERRUPTED_RUN_ERROR);
-      await service.reclaimArchivedVersions();
+      await service.reclaimer.reclaimArchivedVersions();
 
       expect(await tablesIn(env)).toEqual([]);
       expect(await statusOf(built.id)).toBeNull();
@@ -547,9 +573,9 @@ describe("reclaiming an archived version's tables", () => {
 
       await archive("1.0.0");
       // Nor does the startup sweep.
-      await service.reclaimArchivedVersions();
+      await service.reclaimer.reclaimArchivedVersions();
 
-      expect(await tablesIn(env)).toEqual(["summary", TABLE_V2]);
+      expect(await tablesIn(env)).toEqual([TABLE_V2, "summary"].sort());
       expect(await statusOf(shared.id)).toBe("MANIFEST_FILE_READY");
       expect(await statusOf(owned.id)).toBe("MANIFEST_FILE_READY");
       // Back in service, 1.0.0 still reads the shared table its run built.
@@ -585,7 +611,7 @@ describe("reclaiming an archived version's tables", () => {
       );
 
       await restart();
-      await service.reclaimArchivedVersions();
+      await service.reclaimer.reclaimArchivedVersions();
 
       expect(await tablesIn(env)).toEqual([TABLE_V2]);
       expect(await statusOf(v1.id)).toBeNull();
@@ -610,7 +636,7 @@ describe("reclaiming an archived version's tables", () => {
       await versions.setArchiveStatus(PKG, "1.0.0", "archive");
       await versions.setArchiveStatus(PKG, "1.0.0", "unarchive");
       expect(started).toEqual([[PKG, "1.0.0"]]);
-      await service.reclaimVersionTables(ENV, PKG, "1.0.0");
+      await service.reclaimer.reclaimVersionTables(ENV, PKG, "1.0.0");
 
       expect(await tablesIn(env)).toEqual([TABLE_V1]);
       expect(await statusOf(v1.id)).toBe("MANIFEST_FILE_READY");
@@ -629,6 +655,8 @@ describe("reclaiming an archived version's tables", () => {
          [DETAIL_V1, "host_v1", TABLE_V1, TABLE_V2].sort(),
       );
 
+      resetMaterializationTelemetryForTesting();
+      const harness = await startMetricsHarness();
       const deleted = await env
          .getVersionService()!
          .deleteVersion(PKG, "1.0.0");
@@ -636,6 +664,13 @@ describe("reclaiming an archived version's tables", () => {
 
       // The cleanup runs after the delete answers.
       await Promise.all(reclaims);
+      // A version's reclaim counts its drops as a reclaim, never a delete.
+      const drops = await harness.collectAttributes(
+         "publisher_materialization_drop_tables_total",
+      );
+      await harness.shutdown();
+      expect(drops.length).toBeGreaterThan(0);
+      for (const d of drops) expect(d).toMatchObject({ occasion: "reclaim" });
       expect((await tablesIn(env)).sort()).toEqual(
          ["host_v1", TABLE_V2].sort(),
       );
@@ -677,7 +712,7 @@ describe("reclaiming an archived version's tables", () => {
       expect(await statusOf(v1.id)).toBe("MANIFEST_FILE_READY");
 
       await restart();
-      await service.reclaimArchivedVersions();
+      await service.reclaimer.reclaimArchivedVersions();
       expect(await tablesIn(env)).toEqual([]);
       expect(await statusOf(v1.id)).toBeNull();
    });
@@ -788,9 +823,11 @@ describe("reclaiming an archived version's tables", () => {
       ).rejects.toThrow();
       await (
          service as unknown as {
-            transition(id: string, next: string): Promise<unknown>;
+            lifecycle: {
+               transition(id: string, next: string): Promise<unknown>;
+            };
          }
-      ).transition(running.id, "MANIFEST_ROWS_READY");
+      ).lifecycle.transition(running.id, "MANIFEST_ROWS_READY");
       expect(await statusOf(running.id)).toBe("MANIFEST_ROWS_READY");
    });
 
@@ -893,9 +930,11 @@ describe("reclaiming an archived version's tables", () => {
       // It can still settle.
       await (
          service as unknown as {
-            transition(id: string, next: string): Promise<unknown>;
+            lifecycle: {
+               transition(id: string, next: string): Promise<unknown>;
+            };
          }
-      ).transition(running.id, "MANIFEST_ROWS_READY");
+      ).lifecycle.transition(running.id, "MANIFEST_ROWS_READY");
       expect(await statusOf(running.id)).toBe("MANIFEST_ROWS_READY");
    });
 
@@ -945,7 +984,7 @@ describe("reclaiming an archived version's tables", () => {
       expect((await tablesIn(env)).sort()).toEqual([TABLE_V1, TABLE_V2].sort());
 
       await restart();
-      await service.reclaimArchivedVersions();
+      await service.reclaimer.reclaimArchivedVersions();
       expect(await tablesIn(env)).toEqual([]);
       expect(await repo.listMaterializations(ENV_ID, PKG)).toEqual([]);
    });
@@ -957,12 +996,16 @@ describe("reclaiming an archived version's tables", () => {
       const v2 = await build({ versionId: VersionRef.parse("2.0.0") });
 
       // The delete's drop fails: every table is left.
-      const drop = spyOn(
-         service as unknown as {
-            dropManifestEntries: (...args: unknown[]) => Promise<unknown>;
-         },
-         "dropManifestEntries",
-      ).mockImplementationOnce(async (...args: unknown[]) => args[4]);
+      service = newService(env, (real) => {
+         let failed = false;
+         return {
+            dropManifestEntries: async (...args) => {
+               if (failed) return real.dropManifestEntries(...args);
+               failed = true;
+               return args[5];
+            },
+         };
+      });
       const warn = spyOn(logger, "warn");
       try {
          await env.getVersionService()!.deleteVersion(PKG, "1.0.0");
@@ -973,7 +1016,6 @@ describe("reclaiming an archived version's tables", () => {
          expect(left).toHaveLength(1);
          expect(JSON.stringify(left[0][1])).toContain(TABLE_V1);
       } finally {
-         drop.mockRestore();
          warn.mockRestore();
       }
       expect(await repo.getVersion(ENV_ID, PKG, "1.0.0")).toBeNull();
@@ -982,7 +1024,7 @@ describe("reclaiming an archived version's tables", () => {
       expect((await tablesIn(env)).sort()).toEqual([TABLE_V1, TABLE_V2].sort());
 
       await restart();
-      await service.reclaimArchivedVersions();
+      await service.reclaimer.reclaimArchivedVersions();
 
       expect((await tablesIn(env)).sort()).toEqual([TABLE_V1, TABLE_V2].sort());
       expect(await statusOf(v2.id)).toBe("MANIFEST_FILE_READY");
@@ -1030,12 +1072,18 @@ describe("the archive hook and the startup sweep, as main_server.ts wires them",
       const materializationService = new MaterializationService(store);
       const calls: string[][] = [];
       const reclaims: Promise<void>[] = [];
-      const reclaim = materializationService.reclaimVersionTables.bind(
-         materializationService,
-      );
-      spyOn(materializationService, "reclaimVersionTables").mockImplementation(
+      const reclaim =
+         materializationService.reclaimer.reclaimVersionTables.bind(
+            materializationService.reclaimer,
+         );
+      spyOn(
+         materializationService.reclaimer,
+         "reclaimVersionTables",
+      ).mockImplementation(
          (
-            ...args: Parameters<MaterializationService["reclaimVersionTables"]>
+            ...args: Parameters<
+               MaterializationService["reclaimer"]["reclaimVersionTables"]
+            >
          ) => {
             calls.push([...args]);
             const started = reclaim(...args);
@@ -1049,7 +1097,7 @@ describe("the archive hook and the startup sweep, as main_server.ts wires them",
          // Archiving a version reclaims the tables it alone owns, in the background.
          environmentStore.setVersionArchivedHook(
             (environmentName, packageName, versionId) => {
-               void materializationService.reclaimVersionTables(
+               void materializationService.reclaimer.reclaimVersionTables(
                   environmentName,
                   packageName,
                   versionId,
@@ -1060,7 +1108,7 @@ describe("the archive hook and the startup sweep, as main_server.ts wires them",
          // background, once its row is gone.
          environmentStore.setVersionDeletedHook(
             (environmentName, packageName, versionId) => {
-               void materializationService.cleanUpDeletedVersion(
+               void materializationService.reclaimer.cleanUpDeletedVersion(
                   environmentName,
                   packageName,
                   versionId,
@@ -1071,7 +1119,7 @@ describe("the archive hook and the startup sweep, as main_server.ts wires them",
          // version still owes, if that delete's cleanup has not run yet.
          environmentStore.setOwedReclaimHook(
             (environment, packageName, versionId) =>
-               materializationService.reclaimOwedNow(
+               materializationService.reclaimer.reclaimOwedNow(
                   environment,
                   packageName,
                   versionId,
@@ -1080,7 +1128,7 @@ describe("the archive hook and the startup sweep, as main_server.ts wires them",
          // A reclaim that a crash cut short is finished once the environments have
          // loaded: nothing else would start it again.
          sweep = environmentStore.finishedInitialization.then(
-            () => materializationService.reclaimArchivedVersions(),
+            () => materializationService.reclaimer.reclaimArchivedVersions(),
             () => undefined,
          );
       }
@@ -1620,7 +1668,7 @@ describe("the archive hook and the startup sweep, as main_server.ts wires them",
       expect(server).toContain(
          squash(`environmentStore.setVersionArchivedHook(
             (environmentName, packageName, versionId) => {
-               void materializationService.reclaimVersionTables(
+               void materializationService.reclaimer.reclaimVersionTables(
                   environmentName,
                   packageName,
                   versionId,
@@ -1631,7 +1679,7 @@ describe("the archive hook and the startup sweep, as main_server.ts wires them",
       expect(server).toContain(
          squash(`environmentStore.setVersionDeletedHook(
             (environmentName, packageName, versionId) => {
-               void materializationService.cleanUpDeletedVersion(
+               void materializationService.reclaimer.cleanUpDeletedVersion(
                   environmentName,
                   packageName,
                   versionId,
@@ -1641,12 +1689,12 @@ describe("the archive hook and the startup sweep, as main_server.ts wires them",
       );
       expect(server).toContain(
          squash(`environmentStore.setOwedReclaimHook((environment, packageName, versionId) =>
-            materializationService.reclaimOwedNow(environment, packageName, versionId),
+            materializationService.reclaimer.reclaimOwedNow(environment, packageName, versionId),
          );`),
       );
       expect(server).toContain(
          squash(`environmentStore.finishedInitialization.then(
-            () => materializationService.reclaimArchivedVersions(),
+            () => materializationService.reclaimer.reclaimArchivedVersions(),
             () => undefined,
          );`),
       );

@@ -13,7 +13,7 @@
     "warnings": [
       {
         "code": "served-copy-not-served",
-        "message": "This source is stored in a destination its join `c` cannot reach: the joined source reads another connection. Queries that use the join are answered live; the others read the stored table. To serve them too, inline the join (inline=), materialize the joined source into the same destination, or keep this source colocated.",
+        "message": "This source is stored in a destination its join `c` cannot reach: the joined source reads another connection. Queries that use the join are answered live; the others read the stored table. To serve them too, inline the join (inline=), materialize the joined source into the same destination, or build this source in its own database (drop `storage=`).",
         "subject": "ext_joined"
       }
     ]
@@ -59,7 +59,14 @@
       "equalToLive": true,
       "malloy": "run: ext1 -> { group_by: region; aggregate: grand }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "origin": "materialize",
+            "outcome": "used",
+            "tableId": "4a41560a6c4c879c97bca95b66a0e8edfe51021df18c872c73e362b154c0828f"
+          }
+        ],
         "notConsidered": [],
         "query": {
           "filteredBy": [],
@@ -72,13 +79,17 @@
           "sourceName": "ext1"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "origin": "materialize",
+          "tableId": "4a41560a6c4c879c97bca95b66a0e8edfe51021df18c872c73e362b154c0828f",
+          "tier": "storage",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "an extension with a where:",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -121,7 +132,14 @@
       "equalToLive": true,
       "malloy": "run: ext2 -> { group_by: winter; aggregate: grand }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "origin": "materialize",
+            "outcome": "used",
+            "tableId": "4a41560a6c4c879c97bca95b66a0e8edfe51021df18c872c73e362b154c0828f"
+          }
+        ],
         "notConsidered": [],
         "query": {
           "filteredBy": [],
@@ -134,13 +152,17 @@
           "sourceName": "ext2"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "origin": "materialize",
+          "tableId": "4a41560a6c4c879c97bca95b66a0e8edfe51021df18c872c73e362b154c0828f",
+          "tier": "storage",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "an extension of an extension",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -183,7 +205,14 @@
       "equalToLive": true,
       "malloy": "run: ext2_rollup -> { group_by: winter; aggregate: t is g.sum() }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "origin": "materialize",
+            "outcome": "used",
+            "tableId": "4a41560a6c4c879c97bca95b66a0e8edfe51021df18c872c73e362b154c0828f"
+          }
+        ],
         "notConsidered": [],
         "query": {
           "filteredBy": [],
@@ -196,13 +225,17 @@
           "sourceName": "ext2_rollup"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "origin": "materialize",
+          "tableId": "4a41560a6c4c879c97bca95b66a0e8edfe51021df18c872c73e362b154c0828f",
+          "tier": "storage",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a query-shaped source over an extension",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -250,7 +283,14 @@
       "equalToLive": true,
       "malloy": "run: ext_other -> { group_by: status; aggregate: orders, grand }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "origin": "materialize",
+            "outcome": "used",
+            "tableId": "4a41560a6c4c879c97bca95b66a0e8edfe51021df18c872c73e362b154c0828f"
+          }
+        ],
         "notConsidered": [],
         "query": {
           "filteredBy": [],
@@ -264,13 +304,17 @@
           "sourceName": "ext_other"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "origin": "materialize",
+          "tableId": "4a41560a6c4c879c97bca95b66a0e8edfe51021df18c872c73e362b154c0828f",
+          "tier": "storage",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "an extension in another file",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -313,7 +357,16 @@
       "equalToLive": true,
       "malloy": "run: ext_joined -> { group_by: c.segment; aggregate: grand }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "detail": "The query uses a join to a source on another connection than the destination this table is stored in, so it is answered live.",
+            "kind": "materialized",
+            "origin": "materialize",
+            "outcome": "skipped",
+            "reason": "CROSS_CONNECTION",
+            "tableId": "4a41560a6c4c879c97bca95b66a0e8edfe51021df18c872c73e362b154c0828f"
+          }
+        ],
         "notConsidered": [],
         "query": {
           "filteredBy": [],
@@ -378,6 +431,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "materialize",
             "outcome": "used",
             "tableId": "4a41560a6c4c879c97bca95b66a0e8edfe51021df18c872c73e362b154c0828f"
           }
@@ -395,7 +449,9 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "materialize",
           "tableId": "4a41560a6c4c879c97bca95b66a0e8edfe51021df18c872c73e362b154c0828f",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []
@@ -448,6 +504,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "materialize",
             "outcome": "used",
             "tableId": "4a41560a6c4c879c97bca95b66a0e8edfe51021df18c872c73e362b154c0828f"
           }
@@ -465,7 +522,9 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "materialize",
           "tableId": "4a41560a6c4c879c97bca95b66a0e8edfe51021df18c872c73e362b154c0828f",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []
@@ -518,6 +577,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "materialize",
             "outcome": "used",
             "tableId": "4a41560a6c4c879c97bca95b66a0e8edfe51021df18c872c73e362b154c0828f"
           }
@@ -535,7 +595,9 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "materialize",
           "tableId": "4a41560a6c4c879c97bca95b66a0e8edfe51021df18c872c73e362b154c0828f",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []
@@ -593,6 +655,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "materialize",
             "outcome": "used",
             "tableId": "4a41560a6c4c879c97bca95b66a0e8edfe51021df18c872c73e362b154c0828f"
           }
@@ -611,7 +674,9 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "materialize",
           "tableId": "4a41560a6c4c879c97bca95b66a0e8edfe51021df18c872c73e362b154c0828f",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []
@@ -665,6 +730,7 @@
           {
             "detail": "The query uses a join to a source on another connection than the destination this table is stored in, so it is answered live.",
             "kind": "materialized",
+            "origin": "materialize",
             "outcome": "skipped",
             "reason": "CROSS_CONNECTION",
             "tableId": "4a41560a6c4c879c97bca95b66a0e8edfe51021df18c872c73e362b154c0828f"

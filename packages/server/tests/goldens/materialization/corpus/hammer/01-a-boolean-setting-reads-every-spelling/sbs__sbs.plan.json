@@ -16,6 +16,10 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "alpha@<hammer>/sbs/sbs.malloy": "persist",
+      "beta@<hammer>/sbs/sbs.malloy": "persist"
+    },
     "materializePlans": {},
     "rollupPlans": {},
     "sourceGateOutcomes": {
@@ -34,7 +38,6 @@
     }
   },
   "rollupsKeepingGates": [],
-  "rollupsOverStoredBase": [],
   "wirePlan": {
     "graphs": [
       {
@@ -53,6 +56,8 @@
         ]
       }
     ],
+    "omittedFiles": [],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "alpha@<hammer>/sbs/sbs.malloy": {

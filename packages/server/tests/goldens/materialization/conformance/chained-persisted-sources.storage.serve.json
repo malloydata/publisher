@@ -71,6 +71,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "persist",
             "outcome": "used",
             "tableId": "b6534da2ba5d208bc5b68eb2c803c48c2b7b07e91c58e988059c3ddd45063463"
           }
@@ -89,7 +90,10 @@
         },
         "servedBy": {
           "kind": "materialized",
-          "tableId": "b6534da2ba5d208bc5b68eb2c803c48c2b7b07e91c58e988059c3ddd45063463"
+          "origin": "persist",
+          "tableId": "b6534da2ba5d208bc5b68eb2c803c48c2b7b07e91c58e988059c3ddd45063463",
+          "tier": "storage",
+          "via": "served_copy"
         },
         "warnings": []
       },
@@ -146,6 +150,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "persist",
             "outcome": "used",
             "tableId": "45a4da84fffc90542390bef0d62f1c943d873438f24950c85b63b050632755bd"
           }
@@ -154,6 +159,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "persist",
             "relationship": "sibling",
             "sourceName": "orders_rollup",
             "tableId": "b6534da2ba5d208bc5b68eb2c803c48c2b7b07e91c58e988059c3ddd45063463"
@@ -172,7 +178,10 @@
         },
         "servedBy": {
           "kind": "materialized",
-          "tableId": "45a4da84fffc90542390bef0d62f1c943d873438f24950c85b63b050632755bd"
+          "origin": "persist",
+          "tableId": "45a4da84fffc90542390bef0d62f1c943d873438f24950c85b63b050632755bd",
+          "tier": "storage",
+          "via": "served_copy"
         },
         "warnings": []
       },
@@ -224,6 +233,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "persist",
             "outcome": "used",
             "tableId": "97cee6ed0a8888fb660e2e917f3c4f607e64b96bf1a7a16fb0fa46ef2a3c72ef"
           }
@@ -232,6 +242,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "persist",
             "relationship": "below",
             "sourceName": "orders_rollup",
             "tableId": "b6534da2ba5d208bc5b68eb2c803c48c2b7b07e91c58e988059c3ddd45063463"
@@ -239,6 +250,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "persist",
             "relationship": "below",
             "sourceName": "orders_rollup_x",
             "tableId": "45a4da84fffc90542390bef0d62f1c943d873438f24950c85b63b050632755bd"
@@ -256,7 +268,10 @@
         },
         "servedBy": {
           "kind": "materialized",
-          "tableId": "97cee6ed0a8888fb660e2e917f3c4f607e64b96bf1a7a16fb0fa46ef2a3c72ef"
+          "origin": "persist",
+          "tableId": "97cee6ed0a8888fb660e2e917f3c4f607e64b96bf1a7a16fb0fa46ef2a3c72ef",
+          "tier": "storage",
+          "via": "served_copy"
         },
         "warnings": []
       },
@@ -313,8 +328,9 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "persist",
             "outcome": "used",
-            "tableId": "97cee6ed0a8888fb660e2e917f3c4f607e64b96bf1a7a16fb0fa46ef2a3c72ef"
+            "tableId": "b6534da2ba5d208bc5b68eb2c803c48c2b7b07e91c58e988059c3ddd45063463"
           }
         ],
         "notConsidered": [],
@@ -331,7 +347,9 @@
         },
         "servedBy": {
           "kind": "materialized",
-          "tableId": "97cee6ed0a8888fb660e2e917f3c4f607e64b96bf1a7a16fb0fa46ef2a3c72ef",
+          "origin": "persist",
+          "tableId": "b6534da2ba5d208bc5b68eb2c803c48c2b7b07e91c58e988059c3ddd45063463",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []
@@ -389,14 +407,16 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "persist",
             "outcome": "used",
-            "tableId": "97cee6ed0a8888fb660e2e917f3c4f607e64b96bf1a7a16fb0fa46ef2a3c72ef"
+            "tableId": "45a4da84fffc90542390bef0d62f1c943d873438f24950c85b63b050632755bd"
           }
         ],
         "notConsidered": [
           {
             "built": true,
             "kind": "materialized",
+            "origin": "persist",
             "relationship": "sibling",
             "sourceName": "orders_rollup",
             "tableId": "b6534da2ba5d208bc5b68eb2c803c48c2b7b07e91c58e988059c3ddd45063463"
@@ -415,7 +435,9 @@
         },
         "servedBy": {
           "kind": "materialized",
-          "tableId": "97cee6ed0a8888fb660e2e917f3c4f607e64b96bf1a7a16fb0fa46ef2a3c72ef",
+          "origin": "persist",
+          "tableId": "45a4da84fffc90542390bef0d62f1c943d873438f24950c85b63b050632755bd",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []
@@ -468,6 +490,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "persist",
             "outcome": "used",
             "tableId": "97cee6ed0a8888fb660e2e917f3c4f607e64b96bf1a7a16fb0fa46ef2a3c72ef"
           }
@@ -476,6 +499,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "persist",
             "relationship": "below",
             "sourceName": "orders_rollup",
             "tableId": "b6534da2ba5d208bc5b68eb2c803c48c2b7b07e91c58e988059c3ddd45063463"
@@ -483,6 +507,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "persist",
             "relationship": "below",
             "sourceName": "orders_rollup_x",
             "tableId": "45a4da84fffc90542390bef0d62f1c943d873438f24950c85b63b050632755bd"
@@ -500,7 +525,9 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "persist",
           "tableId": "97cee6ed0a8888fb660e2e917f3c4f607e64b96bf1a7a16fb0fa46ef2a3c72ef",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []

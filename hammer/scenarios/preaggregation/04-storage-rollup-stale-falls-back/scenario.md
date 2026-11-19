@@ -11,16 +11,15 @@ SPDX-License-Identifier: MIT
 # A stale rollup leaves the serving set, and the query is answered from the base
 
 Freshness is orthogonal to placement: a rollup bound stale past its window with
-`fallback=live` is dropped from the serve shape exactly as an authored `storage=` source
-is, and the query is answered from the base instead.
+`fallback=live` is left out of the query's pinned tables exactly as an authored
+`storage=` source is, and the query is answered from the base instead.
 
-Worth its own scenario because a rollup's fallback is not the same shape as an ordinary
-source's. When a stored source is dropped, the query recompiles against that source's own
-definition. When a rollup is dropped, the composite loses a member — and because the
-lake composite carries no base member, losing its only member means the composite covers
-nothing at all and the query stops compiling against the shape entirely. Two different
-mechanisms reaching the same place, and only one of them is exercised by the storage
-tier's own freshness scenario.
+Worth its own scenario because a rollup's fallback takes a different path from an
+ordinary source's. When a stored source is left out, the served copy keeps that source
+as written and the query reads its own definition. When a rollup is left out, the
+rollup leg has no table to read and declines (`rollup_stale`), and the query is
+answered from the base. Two different mechanisms reaching the same place, and only one
+of them is exercised by the storage tier's own freshness scenario.
 
 `stale_ok` is checked first, so the two outcomes are distinguished by the fallback rather
 than by the window: the same stale entry serves the stored answer under one policy and
@@ -79,7 +78,8 @@ Stale past its window, but the policy says a stale rollup is still worth serving
 
 ## Query by category (again)
 
-Still `150` — `stale_ok` keeps the member in the shape and the stored answer is returned.
+Still `150` — `stale_ok` keeps the rollup's table in the query's pin and the stored
+answer is returned.
 
 Expect:
 
@@ -99,9 +99,9 @@ the query was answered from the base — correct, unaccelerated, and silent, whi
 the fallback is logged at info rather than debug.
 
 The answer is a single `GROUP BY` of the base, not a rollup recomputed and then merged.
-That distinction is invisible in the rows and is the reason the colocated companion is
+That distinction is invisible in the rows and is the reason the database companion is
 skipped when every rollup is storage-bound: its composite would still pick the rollup
-member, find no colocated table behind it, and rebuild the rollup at query time — two
+member, find no database table behind it, and rebuild the rollup at query time — two
 stages to produce what one stage already produces.
 
 Expect:

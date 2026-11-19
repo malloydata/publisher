@@ -13,6 +13,9 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "nested@<pkg>/m.malloy": "materialize"
+    },
     "materializePlans": {
       "nested@<pkg>/m.malloy": {
         "buildSourceName": "nested__mat",
@@ -83,6 +86,8 @@
         ]
       }
     ],
+    "omittedFiles": [],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "nested@<pkg>/m.malloy": {
@@ -105,7 +110,7 @@
         "freshness": null,
         "modelPath": "m.malloy",
         "name": "nested",
-        "origin": "persist",
+        "origin": "materialize",
         "preaggregate": null,
         "queryMetadata": null,
         "refresh": null,

@@ -1,9 +1,6 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { sqlLiteral } from "../../db_utils";
-import type { QueryMetadata } from "../../query_metadata";
-
 /**
  * Render a build's query-metadata bag into each warehouse's own tagging grammar,
  * for the `storage=` build path.
@@ -17,8 +14,21 @@ import type { QueryMetadata } from "../../query_metadata";
  * Neither connector exports its renderer, so the grammars are reimplemented
  * here and pinned by tests that state the grammar.
  *
+ * The Snowflake statement that sets the tag is warehouse_sql.ts's.
+ *
  * Pinned to @malloydata/malloy 0.0.427.
  */
+
+import { errorCodeOf } from "../../../error_code";
+import { snowflakeSetQueryTagStatement } from "./warehouse_sql";
+import type { components } from "../../../api";
+import { logger } from "../../../logger";
+import {
+   mergeQueryMetadata,
+   type QueryContext,
+   type QueryMetadata,
+} from "../../query_metadata";
+import type { BuildEnvironment } from "./build_upstreams";
 
 /**
  * Snowflake's `QUERY_TAG` ceiling. The bag arrives already bounded to this on
@@ -59,13 +69,8 @@ export function snowflakeQueryTagValue(
  * else. The passthrough reuses ONE session across calls, which is what makes a
  * session-level tag reach the build's read at all.
  *
- * <b>Escaped with {@link sqlLiteral} for the snowflake dialect, not by doubling
- * quotes.</b> A property value may contain a backslash — the contract admits
- * printable ASCII except `"` — and JSON renders one as `\\`. Snowflake treats
- * backslash as an escape inside a single-quoted literal, so quote-doubling alone
- * delivers `\` where the JSON needed `\\`, and the stored tag no longer parses:
- * unqueryable in `QUERY_HISTORY`, which is the entire purpose of tagging, and
- * silent because the statement itself succeeds.
+ * The statement escapes the tag for Snowflake (see
+ * snowflakeSetQueryTagStatement).
  */
 export function snowflakeSetQueryTagSQL(
    metadata: QueryMetadata | undefined,
@@ -73,10 +78,72 @@ export function snowflakeSetQueryTagSQL(
 ): string | undefined {
    const tag = snowflakeQueryTagValue(metadata);
    if (tag === undefined) return undefined;
-   const inner = `ALTER SESSION SET QUERY_TAG = '${sqlLiteral(tag, "snowflake")}'`;
-   // The outer literal is parsed by DuckDB, which has no backslash escape, so
-   // the passthrough's own quote-doubling is the correct level here.
+   return snowflakeSetQueryTagStatement(tag, secretName);
+}
+
+/**
+ * The session parameters Malloy's live Snowflake connection sets on every
+ * session (`@malloydata/db-snowflake`, `SnowflakeExecutor._setSessionParams`):
+ * case-sensitive quoted identifiers, UTC, and weeks starting on Sunday. A
+ * `storage=` passthrough build reads Snowflake on a session of its own, which
+ * otherwise runs in the account's settings: with
+ * `QUOTED_IDENTIFIERS_IGNORE_CASE = TRUE` Malloy's quoted lower-case aliases
+ * come back upper-case, and the account's `TIMEZONE` and `WEEK_START` move a
+ * day or week boundary from live's. Kept in step with db-snowflake by hand;
+ * its output-format settings are left out, since the passthrough reads typed
+ * values, not text.
+ */
+const SNOWFLAKE_SESSION_PARAMETERS = [
+   "ALTER SESSION SET QUOTED_IDENTIFIERS_IGNORE_CASE = FALSE",
+   "ALTER SESSION SET TIMEZONE = 'UTC'",
+   "ALTER SESSION SET WEEK_START = 7",
+] as const;
+
+/**
+ * The settings a build session must hold before it reads, each with the
+ * value Malloy's live session holds: a day or week bucket computed under
+ * another is stored as another bucket than live answers.
+ * `QUOTED_IDENTIFIERS_IGNORE_CASE` is not among them: the build stores each
+ * column under its declared name whatever case the account returns.
+ */
+const SNOWFLAKE_REQUIRED_SETTINGS = [
+   { name: "TIMEZONE", value: "UTC" },
+   { name: "WEEK_START", value: "7" },
+] as const;
+
+/** `inner` run through the passthrough on `secretName`. */
+function throughSnowflake(inner: string, secretName: string): string {
    return `SELECT * FROM snowflake_query('${inner.replace(/'/g, "''")}', '${secretName.replace(/'/g, "''")}')`;
+}
+
+/**
+ * The statements that give a Snowflake build session Malloy's live session
+ * parameters ({@link SNOWFLAKE_SESSION_PARAMETERS}), each through the
+ * passthrough on `secretName`, the way the query tag is set.
+ */
+export function snowflakeSessionParitySQL(secretName: string): string[] {
+   return SNOWFLAKE_SESSION_PARAMETERS.map((inner) =>
+      throughSnowflake(inner, secretName),
+   );
+}
+
+/**
+ * The reads that check a Snowflake build session holds each required setting
+ * ({@link SNOWFLAKE_REQUIRED_SETTINGS}), on the same handle the build reads
+ * through: one `SHOW PARAMETERS … IN SESSION` each, with the value it must
+ * hold.
+ */
+export function snowflakeSessionCheckSQL(
+   secretName: string,
+): { name: string; value: string; sql: string }[] {
+   return SNOWFLAKE_REQUIRED_SETTINGS.map(({ name, value }) => ({
+      name,
+      value,
+      sql: throughSnowflake(
+         `SHOW PARAMETERS LIKE '${name}' IN SESSION`,
+         secretName,
+      ),
+   }));
 }
 
 /** BigQuery's label grammar: lowercase, `[a-z0-9_-]`, at most 63 characters. */
@@ -124,4 +191,59 @@ export function bigQueryQueryLabelValue(
    }
    if (rendered.size === 0) return undefined;
    return [...rendered].map(([key, value]) => `${key}:${value}`).join(",");
+}
+
+/**
+ * What a build needs to tag its statements: the package-level metadata layer
+ * and the run's context. Constant for the run; a source adds only its name.
+ */
+export interface BuildQueryMetadata {
+   packageMaterialization:
+      | components["schemas"]["PackageMaterializationConfig"]
+      | null;
+   context: QueryContext;
+}
+
+/**
+ * A connection's two metadata layers: the overridable default and the
+ * deployment-enforced properties. Fails open: an unreadable connection costs
+ * the tags, never the statement.
+ */
+export function connectionMetadataLayers(
+   environment: BuildEnvironment,
+   connectionName: string,
+): { default: QueryMetadata | null; enforced: QueryMetadata | null } {
+   try {
+      const connection = environment.getApiConnection(connectionName);
+      return {
+         default: connection?.queryMetadata ?? null,
+         enforced: connection?.queryMetadataEnforced ?? null,
+      };
+   } catch (error) {
+      // Logged because the lost enforced layer has no metric behind it.
+      logger.debug("No query-metadata layers for connection", {
+         connectionName,
+         code: errorCodeOf(error),
+      });
+      return { default: null, enforced: null };
+   }
+}
+
+/**
+ * The query metadata a run's own statement on `connectionName` carries (an
+ * ownership probe, a mark, a drop): the connection's layers under the run's
+ * context. Fails open, as a build's does.
+ */
+export function statementRunOptions(
+   environment: BuildEnvironment,
+   connectionName: string,
+   context: QueryContext,
+): { queryMetadata?: QueryMetadata } {
+   const layers = connectionMetadataLayers(environment, connectionName);
+   const resolved = mergeQueryMetadata({
+      connection: layers.default,
+      enforced: layers.enforced,
+      context,
+   });
+   return resolved.metadata ? { queryMetadata: resolved.metadata } : {};
 }

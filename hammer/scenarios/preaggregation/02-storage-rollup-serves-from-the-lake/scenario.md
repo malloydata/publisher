@@ -70,11 +70,12 @@ source: orders is orders_pg.table('public.ps_orders') extend {
 
 The rollup's table is in the store, not in the source warehouse. Asked of the lake
 directly rather than inferred from a query answering correctly, because a correct answer
-proves nothing about placement — the live path returns the same rows. A count rather than
-a name, since the name carries a grain digest.
+proves nothing about placement — the live path returns the same rows. A count of the
+readable prefix (`<pkg>__<file>__<base>_by_<grain>__p`) rather than a name, since the name
+ends in a hash.
 
 ```sql
-SELECT table_name FROM information_schema.tables WHERE table_name LIKE '%__preagg__%' OR table_name LIKE '%__rollup__%'
+SELECT table_name FROM information_schema.tables WHERE table_name LIKE 'ps\_\_ps\_\_orders\_by\_category\_\_p%' ESCAPE '\'
 ```
 
 ## Query by category
@@ -135,6 +136,6 @@ Expect:
 
 Before this, `storage=` on a `#@ preaggregate` line parsed, validated, and did nothing:
 the reader took only `grain` and `namespace`, no rule rejected the unknown key, and the
-rollup was built colocated in the source warehouse. Nothing documented the key, so no
+rollup was built in the source warehouse. Nothing documented the key, so no
 advertised path reached it — which is why the refusal for what is still unsupported and
 the support for what now works ship together rather than as two changes.

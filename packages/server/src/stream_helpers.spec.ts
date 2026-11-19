@@ -9,6 +9,7 @@ import type {
 import { describe, expect, it } from "bun:test";
 
 import { PayloadTooLargeError } from "./errors";
+import { PUBLISHER_QUERY_TIMEOUT_REASON } from "./query_timeout";
 import { isStreamingConnection, streamSqlWithBudget } from "./stream_helpers";
 
 /**
@@ -279,5 +280,32 @@ describe("streamSqlWithBudget", () => {
             { maxRows: 10, maxBytes: 1_000 },
          ),
       ).rejects.toThrow("connection reset");
+   });
+
+   it("rejects when the stream ends quietly because the caller's signal aborted", async () => {
+      const callerAc = new AbortController();
+      const conn = {
+         canStream(): true {
+            return true;
+         },
+         // Like db-postgres and db-duckdb: an abort ends the stream with no error.
+         async *runSQLStream(
+            _sql: string,
+            options?: RunSQLOptions,
+         ): AsyncIterableIterator<QueryRecord> {
+            yield { a: 1 };
+            callerAc.abort(PUBLISHER_QUERY_TIMEOUT_REASON);
+            if (options?.abortSignal?.aborted) return;
+            yield { a: 2 };
+         },
+      } as unknown as StreamingConnection;
+      await expect(
+         streamSqlWithBudget(
+            conn,
+            "SELECT 1",
+            { abortSignal: callerAc.signal },
+            { maxRows: 10, maxBytes: 1_000 },
+         ),
+      ).rejects.toBe(PUBLISHER_QUERY_TIMEOUT_REASON);
    });
 });

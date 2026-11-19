@@ -8,7 +8,7 @@
           "by_given@<pkg>/m.malloy": [
             "stored@<pkg>/m.malloy"
           ],
-          "colocated_ext@<pkg>/m.malloy": [],
+          "database_ext@<pkg>/m.malloy": [],
           "east@<pkg>/m.malloy": [
             "stored@<pkg>/m.malloy"
           ],
@@ -21,7 +21,7 @@
           "stored@<pkg>/m.malloy": []
         },
         "order": [
-          "colocated_ext@<pkg>/m.malloy",
+          "database_ext@<pkg>/m.malloy",
           "stored@<pkg>/m.malloy",
           "by_given@<pkg>/m.malloy",
           "east@<pkg>/m.malloy",
@@ -31,6 +31,14 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "by_given@<pkg>/m.malloy": "materialize",
+      "database_ext@<pkg>/m.malloy": "materialize",
+      "east@<pkg>/m.malloy": "materialize",
+      "east_big@<pkg>/m.malloy": "materialize",
+      "renamed@<pkg>/m.malloy": "materialize",
+      "stored@<pkg>/m.malloy": "materialize"
+    },
     "materializePlans": {
       "by_given@<pkg>/m.malloy": {
         "buildSourceName": "by_given__mat",
@@ -235,8 +243,8 @@
         ],
         "zoneFreeRows": true
       },
-      "colocated_ext@<pkg>/m.malloy": {
-        "buildSourceName": "colocated_ext__mat",
+      "database_ext@<pkg>/m.malloy": {
+        "buildSourceName": "database_ext__mat",
         "columns": [
           {
             "column": "id",
@@ -285,10 +293,10 @@
           }
         ],
         "persist": {
-          "name": "colocated_ext_t"
+          "name": "database_ext_t"
         },
-        "sourceID": "colocated_ext@<pkg>/m.malloy",
-        "sourceName": "colocated_ext",
+        "sourceID": "database_ext@<pkg>/m.malloy",
+        "sourceName": "database_ext",
         "storedColumns": [
           {
             "name": "id",
@@ -873,7 +881,7 @@
         "attributed": true,
         "classification": "row_level"
       },
-      "colocated_ext@<pkg>/m.malloy": {
+      "database_ext@<pkg>/m.malloy": {
         "attributed": true,
         "classification": "row_level"
       },
@@ -896,7 +904,7 @@
     },
     "sourceModelPaths": {
       "by_given@<pkg>/m.malloy": "m.malloy",
-      "colocated_ext@<pkg>/m.malloy": "m.malloy",
+      "database_ext@<pkg>/m.malloy": "m.malloy",
       "east@<pkg>/m.malloy": "m.malloy",
       "east_big@<pkg>/m.malloy": "m.malloy",
       "renamed@<pkg>/m.malloy": "m.malloy",
@@ -912,7 +920,7 @@
           [
             {
               "dependsOn": [],
-              "sourceID": "colocated_ext@<pkg>/m.malloy"
+              "sourceID": "database_ext@<pkg>/m.malloy"
             },
             {
               "dependsOn": [],
@@ -946,6 +954,8 @@
         ]
       }
     ],
+    "omittedFiles": [],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "by_given@<pkg>/m.malloy": {
@@ -1000,7 +1010,7 @@
         "freshness": null,
         "modelPath": "m.malloy",
         "name": "by_given",
-        "origin": "persist",
+        "origin": "materialize",
         "preaggregate": null,
         "queryMetadata": null,
         "refresh": null,
@@ -1016,9 +1026,9 @@
           }
         ]
       },
-      "colocated_ext@<pkg>/m.malloy": {
+      "database_ext@<pkg>/m.malloy": {
         "annotationFields": {
-          "name": "colocated_ext_t"
+          "name": "database_ext_t"
         },
         "columns": [
           {
@@ -1062,13 +1072,13 @@
         "dialect": "duckdb",
         "freshness": null,
         "modelPath": "m.malloy",
-        "name": "colocated_ext",
-        "origin": "persist",
+        "name": "database_ext",
+        "origin": "materialize",
         "preaggregate": null,
         "queryMetadata": null,
         "refresh": null,
         "sourceEntityId": "bfd63fc0b64f3eb8051d97c6733d8cfd5603c84a195da169efa44f21f9f990a1",
-        "sourceID": "colocated_ext@<pkg>/m.malloy",
+        "sourceID": "database_ext@<pkg>/m.malloy",
         "sql": "sha256:cdc29600329761ad"
       },
       "east@<pkg>/m.malloy": {
@@ -1123,7 +1133,7 @@
         "freshness": null,
         "modelPath": "m.malloy",
         "name": "east",
-        "origin": "persist",
+        "origin": "materialize",
         "preaggregate": null,
         "queryMetadata": null,
         "refresh": null,
@@ -1183,7 +1193,7 @@
         "freshness": null,
         "modelPath": "m.malloy",
         "name": "east_big",
-        "origin": "persist",
+        "origin": "materialize",
         "preaggregate": null,
         "queryMetadata": null,
         "refresh": null,
@@ -1243,7 +1253,7 @@
         "freshness": null,
         "modelPath": "m.malloy",
         "name": "renamed",
-        "origin": "persist",
+        "origin": "materialize",
         "preaggregate": null,
         "queryMetadata": null,
         "refresh": null,
@@ -1303,7 +1313,7 @@
         "freshness": null,
         "modelPath": "m.malloy",
         "name": "stored",
-        "origin": "persist",
+        "origin": "materialize",
         "preaggregate": null,
         "queryMetadata": null,
         "refresh": null,

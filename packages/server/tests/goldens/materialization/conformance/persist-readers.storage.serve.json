@@ -57,8 +57,9 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "persist",
             "outcome": "skipped",
-            "reason": "MISSING_FIELD",
+            "reason": "OPTED_OUT",
             "tableId": "2375b815017e854f15706b749efb4d263a5bc0f59e2a56b56a5e4b2ccedd16da"
           }
         ],
@@ -126,8 +127,9 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "persist",
             "outcome": "skipped",
-            "reason": "MISSING_FIELD",
+            "reason": "OPTED_OUT",
             "tableId": "2375b815017e854f15706b749efb4d263a5bc0f59e2a56b56a5e4b2ccedd16da"
           }
         ],
@@ -195,6 +197,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "persist",
             "outcome": "used",
             "tableId": "2375b815017e854f15706b749efb4d263a5bc0f59e2a56b56a5e4b2ccedd16da"
           }
@@ -212,7 +215,10 @@
         },
         "servedBy": {
           "kind": "materialized",
-          "tableId": "2375b815017e854f15706b749efb4d263a5bc0f59e2a56b56a5e4b2ccedd16da"
+          "origin": "persist",
+          "tableId": "2375b815017e854f15706b749efb4d263a5bc0f59e2a56b56a5e4b2ccedd16da",
+          "tier": "storage",
+          "via": "served_copy"
         },
         "warnings": []
       },
@@ -264,8 +270,9 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "persist",
             "outcome": "skipped",
-            "reason": "MISSING_FIELD",
+            "reason": "OPTED_OUT",
             "tableId": "2375b815017e854f15706b749efb4d263a5bc0f59e2a56b56a5e4b2ccedd16da"
           }
         ],
@@ -333,8 +340,9 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "persist",
             "outcome": "skipped",
-            "reason": "MISSING_FIELD",
+            "reason": "OPTED_OUT",
             "tableId": "2375b815017e854f15706b749efb4d263a5bc0f59e2a56b56a5e4b2ccedd16da"
           }
         ],
@@ -402,6 +410,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "persist",
             "outcome": "used",
             "tableId": "2375b815017e854f15706b749efb4d263a5bc0f59e2a56b56a5e4b2ccedd16da"
           }
@@ -419,7 +428,9 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "persist",
           "tableId": "2375b815017e854f15706b749efb4d263a5bc0f59e2a56b56a5e4b2ccedd16da",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []

@@ -14,12 +14,14 @@ import {
    rewriteDimensions,
    SERVED_COPY_FLAG,
    storedMalloyType,
-   storedTypeText,
    typeDeclaration,
    type Reroot,
    replacePairJoin,
 } from "./served_copy";
-import { inverseRenameBlocks } from "../declaration_text";
+import {
+   hiddenIncludeNames,
+   inverseRenameBlocks,
+} from "../text/declaration_text";
 
 /** The zero-based range of `needle`'s declaration (after `source: `) in `text`. */
 function rangeOf(text: string, name: string): Reroot["range"] {
@@ -249,28 +251,44 @@ describe("typeDeclaration", () => {
          "type: daily__served is {\n   r::string,\n   `date`::date,\n   total::number\n}",
       );
    });
+
+   it("leaves out a column no Malloy type declares, rather than writing json", () => {
+      // `::json` does not compile (json is a reserved word, and no type a
+      // `type:` takes): a rollup over a BLOB or INTERVAL grain wrote it.
+      expect(
+         typeDeclaration({
+            typeName: "r__served",
+            columns: [
+               { name: "b", type: "BLOB" },
+               { name: "iv", type: "INTERVAL" },
+               { name: "m", type: "MAP(VARCHAR, INTEGER)" },
+               { name: "total", type: "DOUBLE" },
+            ],
+         }),
+      ).toBe("type: r__served is {\n   total::number\n}");
+   });
 });
 
-describe("storedTypeText", () => {
+describe("storedMalloyType", () => {
    it("writes a persisted nest's list of structs as Malloy's record array", () => {
-      expect(storedTypeText("STRUCT(status VARCHAR, n BIGINT)[]")).toBe(
+      expect(storedMalloyType("STRUCT(status VARCHAR, n BIGINT)[]")).toBe(
          "{ status::string, n::number }[]",
       );
       expect(
-         storedTypeText('STRUCT("line total" DOUBLE, "select" VARCHAR)[]'),
+         storedMalloyType('STRUCT("line total" DOUBLE, "select" VARCHAR)[]'),
       ).toBe("{ `line total`::number, `select`::string }[]");
-      expect(storedTypeText("STRUCT(a STRUCT(b INTEGER)[])[]")).toBe(
+      expect(storedMalloyType("STRUCT(a STRUCT(b INTEGER)[])[]")).toBe(
          "{ a::{ b::number }[] }[]",
       );
-      expect(storedTypeText("STRUCT(d DECIMAL(10,2))")).toBe("{ d::number }");
-      expect(storedTypeText("VARCHAR[]")).toBe("string[]");
+      expect(storedMalloyType("STRUCT(d DECIMAL(10,2))")).toBe("{ d::number }");
+      expect(storedMalloyType("VARCHAR[]")).toBe("string[]");
    });
 
-   it("keeps the serve shape's scalar mapping, and its fallback for what it cannot read", () => {
-      expect(storedTypeText("DECIMAL(18,2)")).toBe("number");
-      expect(storedTypeText("TIMESTAMP WITH TIME ZONE")).toBe("timestamp");
-      expect(storedTypeText("MAP(VARCHAR, INTEGER)")).toBe("json");
-      expect(storedTypeText("STRUCT(a VARCHAR")).toBe("json");
+   it("keeps the serve shape's scalar mapping, and declares nothing it cannot read", () => {
+      expect(storedMalloyType("DECIMAL(18,2)")).toBe("number");
+      expect(storedMalloyType("TIMESTAMP WITH TIME ZONE")).toBe("timestamp");
+      expect(storedMalloyType("MAP(VARCHAR, INTEGER)")).toBeUndefined();
+      expect(storedMalloyType("STRUCT(a VARCHAR")).toBeUndefined();
    });
 
    it("storedMalloyType: undefined for what the type: could only call json", () => {
@@ -356,7 +374,7 @@ source: weekly is ev -> { group_by: r }
          {
             sourceName: "daily",
             url: "file:///m.malloy",
-            reason: "range_not_found",
+            reason: "definition_not_parsed",
          },
       ]);
    });
@@ -410,9 +428,95 @@ source: raw is duckdb.sql("""SELECT region, amount FROM t""") extend {
       ).toBe(false);
    });
 
+   it("re-roots a connection's SQL curated by an include ahead of its extend, keeping both", () => {
+      const raw = `#@ persist name="raw" storage="lake"
+source: raw is duckdb.sql("""SELECT region, amount FROM t""") include {
+  public: region, amount
+} extend {
+  measure: total is amount.sum()
+}
+`;
+      const copy = buildServedCopy(
+         [reroot(raw, "raw", { keepsIncludes: true })],
+         () => raw,
+      );
+      expect(copy.refused).toEqual([]);
+      expect(copy.files.get("file:///m.malloy")).toContain(
+         "source: raw is __publisher_storage_t_0.virtual('h1')::raw__served include {\n  public: region, amount\n} extend {",
+      );
+      // A re-root that keeps no include cannot place it: refused, and warned
+      // of, unlike a refinement left as written by design.
+      expect(buildServedCopy([reroot(raw, "raw")], () => raw).refused).toEqual([
+         {
+            sourceName: "raw",
+            url: "file:///m.malloy",
+            reason: "definition_not_parsed",
+         },
+      ]);
+      expect(
+         declarationSpans(`t is duckdb.sql("x") include { } extend { }`),
+      ).toMatchObject({ connectionRooted: false, connectionBased: true });
+      expect(
+         declarationSpans(`t is duckdb.sql("x") include { } extend { }`, {
+            throughIncludes: true,
+         }),
+      ).toMatchObject({ connectionRooted: true, connectionBased: true });
+   });
+
+   it("refuses a kept include that hides a column the table does not store, naming it", () => {
+      const raw = `#@ persist name="raw" storage="lake"
+source: raw is duckdb.sql("""SELECT r, total, id FROM t""") include {
+  public: r, total
+  #(doc) "kept out of the table"
+  private: id
+  internal: \`r\`
+}
+`;
+      expect(
+         buildServedCopy(
+            [reroot(raw, "raw", { keepsIncludes: true })],
+            () => raw,
+         ).refused,
+      ).toEqual([
+         {
+            sourceName: "raw",
+            url: "file:///m.malloy",
+            reason: "definition_not_parsed",
+            hiddenUnstored: ["id"],
+         },
+      ]);
+   });
+
+   it("counts a hidden name as stored-or-defined only where the run defines it", () => {
+      const run = (extend: string) =>
+         `include {\n  public: r\n  private: s\n} extend {\n  ${extend}\n}`;
+      // A use is not a definition.
+      expect(hiddenIncludeNames(run("dimension: s_len is length(s)"))).toEqual([
+         "s",
+      ]);
+      expect(hiddenIncludeNames(run("where: s is not null"))).toEqual(["s"]);
+      expect(
+         hiddenIncludeNames(
+            run("dimension: f is pick 1 when s is null else 0"),
+         ),
+      ).toEqual(["s"]);
+      // A rename target or a field the run defines is.
+      expect(
+         hiddenIncludeNames(
+            "extend { rename: s is r } include { internal: s; public: * }",
+         ),
+      ).toEqual([]);
+      expect(hiddenIncludeNames(run("dimension: s is upper(r)"))).toEqual([]);
+      expect(
+         hiddenIncludeNames(run("dimension:\n    a is 1\n    s is 2")),
+      ).toEqual([]);
+   });
+
    it("refuses every re-root of a file it cannot read", () => {
       const copy = buildServedCopy([reroot(file, "daily")], () => undefined);
-      expect(copy.refused.map((r) => r.reason)).toEqual(["range_not_found"]);
+      expect(copy.refused.map((r) => r.reason)).toEqual([
+         "definition_not_parsed",
+      ]);
    });
 });
 
@@ -645,7 +749,7 @@ describe("a stored timeframe truncation (decision 3)", () => {
             },
          ),
       ).toBe(
-         "daily is x.virtual('h')::daily__served extend {\n  internal rename:\n    m__stored is m\n  dimension:\n    m is m__stored.month\n}",
+         "daily is x.virtual('h')::daily__served extend {\n  private rename:\n    m__stored is m\n  dimension:\n    m is m__stored.month\n}",
       );
    });
 
@@ -758,9 +862,10 @@ describe("hidden stored columns (P3)", () => {
 
    it("restores a hidden timeframe column under the author's modifier, its stored column renamed as hidden (row 8)", () => {
       // Inherited, so the re-root defines the field under its own modifier.
-      // A hidden field's stored column is `private` (an `internal` one a
-      // caller's own `extend` could read), hidden by a labelled rename in the
-      // first block: no include, so an author's `rename:` still compiles.
+      // Every redefined field's stored column is `private` (an `internal` one
+      // a caller's own `extend` or `include` could read), hidden by a labelled
+      // rename in the first block: no include, so an author's `rename:` still
+      // compiles.
       const out = rerootDeclaration(
          "orders is base extend {\n  measure: n is count()\n}",
          {
@@ -789,11 +894,10 @@ describe("hidden stored columns (P3)", () => {
       );
       expect(out).toBe(
          "orders is x.virtual('h')::orders__served extend {\n" +
-            "  internal rename:\n" +
-            "    order_day__stored is order_day\n" +
             "  private rename:\n" +
             "    order_month__stored is order_month\n" +
             "    order_week__stored is order_week\n" +
+            "    order_day__stored is order_day\n" +
             "  dimension:\n" +
             "    order_day is order_day__stored.day\n" +
             "  internal dimension:\n" +
@@ -831,7 +935,7 @@ describe("hidden stored columns (P3)", () => {
             "  rename:\n" +
             "    order_month__stored is order_month\n" +
             "    order_day__stored is order_day\n" +
-            "} include { public: *; private: order_month__stored; internal: org_id, order_day__stored } extend {\n" +
+            "} include { public: *; private: order_month__stored, order_day__stored; internal: org_id } extend {\n" +
             "  dimension:\n" +
             "    order_day is order_day__stored.day\n" +
             "  private dimension:\n" +
@@ -1185,6 +1289,170 @@ describe("rerootDeclaration (pair tables, P5)", () => {
   measure:
     #(doc) "Flights"
     flight_count is flight_count__pair { where: __parent_row__pair }
+}`);
+   });
+});
+
+describe("rerootDeclaration (counts through a pair table, known limitation 40)", () => {
+   const childColumns = [
+      {
+         name: "seg_id",
+         column: "segments__seg_id",
+         internalName: "segments__seg_id__pair",
+         type: "BIGINT",
+      },
+      {
+         name: "miles",
+         column: "segments__miles",
+         internalName: "segments__miles__pair",
+         type: "DOUBLE",
+      },
+   ];
+   it("declares each level's presence in the record's block, and re-declares a count at the leaf under it", () => {
+      const text = `flights is duckdb.table('flights') extend {
+  primary_key: id
+  join_many: segments on segments.flight_id = id
+  measure:
+    flight_count is count()
+    seg_n is segments.count()
+    seg_miles is segments.miles.sum()
+}`;
+      const out = rerootDeclaration(text, {
+         sourceName: "flights",
+         connectionAlias: "a",
+         virtualHandle: "h",
+         typeName: "flights__served",
+         columns: [{ name: "id", type: "BIGINT" }],
+         pair: {
+            join: "segments",
+            parentRowColumn: { name: "__parent_row", type: "BOOLEAN" },
+            parentRowField: "__parent_row__pair",
+            childColumns,
+            parentMeasures: [
+               { name: "flight_count", internalName: "flight_count__pair" },
+               {
+                  name: "seg_n",
+                  internalName: "seg_n__pair",
+                  level: 1,
+                  present: true,
+               },
+            ],
+            childStoredDimensions: [],
+            levelPresent: [
+               {
+                  field: "__segments__present__pair",
+                  keyPath: ["segments", "seg_id"],
+               },
+            ],
+            leafKeyChecked: true,
+         },
+      });
+      expect(out).toBe(`flights is a.virtual('h')::flights__served extend {
+  internal rename:
+    __parent_row__pair is __parent_row
+    segments__seg_id__pair is segments__seg_id
+    segments__miles__pair is segments__miles
+} extend {
+  primary_key: id
+  dimension: segments is {
+    seg_id is segments__seg_id__pair,
+    miles is segments__miles__pair
+  }
+  internal dimension:
+    __segments__present__pair is segments.seg_id is not null
+  measure:
+    flight_count is count()
+    seg_n is segments.count()
+    seg_miles is segments.miles.sum()
+} extend {
+  internal rename:
+    flight_count__pair is flight_count
+    seg_n__pair is seg_n
+  measure:
+    flight_count is flight_count__pair { where: __parent_row__pair }
+    seg_n is seg_n__pair { where: __segments__present__pair }
+}`);
+   });
+
+   it("re-declares a middle level's count under its row flag and its presence, and a private join's presence beside its renames", () => {
+      const text = `flights is duckdb.table('flights') extend {
+  primary_key: id
+  private join_many: segments is legs on segments.flight_id = id
+  measure:
+    seg_n is segments.count()
+    seg_miles is segments.miles.sum()
+}`;
+      const out = rerootDeclaration(text, {
+         sourceName: "flights",
+         connectionAlias: "a",
+         virtualHandle: "h",
+         typeName: "flights__served",
+         columns: [{ name: "id", type: "BIGINT" }],
+         pair: {
+            join: "segments",
+            parentRowColumn: { name: "__parent_row", type: "BOOLEAN" },
+            parentRowField: "__parent_row__pair",
+            childColumns,
+            hops: [
+               {
+                  join: "stops",
+                  columns: [
+                     {
+                        name: "stop_id",
+                        column: "segments__stops__stop_id",
+                        internalName: "segments__stops__stop_id__pair",
+                        type: "BIGINT",
+                     },
+                  ],
+               },
+            ],
+            levelRows: [
+               {
+                  column: { name: "__child_row", type: "BOOLEAN" },
+                  field: "__child_row__pair",
+               },
+            ],
+            parentMeasures: [
+               {
+                  name: "seg_n",
+                  internalName: "seg_n__pair",
+                  level: 1,
+                  present: true,
+               },
+               {
+                  name: "seg_miles",
+                  internalName: "seg_miles__pair",
+                  level: 1,
+               },
+            ],
+            childStoredDimensions: [],
+            levelPresent: [
+               {
+                  field: "__segments__present__pair",
+                  keyPath: ["segments", "seg_id"],
+               },
+               undefined,
+            ],
+            access: "private",
+         },
+      });
+      expect(out).toContain(`  private dimension: segments is {
+    seg_id is segments__seg_id__pair,
+    miles is segments__miles__pair,
+    stops is {
+      stop_id is segments__stops__stop_id__pair
+    }
+  }
+  private rename:
+    segments__seg_id__pair is segments__seg_id
+    segments__miles__pair is segments__miles
+    segments__stops__stop_id__pair is segments__stops__stop_id
+  internal dimension:
+    __segments__present__pair is segments.seg_id is not null
+`);
+      expect(out).toContain(`  measure:
+    seg_n is seg_n__pair { where: __child_row__pair, __segments__present__pair }
+    seg_miles is seg_miles__pair { where: __child_row__pair }
 }`);
    });
 });

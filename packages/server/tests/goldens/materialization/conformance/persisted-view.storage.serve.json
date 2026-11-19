@@ -242,6 +242,7 @@
         "considered": [
           {
             "kind": "view",
+            "origin": "view",
             "outcome": "used",
             "tableId": "35c99c4e12ad2cdcfa61ed24112545dcfd2904216c718bf57a90cee803f16533"
           }
@@ -259,7 +260,9 @@
         },
         "servedBy": {
           "kind": "view",
-          "tableId": "35c99c4e12ad2cdcfa61ed24112545dcfd2904216c718bf57a90cee803f16533"
+          "origin": "view",
+          "tableId": "35c99c4e12ad2cdcfa61ed24112545dcfd2904216c718bf57a90cee803f16533",
+          "tier": "storage"
         },
         "warnings": []
       },
@@ -311,6 +314,7 @@
         "considered": [
           {
             "kind": "view",
+            "origin": "view",
             "outcome": "used",
             "tableId": "35c99c4e12ad2cdcfa61ed24112545dcfd2904216c718bf57a90cee803f16533"
           }
@@ -328,7 +332,9 @@
         },
         "servedBy": {
           "kind": "view",
-          "tableId": "35c99c4e12ad2cdcfa61ed24112545dcfd2904216c718bf57a90cee803f16533"
+          "origin": "view",
+          "tableId": "35c99c4e12ad2cdcfa61ed24112545dcfd2904216c718bf57a90cee803f16533",
+          "tier": "storage"
         },
         "warnings": []
       },
@@ -381,8 +387,9 @@
           {
             "detail": "the query refines `by_region` (`+ { … }`), and the stored result holds only the view as written",
             "kind": "view",
+            "origin": "view",
             "outcome": "skipped",
-            "reason": "MISSING_FIELD",
+            "reason": "SHAPE_MISMATCH",
             "tableId": "35c99c4e12ad2cdcfa61ed24112545dcfd2904216c718bf57a90cee803f16533"
           }
         ],

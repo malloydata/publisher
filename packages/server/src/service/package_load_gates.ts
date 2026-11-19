@@ -20,7 +20,6 @@ import {
 } from "./package_retrieval_settings";
 
 type ApiPackage = components["schemas"]["Package"];
-type ApiPackageWarning = NonNullable<ApiPackage["warnings"]>[number];
 /** The listing fields a load is judged under. */
 type Listing = Pick<ApiPackage, "explores" | "queryableSources">;
 
@@ -31,12 +30,11 @@ export interface LoadGatedPackage {
    underListing<T>(listing: Listing | undefined, judge: () => T): T;
    formatInvalidExplores(exploresOverride?: string[]): string;
    formatInvalidPersistencePolicy(): string;
-   formatInvalidIncrementalPolicy(): string;
-   formatInvalidPreaggregatePolicy(): string;
+   formatLoadGateText(): string;
    formatClassificationLeaks(): string;
+   formatArrayQueryJoins(): string;
    formatCarriesCeilingLeaks(prepared: PreparedCeilingQueries): string;
-   preaggregateAccessWarnings(): ApiPackageWarning[];
-   persistenceCollisionWarnings(): string[];
+   formatAuthorSqlRefusals(): Promise<string>;
 }
 
 /**
@@ -107,15 +105,30 @@ export function warnInvalidExplores(pkg: LoadGatedPackage): void {
 
 /**
  * The manifest and persistence policy gates a freshly loaded package passes
- * before it serves. Most warn; an invalid incremental refresh or
- * pre-aggregation declaration fails the load. With a `listing`, the package is
+ * before it serves. An invalid materialization annotation (any route), an
+ * invalid incremental refresh or pre-aggregation declaration fails the load;
+ * the package manifest's own policy only warns. With a `listing`, the package is
  * judged as that listing would serve it, and keeps its own.
  */
 export async function applyLoadGates(
    pkg: LoadGatedPackage,
    listing?: Listing,
 ): Promise<void> {
-   // The only await, ahead of the listing, so no request is served under one the gates have not judged.
+   // Author SQL on a DuckDB connection reads as one SELECT, or the package
+   // does not load (duckdb_lockdown.ts): independent of any listing.
+   const authorSql = await pkg.formatAuthorSqlRefusals();
+   if (authorSql) {
+      const packageName = pkg.getPackageName();
+      logger.error(
+         `Package ${packageName} has author SQL that is not one SELECT`,
+         {
+            packageName,
+            detail: authorSql,
+         },
+      );
+      throw new BadRequestError(authorSql);
+   }
+   // The only await ahead of the listing, so no request is served under one the gates have not judged.
    const prepared = await pkg.prepareCeilingQueries();
    pkg.underListing(listing, () => judgeLoadGates(pkg, prepared));
 }
@@ -126,7 +139,8 @@ function judgeLoadGates(
 ): void {
    const packageName = pkg.getPackageName();
    warnInvalidExplores(pkg);
-   // Same fail-safe split: warn at load, reject at publish.
+   // The package manifest's materialization policy (publisher.json schedule
+   // rules) keeps the fail-safe split: warn at load, reject at publish.
    const invalidPolicy = pkg.formatInvalidPersistencePolicy();
    if (invalidPolicy) {
       logger.warn(`Package ${packageName} has an invalid persistence policy`, {
@@ -134,23 +148,33 @@ function judgeLoadGates(
          detail: invalidPolicy,
       });
    }
-   // An invalid incremental `#@ persist` declaration fails the load, like a
-   // compile error. Publish cannot be the only strict point: a package loaded
-   // from control-plane storage never passes through POST/PATCH /packages, and
-   // a warning would leave the author with a source that silently rebuilds in
-   // full. BadRequestError gives a 400 (a control plane defaults to 424); the
-   // message carries every rejection so one republish fixes them all.
-   const invalidIncremental = pkg.formatInvalidIncrementalPolicy();
-   if (invalidIncremental) {
+   // An invalid materialization annotation fails the load, like a compile
+   // error, on every load path: a package loaded from control-plane storage
+   // never passes through POST/PATCH /packages, so a publish-only refusal
+   // would leave it serving with the mistake (an incremental declaration
+   // would silently rebuild in full, a rollup silently never build).
+   // BadRequestError gives a 400 (a control plane defaults to 424); the
+   // message carries every one, with its code, so one republish fixes them
+   // all. A valid annotation Publisher cannot build only warns.
+   const invalid = pkg.formatLoadGateText();
+   if (invalid) {
       // Logged too: the throw is the author's copy, the log the operator's.
       logger.error(
-         `Package ${packageName} has an invalid incremental refresh policy`,
-         {
-            packageName,
-            detail: invalidIncremental,
-         },
+         `Package ${packageName} has an invalid materialization annotation`,
+         { packageName, detail: invalid },
       );
-      throw new BadRequestError(invalidIncremental);
+      throw new BadRequestError(invalid);
+   }
+   // A join inside a query on an array is read by none of the access checks,
+   // so a model that declares one refuses it rather than serve reads nothing
+   // accounts for (a `#(carries)` ceiling or a gate it would pass unseen).
+   const arrayQueryJoins = pkg.formatArrayQueryJoins();
+   if (arrayQueryJoins) {
+      logger.error(
+         `Package ${packageName} joins a source inside a query on an array`,
+         { packageName, detail: arrayQueryJoins },
+      );
+      throw new BadRequestError(arrayQueryJoins);
    }
    // A `#(carries)` ceiling is strict at load too: a surface that lists what
    // it carries must not serve a field outside the list, and a warning would
@@ -170,39 +194,5 @@ function judgeLoadGates(
          { packageName, detail: ceiling },
       );
       throw new BadRequestError(ceiling);
-   }
-   // `#@ preaggregate` is strict at load too (see
-   // formatInvalidPreaggregatePolicy), except the access-modifier pair, which
-   // only warns.
-   const accessWarnings = pkg.preaggregateAccessWarnings();
-   if (accessWarnings.length > 0) {
-      logger.warn(
-         `Package ${packageName} pre-aggregates a field the source hides`,
-         {
-            packageName,
-            detail: accessWarnings.map((w) => w.message).join("\n"),
-         },
-      );
-   }
-   const invalidPreaggregate = pkg.formatInvalidPreaggregatePolicy();
-   if (invalidPreaggregate) {
-      logger.error(
-         `Package ${packageName} has an invalid pre-aggregation declaration`,
-         {
-            packageName,
-            detail: invalidPreaggregate,
-         },
-      );
-      throw new BadRequestError(invalidPreaggregate);
-   }
-   // Persist-target collisions only warn at load, whatever
-   // PERSIST_COLLISION_ENFORCE says; that flag (on by default) governs publish
-   // and build rejection.
-   const collisions = pkg.persistenceCollisionWarnings();
-   if (collisions.length > 0) {
-      logger.warn(`Package ${packageName} has persist-target collisions`, {
-         packageName,
-         detail: collisions.join("\n"),
-      });
    }
 }

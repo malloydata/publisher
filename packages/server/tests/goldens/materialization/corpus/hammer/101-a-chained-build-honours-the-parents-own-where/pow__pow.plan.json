@@ -22,6 +22,11 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "daily@<hammer>/pow/pow.malloy": "persist",
+      "rollup@<hammer>/pow/pow.malloy": "persist",
+      "rollup_wide@<hammer>/pow/pow.malloy": "persist"
+    },
     "materializePlans": {},
     "rollupPlans": {},
     "sourceGateOutcomes": {
@@ -45,7 +50,6 @@
     }
   },
   "rollupsKeepingGates": [],
-  "rollupsOverStoredBase": [],
   "wirePlan": {
     "graphs": [
       {
@@ -72,6 +76,8 @@
         ]
       }
     ],
+    "omittedFiles": [],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "daily@<hammer>/pow/pow.malloy": {

@@ -15,10 +15,21 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // packages/cli/tests/harness -> packages/server and packages/cli/src/index.ts
 const SERVER_DIR = path.resolve(__dirname, "../../../server");
 const CLI_ENTRY = path.resolve(__dirname, "../../src/index.ts");
-const PERSIST_FIXTURE = path.resolve(SERVER_DIR, "tests/fixtures/persist-test");
+export const PERSIST_FIXTURE = path.resolve(
+  SERVER_DIR,
+  "tests/fixtures/persist-test",
+);
 
 export const TEST_ENV = "it-env";
 export const TEST_PKG = "persist-test";
+/**
+ * A watched environment (`--watch-env`) serving its own copy of the fixture.
+ * Package versioning is on by default, so `it-env`'s package is a published,
+ * immutable version; a watched environment mounts its packages in place with
+ * no versions, the one place a schedule PATCH applies (it writes the copy's
+ * publisher.json, which is why this is a copy and not the committed fixture).
+ */
+export const TEST_WATCH_ENV = "it-watch";
 
 export interface TestServer {
   baseUrl: string;
@@ -51,18 +62,24 @@ async function getFreePort(): Promise<number> {
  *
  * If `CLI_TEST_SERVER_URL` is set, reuse that already-running server instead of
  * spawning one (handy for CI). That server must be seeded with the
- * `it-env`/`persist-test` fixture and have no pre-existing materializations,
- * since the suite asserts on the empty initial state.
+ * `it-env`/`persist-test` fixture, serve a writable copy of it as
+ * `persist-test` in a watched `it-watch` environment, share this machine's
+ * filesystem (a test publishes a package from a temp directory), and have no
+ * pre-existing materializations, since the suite asserts on the empty initial
+ * state.
  */
 export async function startTestServer(): Promise<TestServer> {
   const externalUrl = process.env.CLI_TEST_SERVER_URL;
   if (externalUrl) {
     const baseUrl = externalUrl.replace(/\/$/, "");
     await waitForPackage(baseUrl);
+    await waitForPackage(baseUrl, undefined, TEST_WATCH_ENV);
     return { baseUrl, stop: async () => {} };
   }
 
   const serverRoot = fs.mkdtempSync(path.join(os.tmpdir(), "cli-it-root-"));
+  const watchedCopy = path.join(serverRoot, "watched", TEST_PKG);
+  fs.cpSync(PERSIST_FIXTURE, watchedCopy, { recursive: true });
   fs.writeFileSync(
     path.join(serverRoot, "publisher.config.json"),
     JSON.stringify({
@@ -71,6 +88,11 @@ export async function startTestServer(): Promise<TestServer> {
         {
           name: TEST_ENV,
           packages: [{ name: TEST_PKG, location: PERSIST_FIXTURE }],
+          connections: [],
+        },
+        {
+          name: TEST_WATCH_ENV,
+          packages: [{ name: TEST_PKG, location: watchedCopy }],
           connections: [],
         },
       ],
@@ -92,6 +114,10 @@ export async function startTestServer(): Promise<TestServer> {
       PUBLISHER_HOST: "127.0.0.1",
       PUBLISHER_PORT: String(port),
       MCP_PORT: String(mcpPort),
+      PUBLISHER_WATCH: TEST_WATCH_ENV,
+      // The default today; pinned so it-env's package stays a published
+      // version whatever the default becomes or the caller's env says.
+      PUBLISHER_PACKAGE_VERSIONING: "on",
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -111,6 +137,7 @@ export async function startTestServer(): Promise<TestServer> {
 
   try {
     await waitForPackage(baseUrl, () => exited);
+    await waitForPackage(baseUrl, () => exited, TEST_WATCH_ENV);
   } catch (err) {
     proc.kill("SIGKILL");
     fs.rmSync(serverRoot, { recursive: true, force: true });
@@ -142,8 +169,9 @@ export async function startTestServer(): Promise<TestServer> {
 async function waitForPackage(
   baseUrl: string,
   hasExited: () => boolean = () => false,
+  environment: string = TEST_ENV,
 ): Promise<void> {
-  const url = `${baseUrl}/api/v0/environments/${TEST_ENV}/packages/${TEST_PKG}/models`;
+  const url = `${baseUrl}/api/v0/environments/${environment}/packages/${TEST_PKG}/models`;
   const deadline = Date.now() + 120_000;
   while (Date.now() < deadline) {
     if (hasExited()) {

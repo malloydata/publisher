@@ -17,10 +17,7 @@ import {
    type SqlRunner,
    warehouseDeltaTarget,
 } from "../run/incremental_apply";
-import {
-   materializeColumns,
-   planModelMaterialize,
-} from "./build_file_generator";
+import { materializeColumns, planModelMaterialize } from "./materialize_plan";
 import {
    classifyWhereTerms,
    currentTimeFields,
@@ -33,8 +30,8 @@ import {
    deletingWindowsOf,
    leftOutWindowTerms,
    rollingWindowTerms,
-   windowDeleteBefore,
 } from "./rolling_window";
+import { windowDeleteBefore } from "../domain/read_time_terms";
 
 const URL_ = "file:///rw/m.malloy";
 let duckdb: DuckDBConnection;
@@ -547,6 +544,10 @@ describe("the incremental delete, run on DuckDB", () => {
             return { rows: [{ column_name: "ts" }, { column_name: "loaded" }] };
          }
          if (sql.includes("LIMIT 1")) return { rows: [{ present: 1 }] };
+         // The newest stored watermark, where the delta starts.
+         if (/ <= (DATE|TIMESTAMP) '/.test(sql)) {
+            return { rows: [{ watermark_max: "2026-11-08 23:00:00" }] };
+         }
          throw new Error(`unexpected probe: ${sql}`);
       };
       const step = await planIncrementalStep({

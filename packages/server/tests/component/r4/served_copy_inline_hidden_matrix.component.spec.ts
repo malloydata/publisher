@@ -7,7 +7,7 @@
  * every shape the served copy hides a column (an `include` on the source's
  * own head or its base's, a hidden dimension of its own or a base's, a
  * hidden timeframe), with the join public, internal or private, on
- * `storage=` and colocated. Each must be served from its table, equal to
+ * `storage=` and database. Each must be served from its table, equal to
  * live, with no served-copy problem.
  *
  * A join_one beside a hidden column once made the served copy keep the join
@@ -22,13 +22,17 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { installSettings } from "../../../src/test_helpers/settings_env";
+import {
+   installSettings,
+   useMaterializationOn,
+} from "../../../src/test_helpers/settings_env";
 import {
    buildScenario,
    disposeScenarios,
    rowDifference,
    type R4Fixture,
    type Row,
+   itLeavesNoServedCopyProblem,
 } from "./harness";
 
 const seedSql = [
@@ -84,17 +88,17 @@ afterAll(async () => {
 });
 
 for (const kind of ["join_one", "pair"] as const) {
-   for (const colocated of [false, true]) {
+   for (const database of [false, true]) {
       // A hidden join_many is refused for inlining (known limitation 24).
       for (const access of kind === "pair"
          ? [""]
          : ["", "internal ", "private "]) {
          for (const [shape, h] of Object.entries(hiddenShapes)) {
-            const label = `${kind} ${colocated ? "colocated" : "storage"}, join ${access || "public "}, hidden by ${shape}`;
+            const label = `${kind} ${database ? "database" : "storage"}, join ${access || "public "}, hidden by ${shape}`;
             it(label, async () => {
                const { restore } = installSettings({
                   env: {
-                     PERSIST_STORAGE_MODE: colocated ? "off" : "on",
+                     PERSIST_STORAGE_MODE: database ? "off" : "on",
                      PUBLISHER_MATERIALIZE: "true",
                   },
                });
@@ -108,7 +112,7 @@ for (const kind of ["join_one", "pair"] as const) {
 source: carriers is duckdb.table('carriers') extend { primary_key: code }
 source: legs is duckdb.table('legs') extend { primary_key: lid }
 ${h.pre ?? ""}
-#(materialize) ${colocated ? 'name="w_tbl"' : 'storage="lake"'} inline=["${inline}"]
+#(materialize) ${database ? 'name="w_tbl"' : 'storage="lake"'} inline=["${inline}"]
 source: wide is ${h.head} extend {
   primary_key: id
   ${join}
@@ -140,7 +144,9 @@ source: wide is ${h.head} extend {
                      expect(run.servedVia).toBeUndefined();
                   } else {
                      expect(run.servedVia).toBe("served_copy");
-                     expect(run.servedFrom).toBe(colocated ? null : "storage");
+                     expect(run.servedFrom).toBe(
+                        database ? "database" : "storage",
+                     );
                   }
                } finally {
                   restore();
@@ -169,12 +175,9 @@ async function failure(run: () => Promise<unknown>): Promise<unknown> {
  * rows.
  */
 describe("R4: a pair table beside a hidden column refuses exactly where live refuses", () => {
-   let restore: () => void;
    let fixture: R4Fixture;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: {
             "m.malloy": `##! experimental { access_modifiers }
@@ -191,9 +194,6 @@ source: wide is duckdb.table('flights') include { private: secret; internal: ts;
          seedSql,
          materialize: true,
       });
-   });
-   afterAll(async () => {
-      restore();
    });
 
    async function parity(malloy: string, answers: boolean): Promise<void> {
@@ -226,9 +226,7 @@ source: wide is duckdb.table('flights') include { private: secret; internal: ts;
       expect(rowDifference(live ?? [], served?.rows ?? [])).toBeUndefined();
    }
 
-   it("re-roots the pair source, with no problem", async () => {
-      expect(await fixture.servedCopyProblems()).toEqual([]);
-   });
+   itLeavesNoServedCopyProblem(() => fixture);
 
    const refused: [string, string][] = [
       ["select", "run: wide -> { select: secret }"],

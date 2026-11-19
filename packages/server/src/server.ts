@@ -7,6 +7,11 @@
 import { assertSupportedNodeVersion } from "./node_version_check";
 import { printHelpIfAsked } from "./cli_args";
 import { Settings, SettingsError } from "./settings";
+import {
+   initFailedLine,
+   redactPgSecrets,
+   redactSignedUrlParams,
+} from "./pg_helpers";
 
 // Exits non-zero on an unsupported Node before argument parsing, storage init
 // or any listener; otherwise the failure surfaces only as an unexplained 500
@@ -34,12 +39,15 @@ if (failures.length > 0) {
    }
    const message = new SettingsError(failures).message;
    process.stderr.write(
-      `${message}\nPUBLISHER_INIT_FAILED error=${JSON.stringify(message)}\n`,
+      `${redactSignedUrlParams(redactPgSecrets(message))}\n${initFailedLine(message)}`,
    );
    process.exit(1);
 }
 
 const { logger } = await import("./logger");
+// A dependency's unhandled rejection is logged, not fatal; see the function.
+const { installProcessSafetyHandlers } = await import("./process_safety");
+installProcessSafetyHandlers();
 for (const warning of loaded.warnings) {
    logger.warn(warning.message);
 }
@@ -63,4 +71,10 @@ if (apis.servingApiEnabled) {
    await startMainServer(loaded);
 } else {
    await import("./admin_server");
+}
+
+// Counted once the server's telemetry is up, which loading it starts.
+const { recordDeprecatedUsage } = await import("./deprecated_usage_metrics");
+for (const name of loaded.deprecatedNames) {
+   recordDeprecatedUsage(`config:${name}`);
 }

@@ -13,6 +13,9 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "enriched@<pkg>/m.malloy": "materialize"
+    },
     "materializePlans": {
       "enriched@<pkg>/m.malloy": {
         "buildSourceName": "enriched__mat",
@@ -157,6 +160,8 @@
         ]
       }
     ],
+    "omittedFiles": [],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "enriched@<pkg>/m.malloy": {
@@ -215,7 +220,7 @@
         "freshness": null,
         "modelPath": "m.malloy",
         "name": "enriched",
-        "origin": "persist",
+        "origin": "materialize",
         "preaggregate": null,
         "queryMetadata": null,
         "refresh": null,

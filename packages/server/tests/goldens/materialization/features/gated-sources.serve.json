@@ -1,33 +1,25 @@
 {
   "bind": {
     "buildErrors": {},
-    "built": [],
-    "verdicts": [
-      "gated_mat:live:refused",
-      "locked_mat:live:refused"
-    ],
-    "warnings": [
+    "built": [
       {
-        "code": "preaggregate-access-filter",
-        "message": "#(preaggregate) on measure \"total\" of source \"by_column\" is not built, so the measure is served live: the source has a row-level gate (`#(access_filter)` or `#(authorize)`), and a query on a gated source is not read from a rollup unless PUBLISHER_MATERIALIZE_GATED_SOURCES is on, so its table would cost a build no query reads.",
-        "subject": "by_column.total"
+        "name": "gated_mat",
+        "tier": "storage"
       },
       {
-        "code": "preaggregate-access-filter",
-        "message": "#(preaggregate) on measure \"total\" of source \"by_lock\" is not built, so the measure is served live: the source has a row-level gate (`#(access_filter)` or `#(authorize)`), and a query on a gated source is not read from a rollup unless PUBLISHER_MATERIALIZE_GATED_SOURCES is on, so its table would cost a build no query reads.",
-        "subject": "by_lock.total"
+        "name": "by_column__rollup__region_status__5f704d70",
+        "tier": "database"
       },
       {
-        "code": "persist-source-refused",
-        "message": "Source 'gated_mat' cannot be materialized into a storage destination: it is protected by a gate — #(authorize) or #(access_filter), its own or a joined source's. Both are evaluated per request; a materialized-once table served frozen carries no gate, so it would be served to everyone, bypassing authorization. This is refused for safety. Serve this source live (drop 'storage=').",
-        "subject": "gated_mat"
-      },
-      {
-        "code": "persist-source-refused",
-        "message": "Source 'locked_mat' cannot be materialized into a storage destination: it is protected by a gate — #(authorize) or #(access_filter), its own or a joined source's. Both are evaluated per request; a materialized-once table served frozen carries no gate, so it would be served to everyone, bypassing authorization. This is refused for safety. Serve this source live (drop 'storage=').",
-        "subject": "locked_mat"
+        "name": "by_lock__rollup__status__eb4380b4",
+        "tier": "database"
       }
-    ]
+    ],
+    "verdicts": [
+      "gated_mat:serves",
+      "locked_mat:serves"
+    ],
+    "warnings": []
   },
   "queries": [
     {
@@ -82,7 +74,16 @@
       "malloy": "run: by_column -> { group_by: status; aggregate: total }",
       "path": {
         "considered": [],
-        "notConsidered": [],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "origin": "materialize",
+            "relationship": "sibling",
+            "sourceName": "gated_mat",
+            "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb"
+          }
+        ],
         "query": {
           "filteredBy": [],
           "groupedBy": [
@@ -153,7 +154,16 @@
       "malloy": "run: by_lock -> { group_by: status; aggregate: total }",
       "path": {
         "considered": [],
-        "notConsidered": [],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "origin": "materialize",
+            "relationship": "sibling",
+            "sourceName": "gated_mat",
+            "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb"
+          }
+        ],
         "query": {
           "filteredBy": [],
           "groupedBy": [
@@ -241,7 +251,14 @@
       ],
       "malloy": "run: gated_mat -> { group_by: status; aggregate: n, total }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "origin": "materialize",
+            "outcome": "used",
+            "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb"
+          }
+        ],
         "notConsidered": [],
         "query": {
           "filteredBy": [],
@@ -255,13 +272,17 @@
           "sourceName": "gated_mat"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "origin": "materialize",
+          "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb",
+          "tier": "storage",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a row filter over a materialized source",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -313,7 +334,14 @@
       ],
       "malloy": "run: locked_mat -> { group_by: region; aggregate: n }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "origin": "materialize",
+            "outcome": "used",
+            "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb"
+          }
+        ],
         "notConsidered": [],
         "query": {
           "filteredBy": [],
@@ -326,13 +354,17 @@
           "sourceName": "locked_mat"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "origin": "materialize",
+          "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb",
+          "tier": "storage",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a lock over a materialized source",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -386,8 +418,32 @@
       ],
       "malloy": "run: by_column -> { group_by: status; aggregate: total }",
       "path": {
-        "considered": [],
-        "notConsidered": [],
+        "considered": [
+          {
+            "kind": "rollup",
+            "origin": "rollup",
+            "outcome": "used",
+            "tableId": "39eda9310e4be81c33824b2ad31f408ba67139cd58a825e6023c8abbd56e0d60"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "rollup",
+            "origin": "rollup",
+            "relationship": "sibling",
+            "sourceName": "by_lock",
+            "tableId": "938641dc81f1620e036cdeb2408fe5eb9c87bb833bf074a38a84d1ae3406ec20"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "origin": "materialize",
+            "relationship": "sibling",
+            "sourceName": "gated_mat",
+            "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb"
+          }
+        ],
         "query": {
           "filteredBy": [],
           "groupedBy": [
@@ -399,13 +455,16 @@
           "sourceName": "by_column"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "rollup",
+          "origin": "rollup",
+          "tableId": "39eda9310e4be81c33824b2ad31f408ba67139cd58a825e6023c8abbd56e0d60",
+          "tier": "database"
         },
         "warnings": []
       },
       "query": "a row filter over a rollup",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "rollup",
+      "servedFrom": "database",
       "switch": "on"
     },
     {
@@ -457,8 +516,32 @@
       ],
       "malloy": "run: by_lock -> { group_by: status; aggregate: total }",
       "path": {
-        "considered": [],
-        "notConsidered": [],
+        "considered": [
+          {
+            "kind": "rollup",
+            "origin": "rollup",
+            "outcome": "used",
+            "tableId": "938641dc81f1620e036cdeb2408fe5eb9c87bb833bf074a38a84d1ae3406ec20"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "rollup",
+            "origin": "rollup",
+            "relationship": "sibling",
+            "sourceName": "by_column",
+            "tableId": "39eda9310e4be81c33824b2ad31f408ba67139cd58a825e6023c8abbd56e0d60"
+          },
+          {
+            "built": true,
+            "kind": "materialized",
+            "origin": "materialize",
+            "relationship": "sibling",
+            "sourceName": "gated_mat",
+            "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb"
+          }
+        ],
         "query": {
           "filteredBy": [],
           "groupedBy": [
@@ -470,13 +553,16 @@
           "sourceName": "by_lock"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "rollup",
+          "origin": "rollup",
+          "tableId": "938641dc81f1620e036cdeb2408fe5eb9c87bb833bf074a38a84d1ae3406ec20",
+          "tier": "database"
         },
         "warnings": []
       },
       "query": "a lock admitting over a rollup",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "rollup",
+      "servedFrom": "database",
       "switch": "on"
     },
     {
@@ -546,8 +632,32 @@
       ],
       "malloy": "run: gated_mat -> { group_by: status; aggregate: n, total }",
       "path": {
-        "considered": [],
-        "notConsidered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "origin": "materialize",
+            "outcome": "used",
+            "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "rollup",
+            "origin": "rollup",
+            "relationship": "sibling",
+            "sourceName": "by_column",
+            "tableId": "39eda9310e4be81c33824b2ad31f408ba67139cd58a825e6023c8abbd56e0d60"
+          },
+          {
+            "built": true,
+            "kind": "rollup",
+            "origin": "rollup",
+            "relationship": "sibling",
+            "sourceName": "by_lock",
+            "tableId": "938641dc81f1620e036cdeb2408fe5eb9c87bb833bf074a38a84d1ae3406ec20"
+          }
+        ],
         "query": {
           "filteredBy": [],
           "groupedBy": [
@@ -560,13 +670,17 @@
           "sourceName": "gated_mat"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "origin": "materialize",
+          "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb",
+          "tier": "storage",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a row filter over a materialized source",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "on"
     },
     {
@@ -618,8 +732,32 @@
       ],
       "malloy": "run: locked_mat -> { group_by: region; aggregate: n }",
       "path": {
-        "considered": [],
-        "notConsidered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "origin": "materialize",
+            "outcome": "used",
+            "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "rollup",
+            "origin": "rollup",
+            "relationship": "sibling",
+            "sourceName": "by_column",
+            "tableId": "39eda9310e4be81c33824b2ad31f408ba67139cd58a825e6023c8abbd56e0d60"
+          },
+          {
+            "built": true,
+            "kind": "rollup",
+            "origin": "rollup",
+            "relationship": "sibling",
+            "sourceName": "by_lock",
+            "tableId": "938641dc81f1620e036cdeb2408fe5eb9c87bb833bf074a38a84d1ae3406ec20"
+          }
+        ],
         "query": {
           "filteredBy": [],
           "groupedBy": [
@@ -631,13 +769,17 @@
           "sourceName": "locked_mat"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "origin": "materialize",
+          "tableId": "eae11fcde4b5b91f7571923a182628d686e43b4d324795e8e63d896255f534eb",
+          "tier": "storage",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a lock over a materialized source",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "on"
     }
   ]

@@ -39,7 +39,7 @@ export async function failInterruptedMaterializations(
       logger.warn(
          "Marked a materialization FAILED: the server restarted during its run",
          {
-            materializationId: m.id,
+            runId: m.id,
             environmentId: m.environmentId,
             packageName: m.packageName,
             ...(m.version !== null ? { version: m.version } : {}),

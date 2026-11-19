@@ -16,9 +16,11 @@ import {
    fakeSource,
 } from "../../../test_helpers/materialization_test_fixtures";
 import { installSettings } from "../../../test_helpers/settings_env";
-import type { BuildInstruction, ManifestEntry } from "../types";
+import type { BuildInstruction, ManifestEntry } from "../domain/types";
+import { logger } from "../../../logger";
 import { InstructedBuild } from "./instructed_build";
-import type { BuildEnvironment } from "./materialization_run_support";
+import { RunTelemetry, withRunTelemetry } from "./run_telemetry";
+import { type BuildEnvironment } from "./build_upstreams";
 
 const ADDRESS = "bshared7078storage";
 
@@ -43,10 +45,13 @@ function harness(order: string[][]) {
    );
    const built: string[] = [];
    const buildOneSource = sinon.fake(
-      async (
-         source: { name: string },
-         instruction: BuildInstruction,
-      ): Promise<ManifestEntry> => {
+      async ({
+         persistSource: source,
+         instruction,
+      }: {
+         persistSource: { name: string };
+         instruction: BuildInstruction;
+      }): Promise<ManifestEntry> => {
          built.push(source.name);
          return {
             sourceEntityId: ADDRESS,
@@ -61,19 +66,21 @@ function harness(order: string[][]) {
    );
    const build = new InstructedBuild({
       buildOneSource: buildOneSource as never,
+      tableNotOwned: async () => undefined,
       reclaimStorageTablesFromFailedRun: async () => {},
    });
    const environment = {
       getApiConnection: () => {
          throw new Error("unused");
       },
+      getEnvironmentName: () => "env",
       getEnvironmentPath: () => "/tmp/env",
    } as unknown as BuildEnvironment;
    const run = () =>
-      build.run(
+      build.run({
          compiled,
          environment,
-         [
+         instructions: [
             {
                sourceEntityId: ADDRESS,
                materializedTableId: "mt-shared",
@@ -82,9 +89,9 @@ function harness(order: string[][]) {
                destination: "lake",
             },
          ],
-         {},
-         new AbortController().signal,
-      );
+         seedEntries: {},
+         signal: new AbortController().signal,
+      });
    return { run, built };
 }
 
@@ -112,4 +119,33 @@ describe("a refused sibling on a storage address (ms2data/service#7078)", () => 
          ).toEqual(["ext"]);
       });
    }
+});
+
+describe("materialization.build.refused", () => {
+   it("logs the refusal with its run, source and reason code, and no prose", async () => {
+      const { run } = harness([["base"], ["ext"]]);
+      const warn = sinon.stub(logger, "warn");
+      try {
+         await withRunTelemetry(
+            new RunTelemetry("run-7", "orchestrated", "pkg"),
+            run,
+         );
+         const refused = warn
+            .getCalls()
+            .map((c) => c.args as unknown[])
+            .filter((args) => args[0] === "materialization.build.refused");
+         expect(refused).toHaveLength(1);
+         expect(refused[0][1]).toEqual({
+            runId: "run-7",
+            packageName: "pkg",
+            sourceEntityId: ADDRESS,
+            sourceName: "ext",
+            kind: "persist",
+            tier: "storage",
+            reason: "authorize",
+         });
+      } finally {
+         warn.restore();
+      }
+   });
 });

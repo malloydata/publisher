@@ -132,14 +132,26 @@ describe("a v1 #@ preaggregate rollup's annotations", () => {
       ]);
       expect(truth[2].notes["n.total"]).toContain("# currency");
 
-      // Not built: the composite still resolves to the rollup member.
+      // Not built: the rollup leg has no table, so the author's own source
+      // answers live, with its own notes, the `#@ preaggregate` line it
+      // declares among them (the truth file declares none).
+      const withoutOwnLine = (notes: Record<string, string[]>) =>
+         Object.fromEntries(
+            Object.entries(notes).map(([k, v]) => [
+               k,
+               v.filter((n) => !n.startsWith("#@ preaggregate")),
+            ]),
+         );
+      const live = [];
       for (let i = 0; i < queries.length; i++) {
          const unbuilt = await run(pkg, "model.malloy", queries[i]);
+         live.push(unbuilt);
+         expect(unbuilt.servedBy ?? "live").toBe("live");
          expect(unbuilt.rows).toEqual(truth[i].rows);
-         expect(unbuilt.notes).toEqual(truth[i].notes);
+         expect(withoutOwnLine(unbuilt.notes)).toEqual(truth[i].notes);
       }
 
-      const ids = [...pkg.getPreaggregateEntityIds()];
+      const ids = [...pkg.materialization().getPreaggregateEntityIds()];
       expect(ids).toHaveLength(1);
       const rollup = Object.values(pkg.getBuildPlan()?.sources ?? {}).find(
          (s) => s.sourceEntityId === ids[0],
@@ -151,15 +163,18 @@ describe("a v1 #@ preaggregate rollup's annotations", () => {
       await connection.runSQL(
          `CREATE OR REPLACE TABLE built_rollup AS ${rollup.sql}`,
       );
-      pkg.bindColocatedServeManifest({
-         [ids[0]]: { tableName: "built_rollup", connectionName: "duckdb" },
-      } as never);
+      pkg.materialization().bind({
+         database: {
+            [ids[0]]: { tableName: "built_rollup", connectionName: "duckdb" },
+         } as never,
+      });
 
       for (let i = 0; i < queries.length; i++) {
          const served = await run(pkg, "model.malloy", queries[i]);
          expect(served.servedBy).toBe("rollup");
          expect(served.rows).toEqual(truth[i].rows);
-         expect(served.notes).toEqual(truth[i].notes);
+         // Exactly the live answer's notes on the same source.
+         expect(served.notes).toEqual(live[i].notes);
          expect(served.fieldsRead).toEqual(truth[i].fieldsRead);
       }
    });

@@ -1,17 +1,6 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { decodeDottedTablePath } from "@malloydata/malloy";
-
-import { logger } from "../../../logger";
-import type { IncrementalStepReason } from "../../../materialization_metrics";
-import type { IncrementalLedgerEntry } from "../../../storage/DatabaseInterface";
-import type { IncrementalStrategy } from "../types";
-import { errMessage } from "../../../utils";
-import { quoteIdentifier } from "../../quoting";
-import type { PairDelta } from "../plan/incremental_declaration";
-import { windowDeleteBefore, type RollingWindow } from "../plan/rolling_window";
-
 /**
  * Generating and applying an incremental DELTA: the bounded slice of a persisted
  * source that a refresh writes into the already-serving table, instead of
@@ -24,70 +13,55 @@ import { windowDeleteBefore, type RollingWindow } from "../plan/rolling_window";
  * silently DROPS its `where:`, which would rewrite every row. Pinned in
  * incremental_compiler_contract.spec.ts.
  *
+ * The statements whose text differs by dialect (string literals, the probes'
+ * wrapping, the transaction around a delta) are warehouse_sql.ts's.
+ *
  * The range is HALF-OPEN, `[start, end)`, which makes a run idempotent: a crash
  * between the commit and the ledger advance costs a repeat, not a corruption.
  */
 
-/**
- * The two dialect sets below differ only for a `storage=` source, whose rows are
- * computed by the SOURCE warehouse and whose DML runs in the DESTINATION engine.
- *
- * Both are keyed by Malloy's `dialectName`, so BigQuery is `standardsql` (as in
- * `quoting.ts`). No source's `dialectName` is ever "bigquery", so keying by the
- * friendly name would silently reject every BigQuery source.
- */
+import { BuildCancelledError } from "../domain/build_cancelled";
+import { logger } from "../../../logger";
+import { errorCodeOf } from "../../../error_code";
+import type { IncrementalStepReason } from "../../../materialization_metrics";
+import type { IncrementalLedgerEntry } from "../../../storage/DatabaseInterface";
+import type { IncrementalStrategy } from "../domain/types";
+import { capabilitiesOf, dialectsWith } from "../domain/dialect";
+import { errMessage } from "../../../utils";
+import { foldedTablePathParts, quoteIdentifier } from "../../quoting";
+import {
+   escapeSqlString,
+   inOneTransaction,
+   probeSelect,
+   targetColumnsProbeSql,
+   transactionKeywords,
+   watermarkTextSql,
+   withStatementTimeout,
+} from "./warehouse_sql";
+import type { PairDelta } from "../domain/incremental";
+import type { LateRows } from "../domain/types";
+import {
+   windowDeleteBefore,
+   type RollingWindow,
+} from "../domain/read_time_terms";
 
 /**
- * Dialects a bounded watermark range can be rendered and probed FOR — the source
- * side. A dialect here has literal spellings for every watermark type
- * ({@link renderSqlBound}) and a decodable table path
- * ({@link decodeTablePathSegments}).
- */
-export const INCREMENTAL_SOURCE_RANGE_DIALECTS: ReadonlySet<string> = new Set([
-   "postgres",
-   "snowflake",
-   "standardsql",
-]);
-
-/**
- * Dialects whose transactional delta apply is proven: the target side, where the
- * DML lands.
+ * The incremental refresh's dialect sets, from the dialect table
+ * (`domain/dialect.ts`), for message text. The source and target sets differ
+ * only for a `storage=` source, whose rows are computed by the SOURCE warehouse
+ * and whose DML runs in the DESTINATION engine.
  *
  * Postgres, BigQuery and DuckDB take the range replace as one multi-statement
- * script. Snowflake's driver runs one statement per call, on a possibly different
- * pooled session each time, so it gets a Snowflake Scripting block instead (see
- * {@link deltaStatements}).
- *
- * `duckdb` is here only as a `storage=` destination; a DuckDB source is never
- * materialized.
+ * script. Snowflake's driver runs one statement per call, on a possibly
+ * different pooled session each time, so it gets a Snowflake Scripting block
+ * instead (see {@link deltaStatements}).
  */
-export const INCREMENTAL_TARGET_DML_DIALECTS: ReadonlySet<string> = new Set([
-   "postgres",
-   "snowflake",
-   "standardsql",
-   "duckdb",
-]);
-
-/** Dialects with a `MERGE INTO` statement, required by `merge_key=`. */
-export const MERGE_CAPABLE_DIALECTS: ReadonlySet<string> = new Set([
-   "postgres",
-   "snowflake",
-   "standardsql",
-   "duckdb",
-]);
-
-/** Malloy `dialectName` -> the name an author would recognize, for a message. */
-const DIALECT_DISPLAY_NAMES: Record<string, string> = {
-   standardsql: "standardsql (BigQuery)",
-};
-
-/** A dialect set as message text, e.g. `postgres, standardsql (BigQuery)`. */
-export function describeDialects(dialects: ReadonlySet<string>): string {
-   return [...dialects]
-      .sort()
-      .map((d) => DIALECT_DISPLAY_NAMES[d] ?? d)
-      .join(", ");
-}
+export const INCREMENTAL_SOURCE_RANGE_DIALECTS: ReadonlySet<string> =
+   dialectsWith("incrementalSourceRange");
+export const INCREMENTAL_TARGET_DML_DIALECTS: ReadonlySet<string> =
+   dialectsWith("incrementalTargetDml");
+export const MERGE_CAPABLE_DIALECTS: ReadonlySet<string> =
+   dialectsWith("merge");
 
 /**
  * A watermark boundary, held as CANONICAL SCALAR TEXT plus the watermark's Malloy
@@ -108,25 +82,6 @@ export function isRenderableWatermarkType(malloyType: string): boolean {
 }
 
 /**
- * Escape a string for a single-quoted SQL literal.
- *
- * Snowflake and BigQuery read `\` in a single-quoted string as an escape
- * character, so a backslash must be doubled there or a value ending in one
- * swallows the closing quote; Postgres (standard_conforming_strings, its
- * default) reads a doubled backslash as two characters. A quote is doubled
- * everywhere except BigQuery, which has no `''` escape (adjacent literals are a
- * syntax error) and takes `\'`; its backslashes are escaped first so they
- * cannot pair with that escape.
- */
-function escapeSqlString(value: string, dialect?: string): string {
-   if (dialect === "standardsql") {
-      return value.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
-   }
-   const quoted = value.replace(/'/g, "''");
-   return dialect === "snowflake" ? quoted.replace(/\\/g, "\\\\") : quoted;
-}
-
-/**
  * `YYYY-MM-DD HH:MM:SS` from ISO-8601 text, truncated to whole seconds.
  *
  * Safe because the range is half-open and the ledger records the value actually
@@ -137,10 +92,14 @@ function secondsPrecision(value: string): string {
    // Anchored at BOTH ends. A zone offset is refused rather than dropped: dropping
    // `+05:30` would relabel a local bound as UTC, and east of UTC that moves
    // `covered_through` AHEAD of the table, skipping rows permanently. A bare `Z`
-   // already says UTC.
+   // already says UTC, and so does a zero offset (`+00`, `+00:00`, `+0000`),
+   // which is how a zoned timestamp's text reads in a UTC session
+   // (watermarkTextSql).
    const match = value
       .trim()
-      .match(/^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2})(?:\.\d+)?Z?$/);
+      .match(
+         /^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2})(?:\.\d+)?(?:Z|\s?[+-]00(?::?00)?)?$/,
+      );
    if (!match) {
       throw new Error(
          `not a UTC ISO-8601 timestamp: ${JSON.stringify(value)} (expected YYYY-MM-DDTHH:MM:SS, with no zone offset)`,
@@ -244,6 +203,113 @@ export function snapshotBound(malloyType: string, now: Date): WatermarkBound {
    return canonicalBoundValue(malloyType, now);
 }
 
+/** Whether a watermark type takes its range end from the run clock. */
+function isTimeWatermark(malloyType: string): boolean {
+   return malloyType === "date" || malloyType === "timestamp";
+}
+
+const MS_PER_DAY = 86_400_000;
+
+/** A date or timestamp bound as epoch milliseconds (UTC). */
+function boundMillis(bound: WatermarkBound): number {
+   return bound.malloyType === "date"
+      ? Date.parse(`${datePrecision(bound.value)}T00:00:00Z`)
+      : Date.parse(`${secondsPrecision(bound.value).replace(" ", "T")}Z`);
+}
+
+/**
+ * A date or timestamp bound moved back by `seconds`. A date moves by whole
+ * days, rounded UP, so a lookback shorter than a day still re-reads the
+ * boundary's day and the one before it.
+ */
+export function boundMinusSeconds(
+   bound: WatermarkBound,
+   seconds: number,
+): WatermarkBound {
+   const ms =
+      bound.malloyType === "date"
+         ? Math.ceil(seconds / 86_400) * MS_PER_DAY
+         : seconds * 1000;
+   return canonicalBoundValue(
+      bound.malloyType,
+      new Date(boundMillis(bound) - ms),
+   );
+}
+
+/**
+ * Where a delta of a date or timestamp watermark starts reading: the newest
+ * watermark the stored table holds at or below the recorded boundary, moved
+ * back by `lookback=` when one is declared.
+ *
+ * Not the recorded boundary itself. That is the previous run's START TIME (a
+ * time watermark's range ends at the run clock), and a row stamped before it
+ * but landing after it would be below every later range, never written
+ *. The newest stored value is the highest point the table is known to
+ * hold; anything stamped at or above it is read again. The range is
+ * inclusive below (`>=`), so a row stamped in the very second of the newest
+ * stored one is read too: a merge matches it by key, and a range replace
+ * deletes the same range before it inserts, so neither writes it twice.
+ *
+ * Capped at the recorded boundary, which it may lag but never lead (see the
+ * build path's invariant below). With nothing stored at or below it (every
+ * stored watermark NULL, or past the clock when the table was seeded), the
+ * recorded boundary stands.
+ */
+export function deltaLowerBound(params: {
+   recorded: WatermarkBound;
+   /** The table's newest watermark at or below `recorded`; undefined for none. */
+   stored: WatermarkBound | undefined;
+   /** The declared `lookback=`, in seconds; undefined or 0 for none. */
+   lookbackSeconds?: number;
+}): WatermarkBound {
+   const { recorded, stored } = params;
+   const base =
+      stored !== undefined && compareBounds(stored, recorded) < 0
+         ? stored
+         : recorded;
+   return params.lookbackSeconds
+      ? boundMinusSeconds(base, params.lookbackSeconds)
+      : base;
+}
+
+/**
+ * The widest window the late-row check reads below a delta, for a date or
+ * timestamp watermark: the larger of the source's `lookback=` and seven days.
+ * Without it, a source quiet for months (its newest stored row months old)
+ * would have every refresh read months of history.
+ */
+export const LATE_ROWS_WINDOW_CAP_SECONDS = 7 * 86_400;
+
+/**
+ * The start of the window the late-row check reads below a delta's lower
+ * bound: `start - (end - start)`, a window as wide as the delta's own range,
+ * so the check reads about as much as the delta does. For a date or
+ * timestamp watermark the width is capped at the larger of `lookbackSeconds`
+ * and {@link LATE_ROWS_WINDOW_CAP_SECONDS}; a number watermark's range holds
+ * new rows only, so it is not. Undefined for a string watermark, which has
+ * no width.
+ */
+export function lateRowsWindowStart(
+   start: WatermarkBound,
+   end: WatermarkBound,
+   lookbackSeconds = 0,
+): WatermarkBound | undefined {
+   if (start.malloyType === "number") {
+      const width = Number(end.value) - Number(start.value);
+      return width > 0
+         ? canonicalBoundValue("number", Number(start.value) - width)
+         : undefined;
+   }
+   if (!isTimeWatermark(start.malloyType)) return undefined;
+   const cap = Math.max(lookbackSeconds, LATE_ROWS_WINDOW_CAP_SECONDS) * 1000;
+   const width = Math.min(boundMillis(end) - boundMillis(start), cap);
+   if (!(width > 0)) return undefined;
+   return canonicalBoundValue(
+      start.malloyType,
+      new Date(boundMillis(start) - width),
+   );
+}
+
 /**
  * The delta's SELECT for one source and range: the source's OWN build SQL
  * (the target's `buildSQL()`, the string the seed's CTAS runs), wrapped and
@@ -298,94 +364,42 @@ export function deltaSelect(params: {
 /** How a probe or DML statement reaches the warehouse. */
 export type SqlRunner = (
    sql: string,
-   /** A row limit past the connection's default (as few as ten rows). */
-   options?: { rowLimit?: number },
+   options?: {
+      /** A row limit past the connection's default (as few as ten rows). */
+      rowLimit?: number;
+      /** The run's cancel signal, for the delta's own statement only. */
+      abortSignal?: AbortSignal;
+   },
 ) => Promise<{ rows: unknown[] }>;
 
 /**
- * Per-dialect table-path decoding. The physical name arrives as SQL (bare or
- * quoted segments) while `information_schema` compares RAW identifier text, so it
- * is decoded first. Postgres folds bare segments to lower case, Snowflake to
- * UPPER, BigQuery not at all (its names are case-sensitive).
+ * The dialects whose target table's columns the incremental refresh probes
+ * by decoded path: Postgres, Snowflake, BigQuery and DuckDB (a `storage=`
+ * destination's `<destination>.[<schema>.]<name>`).
  */
-const TABLE_PATH_OPTIONS: Record<
-   string,
-   {
-      quoteChar: string;
-      escapeStyle: "doubled";
-      bareIdentRegex: RegExp;
-      foldCase?: "lower" | "upper";
-   }
-> = {
-   postgres: {
-      quoteChar: '"',
-      escapeStyle: "doubled",
-      bareIdentRegex: /^[A-Za-z_][A-Za-z0-9_$]*/,
-      foldCase: "lower",
-   },
-   snowflake: {
-      quoteChar: '"',
-      escapeStyle: "doubled",
-      bareIdentRegex: /^[A-Za-z_][A-Za-z0-9_$]*/,
-      foldCase: "upper",
-   },
-   standardsql: {
-      quoteChar: "`",
-      escapeStyle: "doubled",
-      bareIdentRegex: /^[A-Za-z_][A-Za-z0-9_-]*/,
-   },
-   // A `storage=` destination path: `<destination>.<name>` or
-   // `<destination>.<schema>.<name>`. No case folding: DuckDB stores identifiers
-   // as written and the metadata read compares stored text, so folding would miss
-   // a mixed-case table.
-   //
-   // `-` is admitted because this is a LOGICAL path built from a destination name
-   // and a persist name, neither charset-validated. Rejecting it would make
-   // `my-lake` build and serve fine while this probe failed, seeding every run.
-   duckdb: {
-      quoteChar: '"',
-      escapeStyle: "doubled",
-      bareIdentRegex: /^[A-Za-z_][A-Za-z0-9_$-]*/,
-   },
-};
+const DECODED_PATH_DIALECTS = new Set([
+   "postgres",
+   "snowflake",
+   "standardsql",
+   "duckdb",
+]);
 
 /**
- * The raw identifier segments of a physical table path, or undefined when the
- * path cannot be decoded for this dialect (which leads to a SEED, not a throw).
+ * The raw identifier segments of a physical table path, as its catalog stores
+ * them, or undefined when the path cannot be decoded for this dialect (which
+ * leads to a SEED, not a throw). The physical name arrives as SQL (bare or
+ * quoted segments) while `information_schema` compares RAW identifier text,
+ * so it is decoded by the one parser of a table name
+ * ({@link foldedTablePathParts}): a bare segment folded as the engine folds
+ * it (Postgres to lower case, Snowflake to UPPER, ASCII only; BigQuery and
+ * DuckDB not at all), a quoted one kept.
  */
 export function decodeTablePathSegments(
    dialect: string,
    tablePath: string,
 ): string[] | undefined {
-   const opts = TABLE_PATH_OPTIONS[dialect];
-   if (!opts) return undefined;
-   const decoded = decodeDottedTablePath(tablePath, {
-      quoteChar: opts.quoteChar,
-      escapeStyle: opts.escapeStyle,
-      bareIdentRegex: opts.bareIdentRegex,
-      dialectName: dialect,
-   });
-   if (!decoded.ok) return undefined;
-   return decoded.segments.map((s) => {
-      if (s.quoted || !opts.foldCase) return s.value;
-      return opts.foldCase === "lower"
-         ? s.value.toLowerCase()
-         : s.value.toUpperCase();
-   });
-}
-
-/**
- * Wrap a probe SELECT so the dialect's driver hands back named columns.
- *
- * Postgres only: `PostgresConnection` rewrites every `runSQL` row as
- * `rows[i].row` (Malloy queries project one `row` JSON column), so a plain
- * `SELECT max(x) AS m` comes back as `[undefined]`. Wrapping in `row_to_json`
- * supplies that column. Pinned in incremental_apply.spec.ts.
- */
-export function probeSelect(dialect: string, innerSelect: string): string {
-   return dialect === "postgres"
-      ? `SELECT row_to_json(__p) AS "row" FROM (${innerSelect}) AS __p`
-      : innerSelect;
+   if (!DECODED_PATH_DIALECTS.has(dialect)) return undefined;
+   return foldedTablePathParts(tablePath, dialect);
 }
 
 /** A probe's rows as plain objects (see {@link probeSelect}). */
@@ -420,71 +434,16 @@ export async function probeTargetColumns(
          error: `physical table name ${JSON.stringify(physicalTableName)} is not a decodable ${dialect} table path`,
       };
    }
-   let sql: string;
-   if (dialect === "duckdb") {
-      // `duckdb_columns()`: an attached DuckLake catalog has no
-      // `information_schema`, and `DESCRIBE` throws on an absent table where this
-      // function's contract needs an empty answer.
-      const table = segments[segments.length - 1];
-      // A two-segment path is in the catalog's default schema. Named explicitly
-      // because two schemas can hold the same table name, and probing the wrong
-      // one would describe a table this build never wrote.
-      const schema =
-         segments.length >= 3 ? segments[segments.length - 2] : "main";
-      // The catalog is the FIRST segment (the path is `<destination>.<name>`);
-      // counting from the end would misread a longer name's container.
-      const database = segments[0];
-      sql = `SELECT column_name AS ${probeAlias("column_name", dialect)}
-              FROM duckdb_columns()
-              WHERE database_name = '${escapeSqlString(database, dialect)}'
-                AND schema_name = '${escapeSqlString(schema, dialect)}'
-                AND table_name = '${escapeSqlString(table, dialect)}'
-              ORDER BY column_index`;
-   } else if (dialect === "postgres" || dialect === "snowflake") {
-      const table = segments[segments.length - 1];
-      // An unqualified name lives in the session's default schema, where the CTAS
-      // created it. Not "any schema on the search path": two schemas can hold
-      // the same table name.
-      const schema =
-         segments.length >= 2
-            ? `'${escapeSqlString(segments[segments.length - 2], dialect)}'`
-            : "current_schema()";
-      // Snowflake's information_schema is per-DATABASE, so a database-qualified
-      // name must probe that database's view; Postgres cannot cross databases,
-      // so any leading segment is the current one by construction.
-      const infoSchema =
-         dialect === "snowflake" && segments.length >= 3
-            ? `${quoteIdentifier(segments[segments.length - 3], dialect)}.information_schema.columns`
-            : "information_schema.columns";
-      sql = probeSelect(
-         dialect,
-         `SELECT column_name AS ${probeAlias("column_name", dialect)}
-           FROM ${infoSchema}
-           WHERE table_schema = ${schema}
-             AND table_name = '${escapeSqlString(table, dialect)}'
-           ORDER BY ordinal_position`,
-      );
-   } else {
-      // BigQuery's INFORMATION_SCHEMA is per-dataset, so the view itself must be
-      // dataset-qualified: an unqualified target has no dataset to look in.
-      if (segments.length < 2) {
-         return {
-            columns: [],
-            error:
-               `physical table name ${JSON.stringify(physicalTableName)} is not ` +
-               `dataset-qualified, so its schema cannot be read from ` +
-               `INFORMATION_SCHEMA`,
-         };
-      }
-      const table = segments[segments.length - 1];
-      const container = segments
-         .slice(0, -1)
-         .map((s) => quoteIdentifier(s, dialect))
-         .join(".");
-      sql = `SELECT column_name AS ${probeAlias("column_name", dialect)}
-              FROM ${container}.INFORMATION_SCHEMA.COLUMNS
-              WHERE table_name = '${escapeSqlString(table, dialect)}'
-              ORDER BY ordinal_position`;
+   // Undefined: an unqualified BigQuery name has no dataset to look in.
+   const sql = targetColumnsProbeSql(dialect, segments);
+   if (sql === undefined) {
+      return {
+         columns: [],
+         error:
+            `physical table name ${JSON.stringify(physicalTableName)} is not ` +
+            `dataset-qualified, so its schema cannot be read from ` +
+            `INFORMATION_SCHEMA`,
+      };
    }
    try {
       const result = await runner(sql);
@@ -525,7 +484,7 @@ export async function probeMaxWatermark(
    innerSelect: string,
    watermarkName: string,
    malloyType: string,
-): Promise<{ bound?: WatermarkBound; error?: string }> {
+): Promise<{ bound?: WatermarkBound; error?: string; errorCode?: string }> {
    const column = quoteIdentifier(watermarkName, dialect);
    const sql = probeSelect(
       dialect,
@@ -538,7 +497,65 @@ export async function probeMaxWatermark(
       if (raw === null || raw === undefined) return {};
       return { bound: canonicalBoundValue(malloyType, raw) };
    } catch (err) {
-      return { error: errMessage(err) };
+      // The message can quote the value read (a watermark the parser
+      // refused), so only the code may be logged.
+      return { error: errMessage(err), errorCode: errorCodeOf(err) };
+   }
+}
+
+/**
+ * The newest date or timestamp watermark the stored table holds at or below
+ * `atOrBelow` (the recorded boundary), for {@link deltaLowerBound}: one
+ * aggregate over one column of the table. Undefined (not an error) when none
+ * is: every stored watermark NULL, or past the boundary.
+ *
+ * Read as text ({@link watermarkTextSql}), never as the driver's value, so a
+ * zone-naive timestamp cannot be read in the process's zone.
+ */
+export async function probeStoredWatermark(params: {
+   runner: SqlRunner;
+   dialect: string;
+   quotedTablePath: string;
+   /** The column the table holds the watermark under. */
+   column: string;
+   atOrBelow: WatermarkBound;
+}): Promise<{
+   bound?: WatermarkBound;
+   error?: string;
+   errorCode?: string;
+   /** The value was read but is not a UTC ISO-8601 date or timestamp. */
+   unparseable?: boolean;
+}> {
+   const { dialect, atOrBelow } = params;
+   const type = atOrBelow.malloyType;
+   if (type !== "date" && type !== "timestamp") {
+      return { error: `a ${type} watermark has no stored boundary to read` };
+   }
+   const column = quoteIdentifier(params.column, dialect);
+   const sql = probeSelect(
+      dialect,
+      `SELECT ${watermarkTextSql(dialect, type, `MAX(${column})`)} AS ` +
+         `${probeAlias("watermark_max", dialect)} ` +
+         `FROM ${params.quotedTablePath} ` +
+         `WHERE ${column} <= ${renderSqlBound(atOrBelow, dialect)}`,
+   );
+   let raw: unknown;
+   try {
+      const result = await params.runner(sql);
+      raw = probeRows(result.rows)[0]?.["watermark_max"];
+   } catch (err) {
+      return { error: errMessage(err), errorCode: errorCodeOf(err) };
+   }
+   if (raw === null || raw === undefined) return {};
+   try {
+      return { bound: canonicalBoundValue(type, raw) };
+   } catch (err) {
+      // The message quotes the value read, so only the code may be logged.
+      return {
+         error: errMessage(err),
+         errorCode: errorCodeOf(err),
+         unparseable: true,
+      };
    }
 }
 
@@ -579,7 +596,14 @@ export function compareBounds(a: WatermarkBound, b: WatermarkBound): number {
       );
    }
    if (a.malloyType === "number") return Number(a.value) - Number(b.value);
-   return a.value < b.value ? -1 : a.value > b.value ? 1 : 0;
+   // A timestamp read back as text is spelled `YYYY-MM-DD HH:MM:SS`, one from
+   // the run clock `YYYY-MM-DDTHH:MM:SS`: one spelling, so they compare.
+   const text = (bound: WatermarkBound) =>
+      bound.malloyType === "timestamp"
+         ? bound.value.replace("T", " ")
+         : bound.value;
+   const [x, y] = [text(a), text(b)];
+   return x < y ? -1 : x > y ? 1 : 0;
 }
 
 /**
@@ -725,10 +749,7 @@ export function deltaStatements(params: {
       if (windowDeletes.length === 0) return [clauses.join("\n")];
       // The merge and the window's delete commit together, so a reader never
       // sees the delete without the rows that replaced the window's edge.
-      const body = [clauses.join("\n"), ...windowDeletes];
-      if (dialect === "snowflake") return [snowflakeScriptingBlock(body)];
-      const transaction = transactionKeywords(dialect);
-      return [transaction.begin, ...body, transaction.commit];
+      return inOneTransaction(dialect, [clauses.join("\n"), ...windowDeletes]);
    }
 
    const watermark = q(watermarkName);
@@ -741,9 +762,7 @@ export function deltaStatements(params: {
          `SELECT ${columnList} FROM (${deltaSQL}) AS __s`,
       ...windowDeletes,
    ];
-   if (dialect === "snowflake") return [snowflakeScriptingBlock(body)];
-   const transaction = transactionKeywords(dialect);
-   return [transaction.begin, ...body, transaction.commit];
+   return inOneTransaction(dialect, body);
 }
 
 /** The text a pair delta's check fails with; {@link isPairGuardFailure} reads it. */
@@ -776,8 +795,8 @@ export function isPairGuardFailure(err: unknown): boolean {
  * left in the table has exactly one flagged row. A failed check rolls back
  * and the source is rebuilt in full (see applyIncrementalStep).
  *
- * DuckDB only: the target of every `storage=` table, and a colocated pair
- * table's own warehouse when that is DuckDB (a colocated one elsewhere has no
+ * DuckDB only: the target of every `storage=` table, and a database pair
+ * table's own warehouse when that is DuckDB (a database one elsewhere has no
  * pair lineage, see incrementalLineage, and is rebuilt in full). Its `error()`
  * raises the check; the staging table is a session temporary created before
  * the transaction, so the transaction writes one database. Another target
@@ -792,7 +811,7 @@ export function pairDeltaStatements(params: {
    windowDeletes?: readonly { column: string; before: WatermarkBound }[];
 }): string[] {
    const { dialect, quotedTablePath, pair } = params;
-   if (dialect !== "duckdb") {
+   if (!capabilitiesOf(dialect).pairDelta) {
       throw new Error(
          `a pair table's delta is applied in DuckDB only, not ${dialect}`,
       );
@@ -847,45 +866,6 @@ export function pairDeltaStatements(params: {
 }
 
 /**
- * The range replace as ONE statement for Snowflake: an anonymous Snowflake
- * Scripting block in `EXECUTE IMMEDIATE $$…$$` (drivers do not accept a bare
- * block).
- *
- * The EXCEPTION handler is the rollback, INSIDE the statement because a separate
- * `ROLLBACK` call could reach a different pooled session, leaving the open
- * transaction holding locks. RAISE re-throws, so the build still fails and the
- * boundary is not advanced.
- */
-export function snowflakeScriptingBlock(statements: string[]): string {
-   const body = statements.map((s) => `  ${s};`).join("\n");
-   // SQL containing `$$` would end the block early and run the rest as separate
-   // statements. Generated deltas never contain it, so refuse rather than escape:
-   // planSourceRefresh catches the throw and seeds (plan_error).
-   const block = `BEGIN\n  BEGIN TRANSACTION;\n${body}\n  COMMIT;\nEXCEPTION\n  WHEN OTHER THEN\n    ROLLBACK;\n    RAISE;\nEND`;
-   if (block.includes("$$")) {
-      throw new Error(
-         "the delta SQL contains '$$', which cannot be carried inside a " +
-            "Snowflake Scripting block",
-      );
-   }
-   return `EXECUTE IMMEDIATE $$\n${block}\n$$`;
-}
-
-function transactionKeywords(dialect: string): {
-   begin: string;
-   commit: string;
-   rollback: string;
-} {
-   return dialect === "standardsql"
-      ? {
-           begin: "BEGIN TRANSACTION",
-           commit: "COMMIT TRANSACTION",
-           rollback: "ROLLBACK TRANSACTION",
-        }
-      : { begin: "BEGIN", commit: "COMMIT", rollback: "ROLLBACK" };
-}
-
-/**
  * The delta's statements as ONE driver call. A statement-per-call loop could put
  * BEGIN and COMMIT on different pooled sessions, silently autocommitting each
  * write. (Postgres runs it via the simple query protocol; BigQuery as a
@@ -910,9 +890,21 @@ export async function applyDeltaScript(
    runner: SqlRunner,
    dialect: string,
    statements: string[],
+   /**
+    * The run's cancel signal: given to the delta's script, which reads the
+    * warehouse inside a transaction, never to its rollback. A cancelled
+    * script fails like any other and is rolled back here. Snowflake's
+    * single-statement block has no separate rollback, so its caller passes
+    * none there (incremental_delta_strategy.ts).
+    */
+   abortSignal?: AbortSignal,
 ): Promise<void> {
    try {
-      await runner(deltaScript(statements));
+      if (abortSignal?.aborted) throw new BuildCancelledError();
+      await runner(
+         deltaScript(statements),
+         abortSignal ? { abortSignal } : undefined,
+      );
    } catch (err) {
       if (statements.length > 1) {
          try {
@@ -921,7 +913,7 @@ export async function applyDeltaScript(
             logger.warn(
                "Could not roll back a failed delta; a pooled connection may " +
                   "stay in an aborted transaction",
-               { dialect, error: errMessage(rollbackErr) },
+               { dialect, code: errorCodeOf(rollbackErr) },
             );
          }
       }
@@ -973,6 +965,14 @@ export interface IncrementalLineage {
     * to one already changes {@link sourceEntityId}.
     */
    rollingWindow?: readonly RollingWindow[];
+   /**
+    * The declared `lookback=`, in seconds: a date or timestamp delta starts
+    * this far below the newest stored watermark ({@link deltaLowerBound}),
+    * and the merge key matches the rows read again. Only with `merge_key=`
+    * (the publish gate). Not compared with the ledger: it moves where a
+    * delta starts, never what a recorded boundary means.
+    */
+   lookbackSeconds?: number;
    /**
     * A pair table's parent key and parent-row flag column
     * ({@link pairDeltaStatements}): a delta replaces every row of each parent
@@ -1106,7 +1106,7 @@ export function ledgerLineageMismatch(
  * `reason` label — the free-text `reason` names specifics (columns, versions,
  * boundary values) that a metric label cannot carry.
  */
-export type IncrementalStepReasonCode = IncrementalStepReason;
+type IncrementalStepReasonCode = IncrementalStepReason;
 
 /** What one source's refresh should do. */
 export type IncrementalStep =
@@ -1154,8 +1154,59 @@ async function resolveDeltaEnd(
 }
 
 /**
+ * The lower bound of a delta's range. A DATE or TIMESTAMP watermark starts at
+ * the newest watermark the table holds, less `lookback=`
+ * ({@link deltaLowerBound}), not at the recorded boundary, which is the
+ * previous run's clock: one aggregate over the table's watermark column. A
+ * NUMBER or STRING boundary is already the source's own frontier, read from
+ * its rows, so it is where the delta starts.
+ */
+async function resolveDeltaStart(
+   target: DeltaTarget,
+   lineage: IncrementalLineage,
+   recorded: WatermarkBound,
+): Promise<{ bound: WatermarkBound; error?: undefined } | { error: string }> {
+   if (!isTimeWatermark(recorded.malloyType)) return { bound: recorded };
+   const stored = await probeStoredWatermark({
+      runner: target.runner,
+      dialect: target.dialect,
+      quotedTablePath: target.quotedTablePath,
+      column:
+         target.storedColumn?.(lineage.watermarkName) ?? lineage.watermarkName,
+      atOrBelow: recorded,
+   });
+   if (stored.error !== undefined) {
+      if (stored.unparseable) {
+         // Otherwise this source rebuilds in full on every refresh with no
+         // sign but the seed's reason code.
+         logger.warn(
+            "The newest stored watermark is not a UTC ISO-8601 date or " +
+               "timestamp, so this incremental source is rebuilt in full on " +
+               "every refresh. Check that the connection's setupSQL does not " +
+               "set a session time zone other than UTC (for a timestamp with " +
+               "time zone), and that the stored watermark holds no " +
+               "-infinity, which a storage= destination reads as text",
+            {
+               physicalTableName: lineage.physicalTableName,
+               watermark: lineage.watermarkName,
+               errorCode: stored.errorCode,
+            },
+         );
+      }
+      return { error: stored.error };
+   }
+   return {
+      bound: deltaLowerBound({
+         recorded,
+         stored: stored.bound,
+         lookbackSeconds: lineage.lookbackSeconds,
+      }),
+   };
+}
+
+/**
  * Where a delta's DML lands, and how its rows are produced: the only facts that
- * differ between a colocated table and a `storage=` one (rows computed by the
+ * differ between a database table and a `storage=` one (rows computed by the
  * SOURCE warehouse, DML issued in the DESTINATION engine).
  *
  * The decision order and reason codes stay in {@link planIncrementalStep} alone,
@@ -1166,6 +1217,8 @@ export interface DeltaTarget {
    dialect: string;
    /** The connection holding the table: every probe and the DML run here. */
    runner: SqlRunner;
+   /** The run's cancel signal, given to the delta's script alone. */
+   abortSignal?: AbortSignal;
    /** The table as the CREATE quoted it, for the DML and the emptiness probe. */
    quotedTablePath: string;
    /**
@@ -1185,14 +1238,33 @@ export interface DeltaTarget {
       end: WatermarkBound | undefined,
    ): Promise<string>;
    /**
+    * The SOURCE's rows in `[start, end)`, only `columns` of them (stored
+    * names), as a SELECT executable on the TARGET: what the late-row check
+    * ({@link countLateRows}) compares the stored table with. Its read is not
+    * the delta's, so it is not counted in the delta's read cost. Absent: the
+    * check is not run.
+    */
+   windowRows?(
+      start: WatermarkBound,
+      end: WatermarkBound,
+      columns: string[],
+   ): Promise<string>;
+   /**
     * The SOURCE's watermark frontier, for a number or string watermark (see
     * resolveDeltaEnd).
     */
    probeSourceFrontier(): Promise<{ bound?: WatermarkBound; error?: string }>;
+   /**
+    * The column the table and the source's SQL hold a field under, where it
+    * is not the field's name (a renamed field's column keeps its own name in
+    * a `storage=` table). The DML names the watermark, merge keys, scope and
+    * rolling-window columns through it. Absent: every field is its column.
+    */
+   storedColumn?(field: string): string;
 }
 
 /**
- * The delta target for a COLOCATED source: one connection and dialect answer
+ * The delta target for a DATABASE source: one connection and dialect answer
  * everything, and the delta's rows are the seed's SQL with a range predicate.
  */
 export function warehouseDeltaTarget(params: {
@@ -1205,11 +1277,14 @@ export function warehouseDeltaTarget(params: {
     * the seed's CTAS runs (see {@link deltaSelect}).
     */
    sourceSQL: string;
+   /** The run's cancel signal, for the delta's script. */
+   abortSignal?: AbortSignal;
 }): DeltaTarget {
    const { dialect, runner, lineage, sourceSQL } = params;
    return {
       dialect,
       runner,
+      ...(params.abortSignal ? { abortSignal: params.abortSignal } : {}),
       quotedTablePath: params.quotedTablePath,
       logicalTablePath: lineage.physicalTableName,
       deltaRows: async (start, end) =>
@@ -1220,6 +1295,15 @@ export function warehouseDeltaTarget(params: {
             start,
             end,
          }),
+      windowRows: async (start, end, columns) =>
+         `SELECT ${columns.map((c) => quoteIdentifier(c, dialect)).join(", ")} ` +
+         `FROM (${deltaSelect({
+            dialect,
+            sourceSQL,
+            watermarkName: lineage.watermarkName,
+            start,
+            end,
+         })}) AS __c`,
       probeSourceFrontier: () =>
          probeMaxWatermark(
             runner,
@@ -1277,7 +1361,7 @@ export async function planIncrementalStep(inputs: {
 
    if (
       lineage.strategy === "merge" &&
-      dialect === "postgres" &&
+      capabilitiesOf(dialect).mergeGatedByServerVersion &&
       (inputs.postgresVersionNum ?? 0) < POSTGRES_MERGE_MIN_VERSION_NUM
    ) {
       // Not a silent fallback to range replace: merge_key= asks for the
@@ -1329,10 +1413,21 @@ export async function planIncrementalStep(inputs: {
       };
    }
 
-   const start: WatermarkBound = {
+   const recorded: WatermarkBound = {
       malloyType: ledgerEntry.coveredThroughType,
       value: ledgerEntry.coveredThroughValue,
    };
+   const lower = await resolveDeltaStart(target, lineage, recorded);
+   if (lower.error !== undefined) {
+      // Unproven where the table reaches: a delta from the recorded boundary
+      // could skip rows, so rebuild.
+      return {
+         mode: "seed",
+         reasonCode: "table_unreadable",
+         reason: `the newest stored watermark could not be read (${lower.error})`,
+      };
+   }
+   const start = lower.bound;
    const end = await resolveDeltaEnd(target, lineage, inputs.now);
    if (!end.bound) {
       return {
@@ -1341,7 +1436,7 @@ export async function planIncrementalStep(inputs: {
          reason: end.error
             ? `the watermark frontier could not be read (${end.error})`
             : "the source has no rows with a non-null watermark",
-         coveredThrough: start,
+         coveredThrough: recorded,
       };
    }
    if (compareBounds(end.bound, start) <= 0) {
@@ -1351,7 +1446,7 @@ export async function planIncrementalStep(inputs: {
          reason:
             `the watermark has not advanced past ${start.value} ` +
             `(frontier: ${end.bound.value})`,
-         coveredThrough: start,
+         coveredThrough: recorded,
       };
    }
 
@@ -1370,6 +1465,7 @@ export async function planIncrementalStep(inputs: {
 
    // Built LAST: producing it can issue the source read (DeltaTarget.deltaRows),
    // which no failed check should pay for.
+   const column = (field: string) => target.storedColumn?.(field) ?? field;
    const statements = deltaStatements({
       dialect,
       quotedTablePath: target.quotedTablePath,
@@ -1383,13 +1479,13 @@ export async function planIncrementalStep(inputs: {
          lineage.pair ? undefined : end.bound,
       ),
       columns: inputs.columns,
-      mergeKeys: lineage.mergeKeys,
-      scopeColumns: lineage.scopeColumns,
-      watermarkName: lineage.watermarkName,
+      mergeKeys: (lineage.mergeKeys ?? []).map(column),
+      scopeColumns: lineage.scopeColumns?.map(column),
+      watermarkName: column(lineage.watermarkName),
       start,
       end: end.bound,
       windowDeletes: (lineage.rollingWindow ?? []).map((window) => ({
-         column: window.field,
+         column: column(window.field),
          before: canonicalBoundValue(
             "timestamp",
             windowDeleteBefore(window, inputs.now),
@@ -1437,12 +1533,16 @@ export async function seedCoveredThrough(
    lineage: IncrementalLineage,
    quotedTablePath: string,
    now: Date,
-): Promise<{ bound?: WatermarkBound; error?: string }> {
+   /** The column the table holds the watermark under (DeltaTarget.storedColumn). */
+   storedColumn?: (field: string) => string,
+): Promise<{ bound?: WatermarkBound; error?: string; errorCode?: string }> {
+   const watermark =
+      storedColumn?.(lineage.watermarkName) ?? lineage.watermarkName;
    const frontier = await probeMaxWatermark(
       runner,
       dialect,
-      `SELECT ${quoteIdentifier(lineage.watermarkName, dialect)} FROM ${quotedTablePath}`,
-      lineage.watermarkName,
+      `SELECT ${quoteIdentifier(watermark, dialect)} FROM ${quotedTablePath}`,
+      watermark,
       lineage.watermarkType,
    );
    if (frontier.error || !frontier.bound) return frontier;
@@ -1451,3 +1551,213 @@ export async function seedCoveredThrough(
       ? { bound: snapshotBound(type, now) }
       : frontier;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Late rows: rows the source holds below a delta's lower bound that the stored
+// table lacks. A delta never reads below that bound, so such a row (stamped
+// before the newest stored row, landing after it was written) is missing from
+// the served table until a rebuild, or a `lookback=` wide enough to reach it.
+// The check makes that visible; it never writes.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The late-row check's one aggregate, run on the TARGET: how many of the
+ * source's rows in `[from, to)` (`windowSQL`, see DeltaTarget.windowRows) the
+ * stored table lacks.
+ *
+ * With `merge_key=` (`matchColumns`, the keys plus any scope columns), a
+ * source row is present when a stored row has the same keys AND the same
+ * watermark, so a restatement the delta skipped counts as well as a row it
+ * never saw. A LEFT JOIN rather than a correlated `NOT EXISTS`: BigQuery
+ * refuses a correlated subquery it cannot turn into a join, and the
+ * watermark's equality is the equi-join every engine needs. Both sides are
+ * read only inside the window. Without a merge key (a range replace, whose
+ * rows' watermarks never change) the count is the source's rows in the
+ * window less the table's.
+ */
+export function lateRowsSql(params: {
+   dialect: string;
+   quotedTablePath: string;
+   windowSQL: string;
+   /** The watermark's stored column. */
+   watermark: string;
+   /** Stored columns that identify a row; empty for a range replace. */
+   matchColumns: string[];
+   from: WatermarkBound;
+   to: WatermarkBound;
+}): string {
+   const { dialect, quotedTablePath, windowSQL, matchColumns } = params;
+   const q = (name: string) => quoteIdentifier(name, dialect);
+   const w = q(params.watermark);
+   const inWindow =
+      `${w} >= ${renderSqlBound(params.from, dialect)} AND ` +
+      `${w} < ${renderSqlBound(params.to, dialect)}`;
+   const alias = probeAlias("late_rows", dialect);
+   if (matchColumns.length === 0) {
+      return probeSelect(
+         dialect,
+         `SELECT (SELECT COUNT(*) FROM (${windowSQL}) AS __s) - ` +
+            `(SELECT COUNT(*) FROM ${quotedTablePath} WHERE ${inWindow}) ` +
+            `AS ${alias}`,
+      );
+   }
+   const stored = [...new Set([params.watermark, ...matchColumns])]
+      .map(q)
+      .join(", ");
+   const on = [
+      `__t.${w} = __s.${w}`,
+      ...matchColumns
+         .filter((c) => c !== params.watermark)
+         .map(
+            (c) =>
+               `(__t.${q(c)} = __s.${q(c)} OR ` +
+               `(__t.${q(c)} IS NULL AND __s.${q(c)} IS NULL))`,
+         ),
+   ].join(" AND ");
+   return probeSelect(
+      dialect,
+      `SELECT COUNT(*) AS ${alias} FROM (${windowSQL}) AS __s ` +
+         `LEFT JOIN (SELECT 1 AS __present, ${stored} FROM ` +
+         `${quotedTablePath} WHERE ${inWindow}) AS __t ON ${on} ` +
+         `WHERE __t.__present IS NULL`,
+   );
+}
+
+/** A bound as the wire spells it: ISO-8601 with a `T` for a timestamp. */
+function wireBoundValue(bound: WatermarkBound): string {
+   return bound.malloyType === "timestamp"
+      ? bound.value.replace(" ", "T")
+      : bound.value;
+}
+
+/**
+ * How long the late-row check may take before the run goes on without it.
+ * The check is best-effort, so a slow read never holds up the end of a run.
+ * Its statement is stopped too: on Postgres by a statement timeout of the
+ * same length or the session's own if stricter (withStatementTimeout),
+ * elsewhere by the abort signal (a `storage=` session's statement is
+ * interrupted, sessionRunner in incremental_storage.ts). A `storage=` source
+ * on BigQuery is not checked at all: its window would be read by a billed
+ * BigQuery job that an interrupt does not cancel (incremental_storage.ts).
+ */
+const LATE_ROWS_CHECK_TIMEOUT_MS = 60_000;
+
+/**
+ * Run the late-row check for a delta that committed: the source's rows in a
+ * window directly below its lower bound ({@link lateRowsWindowStart}, as wide
+ * as its own range, capped) that the stored table lacks. One aggregate over
+ * that window of the source and of the table.
+ *
+ * What an earlier delta found is `carried` (the bound manifest entry's
+ * `lateRows`), and it stays reported until a rebuild clears it: the window is
+ * checked only above `carried.to`, so no slice is counted twice, and what it
+ * finds adds to the carried count. A check that does not run, finds nothing,
+ * fails or times out returns the carried rows as they were.
+ *
+ * Nothing new for a pair table (its delta replaces whole parents, so its rows
+ * have no per-row identity to compare), a string watermark (a window has no
+ * width), or a target that cannot read the source's window. Never throws:
+ * the delta it checks has already committed.
+ */
+export async function countLateRows(params: {
+   target: DeltaTarget;
+   lineage: IncrementalLineage;
+   start: WatermarkBound;
+   end: WatermarkBound;
+   carried?: LateRows;
+   timeoutMs?: number;
+}): Promise<{ lateRows?: LateRows; error?: string; errorCode?: string }> {
+   const { target, lineage, start, end, carried } = params;
+   const kept = carried ? { lateRows: carried } : {};
+   const windowRows = target.windowRows;
+   if (lineage.pair || !windowRows) return kept;
+   let from = lateRowsWindowStart(start, end, lineage.lookbackSeconds);
+   if (!from) return kept;
+   if (carried) {
+      // Above what an earlier check counted, so a row is counted once.
+      const checkedTo = { malloyType: start.malloyType, value: carried.to };
+      if (compareBounds(checkedTo, from) > 0) from = checkedTo;
+      if (compareBounds(from, start) >= 0) return kept;
+   }
+   const windowFrom = from;
+   const column = (field: string) => target.storedColumn?.(field) ?? field;
+   const watermark = column(lineage.watermarkName);
+   const matchColumns =
+      lineage.mergeKeys.length > 0
+         ? [
+              ...new Set(
+                 [...lineage.mergeKeys, ...(lineage.scopeColumns ?? [])].map(
+                    column,
+                 ),
+              ),
+           ]
+         : [];
+   const timeoutMs = params.timeoutMs ?? LATE_ROWS_CHECK_TIMEOUT_MS;
+   const abort = new AbortController();
+   const check = (async () => {
+      const windowSQL = await windowRows(windowFrom, start, [
+         ...new Set([watermark, ...matchColumns]),
+      ]);
+      const result = await target.runner(
+         withStatementTimeout(
+            target.dialect,
+            lateRowsSql({
+               dialect: target.dialect,
+               quotedTablePath: target.quotedTablePath,
+               windowSQL,
+               watermark,
+               matchColumns,
+               from: windowFrom,
+               to: start,
+            }),
+            timeoutMs,
+         ),
+         { abortSignal: abort.signal },
+      );
+      return Number(probeRows(result.rows)[0]?.["late_rows"]);
+   })();
+   // The side that loses the race must not surface as an unhandled rejection.
+   check.catch(() => undefined);
+   let timer: ReturnType<typeof setTimeout> | undefined;
+   const timedOut = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+         abort.abort();
+         reject(
+            Object.assign(
+               new Error(`the late-row check took longer than ${timeoutMs} ms`),
+               { code: "late_rows_check_timeout" },
+            ),
+         );
+      }, timeoutMs);
+   });
+   try {
+      const count = await Promise.race([check, timedOut]);
+      if (!Number.isFinite(count) || count <= 0) return kept;
+      return {
+         lateRows: {
+            count: count + (carried?.count ?? 0),
+            from: carried?.from ?? wireBoundValue(windowFrom),
+            to: wireBoundValue(start),
+         },
+      };
+   } catch (err) {
+      if (abort.signal.aborted) {
+         // Interrupted: let the statement wind down, briefly, so the
+         // session or connection it held is free for the run's next one.
+         let settle: ReturnType<typeof setTimeout> | undefined;
+         await Promise.race([
+            check.catch(() => undefined),
+            new Promise((resolve) => {
+               settle = setTimeout(resolve, LATE_ROWS_SETTLE_MS);
+            }),
+         ]);
+         clearTimeout(settle);
+      }
+      return { ...kept, error: errMessage(err), errorCode: errorCodeOf(err) };
+   } finally {
+      clearTimeout(timer);
+   }
+}
+
+/** How long a timed-out late-row check is given to stop once interrupted. */
+const LATE_ROWS_SETTLE_MS = 5_000;

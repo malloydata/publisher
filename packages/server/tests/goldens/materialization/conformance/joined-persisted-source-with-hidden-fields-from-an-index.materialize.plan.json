@@ -22,6 +22,10 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "customer_dim@<pkg>/dims.malloy": "materialize",
+      "order_facts@<pkg>/facts.malloy": "materialize"
+    },
     "materializePlans": {
       "customer_dim@<pkg>/dims.malloy": {
         "buildSourceName": "customer_dim__mat",
@@ -173,6 +177,8 @@
         ]
       }
     ],
+    "omittedFiles": [],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "customer_dim@<pkg>/dims.malloy": {
@@ -199,7 +205,7 @@
         "freshness": null,
         "modelPath": "dims.malloy",
         "name": "customer_dim",
-        "origin": "persist",
+        "origin": "materialize",
         "preaggregate": null,
         "queryMetadata": null,
         "refresh": null,
@@ -235,7 +241,7 @@
         "freshness": null,
         "modelPath": "facts.malloy",
         "name": "order_facts",
-        "origin": "persist",
+        "origin": "materialize",
         "preaggregate": null,
         "queryMetadata": null,
         "refresh": null,

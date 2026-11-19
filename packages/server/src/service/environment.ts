@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { isUnderStorageLocation } from "../driver_errors";
 import type { GivenValue } from "@malloydata/malloy";
 import { recordAnnotationFindings } from "../materialization_metrics";
 import { type CompiledDocument } from "./compile_document";
@@ -40,6 +41,10 @@ import {
 } from "../errors";
 import { getPersistStorageMode, isPackageInlineFieldsEnabled } from "../config";
 import { logger } from "../logger";
+import {
+   withoutAbsolutePaths,
+   withPackageRelativeErrors,
+} from "../package_relative_text";
 import { redactPgSecrets } from "../pg_helpers";
 import {
    mergeConnectionUpdate,
@@ -52,8 +57,18 @@ import {
    assertSafeRelativeModelPath,
    safeJoinUnderRoot,
 } from "../path_safety";
-import { FreshnessManifest, ManifestEntry } from "./materialization/types";
-import { errMessage } from "../utils";
+import {
+   FreshnessManifest,
+   ManifestEntry,
+} from "./materialization/domain/types";
+import {
+   confinedPackagePath,
+   errMessage,
+   ImportOutsidePackageError,
+   readPackageURL,
+} from "../utils";
+import { isDeepStrictEqual } from "util";
+import { pathToFileURL } from "url";
 import {
    buildEnvironmentMalloyConfig,
    deleteDuckLakeConnectionFile,
@@ -72,8 +87,13 @@ import {
    splitManifestEntries,
    type FetchedManifest,
 } from "./materialization/run/manifest_loader";
+import type { RunManifestLoad } from "./materialization/domain/types";
+import type { KeptTable } from "./materialization/domain/types";
 import { ApiConnection } from "./model";
+import { destinationOverlaps } from "./destination_overlap";
+import type { PackageMaterialization } from "./materialization";
 import { Package } from "./package";
+import { canonicalJson } from "./package_revision";
 import { applyLoadGates } from "./package_load_gates";
 import { resolvePatchedSettings } from "./package_patch";
 import { environmentResource, packageResource } from "../api_resource";
@@ -92,7 +112,8 @@ import {
    type TaggedLogMessage,
 } from "./compile_source";
 import { type OverlayFile } from "./request_overlay";
-import { destinationSchemaOf } from "./materialization/run/storage_table_path";
+import { destinationSchemaOf } from "./materialization/domain/storage_table_path";
+import { storageWritable } from "./materialization/domain/placement";
 
 export {
    COMPILE_SCOPES,
@@ -105,6 +126,7 @@ import {
    type ConfiguredPublishRetry,
 } from "./configured_publish_retry";
 import { VersionRegistry, VersionService } from "./versions/version_service";
+import { StatusSnapshot } from "./status_snapshot";
 import { getPackageLoadWorkerCount } from "../package_load/package_load_pool";
 import { readManifestVersion, VersionStore } from "./versions/version_store";
 import {
@@ -315,10 +337,35 @@ function mergePackageManifest(
  * reads (`PackageStatusEntry`). While PUBLISHER_PACKAGE_INLINE_FIELDS is on an
  * entry is the package's full response plus its serving state.
  */
+/**
+ * Background re-reads of version rows a failed read left out of `/status`:
+ * the first delay, the cap it doubles up to, and the attempt after which a
+ * read still failing is logged as an error. It is retried at the cap until
+ * one lands, never given up on.
+ */
+const STATUS_VERSIONS_RETRY_FIRST_MS = 250;
+const STATUS_VERSIONS_RETRY_CAP_MS = 30_000;
+const STATUS_VERSIONS_RETRIES_BEFORE_ERROR = 8;
+
 export type PackageListingOptions = {
    includeLoading?: boolean;
    operational?: boolean;
 };
+
+/**
+ * What a version binds from a set of entries, in one form whoever bound it:
+ * the database entries its models compile and bind over, and the `storage=`
+ * entries as {@link splitManifestEntries} gives them, keys sorted at every
+ * depth. A read of the store and a run's own load compare equal exactly when
+ * they bind the same, whatever key order the store (a jsonb column, say)
+ * gives back.
+ */
+function storeBindingSignature(
+   database: FreshnessManifest,
+   storage: Record<string, ManifestEntry>,
+): string {
+   return canonicalJson({ database, storage });
+}
 
 /**
  * At most this many build plans re-derive at once after a connection edit:
@@ -413,6 +460,8 @@ export class Environment {
     * lifecycle phase, because a reload runs while the previous copy serves.
     */
    private readonly loadsInFlight = new PackageLoadTracker();
+   /** What `GET /status` answers from; see {@link describeForStatus}. */
+   private readonly statusSnapshot: StatusSnapshot;
    /** Bumped by every connection edit that can move content addresses. */
    private connectionGeneration = 0;
    /** The connections the latest edit changed, for the refresh's log lines. */
@@ -494,6 +543,13 @@ export class Environment {
       packageName: string,
       reader: ServingReader,
    ) => Promise<Record<string, ManifestEntry>>;
+   // The tables a package's newest auto-run lists as kept after a rename
+   // (Reclaimer.reclaimRenamedTables), which its warnings name, read again
+   // whenever the package (re)loads. Undefined ⇒ none.
+   private keptTablesResolver?: (
+      packageName: string,
+      reader: ServingReader,
+   ) => Promise<readonly KeptTable[]>;
    // Whether an UNVERSIONED package restores its serve bindings from the local
    // store when it loads. Only an environment reloaded from the database at
    // startup does, exactly as before versions existed; one created at runtime
@@ -509,6 +565,11 @@ export class Environment {
    private readonly storeBindingReads = new WeakMap<Package, string>();
    // The loaded versions already settled once they became findable.
    private readonly settledVersions = new WeakSet<Package>();
+   // The versions a host owns (see isHostOwned), by `package@version`, for
+   // every version marked in this process: a copy whose load read its row
+   // before the mark still counts. A loaded copy's own mark is on its
+   // materialization (PackageMaterialization.isHostOwned).
+   private readonly hostOwnedVersionKeys = new Set<string>();
    // Called when a version is archived, to reclaim the tables it alone owns.
    // Set by EnvironmentStore (see setVersionArchivedHook).
    private versionArchivedHook:
@@ -555,6 +616,7 @@ export class Environment {
       this.environmentName = environmentName;
       this.environmentPath = environmentPath;
       this.lifecycle = new PackageLifecycle(environmentName);
+      this.statusSnapshot = new StatusSnapshot(environmentName);
       Environment.openEnvironments.add(this.openEnvironmentRef);
       this.malloyConfig = malloyConfig;
       this.apiConnections = apiConnections;
@@ -769,6 +831,25 @@ export class Environment {
       return this.apiConnections;
    }
 
+   /**
+    * Whether `url` lies under a data path this environment configures: a
+    * DuckLake connection's or a storage destination's `storage.bucketUrl`.
+    * An object store refusing such a URL is the database's storage
+    * credentials at fault, not the query (StorageAccessDeniedError.managed).
+    */
+   public isConfiguredStorageUrl(url: string): boolean {
+      const locations: string[] = [];
+      for (const c of [...this.apiConnections, ...this.destinations]) {
+         const bucketUrl = (
+            c as { ducklakeConnection?: { storage?: { bucketUrl?: unknown } } }
+         ).ducklakeConnection?.storage?.bucketUrl;
+         if (typeof bucketUrl === "string" && bucketUrl) {
+            locations.push(bucketUrl);
+         }
+      }
+      return isUnderStorageLocation(url, locations);
+   }
+
    public getApiConnection(connectionName: string): ApiConnection {
       const connection = this.apiConnections.find(
          (connection) => connection.name === connectionName,
@@ -805,6 +886,7 @@ export class Environment {
          ? processStorageDestinationsOrThrow(requested)
          : processStorageDestinations(requested);
       this.destinationsAuthoritative = true;
+      this.warnOnDestinationOverlap();
 
       // An orchestrator re-pushing its desired state on a loop must not
       // re-attach every destination each cycle, so an equal list (ignoring
@@ -822,6 +904,28 @@ export class Environment {
          logger.info(
             `Environment ${this.environmentName} has ${this.destinations.length} storage destination(s)`,
             { destinations: this.destinations.map((d) => d.name) },
+         );
+      }
+   }
+
+   /**
+    * Warns when a connection a model can name reaches a storage
+    * destination's tables (destination_overlap.ts): a destination holds
+    * gated sources' rows ungated, so such a connection lets any package read
+    * them by name. A warning only: the operator's configuration decides.
+    */
+   private warnOnDestinationOverlap(): void {
+      for (const overlap of destinationOverlaps(
+         this.apiConnections ?? [],
+         this.destinations ?? [],
+      )) {
+         logger.warn(
+            `Connection "${overlap.connection}" reaches storage destination "${overlap.destination}": ${overlap.reason}. A destination holds stored tables, gated sources' rows among them with no gate, and models can read them through the connection by name. Never configure a destination's catalog or data path as a connection models can name.`,
+            {
+               environmentName: this.environmentName,
+               connection: overlap.connection,
+               destinationName: overlap.destination,
+            },
          );
       }
    }
@@ -857,12 +961,14 @@ export class Environment {
     * live), never correctness; it must run before serve bindings are pushed.
     */
    private attachDestinationServeConfig(_package: Package): void {
-      _package.setServeDestinationConfig(() =>
-         this.getStorageDestinationMalloyConfig(),
-      );
+      _package
+         .materialization()
+         .setServeDestinationConfig(() =>
+            this.getStorageDestinationMalloyConfig(),
+         );
       // Live too: a destination configured after the load clears its
       // publish warning (P13) with no reload.
-      _package.setDeploymentFacts({
+      _package.materialization().setDeploymentFacts({
          destinationNames: () =>
             this.destinationsAuthoritative
                ? this.destinations.flatMap((d) => (d.name ? [d.name] : []))
@@ -878,11 +984,13 @@ export class Environment {
          },
       });
       // Live, like the config: a destination list swap needs no reload.
-      _package.setServeDestinationSchema((destinationName) =>
-         destinationSchemaOf(
-            this.destinations.find((d) => d.name === destinationName),
-         ),
-      );
+      _package
+         .materialization()
+         .setServeDestinationSchema((destinationName) =>
+            destinationSchemaOf(
+               this.destinations.find((d) => d.name === destinationName),
+            ),
+         );
    }
 
    /**
@@ -904,7 +1012,12 @@ export class Environment {
             this.destinations,
             destinationRoot,
             false,
-            { origin: "storage-destination" },
+            {
+               origin: "storage-destination",
+               // A destination reopened without its catalog: serve shapes
+               // compiled against the closed connection recompile.
+               onDuckLakeReopened: () => this.invalidateCompiledLegs(),
+            },
          );
       } catch (error) {
          logger.error(
@@ -926,7 +1039,7 @@ export class Environment {
          // Memoized serve shapes hold the retired generation's connections but
          // are keyed on the binding set, which this does not change; left in
          // place, every routed query would quietly fall back to live.
-         this.invalidateServeShapes();
+         this.invalidateCompiledLegs();
       }
    }
 
@@ -957,7 +1070,7 @@ export class Environment {
       _package: Package,
       changed: ReadonlySet<string>,
    ): boolean {
-      const names = _package.planConnectionNames();
+      const names = _package.materialization().planConnectionNames();
       if (names === null) return true;
       for (const name of names) if (changed.has(name)) return true;
       return false;
@@ -1035,7 +1148,14 @@ export class Environment {
          this.planRefreshesRunning++;
          const connections = this.lastChangedConnections;
          next
-            .refreshBuildPlan({ retryFailed })
+            .refreshBuildPlan({
+               retryFailed,
+               // A version's files never change; only the unversioned package
+               // a reload replaces can serve an older model than its files.
+               isStale: () =>
+                  next.getVersionId() === undefined &&
+                  this.getStaleCompileErrors().has(next.getPackageName()),
+            })
             .then((derived) => {
                if (derived) {
                   const backoff = this.planRefreshBackoff.get(next);
@@ -1043,7 +1163,11 @@ export class Environment {
                   this.planRefreshBackoff.delete(next);
                   return;
                }
-               if (!next.lastBuildPlanRefreshFailedTransiently()) {
+               if (
+                  !next
+                     .materialization()
+                     .lastBuildPlanRefreshFailedTransiently()
+               ) {
                   // The plan compute itself failed (a model that no longer
                   // compiles, a connection that does not resolve): it fails
                   // the same way until the model or a connection changes, and
@@ -1096,14 +1220,14 @@ export class Environment {
    }
 
    /** Drop every loaded model's memoized serve shape; the next query recompiles. */
-   private invalidateServeShapes(): void {
+   private invalidateCompiledLegs(): void {
       for (const _package of this.packages.values()) {
-         _package.invalidateServeShapes();
+         _package.materialization().invalidateCompiledLegs();
       }
       // Loaded versions too: they compiled against the destinations that just
       // changed.
       for (const [, , version] of this.versionService?.cache.entries() ?? []) {
-         version.invalidateServeShapes();
+         version.materialization().invalidateCompiledLegs();
       }
    }
 
@@ -1510,7 +1634,18 @@ export class Environment {
       // under the old connections: re-derive it, and the package's other
       // loaded copies, once it lands (see refreshBuildPlans).
       const generation = this.connectionGeneration;
-      return this.loadsInFlight.track(packageName, fn).then((result) => {
+      const tracked = async (): Promise<T> => {
+         let result: T | undefined;
+         try {
+            result = await fn();
+            return result;
+         } finally {
+            // Before the load is marked settled: what it committed or
+            // changed in place, for /status.
+            this.settleStatusSnapshot(packageName, result);
+         }
+      };
+      return this.loadsInFlight.track(packageName, tracked).then((result) => {
          if (this.connectionGeneration !== generation) {
             const changed = new Set(this.lastChangedConnections);
             const loaded = [
@@ -1560,6 +1695,46 @@ export class Environment {
       return this.getOrCreatePackageMutex(packageName).runExclusive(fn);
    }
 
+   /** Every copy of the package in memory: its single slot and its versions. */
+   private residentCopiesOf(packageName: string): Package[] {
+      const copies: Package[] = [];
+      const resident = this.packages.get(packageName);
+      if (resident !== undefined) copies.push(resident);
+      for (const [name, , version] of this.versionService?.cache.entries() ??
+         []) {
+         if (name === packageName) copies.push(version);
+      }
+      return copies;
+   }
+
+   /**
+    * An operation on the package settled: capture, for `/status`, the copies
+    * it may have built or changed. When `result` names the copy it worked on
+    * (a load returns the copy, a publish `{ loaded }`), that copy and the
+    * package's single slot, which a first versioned publish retires; a
+    * version is not in the cache yet when its load settles. Otherwise, as for
+    * a rebind that returns nothing, every copy of the package in memory.
+    * Slim entries carry no metadata, so nothing is captured while inline
+    * fields are off.
+    */
+   private settleStatusSnapshot(packageName: string, result: unknown): void {
+      if (!isPackageInlineFieldsEnabled()) return;
+      const touched =
+         result instanceof Package
+            ? result
+            : typeof result === "object" &&
+                result !== null &&
+                "loaded" in result &&
+                result.loaded instanceof Package
+              ? result.loaded
+              : undefined;
+      this.statusSnapshot.settle(
+         touched !== undefined
+            ? [touched, this.packages.get(packageName)]
+            : this.residentCopiesOf(packageName),
+      );
+   }
+
    /**
     * Read a model file's text, or undefined when there is none. The caller
     * holds the package lock.
@@ -1591,6 +1766,29 @@ export class Environment {
       packageRoot: string,
       target: string,
    ): Promise<string[]> {
+      // A link planted at the file, or a dangling link on the way to it, is
+      // refused before anything about where it leads is looked at, with the
+      // answer a link out of the package gets, so a write cannot tell a
+      // target that exists from one that does not.
+      const outside = () =>
+         new InvalidModelPathError(
+            `Invalid model path: it resolves outside the package.`,
+         );
+      const isLink = async (p: string) =>
+         (
+            await fs.promises.lstat(p).catch(() => undefined)
+         )?.isSymbolicLink() === true;
+      if (await isLink(target)) throw outside();
+      // Where the target leads, settled by the package's own walk, which
+      // never looks outside the package: a directory link on the way that
+      // passes out (and back, or not) is refused here, the same whatever
+      // lies outside, before the stats below would follow it.
+      try {
+         await confinedPackagePath(packageRoot, pathToFileURL(target));
+      } catch (error) {
+         if (error instanceof ImportOutsidePackageError) throw outside();
+         throw error;
+      }
       const missing: string[] = [];
       let dir = path.dirname(target);
       while (dir.startsWith(packageRoot)) {
@@ -1601,6 +1799,7 @@ export class Environment {
             throw error;
          });
          if (stat === undefined) {
+            if (await isLink(dir)) throw outside();
             missing.push(dir);
             dir = path.dirname(dir);
             continue;
@@ -1889,6 +2088,16 @@ export class Environment {
       }
    }
 
+   /** See {@link keptTablesResolver}. */
+   public setKeptTablesResolver(
+      resolver: (
+         packageName: string,
+         reader: ServingReader,
+      ) => Promise<readonly KeptTable[]>,
+   ): void {
+      this.keptTablesResolver = resolver;
+   }
+
    /** See {@link storageBindingResolver}. */
    public setStorageBindingResolver(
       resolver: (
@@ -1905,8 +2114,8 @@ export class Environment {
     * from the database at startup, the one place the restore ran before
     * versions existed (see {@link restoreUnversionedFromLocalStore}).
     */
-   public restoreUnversionedBindingsFromLocalStore(): void {
-      this.restoreUnversionedFromLocalStore = true;
+   public restoreUnversionedBindingsFromLocalStore(restore = true): void {
+      this.restoreUnversionedFromLocalStore = restore;
    }
 
    /**
@@ -1989,7 +2198,7 @@ export class Environment {
          for (const copy of this.pendingVersionReleases.get(k) ?? []) {
             this.retireConnectionGeneration(
                `package ${packageName} version ${versionId}`,
-               () => copy.getMalloyConfig().shutdown("close"),
+               () => copy.releaseConnections(),
             );
          }
          this.pendingVersionReleases.delete(k);
@@ -2051,7 +2260,7 @@ export class Environment {
     * build. Best-effort: a lookup failure leaves the package serving live.
     *
     * Both tiers come from the same manifest ({@link splitManifestEntries}):
-    *  - colocated → {@link Package.bindColocatedServeManifest}, a per-query
+    *  - database → {@link Package.bindDatabaseServeManifest}, a per-query
     *    override with no recompile; restored regardless of
     *    `PERSIST_STORAGE_MODE`, which does not gate a plain `#@ persist`.
     *  - storage= → {@link Package.bindStorageServeBindings}; only when the
@@ -2060,11 +2269,25 @@ export class Environment {
     * Skipped when the package has a `manifestLocation`: the host's manifest is
     * then authoritative, and this rebind (which runs after
     * {@link bindManifestIfConfigured}) would overwrite it with a possibly
-    * staler local generation.
+    * staler local generation. Skipped too for a version a host owns with no
+    * manifest bound ({@link isHostOwned}): the host cleared it to serve live.
     */
    private async rebindServeBindingsFromLocalStore(
       pkg: Package,
    ): Promise<void> {
+      if (this.keptTablesResolver) {
+         await this.keptTablesResolver(
+            pkg.getPackageName(),
+            servingReaderOf(pkg),
+         )
+            .then((kept) => pkg.setKeptTables(kept))
+            .catch((err) =>
+               logger.warn("Failed to read the tables kept after a rename", {
+                  packageName: pkg.getPackageName(),
+                  error: errMessage(err),
+               }),
+            );
+      }
       if (!this.storageBindingResolver) return;
       if (
          pkg.getVersionId() === undefined &&
@@ -2072,30 +2295,32 @@ export class Environment {
       ) {
          return;
       }
-      if (pkg.getPackageMetadata().manifestLocation) return;
+      if (this.isHostOwned(pkg)) return;
       const packageName = pkg.getPackageName();
       try {
          const rawEntries = await this.storageBindingResolver(
             packageName,
             servingReaderOf(pkg),
          );
+         const { tableNameManifest, storageEntries, signature } =
+            this.splitStoreEntries(pkg, rawEntries);
          if (pkg.getVersionId() !== undefined) {
-            this.storeBindingReads.set(pkg, JSON.stringify(rawEntries));
+            this.storeBindingReads.set(pkg, signature);
          }
          if (Object.keys(rawEntries).length === 0) return;
-         const { tableNameManifest, storageEntries } = splitManifestEntries(
-            rawEntries,
-            `local store (package ${packageName})`,
-            true,
-         );
          if (Object.keys(tableNameManifest).length > 0) {
-            pkg.bindColocatedServeManifest(tableNameManifest);
+            pkg.materialization().bind({
+               database: tableNameManifest,
+               observed: await pkg
+                  .materialization()
+                  .readDatabaseColumns(tableNameManifest),
+            });
          }
          if (
-            getPersistStorageMode() !== "off" &&
+            storageWritable(getPersistStorageMode()) &&
             Object.keys(storageEntries).length > 0
          ) {
-            pkg.bindStorageServeBindings(storageEntries);
+            pkg.materialization().bind({ storage: storageEntries });
          }
       } catch (err) {
          logger.warn(
@@ -2318,6 +2543,367 @@ export class Environment {
    }
 
    /**
+    * Read every version row once, for `/status`, when this environment's
+    * versions are bound. Every later write refreshes its own package's rows
+    * (see {@link refreshStatusVersions}), so a poll reads none. One read at a
+    * time: a caller arriving while one runs shares it. A failed read is
+    * retried in the background (see {@link scheduleStatusVersionsRetry}).
+    */
+   public primeStatusVersions(): Promise<void> {
+      this.statusVersionsPriming ??= this.readAllStatusVersions().finally(
+         () => {
+            this.statusVersionsPriming = undefined;
+         },
+      );
+      return this.statusVersionsPriming;
+   }
+
+   /**
+    * {@link primeStatusVersions} for an environment whose row was just
+    * created, which no version row can name yet: primed with none, without
+    * reading. Any write after it refreshes its own package's rows as usual.
+    */
+   public primeStatusVersionsEmpty(): void {
+      if (!this.versionService || this.statusVersionsPrimed) return;
+      this.statusSnapshot.replaceVersionRecords(
+         [],
+         this.statusSnapshot.ticket(),
+      );
+      this.statusVersionsPrimed = true;
+      this.statusVersionsRetryAttempt = 0;
+   }
+
+   private async readAllStatusVersions(): Promise<void> {
+      const versions = this.versionService;
+      if (!versions) return;
+      const ticket = this.statusSnapshot.ticket();
+      try {
+         this.statusSnapshot.replaceVersionRecords(
+            await versions.listAllVersions(),
+            ticket,
+         );
+         this.statusVersionsPrimed = true;
+         this.statusVersionsRetryAttempt = 0;
+      } catch (error) {
+         logger.error("Could not read package versions for /status", {
+            environmentName: this.environmentName,
+            error: error instanceof Error ? error.message : String(error),
+         });
+         this.scheduleStatusVersionsRetry();
+      }
+   }
+
+   /** Whether {@link primeStatusVersions} has read every row. */
+   private statusVersionsPrimed = false;
+   private statusVersionsPriming: Promise<void> | undefined;
+   private statusVersionsRetry: ReturnType<typeof setTimeout> | undefined;
+   private statusVersionsRetryAttempt = 0;
+   /** Set by {@link closeAllConnections}: nothing is retried after it. */
+   private closed = false;
+
+   /**
+    * Re-read one package's version rows for `/status` after a write to them,
+    * with every package an earlier failed read left dirty, or every row when
+    * the first read has not succeeded. Never throws.
+    *
+    * Between a write's commit and this read landing, `/status` lists the
+    * package's rows as they were before the write; the write's caller is
+    * answered only after it lands.
+    */
+   private async refreshStatusVersions(packageName: string): Promise<void> {
+      const versions = this.versionService;
+      if (!versions) return;
+      await this.statusVersionsPriming;
+      if (!this.statusVersionsPrimed) return this.primeStatusVersions();
+      for (const name of new Set([
+         packageName,
+         ...this.statusSnapshot.dirtyPackages(),
+      ])) {
+         await this.statusSnapshot.refreshVersionRecords(name, () =>
+            versions.versionRecords(name),
+         );
+      }
+      // A new write: the retries start over.
+      this.statusVersionsRetryAttempt = 0;
+      if (this.statusSnapshot.dirtyPackages().length > 0) {
+         this.scheduleStatusVersionsRetry();
+      }
+   }
+
+   /**
+    * Retry, in the background, the version reads that failed: a committed
+    * version missing from `/status` reads as absent to the control plane,
+    * which would dispatch it again. Backs off from 250 ms to 30 s, then
+    * retries every 30 s until a read lands; a write to any package starts
+    * the backoff over. Meanwhile `/status` lists what it last read, plus the
+    * versions this server holds loaded (see {@link statusVersionEntries}).
+    */
+   private scheduleStatusVersionsRetry(): void {
+      if (this.closed || this.statusVersionsRetry !== undefined) return;
+      const attempt = this.statusVersionsRetryAttempt++;
+      if (attempt === STATUS_VERSIONS_RETRIES_BEFORE_ERROR) {
+         logger.error(
+            "Still cannot re-read package versions for /status; retrying every 30 s",
+            {
+               environmentName: this.environmentName,
+               primed: this.statusVersionsPrimed,
+               packages: this.statusSnapshot.dirtyPackages(),
+            },
+         );
+      }
+      this.statusVersionsRetry = setTimeout(
+         () => {
+            this.statusVersionsRetry = undefined;
+            void this.retryStatusVersions();
+         },
+         Math.min(
+            STATUS_VERSIONS_RETRY_FIRST_MS *
+               2 ** Math.min(attempt, STATUS_VERSIONS_RETRIES_BEFORE_ERROR),
+            STATUS_VERSIONS_RETRY_CAP_MS,
+         ),
+      );
+      this.statusVersionsRetry.unref?.();
+   }
+
+   private async retryStatusVersions(): Promise<void> {
+      const versions = this.versionService;
+      if (!versions || this.closed) return;
+      if (!this.statusVersionsPrimed) {
+         await this.primeStatusVersions();
+         return;
+      }
+      for (const name of this.statusSnapshot.dirtyPackages()) {
+         await this.statusSnapshot.refreshVersionRecords(name, () =>
+            versions.versionRecords(name),
+         );
+      }
+      if (this.statusSnapshot.dirtyPackages().length > 0) {
+         this.scheduleStatusVersionsRetry();
+      } else {
+         this.statusVersionsRetryAttempt = 0;
+      }
+   }
+
+   /**
+    * This environment as `GET /status` lists it, from what it holds in
+    * memory: no package metadata is built, nothing is read from the database
+    * and nothing is loaded. The same entries {@link serialize} with
+    * `operational`, plus {@link listVersionEntries}, would give, except that a
+    * package registered from config and not loaded yet is not listed (that
+    * listing would load it).
+    */
+   public describeForStatus(
+      options: Pick<PackageListingOptions, "includeLoading"> = {},
+   ): ApiEnvironment {
+      const versionEntries = this.statusVersionEntries(options);
+      const packages = [
+         ...this.statusPackageEntries(options).filter(
+            (entry) => !versionEntries.has(entry.name ?? ""),
+         ),
+         ...[...versionEntries.values()].flat(),
+      ];
+      return {
+         ...this.metadata,
+         connections: toPublicConnections(this.listApiConnections()).map(
+            (connection) => ({ ...connection, attributes: undefined }),
+         ),
+         storageDestinations: this.destinations.map(({ name, type }) => ({
+            name,
+            type,
+         })),
+         packages,
+      };
+   }
+
+   /** The unversioned entries of {@link describeForStatus}; see listPackages. */
+   private statusPackageEntries(
+      options: Pick<PackageListingOptions, "includeLoading">,
+   ): ApiPackage[] {
+      const inline = isPackageInlineFieldsEnabled();
+      const names = new Set<string>([
+         ...this.lifecycle.registeredNames(),
+         ...(options.includeLoading ? this.loadsInFlight.names() : []),
+      ]);
+      const entries: ApiPackage[] = [];
+      for (const packageName of names) {
+         if (this.lifecycle.phaseOf(packageName) === "unloading") continue;
+         const resident = this.packages.get(packageName);
+         if (resident === undefined) {
+            // A versioned package is listed by its versions; a load in flight
+            // only on request; anything else (configured and not loaded, an
+            // interrupted or failed load) is not listed, and never loaded.
+            if (this.statusSnapshot.isVersioned(packageName)) continue;
+            if (options.includeLoading && this.loadsInFlight.has(packageName)) {
+               entries.push({
+                  name: packageName,
+                  status: this.describePackageStatus(packageName),
+               });
+            }
+            continue;
+         }
+         if (!inline) {
+            const entry = this.slimStatusEntry(packageName, resident);
+            if (entry !== undefined) entries.push(entry);
+            continue;
+         }
+         const entry = this.inlineStatusEntry(resident);
+         if (entry === undefined) continue;
+         entries.push({
+            ...entry,
+            name: packageName,
+            status: this.describePackageStatus(packageName),
+         });
+      }
+      return entries;
+   }
+
+   /** The version entries of {@link describeForStatus}; see listVersionEntries. */
+   private statusVersionEntries(
+      options: Pick<PackageListingOptions, "includeLoading">,
+   ): Map<string, ApiPackage[]> {
+      const entries = new Map<string, ApiPackage[]>();
+      const versions = this.versionService;
+      if (!versions) return entries;
+      const inline = isPackageInlineFieldsEnabled();
+      for (const row of this.statusSnapshot.versionRows()) {
+         const loaded = versions.cache.peek(row.packageName, row.versionId);
+         const base: ApiPackage | undefined = !inline
+            ? this.slimStatusEntry(row.packageName, loaded, row.versionId)
+            : loaded
+              ? this.inlineStatusEntry(loaded)
+              : {
+                   name: row.packageName,
+                   resource: packageResource(
+                      this.environmentName,
+                      row.packageName,
+                   ),
+                   versionId: row.versionId,
+                };
+         if (base === undefined) continue;
+         const list = entries.get(row.packageName) ?? [];
+         list.push({
+            ...base,
+            name: row.packageName,
+            versionId: row.versionId,
+            latestVersion: row.latest,
+            archiveStatus: row.archiveStatus,
+            loaded: loaded !== undefined,
+            status: this.describePackageStatus(row.packageName, row.versionId),
+         });
+         entries.set(row.packageName, list);
+      }
+      // While a package's rows may be out of date (its last read failed, or
+      // no read has landed yet), a version this server holds loaded is
+      // listed even when the rows it holds lack it: it was committed, since
+      // only a committed version is cached past its publish, and an absent
+      // one reads to the control plane as one to dispatch again. Its
+      // `latestVersion` is the package's as last read, as for a version
+      // still publishing below.
+      const unread = this.statusVersionsPrimed
+         ? new Set(this.statusSnapshot.dirtyPackages())
+         : undefined;
+      if (unread === undefined || unread.size > 0) {
+         for (const [
+            packageName,
+            versionId,
+            loaded,
+         ] of versions.cache.entries()) {
+            if (unread !== undefined && !unread.has(packageName)) continue;
+            if (this.packages.has(packageName)) continue;
+            const list = entries.get(packageName) ?? [];
+            if (list.some((entry) => entry.versionId === versionId)) continue;
+            const base = inline
+               ? this.inlineStatusEntry(loaded)
+               : this.slimStatusEntry(packageName, loaded, versionId);
+            if (base === undefined) continue;
+            list.push({
+               ...base,
+               name: packageName,
+               versionId,
+               latestVersion: list[0]?.latestVersion ?? null,
+               // An archived version is unloaded, so a loaded one is in service.
+               archiveStatus: "unarchive",
+               loaded: true,
+               status: this.describePackageStatus(packageName, versionId),
+            });
+            entries.set(packageName, list);
+         }
+      }
+      if (options.includeLoading) {
+         for (const {
+            packageName,
+            versionId,
+         } of versions.publishingVersions()) {
+            if (this.packages.has(packageName)) continue;
+            const list = entries.get(packageName) ?? [];
+            if (list.some((entry) => entry.versionId === versionId)) continue;
+            list.push({
+               name: packageName,
+               resource: packageResource(this.environmentName, packageName),
+               versionId,
+               latestVersion: list[0]?.latestVersion ?? null,
+               loaded: false,
+               status: this.describePackageStatus(packageName, versionId),
+            });
+            entries.set(packageName, list);
+         }
+      }
+      return entries;
+   }
+
+   /**
+    * A copy's full entry while inline fields are on: its metadata as last
+    * captured, with the fields a reconcile reads (the manifest binding) read
+    * live. Undefined when its metadata cannot be built, as listPackages
+    * leaves such a package out.
+    */
+   private inlineStatusEntry(pkg: Package): ApiPackage | undefined {
+      try {
+         const operational = pkg.getOperationalFields();
+         return {
+            ...this.statusSnapshot.metadataOf(pkg),
+            ...operational,
+            // Absent when nothing is bound from storage, so set either way.
+            storageServeBindings: operational.storageServeBindings,
+         };
+      } catch (error) {
+         logger.error("Could not describe a package for /status", {
+            environmentName: this.environmentName,
+            packageName: pkg.getPackageName(),
+            error: error instanceof Error ? error.message : String(error),
+         });
+         return undefined;
+      }
+   }
+
+   /**
+    * A copy's slim entry while inline fields are off, or undefined when it
+    * cannot be read: one package that throws must not fail the whole poll.
+    */
+   private slimStatusEntry(
+      packageName: string,
+      loaded: Package | undefined,
+      versionId?: string,
+   ): ApiPackageStatusEntry | undefined {
+      try {
+         return this.statusEntry(packageName, loaded, versionId);
+      } catch (error) {
+         logger.error("Could not describe a package for /status", {
+            environmentName: this.environmentName,
+            packageName,
+            versionId,
+            error: error instanceof Error ? error.message : String(error),
+         });
+         return undefined;
+      }
+   }
+
+   /** Visible for tests: polls that built a copy's metadata themselves. */
+   public statusSnapshotMissesForTesting(): number {
+      return this.statusSnapshot.missesForTesting();
+   }
+
+   /**
     * Give this environment its version rules, backed by the registry rows of
     * `environmentId`. Idempotent per id. `hooks` are what only the store
     * knows: how to fetch a location, and how to write the package's row.
@@ -2357,7 +2943,7 @@ export class Environment {
             releaseVersion: (packageName, versionId, loaded) =>
                this.retireConnectionGeneration(
                   `package ${packageName} version ${versionId}`,
-                  () => loaded.getMalloyConfig().shutdown("close"),
+                  () => loaded.releaseConnections(),
                ),
             bindVersionManifest: (loaded, manifestPath) =>
                this.bindVersionManifest(loaded, manifestPath),
@@ -2385,27 +2971,37 @@ export class Environment {
                if (!unversioned) return;
                this.packages.delete(packageName);
                this.retireConnectionGeneration(`package ${packageName}`, () =>
-                  unversioned.getMalloyConfig().shutdown("close"),
+                  unversioned.releaseConnections(),
                );
             },
             ensurePackageRecord: hooks.ensurePackageRecord,
             removePackageRecord: hooks.removePackageRecord,
-            boundManifestOf: (loaded) =>
-               loaded.getPackageMetadata().manifestLocation ?? null,
+            boundManifestOf: (loaded) => loaded.getManifestLocation() ?? null,
+            hostMarked: (loaded) => loaded.materialization().isHostOwned(),
             isVersionBuilding: (packageName, versionId) =>
                this.versionBuilds.has(`${packageName}@${versionId}`),
             onVersionArchived: (packageName, versionId) =>
                this.versionArchivedHook?.(packageName, versionId),
-            onVersionDeleted: (packageName, versionId) =>
-               this.versionDeletedHook?.(packageName, versionId),
+            onVersionDeleted: (packageName, versionId) => {
+               // A version published again under this id starts unmarked.
+               this.hostOwnedVersionKeys.delete(`${packageName}@${versionId}`);
+               this.versionDeletedHook?.(packageName, versionId);
+            },
             reclaimOwedBy: async (packageName, versionId) => {
                await this.owedReclaimHook?.(packageName, versionId);
             },
             packageRemoved: (packageName) => {
+               for (const key of this.hostOwnedVersionKeys) {
+                  if (key.startsWith(`${packageName}@`)) {
+                     this.hostOwnedVersionKeys.delete(key);
+                  }
+               }
                this.clearPackageLoadFailure(packageName);
                this.transition(packageName, { type: "unregister" });
                hooks.packageRemoved?.(packageName);
             },
+            recordsChanged: (packageName) =>
+               this.refreshStatusVersions(packageName),
             onVersionLoaded: (packageName, loaded, isLatest) => {
                this.transition(packageName, { type: "versionServing" });
                void this.settleSharedBindings(packageName, loaded);
@@ -2436,29 +3032,52 @@ export class Environment {
          versionId: string;
          manifestPath: string | null;
          sourceLocation: string | null;
+         hostOwned: boolean;
       },
    ): Promise<Package> {
-      const loaded = await Package.create(
-         this.environmentName,
-         packageName,
-         versionPath,
-         () => this.malloyConfig.malloyConfig,
-      );
-      this.attachDestinationServeConfig(loaded);
-      // The version's serving state lives on its registry row, not in its
-      // immutable publisher.json: where it came from, which version it is,
-      // and the manifest it is bound to.
-      loaded.setPackageMetadata({
-         ...loaded.getPackageMetadata(),
-         versionId: version.versionId,
-         ...(version.sourceLocation
-            ? { location: version.sourceLocation }
-            : {}),
-         manifestLocation: version.manifestPath,
+      // A failed load names the version's files package-relative, as a
+      // failed reload does, never this server's version folder.
+      return withPackageRelativeErrors(versionPath, async () => {
+         // Read the manifest while the version compiles, and compile it
+         // once: its models hydrate over the database entries, so the bind
+         // below binds them without the reload a bind after a plain load
+         // would run. A read that fails is reported by that bind.
+         const manifest = version.manifestPath
+            ? this.fetchManifestEntriesWithTimeout(version.manifestPath)
+            : undefined;
+         manifest?.catch(() => undefined);
+         const loaded = await Package.create(
+            this.environmentName,
+            packageName,
+            versionPath,
+            () => this.malloyConfig.malloyConfig,
+            false,
+            {
+               versionId: version.versionId,
+               database: manifest?.then(
+                  (fetched) => fetched.tableNameManifest,
+                  () => undefined,
+               ),
+            },
+         );
+         this.attachDestinationServeConfig(loaded);
+         // The version's serving state lives on its registry row, not in its
+         // immutable publisher.json: where it came from, which version it is,
+         // and the manifest it is bound to.
+         loaded.updateStoredMetadata({
+            versionId: version.versionId,
+            ...(version.sourceLocation
+               ? { location: version.sourceLocation }
+               : {}),
+            manifestLocation: version.manifestPath,
+         });
+         // Marked by its row; one whose manifest binds below is marked by
+         // that bind (markHostOwned).
+         if (version.hostOwned) loaded.materialization().markHostOwned();
+         await this.bindManifestIfConfigured(loaded, manifest);
+         await this.rebindServeBindingsFromLocalStore(loaded);
+         return loaded;
       });
-      await this.bindManifestIfConfigured(loaded);
-      await this.rebindServeBindingsFromLocalStore(loaded);
-      return loaded;
    }
 
    /**
@@ -2496,7 +3115,8 @@ export class Environment {
     * version's lock, so two of these never apply out of the order they read
     * in. `read` answers for the version as a reader (see ServingReader);
     * `onlyIfMoved` skips a bind when the store says what this version last
-    * bound from it. A version bound to a host manifest is the host's.
+    * bound from it. A version a host owns ({@link isHostOwned}) is the
+    * host's, bound to its manifest or live.
     *
     * A version whose rebind fails is taken out of service at once: it would
     * otherwise keep a binding the store no longer vouches for, possibly a
@@ -2524,33 +3144,23 @@ export class Environment {
                   versionId,
                   "rebind it from the store",
                   async (pkg): Promise<"done" | "retry"> => {
-                     if (pkg.getPackageMetadata().manifestLocation) {
+                     if (this.isHostOwned(pkg)) {
                         return "done";
                      }
                      try {
                         const entries = await read(servingReaderOf(pkg));
-                        const signature = JSON.stringify(entries);
                         if (
                            options.onlyIfMoved &&
-                           this.storeBindingReads.get(pkg) === signature
+                           this.storeBindingReads.get(pkg) ===
+                              this.splitStoreEntries(pkg, entries, true)
+                                 .signature
                         ) {
                            return "done";
                         }
-                        const { tableNameManifest, storageEntries } =
-                           splitManifestEntries(
-                              entries,
-                              `local store (package ${packageName} version ${versionId})`,
-                           );
-                        if (
-                           Object.keys(tableNameManifest).length > 0 ||
-                           pkg.hasBoundTableNameManifest()
-                        ) {
-                           await pkg.reloadAllModels(tableNameManifest);
-                        }
-                        if (getPersistStorageMode() !== "off") {
-                           pkg.bindStorageServeBindings(storageEntries);
-                        }
-                        this.storeBindingReads.set(pkg, signature);
+                        await this.bindStoreEntries(
+                           pkg,
+                           this.splitStoreEntries(pkg, entries),
+                        );
                         return "done";
                      } catch (error) {
                         if (
@@ -2619,6 +3229,224 @@ export class Environment {
       return "after its build";
    }
 
+   /**
+    * Store entries split by tier, as a bind reads them, with the signature
+    * of what they bind ({@link storeBindingSignature}). `quiet` for a split
+    * that only compares: its skipped entries are logged by the bind, if one
+    * follows.
+    */
+   private splitStoreEntries(
+      pkg: Package,
+      entries: Record<string, ManifestEntry>,
+      quiet = false,
+   ): FetchedManifest & { signature: string } {
+      const packageName = pkg.getPackageName();
+      const versionId = pkg.getVersionId();
+      const { tableNameManifest, storageEntries } = splitManifestEntries(
+         entries,
+         versionId !== undefined
+            ? `local store (package ${packageName} version ${versionId})`
+            : `local store (package ${packageName})`,
+         // From the store, with the key checks its newest run stands behind
+         // (withRollupKeyRecords).
+         "store",
+         { quiet },
+      );
+      return {
+         tableNameManifest,
+         storageEntries,
+         signature: storeBindingSignature(tableNameManifest, storageEntries),
+      };
+   }
+
+   /**
+    * Bind store entries ({@link splitStoreEntries}) to a package bound to no
+    * host manifest: the database ones recompile the models when there is
+    * something to substitute or clear, the `storage=` ones replace the
+    * storage bindings (unless the storage tier is off). A version remembers
+    * what it bound (see storeBindingReads).
+    */
+   private async bindStoreEntries(
+      pkg: Package,
+      {
+         tableNameManifest,
+         storageEntries,
+         signature,
+      }: ReturnType<Environment["splitStoreEntries"]>,
+   ): Promise<boolean> {
+      let reloaded = false;
+      if (
+         Object.keys(tableNameManifest).length > 0 ||
+         pkg.materialization().hasBoundTableNameManifest()
+      ) {
+         await pkg.reloadAllModels(tableNameManifest);
+         reloaded = true;
+      }
+      if (storageWritable(getPersistStorageMode())) {
+         pkg.materialization().bind({ storage: storageEntries });
+      }
+      if (pkg.getVersionId() !== undefined) {
+         this.storeBindingReads.set(pkg, signature);
+      }
+      return reloaded;
+   }
+
+   /**
+    * After its host manifest is cleared, bind what this server's own store
+    * holds for the package (or version), so tables already built here serve
+    * at once; with none, or when the store cannot be read, revert it to
+    * live. A version a host owns ({@link isHostOwned}) always goes live: the
+    * host cleared it to stop serving stored tables, which it may be about to
+    * drop, so what this server's store holds for it is not to be served. An
+    * unversioned package reads the store only where it restores from it on
+    * load ({@link restoreUnversionedFromLocalStore}); elsewhere it goes live,
+    * as it would load. `wasBound`: it served bound tables before the clear.
+    * Says whether the models were recompiled. The caller holds the package's
+    * (or version's) lock.
+    */
+   private async bindLocalStoreOrLive(
+      pkg: Package,
+      wasBound: boolean,
+   ): Promise<boolean> {
+      let entries: Record<string, ManifestEntry> = {};
+      const restores =
+         (pkg.getVersionId() !== undefined && !this.isHostOwned(pkg)) ||
+         (pkg.getVersionId() === undefined &&
+            this.restoreUnversionedFromLocalStore);
+      if (this.storageBindingResolver && restores) {
+         try {
+            entries = await this.storageBindingResolver(
+               pkg.getPackageName(),
+               servingReaderOf(pkg),
+            );
+         } catch (error) {
+            logger.warn(
+               "Could not read the local store after clearing a manifest; serving live",
+               {
+                  packageName: pkg.getPackageName(),
+                  versionId: pkg.getVersionId(),
+                  error: errMessage(error),
+               },
+            );
+         }
+      }
+      if (Object.keys(entries).length > 0) {
+         return this.bindStoreEntries(
+            pkg,
+            this.splitStoreEntries(pkg, entries),
+         );
+      }
+      // Nothing bound now: the binding status still names the manifest that
+      // was (an empty one, or one whose fetch failed), so say live.
+      pkg.materialization().markServingLive();
+      if (!wasBound) return false;
+      // Drop both tiers so nothing still routes to a materialized table.
+      await pkg.reloadAllModels({});
+      pkg.materialization().bind({ storage: {} });
+      return true;
+   }
+
+   /**
+    * Mark a loaded version host-owned, in memory and on its registry row
+    * (which a version being published does not have yet: its publish's
+    * commit records the mark, see VersionHost.hostMarked). A row that cannot
+    * be written is logged: the version is host-owned until it unloads.
+    */
+   private async markHostOwned(pkg: Package): Promise<void> {
+      const versionId = pkg.getVersionId();
+      const mz = pkg.materialization();
+      if (versionId === undefined || mz.isHostOwned()) return;
+      mz.markHostOwned();
+      this.hostOwnedVersionKeys.add(`${pkg.getPackageName()}@${versionId}`);
+      await this.versionService
+         ?.markHostOwned(pkg.getPackageName(), versionId)
+         .catch((error) =>
+            logger.warn("Could not record that a host owns a version", {
+               packageName: pkg.getPackageName(),
+               versionId,
+               error: errMessage(error),
+            }),
+         );
+   }
+
+   /**
+    * A host's instructed run of a version is about to commit: the host owns
+    * the version from now on, as a bind would make it (see isHostOwned).
+    * Under the version's lock, so no load, settle or rebind interleaves: a
+    * loaded copy bound to no manifest that serves what this server's store
+    * holds goes live now, as a clear would leave it.
+    */
+   public async markVersionHostOwned(
+      packageName: string,
+      versionId: string,
+   ): Promise<void> {
+      const versions = this.versionService;
+      if (!versions) return;
+      await this.trackPackageLoad(packageName, () =>
+         versions.withVersionLock(packageName, versionId, async () => {
+            this.hostOwnedVersionKeys.add(`${packageName}@${versionId}`);
+            const loaded = versions.cache.peek(packageName, versionId);
+            if (!loaded) {
+               await versions
+                  .markHostOwned(packageName, versionId)
+                  .catch((error) =>
+                     logger.warn(
+                        "Could not record that a host owns a version",
+                        {
+                           packageName,
+                           versionId,
+                           error: errMessage(error),
+                        },
+                     ),
+                  );
+               return;
+            }
+            await this.markHostOwned(loaded);
+            if (loaded.getManifestLocation()) return;
+            const mz = loaded.materialization();
+            if (
+               mz.hasBoundTableNameManifest() ||
+               mz.hasStorageServeBindings()
+            ) {
+               // Never fails the run before it commits: its tables would
+               // go unrecorded. A copy that does not recompile keeps its
+               // database tables until it next loads, live (host-owned).
+               try {
+                  await loaded.reloadAllModels({});
+               } catch (error) {
+                  logger.warn(
+                     "Could not take a version a host built live; it serves live from its next load",
+                     { packageName, versionId, error: errMessage(error) },
+                  );
+               }
+               mz.bind({ storage: {} });
+            }
+            mz.markServingLive();
+         }),
+      );
+   }
+
+   /**
+    * Whether a host owns the binding of this package: it is bound to a host
+    * manifest now, or it is a version a host has bound (a manifest it named
+    * bound) or built (its instructed run committed) at least once: its
+    * registry row's `hostOwned`, which survives a restart. A host-owned
+    * package never binds this server's own run store: with no manifest it
+    * serves live until the host binds it again. A version a host never bound
+    * or built (standalone, or orchestrated by this server) is not.
+    */
+   public isHostOwned(pkg: Package): boolean {
+      const versionId = pkg.getVersionId();
+      return (
+         Boolean(pkg.getManifestLocation()) ||
+         pkg.materialization().isHostOwned() ||
+         (versionId !== undefined &&
+            this.hostOwnedVersionKeys.has(
+               `${pkg.getPackageName()}@${versionId}`,
+            ))
+      );
+   }
+
    /** Rebind a loaded version to a build manifest, or revert it to live. */
    private async bindVersionManifest(
       loaded: Package,
@@ -2626,29 +3454,27 @@ export class Environment {
    ): Promise<void> {
       const packageName = loaded.getPackageName();
       const wasBound =
-         loaded.hasBoundTableNameManifest() || loaded.hasStorageServeBindings();
-      const previous = loaded.getPackageMetadata().manifestLocation ?? null;
-      loaded.setPackageMetadata({
-         ...loaded.getPackageMetadata(),
-         manifestLocation: manifestPath,
-      });
+         loaded.materialization().hasBoundTableNameManifest() ||
+         loaded.materialization().hasStorageServeBindings();
+      const previous = loaded.getManifestLocation() ?? null;
+      loaded.updateStoredMetadata({ manifestLocation: manifestPath });
       try {
          if (manifestPath) {
             await this.trackPackageLoad(packageName, () =>
                this.bindManifest(loaded, manifestPath),
             );
-         } else if (wasBound) {
-            await this.trackPackageLoad(packageName, async () => {
-               await loaded.reloadAllModels({});
-               loaded.bindStorageServeBindings({});
-            });
+         } else {
+            // Cleared: a host-owned version serves live; another serves what
+            // this server's own store holds for it, at once, else live.
+            // Inline rather than through rebindVersionFromStore, whose
+            // version lock the caller holds.
+            await this.trackPackageLoad(packageName, () =>
+               this.bindLocalStoreOrLive(loaded, wasBound),
+            );
          }
       } catch (error) {
          // The models still use the previous binding, so the metadata says so.
-         loaded.setPackageMetadata({
-            ...loaded.getPackageMetadata(),
-            manifestLocation: previous,
-         });
+         loaded.updateStoredMetadata({ manifestLocation: previous });
          throw error;
       }
    }
@@ -2770,18 +3596,27 @@ export class Environment {
                this.environmentPath,
                packageName,
             );
-            const _package = await Package.create(
-               this.environmentName,
-               packageName,
+            // The load failure is the caller's answer and the package's
+            // status: it names the package's files package-relative, never
+            // where this server keeps them, binding included.
+            const _package = await withPackageRelativeErrors(
                packagePath,
-               () => this.malloyConfig.malloyConfig,
+               async () => {
+                  const created = await Package.create(
+                     this.environmentName,
+                     packageName,
+                     packagePath,
+                     () => this.malloyConfig.malloyConfig,
+                  );
+                  this.attachDestinationServeConfig(created);
+                  await this.commitLoadedPackage(packageName, created, {
+                     bindServeState: true,
+                     replaces: existingPackage,
+                     reportSurfaceChange: true,
+                  });
+                  return created;
+               },
             );
-            this.attachDestinationServeConfig(_package);
-            await this.commitLoadedPackage(packageName, _package, {
-               bindServeState: true,
-               replaces: existingPackage,
-               reportSurfaceChange: true,
-            });
             logger.debug(`Successfully loaded package ${packageName}`);
 
             return _package;
@@ -2833,7 +3668,7 @@ export class Environment {
       }
       if (replaces) {
          this.retireConnectionGeneration(`package ${packageName}`, () =>
-            replaces.getMalloyConfig().shutdown("close"),
+            replaces.releaseConnections(),
          );
          if (options.reportSurfaceChange) {
             pkg.noteSurfaceChangeFrom(replaces.getPackageMetadata().explores);
@@ -3038,11 +3873,14 @@ export class Environment {
          const versionId = options.readVersion
             ? (await readManifestVersion(stagingPath)).versionId
             : undefined;
+         // As the version it would publish, so it is judged as the
+         // versioned publish judges it (a scope: version package names its
+         // tables per version).
          const pkg = await this.loadStagedTree(
             packageName,
             stagingPath,
             options.validate,
-            { dryRun: true },
+            { dryRun: true, ...(versionId !== undefined ? { versionId } : {}) },
          );
          try {
             // Awaited here: a preview compiles against the staged files.
@@ -3104,7 +3942,7 @@ export class Environment {
       packageName: string,
       treePath: string,
       validate: ((pkg: Package) => string | undefined) | undefined,
-      options: { dryRun: boolean },
+      options: { dryRun: boolean; versionId?: string },
    ): Promise<Package> {
       const pkg = await Package.create(
          this.environmentName,
@@ -3114,7 +3952,12 @@ export class Environment {
          // Freshly staged, so a failed load's half-built tree is ours to
          // remove.
          true,
-         { dryRun: options.dryRun },
+         {
+            dryRun: options.dryRun,
+            ...(options.versionId !== undefined
+               ? { versionId: options.versionId }
+               : {}),
+         },
       );
       this.attachDestinationServeConfig(pkg);
       // Publish, update and dry run only (reload passes no validator). A
@@ -3145,7 +3988,7 @@ export class Environment {
       label: string,
    ): Promise<void> {
       try {
-         await pkg.getMalloyConfig().shutdown("close");
+         await pkg.releaseConnections();
       } catch (error) {
          logger.error(`Error releasing the connections of ${label}`, {
             error,
@@ -3267,11 +4110,26 @@ export class Environment {
 
          // Same lock hold: as a separate step, a delete queued behind the
          // swap could run first and the update would 404 for completed work.
+         // The install has committed and is serving, so a metadata update
+         // that fails now (a read-only manifest, a full disk) is logged, not
+         // answered as a failure of the publish that already took effect.
          if (update !== undefined) {
-            await this._updatePackageLocked(packageName, update, {
-               recordLocation: true,
-               regated: true,
-            });
+            try {
+               await this._updatePackageLocked(packageName, update, {
+                  recordLocation: true,
+                  regated: true,
+               });
+            } catch (error) {
+               logger.error(
+                  "The package installed and is serving, but its metadata " +
+                     "update after the install failed",
+                  {
+                     environmentName: this.environmentName,
+                     packageName,
+                     error,
+                  },
+               );
+            }
          }
 
          return newPackage;
@@ -3335,7 +4193,7 @@ export class Environment {
             // released; drained rather than shut down inline because queries
             // that already hold this Package are not covered by the lock.
             this.retireConnectionGeneration(`package ${packageName}`, () =>
-               oldPackage.getMalloyConfig().shutdown("close"),
+               oldPackage.releaseConnections(),
             );
          }
          this.packages.delete(packageName);
@@ -3377,7 +4235,7 @@ export class Environment {
     * Every materialization run lands here, so the recompile (~1.1 MB of RSS
     * never reclaimed) is skipped when there is nothing to substitute now and
     * nothing was before: a `tableName` manifest is resolved at compile time,
-    * and a package that dropped its last colocated entry must still recompile
+    * and a package that dropped its last database entry must still recompile
     * to revert it.
     */
    public async reloadAllModelsForPackage(
@@ -3395,7 +4253,11 @@ export class Environment {
                "reload its models",
                async (pkg) => {
                   const has = Object.keys(manifest).length > 0;
-                  if (!has && !pkg.hasBoundTableNameManifest()) return;
+                  if (
+                     !has &&
+                     !pkg.materialization().hasBoundTableNameManifest()
+                  )
+                     return;
                   await pkg.reloadAllModels(manifest);
                },
             ),
@@ -3411,7 +4273,7 @@ export class Environment {
                );
             }
             const has = Object.keys(manifest).length > 0;
-            const had = pkg.hasBoundTableNameManifest();
+            const had = pkg.materialization().hasBoundTableNameManifest();
             if (!has && !had) return;
             await pkg.reloadAllModels(manifest);
          }),
@@ -3419,111 +4281,193 @@ export class Environment {
    }
 
    /**
-    * Bind a package's `storage=` serve bindings from a build's full manifest
-    * entries, routing those sources through the virtual-source transform.
-    * Best-effort: logged no-op if the package isn't loaded.
+    * Load an auto-run's manifest into the package it built (or that version),
+    * then run `commit`, all under the package's lock (a version's, for a
+    * published version), and say how the load went.
+    *
+    * One lock across the reload, the storage bind and `commit` (the run's move
+    * to MANIFEST_FILE_READY), so no other reload, publish or version load can
+    * slip between them: one that waits on the lock reads the store after the
+    * run is MANIFEST_FILE_READY, so it binds this run's manifest, never the
+    * one before it. A version that is not loaded binds from the store when
+    * it next loads, which is after `commit`, so it counts as loaded, unless
+    * its registry row says a host owns it.
+    *
+    * A package or version bound to a host manifest (`manifestLocation`),
+    * or a version a host owns ({@link isHostOwned}), serves the host's
+    * tables or live: the run's entries, neither tier, are applied to it.
+    * Creating such a run is refused up front (409); this holds when a
+    * manifest is bound while one runs. The run still commits its rows, and
+    * says it was not served, as one whose bind did not take does.
     */
-   public async bindPackageStorageServeBindings(
-      packageName: string,
-      entries: Record<string, ManifestEntry>,
-      // A published version of the package; undefined, its unversioned slot.
-      versionId?: string,
-   ): Promise<void> {
+   public async loadRunManifest(params: {
+      packageName: string;
+      versionId?: string;
+      /** The database entries, compiled in as the build manifest. */
+      database: FreshnessManifest;
+      /** The full entries, of which the `storage=` ones are bound. */
+      storage: Record<string, ManifestEntry>;
+      commit: (outcome: RunManifestLoad) => Promise<void>;
+   }): Promise<RunManifestLoad> {
+      const { packageName, versionId } = params;
       assertSafePackageName(packageName);
-      if (versionId !== undefined) {
-         await this.withLoadedVersion(
-            packageName,
-            versionId,
-            "bind storage serve bindings",
-            async (pkg) => {
-               // Host-authoritative, as below.
-               if (pkg.getPackageMetadata().manifestLocation) return;
-               pkg.bindStorageServeBindings(entries);
-            },
-         );
-         return;
-      }
-      return this.withPackageLock(packageName, async () => {
-         const pkg = this.packages.get(packageName);
+      const load = async (
+         pkg: Package | undefined,
+      ): Promise<RunManifestLoad> => {
          if (!pkg) {
-            logger.warn(
-               "Cannot bind storage serve bindings: package not loaded",
-               { packageName },
-            );
-            return;
+            if (versionId !== undefined) {
+               // Not loaded: it binds from the store when it next loads,
+               // unless a host owns it, when this run's tables never serve.
+               const row = await this.versionService
+                  ?.getVersion(packageName, versionId)
+                  .catch(() => undefined);
+               if (row?.manifestPath || row?.hostOwned) {
+                  return {
+                     loaded: false,
+                     step: "bind",
+                     error:
+                        "a host owns this version (it is bound to a host " +
+                        "manifest, or was bound or built by a host): it " +
+                        "serves the host's manifest or live, so this run's " +
+                        "tables are not served",
+                  };
+               }
+               return { loaded: true };
+            }
+            return {
+               loaded: false,
+               step: "reload",
+               error: `Package ${packageName} is not loaded`,
+            };
          }
-         // With a manifestLocation the host is authoritative; this local-store
-         // path would clobber its bindings with a possibly staler generation.
-         if (pkg.getPackageMetadata().manifestLocation) {
-            logger.debug(
-               "Skipping local-store storage serve binding: manifestLocation " +
-                  "is bound (host authoritative)",
-               { packageName },
-            );
-            return;
+         // With a manifestLocation the host is authoritative, for both tiers.
+         const manifestLocation = pkg.getManifestLocation();
+         if (manifestLocation) {
+            return {
+               loaded: false,
+               step: "bind",
+               error:
+                  `bound to a host manifest (${manifestLocation}) while the ` +
+                  `run built: its tables are served from that manifest, so ` +
+                  `this run's tables are not served`,
+            };
          }
-         pkg.bindStorageServeBindings(entries);
-      });
+         // A version a host owns with no manifest serves live until the
+         // host binds it again.
+         if (this.isHostOwned(pkg)) {
+            return {
+               loaded: false,
+               step: "bind",
+               error:
+                  `bound by a host while the run built: a version a host ` +
+                  `has bound serves the host's manifest or live, so this ` +
+                  `run's tables are not served`,
+            };
+         }
+         try {
+            const has = Object.keys(params.database).length > 0;
+            if (has || pkg.materialization().hasBoundTableNameManifest()) {
+               await pkg.reloadAllModels(params.database);
+            }
+         } catch (err) {
+            return { loaded: false, step: "reload", error: errMessage(err) };
+         }
+         try {
+            pkg.materialization().bind({ storage: params.storage });
+         } catch (err) {
+            return { loaded: false, step: "bind", error: errMessage(err) };
+         }
+         if (versionId !== undefined) {
+            // What the version now binds is the run's, which the store reads
+            // back once `commit` makes it MANIFEST_FILE_READY: so the run's
+            // rebind of its own version (rebindOwnVersionIfMoved) finds it
+            // unmoved and binds nothing again, while a store another process
+            // moved since still differs.
+            this.storeBindingReads.set(
+               pkg,
+               storeBindingSignature(
+                  params.database,
+                  splitManifestEntries(
+                     params.storage,
+                     `run (package ${packageName} version ${versionId})`,
+                     "store",
+                     // Compared, not bound: the load bound these above.
+                     { quiet: true },
+                  ).storageEntries,
+               ),
+            );
+         }
+         return { loaded: true };
+      };
+      const loadAndCommit = async (pkg: Package | undefined) => {
+         const outcome = await load(pkg);
+         await params.commit(outcome);
+         return outcome;
+      };
+      if (versionId !== undefined) {
+         const versions = this.versionService;
+         if (!versions) return loadAndCommit(undefined);
+         return this.trackPackageLoad(packageName, () =>
+            versions.withVersionLock(packageName, versionId, () =>
+               loadAndCommit(versions.cache.peek(packageName, versionId)),
+            ),
+         );
+      }
+      return this.trackPackageLoad(packageName, () =>
+         this.withPackageLock(packageName, () =>
+            loadAndCommit(this.packages.get(packageName)),
+         ),
+      );
    }
 
    /**
-    * The colocated analogue of {@link bindPackageStorageServeBindings}, used by
-    * the post-delete rebind so a reclaimed table is not left routed. An empty
-    * manifest reverts to live; skipped under a `manifestLocation`.
-    *
-    * Unlike the load-time rebind's per-query overlay, these models have the
-    * substitution baked in by a build's auto-load, so this must recompile —
-    * skipped when there is nothing to substitute or clear.
+    * Rebind an unversioned package from the store: `read` answers what the
+    * store says it serves, and is called under the package's lock, which
+    * the bind holds too, so nothing created under the same lock (a load, a
+    * reload, an unversioned run's start) lands between the read and the
+    * bind. The database entries recompile the models when there is
+    * something to substitute or clear (a build's auto-load baked the
+    * substitution in); the `storage=` entries, when `read` returns them,
+    * replace the storage bindings, empty reverting to live. Used after a
+    * run and after a delete, so a reclaimed table is not left routed.
+    * Skipped under a `manifestLocation` (the host is authoritative), and a
+    * logged no-op when the package is not loaded.
     */
-   public async bindPackageColocatedServeManifest(
+   public async rebindPackageFromStore(
       packageName: string,
-      entries: FreshnessManifest,
-      // A published version of the package; undefined, its unversioned slot.
-      versionId?: string,
+      read: () => Promise<{
+         database: FreshnessManifest;
+         storage?: Record<string, ManifestEntry>;
+      }>,
    ): Promise<void> {
       assertSafePackageName(packageName);
-      if (versionId !== undefined) {
-         await this.trackPackageLoad(packageName, () =>
-            this.withLoadedVersion(
-               packageName,
-               versionId,
-               "bind a colocated serve manifest",
-               async (pkg) => {
-                  // Host-authoritative, as below.
-                  if (pkg.getPackageMetadata().manifestLocation) return;
-                  const hasColocated = Object.keys(entries).length > 0;
-                  if (hasColocated || pkg.hasBoundTableNameManifest()) {
-                     await pkg.reloadAllModels(entries);
-                  }
-               },
-            ),
-         );
-         return;
-      }
       // A recompile, so reported as loading while it runs (see trackPackageLoad).
       return this.trackPackageLoad(packageName, () =>
          this.withPackageLock(packageName, async () => {
             const pkg = this.packages.get(packageName);
             if (!pkg) {
                logger.warn(
-                  "Cannot bind colocated serve manifest: package not loaded",
+                  "Cannot rebind serve bindings from the store: package not loaded",
                   { packageName },
                );
                return;
             }
-            if (pkg.getPackageMetadata().manifestLocation) {
+            if (pkg.getManifestLocation()) {
                logger.debug(
-                  "Skipping local-store colocated serve binding: manifestLocation " +
-                     "is bound (host authoritative)",
+                  "Skipping local-store serve binding: manifestLocation is " +
+                     "bound (host authoritative)",
                   { packageName },
                );
                return;
             }
-            const hasColocated = Object.keys(entries).length > 0;
-            const hadColocated = pkg.hasBoundTableNameManifest();
-            if (hasColocated || hadColocated) {
-               await pkg.reloadAllModels(entries);
+            const { database, storage } = await read();
+            if (
+               Object.keys(database).length > 0 ||
+               pkg.materialization().hasBoundTableNameManifest()
+            ) {
+               await pkg.reloadAllModels(database);
             }
+            if (storage) pkg.materialization().bind({ storage: storage });
          }),
       );
    }
@@ -3531,65 +4475,83 @@ export class Environment {
    /**
     * If the package declares a `manifestLocation`, fetch the host's build
     * manifest and bind it. Best-effort: a failure leaves it serving live.
-    * Caller holds the package lock.
+    * Caller holds the package lock. `fetched`: that manifest, already being
+    * read by the caller.
     */
-   private async bindManifestIfConfigured(pkg: Package): Promise<void> {
-      const manifestLocation = pkg.getPackageMetadata().manifestLocation;
+   private async bindManifestIfConfigured(
+      pkg: Package,
+      fetched?: Promise<FetchedManifest>,
+   ): Promise<void> {
+      const manifestLocation = pkg.getManifestLocation();
       if (!manifestLocation) {
          return;
       }
-      await this.bindManifest(pkg, manifestLocation);
+      await this.bindManifest(pkg, manifestLocation, "if-changed", fetched);
    }
 
-   /** Fetch + bind a specific manifest URI onto an already-loaded package. */
+   /**
+    * Fetch + bind a specific manifest URI onto an already-loaded package.
+    * Re-binding the manifest the models were last compiled with recompiles
+    * nothing, unless `recompile` is `always`: a PATCH, whose reload also
+    * re-reads the publisher.json it just wrote.
+    */
    private async bindManifest(
       pkg: Package,
       manifestLocation: string,
+      recompile: "always" | "if-changed" = "if-changed",
+      /** `manifestLocation`'s manifest, already being read by the caller. */
+      fetched?: Promise<FetchedManifest>,
    ): Promise<void> {
       const packageName = pkg.getPackageName();
       try {
          // Timed out to live, since binding runs before the package serves.
-         const { tableNameManifest, storageEntries } =
-            await this.fetchManifestEntriesWithTimeout(manifestLocation);
+         const { tableNameManifest, storageEntries } = await (fetched ??
+            this.fetchManifestEntriesWithTimeout(manifestLocation));
 
          // Storage entries bind without a recompile. Bind when there are any
          // or were any, so vanished entries drop their old bindings. Take both
          // `had*` reads before either tier applies, since each bind overwrites
          // what its guard reads.
          const hasStorage = Object.keys(storageEntries).length > 0;
-         const hadStorage = pkg.hasStorageServeBindings();
+         const hadStorage = pkg.materialization().hasStorageServeBindings();
 
-         // Colocated substitution is resolved at compile time, so it needs a
+         // Database substitution is resolved at compile time, so it needs a
          // recompile, skipped when there is nothing to substitute or clear.
-         const hasColocated = Object.keys(tableNameManifest).length > 0;
-         const hadColocated = pkg.hasBoundTableNameManifest();
+         const hasDatabase = Object.keys(tableNameManifest).length > 0;
+         const hadDatabase = pkg.materialization().hasBoundTableNameManifest();
 
          // Recompile first: it is the only step that can throw, and the catch
          // reports "no manifest applied", which would be false if the new
          // storage bindings were already routing.
-         if (hasColocated || hadColocated) {
-            await pkg.reloadAllModels(tableNameManifest);
-         }
+         const recompiled =
+            (hasDatabase || hadDatabase) &&
+            (await pkg.reloadAllModels(tableNameManifest, {
+               ifChanged: recompile === "if-changed",
+            }));
 
          if (hasStorage || hadStorage) {
-            pkg.bindStorageServeBindings(storageEntries);
+            pkg.materialization().bind({ storage: storageEntries });
          }
 
          // Unconditionally bound, even for a manifest that binds nothing:
          // reporting `unbound` would be permanent drift to a caller that
          // rebinds on anything but `bound`. Entry counts distinguish empty.
-         pkg.markManifestBound(manifestLocation);
+         pkg.materialization().markManifestBound(manifestLocation);
          recordManifestBind("success");
+         // A host manifest bound: the host owns the version from now on.
+         // Only here, so a manifest that never binds (a mistyped URL) marks
+         // nothing.
+         await this.markHostOwned(pkg);
          logger.info("Bound build manifest to package", {
             environmentName: this.environmentName,
             packageName,
             manifestLocation,
             tableNameEntryCount: Object.keys(tableNameManifest).length,
             storageEntryCount: Object.keys(storageEntries).length,
-            recompiled: hasColocated || hadColocated,
+            recompiled,
          });
       } catch (err) {
-         pkg.markManifestBindFailed();
+         pkg.materialization().markManifestBindFailed();
          const timedOut =
             err instanceof Error && err.message.includes("Timed out after");
          recordManifestBind(timedOut ? "timeout" : "failure");
@@ -3655,12 +4617,28 @@ export class Environment {
    ): Promise<void> {
       const packagePath = safeJoinUnderRoot(this.environmentPath, packageName);
       const manifestPath = safeJoinUnderRoot(packagePath, "publisher.json");
+      // Where the write lands, settled before anything is written: inside
+      // the package. A manifest that is a link out of it is not written; one
+      // that is a link inside it is replaced by the file itself (the rename
+      // below replaces the link, never writes through it).
+      try {
+         await confinedPackagePath(packagePath, pathToFileURL(manifestPath));
+      } catch (error) {
+         if (!(error instanceof ImportOutsidePackageError)) throw error;
+         throw new BadRequestError(
+            `The package's publisher.json leads outside the package, so ` +
+               `Publisher does not write it. Replace it with the file itself.`,
+         );
+      }
 
       try {
          let existingManifest: Record<string, unknown> = {};
+         let existingRead = false;
          try {
-            const content = await fs.promises.readFile(manifestPath, "utf-8");
-            existingManifest = JSON.parse(content);
+            existingManifest = JSON.parse(
+               await readPackageURL(packagePath, pathToFileURL(manifestPath)),
+            );
+            existingRead = true;
          } catch (_err) {
             logger.warn(`Could not read manifest for ${packageName}`);
          }
@@ -3670,14 +4648,10 @@ export class Environment {
             metadata,
          );
 
-         await fs.promises.writeFile(
-            manifestPath,
-            JSON.stringify(updatedManifest, null, 2),
-            "utf-8",
-         );
          // Recorded outside the package directory so nothing the package's
          // content carries is ever read as its install location. Never
-         // cleared from here.
+         // cleared from here. Written before the manifest, so a manifest that
+         // cannot be written does not lose it.
          if (metadata.location !== undefined && metadata.location !== "") {
             const recordPath = this.installRecordPath(packageName);
             await fs.promises.mkdir(path.dirname(recordPath), {
@@ -3690,6 +4664,39 @@ export class Environment {
             );
          }
 
+         // An update that changes nothing in the manifest (an install that
+         // only records its location) leaves the file alone, so it cannot
+         // fail after the install has committed.
+         if (
+            !existingRead ||
+            !isDeepStrictEqual(existingManifest, updatedManifest)
+         ) {
+            // The rename below would replace a file its mode says not to
+            // write; a read-only manifest is refused with its errno.
+            await fs.promises
+               .access(manifestPath, fs.constants.W_OK)
+               .catch((error: NodeJS.ErrnoException) => {
+                  if (error.code !== "ENOENT") throw error;
+               });
+            // A temporary file beside it, renamed over it: the rename
+            // replaces whatever is at the path, a link included, rather than
+            // writing through it.
+            const temporary = path.join(
+               packagePath,
+               `.publisher.json.${crypto.randomUUID()}.tmp`,
+            );
+            try {
+               await fs.promises.writeFile(
+                  temporary,
+                  JSON.stringify(updatedManifest, null, 2),
+                  { encoding: "utf-8", flag: "wx" },
+               );
+               await fs.promises.rename(temporary, manifestPath);
+            } catch (error) {
+               await fs.promises.rm(temporary, { force: true }).catch(() => {});
+               throw error;
+            }
+         }
          logger.info(`Updated publisher.json for ${packageName}`);
       } catch (error) {
          logger.error(`Failed to update publisher.json`, { error });
@@ -3714,12 +4721,20 @@ export class Environment {
       // would land on the copy about to be swapped away. Wait for loads in
       // flight and apply to whatever is resident afterwards (or 404).
       await this.awaitPackageLoads(packageName);
-      return this.withPackageLock(packageName, () =>
-         this._updatePackageLocked(packageName, body, {
-            recordLocation: false,
-            admit: options.admit,
-         }),
-      );
+      return this.withPackageLock(packageName, async () => {
+         try {
+            return await this._updatePackageLocked(packageName, body, {
+               recordLocation: false,
+               admit: options.admit,
+            });
+         } finally {
+            // The PATCH changed the resident copy in place: /status reads it.
+            this.settleStatusSnapshot(
+               packageName,
+               this.packages.get(packageName),
+            );
+         }
+      });
    }
 
    /**
@@ -3871,24 +4886,28 @@ export class Environment {
             : undefined,
       });
 
-      // Apply a manifestLocation change now: a URI rebinds, null/empty
-      // reverts to live.
-      const revertsBinding =
-         body.manifestLocation !== undefined &&
-         !body.manifestLocation &&
-         (_package.hasBoundTableNameManifest() ||
-            _package.hasStorageServeBindings());
+      // Apply a manifestLocation change now: a URI rebinds, null/empty binds
+      // what this server's own store holds, else reverts to live.
+      const clears =
+         body.manifestLocation !== undefined && !body.manifestLocation;
       if (body.manifestLocation) {
          // May recompile, so reported as loading.
          await this.trackPackageLoad(packageName, () =>
-            this.bindManifest(_package, body.manifestLocation as string),
+            this.bindManifest(
+               _package,
+               body.manifestLocation as string,
+               "always",
+            ),
          );
-      } else if (revertsBinding) {
-         // Drop both tiers so nothing still routes to a materialized table.
-         await this.trackPackageLoad(packageName, async () => {
-            await _package.reloadAllModels({});
-            _package.bindStorageServeBindings({});
-         });
+      } else if (clears) {
+         const wasBound =
+            _package.materialization().hasBoundTableNameManifest() ||
+            _package.materialization().hasStorageServeBindings();
+         // May recompile (which relints), so reported as loading.
+         const recompiled = await this.trackPackageLoad(packageName, () =>
+            this.bindLocalStoreOrLive(_package, wasBound),
+         );
+         if (!recompiled) await _package.relintReports();
       } else {
          // The surface may have changed with no file changing.
          await _package.relintReports();
@@ -4103,7 +5122,7 @@ export class Environment {
 
    /** Every change to a package's phase or problems goes through here. */
    private transition(packageName: string, event: PackageLifecycleEvent): void {
-      this.lifecycle.apply(packageName, event);
+      this.lifecycle.apply(packageName, callerVisibleEvent(event));
    }
 
    public async deletePackage(
@@ -4162,6 +5181,11 @@ export class Environment {
             }
             if (versioned && this.versionService) {
                this.versionService.forgetPackage(packageName);
+               // Its rows went with removeRecords (or before this was called).
+               // Until this read lands, /status still lists the versions, as
+               // not loaded: the window between a row's write and its read
+               // that every version write has.
+               await this.refreshStatusVersions(packageName);
                await new VersionStore(this.environmentPath).removePackage(
                   packageName,
                );
@@ -4204,7 +5228,7 @@ export class Environment {
 
          // Drained so in-flight queries finish before the handle is released.
          this.retireConnectionGeneration(`package ${packageName}`, () =>
-            _package.getMalloyConfig().shutdown("close"),
+            _package.releaseConnections(),
          );
 
          const retiredPath = await this.retirePackageDirectory(packageName);
@@ -4297,7 +5321,7 @@ export class Environment {
          }
          this.transition(packageName, { type: "beginUnload" });
          this.retireConnectionGeneration(`package ${packageName}`, () =>
-            _package.getMalloyConfig().shutdown("close"),
+            _package.releaseConnections(),
          );
          // Eviction and clearing a recorded failure belong together.
          this.clearPackageLoadFailure(packageName);
@@ -4315,6 +5339,7 @@ export class Environment {
       this.malloyConfig = malloyConfig;
       const previousConnections = this.apiConnections;
       this.apiConnections = malloyConfig.apiConnections;
+      this.warnOnDestinationOverlap();
       if (previousMalloyConfig !== malloyConfig) {
          this.refreshBuildPlans(
             changedConnectionNames(previousConnections, this.apiConnections),
@@ -4386,13 +5411,16 @@ export class Environment {
    }
 
    public async closeAllConnections(): Promise<void> {
+      // A closed (deleted) environment stops re-reading version rows, so no
+      // timer keeps it alive.
+      this.closed = true;
       this.cancelPlanRefreshes();
+      clearTimeout(this.statusVersionsRetry);
+      this.statusVersionsRetry = undefined;
       // Package configs (each with its own sandbox `duckdb`) first, or hard
       // unload leaks their handles.
       const packageReleases = await Promise.allSettled(
-         Array.from(this.packages.values(), (pkg) =>
-            pkg.getMalloyConfig().shutdown("close"),
-         ),
+         Array.from(this.packages.values(), (pkg) => pkg.releaseConnections()),
       );
       for (const result of packageReleases) {
          if (result.status === "rejected") {
@@ -4530,16 +5558,43 @@ export function extractPreambleFromSource(content: string): string {
  * not loaded or materializes nothing.
  */
 function servingVerdicts(pkg: Package | undefined): {
-   serveVerdicts?: ReturnType<Package["getServeVerdicts"]>;
+   serveVerdicts?: ReturnType<PackageMaterialization["serveVerdicts"]>;
 } {
    if (!pkg) return {};
    try {
-      const verdicts = pkg.getServeVerdicts();
+      const verdicts = pkg.materialization().serveVerdicts();
       return verdicts.length > 0 ? { serveVerdicts: verdicts } : {};
    } catch (error) {
       logger.warn("Could not compute serve verdicts", {
          error: error instanceof Error ? error.message : String(error),
       });
       return {};
+   }
+}
+
+/**
+ * `event` with the message it records (a load, mount or stale-reload error,
+ * read back by /status `loadErrors`, MCP `get_status` and `list_packages`)
+ * naming no server path. A load error is already package-relative; this is
+ * the backstop for every other record, such as a configured location that
+ * did not mount.
+ */
+function callerVisibleEvent(
+   event: PackageLifecycleEvent,
+): PackageLifecycleEvent {
+   switch (event.type) {
+      case "recordLoadError":
+      case "recordMountError":
+         return { ...event, message: withoutAbsolutePaths(event.message) };
+      case "reloadFailed":
+         return {
+            ...event,
+            stale: {
+               ...event.stale,
+               message: withoutAbsolutePaths(event.stale.message),
+            },
+         };
+      default:
+         return event;
    }
 }

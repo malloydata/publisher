@@ -29,6 +29,7 @@ import {
    optionalBooleanParam,
    queryVersionRefOf,
    assertNoCollectionReload,
+   assertNoDropTables,
    versionRefOf,
 } from "../route_params";
 import { processStorageDestinationsOrThrow } from "../service/connection_config";
@@ -956,15 +957,48 @@ function registerMaterializationRoutes(
          );
       }),
    );
+   // A guarded drop of one table a run of the package built on one of its
+   // connections; MaterializationService.dropMaterializedTable decides it.
+   // On the package's connections, not under a run: the run's record may be
+   // gone already. No legacy /projects alias.
+   app.delete(
+      `${pkg}/connections/:connectionName/materializedTables/:tableName`,
+      apiRoute(async (req, res) => {
+         const materializationId = req.query.materializationId;
+         if (
+            materializationId !== undefined &&
+            (typeof materializationId !== "string" || materializationId === "")
+         ) {
+            throw new BadRequestError(
+               `Invalid materializationId ${JSON.stringify(materializationId)}: ` +
+                  `expected one run id. Fix: ${req.method} ${req.path}` +
+                  `?materializationId=<id>, or omit it.`,
+            );
+         }
+         await materializationController.dropMaterializedTable(
+            req.params.environmentName,
+            req.params.packageName,
+            req.params.connectionName,
+            req.params.tableName,
+            {
+               ...(materializationId !== undefined
+                  ? { materializationId }
+                  : {}),
+               versionId: versionRefOf(req),
+            },
+         );
+         res.status(204).send();
+      }),
+   );
    app.delete(
       materialization,
       apiRoute(async (req, res) => {
-         const dropTables = booleanParam(req, "dropTables");
+         assertNoDropTables(req);
          await materializationController.deleteMaterialization(
             req.params.environmentName,
             req.params.packageName,
             req.params.materializationId,
-            { dropTables, versionId: versionRefOf(req) },
+            { versionId: versionRefOf(req) },
          );
          res.status(204).send();
       }),

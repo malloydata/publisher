@@ -112,13 +112,41 @@ describe("Materialization Commands", () => {
       }),
     } as unknown as PublisherClient;
 
-    await materializationCommands.materialize(mockClient, "env", "pkg", {
-      wait: true,
-      pollIntervalMs: 1,
-      timeoutMs: 1000,
-    });
+    const code = await materializationCommands.materialize(
+      mockClient,
+      "env",
+      "pkg",
+      { wait: true, pollIntervalMs: 1, timeoutMs: 1000 },
+    );
 
+    expect(code).toBe(0);
     expect(calls).toBeGreaterThanOrEqual(3);
+  });
+
+  test("materialize with wait exits 2 when the run built but its manifest did not load", async () => {
+    const mockClient = {
+      createMaterialization: mock(() =>
+        Promise.resolve({ id: "m1", status: "PENDING" }),
+      ),
+      getMaterialization: mock(() =>
+        Promise.resolve({
+          id: "m1",
+          status: "MANIFEST_FILE_READY",
+          metadata: { autoLoad: "failed", autoLoadError: "does not compile" },
+        }),
+      ),
+    } as unknown as PublisherClient;
+    // The command returns the code rather than setting process.exitCode: a
+    // test that sets it cannot put it back under Bun, which ignores
+    // `process.exitCode = undefined`, so the whole run would exit 2.
+    const code = await materializationCommands.materialize(
+      mockClient,
+      "env",
+      "pkg",
+      { wait: true, pollIntervalMs: 1, timeoutMs: 1000 },
+    );
+    expect(code).toBe(materializationCommands.BUILT_NOT_SERVED_EXIT_CODE);
+    expect(process.exitCode).toBeFalsy();
   });
 
   test("materialize with wait throws on a FAILED build (non-zero exit)", async () => {
@@ -138,6 +166,28 @@ describe("Materialization Commands", () => {
         timeoutMs: 1000,
       }),
     ).rejects.toThrow(/FAILED/);
+  });
+
+  test("materialize with wait throws when a host-bound package refuses the run (409)", async () => {
+    const mockClient = {
+      createMaterialization: mock(() =>
+        Promise.reject(
+          new Error(
+            "409: this package's tables are served from a host manifest; a local run would build tables it cannot serve",
+          ),
+        ),
+      ),
+      getMaterialization: mock(() => Promise.resolve({})),
+    } as unknown as PublisherClient;
+
+    await expect(
+      materializationCommands.materialize(mockClient, "env", "pkg", {
+        wait: true,
+        pollIntervalMs: 1,
+        timeoutMs: 1000,
+      }),
+    ).rejects.toThrow(/host manifest/);
+    expect(mockClient.getMaterialization).not.toHaveBeenCalled();
   });
 
   test("stopMaterialization calls action stop", async () => {
@@ -178,28 +228,6 @@ describe("Materialization Commands", () => {
       "env",
       "pkg",
       "m1",
-      undefined,
-    );
-  });
-
-  test("deleteMaterialization forwards dropTables", async () => {
-    const mockClient = {
-      deleteMaterialization: mock(() => Promise.resolve()),
-    } as unknown as PublisherClient;
-
-    await materializationCommands.deleteMaterialization(
-      mockClient,
-      "env",
-      "pkg",
-      "m1",
-      true,
-    );
-
-    expect(mockClient.deleteMaterialization).toHaveBeenCalledWith(
-      "env",
-      "pkg",
-      "m1",
-      true,
     );
   });
 });

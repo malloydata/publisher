@@ -13,6 +13,9 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "monthly@<pkg>/m.malloy": "persist"
+    },
     "materializePlans": {},
     "rollupPlans": {},
     "sourceGateOutcomes": {
@@ -40,6 +43,8 @@
         ]
       }
     ],
+    "omittedFiles": [],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "monthly@<pkg>/m.malloy": {

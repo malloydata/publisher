@@ -2,8 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * The re-root rewriter: the served copy of an author's model file
- * (materialization v2, phase 3).
+ * The re-root rewriter: the served copy of an author's model file.
  *
  * The served copy IS the author's file, served in memory in place of the file
  * on disk, with each persisted source that has a stored table re-rooted on it:
@@ -40,38 +39,38 @@ import {
    nowComparison,
    stringLiteral,
 } from "../../malloy_text";
-import { noteSource } from "../field_notes";
-import type { MaterializeReadTimeTerm } from "../plan/build_file_generator";
-import {
-   duckdbTypeToMalloy,
-   duckdbTypeToMalloyType,
-} from "./materialization_serve_transform";
+import { noteSource } from "../text/field_notes";
+import type { MaterializeReadTimeTerm } from "../domain/read_time_terms";
+import { storedMalloyType } from "../stored_column_types";
+
+export { storedMalloyType };
 import {
    declarationSpans,
    declaredBaseName,
    dropDimensions,
+   dropExceptItems,
+   hiddenIncludeNames,
    inverseRenameBlocks,
    inverselyRenamedColumns,
    rewriteDimensions,
-} from "../declaration_text";
+} from "../text/declaration_text";
 import {
    isName,
    lexAll,
    offsetOf,
    statementHead,
    statementStarts,
-} from "../malloy_lexer";
+} from "../text/malloy_lexer";
 import {
    dropJoinDefinition,
    inlinedJoinRenames,
    inlinedJoinStatements,
    intoFirstExtend,
    labelledRenames,
-   renameAccess,
    renameBlock,
    TIMEFRAMES,
    type GeneratedRename,
-} from "../inlined_join_text";
+} from "../text/inlined_join_text";
 
 export {
    declarationSpans,
@@ -103,8 +102,16 @@ export interface Reroot {
    /** The `type:` the virtual source is declared as; unique in the file. */
    typeName: string;
    /**
+    * The zone the author's source computes in, its own or one it inherits
+    * from a base (its `queryTimezone`). The re-root replaces that base with
+    * the stored table, so it writes the zone again, ahead of the source's own
+    * blocks, which can still set theirs; without it the copy would compute
+    * every query on the source in the default zone.
+    */
+   zone?: string;
+   /**
     * The stored table's columns, under the author's spelling (a hidden one
-    * with its access modifier, P3), each with
+    * with its access modifier), each with
     * the annotation lines its field carries (`#(doc) "…"`, `#(classification)
     * …`), written on the field in the `type:` so they read back on it.
     */
@@ -130,23 +137,22 @@ export interface Reroot {
     * current-time term inherited from a base is not in the source's own text,
     * so the re-root writes it right on the stored table (one the source's own
     * `extend` repeats is applied twice, which is harmless). A given-reading
-    * term is kept as the author wrote it, in the source's own blocks or a
-    * base's kept block ({@link keptBlocks}).
+    * term is kept as the author wrote it, in the source's own blocks: one
+    * written anywhere else refuses the source at plan.
     */
    readTimeTerms?: readonly MaterializeReadTimeTerm[];
    /**
     * The trailing `extend` runs of the bases the source is built from in this
     * file, root first, as their own declarations wrote them
-    * (kept_ancestors.ts). For an extension table (P10), whose table holds
-    * every one of their rows and stored columns, and for a source whose plan
-    * left out a base's given-reading `where:` or caller-dependent dimension
-    * (`keptBases`), which only that base's block re-applies at read. The
-    * re-root keeps their blocks ahead of its own, and their measures, joins
-    * and views stay the source's.
+    * (kept_ancestors.ts). For an extension table, whose table holds
+    * every one of their rows and stored columns, and for a source whose bases
+    * declare a measure, view or join it inherits. The re-root keeps their
+    * blocks ahead of its own, and their measures, joins and views stay the
+    * source's.
     */
    keptBlocks?: string;
    /**
-    * A v1 query-shaped source's re-root under the cutover (review F3): the
+    * A v1 query-shaped source's re-root: the
     * run it keeps is everything after its query, `include { … }` blocks
     * included, so the author's own `rename:`, `except:` and access
     * modifiers apply to the stored columns as they applied to the query's
@@ -154,8 +160,32 @@ export interface Reroot {
     */
    keepsIncludes?: true;
    /**
+    * An `except:` item naming no stored column (no build stores a column its
+    * source drops) is deleted from the kept text, ancestors' kept blocks
+    * included, since the re-rooted source has nothing of that name to
+    * exclude and Malloy refuses the statement (`dropExceptItems`). Set on
+    * every re-root; an item naming a stored column is kept.
+    */
+   dropsUnstoredExcepts?: true;
+   /**
+    * With {@link keepsIncludes}: the query's own output names, under which a
+    * v1 query-shaped table stores its columns. The kept `rename:`s read
+    * those names as written, so no column stored under one is renamed back
+    * first, even when a rename's new name is also an output name (a swap,
+    * `rename: n is total; rename: total is n` by way of a third name).
+    */
+   outputNames?: readonly string[];
+   /**
+    * A v1 `#@ persist` source declared by refinement alone (`high_value is
+    * raw extend { where: … }`) whose base chain carries no filter and no
+    * gate: its table holds its root's rows, so re-rooting it with its own
+    * `extend` run kept (its `where:` applied again) loses nothing. Without
+    * it such a declaration is left as written (`not_query_shaped`).
+    */
+   refinementRooted?: true;
+   /**
     * For a `#(materialize)` source that inlines a join_many: its stored table
-    * is a pair table (P5), read as the source itself with no join
+    * is a pair table, read as the source itself with no join
     * ({@link PairReroot}).
     */
    pair?: PairReroot;
@@ -167,7 +197,7 @@ export interface Reroot {
    inlinedJoins?: readonly InlinedJoin[];
    /**
     * The hidden dimensions the kept text defines, computed at read rather
-    * than read from a stored column (set by the rewriter, P3). A rolling
+    * than read from a stored column (set by the rewriter). A rolling
     * window over one cannot be written on the stored table, where it is not
     * yet defined: the kept text's own `where:` applies it
     * ({@link ServedCopySpan.termsKeptAsWritten}).
@@ -176,13 +206,17 @@ export interface Reroot {
 }
 
 /**
- * How the served copy reads a pair table (an inlined join_many, P5): as the
+ * How the served copy reads a pair table (an inlined join_many): as the
  * source itself, one row per row of live's LEFT JOIN, with no join at read.
  * The join's name is a record of the joined source's stored columns, so
  * `<join>.<field>` reads the column on the same row; the join_many statement
  * is replaced by that record. Each measure over the source's own fields is
  * re-declared to aggregate only the rows the parent-row flag marks (one per
- * parent), and an aggregate through the join reads every row, as live's does.
+ * parent), and an aggregate through the join reads every row. Live reads
+ * every row for a `min` or `max`, but (Malloy 0.0.438 on) skips a
+ * childless parent's null-extended row for a `count()`, `sum` or `avg`, so a
+ * measure through the join that would read that row is re-declared under the
+ * level's presence field ({@link PairReroot.levelPresent}).
  * The stored flag and child columns are renamed internally, so no query reads
  * them. What the record cannot carry (the joined source's measures and views,
  * its fields' annotations) is not in the served source; a query that needs it
@@ -234,13 +268,35 @@ export interface PairReroot {
     */
    oneParentLevels?: readonly number[];
    /**
+    * For each level of the path (level 1 first, the leaf last): an internal
+    * dimension, `field`, true where that level has a row: its primary key,
+    * read through the record (`keyPath`, `["items", "item_id"]`), is not
+    * null. Undefined at a level whose key the build did not check unique and
+    * never null (the leaf, unless its recorded check passed): there the
+    * test cannot tell a row of the level from a childless row's
+    * null-extended row. Live takes a `count()`,
+    * `sum` or `avg` at a join over the rows whose key is not null; a measure
+    * re-declared under the field ({@link PairMeasure.present}) skips the
+    * null-extended row as live does. Declared in the record's own block,
+    * where a hidden join's record is readable, and internal, so no query
+    * reads it.
+    */
+   levelPresent?: readonly ({ field: string; keyPath: string[] } | undefined)[];
+   /**
+    * The leaf's key check, recorded beside the table by the run that wrote
+    * it, passed: the key is unique and never null on a row of the leaf
+    * source. Without it the copy declines every count, sum or average at the
+    * leaf (governance/ir/pair_flat_query.ts, `FlatPair.leafKeyChecked`).
+    */
+   leafKeyChecked?: true;
+   /**
     * For a table that stores more than one inlined path: which block this
     * served source reads, and the other blocks' records.
     */
    block?: PairBlockReroot;
    /**
     * The join_many's access modifier on the author's source, when it is not
-    * public (known limitation 24), read off the author's compiled source. The
+    * public, read off the author's compiled source. The
     * record is declared under it in place of the join_many statement, and
     * the stored columns it reads (every level of a path) are renamed
     * `private` in that same block, the only one that reads them, so a caller
@@ -332,11 +388,19 @@ export interface PairMeasure {
    /** The author's access modifier; absent for a public measure. */
    access?: "internal";
    /**
-    * The level it aggregates at, when it is a level between the source and
-    * the leaf of a path of more than one hop: re-declared under that level's
-    * row flag. Absent: the source's own fields, under the parent-row flag.
+    * The level it aggregates at, when it is a level of the inlined path: one
+    * between the source and the leaf is re-declared under that level's row
+    * flag, the leaf under no flag. Absent: the source's own fields, under
+    * the parent-row flag.
     */
    level?: number;
+   /**
+    * Re-declared under its level's presence field as well
+    * ({@link PairReroot.levelPresent}): it counts that level's rows, or sums
+    * or averages a value that is not null on a childless row's null-extended
+    * row, which live skips.
+    */
+   present?: true;
 }
 
 /** One stored column of a re-rooted source. */
@@ -348,7 +412,7 @@ export interface ServedColumn {
    notes?: readonly string[];
    /**
     * The access modifier the author's source gives the field, when it is not
-    * public (P3). The re-root writes it again on the stored table,
+    * public. The re-root writes it again on the stored table,
     * `include { public: *; private: org_id }`, so a caller cannot select the
     * column, and the source's own `extend` reads it as it read the field.
     */
@@ -365,7 +429,7 @@ export interface ServedColumn {
    timeframe?: string;
    /**
     * The native SQL type the stored column is read through (`HUGEINT`), for a
-    * big-integer field (`bigIntegerReads`, known limitation 12): a `type:`
+    * big-integer field (`bigIntegerReads`): a `type:`
     * field can only be a `number`, which Malloy reads through a JavaScript
     * number and rounds above 2^53, so the column is renamed internally, as a
     * timeframe column is, and the field redefined as it cast to that type,
@@ -379,7 +443,7 @@ export interface ServedColumn {
     * The Malloy type the column is read as when its stored type does not
     * serve as its declared one but a cast makes it faithful
     * (`faithfulCastTarget`: an integer flag as `boolean`, a timestamp as
-    * `date`; the v1 cutover's G5, for a table an older build typed). The
+    * `date`, for a table an older build typed). The
     * `type:` declares the stored type, and the column is renamed internally
     * and the field redefined as its cast, as for a timeframe (both at once
     * for a truncation stored as a timestamp):
@@ -393,9 +457,15 @@ export interface ServedColumn {
    /**
     * Declared `timestamptz` rather than the stored type's `timestamp`: a
     * TIMESTAMP WITH TIME ZONE column whose author field is a `timestamptz`,
-    * so the field reads back as one (the v1 cutover).
+    * so the field reads back as one.
     */
    timestamptz?: true;
+   /**
+    * A stored list or struct declared in live's shape where it differs from
+    * the stored type's own (`{ at::timestamptz }[]` for a list of zoned
+    * timestamps whose field live types as `timestamptz`).
+    */
+   declaredType?: string;
 }
 
 /** A timeframe in {@link TIMEFRAMES}, as Malloy text. */
@@ -425,8 +495,24 @@ function timeframeKeyword(timeframe: string | undefined): string {
  * persisted view's result, a rollup's grain): each column with a timeframe,
  * which the table's type cannot carry, renamed internally and redefined as
  * that column truncated again (the identity on a truncated value), so the
- * field keeps its timeframe. Text that opens an `extend { … }` block; empty
- * when no column has a timeframe in {@link TIMEFRAMES}.
+ * field keeps its timeframe; and each column read through a faithful cast
+ * (`castTo`, `serveTypePlan`'s: a date truncation a build stored as a
+ * TIMESTAMP, an integer flag), redefined as it cast, then truncated:
+ *
+ *    internal rename: order_month__tf is order_month
+ *    dimension: order_month is (order_month__tf::"DATE").month
+ *
+ * A big-integer column (`nativeCast`, `bigIntegerReadOf`'s) is redefined as
+ * it read through its native type, which Malloy types as a `bigint` number
+ * and answers with every digit (`big__tf::"HUGEINT"`), as
+ * {@link ServedColumn.nativeCast} is.
+ *
+ * A date is cast with the SQL type, a plain `CAST(… AS DATE)`, never Malloy's
+ * `::date`, which would convert it to a query's time zone first (as
+ * `timeframeExpression` does). Each internal name is `<column>__tf`, or
+ * `__tf_2`, … when a column of the table (`taken`, by default the columns
+ * given) already has it. Text that opens an `extend { … }` block; empty when
+ * no column is redefined.
  */
 export function timeframeRestatements(
    columns: readonly {
@@ -434,28 +520,61 @@ export function timeframeRestatements(
       timeframe?: string;
       /** The author's annotation lines, written again on the redefined field. */
       notes?: readonly string[];
+      /** The faithful cast the stored column is read through. */
+      castTo?: "DATE" | "BOOLEAN";
+      /** The native SQL type a big-integer column is read through (`HUGEINT`). */
+      nativeCast?: string;
    }[],
+   taken: readonly string[] = columns.map((c) => c.name),
 ): string {
-   const truncated = columns.filter(
-      (c) => c.timeframe !== undefined && TIMEFRAMES.has(c.timeframe),
-   );
-   if (truncated.length === 0) return "";
-   const renames = truncated
-      .map((c) => `    ${identifier(`${c.name}__tf`)} is ${identifier(c.name)}`)
+   const redefined = columns.flatMap((c) => {
+      const timeframe =
+         c.timeframe !== undefined && TIMEFRAMES.has(c.timeframe)
+            ? c.timeframe
+            : undefined;
+      return timeframe || c.castTo || c.nativeCast ? [{ ...c, timeframe }] : [];
+   });
+   if (redefined.length === 0) return "";
+   const used = new Set([...taken, ...columns.map((c) => c.name)]);
+   const internal = redefined.map((c) => freeInternalName(c.name, used));
+   const renames = redefined
+      .map((c, i) => `    ${identifier(internal[i])} is ${identifier(c.name)}`)
       .join("\n");
-   // malloy-text: the author's own notes, then names through identifier and a timeframe from TIMEFRAMES
-   const dims = truncated
-      .map(
-         (c) =>
+   // malloy-text: the author's own notes, then names through identifier, a cast to DATE, boolean or a native type through doubleQuotedString, and a timeframe from TIMEFRAMES
+   const dims = redefined
+      .map((c, i) => {
+         const stored = identifier(internal[i]);
+         const read = c.nativeCast
+            ? `${stored}::${doubleQuotedString(c.nativeCast)}`
+            : c.castTo === "DATE"
+              ? `${stored}::"DATE"`
+              : c.castTo === "BOOLEAN"
+                ? `${stored}::boolean`
+                : stored;
+         const value = !c.timeframe
+            ? read
+            : c.castTo
+              ? `(${read}).${timeframeKeyword(c.timeframe)}`
+              : `${read}.${timeframeKeyword(c.timeframe)}`;
+         return (
             (c.notes ?? []).map((n) => noteSource(n, "    ")).join("") +
-            `    ${identifier(c.name)} is ${identifier(`${c.name}__tf`)}.${timeframeKeyword(c.timeframe)}`,
-      )
+            `    ${identifier(c.name)} is ${value}`
+         );
+      })
       .join("\n");
    return `\n  internal rename:\n${renames}\n  dimension:\n${dims}`;
 }
 
+/** `<name>__tf`, or `<name>__tf_<n>`, the first that is none of `used`; added to it. */
+function freeInternalName(name: string, used: Set<string>): string {
+   let internal = `${name}__tf`;
+   for (let n = 2; used.has(internal); n++) internal = `${name}__tf_${n}`;
+   used.add(internal);
+   return internal;
+}
+
 /** Why a declaration could not be re-rooted; the source then serves live. */
-export interface RerootRefusal {
+interface RerootRefusal {
    sourceName: string;
    url: string;
    /**
@@ -467,12 +586,18 @@ export interface RerootRefusal {
     * the serve side re-applies the whole chain's filters, so re-rooting it
     * would drop its base's `where:`. It is left as written; it still inherits
     * a re-rooted base by name.
+    *
+    * `definition_not_parsed`: the declaration could not be read, its base
+    * is a connection's table or SQL followed by something the re-root does
+    * not keep, or the `include { … }` it keeps hides a column its table does
+    * not store ({@link hiddenUnstored}).
     */
-   reason:
-      | "range_not_found"
-      | "definition_not_parsed"
-      | "not_query_shaped"
-      | "pair_join_not_found";
+   reason: "definition_not_parsed" | "not_query_shaped" | "pair_join_not_found";
+   /**
+    * With `definition_not_parsed`: the columns the declaration's kept
+    * `include { … }` hides that its table does not store.
+    */
+   hiddenUnstored?: string[];
 }
 
 /**
@@ -496,7 +621,7 @@ export interface ServedCopySpan {
 }
 
 /** The served copy of the files that declare re-rooted sources. */
-export interface ServedCopy {
+interface ServedCopy {
    /** File URL → its served text. Files with nothing re-rooted are absent. */
    files: Map<string, string>;
    /** Re-roots that did not apply. */
@@ -510,7 +635,7 @@ export const SERVED_COPY_FLAG = "##! experimental { virtual_source }";
 
 /**
  * The flag for a served copy that writes access modifiers again on a stored
- * table (P3): `include { … }` needs `access_modifiers` too.
+ * table: `include { … }` needs `access_modifiers` too.
  */
 export const SERVED_COPY_ACCESS_FLAG =
    "##! experimental { virtual_source access_modifiers }";
@@ -540,7 +665,7 @@ export function buildServedCopy(
             refused.push({
                sourceName: r.sourceName,
                url,
-               reason: "range_not_found",
+               reason: "definition_not_parsed",
             });
          }
          continue;
@@ -567,22 +692,54 @@ export function buildServedCopy(
             refused.push({
                sourceName: r.sourceName,
                url,
-               reason: "range_not_found",
+               reason: "definition_not_parsed",
             });
             continue;
          }
          const declaration = out.slice(start, end);
-         const spans = declarationSpans(declaration);
+         // Read as the re-root reads it: a run that keeps the author's
+         // `include { … }` blocks walks back over them too, so a connection's
+         // SQL curated by one (`conn.sql("…") include { … } extend { … }`) is
+         // connection-rooted.
+         const spans = declarationSpans(declaration, {
+            throughIncludes: r.keepsIncludes === true,
+         });
          if (
             spans &&
             !spans.queryShaped &&
             !spans.connectionRooted &&
-            !r.storedDimensions
+            !r.storedDimensions &&
+            !r.refinementRooted
          ) {
             refused.push({
                sourceName: r.sourceName,
                url,
-               reason: "not_query_shaped",
+               // A refinement is left as written by design; a connection's
+               // table or SQL the re-root cannot place is a declaration it
+               // could not read, and is warned of.
+               reason: spans.connectionBased
+                  ? "definition_not_parsed"
+                  : "not_query_shaped",
+            });
+            continue;
+         }
+         // A kept `include { … }` that hides a column the table does not
+         // hold (a v1 `storage=` table that does not hold every column its
+         // source declares) cannot compile on it: refused before the
+         // re-root, saying why.
+         const hiddenUnstored =
+            r.keepsIncludes && spans?.extendStart !== undefined
+               ? (
+                    hiddenIncludeNames(declaration.slice(spans.extendStart)) ??
+                    []
+                 ).filter((n) => !r.columns.some((c) => c.name === n))
+               : [];
+         if (hiddenUnstored.length > 0) {
+            refused.push({
+               sourceName: r.sourceName,
+               url,
+               reason: "definition_not_parsed",
+               hiddenUnstored,
             });
             continue;
          }
@@ -596,7 +753,7 @@ export function buildServedCopy(
             spans &&
             // Without the pair it re-roots: what failed is the pair's join,
             // not the declaration (an inverse rename block behind an
-            // include, known limitation 30, fails either way).
+            // include, fails either way).
             rerootDeclaration(declaration, {
                ...effective,
                pair: undefined,
@@ -657,7 +814,7 @@ export function buildServedCopy(
 /**
  * The re-root with each hidden stored dimension the kept text defines (the
  * declaration's own trailing `extend`, and for an extension table the kept
- * blocks of its ancestors, P10) left to that definition (P3): its column is left
+ * blocks of its ancestors) left to that definition: its column is left
  * out of the `type:` and its definition is kept as written, access modifier
  * and all, and computed at read from the stored columns it reads. Dropping
  * it instead would leave the stored column in its place, public. A hidden
@@ -681,7 +838,7 @@ function keepHiddenDefinitions(
       spans.extendStart === undefined
          ? ""
          : declaration.slice(spans.extendStart);
-   // Every block the re-root keeps: an extension table's ancestors' (P10),
+   // Every block the re-root keeps: an extension table's ancestors',
    // then its own. A hidden dimension an ancestor's kept block defines is
    // kept as that block wrote it, as one the source's own block defines is.
    const extend = [r.keptBlocks?.trim() ?? "", own].filter(Boolean).join(" ");
@@ -704,7 +861,7 @@ function keepHiddenDefinitions(
 
 /**
  * The `include { … }` that writes the author's access modifiers again on the
- * stored table's hidden columns (P3), or "" when it has none. Every other
+ * stored table's hidden columns, or "" when it has none. Every other
  * column stays public (`public: *`; an `include` makes what it does not list
  * private). It sits just before the author's own `extend`, which reads a
  * field the `include` hides as it read the field on the author's source.
@@ -766,6 +923,9 @@ export function rerootDeclaration(
       | "inlinedJoins"
       | "computedAtRead"
       | "keepsIncludes"
+      | "dropsUnstoredExcepts"
+      | "outputNames"
+      | "zone"
    > & { columns?: Reroot["columns"] },
 ): string | undefined {
    const spans = declarationSpans(declaration, {
@@ -774,7 +934,8 @@ export function rerootDeclaration(
    if (!spans) return undefined;
    const virtual =
       `${identifier(r.connectionAlias)}.virtual(${stringLiteral(r.virtualHandle)})` +
-      `::${identifier(r.typeName)}`;
+      `::${identifier(r.typeName)}` +
+      (r.zone ? ` extend { timezone: ${stringLiteral(r.zone)} }` : "");
    const name = declaration.slice(0, spans.nameEnd).trimEnd();
    const inlined = r.inlinedJoins ?? [];
    // No stored timeframe column is renamed to an inlined join's column.
@@ -786,23 +947,34 @@ export function rerootDeclaration(
       spans.extendStart === undefined
          ? ""
          : declaration.slice(spans.extendStart).trimEnd();
-   const kept = [r.keptBlocks?.trim() ?? "", own].filter(Boolean).join(" ");
-   // The table stores a renamed field under its new name; the kept text
-   // renames it from the old one, so the old name is given back first.
-   const renames = inverseRenameBlocks(
-      kept,
-      new Set((r.columns ?? []).map((c) => c.name)),
+   let kept = [r.keptBlocks?.trim() ?? "", own].filter(Boolean).join(" ");
+   if (r.dropsUnstoredExcepts) {
+      const stored = new Set(
+         (r.columns ?? []).map((c) => c.name.toLowerCase()),
+      );
+      const edited = dropExceptItems(
+         kept,
+         (name) => !stored.has(name.toLowerCase()),
+      );
+      if (edited === undefined) return undefined;
+      kept = edited.text;
+   }
+   // A table that stores a renamed field under its new name: the kept text
+   // renames it from the old one, so the old name is given back first. A
+   // column stored under the query's own output name is read by the kept
+   // renames as it is, and is never renamed back.
+   const outputs = new Set(r.outputNames ?? []);
+   const renamedStore = new Set(
+      (r.columns ?? []).map((c) => c.name).filter((n) => !outputs.has(n)),
    );
+   const renames = inverseRenameBlocks(kept, renamedStore);
    if (renames === undefined) return undefined;
    const columns = r.columns ?? [];
    const redefined = timeframedColumns(columns, reserved);
    // A cast column the inverse renames give an old name back cannot be read
    // under its stored name after them: it is cast in a block of its own just
    // ahead of them, and the renames then rename the cast field.
-   const renamedBack = inverselyRenamedColumns(
-      kept,
-      new Set(columns.map((c) => c.name)),
-   );
+   const renamedBack = inverselyRenamedColumns(kept, renamedStore);
    const early = redefined.filter(
       (c) => c.nativeCast !== undefined && renamedBack.has(c.name),
    );
@@ -816,17 +988,17 @@ export function rerootDeclaration(
       ...timeframed.map((c) => ({
          internal: c.internalName,
          column: c.name,
-         access: renameAccess(c),
+         access: storedRenameAccess(c, r.storedDimensions),
       })),
       ...joinRenames,
    ];
    // The author's access modifiers written again on the stored hidden
-   // columns (P3), on the stored table under its stored names, so before the
-   // inverse renames and every kept block (an ancestor's, P10, and the
+   // columns, on the stored table under its stored names, so before the
+   // inverse renames and every kept block (an ancestor's, and the
    // author's own), which read them as they read the author's fields. Only a
    // hidden column kept under its own name needs that `include`: when the
    // re-root writes one, every internal name is renamed ahead of it and the
-   // include hides it ({@link renameAccess}), since Malloy refuses a rename
+   // include hides it (`renameAccess`), since Malloy refuses a rename
    // in the block just after an include. A hidden timeframe column or a
    // hidden join's columns alone are hidden by labelled renames in the first
    // block (`private rename:`) instead, so an author's `rename:` (and the
@@ -858,7 +1030,7 @@ export function rerootDeclaration(
       let replaced: string | undefined = replacePairJoin(
          extend,
          r.pair.join,
-         pairRecord(r.pair),
+         pairRecord(r.pair, r.pair.levelPresent),
          r.pair.access !== undefined,
       );
       for (const other of r.pair.block?.others ?? []) {
@@ -872,8 +1044,8 @@ export function rerootDeclaration(
       }
       if (replaced === undefined) return undefined;
       // Behind an include, the pair's renames go ahead of it with the
-      // others (Malloy refuses a rename in the block just after an include,
-      // known limitation 30), and the include hides each internally.
+      // others (Malloy refuses a rename in the block just after an include),
+      // and the include hides each internally.
       if (ahead) {
          generated.push(
             ...pairStoredColumns(r.pair).map((c) => ({
@@ -958,6 +1130,7 @@ function servedExtend(
             timeframed,
             timeframed.filter((c) => !rewritten.has(c.name)),
             withRenames,
+            storedDimensions,
          ),
       );
       if (opened === undefined) return undefined;
@@ -1025,13 +1198,27 @@ function pairRenames(pair: PairReroot, withRenames = true): string {
  * block, by a `private rename:` of every stored column it reads: a private
  * name is readable only in the block that defines it, which is the record's.
  */
-function pairRecord(record: {
-   join: string;
-   childColumns: readonly (JoinedColumn & { internalName: string })[];
-   hops?: readonly PairHopColumns[];
-   access?: "private" | "internal";
-}): string {
+function pairRecord(
+   record: {
+      join: string;
+      childColumns: readonly (JoinedColumn & { internalName: string })[];
+      hops?: readonly PairHopColumns[];
+      access?: "private" | "internal";
+   },
+   levelPresent?: PairReroot["levelPresent"],
+): string {
    const { join, childColumns, hops, access } = record;
+   const present = (levelPresent ?? []).flatMap((p) =>
+      p === undefined
+         ? []
+         : [
+              `    ${identifier(p.field)} is ${p.keyPath.map((n) => identifier(n)).join(".")} is not null`,
+           ],
+   );
+   const presence =
+      present.length > 0
+         ? `\n  internal dimension:\n${present.join("\n")}`
+         : "";
    const field = (c: JoinedColumn & { internalName: string }, pad: string) =>
       // malloy-text: names through identifier, a timeframe from TIMEFRAMES and a cast through doubleQuotedString
       `${pad}${identifier(c.name)} is ${identifier(c.internalName)}` +
@@ -1052,32 +1239,43 @@ function pairRecord(record: {
       return items.join(",\n");
    };
    const dimension = `${accessPrefix(access)}dimension: ${identifier(join)} is {\n${level(0, "    ")}\n  }`;
-   if (access === undefined) return dimension;
+   if (access === undefined) return `${dimension}${presence}`;
    const renames = [...childColumns, ...(hops ?? []).flatMap((h) => h.columns)]
       .map(
          (c) => `    ${identifier(c.internalName)} is ${identifier(c.column)}`,
       )
       .join("\n");
-   return `${dimension}\n  private rename:\n${renames}`;
+   return `${dimension}\n  private rename:\n${renames}${presence}`;
 }
 
 /**
  * The extend block that closes a pair table's served source: each measure
- * over one level above the leaf (the source's own fields, or a level between
- * it and the leaf of a longer path) renamed internally and declared again,
- * under its own name, annotations and access, over the rows that level's
- * flag marks. A measure that reads it by name (a ratio of two, a view) reads
- * the re-declared one. Empty when there is none.
+ * over one level (the source's own fields, or a level of the inlined path)
+ * renamed internally and declared again, under its own name, annotations and
+ * access, over that level's rows: above the leaf the rows its flag marks,
+ * and, for a measure that needs it ({@link PairMeasure.present}), only where
+ * the level has a row. A measure that reads it by name (a ratio of two, a
+ * view) reads the re-declared one. Empty when there is none.
  */
 function pairMeasures(pair: PairReroot): string {
    if (pair.parentMeasures.length === 0) return "";
-   const flagOf = (m: PairMeasure) => {
+   const leaf = 1 + (pair.hops?.length ?? 0);
+   const conditionsOf = (m: PairMeasure) => {
       const level = m.level ?? 0;
-      return identifier(
-         level === 0
-            ? pair.parentRowField
-            : ((pair.levelRows ?? [])[level - 1]?.field ?? pair.parentRowField),
-      );
+      if (level === 0) return identifier(pair.parentRowField);
+      const out: string[] = [];
+      if (level < leaf) {
+         out.push(
+            identifier(
+               (pair.levelRows ?? [])[level - 1]?.field ?? pair.parentRowField,
+            ),
+         );
+      }
+      const present = m.present
+         ? (pair.levelPresent ?? [])[level - 1]
+         : undefined;
+      if (present !== undefined) out.push(identifier(present.field));
+      return out.join(", ");
    };
    const renames = pair.parentMeasures
       .map((m) => `    ${identifier(m.internalName)} is ${identifier(m.name)}`)
@@ -1090,7 +1288,7 @@ function pairMeasures(pair: PairReroot): string {
          .map(
             (m) =>
                notes(m) +
-               `    ${identifier(m.name)} is ${identifier(m.internalName)} { where: ${flagOf(m)} }`,
+               `    ${identifier(m.name)} is ${identifier(m.internalName)} { where: ${conditionsOf(m)} }`,
          )
          .join("\n");
    const visible = pair.parentMeasures.filter((m) => m.access === undefined);
@@ -1185,7 +1383,7 @@ function readTimeTermText(term: MaterializeReadTimeTerm): string | undefined {
             term.window.offset,
          );
       case "given":
-         // Kept, not written: a given-reading term (P2) is in the
+         // Kept, not written: a given-reading term is in the
          // declaration's own trailing `extend` or a kept base's
          // (`keptBlocks`), which the re-root keeps as the author wrote it (the
          // build generator takes a term out only there).
@@ -1257,15 +1455,15 @@ function timeframedColumns(
  *
  * A date is cast with the SQL type (`::"DATE"`), which Malloy writes as a
  * plain `CAST(… AS DATE)`: Malloy's own `::date` of a timestamp converts it
- * to a query's `timezone:` first, which would move the stored date by a day
- * (the serve shape cast in a query-shaped source, in the session's zone).
+ * to a query's `timezone:` first, which would move the stored date by a
+ * day.
  * A big-integer column is read as its native type instead
  * (`<internal>::"HUGEINT"`, {@link ServedColumn.nativeCast}).
  */
 function timeframeExpression(c: Timeframed): string {
    const stored = identifier(c.internalName);
    // A big-integer column read as its native type, which Malloy types as a
-   // `bigint` number (known limitation 12).
+   // `bigint` number.
    if (c.nativeCast) return `${stored}::${doubleQuotedString(c.nativeCast)}`;
    const read =
       c.castTo === "date"
@@ -1296,24 +1494,25 @@ function accessPrefix(access: "private" | "internal" | undefined): string {
  * inherited one, or a `#@ persist` query's output column), with the field's
  * annotations.
  *
- * A hidden field (P3) is redefined under the author's modifier, and its
- * stored column's internal name is `private` ({@link renameAccess}), so no
- * caller reaches it by any path (a `private rename:` here, or, when the
- * re-root writes an `include` for other hidden columns, a rename ahead of it
- * that the include hides, and `withRenames` is false). A public field's stored
- * column is renamed `internal`, so no `select:` reaches it.
+ * A field is redefined under the author's modifier, and its stored column's
+ * internal name is `private` ({@link storedRenameAccess}), so no caller
+ * reaches it by any path, a caller's own `include { public: * }` included (a
+ * `private rename:` here, or, when the re-root writes an `include` for other
+ * hidden columns, a rename ahead of it that the include hides, and
+ * `withRenames` is false).
  */
 function timeframeStatements(
    all: readonly Timeframed[],
    emitted: readonly Timeframed[],
    withRenames: boolean,
+   storedDimensions?: readonly string[],
 ): string {
    let out = withRenames
       ? labelledRenames(
            all.map((c) => ({
               internal: c.internalName,
               column: c.name,
-              access: renameAccess(c),
+              access: storedRenameAccess(c, storedDimensions),
            })),
         )
       : "";
@@ -1333,83 +1532,24 @@ function timeframeStatements(
 }
 
 /**
- * The Malloy type a stored column is declared as in the `type:`. A scalar is
- * the serve shape's mapping; a list and a struct (what a persisted `nest:`
- * stores, `STRUCT(status VARCHAR, n BIGINT)[]`) are written as Malloy's array
- * and record types (`{ status::string, n::number }[]`), so the nest's rows read
- * back through it as they do live. A nested type that does not read as one
- * (a MAP, a union) is the serve shape's `json`, which does not compile.
+ * The access of a redefined column's internal name: `private`, so no caller
+ * reaches it by any path, a caller's own `include { public: * }` included,
+ * since what reads it (the redefined field) is written in the re-root's first
+ * block. A public `#(materialize)` stored dimension whose definition is
+ * rewritten in place may sit in a later block, where a private name is not
+ * readable: its internal name stays `internal`.
  */
-export function storedTypeText(stored: string): string {
-   return storedMalloyType(stored) ?? duckdbTypeToMalloy(stored);
+function storedRenameAccess(
+   c: { name: string; access?: "private" | "internal" },
+   storedDimensions: readonly string[] | undefined,
+): "private" | "internal" {
+   if (c.access) return "private";
+   return storedDimensions?.includes(c.name) ? "internal" : "private";
 }
 
-/**
- * {@link storedTypeText} when the stored type reads back faithfully, else
- * undefined: a type the `type:` could only declare as `json`, which Malloy
- * refuses there, so one such column would fail the whole model's copy. A
- * nest built from a warehouse whose nests are JSON (Postgres, Snowflake) is
- * stored as `JSON`, for one.
- */
-export function storedMalloyType(stored: string): string | undefined {
-   const parsed = parseNestedType(stored.trim());
-   if (parsed === undefined || parsed.rest.trim() !== "") return undefined;
-   return parsed.text;
-}
-
-/**
- * One DuckDB type at the start of `s`: a scalar, `STRUCT(<name> <type>, …)`,
- * or either followed by `[]`. Undefined when it is no such type.
- */
-function parseNestedType(
-   s: string,
-   depth = 0,
-): { text: string; rest: string } | undefined {
-   if (depth > 16) return undefined;
-   let text: string;
-   let rest: string;
-   const struct = /^STRUCT\s*\(/i.exec(s);
-   if (struct) {
-      rest = s.slice(struct[0].length);
-      const fields: string[] = [];
-      for (;;) {
-         const name = /^\s*("(?:[^"]|"")*"|[A-Za-z_][A-Za-z0-9_]*)\s+/.exec(
-            rest,
-         );
-         if (!name) return undefined;
-         const fieldName = name[1].startsWith('"')
-            ? name[1].slice(1, -1).replace(/""/g, '"')
-            : name[1];
-         const inner = parseNestedType(rest.slice(name[0].length), depth + 1);
-         if (!inner) return undefined;
-         fields.push(`${identifier(fieldName)}::${inner.text}`);
-         rest = inner.rest.trimStart();
-         if (rest.startsWith(",")) {
-            rest = rest.slice(1);
-            continue;
-         }
-         if (!rest.startsWith(")")) return undefined;
-         rest = rest.slice(1);
-         break;
-      }
-      text = `{ ${fields.join(", ")} }`;
-   } else {
-      // A scalar, with its own parenthesised arguments (`DECIMAL(18,2)`).
-      const scalar =
-         /^[A-Za-z_][A-Za-z0-9_ ]*?(\([0-9,\s]*\))?(?=\s*(\[|,|\)|$))/.exec(s);
-      if (!scalar) return undefined;
-      const mapped = duckdbTypeToMalloyType(scalar[0]);
-      if (!("type" in mapped)) return undefined;
-      text = mapped.type;
-      rest = s.slice(scalar[0].length);
-   }
-   for (;;) {
-      const list = /^\s*\[\s*\]/.exec(rest);
-      if (!list) break;
-      text = `${text}[]`;
-      rest = rest.slice(list[0].length);
-   }
-   return { text, rest };
+/** Whether an annotation line is a `#(classification)`. */
+function isClassificationNote(note: string): boolean {
+   return /^#\(classification\)/.test(note.trimStart());
 }
 
 /** The emitted `type:` declaration for one re-rooted source. */
@@ -1431,20 +1571,30 @@ export function typeDeclaration(
    );
    // malloy-text: the author's own notes, then names through identifier and a Malloy type name
    const fields = [...r.columns, ...joined]
-      .map(
-         (c) =>
+      .flatMap((c) => {
+         // A column no Malloy type declares (a BLOB, an INTERVAL, a MAP) is
+         // left out, so a query reading it finds no field and answers live:
+         // there is no type to write (`json` is not one a `type:` takes).
+         const type = c.timestamptz
+            ? "timestamptz"
+            : (c.declaredType ?? storedMalloyType(c.type));
+         if (type === undefined) return [];
+         return [
             // A timeframe or cast column's notes go on its redefined field
-            // instead.
+            // instead, all but its `#(classification)`, which stays on the
+            // column too: the internal name it is renamed to keeps it, so a
+            // read of that name (a `select: *` the governor expands) is of
+            // the field's class, as live's.
             ((c.timeframe && TIMEFRAMES.has(c.timeframe)) ||
             c.castTo ||
             c.nativeCast
-               ? []
+               ? (c.notes ?? []).filter(isClassificationNote)
                : (c.notes ?? [])
             )
                .map((note) => noteSource(note, "   "))
-               .join("") +
-            `   ${identifier(c.name)}::${c.timestamptz ? "timestamptz" : storedTypeText(c.type)}`,
-      )
+               .join("") + `   ${identifier(c.name)}::${type}`,
+         ];
+      })
       .join(",\n");
    return `type: ${identifier(r.typeName)} is {\n${fields}\n}`;
 }

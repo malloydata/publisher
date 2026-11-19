@@ -1,0 +1,41 @@
+// conformance: v1 rollup on annotated measures [storage]: files generated while serving
+
+// ==== <pkg>/m.malloy
+##! experimental { access_modifiers persistence virtual_source }
+
+type: orders__rollup__region__d4f76546__type is {
+   region::string,
+   n__partial::number,
+   total__partial::number
+}
+source: orders__rollup__region__d4f76546__served is __served_copy_alias_of_lake.virtual('f59e28dc263a95a93f57a37ddad239cafd219f8863304c4da1c005bc52e8ec18')::orders__rollup__region__d4f76546__type extend {
+  measure:
+    #(doc) "Orders"
+    #@ preaggregate grain="region" storage="lake"
+    n is n__partial.sum()
+    # currency
+    #(doc) "Revenue"
+    #@ preaggregate grain="region" storage="lake"
+    total is total__partial.sum()
+}
+source: orders is orders__rollup__region__d4f76546__served include { internal: n__partial, total__partial public: * }
+
+// ==== <pkg>/m.malloy.rollup-author.malloy
+##! experimental { persistence }
+import "raw.malloy"
+
+source: orders is orders_raw extend {
+  dimension: zone is upper(region)
+  # currency
+  #(doc) "Revenue"
+  #@ preaggregate grain="region" storage="lake"
+  measure: total is amount.sum()
+  #(doc) "Orders"
+  #@ preaggregate grain="region" storage="lake"
+  measure: n is count()
+}
+
+// ==== <pkg>/m.malloy.rollup.malloy
+##! experimental { access_modifiers persistence virtual_source }
+import { orders_raw, customers_raw, lines_raw } from "raw.malloy"
+import { orders } from "m.malloy"

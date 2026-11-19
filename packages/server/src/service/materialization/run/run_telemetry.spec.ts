@@ -7,7 +7,10 @@ import * as sinon from "sinon";
 import { MaterializationEligibilityError } from "../../../errors";
 import { logger } from "../../../logger";
 import { resetMaterializationTelemetryForTesting } from "../../../materialization_metrics";
-import { createMocks } from "../../../test_helpers/materialization_service_harness";
+import {
+   createMocks,
+   serviceWith,
+} from "../../../test_helpers/materialization_service_harness";
 import {
    compiledWith,
    fakeSource,
@@ -16,12 +19,12 @@ import {
    startMetricsHarness,
    type MetricsHarness,
 } from "../../../test_helpers/metrics_harness";
-import type { BuildInstruction, ManifestEntry } from "../types";
-import { BilledReadNotCapturedError } from "./materialization_build_session";
+import type { BuildInstruction, ManifestEntry } from "../domain/types";
+import { errorCodeOf } from "../../../error_code";
+import { BilledReadNotCapturedError } from "./build_attribution";
 import {
    buildKindOf,
    buildKindsByAddress,
-   errorCodeOf,
    failureClassOf,
    RUN_TRIGGERS,
    RunTelemetry,
@@ -62,38 +65,43 @@ describe("run telemetry vocabulary", () => {
          "auto",
          "orchestrator",
       ]);
-      expect(runTriggerOf({ trigger: "SCHEDULER", orchestrated: true })).toBe(
+      expect(runTriggerOf({ trigger: "scheduler", orchestrated: true })).toBe(
          "schedule",
       );
       expect(
          runTriggerOf({
-            trigger: "ON_DEMAND",
+            trigger: "on_demand",
             runContextTrigger: "scheduler",
             orchestrated: true,
          }),
       ).toBe("schedule");
-      expect(runTriggerOf({ trigger: "ON_DEMAND", orchestrated: true })).toBe(
+      expect(runTriggerOf({ trigger: "on_demand", orchestrated: true })).toBe(
          "orchestrator",
       );
       expect(
          runTriggerOf({
-            trigger: "ON_DEMAND",
+            trigger: "on_demand",
             runContextTrigger: "publish",
             orchestrated: false,
          }),
       ).toBe("auto");
-      expect(runTriggerOf({ trigger: "ON_DEMAND", orchestrated: false })).toBe(
+      expect(runTriggerOf({ trigger: "on_demand", orchestrated: false })).toBe(
          "api",
       );
    });
 
    it("names a build's kind from the plan that made its source", () => {
+      const source = {} as never;
       const compiled = {
-         preaggregatePlans: { "r@m": {} as never },
-         materializePlans: {
-            "m@m": {} as never,
-            "p@m": { pair: {} } as never,
-         },
+         tables: {
+            "r@m": { kind: "rollup", source, rollup: {} as never },
+            "m@m": { kind: "materialize", source, materialize: {} as never },
+            "p@m": {
+               kind: "pair",
+               source,
+               materialize: { pair: {} } as never,
+            },
+         } as const,
       };
       expect(buildKindOf(compiled, "r@m")).toBe("rollup");
       expect(buildKindOf(compiled, "m@m")).toBe("materialize");
@@ -139,10 +147,10 @@ describe("run telemetry vocabulary", () => {
          errorCodeOf(
             new MaterializationEligibilityError({
                message: "reads given ORG = 42",
-               reason: "given_in_persisted_query",
+               reason: "reads_given",
             }),
          ),
-      ).toBe("given_in_persisted_query");
+      ).toBe("reads_given");
       const driver = Object.assign(
          new Error(
             "relation \"secret\" does not exist: SELECT 'v' FROM secret",
@@ -184,7 +192,7 @@ describe("run telemetry through the build loop", () => {
    });
 
    /**
-    * Two colocated `#@ persist` sources, built by `buildOneSource`; the first
+    * Two database `#@ persist` sources, built by `buildOneSource`; the first
     * gated by `#(authorize)` when `gateFirst`, so the eligibility gate
     * refuses it.
     */
@@ -213,8 +221,9 @@ describe("run telemetry through the build loop", () => {
          [["s1"], ["s2"]],
          new Map([["duckdb", connection]]),
       );
-      (ctx.service as unknown as { buildOneSource: unknown }).buildOneSource =
-         buildOneSource;
+      const service = serviceWith(ctx, {
+         buildOneSource: buildOneSource as never,
+      });
       const telemetry = new RunTelemetry(
          "run-1",
          opts.mode ?? "orchestrated",
@@ -222,26 +231,27 @@ describe("run telemetry through the build loop", () => {
       );
       const result = await withRunTelemetry(telemetry, () =>
          (
-            ctx.service as unknown as {
+            service.collaborators as unknown as {
                executeInstructedBuild: (...args: unknown[]) => Promise<unknown>;
             }
          )
-            .executeInstructedBuild(
+            .executeInstructedBuild({
                compiled,
-               {
+               environment: {
                   getApiConnection: () => {
                      throw new Error("no config");
                   },
+                  getEnvironmentName: () => "env",
                   getEnvironmentPath: () => "/tmp/env",
                },
-               [
+               instructions: [
                   instruction("a1aaaaaaaaaaaaaa", "s1_v1"),
                   instruction("a2bbbbbbbbbbbbbb", "s2_v1"),
                ],
-               {},
-               (opts.abort ?? new AbortController()).signal,
-               false,
-            )
+               seedEntries: {},
+               signal: (opts.abort ?? new AbortController()).signal,
+               strict: false,
+            })
             .then(
                (value) => ({ value }),
                (error: unknown) => ({ error }),
@@ -266,15 +276,16 @@ describe("run telemetry through the build loop", () => {
    it("counts and logs each built source once, with its duration and bytes", async () => {
       const build = sinon
          .stub()
-         .callsFake(async (_s, i: BuildInstruction) =>
-            entryFor(i.sourceEntityId),
+         .callsFake(
+            async ({ instruction: i }: { instruction: BuildInstruction }) =>
+               entryFor(i.sourceEntityId),
          );
       const { telemetry } = await runLoop(build, { mode: "auto" });
 
       expect(
          await harness.collectCounter("publisher_materialization_build_total", {
             kind: "persist",
-            tier: "colocated",
+            tier: "database",
             outcome: "built",
             failure_class: "none",
          }),
@@ -282,14 +293,14 @@ describe("run telemetry through the build loop", () => {
       expect(
          await harness.collectHistogram(
             "publisher_materialization_build_duration_ms",
-            { kind: "persist", tier: "colocated", method: "full" },
+            { kind: "persist", tier: "database", method: "full" },
          ),
       ).toMatchObject({ count: 2, sum: 500 });
       expect(
          (
             await harness.collectHistogram(
                "publisher_materialization_build_read_bytes",
-               { tier: "colocated" },
+               { tier: "database" },
             )
          ).count,
       ).toBe(2);
@@ -307,7 +318,7 @@ describe("run telemetry through the build loop", () => {
             sourceEntityId: "a1aaaaaaaaaaaaaa",
             sourceName: "s1",
             kind: "persist",
-            tier: "colocated",
+            tier: "database",
             method: "full",
             durationMs: 250,
             rows: 7,
@@ -319,13 +330,16 @@ describe("run telemetry through the build loop", () => {
    });
 
    it("leaves a host-assigned table name off the event, and does not time a skipped refresh", async () => {
-      const build = sinon.stub().callsFake(async (_s, i: BuildInstruction) =>
-         entryFor(i.sourceEntityId, {
-            buildDurationMs: null,
-            refresh: "none",
-            queryCostBytes: null,
-         }),
-      );
+      const build = sinon
+         .stub()
+         .callsFake(
+            async ({ instruction: i }: { instruction: BuildInstruction }) =>
+               entryFor(i.sourceEntityId, {
+                  buildDurationMs: null,
+                  refresh: "none",
+                  queryCostBytes: null,
+               }),
+         );
       await runLoop(build, { mode: "orchestrated" });
 
       expect(
@@ -353,10 +367,15 @@ describe("run telemetry through the build loop", () => {
    it("counts a failed source once, by its class, and logs its code and never its message", async () => {
       const message =
          "Permission denied: INSERT INTO t SELECT 'PLANTED_VALUE' FROM x";
-      const build = sinon.stub().callsFake(async (_s, i: BuildInstruction) => {
-         if (i.sourceEntityId === "a1aaaaaaaaaaaaaa") throw new Error(message);
-         return entryFor(i.sourceEntityId);
-      });
+      const build = sinon
+         .stub()
+         .callsFake(
+            async ({ instruction: i }: { instruction: BuildInstruction }) => {
+               if (i.sourceEntityId === "a1aaaaaaaaaaaaaa")
+                  throw new Error(message);
+               return entryFor(i.sourceEntityId);
+            },
+         );
       const { telemetry } = await runLoop(build);
 
       expect(
@@ -400,14 +419,20 @@ describe("run telemetry through the build loop", () => {
    });
 
    it("counts a billed read lost once, however the strategy wrapped it", async () => {
-      const build = sinon.stub().callsFake(async (_s, i: BuildInstruction) => {
-         if (i.sourceEntityId === "a2bbbbbbbbbbbbbb") {
-            throw new Error("Failed to materialize", {
-               cause: new BilledReadNotCapturedError("read billed, rows lost"),
-            });
-         }
-         return entryFor(i.sourceEntityId);
-      });
+      const build = sinon
+         .stub()
+         .callsFake(
+            async ({ instruction: i }: { instruction: BuildInstruction }) => {
+               if (i.sourceEntityId === "a2bbbbbbbbbbbbbb") {
+                  throw new Error("Failed to materialize", {
+                     cause: new BilledReadNotCapturedError(
+                        "read billed, rows lost",
+                     ),
+                  });
+               }
+               return entryFor(i.sourceEntityId);
+            },
+         );
       await runLoop(build);
 
       const points = await harness.collectAttributes(
@@ -415,7 +440,7 @@ describe("run telemetry through the build loop", () => {
       );
       expect(points).toContainEqual({
          kind: "persist",
-         tier: "colocated",
+         tier: "database",
          outcome: "failed",
          failure_class: "billed_read_lost",
       });
@@ -467,7 +492,7 @@ describe("run telemetry through the build loop", () => {
       ).toEqual([
          {
             kind: "persist",
-            tier: "colocated",
+            tier: "database",
             outcome: "cancelled",
             failure_class: "none",
          },
@@ -485,8 +510,9 @@ describe("run telemetry through the build loop", () => {
    it("counts a source the eligibility gate refuses once, as refused, and does not build it", async () => {
       const build = sinon
          .stub()
-         .callsFake(async (_s, i: BuildInstruction) =>
-            entryFor(i.sourceEntityId),
+         .callsFake(
+            async ({ instruction: i }: { instruction: BuildInstruction }) =>
+               entryFor(i.sourceEntityId),
          );
       const { telemetry } = await runLoop(build, { gateFirst: true });
 
@@ -499,13 +525,13 @@ describe("run telemetry through the build loop", () => {
          expect.arrayContaining([
             {
                kind: "persist",
-               tier: "colocated",
+               tier: "database",
                outcome: "refused",
                failure_class: "none",
             },
             {
                kind: "persist",
-               tier: "colocated",
+               tier: "database",
                outcome: "built",
                failure_class: "none",
             },
@@ -524,15 +550,19 @@ describe("run telemetry through the build loop", () => {
    });
 
    it("fails a refusal thrown from inside the build as deterministic, with its reason as the code", async () => {
-      const build = sinon.stub().callsFake(async (_s, i: BuildInstruction) => {
-         if (i.sourceEntityId === "a1aaaaaaaaaaaaaa") {
-            throw new MaterializationEligibilityError({
-               message: "not eligible",
-               reason: "free_parameter",
-            });
-         }
-         return entryFor(i.sourceEntityId);
-      });
+      const build = sinon
+         .stub()
+         .callsFake(
+            async ({ instruction: i }: { instruction: BuildInstruction }) => {
+               if (i.sourceEntityId === "a1aaaaaaaaaaaaaa") {
+                  throw new MaterializationEligibilityError({
+                     message: "not eligible",
+                     reason: "free_parameter",
+                  });
+               }
+               return entryFor(i.sourceEntityId);
+            },
+         );
       await runLoop(build);
       expect(
          await harness.collectCounter("publisher_materialization_build_total", {
@@ -555,18 +585,18 @@ describe("run events", () => {
    afterEach(() => captured.restore());
 
    it("logs run.started and run.finished with the spec's fields and levels", () => {
-      const run = new RunTelemetry("run-9", "orchestrated", "pkg");
+      const startedAt = Date.now() - 1200;
+      const run = new RunTelemetry("run-9", "orchestrated", "pkg", startedAt);
       run.started("orchestrator", 3);
       run.tally.built = 2;
       run.tally.failed = 1;
-      run.finished("partial", 1200);
-      run.finished("success", 10);
+      run.finished("partial");
+      run.finished("success");
       run.finished(
          "failed",
-         20,
          Object.assign(new Error("SELECT 'x' failed"), { code: "XX000" }),
       );
-      run.finished("cancelled", 30, new Error("Build cancelled"));
+      run.finished("cancelled", new Error("Build cancelled"));
 
       expect(captured.logs.map((l) => [l.message, l.level])).toEqual([
          ["materialization.run.started", "info"],
@@ -587,12 +617,14 @@ describe("run events", () => {
          packageName: "pkg",
          mode: "orchestrated",
          outcome: "partial",
-         durationMs: 1200,
+         durationMs: expect.any(Number),
          built: 2,
          reused: 0,
          refused: 0,
          failed: 1,
       });
+      // Measured from the run's start, which the telemetry holds.
+      expect(captured.logs[1].meta?.durationMs).toBeGreaterThanOrEqual(1200);
       expect(captured.logs[3].meta).toMatchObject({ code: "XX000" });
       expect(JSON.stringify(captured.logs)).not.toContain("SELECT");
       // A cancellation keeps the code of what ended it: an abort can race a
@@ -646,34 +678,40 @@ describe("run telemetry review findings", () => {
          [["base", "ext"], ["other"]],
          new Map([["duckdb", connection]]),
       );
-      const build = sinon.stub().callsFake(async (_s, i: BuildInstruction) => {
-         if (i.sourceEntityId === "a1aaaaaaaaaaaaaa") {
-            throw new Error("Permission denied");
-         }
-         return {
-            sourceEntityId: i.sourceEntityId,
-            physicalTableName: `${i.sourceEntityId}_t`,
-            connectionName: "duckdb",
-            buildDurationMs: 10,
-         };
+      const build = sinon
+         .stub()
+         .callsFake(
+            async ({ instruction: i }: { instruction: BuildInstruction }) => {
+               if (i.sourceEntityId === "a1aaaaaaaaaaaaaa") {
+                  throw new Error("Permission denied");
+               }
+               return {
+                  sourceEntityId: i.sourceEntityId,
+                  physicalTableName: `${i.sourceEntityId}_t`,
+                  connectionName: "duckdb",
+                  buildDurationMs: 10,
+               };
+            },
+         );
+      const service = serviceWith(ctx, {
+         buildOneSource: build as never,
       });
-      (ctx.service as unknown as { buildOneSource: unknown }).buildOneSource =
-         build;
       const telemetry = new RunTelemetry("run-1", "auto", "pkg");
       const result = (await withRunTelemetry(telemetry, () =>
          (
-            ctx.service as unknown as {
+            service.collaborators as unknown as {
                executeInstructedBuild: (...args: unknown[]) => Promise<unknown>;
             }
-         ).executeInstructedBuild(
+         ).executeInstructedBuild({
             compiled,
-            {
+            environment: {
                getApiConnection: () => {
                   throw new Error("no config");
                },
+               getEnvironmentName: () => "env",
                getEnvironmentPath: () => "/tmp/env",
             },
-            [
+            instructions: [
                {
                   sourceEntityId: "a1aaaaaaaaaaaaaa",
                   materializedTableId: "mt-1",
@@ -687,14 +725,36 @@ describe("run telemetry review findings", () => {
                   realization: "COPY",
                },
             ],
-            {},
-            new AbortController().signal,
-            false,
-         ),
-      )) as { failures: Record<string, unknown> };
+            seedEntries: {},
+            signal: new AbortController().signal,
+            strict: false,
+         }),
+      )) as {
+         failures: Record<
+            string,
+            { sourceName: string; reason: string; retryable?: boolean }
+         >;
+      };
 
-      // The run's record holds one failure for the address ...
+      // The shared table's build ran once: the extend took the base's
+      // failure rather than running the same build again.
+      expect(
+         build
+            .getCalls()
+            .filter(
+               (c) =>
+                  (c.args[0] as { instruction: BuildInstruction }).instruction
+                     .sourceEntityId === "a1aaaaaaaaaaaaaa",
+            ),
+      ).toHaveLength(1);
+      // The run's record holds one failure for the address, named for the
+      // last source on it as before, with the build's own reason ...
       expect(Object.keys(result.failures)).toEqual(["a1aaaaaaaaaaaaaa"]);
+      expect(result.failures["a1aaaaaaaaaaaaaa"]).toMatchObject({
+         sourceName: "ext",
+         reason: "Permission denied",
+         retryable: false,
+      });
       // ... and the counter, the tally and the log agree with it.
       expect(
          await harness.collectCounter("publisher_materialization_build_total", {

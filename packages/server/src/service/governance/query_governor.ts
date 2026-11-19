@@ -87,6 +87,12 @@ import {
    type GovernedRunnable,
 } from "./governed_runnable";
 import { derivedStructsReachable } from "./ir/source_graph";
+import { givenWhereCodes } from "./ir/compiled_model";
+import {
+   arrayQueryJoinRefusal,
+   arrayQueryJoins,
+   governsAccess,
+} from "./ir/array_query";
 import {
    assertFilterDimensionBindsToDeclaringSource,
    assertGraftedGateBindsToDeclaringSource,
@@ -172,7 +178,15 @@ function denyUnlessAdmitted(
          outcome === "unresolvable" ? "denied_unresolvable" : "denied_by_lock",
          site,
       );
-      throw AccessDeniedError.forSource(label);
+      if (outcome === "unresolvable") {
+         // The caller's 403 is the same `ACCESS_DENIED` either way; the log
+         // and the metric are where a gate that could not be decided shows.
+         logger.info("A lock could not be decided; denying", {
+            source: label,
+            site,
+         });
+      }
+      throw AccessDeniedError.forSource(label, "lock");
    }
    recordLockDecision("denied_unresolvable", site);
    // Also booked on the row-level counter: a gate refused at shape resolution
@@ -180,7 +194,13 @@ function denyUnlessAdmitted(
    // `cause` is a finer label, not a substitute.
    recordRowLevelGateDecision("denied_by_gate", site);
    if (resolution.cause) recordRowLevelGateRejected(resolution.cause);
-   throw AccessDeniedError.forSource(label);
+   logger.info("A gate could not be resolved; denying", {
+      source: label,
+      site,
+      ...(resolution.cause ? { cause: resolution.cause } : {}),
+   });
+   // Booked as a row filter's refusal, as the row-level metric books it.
+   throw AccessDeniedError.forSource(label, "row_filter");
 }
 
 /**
@@ -215,6 +235,27 @@ export const REQUEST_CHAIN_MAX_NAMES = 64;
 
 /** The one sentence a gated model answers a hidden, hidden-and-locked or absent name with. */
 const GENERIC_NOT_QUERYABLE = "Query target is not queryable.";
+
+/** A run target's given-reading terms, its own and each join's, by text. */
+interface GivenTerms {
+   own: string[];
+   joins: ReadonlyMap<string, string[]>;
+}
+
+/**
+ * Whether a routed compile applies the live one's given-reading terms: its
+ * run target's exactly, and each join it declares exactly as live's join of
+ * that name (a join live does not have differs).
+ */
+function sameGivenTerms(live: GivenTerms, routed: GivenTerms): boolean {
+   const same = (a: readonly string[], b: readonly string[] | undefined) =>
+      b !== undefined && a.join("\u0000") === b.join("\u0000");
+   if (!same(live.own, routed.own)) return false;
+   for (const [name, codes] of routed.joins) {
+      if (!same(codes, live.joins.get(name))) return false;
+   }
+   return true;
+}
 
 /**
  * One request to {@link QueryGovernor.govern}: who is asking (givens and
@@ -260,6 +301,15 @@ export interface GovernRequest {
     * live entry point carries (see `sameGateSet`), or the query is denied.
     */
    routedPastEntryPointGate?: boolean;
+   /**
+    * The routed compile writes again the run target's given-reading `where:`
+    * terms its stored table left out (a `#(rollup)` rollup's variant).
+    * Re-proven on that compile: its run target must apply exactly the
+    * given-reading terms the live run target does, by text, or the query is
+    * denied, so a variant that lost one never answers with every caller's
+    * rows.
+    */
+   reprovesGivenTerms?: boolean;
    /** See `authorizeAndBindRunnable`'s options. */
    bypassAlreadyNoted?: boolean;
    /**
@@ -284,10 +334,8 @@ export interface GovernRequest {
       /**
        * `"served_copy"` when the router answered from the served copy (the
        * author's text re-rooted on stored tables), so the ceiling is read on
-       * {@link CompiledQuery.runnable}, the compile that answers: the live
-       * compile is a cross-connection model's build view, which lacks the
-       * joins it leaves out, so a query through one does not compile there.
-       * The live compile is still checked whenever it compiles. Any other
+       * {@link CompiledQuery.runnable}, the compile that answers. The live
+       * compile is still checked whenever it compiles. Any other
        * routed shape carries no annotations to read a ceiling from, so it
        * stays on the live compile.
        */
@@ -704,6 +752,18 @@ export class QueryGovernor {
             );
          }
       }
+      // Model semantics, not authorization: checked under the bypass too.
+      if (request.reprovesGivenTerms) {
+         const [expected, written] = await Promise.all([
+            live ? this.runTargetGivenTerms(live) : undefined,
+            this.runTargetGivenTerms(compiled.runnable),
+         ]);
+         if (!expected || !written || !sameGivenTerms(expected, written)) {
+            await this.denyGivenTermsDiffer(compiled.runnable);
+         }
+      }
+      // The compile that runs: live, or the served copy when it answers.
+      await this.assertNoArrayQueryJoin(runnable);
       if (request.ceiling && !request.bypassAuthorize) {
          const source = await request.ceiling.source(runnable);
          for (const target of await this.ceilingTargets(
@@ -744,6 +804,52 @@ export class QueryGovernor {
       logger.warn(
          "A routed answer past an entry-point gate could not be re-proven on its own compile; denying",
          { modelPath: this.modelPath, source, why },
+      );
+      throw AccessDeniedError.forSource(source ?? "unknown");
+   }
+
+   /**
+    * The run target's given-reading `where:` terms, by text, and each of its
+    * joins' (a join re-pointed at a stored table must carry its source's);
+    * undefined fails closed.
+    */
+   private async runTargetGivenTerms(
+      runnable: QueryMaterializer,
+   ): Promise<GivenTerms | undefined> {
+      try {
+         const { struct } = await this.resolveRunTargetStruct(runnable);
+         const own = struct ? givenWhereCodes(struct) : undefined;
+         if (!own) return undefined;
+         const joins = new Map<string, string[]>();
+         for (const f of (struct?.fields ?? []) as {
+            join?: unknown;
+            name?: string;
+            as?: string;
+         }[]) {
+            if (f.join === undefined) continue;
+            const codes = givenWhereCodes(f);
+            if (!codes) return undefined;
+            joins.set(f.as ?? f.name ?? "", codes);
+         }
+         return { own, joins };
+      } catch {
+         return undefined;
+      }
+   }
+
+   /**
+    * Deny a routed answer whose given-reading `where:` terms differ from
+    * live's ({@link GovernRequest.reprovesGivenTerms}); opaque to the caller.
+    * Not a gate decision, so no gate metric counts it: its error-level log
+    * line is the signal.
+    */
+   private async denyGivenTermsDiffer(
+      routed: QueryMaterializer,
+   ): Promise<never> {
+      const source = await this.resolveAuthorizeSourceFromRunnable(routed);
+      logger.error(
+         "A routed answer's given-reading where: terms differ from the live query's on its own compile; denying",
+         { modelPath: this.modelPath, source },
       );
       throw AccessDeniedError.forSource(source ?? "unknown");
    }
@@ -1957,10 +2063,9 @@ export class QueryGovernor {
     * served copy answered. When it did, the served copy's own compile (the
     * routed runnable, before any graft, as the live check reads the live
     * compile before any graft), and live as well whenever live compiles: a
-    * live compile that does not compile is a cross-connection model's build
-    * view without the join the query goes through, which has nothing to
-    * read, and is never what answers. A served-copy claim with no separate
-    * routed compile is not one: the live compile is what runs, so it is read.
+    * live compile that does not compile has nothing to read, and is never
+    * what answers. A served-copy claim with no separate routed compile is
+    * not one: the live compile is what runs, so it is read.
     */
    private async ceilingTargets(
       ceiling: NonNullable<GovernRequest["ceiling"]>,
@@ -1988,6 +2093,35 @@ export class QueryGovernor {
    }
 
    /**
+    * Refuse a query that joins a source inside a query on an array, in a
+    * model that governs access: no check here can follow what that join
+    * reads, so a gate or a `#(carries)` it reaches would pass unseen and the
+    * access record would miss it. A model's own such join refuses its load
+    * (`Package.formatArrayQueryJoins`), so this is one the caller wrote, in
+    * the query or in a source it declares. After the gates, so a caller a
+    * gate refuses is refused as one.
+    */
+   private async assertNoArrayQueryJoin(
+      runnable: QueryMaterializer,
+   ): Promise<void> {
+      if (!governsAccess(this.modelDef)) return;
+      let prepared: Awaited<ReturnType<typeof readPreparedQuery>>;
+      try {
+         prepared = await readPreparedQuery(runnable);
+      } catch {
+         // No query to read (a compile with no final `run:`): nothing runs.
+         return;
+      }
+      const joins = [
+         prepared.query,
+         resolveStructRef(prepared.structRef, prepared.modelDef),
+         prepared.compositeResolvedSourceDef,
+      ].flatMap((root) => arrayQueryJoins(root));
+      const refusal = arrayQueryJoinRefusal("This query", joins);
+      if (refusal) throw new BadRequestError(refusal);
+   }
+
+   /**
     * Refuse a query whose entry carries a `#(carries)` ceiling when it reads a
     * field past it, so a source's list holds for what a caller reads and not
     * only for what the author declared. The entry's ceiling is read off the
@@ -2002,9 +2136,8 @@ export class QueryGovernor {
       givens: Record<string, GivenValue> | undefined,
       region: CallerRegion | undefined,
       /**
-       * `live` is the served copy's compile: its own model is the one read
-       * (the build view's lacks what it left out), and a ceiling declared
-       * only there still counts.
+       * `live` is the served copy's compile: its own model is the one read,
+       * and a ceiling declared only there still counts.
        */
       servedCopy = false,
    ): Promise<void> {
@@ -2030,7 +2163,7 @@ export class QueryGovernor {
               )
             : [];
          // The served copy's compile without its own model cannot be read
-         // against anything: refused rather than read against the build view.
+         // against anything: refused rather than read against live's.
          refusal =
             servedCopy && !modelDef
                ? "this query's source cannot be read completely"

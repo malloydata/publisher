@@ -16,6 +16,10 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "mixed@<hammer>/pn/pn.malloy": "persist",
+      "reserved@<hammer>/pn/pn.malloy": "persist"
+    },
     "materializePlans": {},
     "rollupPlans": {},
     "sourceGateOutcomes": {
@@ -34,7 +38,6 @@
     }
   },
   "rollupsKeepingGates": [],
-  "rollupsOverStoredBase": [],
   "wirePlan": {
     "graphs": [
       {
@@ -53,6 +56,8 @@
         ]
       }
     ],
+    "omittedFiles": [],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "mixed@<hammer>/pn/pn.malloy": {

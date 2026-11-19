@@ -13,6 +13,9 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "monthly@<pkg>/m.malloy": "materialize"
+    },
     "materializePlans": {
       "monthly@<pkg>/m.malloy": {
         "buildSourceName": "monthly__mat",
@@ -110,6 +113,8 @@
         ]
       }
     ],
+    "omittedFiles": [],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "monthly@<pkg>/m.malloy": {
@@ -148,7 +153,7 @@
         "freshness": null,
         "modelPath": "m.malloy",
         "name": "monthly",
-        "origin": "persist",
+        "origin": "materialize",
         "preaggregate": null,
         "queryMetadata": null,
         "refresh": null,

@@ -6,8 +6,9 @@
  * text compiles against it unchanged: every name of the author's model (its
  * sources, queries and givens), each imported from the file that declares it,
  * under the same name. Shared by the router legs that compile a caller's text
- * in a model of their own: the persisted-view leg (`view_variants.ts`) and
- * the rollup leg (#1651, `rollup_variants.ts`).
+ * in a model of their own: the view and query legs, through the declaring-
+ * file overlay (`declaring_file_variant.ts`), and the rollup leg
+ * (`rollup_variants.ts`).
  *
  * A name the model exports is imported from the model itself; any other from
  * the file its `sourceID` (or, for a query, its location) names, under its
@@ -18,7 +19,7 @@ import * as path from "path";
 import { fileURLToPath } from "url";
 import { doubleQuotedString, identifier } from "../../malloy_text";
 import { overlayKey } from "../../overlay_key";
-import { splitSourceID } from "../plan/persisted_view";
+import { splitSourceID } from "../domain/table_plans";
 
 /** `url` relative to `from`'s directory, for an `import`, or undefined. */
 export function relativeImport(from: URL, url: string): string | undefined {
@@ -42,11 +43,11 @@ export interface AuthorImportOptions {
     */
    alias?: ReadonlyMap<string, string>;
    /**
-    * Names declared in `from` (an overlay key) other than `keep` are imported
-    * from `to` instead: a name a file imports is not exported again, so when
-    * the variant overlays the declaring file, only `keep` stays there.
+    * Names declared in `from` (an overlay key) other than those in `keep` are
+    * imported from `to` instead: a name a file imports is not exported again,
+    * so when the variant overlays the declaring file, only `keep` stays there.
     */
-   redirect?: { from: string; to: string; keep: string };
+   redirect?: { from: string; to: string; keep: ReadonlySet<string> };
 }
 
 /**
@@ -71,7 +72,7 @@ export function authorNameImports(
       const target =
          redirect &&
          overlayKey(url) === redirect.from &&
-         declaredName !== redirect.keep
+         !redirect.keep.has(declaredName)
             ? redirect.to
             : url;
       byFile.set(target, [...(byFile.get(target) ?? []), item]);

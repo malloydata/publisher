@@ -5,13 +5,13 @@ import type { PersistSource } from "@malloydata/malloy";
 import { describe, expect, it } from "bun:test";
 import { ChainedUpstreamMissingError } from "../../../errors";
 import { buildEnvironmentStub } from "../../../test_helpers/materialization_service_harness";
-import type { MaterializePlan } from "../plan/build_file_generator";
-import type { ManifestEntry } from "../types";
+import type { MaterializePlan } from "../domain/table_plans";
+import type { ManifestEntry } from "../domain/types";
 import {
+   type ChainedPlanFacts,
    NO_PLAN_FACTS,
    presentedSourceName,
-   type ChainedPlanFacts,
-} from "./materialization_run_support";
+} from "./build_upstreams";
 import { StorageBuildStrategy } from "./storage_build_strategy";
 
 /**

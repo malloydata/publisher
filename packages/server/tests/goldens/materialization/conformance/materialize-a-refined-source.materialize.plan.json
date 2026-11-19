@@ -13,6 +13,9 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "east_west@<pkg>/m.malloy": "materialize"
+    },
     "materializePlans": {
       "east_west@<pkg>/m.malloy": {
         "buildSourceName": "east_west__mat",
@@ -157,6 +160,8 @@
         ]
       }
     ],
+    "omittedFiles": [],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "east_west@<pkg>/m.malloy": {
@@ -215,7 +220,7 @@
         "freshness": null,
         "modelPath": "m.malloy",
         "name": "east_west",
-        "origin": "persist",
+        "origin": "materialize",
         "preaggregate": null,
         "queryMetadata": null,
         "refresh": null,

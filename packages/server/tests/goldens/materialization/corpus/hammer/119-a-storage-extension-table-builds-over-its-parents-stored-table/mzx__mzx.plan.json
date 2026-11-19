@@ -22,6 +22,11 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "orders@<hammer>/mzx/mzx.malloy": "materialize",
+      "us_big@<hammer>/mzx/mzx.malloy": "materialize",
+      "us_orders@<hammer>/mzx/mzx.malloy": "materialize"
+    },
     "materializePlans": {
       "orders@<hammer>/mzx/mzx.malloy": {
         "buildSourceName": "orders__mat",
@@ -323,7 +328,6 @@
     }
   },
   "rollupsKeepingGates": [],
-  "rollupsOverStoredBase": [],
   "wirePlan": {
     "graphs": [
       {
@@ -350,6 +354,8 @@
         ]
       }
     ],
+    "omittedFiles": [],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "orders@<hammer>/mzx/mzx.malloy": {
@@ -384,7 +390,7 @@
         "freshness": null,
         "modelPath": "mzx.malloy",
         "name": "orders",
-        "origin": "persist",
+        "origin": "materialize",
         "preaggregate": null,
         "queryMetadata": null,
         "refresh": null,
@@ -428,7 +434,7 @@
         "freshness": null,
         "modelPath": "mzx.malloy",
         "name": "us_big",
-        "origin": "persist",
+        "origin": "materialize",
         "preaggregate": null,
         "queryMetadata": null,
         "refresh": null,
@@ -472,7 +478,7 @@
         "freshness": null,
         "modelPath": "mzx.malloy",
         "name": "us_orders",
-        "origin": "persist",
+        "origin": "materialize",
         "preaggregate": null,
         "queryMetadata": null,
         "refresh": null,

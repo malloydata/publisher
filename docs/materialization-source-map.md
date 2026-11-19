@@ -39,13 +39,20 @@ reads it.
 
 ## The keying rule
 
-Three identities, each used for one thing:
+Four identities, each used for one thing:
 
 | Identity | Key | Used for |
 | --- | --- | --- |
 | A declaration | `sourceID` (`name@<model URL>`) | Every map, gate and lookup about a source |
-| A stored table | `(sourceEntityId, destination)`; destination is null for colocated | Bindings, the catalog, verdicts and the path report |
+| A stored table | its address: the content address (`sourceEntityId`, computed once per plan in `plan/addressing.ts` and held in `PackagePlan.addresses`), its tier, and its place: a binding's `destinationName` is the `storage=` destination for a storage table and the source's own connection for a database one. With `persist.addressIncludesDestination` on, the destination is folded into the content address itself; otherwise it is carried beside it. Where Malloy files the table under another key, the plan records that key in `PackagePlan.compilerKeys` | Bindings, the catalog, verdicts and the path report |
+| A physical table | a name in a place (a connection or a `storage=` destination), compared by the keys in `domain/physical_table.ts`, each named for what it is safe for; a run records one as a `TableRecord` | Builds, claims, uniqueness, the reclaim. Never a binding or a gate |
 | A name | the name in one model's namespace | Display and logs only |
+
+The address is not yet one named type: its parts travel together on the
+table plan, the manifest entry and the binding. The rules that judge a table
+by its address key by the content address alone: `ungatedTableAddresses` and
+`keptTableAddresses` (`serve/bind.ts`) are sets of `sourceEntityId`s, so every
+source sharing an address is judged together.
 
 A name is never a map key or a gate. Names are neither package-unique (two
 models may declare `orders`) nor stable across import (a re-export can rename),
@@ -165,18 +172,14 @@ which of their tables) a build reads.
 
 ## Cross-connection joins
 
-A join whose target is on a different origin connection is marked. Phase 0's
-probe (Evidence 7) showed the consequences the map has to carry:
-
-- the author's file with such a join does not compile live, so the generator
-  plans builds from the file with those joins removed, and the map for build
-  planning is built over that compile;
-- the build view (the author's text with those joins left out) is the compile
-  of record for discovery and gates, and the served copy is what the rewriter
-  and router read (decided 2026-11-12, #1643);
-- a query that reaches a side not yet built is refused from build state (the
-  join is left out of the served copy while that side is unbuilt, #1643), so
-  the map reports which joins depend on which tables.
+A join whose target is on a different origin connection is marked. Malloy
+refuses such a join in the author's file (`join-connection-mismatch`), so a
+model that has one fails to load and never reaches the map. The mark matters
+for the served copy: a re-root moves a source onto its destination, and a
+reference join it keeps to a source that is not stored there now crosses
+connections. The served copy leaves that join out (with what reads it), so
+the map reports which joins depend on which tables, and a query through one is
+answered live.
 
 ## Who consumes it
 
@@ -200,7 +203,8 @@ verdict tests stay green.
 
 - The map module, on `source_graph.ts`.
 - The three hand-written chain walkers are replaced by map walks:
-  - `reachedPersistedSources` (`materialization_serve_transform.ts`), the
+  - `reachedPersistedSources` (`materialization_serve_transform.ts`, since
+    deleted; the walk is now `reachPersisted` in `text/source_map.ts`), the
     build-side reach that stops at persisted sources;
   - `sourceChainOf` (`query_path.ts`), the chain the path report and router
     candidates read;
@@ -224,7 +228,7 @@ verdict tests stay green.
 
 ## Open points
 
-1. **One listing per rollup.** Resolved for `#(preaggregate)` (phase 4 PR 1):
+1. **One listing per rollup.** Resolved for `#(rollup)` (phase 4 PR 1):
    a rollup is planned only in the model that declares its base, keyed by its
    own `sourceID` (`<rollup>@<declaring model>.preaggregate.malloy`), so the
    build plan lists it once. `#@ preaggregate` keeps its per-model companions,

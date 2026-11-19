@@ -56,6 +56,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "persist",
             "outcome": "used",
             "tableId": "4250ea814a3dff950753ae0c1d232c25465baaa30ddfe31fc97e7db31327e426"
           }
@@ -73,7 +74,10 @@
         },
         "servedBy": {
           "kind": "materialized",
-          "tableId": "4250ea814a3dff950753ae0c1d232c25465baaa30ddfe31fc97e7db31327e426"
+          "origin": "persist",
+          "tableId": "4250ea814a3dff950753ae0c1d232c25465baaa30ddfe31fc97e7db31327e426",
+          "tier": "storage",
+          "via": "served_copy"
         },
         "warnings": []
       },
@@ -125,6 +129,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "persist",
             "outcome": "used",
             "tableId": "4250ea814a3dff950753ae0c1d232c25465baaa30ddfe31fc97e7db31327e426"
           }
@@ -142,7 +147,10 @@
         },
         "servedBy": {
           "kind": "materialized",
-          "tableId": "4250ea814a3dff950753ae0c1d232c25465baaa30ddfe31fc97e7db31327e426"
+          "origin": "persist",
+          "tableId": "4250ea814a3dff950753ae0c1d232c25465baaa30ddfe31fc97e7db31327e426",
+          "tier": "storage",
+          "via": "served_copy"
         },
         "warnings": []
       },
@@ -194,8 +202,8 @@
         "considered": [
           {
             "kind": "materialized",
-            "outcome": "skipped",
-            "reason": "MISSING_FIELD",
+            "origin": "persist",
+            "outcome": "used",
             "tableId": "4250ea814a3dff950753ae0c1d232c25465baaa30ddfe31fc97e7db31327e426"
           }
         ],
@@ -211,13 +219,17 @@
           "sourceName": "from_view"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "origin": "persist",
+          "tableId": "4250ea814a3dff950753ae0c1d232c25465baaa30ddfe31fc97e7db31327e426",
+          "tier": "storage",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a named query",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -263,6 +275,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "persist",
             "outcome": "used",
             "tableId": "4250ea814a3dff950753ae0c1d232c25465baaa30ddfe31fc97e7db31327e426"
           }
@@ -280,7 +293,9 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "persist",
           "tableId": "4250ea814a3dff950753ae0c1d232c25465baaa30ddfe31fc97e7db31327e426",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []
@@ -333,6 +348,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "persist",
             "outcome": "used",
             "tableId": "4250ea814a3dff950753ae0c1d232c25465baaa30ddfe31fc97e7db31327e426"
           }
@@ -350,7 +366,9 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "persist",
           "tableId": "4250ea814a3dff950753ae0c1d232c25465baaa30ddfe31fc97e7db31327e426",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []
@@ -403,6 +421,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "persist",
             "outcome": "used",
             "tableId": "4250ea814a3dff950753ae0c1d232c25465baaa30ddfe31fc97e7db31327e426"
           }
@@ -420,7 +439,9 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "persist",
           "tableId": "4250ea814a3dff950753ae0c1d232c25465baaa30ddfe31fc97e7db31327e426",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []

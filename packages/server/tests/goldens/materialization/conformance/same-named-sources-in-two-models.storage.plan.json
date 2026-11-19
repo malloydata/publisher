@@ -33,6 +33,10 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "summary@<pkg>/a.malloy": "persist",
+      "summary@<pkg>/b.malloy": "persist"
+    },
     "materializePlans": {},
     "rollupPlans": {},
     "sourceGateOutcomes": {
@@ -46,8 +50,8 @@
       }
     },
     "sourceModelPaths": {
-      "summary@<pkg>/a.malloy": "c.malloy",
-      "summary@<pkg>/b.malloy": "c.malloy"
+      "summary@<pkg>/a.malloy": "a.malloy",
+      "summary@<pkg>/b.malloy": "b.malloy"
     }
   },
   "loadWarnings": [],
@@ -91,6 +95,8 @@
         ]
       }
     ],
+    "omittedFiles": [],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "summary@<pkg>/a.malloy": {
@@ -111,7 +117,7 @@
         "connectionName": "duckdb",
         "dialect": "duckdb",
         "freshness": null,
-        "modelPath": "c.malloy",
+        "modelPath": "a.malloy",
         "name": "placed",
         "origin": "persist",
         "preaggregate": null,
@@ -139,7 +145,7 @@
         "connectionName": "duckdb",
         "dialect": "duckdb",
         "freshness": null,
-        "modelPath": "c.malloy",
+        "modelPath": "b.malloy",
         "name": "shipped",
         "origin": "persist",
         "preaggregate": null,

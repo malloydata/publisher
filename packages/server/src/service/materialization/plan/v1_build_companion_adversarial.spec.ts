@@ -7,6 +7,10 @@
  * with the flag written by its author plans under `off` (main's path).
  */
 
+import {
+   gatesIn,
+   sourcesIn,
+} from "../../../test_helpers/materialization_test_fixtures";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {
    FixedConnectionMap,
@@ -46,16 +50,16 @@ function reader(overlay: ReadonlyMap<string, string>): URLReader {
 async function plan(
    files: Record<string, string>,
    modelPath: string,
-   mode: "off" | "on",
+   // A label only since the switch retired: an unflagged file is planned
+   // from its build copy, a flagged one from itself.
+   _mode: "off" | "on",
 ): Promise<BuildPlanParts> {
    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "v1-build-companion-"));
    for (const [f, text] of Object.entries(files)) {
       fs.mkdirSync(path.dirname(path.join(dir, f)), { recursive: true });
       fs.writeFileSync(path.join(dir, f), text);
    }
-   const { restore } = installSettings({
-      env: { PUBLISHER_V1_SERVED_COPY: mode },
-   });
+   const { restore } = installSettings({ env: {} });
    try {
       const base = pathToFileURL(dir + "/");
       const runtime = new Runtime({
@@ -76,7 +80,6 @@ async function plan(
             runtime: new Runtime({ urlReader: reader(overlay), connections }),
             importBaseURL: base,
          }),
-         synthesized: null,
       });
       return parts;
    } finally {
@@ -90,7 +93,7 @@ async function addresses(
 ): Promise<Record<string, string>> {
    const digests = { duckdb: await duckdb.getDigest() };
    const out: Record<string, string> = {};
-   for (const [id, s] of Object.entries(parts.sources)) {
+   for (const [id, s] of Object.entries(sourcesIn(parts))) {
       // sourceIDs carry the temp dir; key by name@file.
       const key = dir ? id.replace(dir, "") : id.replace(/^.*\//, "");
       out[key] = computeSourceEntityId(s, digests);
@@ -106,17 +109,18 @@ source: p is base extend { measure: n is count() } -> { group_by: a, b; aggregat
 `;
 
 describe("the v1 build copy on adversarial files", () => {
-   it("off: an unflagged #@ persist file plans nothing (guard 1 unchanged)", async () => {
-      const parts = await plan({ "m.malloy": PERSIST }, "m.malloy", "off");
-      expect(Object.keys(parts.sources)).toEqual([]);
-   });
-
    for (const [label, authorText] of [
       ["plain", PERSIST],
       ["leading comment and blank lines", `// header\n\n-- more\n${PERSIST}`],
       ["a model ## annotation first", `## doc="a model"\n${PERSIST}`],
       ["another ##! flag first", `##! experimental { join_types }\n${PERSIST}`],
       ["a commented-out #@ persist too", `${PERSIST}\n// #@ persist\n`],
+      // Malloy reads `persist` anywhere on the line; the copy must too, or
+      // the source is planned nowhere and reported nowhere.
+      [
+         "persist after another key on its #@ line",
+         PERSIST.replace("#@ persist", "#@ name=p_t persist"),
+      ],
    ] as const) {
       it(`on: ${label} plans what the author-flagged file plans off`, async () => {
          const on = await plan({ "m.malloy": authorText }, "m.malloy", "on");
@@ -130,8 +134,8 @@ describe("the v1 build copy on adversarial files", () => {
          expect(a).toEqual(await addresses(off));
          expect(on.droppedPersistSources).toEqual(off.droppedPersistSources);
          expect(on.annotationFindings).toEqual(off.annotationFindings);
-         expect(Object.values(on.sourceGateOutcomes)).toEqual(
-            Object.values(off.sourceGateOutcomes),
+         expect(Object.values(gatesIn(on))).toEqual(
+            Object.values(gatesIn(off)),
          );
          expect(on.builds.length).toBe(off.builds.length);
       });
@@ -157,10 +161,10 @@ describe("the v1 build copy on adversarial files", () => {
       const files = { "lib/p.malloy": PERSIST };
       const m = `import "lib/p.malloy"\nsource: q is p extend {}\n`;
       const on = await plan({ ...files, "m.malloy": m }, "m.malloy", "on");
-      expect(Object.keys(on.sources)).toEqual([]);
+      expect(Object.keys(sourcesIn(on))).toEqual([]);
       // the declaring file plans it
       const lib = await plan(files, "lib/p.malloy", "on");
-      expect(Object.keys(lib.sources).length).toBe(1);
+      expect(Object.keys(sourcesIn(lib)).length).toBe(1);
    });
 
    it("on: a broken #@ line's finding names the author's line, not the copy's", async () => {

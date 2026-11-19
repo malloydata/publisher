@@ -14,7 +14,7 @@
 // arbitrary DDL.
 //
 // The fix is at the publish-time trust boundary, not in the shared quoting helper:
-// `assertPersistNamesQuoted` already rejects an UNQUOTED name; it is extended to
+// `persistNameProblems` already rejects an UNQUOTED name; it is extended to
 // also reject a quoted name whose content is not a plain dialect identifier path
 // (letters/digits/underscore segments joined by dots). This keeps the byte-identical
 // CREATE/serve quoting contract untouched while making a malicious name un-publishable.
@@ -23,10 +23,9 @@
 // content check lands, which is the proof the injection is reachable.
 
 import { describe, expect, it } from "bun:test";
-import { ModelCompilationError } from "../errors";
-import { assertPersistNamesQuoted } from "./materialization/plan/persist_annotation_validation";
+import { persistNameProblems } from "./materialization/plan/persist_annotation_validation";
 
-describe("assertPersistNamesQuoted identifier-injection hardening (F-3)", () => {
+describe("persistNameProblems identifier-injection hardening (F-3)", () => {
    // Each payload is a quoted persist name whose content breaks out of the
    // identifier when inlined into DDL. Rejecting them at publish is the fix.
    const injectionPayloads: Array<{ desc: string; line: string }> = [
@@ -66,23 +65,19 @@ describe("assertPersistNamesQuoted identifier-injection hardening (F-3)", () => 
 
    for (const { desc, line } of injectionPayloads) {
       it(`rejects a quoted persist name with ${desc}`, () => {
-         expect(() => assertPersistNamesQuoted(line, "m.malloy")).toThrow(
-            ModelCompilationError,
-         );
+         expect(persistNameProblems(line, "m.malloy")).toHaveLength(1);
       });
    }
 
    it("names the offending annotation and the allowed shape in the error", () => {
-      let caught: Error | undefined;
-      try {
-         assertPersistNamesQuoted(`#@ persist name="a\\"b"`, "m.malloy");
-      } catch (e) {
-         caught = e as Error;
-      }
-      expect(caught).toBeInstanceOf(ModelCompilationError);
+      const [problem] = persistNameProblems(
+         `#@ persist name="a\\"b"`,
+         "m.malloy",
+      );
+      expect(problem.line).toEndWith("[persist-invalid]");
       // Actionable: the message must name the offending value and the allowed shape.
-      expect(caught?.message).toContain("m.malloy");
-      expect(caught?.message).toMatch(/letters|identifier|hyphen/);
+      expect(problem.line).toContain("m.malloy");
+      expect(problem.line).toMatch(/letters|identifier|hyphen/);
    });
 
    // The grammar mirrors the control plane's physical-name allowlist
@@ -101,7 +96,7 @@ describe("assertPersistNamesQuoted identifier-injection hardening (F-3)", () => 
    ];
    for (const line of legitimate) {
       it(`still accepts the legitimate name ${line}`, () => {
-         expect(() => assertPersistNamesQuoted(line, "m.malloy")).not.toThrow();
+         expect(persistNameProblems(line, "m.malloy")).toEqual([]);
       });
    }
 });

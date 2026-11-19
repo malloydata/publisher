@@ -15,33 +15,7 @@
       "customer_dim:serves",
       "order_facts:serves"
     ],
-    "warnings": [
-      {
-        "code": "served-copy-not-served",
-        "message": "This source's re-root on its stored table does not compile in the served copy (the server log has the compiler's message). The served copy leaves it as written, so it answers live, and the model's other stored sources still serve. This is a Publisher bug; please report it.",
-        "subject": "customer_dim"
-      },
-      {
-        "code": "served-copy-not-served",
-        "message": "This source's re-root on its stored table does not compile in the served copy (the server log has the compiler's message). The served copy leaves it as written, so it answers live, and the model's other stored sources still serve. This is a Publisher bug; please report it.",
-        "subject": "customer_dim"
-      },
-      {
-        "code": "served-copy-not-served",
-        "message": "This source's re-root on its stored table does not compile in the served copy (the server log has the compiler's message). The served copy leaves it as written, so it answers live, and the model's other stored sources still serve. This is a Publisher bug; please report it.",
-        "subject": "order_facts"
-      },
-      {
-        "code": "served-copy-not-served",
-        "message": "This source's re-root on its stored table does not compile in the served copy (the server log has the compiler's message). The served copy leaves it as written, so it answers live, and the model's other stored sources still serve. This is a Publisher bug; please report it.",
-        "subject": "customer_dim"
-      },
-      {
-        "code": "served-copy-not-served",
-        "message": "This source's re-root on its stored table does not compile in the served copy (the server log has the compiler's message). The served copy leaves it as written, so it answers live, and the model's other stored sources still serve. This is a Publisher bug; please report it.",
-        "subject": "order_facts"
-      }
-    ]
+    "warnings": []
   },
   "queries": [
     {
@@ -92,8 +66,8 @@
         "considered": [
           {
             "kind": "materialized",
-            "outcome": "skipped",
-            "reason": "MISSING_FIELD",
+            "origin": "persist",
+            "outcome": "used",
             "tableId": "f68477c5c4c6c8217554876309cf1fe3d9adc67f71f024f9e5ccfd74d6ad1bee"
           }
         ],
@@ -110,13 +84,17 @@
           "sourceName": "order_facts"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "origin": "persist",
+          "tableId": "f68477c5c4c6c8217554876309cf1fe3d9adc67f71f024f9e5ccfd74d6ad1bee",
+          "tier": "storage",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a measure over the joined source's internal column, from the index",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -162,8 +140,8 @@
         "considered": [
           {
             "kind": "materialized",
-            "outcome": "skipped",
-            "reason": "MISSING_FIELD",
+            "origin": "persist",
+            "outcome": "used",
             "tableId": "d14b4a5efb2857d27e71fe2eaae8c5206671492506854fc37a6bfa2c53f2528e"
           }
         ],
@@ -179,13 +157,17 @@
           "sourceName": "customer_dim"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "origin": "persist",
+          "tableId": "d14b4a5efb2857d27e71fe2eaae8c5206671492506854fc37a6bfa2c53f2528e",
+          "tier": "storage",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "the joined source's measure, in its own file",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -236,8 +218,8 @@
         "considered": [
           {
             "kind": "materialized",
-            "outcome": "skipped",
-            "reason": "MISSING_FIELD",
+            "origin": "persist",
+            "outcome": "used",
             "tableId": "f68477c5c4c6c8217554876309cf1fe3d9adc67f71f024f9e5ccfd74d6ad1bee"
           }
         ],
@@ -254,13 +236,17 @@
           "sourceName": "order_facts"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "origin": "persist",
+          "tableId": "f68477c5c4c6c8217554876309cf1fe3d9adc67f71f024f9e5ccfd74d6ad1bee",
+          "tier": "storage",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a measure over the joined source's internal column, from the index",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "on"
     },
     {
@@ -306,8 +292,8 @@
         "considered": [
           {
             "kind": "materialized",
-            "outcome": "skipped",
-            "reason": "MISSING_FIELD",
+            "origin": "persist",
+            "outcome": "used",
             "tableId": "d14b4a5efb2857d27e71fe2eaae8c5206671492506854fc37a6bfa2c53f2528e"
           }
         ],
@@ -323,13 +309,17 @@
           "sourceName": "customer_dim"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "origin": "persist",
+          "tableId": "d14b4a5efb2857d27e71fe2eaae8c5206671492506854fc37a6bfa2c53f2528e",
+          "tier": "storage",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "the joined source's measure, in its own file",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "on"
     }
   ]

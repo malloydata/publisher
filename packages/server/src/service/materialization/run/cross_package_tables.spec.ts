@@ -3,7 +3,6 @@
 
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "fs";
-import * as os from "os";
 import * as path from "path";
 import { unrecordedAudit } from "../../access_record";
 import type {
@@ -11,16 +10,18 @@ import type {
    ResourceRepository,
 } from "../../../storage/DatabaseInterface";
 import { DuckDBConnection } from "../../../storage/duckdb/DuckDBConnection";
-import { createDuckDBRepository } from "../../../storage/duckdb/DuckDBRepository";
-import { initializeSchema } from "../../../storage/duckdb/schema";
 import { installSettings } from "../../../test_helpers/settings_env";
 import { writePackageFiles } from "../../../test_helpers/temp_package";
 import { Environment } from "../../environment";
-import type { EnvironmentStore } from "../../environment_store";
 import { parsePackageName } from "../../identity";
-import { packageTableSuffix } from "../../versions/materialization_scope";
+import { autoRunTableName } from "../../../test_helpers/readable_table_name";
 import { MaterializationService } from "./materialization_service";
 import { ownedTableComment, TABLE_OWNED_ELSEWHERE } from "./table_ownership";
+import {
+   openTempStorage,
+   disposeTempStorage,
+} from "../../../test_helpers/temp_storage";
+import { serviceOverEnvironment } from "../../../test_helpers/materialization_service_harness";
 
 /**
  * Two packages of one environment, on one shared warehouse connection, each
@@ -28,7 +29,7 @@ import { ownedTableComment, TABLE_OWNED_ELSEWHERE } from "./table_ownership";
  * different rows. Real builds through the service, real queries: each
  * package must answer with its own rows, served from its own table or live,
  * never the other's. The environment case (two environments on one schema)
- * is the same rule, since the suffix hashes the environment too
+ * is the same rule, since the name's hash covers the environment too
  * (self_table_naming.spec.ts); it runs end to end on Postgres and DuckLake in
  * tests/integration/materialization/cross_package_tables.integration.spec.ts.
  */
@@ -43,8 +44,9 @@ const WAREHOUSE = {
    duckdbConnection: { setupSQL: "SELECT 1" },
 } as const;
 
-const suffix = (packageName: string) =>
-   packageTableSuffix({ environmentName: ENV, packageName });
+/** The table a package's auto-run builds `summary` into. */
+const summaryTable = (packageName: string) =>
+   autoRunTableName(ENV, packageName, "summary", { modelPath: "model.malloy" });
 
 function model(who: string): string {
    return [
@@ -72,11 +74,13 @@ describe("two packages on one warehouse connection", () => {
       restoreSettings = installSettings({
          env: { PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: "true" },
       }).restore;
-      root = fs.realpathSync(
-         fs.mkdtempSync(path.join(os.tmpdir(), "cross-package-tables-")),
-      );
-      envPath = path.join(root, "env");
-      fs.mkdirSync(envPath);
+      ({ root, envPath, db, repo } = await openTempStorage(
+         "cross-package-tables-",
+         {
+            id: ENV_ID,
+            name: ENV,
+         },
+      ));
       for (const pkg of ["pa", "pb"]) {
          writePackageFiles(
             path.join(envPath, pkg),
@@ -84,29 +88,18 @@ describe("two packages on one warehouse connection", () => {
             { manifest: { name: pkg, description: "fixture" } },
          );
       }
-      db = new DuckDBConnection(":memory:");
-      await db.initialize();
-      await initializeSchema(db);
-      await db.run(
-         "INSERT INTO environments (id, name, path, created_at, updated_at) VALUES (?, ?, ?, now(), now())",
-         [ENV_ID, ENV, envPath],
-      );
-      repo = createDuckDBRepository(db);
       env = await Environment.create(ENV, envPath, [WAREHOUSE as never]);
       await env.addPackage("pa");
       await env.addPackage("pb");
-      const store = {
-         storageManager: { getRepository: () => repo },
-         getEnvironment: async () => env,
-         getLoadedEnvironments: () => [env],
-      } as unknown as EnvironmentStore;
-      service = new MaterializationService(store);
+      service = serviceOverEnvironment(
+         () => repo,
+         () => env,
+      );
    });
 
    afterEach(async () => {
       await env.closeAllConnections().catch(() => undefined);
-      await db.close();
-      fs.rmSync(root, { recursive: true, force: true });
+      await disposeTempStorage({ db, root });
       restoreSettings();
    });
 
@@ -145,6 +138,17 @@ describe("two packages on one warehouse connection", () => {
             "SELECT table_name FROM duckdb_tables() WHERE schema_name = 'main' ORDER BY 1",
          )
       ).map((r) => String(r.table_name));
+   }
+
+   /** Where DuckDB's catalog says `table` is, as a mark names it. */
+   async function locationOf(table: string): Promise<string> {
+      return String(
+         (
+            await sql(
+               `SELECT database_name || '.' || schema_name || '.' || table_name AS loc FROM duckdb_tables() WHERE table_name = '${table}'`,
+            )
+         )[0]?.loc,
+      );
    }
 
    async function comment(table: string): Promise<unknown> {
@@ -196,9 +200,11 @@ describe("two packages on one warehouse connection", () => {
 
       // Default names are the package's own; the author's name= is one table.
       expect(await tables()).toEqual(
-         [`named_t`, `summary${suffix("pa")}`, `summary${suffix("pb")}`].sort(),
+         [`named_t`, summaryTable("pa"), summaryTable("pb")].sort(),
       );
-      expect(await comment("named_t")).toBe(ownedTableComment(`${ENV}/pa`));
+      expect(await comment("named_t")).toBe(
+         ownedTableComment(`${ENV}/pa`, await locationOf("named_t")),
+      );
       // pb's name= is held by pa's table: refused, coded, nothing written.
       const reasons = failureReasons(b);
       expect(reasons).toHaveLength(1);
@@ -206,8 +212,8 @@ describe("two packages on one warehouse connection", () => {
       expect(reasons[0]).toContain(`a table package '${ENV}/pa' built`);
 
       // Served from the stored tables (tampered values prove it), or live.
-      await tamper(`summary${suffix("pa")}`, "pa-stored");
-      await tamper(`summary${suffix("pb")}`, "pb-stored");
+      await tamper(summaryTable("pa"), "pa-stored");
+      await tamper(summaryTable("pb"), "pb-stored");
       await tamper("named_t", "pa-stored-named");
       expect(await who("pa", "summary")).toBe("pa-stored");
       expect(await who("pb", "summary")).toBe("pb-stored");
@@ -225,15 +231,19 @@ describe("two packages on one warehouse connection", () => {
       expect(await who("pa", "named")).toBe("pa-stored-named");
    });
 
-   it("deleting a run never drops a table another package has built at that name since", async () => {
+   it("deleting a run leaves a table another package has built at that name since", async () => {
       // pb builds `named_t` first; then the table is dropped outside
       // Publisher, and pa builds it.
       const b = await build("pb");
-      expect(await comment("named_t")).toBe(ownedTableComment(`${ENV}/pb`));
+      expect(await comment("named_t")).toBe(
+         ownedTableComment(`${ENV}/pb`, await locationOf("named_t")),
+      );
       await sql("DROP TABLE named_t");
       const a = await build("pa");
       expect(a.status).toBe("MANIFEST_FILE_READY");
-      expect(await comment("named_t")).toBe(ownedTableComment(`${ENV}/pa`));
+      expect(await comment("named_t")).toBe(
+         ownedTableComment(`${ENV}/pa`, await locationOf("named_t")),
+      );
       await tamper("named_t", "pa-stored-named");
 
       // pb's next build does not reuse the table its records name: it is
@@ -242,11 +252,8 @@ describe("two packages on one warehouse connection", () => {
       expect(failureReasons(b2).join(" ")).toContain(TABLE_OWNED_ELSEWHERE);
       expect(await who("pb", "named")).toBe("pb");
 
-      // Deleting pb's first run with its tables drops pb's own table and
-      // leaves pa's.
-      await service.deleteMaterialization(ENV, "pb", b.id, {
-         dropTables: true,
-      });
+      // Deleting pb's first run is record-only: pa's table stays.
+      await service.deleteMaterialization(ENV, "pb", b.id);
       expect(await tables()).toContain("named_t");
       expect(await who("pa", "named")).toBe("pa-stored-named");
    });
@@ -294,10 +301,12 @@ describe("two packages on one warehouse connection", () => {
          Object.values(a.manifest?.entries ?? {})
             .map((e) => e.physicalTableName)
             .sort(),
-      ).toEqual(["named_t", `summary${suffix("pa")}`].sort());
+      ).toEqual(["named_t", summaryTable("pa")].sort());
       // pa built first: its records name the unmarked `named_t`, so it
       // claimed it. pb's records name it too, but pa's mark decides.
-      expect(await comment("named_t")).toBe(ownedTableComment(`${ENV}/pa`));
+      expect(await comment("named_t")).toBe(
+         ownedTableComment(`${ENV}/pa`, await locationOf("named_t")),
+      );
       expect(failureReasons(b).join(" ")).toContain(TABLE_OWNED_ELSEWHERE);
       expect(await who("pa", "summary")).toBe("pa");
       expect(await who("pb", "summary")).toBe("pb");
@@ -319,7 +328,7 @@ describe("two packages on one warehouse connection", () => {
          // The table holds the rows of the package its mark names.
          const holder = refused[0] === a ? "pb" : "pa";
          expect(await comment("named_t")).toBe(
-            ownedTableComment(`${ENV}/${holder}`),
+            ownedTableComment(`${ENV}/${holder}`, await locationOf("named_t")),
          );
          expect((await sql("SELECT who FROM named_t"))[0].who).toBe(holder);
          expect(await who("pa", "named")).toBe("pa");
@@ -327,26 +336,23 @@ describe("two packages on one warehouse connection", () => {
       }
    });
 
-   it("a name= spelled as another package's own table name is refused", async () => {
+   it("a name= spelled as another package's own table name fails the load", async () => {
       fs.writeFileSync(
          path.join(envPath, "pa", "model.malloy"),
          [
             "##! experimental.persistence",
             `source: base1 is warehouse.sql("SELECT 'pa' AS who, 1 AS k")`,
-            `#@ persist name="summary${suffix("pb")}"`,
+            `#@ persist name="${summaryTable("pb")}"`,
             "source: summary is base1 -> { group_by: who }",
             "",
          ].join("\n"),
       );
-      await env.getPackage(parsePackageName("pa"), true);
-      // pa goes first, onto a free name: it would have built pb's table.
-      const a = await build("pa");
-      expect(failureReasons(a).join(" ")).toContain(TABLE_OWNED_ELSEWHERE);
-      expect(await tables()).toEqual([]);
+      // Invalid: it could build over pb's table, so it never loads to try
+      // (the build's own ownership check stays, behind it).
+      await expect(
+         env.getPackage(parsePackageName("pa"), true),
+      ).rejects.toThrow("[persist-invalid]");
       await build("pb");
-      await build("pa");
-      expect(await who("pa", "summary")).toBe("pa");
       expect(await who("pb", "summary")).toBe("pb");
-      expect(await tables()).toEqual([`named_t`, `summary${suffix("pb")}`]);
    });
 });

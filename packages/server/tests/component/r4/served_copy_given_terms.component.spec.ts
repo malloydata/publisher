@@ -19,7 +19,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { installSettings } from "../../../src/test_helpers/settings_env";
+import { useMaterializationOn } from "../../../src/test_helpers/settings_env";
 import {
    buildScenario,
    disposeScenarios,
@@ -109,14 +109,8 @@ async function expectEachCallerLive(
 }
 
 describe("R4: a given-reading where: is applied per caller in the served copy", () => {
-   let restore: () => void;
-   beforeAll(() => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
-   });
+   useMaterializationOn();
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 

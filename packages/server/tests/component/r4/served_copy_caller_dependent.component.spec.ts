@@ -13,12 +13,12 @@
  *  - the current time: read at two pinned clocks, each equal to live;
  *  - the query time zone: a `timezone:` query over a table that stores only
  *    zone-free computed dimensions is served, equal to live and different
- *    from the same query without the zone, a zone-dependent dimension
- *    declared on a base in the same file included (the served copy keeps
- *    that base's block); over a table that stores a zone-dependent one
- *    (declared on a base in another file, so stored as built) it is
- *    answered live, as it is over a table whose rows a zone-dependent
- *    `where:` filtered at build (the source's own, or a kept base's).
+ *    from the same query without the zone; over a table that stores a
+ *    zone-dependent one (declared on a base, in this file or another, or
+ *    on a materialized parent, so stored as built: the served copy keeps
+ *    only the source's own declaration) it is answered live, as it is over
+ *    a table whose rows a zone-dependent `where:` filtered at build. A source
+ *    whose given-reading `where:` a base writes is not built at all.
  *
  * The harness builds each generated source with its SQL as compiled and does
  * not run the eligibility gates, so a dimension that were stored would be
@@ -27,7 +27,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { installSettings } from "../../../src/test_helpers/settings_env";
+import { useMaterializationOn } from "../../../src/test_helpers/settings_env";
 import {
    buildScenario,
    disposeScenarios,
@@ -129,12 +129,9 @@ source: headed is (ev extend { dimension: mine is org = $ORG }) extend {
 const CALLERS = [{ ORG: "acme" }, { ORG: "globex" }];
 
 describe("R4: a caller-dependent dimension is computed at read, never stored (P9)", () => {
-   let restore: () => void;
    let fixture: R4Fixture;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: { "m.malloy": model, "far.malloy": farModel },
          seedSql,
@@ -143,7 +140,6 @@ describe("R4: a caller-dependent dimension is computed at read, never stored (P9
       });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 
@@ -175,8 +171,11 @@ describe("R4: a caller-dependent dimension is computed at read, never stored (P9
          (t) => `SELECT * FROM ${t("orders")} LIMIT 1`,
       );
       const stored = Object.keys(row).sort();
-      // base_hour too: declared on a base whose block the served copy keeps.
-      expect(stored).toEqual(["amt", "big", "id", "org", "ts"].sort());
+      // base_hour is stored: declared on a base, whose text the served copy
+      // does not keep, and zone-dependent only, so stored as built.
+      expect(stored).toEqual(
+         ["amt", "base_hour", "big", "id", "org", "ts"].sort(),
+      );
       const [localRow] = await fixture.storedSQL(
          (t) => `SELECT * FROM ${t("local")} LIMIT 1`,
       );
@@ -273,11 +272,13 @@ describe("R4: a caller-dependent dimension is computed at read, never stored (P9
          expect(fixture.buildReads.zonal_ext).toContain("zonal");
       });
 
-      it("leaves out the inherited zone-dependent dimension, and its own", async () => {
+      it("stores the inherited zone-dependent dimension as built, and leaves out its own", async () => {
          const [row] = await fixture.storedSQL(
             (t) => `SELECT * FROM ${t("zonal_ext")} LIMIT 1`,
          );
-         expect(Object.keys(row)).not.toContain("hr");
+         // `hr` is the parent's, so the extension's served copy does not keep
+         // its definition: stored in the build's zone. `hr_next` is its own.
+         expect(Object.keys(row)).toContain("hr");
          expect(Object.keys(row)).not.toContain("hr_next");
          const [parent] = await fixture.storedSQL(
             (t) => `SELECT * FROM ${t("zonal")} LIMIT 1`,
@@ -296,14 +297,14 @@ describe("R4: a caller-dependent dimension is computed at read, never stored (P9
          expect(rowDifference(run.live, run.served)).toBeUndefined();
       });
 
-      it("serves a timezone: query, computing the inherited hour at read in the kept block", async () => {
+      it("answers a timezone: query live over the extension's stored hour, and serves it from the parent's table", async () => {
          const run = await fixture.run({
             name: "zonal_ext zoned",
             malloy:
                "run: zonal_ext -> { timezone: 'America/Los_Angeles'; group_by: hr, hr_next; aggregate: total; order_by: hr }",
             givens: CALLERS[0],
          });
-         expect(run.servedVia).toBe("served_copy");
+         expect(run.servedVia).toBeUndefined();
          expect(rowDifference(run.live, run.served)).toBeUndefined();
          // The parent stores no zone-dependent dimension: served in the zone.
          const parent = await fixture.run({
@@ -374,50 +375,36 @@ describe("R4: a caller-dependent dimension is computed at read, never stored (P9
          expect(run.live).not.toEqual(utc.live);
       });
 
-      it("answers live over a table whose rows a kept base's timestamp literal filtered in the build's zone", async () => {
-         // `scoped_since_base` is kept (its `where:` reads a given, so the
-         // served copy re-applies its block over the table), and its other
-         // `where:` moves with the zone: at +05:30 it admits globex's row the
-         // build (in UTC) left out of the table. The kept block re-applies
-         // the cut-off at read, but cannot bring that row back, so the
-         // source is not zone-free and a `timezone:` query is answered live.
-         const globex = CALLERS[1];
-         const zonedQuery =
-            "run: scoped_since -> { timezone: 'Asia/Kolkata'; group_by: org; aggregate: total; order_by: org }";
-         const run = await fixture.run({
-            name: "scoped since zoned",
-            malloy: zonedQuery,
-            givens: globex,
-         });
-         expect(run.servedVia).toBeUndefined();
-         expect(rowDifference(run.live, run.served)).toBeUndefined();
-         fixture.setBindings(fixture.bindings);
-         const asIs = await fixture.runAsIs(zonedQuery, globex);
+      it("answers live a source whose given-reading where: a base writes: it is not built", async () => {
+         // `scoped_since_base` writes the given-reading term, so
+         // `scoped_since` is refused at plan and every query is live.
          expect(
-            (asIs.path?.considered ?? []).map((c) => [c.outcome, c.reason]),
-         ).toEqual([["skipped", "TIME_ZONE"]]);
-         // Without a zone the table answers, per caller, through the kept
-         // block; the zone changes globex's answer, so a served one could
-         // not have matched it.
-         const utc = await fixture.run({
-            name: "scoped since",
-            malloy:
-               "run: scoped_since -> { group_by: org; aggregate: total; order_by: org }",
-            givens: globex,
-         });
-         expect(utc.servedVia).toBe("served_copy");
-         expect(rowDifference(utc.live, utc.served)).toBeUndefined();
-         expect(run.live).not.toEqual(utc.live);
+            fixture.bindings.flatMap((b) => b.sourceIDs ?? []),
+         ).not.toContain(expect.stringMatching(/^scoped_since@/));
+         for (const malloy of [
+            "run: scoped_since -> { timezone: 'Asia/Kolkata'; group_by: org; aggregate: total; order_by: org }",
+            "run: scoped_since -> { group_by: org; aggregate: total; order_by: org }",
+         ]) {
+            for (const givens of CALLERS) {
+               const run = await fixture.run({
+                  name: `scoped since ${givens.ORG}`,
+                  malloy,
+                  givens,
+               });
+               expect(run.servedVia).toBeUndefined();
+               expect(rowDifference(run.live, run.served)).toBeUndefined();
+            }
+         }
       });
 
-      it("serves a timezone: query over a zone-dependent dimension declared on a base in the same file", async () => {
+      it("answers live a timezone: query over a zone-dependent dimension declared on a base in the same file", async () => {
          const run = await fixture.run({
             name: "orders zoned",
             malloy:
                "run: orders -> { timezone: 'America/Los_Angeles'; group_by: base_hour; aggregate: total; order_by: base_hour }",
             givens: CALLERS[0],
          });
-         expect(run.servedVia).toBe("served_copy");
+         expect(run.servedVia).toBeUndefined();
          expect(rowDifference(run.live, run.served)).toBeUndefined();
          const utc = await fixture.run({
             name: "orders unzoned",
@@ -426,6 +413,7 @@ describe("R4: a caller-dependent dimension is computed at read, never stored (P9
             givens: CALLERS[0],
          });
          expect(utc.servedVia).toBe("served_copy");
+         expect(rowDifference(utc.live, utc.served)).toBeUndefined();
          expect(run.live).not.toEqual(utc.live);
       });
 

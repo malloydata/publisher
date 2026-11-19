@@ -2,12 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "bun:test";
-import {
-   decomposeMeasure,
-   emitMeasureExpr,
-   isMeasureRefusal,
-   parseMeasureExpression,
-} from "./rollup_measure_grammar";
+import { decomposeMeasure, isMeasureRefusal } from "./rollup_measure_grammar";
+import { emitMeasureExpr } from "../text/read_text";
 
 /** A scope over a fixed set of measures. */
 function scope(measures: Record<string, string>) {
@@ -30,7 +26,7 @@ function render(measures: Record<string, string>, name = "m") {
    };
 }
 
-describe("the #(preaggregate) measure grammar", () => {
+describe("the #(rollup) measure grammar", () => {
    it("stores one partial per aggregate and merges count with sum", () => {
       expect(render({ m: "count()" })).toEqual({
          partials: ["count: count()"],
@@ -140,20 +136,14 @@ describe("the #(preaggregate) measure grammar", () => {
    });
 
    it("re-emits names through malloy_text, quoting a keyword", () => {
-      const parsed = parseMeasureExpression(
-         "`count`.sum() { where: `date` = 'x' }",
-      );
-      expect(parsed && emitMeasureExpr(parsed)).toBe(
-         "`count`.sum() { where: `date` = 'x' }",
-      );
       expect(
-         parseMeasureExpression("x.sum() { where: s = 'o\\'brien' }") &&
-            emitMeasureExpr(
-               parseMeasureExpression(
-                  "x.sum() { where: s = 'o\\'brien' }",
-               ) as never,
-            ),
-      ).toBe("x.sum() { where: s = 'o\\'brien' }");
+         render({ m: "`count`.sum() { where: `date` = 'x' }" }),
+      ).toMatchObject({
+         partials: ["sum: `count`.sum() { where: `date` = 'x' }"],
+      });
+      expect(render({ m: "x.sum() { where: s = 'o\\'brien' }" })).toMatchObject(
+         { partials: ["sum: x.sum() { where: s = 'o\\'brien' }"] },
+      );
    });
 
    it("never emits two minus signs together, which Malloy reads as a comment", () => {

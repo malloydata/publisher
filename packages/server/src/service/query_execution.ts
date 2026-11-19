@@ -11,6 +11,7 @@
 
 import { withSpan } from "../telemetry";
 import {
+   EMPTY_BUILD_MANIFEST,
    MalloyError,
    type QueryMaterializer,
    type Result,
@@ -18,7 +19,12 @@ import {
 import type { GovernedRunnable } from "./governance/governed_runnable";
 import * as Malloy from "@malloydata/malloy-interfaces";
 import { getDefaultQueryRowLimit } from "../config";
-import { BadRequestError, databaseAccessFailure } from "../errors";
+import {
+   BadRequestError,
+   databaseAccessFailure,
+   storageAccessFailure,
+} from "../errors";
+import { redactStorageUrls } from "../pg_helpers";
 import { logger } from "../logger";
 import { type QueryCapSource } from "../query_cap_metrics";
 import { bigIntReplacer } from "../json_utils";
@@ -67,6 +73,8 @@ export async function prepareAndRun(
       /** Emit a usage record when the executing connection is metered. */
       usage?: {
          metered: (connectionName: string) => boolean;
+         /** The DuckLake catalog of a metered connection, for its record. */
+         catalog?: (connectionName: string) => string | undefined;
          environment: string;
          package?: string;
       };
@@ -88,11 +96,22 @@ async function prepareAndRunUntraced(
       ) => QueryMetadata | undefined | Promise<QueryMetadata | undefined>;
       usage?: {
          metered: (connectionName: string) => boolean;
+         /** The DuckLake catalog of a metered connection, for its record. */
+         catalog?: (connectionName: string) => string | undefined;
          environment: string;
          package?: string;
       };
    },
 ): Promise<PreparedRun> {
+   // Never undefined: Malloy reads an undefined `buildManifest` as "use the
+   // Runtime's", and a host's manifest bind leaves the whole manifest on the
+   // Runtime, unfiltered by freshness. A caller with nothing to substitute
+   // (a strip that left nothing, the cutover's live leg, a serve shape) must
+   // read no table at all.
+   options = {
+      ...options,
+      buildManifest: options.buildManifest ?? EMPTY_BUILD_MANIFEST,
+   };
    const prepared = await runnable.getPreparedResult(options);
    const preparedLimit = prepared.resultExplore.limit;
    const rowLimitSource = queryRowLimitSource(preparedLimit);
@@ -117,6 +136,7 @@ async function prepareAndRunUntraced(
                  connection: prepared.connectionName,
                  surface: "serve",
                  package: usage.package,
+                 catalog: safeCatalog(usage.catalog, prepared.connectionName),
               },
               execute,
               (r) => r.data.rowCount,
@@ -160,6 +180,11 @@ interface RunErrorContext {
    modelPath: string;
    /** Prefix of the generic 400's message, e.g. `Query execution failed`. */
    failurePrefix: string;
+   /**
+    * What the caller read, in its own terms (the run target's source), for
+    * an answer that may not quote the driver's text.
+    */
+   subject?: string;
    /** Error classes that keep their own status rather than becoming a 400. */
    passThrough: readonly ErrorClass[];
    /** Logs an unclassified failure just before it becomes the generic 400. */
@@ -213,6 +238,10 @@ export function mapRunError(err: unknown, ctx: RunErrorContext): void {
    // ran, so a 400 would wrongly tell the caller to fix it.
    const accessFailure = databaseAccessFailure(err);
    if (accessFailure) throw accessFailure;
+   // The storage behind a table refused the read (403): the driver's text
+   // quotes the object's URL, so the answer names the source instead.
+   const storageFailure = storageAccessFailure(err, ctx.subject);
+   if (storageFailure) throw storageFailure;
 
    if (
       ctx.benignMessage !== undefined &&
@@ -221,7 +250,10 @@ export function mapRunError(err: unknown, ctx: RunErrorContext): void {
       return;
    }
    ctx.logFailure(errorMessage, err);
-   throw new BadRequestError(`${ctx.failurePrefix}: ${errorMessage}`);
+   // Driver text in a 4xx body names no storage path.
+   throw new BadRequestError(
+      redactStorageUrls(`${ctx.failurePrefix}: ${errorMessage}`),
+   );
 }
 
 /**
@@ -241,6 +273,18 @@ export function isGivenBindingFailure(err: unknown): boolean {
       Array.isArray(problems) &&
       problems.some((p) => isGivenCode((p as { code?: unknown })?.code))
    );
+}
+
+/** Reading a record's catalog must never fail a query either. */
+function safeCatalog(
+   catalog: ((connectionName: string) => string | undefined) | undefined,
+   connectionName: string,
+): string | undefined {
+   try {
+      return catalog?.(connectionName);
+   } catch {
+      return undefined;
+   }
 }
 
 /** A metering check must never fail a query. */

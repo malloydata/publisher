@@ -21,9 +21,10 @@
  * `LoadPackageError`, which `Package.loadViaWorker` rewraps as a 503 (there
  * is no in-process fallback).
  *
- *   main  ──▶ worker:  LoadPackageRequest, ShutdownRequest,
- *                      *Response (correlated by requestId)
- *   worker ──▶ main:   LoadPackageResult | LoadPackageError, ReadyMessage,
+ *   main  ──▶ worker:  LoadPackageRequest, CompileServedCopyRequest,
+ *                      ShutdownRequest, *Response (correlated by requestId)
+ *   worker ──▶ main:   LoadPackageResult | LoadPackageError,
+ *                      CompileServedCopyResult, ReadyMessage,
  *                      WorkerLogMessage, and the proxy requests
  *                      (connection metadata, schema fetches, non-file URLs)
  *
@@ -34,8 +35,12 @@
  * fail-closed deny.
  */
 
-import type { EligibilityRefusalReason } from "../materialization_metrics";
-import type { BuildPlanOutcome } from "../service/materialization/plan/build_plan";
+import type { SerializedNotebookCell } from "./notebook_cell_wire";
+import type { PackageAnnotationFinding } from "../service/annotation_reader";
+import type {
+   EligibilityRefusals,
+   PackagePlan,
+} from "../service/materialization/domain/package_plan";
 import type { SQLSourceDef, TableSourceDef } from "@malloydata/malloy";
 import type {
    PackageMaterializationConfig,
@@ -55,8 +60,18 @@ import type { ModelEntitiesPlan } from "../service/entities/plan";
  *
  * 2: `SerializedModel.entities`, the model's entities plan
  * (`LoadPackageRequest.withEntities`).
+ *
+ * 3: `SerializedModel.governsAccess`.
+ *
+ * 4: every field of a build plan's outcome is sent, so
+ * the pool reads none as missing.
+ *
+ * 5: the served-copy compile job ({@link CompileServedCopyRequest}).
+ *
+ * 6: the build plan is sent as its `PackagePlan` (its tables, builds and
+ * addresses as data), and the pre-aggregation companion fields are gone.
  */
-export const PACKAGE_LOAD_PROTOCOL_VERSION = 2;
+export const PACKAGE_LOAD_PROTOCOL_VERSION = 6;
 
 // ──────────────────────────────────────────────────────────────────────
 // Direction: main ──▶ worker (load-package job)
@@ -70,6 +85,12 @@ export const PACKAGE_LOAD_PROTOCOL_VERSION = 2;
 export interface ConnectionMetadata {
    name: string;
    dialectName: string;
+   /**
+    * The connection's configured type (`postgres`, `duckdb`, `ducklake`, ...),
+    * which the build plan's `storage=` eligibility reads; absent when the main
+    * thread recorded none.
+    */
+   connectionType?: string;
    digest: string;
    /**
     * Identifies the main thread's connection instance, so the worker's schema
@@ -117,18 +138,19 @@ export interface LoadPackageRequest {
    computeBuildPlan?: boolean;
    /**
     * How long into the job the worker keeps doing optional work for the main
-    * thread (render-tag results, pre-aggregation companions, build plan).
-    * Checked before each render-tag target and each companion; past it, the
+    * thread (render-tag results, entities, build plan). Checked before each
+    * render-tag target and each model's plan parts; past it, the
     * remaining work (and the plan, once any model's parts are missing) is left
     * to the main thread. The pool's jobLimitMs adds room for it.
     */
    mainThreadWorkBudgetMs: number;
    /**
-    * Compile each model's pre-aggregation companion for the main thread to
-    * hydrate (see SerializedModel.preaggregateCompanion). Set by the loads
-    * that serve the package; a compile preview does not serve it.
+    * The package is a published version (its version owns its runs' tables
+    * when its scope is `"version"`), so its tables take readable names whose
+    * hash covers the version, which decides which sources share a table.
+    * Absent: unversioned, whose `name=`s are written as given.
     */
-   withPreaggregateCompanions?: boolean;
+   publishedVersion?: boolean;
    /**
     * Plan each `.malloy` model's entities for the main thread to resolve (see
     * SerializedModel.entities). Set by the loads that compute the package's
@@ -167,12 +189,6 @@ export interface SerializedModel {
     * belong to the pre-edit text. `.malloy` models only.
     */
    modelSourceText?: string;
-   /**
-    * Set when the model joins sources across connections (#6982) and was
-    * loaded, behind the materialize switch, from its build view: the
-    * definitions left out (`LeftOutDefinition[]`).
-    */
-   crossConnectionLeftOut?: unknown[];
    /** Accumulated dataStyles from sibling `.styles.json` files. */
    dataStyles?: unknown;
    /** Wall-clock ms spent compiling this single model in the worker. */
@@ -182,12 +198,14 @@ export interface SerializedModel {
    /** Set when the model failed to compile. */
    compilationError?: SerializedError;
    /**
-    * Non-fatal `#(authorize)` load-time findings, logged by the main thread:
-    * a gate inherited (judged by shared note object, not by text) at an entry
-    * point where it cannot be expressed. The model still serves; that entry
-    * point denies every request (`Model.resolveGateShape`).
+    * Non-fatal gate findings at load (`GateLoadWarning`), logged by the main
+    * thread and carried on the package's warnings: a gate inherited (judged
+    * by shared note object, not by text) at an entry point where it cannot be
+    * expressed, so that entry point denies every request
+    * (`Model.resolveGateShape`), or a source-line gate that reads no given or
+    * negates a membership test. The model still serves.
     */
-   authorizeWarnings?: string[];
+   gateWarnings?: { sourceName: string; code: string; message: string }[];
    /**
     * Prepared `Malloy.Result`s for the model's render-tag targets, for the
     * main thread's tag validation (the renderer cannot load in the worker,
@@ -197,12 +215,14 @@ export interface SerializedModel {
     */
    renderTagResults?: { label: string; result?: unknown }[];
    /**
-    * The model's pre-aggregation companion, for the main thread to hydrate
-    * rather than compile (see Model.buildPreaggregateServeModel). `{}` when
-    * there is none or it failed; absent when not attempted, and the main
-    * thread compiles it.
+    * SHA-256 of `renderTagResults` as JSON, set only when they cover every
+    * render-tag target. The results are the whole input of the tag check, so
+    * the main thread keys its findings cache on this digest and skips the
+    * check for a model it has already judged (ms2data/service#7795). It
+    * covers what model text alone would miss: a table whose schema changed
+    * under the same text prepares different results.
     */
-   preaggregateCompanion?: { modelDef?: unknown };
+   renderTagResultsDigest?: string;
    /**
     * The model's entities, planned before its sources' queryability is known
     * (`service/entities/plan.ts`); the main thread resolves it against the
@@ -211,22 +231,16 @@ export interface SerializedModel {
     * then plans it itself.
     */
    entities?: ModelEntitiesPlan;
+   /**
+    * Whether `modelDef` governs access (`governsAccess` in
+    * governance/ir/array_query.ts), answered here so the main thread never
+    * walks a model that governs nothing; it notes this on the hydrated
+    * `modelDef`. Absent when the model did not compile.
+    */
+   governsAccess?: boolean;
 }
 
-export interface SerializedNotebookCell {
-   type: "code" | "markdown";
-   /** Raw cell text. */
-   text: string;
-   /**
-    * The cell's ModelDef at its point in the `extendModel` chain, hydrated by
-    * the main thread so cell-level queries compile in the right scope.
-    */
-   cellModelDef?: unknown;
-   /** The cell's final QueryDef, hydrated by the main thread without recompiling. */
-   cellQueryDef?: unknown;
-   newSources?: unknown[];
-   queryInfo?: unknown;
-}
+export type { SerializedNotebookCell } from "./notebook_cell_wire";
 
 export interface LoadPackageResult {
    type: "load-package-result";
@@ -304,6 +318,19 @@ export interface WorkerLogMessage {
 }
 
 /**
+ * An unhandled promise rejection caught in the worker, reported so the main
+ * thread logs it and counts it in `publisher_unhandled_rejection_total`. The
+ * worker's own logger has no job context in a rejection listener (Bun's
+ * AsyncLocalStorage is empty there), so a log written in place would carry no
+ * job and reach only the worker's stdout.
+ */
+export interface WorkerUnhandledRejectionMessage {
+   type: "unhandled-rejection";
+   message: string;
+   stack?: string;
+}
+
+/**
  * The package build plan derived from this compile, so the main thread need
  * not compile again. `durationMs` is a ceiling (other compiles interleave). A
  * failure fails the plan, not the load.
@@ -311,12 +338,11 @@ export interface WorkerLogMessage {
 export type WorkerBuildPlan =
    | {
         ok: true;
-        outcome: BuildPlanOutcome;
+        /** Its eligibility refusals are counted on it (`eligibilityRefused`). */
+        packagePlan: PackagePlan<PackageAnnotationFinding>;
         durationMs: number;
         /** Connections whose digest could not be read (see resolveConnectionDigests). */
         digestSkipped: string[];
-        /** Eligibility refusals counted while deriving it, by reason. */
-        eligibilityRefused: Partial<Record<EligibilityRefusalReason, number>>;
      }
    | {
         ok: false;
@@ -325,7 +351,7 @@ export type WorkerBuildPlan =
         /** Connections whose digest could not be read before it failed. */
         digestSkipped: string[];
         /** Refusals counted before the derivation failed. */
-        eligibilityRefused: Partial<Record<EligibilityRefusalReason, number>>;
+        eligibilityRefused: EligibilityRefusals;
      };
 
 export interface LoadPackageError {
@@ -356,6 +382,52 @@ export interface SerializedErrno {
    code: string;
    syscall?: string;
    path?: string;
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// The served-copy compile job (main ──▶ worker ──▶ main)
+// ──────────────────────────────────────────────────────────────────────
+
+/**
+ * Compile one pass of a model's served copy (served_copy_serve.ts): the
+ * package's model over the re-rooted files, read in place of the package's
+ * own. The main thread writes the files and hydrates the `modelDef` that
+ * comes back; connections are proxied, as for a package load, against the
+ * served copy's own connections (the package's, and its storage
+ * destinations under their aliases).
+ */
+export interface CompileServedCopyRequest {
+   type: "compile-served-copy";
+   requestId: string;
+   /** Absolute path to the package directory on disk. */
+   packagePath: string;
+   /** Scopes the worker's schema cache, as {@link LoadPackageRequest.environmentName}. */
+   environmentName: string;
+   /** The model the copy is of, relative to the package. */
+   modelPath: string;
+   /** The connection an unnamed lookup resolves to. */
+   defaultConnectionName: string | null;
+   /** The re-rooted files, each keyed by its overlay key (`overlay_key.ts`). */
+   files: [string, string][];
+}
+
+/**
+ * A served-copy compile's outcome: the compiled `modelDef`, or the compile
+ * failure, in-band so the main thread reads it as the inline compile's
+ * failure (a `MalloyError` keeps its problems). A failure of the job itself
+ * (a timeout, a crash) rejects instead.
+ */
+export interface CompileServedCopyResult {
+   type: "compile-served-copy-result";
+   requestId: string;
+   /** The sender's {@link PACKAGE_LOAD_PROTOCOL_VERSION}. */
+   protocolVersion: number;
+   /** Set when the copy compiled. A `ModelDef`, wire-typed `unknown`. */
+   modelDef?: unknown;
+   /** Set when it did not. */
+   error?: SerializedError;
+   /** Wall-clock ms the compile took in the worker. */
+   compileDurationMs: number;
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -467,6 +539,7 @@ export interface ReadyMessage {
 
 export type MainToWorkerMessage =
    | LoadPackageRequest
+   | CompileServedCopyRequest
    | ConnectionMetadataResponse
    | SchemaForTablesResponse
    | SchemaForSqlResponse
@@ -476,10 +549,12 @@ export type MainToWorkerMessage =
 
 export type WorkerToMainMessage =
    | LoadPackageResult
+   | CompileServedCopyResult
    | LoadPackageError
    | ConnectionMetadataRequest
    | SchemaForTablesRequest
    | SchemaForSqlRequest
    | ReadUrlRequest
    | WorkerLogMessage
+   | WorkerUnhandledRejectionMessage
    | ReadyMessage;

@@ -64,8 +64,8 @@ server that cannot be reached as unreachable (502, `CONNECTION_FAILED`). Two lim
   error rather than 424, as it does for Postgres there.
 
 The dialect is **experimental** upstream. Publisher accepts it on the author's behalf, so a model
-needs no `##! experimental.dialect.sqlserver` pragma. The connection is **read-only**: a colocated
-`#@ persist` on a SQL Server source is refused at load with reason `read_only_dialect` and the
+needs no `##! experimental.dialect.sqlserver` pragma. The connection is **read-only**: a database
+`#@ persist` on a SQL Server source is refused at load with reason `connection_cannot_hold_table` and the
 source serves live. The connector's README lists what the dialect does not translate yet (`nest:`,
 a boolean used as a condition, `all()`/`exclude()`, regular expressions before SQL Server 2025).
 
@@ -457,7 +457,7 @@ applies `statementTimeoutMilliseconds`, the same way; its `sslmode` is described
   timeout is merged into them, so its other server settings are kept; a `statement_timeout`
   already in them is replaced by this field, with a warning logged. A connection pooler in
   transaction mode may not carry a session setting from one statement to the next. The timeout
-  bounds every statement on the connection, including persisted-source builds: a colocated
+  bounds every statement on the connection, including persisted-source builds: a database
   `#@ persist` build and a federated `storage=` build run on sessions that carry it, so size it
   for the longest build, not only for interactive queries.
 

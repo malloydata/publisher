@@ -16,6 +16,10 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "daily@<hammer>/rfs/rfs.malloy": "persist",
+      "weekly@<hammer>/rfs/rfs.malloy": "persist"
+    },
     "materializePlans": {},
     "rollupPlans": {},
     "sourceGateOutcomes": {
@@ -34,7 +38,6 @@
     }
   },
   "rollupsKeepingGates": [],
-  "rollupsOverStoredBase": [],
   "wirePlan": {
     "graphs": [
       {
@@ -53,6 +56,8 @@
         ]
       }
     ],
+    "omittedFiles": [],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "daily@<hammer>/rfs/rfs.malloy": {

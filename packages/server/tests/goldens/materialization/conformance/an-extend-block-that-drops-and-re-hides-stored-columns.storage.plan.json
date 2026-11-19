@@ -15,6 +15,10 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "dropped@<pkg>/m.malloy": "persist",
+      "rehidden@<pkg>/m.malloy": "persist"
+    },
     "materializePlans": {},
     "rollupPlans": {},
     "sourceGateOutcomes": {
@@ -51,6 +55,8 @@
         ]
       }
     ],
+    "omittedFiles": [],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "dropped@<pkg>/m.malloy": {

@@ -8,7 +8,7 @@
       },
       {
         "name": "orders_wide_local",
-        "tier": "colocated"
+        "tier": "database"
       }
     ],
     "verdicts": [
@@ -63,11 +63,19 @@
       "equalToLive": true,
       "malloy": "run: orders_wide -> { group_by: customers.segment; aggregate: order_count, total }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "origin": "materialize",
+            "outcome": "used",
+            "tableId": "e21cb38810563b21fbe28f4348e65671976629e516095208d031f9f3263acbf1"
+          }
+        ],
         "notConsidered": [
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
             "sourceName": "orders_wide_local",
             "tableId": "af106e366ef6b6a3cc9c6879b9ee78042dd3107bb9cbc7a746ad4a9f07863223"
@@ -85,13 +93,17 @@
           "sourceName": "orders_wide"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "origin": "materialize",
+          "tableId": "e21cb38810563b21fbe28f4348e65671976629e516095208d031f9f3263acbf1",
+          "tier": "storage",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a joined dimension, storage=",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -134,11 +146,19 @@
       "equalToLive": true,
       "malloy": "run: orders_wide -> { group_by: customer_region; aggregate: customers_ordering }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "origin": "materialize",
+            "outcome": "used",
+            "tableId": "e21cb38810563b21fbe28f4348e65671976629e516095208d031f9f3263acbf1"
+          }
+        ],
         "notConsidered": [
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
             "sourceName": "orders_wide_local",
             "tableId": "af106e366ef6b6a3cc9c6879b9ee78042dd3107bb9cbc7a746ad4a9f07863223"
@@ -155,13 +175,17 @@
           "sourceName": "orders_wide"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "origin": "materialize",
+          "tableId": "e21cb38810563b21fbe28f4348e65671976629e516095208d031f9f3263acbf1",
+          "tier": "storage",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a dimension reading the join",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -209,11 +233,19 @@
       "equalToLive": true,
       "malloy": "run: orders_wide -> by_segment",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "origin": "materialize",
+            "outcome": "used",
+            "tableId": "e21cb38810563b21fbe28f4348e65671976629e516095208d031f9f3263acbf1"
+          }
+        ],
         "notConsidered": [
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
             "sourceName": "orders_wide_local",
             "tableId": "af106e366ef6b6a3cc9c6879b9ee78042dd3107bb9cbc7a746ad4a9f07863223"
@@ -231,13 +263,17 @@
           "sourceName": "orders_wide"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "origin": "materialize",
+          "tableId": "e21cb38810563b21fbe28f4348e65671976629e516095208d031f9f3263acbf1",
+          "tier": "storage",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a declared view",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -280,11 +316,20 @@
       "equalToLive": true,
       "malloy": "run: orders_wide -> { group_by: region; aggregate: customers.customer_count }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "origin": "materialize",
+            "outcome": "skipped",
+            "reason": "MISSING_FIELD",
+            "tableId": "e21cb38810563b21fbe28f4348e65671976629e516095208d031f9f3263acbf1"
+          }
+        ],
         "notConsidered": [
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
             "sourceName": "orders_wide_local",
             "tableId": "af106e366ef6b6a3cc9c6879b9ee78042dd3107bb9cbc7a746ad4a9f07863223"
@@ -350,11 +395,19 @@
       "equalToLive": true,
       "malloy": "run: orders_wide_local -> { group_by: customers.loud_name; aggregate: total }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "origin": "materialize",
+            "outcome": "used",
+            "tableId": "af106e366ef6b6a3cc9c6879b9ee78042dd3107bb9cbc7a746ad4a9f07863223"
+          }
+        ],
         "notConsidered": [
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
             "sourceName": "orders_wide",
             "tableId": "e21cb38810563b21fbe28f4348e65671976629e516095208d031f9f3263acbf1"
@@ -371,13 +424,17 @@
           "sourceName": "orders_wide_local"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "origin": "materialize",
+          "tableId": "af106e366ef6b6a3cc9c6879b9ee78042dd3107bb9cbc7a746ad4a9f07863223",
+          "tier": "database",
+          "via": "served_copy"
         },
         "warnings": []
       },
-      "query": "a joined dimension, colocated",
-      "servedBy": "live",
-      "servedFrom": null,
+      "query": "a joined dimension, database",
+      "servedBy": "materialized",
+      "servedFrom": "database",
       "switch": "off"
     },
     {
@@ -428,6 +485,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "materialize",
             "outcome": "used",
             "tableId": "e21cb38810563b21fbe28f4348e65671976629e516095208d031f9f3263acbf1"
           }
@@ -436,6 +494,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
             "sourceName": "orders_wide_local",
             "tableId": "af106e366ef6b6a3cc9c6879b9ee78042dd3107bb9cbc7a746ad4a9f07863223"
@@ -454,7 +513,9 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "materialize",
           "tableId": "e21cb38810563b21fbe28f4348e65671976629e516095208d031f9f3263acbf1",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []
@@ -507,6 +568,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "materialize",
             "outcome": "used",
             "tableId": "e21cb38810563b21fbe28f4348e65671976629e516095208d031f9f3263acbf1"
           }
@@ -515,6 +577,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
             "sourceName": "orders_wide_local",
             "tableId": "af106e366ef6b6a3cc9c6879b9ee78042dd3107bb9cbc7a746ad4a9f07863223"
@@ -532,7 +595,9 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "materialize",
           "tableId": "e21cb38810563b21fbe28f4348e65671976629e516095208d031f9f3263acbf1",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []
@@ -590,6 +655,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "materialize",
             "outcome": "used",
             "tableId": "e21cb38810563b21fbe28f4348e65671976629e516095208d031f9f3263acbf1"
           }
@@ -598,6 +664,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
             "sourceName": "orders_wide_local",
             "tableId": "af106e366ef6b6a3cc9c6879b9ee78042dd3107bb9cbc7a746ad4a9f07863223"
@@ -616,7 +683,9 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "materialize",
           "tableId": "e21cb38810563b21fbe28f4348e65671976629e516095208d031f9f3263acbf1",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []
@@ -669,6 +738,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "materialize",
             "outcome": "skipped",
             "reason": "MISSING_FIELD",
             "tableId": "e21cb38810563b21fbe28f4348e65671976629e516095208d031f9f3263acbf1"
@@ -678,6 +748,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
             "sourceName": "orders_wide_local",
             "tableId": "af106e366ef6b6a3cc9c6879b9ee78042dd3107bb9cbc7a746ad4a9f07863223"
@@ -746,6 +817,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "materialize",
             "outcome": "used",
             "tableId": "af106e366ef6b6a3cc9c6879b9ee78042dd3107bb9cbc7a746ad4a9f07863223"
           }
@@ -754,6 +826,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
             "sourceName": "orders_wide",
             "tableId": "e21cb38810563b21fbe28f4348e65671976629e516095208d031f9f3263acbf1"
@@ -771,14 +844,16 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "materialize",
           "tableId": "af106e366ef6b6a3cc9c6879b9ee78042dd3107bb9cbc7a746ad4a9f07863223",
+          "tier": "database",
           "via": "served_copy"
         },
         "warnings": []
       },
-      "query": "a joined dimension, colocated",
+      "query": "a joined dimension, database",
       "servedBy": "materialized",
-      "servedFrom": null,
+      "servedFrom": "database",
       "switch": "on"
     }
   ]

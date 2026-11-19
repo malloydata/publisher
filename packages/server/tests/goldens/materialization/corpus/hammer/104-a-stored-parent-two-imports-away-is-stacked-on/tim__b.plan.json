@@ -18,6 +18,10 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "daily@<hammer>/tim/a.malloy": "persist",
+      "weekly@<hammer>/tim/b.malloy": "persist"
+    },
     "materializePlans": {},
     "rollupPlans": {},
     "sourceGateOutcomes": {
@@ -31,12 +35,11 @@
       }
     },
     "sourceModelPaths": {
-      "daily@<hammer>/tim/a.malloy": "b.malloy",
+      "daily@<hammer>/tim/a.malloy": "a.malloy",
       "weekly@<hammer>/tim/b.malloy": "b.malloy"
     }
   },
   "rollupsKeepingGates": [],
-  "rollupsOverStoredBase": [],
   "wirePlan": {
     "graphs": [
       {
@@ -57,6 +60,8 @@
         ]
       }
     ],
+    "omittedFiles": [],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "daily@<hammer>/tim/a.malloy": {
@@ -77,7 +82,7 @@
         "connectionName": "orders_pg",
         "dialect": "duckdb",
         "freshness": null,
-        "modelPath": "b.malloy",
+        "modelPath": "a.malloy",
         "name": "daily",
         "origin": "persist",
         "preaggregate": null,

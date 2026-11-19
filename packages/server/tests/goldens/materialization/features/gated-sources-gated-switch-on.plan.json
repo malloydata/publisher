@@ -26,6 +26,12 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "by_column__rollup__region_status__5f704d70@<pkg>/m.malloy.preaggregate.malloy": "rollup",
+      "by_lock__rollup__status__eb4380b4@<pkg>/m.malloy.preaggregate.malloy": "rollup",
+      "gated_mat@<pkg>/m.malloy": "materialize",
+      "locked_mat@<pkg>/m.malloy": "materialize"
+    },
     "materializePlans": {
       "gated_mat@<pkg>/m.malloy": {
         "buildSourceName": "gated_mat__mat",
@@ -223,6 +229,7 @@
     "rollupPlans": {
       "by_column__rollup__region_status__5f704d70@<pkg>/m.malloy.preaggregate.malloy": {
         "baseDeclaredName": "by_column",
+        "baseGateOwn": true,
         "baseGated": true,
         "baseSourceID": "by_column@<pkg>/m.malloy",
         "baseSourceName": "by_column",
@@ -277,6 +284,8 @@
       },
       "by_lock__rollup__status__eb4380b4@<pkg>/m.malloy.preaggregate.malloy": {
         "baseDeclaredName": "by_lock",
+        "baseGateLocksOnly": true,
+        "baseGateOwn": true,
         "baseGated": true,
         "baseSourceID": "by_lock@<pkg>/m.malloy",
         "baseSourceName": "by_lock",
@@ -332,7 +341,8 @@
     "sourceGateOutcomes": {
       "by_column__rollup__region_status__5f704d70@<pkg>/m.malloy.preaggregate.malloy": {
         "attributed": true,
-        "classification": "rejected"
+        "classification": "rejected",
+        "inheritedRowFilter": true
       },
       "by_lock__rollup__status__eb4380b4@<pkg>/m.malloy.preaggregate.malloy": {
         "attributed": true,
@@ -388,6 +398,8 @@
         ]
       }
     ],
+    "omittedFiles": [],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "by_column__rollup__region_status__5f704d70@<pkg>/m.malloy.preaggregate.malloy": {
@@ -411,7 +423,7 @@
         "freshness": null,
         "modelPath": "m.malloy",
         "name": "by_column__rollup__region_status__5f704d70",
-        "origin": "preaggregate",
+        "origin": "rollup",
         "preaggregate": {
           "baseSourceName": "by_column",
           "grainDimensions": [
@@ -445,7 +457,7 @@
         "freshness": null,
         "modelPath": "m.malloy",
         "name": "by_lock__rollup__status__eb4380b4",
-        "origin": "preaggregate",
+        "origin": "rollup",
         "preaggregate": {
           "baseSourceName": "by_lock",
           "grainDimensions": [
@@ -509,7 +521,7 @@
         "freshness": null,
         "modelPath": "m.malloy",
         "name": "gated_mat",
-        "origin": "persist",
+        "origin": "materialize",
         "preaggregate": null,
         "queryMetadata": null,
         "refresh": null,
@@ -565,7 +577,7 @@
         "freshness": null,
         "modelPath": "m.malloy",
         "name": "locked_mat",
-        "origin": "persist",
+        "origin": "materialize",
         "preaggregate": null,
         "queryMetadata": null,
         "refresh": null,

@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { readFileSync } from "fs";
+import * as path from "path";
 
 import {
    BUILD_DURATION_BUCKETS_MS,
@@ -13,21 +15,52 @@ import {
    INCREMENTAL_STEP_REASONS,
    MATERIALIZATION_MODES,
    MATERIALIZATION_OUTCOMES,
+   DROP_OCCASIONS,
+   KEY_CHECK_KINDS,
+   KEY_CHECK_OUTCOMES,
+   recordAnnotationFindings,
+   recordAttributionSkipped,
+   recordAutoLoadOutcome,
    recordBuildDuration,
    recordBuildOutcome,
+   recordBuildPlanComputeDuration,
+   recordBuildPlanComputeFailed,
    recordBuildReadBytes,
+   recordDuplicateTargetSkipped,
    recordIncrementalStep,
+   recordKeyCheck,
+   recordManifestBindDegraded,
+   recordQueryRoute,
+   recordQueryRouteDuration,
+   recordScheduledFire,
+   recordSharedAddressInstructions,
+   recordStaleUpstreamEntry,
+   recordStoredColumnTypeMismatch,
+   recordTableCollision,
    recordStorageTableRetained,
    recordChainedStorageBuild,
    recordConnectionDigestSkipped,
    recordDropTables,
    recordEligibilityRefused,
    recordMaterializationRun,
-   recordServeShapeTierDrop,
-   recordServeShapeTypeFallback,
-   recordStorageServeRouting,
+   recordStoredTypeFallback,
+   recordManifestBind,
+   recordSourceBound,
+   recordServedCopyOutcome,
+   recordSourceDeclined,
+   ROUTE_LEGS,
+   routeLegOf,
+   ROUTE_OUTCOMES,
+   ROUTE_REASONS,
+   BIND_SCOPES,
+   BIND_OUTCOMES,
    resetMaterializationTelemetryForTesting,
 } from "./materialization_metrics";
+import {
+   SOURCE_DECLINE_REASONS,
+   servedCopyOutcomes,
+   servesInPart,
+} from "./service/materialization/domain/source_decline";
 import {
    startMetricsHarness,
    type MetricsHarness,
@@ -64,17 +97,29 @@ describe("materialization_metrics", () => {
             outcome: "failed",
          }),
       ).toBe(1);
+      // The duration carries the outcome too, so a failed run's time is
+      // read apart from a successful one's.
+      const failed = await harness.collectHistogram(
+         "publisher_materialization_run_duration_ms",
+         { mode: "orchestrated", outcome: "failed" },
+      );
+      expect(failed).toMatchObject({ count: 1, sum: 5 });
+      const succeeded = await harness.collectHistogram(
+         "publisher_materialization_run_duration_ms",
+         { mode: "auto", outcome: "success" },
+      );
+      expect(succeeded).toMatchObject({ count: 2, sum: 30 });
    });
 
    it("counts one build per call, failure_class none unless failed", async () => {
       recordBuildOutcome({
          kind: "persist",
-         tier: "colocated",
+         tier: "database",
          outcome: "built",
       });
       recordBuildOutcome({
          kind: "persist",
-         tier: "colocated",
+         tier: "database",
          outcome: "reused",
       });
       recordBuildOutcome({
@@ -139,8 +184,8 @@ describe("materialization_metrics", () => {
    });
 
    it("records bytes read only when the warehouse reported a positive count", async () => {
-      recordBuildReadBytes(5e9, "colocated");
-      recordBuildReadBytes(0, "colocated");
+      recordBuildReadBytes(5e9, "database");
+      recordBuildReadBytes(0, "database");
       recordBuildReadBytes(null, "storage");
       recordBuildReadBytes(undefined, "storage");
 
@@ -155,7 +200,7 @@ describe("materialization_metrics", () => {
          await harness.collectAttributes(
             "publisher_materialization_build_read_bytes",
          ),
-      ).toEqual([{ tier: "colocated" }]);
+      ).toEqual([{ tier: "database" }]);
    });
 
    it("keeps every build label to the spec's vocabulary and series bound", () => {
@@ -166,9 +211,10 @@ describe("materialization_metrics", () => {
          "persist",
          "rollup",
          "view",
+         "query",
          "pair",
       ]);
-      expect([...BUILD_TIERS]).toEqual(["colocated", "storage"]);
+      expect([...BUILD_TIERS]).toEqual(["database", "storage"]);
       expect([...BUILD_METHODS]).toEqual(["full", "delta"]);
       expect([...BUILD_OUTCOMES]).toEqual([
          "built",
@@ -194,16 +240,16 @@ describe("materialization_metrics", () => {
       expect(INCREMENTAL_STEP_REASONS).toHaveLength(14);
 
       // build_total: failure_class is none for the four other outcomes, and
-      // one of the four failure classes when failed: 5 x 2 x (4 + 4) = 80.
+      // one of the four failure classes when failed: 6 x 2 x (4 + 4) = 96.
       const failedClasses = FAILURE_CLASSES.length - 1;
       const notFailed = BUILD_OUTCOMES.length - 1;
       expect(
          BUILD_KINDS.length * BUILD_TIERS.length * (notFailed + failedClasses),
-      ).toBe(80);
-      // build_duration_ms: 5 x 2 x 2 = 20; build_read_bytes: 2.
+      ).toBe(96);
+      // build_duration_ms: 6 x 2 x 2 = 24; build_read_bytes: 2.
       expect(
          BUILD_KINDS.length * BUILD_TIERS.length * BUILD_METHODS.length,
-      ).toBe(20);
+      ).toBe(24);
       expect(BUILD_TIERS.length).toBe(2);
    });
 
@@ -226,23 +272,37 @@ describe("materialization_metrics", () => {
       ).toEqual([{ step: "seed", reason: "no_boundary" }, { step: "delta" }]);
    });
 
-   it("counts drop-table outcomes (labeled by engine) and connection-digest skips", async () => {
-      recordDropTables("success", "storage");
-      recordDropTables("failure", "in_warehouse");
+   it("labels an annotation finding by outcome in the warning suffixes' words", async () => {
+      recordAnnotationFindings([
+         { code: "persist-unknown-key", severity: "error" },
+         { code: "persist-not-built", severity: "warn" },
+      ]);
+      expect(
+         await harness.collectAttributes("publisher_annotation_findings_total"),
+      ).toEqual([
+         { code: "persist-unknown-key", outcome: "invalid" },
+         { code: "persist-not-built", outcome: "not_built" },
+      ]);
+   });
+
+   it("counts drop-table outcomes by tier and occasion, and connection-digest skips", async () => {
+      recordDropTables("success", "storage", "delete");
+      recordDropTables("failure", "database", "reclaim");
       recordConnectionDigestSkipped();
 
       expect(
          await harness.collectCounter(
             "publisher_materialization_drop_tables_total",
-            { outcome: "failure", engine: "in_warehouse" },
+            { outcome: "failure", tier: "database", occasion: "reclaim" },
          ),
       ).toBe(1);
       expect(
          await harness.collectCounter(
             "publisher_materialization_drop_tables_total",
-            { outcome: "success", engine: "storage" },
+            { outcome: "success", tier: "storage", occasion: "delete" },
          ),
       ).toBe(1);
+      expect(DROP_OCCASIONS).toEqual(["delete", "reclaim", "caller"]);
       expect(
          await harness.collectCounter(
             "publisher_materialization_connection_digest_skipped_total",
@@ -250,19 +310,57 @@ describe("materialization_metrics", () => {
       ).toBe(1);
    });
 
-   it("counts storage= serve-routing decisions labeled by outcome", async () => {
-      recordStorageServeRouting("storage");
-      recordStorageServeRouting("storage");
-      recordStorageServeRouting("live_fallback");
-
+   it("counts a served-copy source by the outcome resolved for it", async () => {
+      recordServedCopyOutcome("partial", "inline_join_kept");
+      recordServedCopyOutcome("declined", "column_types");
+      const bind = (labels: Record<string, string>) =>
+         harness.collectCounter("publisher_served_copy_bind_total", labels);
       expect(
-         await harness.collectCounter("publisher_storage_serve_routing_total", {
-            outcome: "storage",
+         await bind({
+            scope: "source",
+            outcome: "partial",
+            reason: "inline_join_kept",
          }),
+      ).toBe(1);
+      expect(
+         await bind({
+            scope: "source",
+            outcome: "declined",
+            reason: "column_types",
+         }),
+      ).toBe(1);
+   });
+
+   it("counts serving's binds by scope, outcome and reason", async () => {
+      recordManifestBind("success");
+      recordManifestBind("timeout");
+      recordSourceBound();
+      recordSourceBound();
+      recordSourceDeclined("build_plan_unavailable");
+      recordServedCopyOutcome("declined", "classification_not_kept");
+      const bind = (labels: Record<string, string>) =>
+         harness.collectCounter("publisher_served_copy_bind_total", labels);
+      expect(
+         await bind({ scope: "manifest", outcome: "success", reason: "none" }),
+      ).toBe(1);
+      expect(
+         await bind({ scope: "manifest", outcome: "timeout", reason: "none" }),
+      ).toBe(1);
+      expect(
+         await bind({ scope: "source", outcome: "bound", reason: "none" }),
       ).toBe(2);
       expect(
-         await harness.collectCounter("publisher_storage_serve_routing_total", {
-            outcome: "live_fallback",
+         await bind({
+            scope: "source",
+            outcome: "declined",
+            reason: "build_plan_unavailable",
+         }),
+      ).toBe(1);
+      expect(
+         await bind({
+            scope: "source",
+            outcome: "declined",
+            reason: "classification_not_kept",
          }),
       ).toBe(1);
    });
@@ -296,11 +394,10 @@ describe("materialization_metrics", () => {
       ).toBe(1);
    });
 
-   it("counts eligibility refusals, tier drops, and type fallbacks", async () => {
+   it("counts eligibility refusals and type fallbacks", async () => {
       recordEligibilityRefused("given");
       recordEligibilityRefused("free_parameter");
-      recordServeShapeTierDrop(0);
-      recordServeShapeTypeFallback("array");
+      recordStoredTypeFallback("array");
 
       expect(
          await harness.collectCounter(
@@ -310,15 +407,277 @@ describe("materialization_metrics", () => {
       ).toBe(1);
       expect(
          await harness.collectCounter(
-            "publisher_storage_serve_shape_tier_drop_total",
-            { tier: "0" },
-         ),
-      ).toBe(1);
-      expect(
-         await harness.collectCounter(
             "publisher_storage_serve_shape_type_fallback_total",
             { kind: "array" },
          ),
       ).toBe(1);
+   });
+});
+
+/**
+ * One emission of every instrument `materialization_metrics.ts` declares,
+ * read back through the harness. The list is checked against the file's own
+ * instrument names, so an instrument added without a case here fails.
+ */
+const EMISSIONS: Record<string, () => void> = {
+   publisher_materialization_runs_total: () =>
+      recordMaterializationRun("auto", "success", 1),
+   publisher_materialization_run_duration_ms: () =>
+      recordMaterializationRun("orchestrated", "partial", 1),
+   publisher_materialization_build_total: () =>
+      recordBuildOutcome({
+         kind: "persist",
+         tier: "database",
+         outcome: "built",
+      }),
+   publisher_materialization_build_duration_ms: () =>
+      recordBuildDuration(1, { kind: "view", tier: "storage", method: "full" }),
+   publisher_materialization_build_read_bytes: () =>
+      recordBuildReadBytes(1_000, "database"),
+   publisher_annotation_findings_total: () =>
+      recordAnnotationFindings([
+         { code: "persist-not-built", severity: "warn" },
+      ]),
+   publisher_materialization_incremental_step_total: () =>
+      recordIncrementalStep("seed", "forced"),
+   publisher_materialization_build_plan_compute_duration_ms: () =>
+      recordBuildPlanComputeDuration(1, "worker"),
+   publisher_materialization_build_plan_compute_failed_total: () =>
+      recordBuildPlanComputeFailed(),
+   publisher_materialization_auto_load_total: () =>
+      recordAutoLoadOutcome("success"),
+   publisher_materialization_connection_digest_skipped_total: () =>
+      recordConnectionDigestSkipped(),
+   publisher_served_copy_bind_total: () => recordSourceBound(),
+   publisher_materialization_manifest_bind_degraded_total: () =>
+      recordManifestBindDegraded(),
+   publisher_materialization_duplicate_target_skipped_total: () =>
+      recordDuplicateTargetSkipped(),
+   publisher_materialization_shared_address_instructions_total: () =>
+      recordSharedAddressInstructions(),
+   publisher_materialization_table_collision_total: () =>
+      recordTableCollision(),
+   publisher_materialization_drop_tables_total: () =>
+      recordDropTables("success", "database", "reclaim"),
+   publisher_materialization_scheduled_fires_total: () =>
+      recordScheduledFire("fired"),
+   publisher_query_route_total: () =>
+      recordQueryRoute("rollup", "used", "NONE"),
+   publisher_query_route_duration_ms: () => recordQueryRouteDuration(1, "live"),
+   publisher_materialization_key_check_total: () =>
+      recordKeyCheck("parent", "not_unique"),
+   publisher_storage_tables_retained_total: () => recordStorageTableRetained(),
+   publisher_storage_build_attribution_skipped_total: () =>
+      recordAttributionSkipped("tag_failed"),
+   publisher_materialization_eligibility_refused_total: () =>
+      recordEligibilityRefused("authorize"),
+   publisher_storage_serve_shape_type_fallback_total: () =>
+      recordStoredTypeFallback("unrecognized"),
+   publisher_storage_column_type_mismatch_total: () =>
+      recordStoredColumnTypeMismatch("serve", "number"),
+   publisher_storage_chained_build_total: () =>
+      recordChainedStorageBuild("parent_reuse"),
+   publisher_materialization_stale_upstream_entry_total: () =>
+      recordStaleUpstreamEntry("storage"),
+};
+
+/** Every instrument name `materialization_metrics.ts` passes to a lazy constructor. */
+function declaredInstruments(): string[] {
+   const text = readFileSync(
+      path.join(__dirname, "materialization_metrics.ts"),
+      "utf8",
+   );
+   return [...text.matchAll(/lazy(?:Counter|Histogram)\(\s*"([a-z_]+)"/g)].map(
+      (m) => m[1],
+   );
+}
+
+describe("every materialization instrument", () => {
+   let harness: MetricsHarness;
+
+   beforeEach(async () => {
+      harness = await startMetricsHarness();
+      resetMaterializationTelemetryForTesting();
+   });
+
+   afterEach(async () => {
+      resetMaterializationTelemetryForTesting();
+      await harness.shutdown();
+   });
+
+   it("has an emission case for each instrument the module declares", () => {
+      expect(Object.keys(EMISSIONS).sort()).toEqual(
+         declaredInstruments().sort(),
+      );
+   });
+
+   for (const [name, emit] of Object.entries(EMISSIONS)) {
+      it(`emits ${name}`, async () => {
+         emit();
+         const points = await harness.collectAttributes(name);
+         expect(points.length).toBeGreaterThan(0);
+      });
+   }
+
+   it("labels key checks by kind and outcome from closed lists", async () => {
+      for (const kind of KEY_CHECK_KINDS) {
+         for (const outcome of KEY_CHECK_OUTCOMES)
+            recordKeyCheck(kind, outcome);
+      }
+      expect(
+         await harness.collectCounter(
+            "publisher_materialization_key_check_total",
+            { kind: "inline_join", outcome: "reused" },
+         ),
+      ).toBe(1);
+      expect(
+         await harness.collectAttributes(
+            "publisher_materialization_key_check_total",
+         ),
+      ).toHaveLength(KEY_CHECK_KINDS.length * KEY_CHECK_OUTCOMES.length);
+   });
+
+   it("times a route by the leg that answered", async () => {
+      recordQueryRouteDuration(4, "materialized");
+      recordQueryRouteDuration(6, "materialized");
+      expect(
+         await harness.collectHistogram("publisher_query_route_duration_ms", {
+            leg: "materialized",
+         }),
+      ).toMatchObject({ count: 2, sum: 10 });
+   });
+});
+
+// Each label of the routing and bind counters is a closed union; adding a
+// value is a reviewed change to these lists (Step 4 specification).
+describe("the routing and bind label vocabularies", () => {
+   it("names exactly the route counter's legs, outcomes and reasons", () => {
+      expect([...ROUTE_LEGS]).toEqual([
+         "view",
+         "query",
+         "rollup",
+         "materialized",
+         "live",
+      ]);
+      expect([...ROUTE_OUTCOMES]).toEqual(["used", "skipped", "fallback"]);
+      expect([...ROUTE_REASONS]).toEqual([
+         "NONE",
+         "NOT_BUILT",
+         "NOT_SERVED",
+         "OPTED_OUT",
+         "MISSING_FIELD",
+         "SHAPE_MISMATCH",
+         "ROW_LEVEL_GATE",
+         "GRAIN_TOO_COARSE",
+         "TIME_ZONE",
+         "CROSS_CONNECTION",
+         "COUNT_SEMANTICS",
+         "STALE",
+         "READ_FAILED",
+         "WARNED",
+         "CONTRACT",
+         "RUN_FAILED",
+      ]);
+   });
+
+   it("names the served copy's leg `materialized`, as the path report names its answer", () => {
+      expect(routeLegOf("served")).toBe("materialized");
+      expect(routeLegOf("rollup")).toBe("rollup");
+      expect(routeLegOf("live")).toBe("live");
+   });
+
+   it("names exactly the bind counter's scopes, outcomes and reasons", () => {
+      expect([...BIND_SCOPES]).toEqual(["manifest", "source"]);
+      expect([...BIND_OUTCOMES]).toEqual([
+         "success",
+         "failure",
+         "timeout",
+         "bound",
+         "partial",
+         "declined",
+      ]);
+      expect(["none", ...SOURCE_DECLINE_REASONS]).toEqual([
+         "none",
+         "build_plan_unavailable",
+         "refused",
+         "missing_table",
+         "unquotable_name",
+         "compile_failed",
+         "cross_connection_unbuilt",
+         "column_types",
+         "no_declaration",
+         "definition_not_parsed",
+         "pair_join_not_found",
+         "pair_not_compiled",
+         "fields_not_carried",
+         "read_terms_not_kept",
+         "cross_connection_join",
+         "inline_join_kept",
+         "reroot_not_compiled",
+         "classification_not_kept",
+      ]);
+   });
+});
+
+describe("which source declines still serve the source", () => {
+   it("is exactly the served copy's two partial reasons", () => {
+      expect(SOURCE_DECLINE_REASONS.filter(servesInPart)).toEqual([
+         "cross_connection_join",
+         "inline_join_kept",
+      ]);
+   });
+});
+
+describe("one served-copy outcome per source per compile", () => {
+   const ids = (...xs: string[]) => new Set(xs);
+   it("counts a source with two partial reasons once, while it is re-rooted", () => {
+      expect(
+         servedCopyOutcomes(
+            [
+               { sourceID: "s", reason: "inline_join_kept" },
+               { sourceID: "s", reason: "inline_join_kept" },
+               { sourceID: "s", reason: "cross_connection_join" },
+            ],
+            ids("s"),
+         ),
+      ).toEqual([{ outcome: "partial", reason: "inline_join_kept" }]);
+   });
+
+   it("declines a source that is partial and then dropped", () => {
+      expect(
+         servedCopyOutcomes(
+            [{ sourceID: "s", reason: "inline_join_kept" }],
+            ids(),
+         ),
+      ).toEqual([{ outcome: "declined", reason: "inline_join_kept" }]);
+   });
+
+   it("lets declined beat partial on one source, by its leaving-out reason", () => {
+      expect(
+         servedCopyOutcomes(
+            [
+               { sourceID: "s", reason: "cross_connection_join" },
+               { sourceID: "s", reason: "classification_not_kept" },
+            ],
+            ids("s"),
+         ),
+      ).toEqual([{ outcome: "declined", reason: "classification_not_kept" }]);
+   });
+
+   it("keeps sources apart, and counts a problem naming no source on its own", () => {
+      expect(
+         servedCopyOutcomes(
+            [
+               { sourceID: "a", reason: "inline_join_kept" },
+               { sourceName: "b", reason: "column_types" },
+               { reason: "cross_connection_unbuilt" },
+            ],
+            ids("a"),
+         ),
+      ).toEqual([
+         { outcome: "declined", reason: "cross_connection_unbuilt" },
+         { outcome: "partial", reason: "inline_join_kept" },
+         { outcome: "declined", reason: "column_types" },
+      ]);
    });
 });

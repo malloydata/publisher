@@ -1,6 +1,17 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+/**
+ * Loading a file into a DuckLake destination as a table
+ * ({@link loadStorageTable}), and copying a table between catalogs for a
+ * migration ({@link copyStorageTable}), with the reader SQL and the refusals
+ * around them. Read by catalog_admin.ts.
+ *
+ * Effects: one DuckLake transaction per table on a transient read-write
+ * session. A load reads only under the destination's data path, and renders
+ * a caller's reader options as typed literals, never spliced text.
+ */
+
 import type { DuckDBConnection } from "@malloydata/db-duckdb";
 import path from "path";
 import { components } from "../../../api";
@@ -10,7 +21,6 @@ import {
    logInternalFailure,
 } from "../../../errors";
 import {
-   applySessionResourceLimits,
    attachDuckLakeReadOnly,
    attachDuckLakeReadWrite,
    escapeSQL,
@@ -21,10 +31,13 @@ import {
    type PartitionKey,
 } from "../../connection";
 import {
-   createIsolatedBuildSession,
+   createLocalDataPaths,
+   lockDownDestinationSession,
+   withIsolatedSession,
    writePartitionedTable,
 } from "./materialization_build_session";
 import { quoteIdentifier } from "../../quoting";
+import { STORAGE_DIALECT } from "../domain/dialect";
 
 type ApiConnection = components["schemas"]["Connection"];
 
@@ -167,40 +180,36 @@ export async function loadStorageTable(params: {
    }
    // A configured data path is checked before anything attaches; with none,
    // the catalog's recorded path is checked once it is attached.
-   const configuredPath =
-      destinationConnection.ducklakeConnection.storage?.bucketUrl;
+   const ducklake = destinationConnection.ducklakeConnection;
+   const configuredPath = ducklake.storage?.bucketUrl;
    if (configuredPath) {
       assertUnderDataPath(params.uri, configuredPath);
    }
    const reader = readerSql(params.uri, params.format, params.options);
 
-   const { session, dispose, workDir } = createIsolatedBuildSession(
-      `load_${destinationName}`,
-   );
-   try {
-      await applySessionResourceLimits(session, { tempDirectory: workDir });
-      await attachDuckLakeReadWrite(
-         session,
-         destinationName,
-         destinationConnection.ducklakeConnection,
-      );
+   return withIsolatedSession(`load_${destinationName}`, async (session) => {
+      await attachDuckLakeReadWrite(session, destinationName, ducklake);
       if (!configuredPath) {
          const recorded = await recordedCatalogSettings(
             session,
             destinationName,
-            destinationConnection.ducklakeConnection.catalog?.metadataSchema,
+            ducklake.catalog?.metadataSchema,
          );
          assertUnderDataPath(params.uri, recorded.data_path ?? "");
       }
       if (params.format === "xlsx") {
          await installAndLoadExtension(session, "excel");
       }
+      // The reader takes caller options: confine it to the catalog's data path
+      // (recorded by the attach) before it runs (duckdb_lockdown.ts).
+      const allow = configuredPath ? [configuredPath] : [];
+      // The load writes the destination's table files.
+      createLocalDataPaths(session, allow);
+      await lockDownDestinationSession(session, allow);
       return await writeTableAs(session, params, reader, (error) =>
          readerRefusal(error, params.uri),
       );
-   } finally {
-      await dispose();
-   }
+   });
 }
 
 /**
@@ -247,9 +256,12 @@ export function readerRefusal(
  * - The same table guarantees as {@link loadStorageTable}: one DuckLake
  *   transaction, `create` refusing a table that exists (409), a transient
  *   session with the build session's teardown.
- * - A partitioned source is written with its partition spec and in partition
- *   order, as a partitioned build writes it, and the spec is returned. A
- *   partitioned table copied onto itself is refused (400).
+ * - A partitioned source (one an earlier release's `partition=` build wrote) is
+ *   written with its partition spec and in partition order, and the spec is
+ *   returned. A partitioned table copied onto itself is refused (400).
+ *   Copied with `replace` onto a table an incremental build manages, the
+ *   spec stays until that build's next full refresh, and its deltas into it
+ *   run without the copy's memory bounds.
  * - The caller checks that the source exists and that the destination may
  *   hold its rows before calling: this attaches and writes.
  *
@@ -303,16 +315,17 @@ export async function copyStorageTable(params: {
         ? `${COPY_SOURCE_ALIAS}_2`
         : COPY_SOURCE_ALIAS;
 
-   const { session, dispose, workDir } = createIsolatedBuildSession(
-      `copy_${destinationName}`,
-   );
-   try {
-      await applySessionResourceLimits(session, { tempDirectory: workDir });
+   return withIsolatedSession(`copy_${destinationName}`, async (session) => {
       await attachDuckLakeReadWrite(
          session,
          destinationName,
          destinationConnection.ducklakeConnection!,
       );
+      // The destination's own data path, before the read-only source is
+      // attached: only the catalog written into is created.
+      const destinationPath =
+         destinationConnection.ducklakeConnection?.storage?.bucketUrl;
+      createLocalDataPaths(session, destinationPath ? [destinationPath] : []);
       if (!sameCatalog) {
          await attachDuckLakeReadOnly(
             session,
@@ -320,8 +333,17 @@ export async function copyStorageTable(params: {
             source.connection.ducklakeConnection!,
          );
       }
+      // Confined to the two catalogs' data paths (configured, or recorded by
+      // the attaches) before it reads or writes (duckdb_lockdown.ts).
+      await lockDownDestinationSession(
+         session,
+         [destinationConnection, source.connection].flatMap((conn) => {
+            const dataPath = conn.ducklakeConnection?.storage?.bucketUrl;
+            return dataPath ? [dataPath] : [];
+         }),
+      );
       const from = [sourceAlias, source.schemaName, source.tableName]
-         .map((part) => quoteIdentifier(part, "duckdb"))
+         .map((part) => quoteIdentifier(part, STORAGE_DIALECT))
          .join(".");
       // The copy keeps the source's layout: DuckLake applies a partition spec
       // only to files written after it is set, so a copy written without it
@@ -357,9 +379,7 @@ export async function copyStorageTable(params: {
          )),
          partitionedBy,
       };
-   } finally {
-      await dispose();
-   }
+   });
 }
 
 /**
@@ -383,8 +403,11 @@ const COPY_SOURCE_ALIAS = "__copy_source";
  * is thrown in place of the original (the load passes {@link readerRefusal}).
  * It never sees the flush, count or describe that follow, which fail against the
  * catalog after the table is committed, so a retry would meet the table.
+ *
+ * Exported as a test seam: its callers reach it only after a DuckLake attach,
+ * which needs a Postgres catalog, so a spec drives it on a file catalog.
  */
-async function writeTableAs(
+export async function writeTableAs(
    session: DuckDBConnection,
    params: {
       destinationName: string;
@@ -401,7 +424,7 @@ async function writeTableAs(
    // session, and the flush below for a catalog that records its own limit.
    await session.runSQL("SET ducklake_default_data_inlining_row_limit = 0");
    const target = [destinationName, schemaName, tableName]
-      .map((part) => quoteIdentifier(part, "duckdb"))
+      .map((part) => quoteIdentifier(part, STORAGE_DIALECT))
       .join(".");
    const create =
       params.mode === "replace" ? "CREATE OR REPLACE TABLE" : "CREATE TABLE";
@@ -409,15 +432,13 @@ async function writeTableAs(
       if (partitionedBy.length === 0) {
          await session.runSQL(`${create} ${target} AS SELECT * FROM ${from}`);
       } else {
-         // Bounded as a partitioned build is: the writer's memory, not the
-         // source's, is what a wide many-partition insert exhausts.
+         // Bounded: the writer's memory, not the source's, is what a wide
+         // many-partition insert exhausts.
          await writePartitionedTable(session, {
             quotedTablePath: target,
             selectSQL: `SELECT * FROM ${from}`,
             keys: partitionedBy,
             createStatement: create,
-            bounded: true,
-            read: async () => undefined,
          });
       }
    } catch (error) {

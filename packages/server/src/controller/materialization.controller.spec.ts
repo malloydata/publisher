@@ -42,7 +42,7 @@ describe("MaterializationController.createMaterialization validation", () => {
    it("never forwards a client-supplied trigger (SCHEDULER cannot be forged)", async () => {
       // trigger is service-level-only: the controller must strip it so an API
       // caller cannot mint a run that reads as scheduler-driven. The service
-      // then defaults it to ON_DEMAND.
+      // then defaults it to on_demand.
       const parsed = await parse({ forceRefresh: true, trigger: "SCHEDULER" });
       expect(parsed).toEqual({ forceRefresh: true });
       expect("trigger" in (parsed as object)).toBe(false);
@@ -93,6 +93,75 @@ describe("MaterializationController.createMaterialization validation", () => {
       });
    });
 
+   describe("a host-supplied physicalTableName, held to the bind's rule", () => {
+      const source = (physicalTableName: string) => ({
+         sourceEntityId: "b1",
+         materializedTableId: "mt-1",
+         physicalTableName,
+      });
+      const ledger = (physicalTableName: string) => ({
+         connectionName: "c",
+         physicalTableName,
+         coveredThrough: "1",
+         coveredThroughType: "number",
+         watermark: "w",
+         strategy: "merge",
+         sourceEntityId: "b1",
+      });
+      const bodies: [string, (name: string) => Record<string, unknown>][] = [
+         [
+            "Build instruction",
+            (n) => ({ buildInstructions: { sources: [source(n)] } }),
+         ],
+         [
+            "Manifest reference",
+            (n) => ({
+               buildInstructions: {
+                  sources: [source("ok_v1")],
+                  referenceManifest: [
+                     { sourceEntityId: "b0", physicalTableName: n },
+                  ],
+               },
+            }),
+         ],
+         [
+            "Ledger entry",
+            (n) => ({
+               buildInstructions: {
+                  sources: [source("ok_v1")],
+                  ledger: [ledger(n)],
+               },
+            }),
+         ],
+      ];
+      for (const [what, body] of bodies) {
+         for (const bad of [
+            "t\\'; DROP TABLE x --",
+            '"s.t',
+            'a"b.t',
+            "a..b",
+            ".t",
+         ]) {
+            it(`refuses ${what} ${JSON.stringify(bad)} with a 400 naming the field`, async () => {
+               const { controller } = build();
+               const err = await controller
+                  .createMaterialization("env", "pkg", body(bad))
+                  .catch((e) => e);
+               expect(err).toBeInstanceOf(BadRequestError);
+               expect(String(err.message)).toContain(
+                  `${what} 'physicalTableName'`,
+               );
+            });
+         }
+         for (const good of ["s.orders_v1", '"My Schema"."T x"']) {
+            it(`accepts ${what} ${JSON.stringify(good)}`, async () => {
+               const { controller } = build();
+               await controller.createMaterialization("env", "pkg", body(good));
+            });
+         }
+      }
+   });
+
    it("treats null buildInstructions as absent (auto-run)", async () => {
       expect(await parse({ buildInstructions: null })).toEqual({});
    });
@@ -133,7 +202,7 @@ describe("MaterializationController.createMaterialization validation", () => {
 
    it("preserves the storage `destination` on a build instruction", async () => {
       // Regression: `destination` is the orchestrated `storage=` axis. Dropping it
-      // here silently downgrades an orchestrated build to a colocated
+      // here silently downgrades an orchestrated build to a database
       // build, so it never materializes into the storage destination.
       const parsed = await parse({
          buildInstructions: {

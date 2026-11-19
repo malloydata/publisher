@@ -183,18 +183,11 @@ export default function Materializations({
       mutationFn: reporting(
          "materialization",
          "delete",
-         ({
-            materialization,
-            dropTables,
-         }: {
-            materialization: Materialization;
-            dropTables: boolean;
-         }) =>
+         (materialization: Materialization) =>
             apiClients.materializations.deleteMaterialization(
                environmentName,
                packageName,
                materialization.id as string,
-               dropTables,
                versionId,
             ),
       ),
@@ -385,11 +378,8 @@ export default function Materializations({
                   onStop={(materialization) =>
                      stopMaterialization.mutate(materialization)
                   }
-                  onDelete={(materialization, dropTables) =>
-                     deleteMaterialization.mutate({
-                        materialization,
-                        dropTables,
-                     })
+                  onDelete={(materialization) =>
+                     deleteMaterialization.mutate(materialization)
                   }
                   onViewDetails={(materialization) =>
                      setSelectedId(materialization.id ?? null)

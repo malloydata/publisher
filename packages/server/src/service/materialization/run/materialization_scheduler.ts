@@ -1,6 +1,18 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+/**
+ * The standalone materialization scheduler ({@link MaterializationScheduler}):
+ * fires each loaded package's declared `materialization.schedule` cron as an
+ * auto-run through the materialization service, for a Publisher with no
+ * control plane. Constructed by main_server.ts only when the local scheduler
+ * is configured; exported through index.ts.
+ *
+ * Arming state is in memory, re-anchored after a restart from the newest
+ * recorded scheduler fire. Logs and counts each fire.
+ */
+
+import { errorCodeOf } from "../../../error_code";
 import type { MaterializationSchedulerConfig } from "../../../config";
 import { MaterializationConflictError } from "../../../errors";
 import { logger } from "../../../logger";
@@ -49,7 +61,7 @@ interface ScheduleState {
  * loads (through the memory governor) only when its cron comes due. Archiving a
  * version takes it out of the sweep; unarchiving arms it again. Only packages
  * whose persistence policy is valid fire (the publish rule). Arming state is in
- * memory, re-anchored after a restart from the newest recorded `SCHEDULER` fire
+ * memory, re-anchored after a restart from the newest recorded `scheduler` fire
  * (see {@link arm}).
  */
 export class MaterializationScheduler {
@@ -119,7 +131,7 @@ export class MaterializationScheduler {
          } catch (err) {
             logger.warn("MaterializationScheduler: could not list versions", {
                environmentName,
-               error: err instanceof Error ? err.message : String(err),
+               code: errorCodeOf(err),
             });
             continue;
          }
@@ -200,7 +212,7 @@ export class MaterializationScheduler {
             environmentName,
             packageName,
             versionId,
-            error: err instanceof Error ? err.message : String(err),
+            code: errorCodeOf(err),
          });
       }
    }
@@ -209,7 +221,8 @@ export class MaterializationScheduler {
     * A published version's schedulable cron, or null. Read from the loaded
     * version when it is in memory (as for a package), otherwise from its
     * publisher.json, without loading it. A version bound to a host's
-    * manifest is the host's to build (Guard 2). Publishing refuses an invalid
+    * manifest, or bound by one before (`hostOwned`), is the host's to build
+    * (Guard 2). Publishing refuses an invalid
     * persistence policy, so an unloaded version needs only the schedule's own
     * conditions: `scope: version`, and a cron that parses.
     */
@@ -217,7 +230,7 @@ export class MaterializationScheduler {
       env: MaterializationEnvironment,
       version: Version,
    ): Promise<string | null> {
-      if (version.manifestPath) return null;
+      if (version.manifestPath || version.hostOwned) return null;
       const loaded = env.peekVersion(version.packageName, version.versionId);
       if (loaded) return this.schedulableCron(loaded);
       const manifest = await env
@@ -345,7 +358,7 @@ export class MaterializationScheduler {
 
    /**
     * The instant to compute the first `nextFireAt` from after a (re)start: the
-    * newest recorded `SCHEDULER` fire if any, else `now`. Any lookup failure
+    * newest recorded `scheduler` fire if any, else `now`. Any lookup failure
     * degrades to `now` (no catch-up) so arming always succeeds.
     */
    private async recoveryAnchor(
@@ -369,7 +382,7 @@ export class MaterializationScheduler {
             {
                environmentName,
                packageName,
-               error: err instanceof Error ? err.message : String(err),
+               code: errorCodeOf(err),
             },
          );
          return new Date(nowMs);
@@ -397,7 +410,7 @@ export class MaterializationScheduler {
             packageName,
             {
                forceRefresh: true,
-               trigger: "SCHEDULER",
+               trigger: "scheduler",
                ...(versionId !== undefined
                   ? { versionId: VersionRef.parse(versionId) }
                   : {}),
@@ -425,7 +438,7 @@ export class MaterializationScheduler {
             environmentName,
             packageName,
             versionId,
-            error: err instanceof Error ? err.message : String(err),
+            code: errorCodeOf(err),
          });
       }
    }

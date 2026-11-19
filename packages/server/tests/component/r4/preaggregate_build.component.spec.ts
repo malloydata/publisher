@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * R4 for the `#(preaggregate)` build side (materialization v2, phase 4): each
+ * R4 for the `#(rollup)` build side (materialization v2, phase 4): each
  * rollup the companion builds holds the partials its measures merge from, so
  * re-aggregating the stored table, in plain SQL and independently of Malloy,
  * equals the live query. Rollups are not served yet (that is the router leg);
@@ -10,7 +10,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { installSettings } from "../../../src/test_helpers/settings_env";
+import { useMaterializationOn } from "../../../src/test_helpers/settings_env";
 import {
    buildScenario,
    disposeScenarios,
@@ -47,37 +47,36 @@ source: orders is duckdb.table('orders_raw') extend {
   dimension:
     order_day is order_time.day
     line_kind is lines.kind
-  #(preaggregate) grain=["category", "order_day"]
+  #(rollup) grain=["category", "order_day"]
   measure: total is amount.sum()
-  #(preaggregate) grain=["category"]
+  #(rollup) grain=["category"]
   measure: per_order is coalesce(amount.sum() / count(), 0)
-  #(preaggregate) grain=["category"]
+  #(rollup) grain=["category"]
   measure: east_total is amount.sum() { where: region = 'east' }
-  #(preaggregate) grain=["carrier"]
+  #(rollup) grain=["carrier"]
   measure: fleet is carriers.fleet.sum()
-  #(preaggregate) grain=["carrier"]
+  #(rollup) grain=["carrier"]
   measure: top_fleet is carriers.fleet.max()
-  #(preaggregate) grain=["category", "line_kind"]
+  #(rollup) grain=["category", "line_kind"]
   measure: line_total is amount.sum()
 }
 
 source: recent is duckdb.table('orders_raw') extend {
   where: order_time > now - 40 days
-  #(preaggregate) grain=["category"]
+  #(rollup) grain=["category"]
   measure: recent_total is amount.sum()
 }
 
 #(access_filter) region = $REGION
 source: gated is duckdb.table('orders_raw') extend {
-  #(preaggregate) grain=["category", "region"]
+  #(rollup) grain=["category", "region"]
   measure: gated_total is amount.sum()
 }
 `;
 
-describe("R4: #(preaggregate) rollups build the partials their measures merge from", () => {
-   let restore: () => void;
+describe("R4: #(rollup) rollups build the partials their measures merge from", () => {
    let fixture: R4Fixture;
-   /** The colocated table of the rollup of `base` at `grain`. */
+   /** The database table of the rollup of `base` at `grain`. */
    const table = (base: string, grain: string[]) => {
       const prefix = `${base}__rollup__${grain.join("_")}__`;
       const names = Object.keys(fixture.rollupTables).filter((n) =>
@@ -87,10 +86,8 @@ describe("R4: #(preaggregate) rollups build the partials their measures merge fr
       return fixture.rollupTables[names[0] as string] as string;
    };
 
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: { "m.malloy": MODEL },
          seedSql,
@@ -99,7 +96,6 @@ describe("R4: #(preaggregate) rollups build the partials their measures merge fr
       });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 
@@ -148,15 +144,14 @@ describe("R4: #(preaggregate) rollups build the partials their measures merge fr
       });
    }
 
-   it("builds nothing over a gated source, whose rollups no query reads yet (row 21)", () => {
-      // The grain keeps the gate's field, so A4 alone would build it; while a
-      // gated entry point skips every rollup, the table would cost a build
-      // for nothing.
+   it("builds a rollup over a source's own gate, its grain keeping the gate's field (G3)", () => {
+      // Read past the gate, which `govern()` grafts and re-proves on it, so
+      // its table is worth the build (r4/gated_rollup).
       expect(
          Object.keys(fixture.rollupTables).filter((n) =>
             n.startsWith("gated__rollup__"),
          ),
-      ).toEqual([]);
+      ).toHaveLength(1);
    });
 
    it("builds nothing for a source whose rows read the current time (S25b)", () => {

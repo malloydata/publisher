@@ -1,0 +1,3 @@
+{
+  "loadError": "m.malloy: #(rollup) on measure \"r_empty\" of source \"rollups\" has a storage= that is not a destination name. [rollup-invalid]"
+}

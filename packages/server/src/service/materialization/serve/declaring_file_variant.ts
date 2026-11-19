@@ -4,14 +4,14 @@
 /**
  * The declaring-file overlay both router legs that compile a caller's text
  * over a stored table share: the persisted-view leg (`view_variants.ts`) and
- * the `#(preaggregate)` rollup leg (`rollup_variants.ts`).
+ * the `#(rollup)` rollup leg (`rollup_variants.ts`).
  *
  * The queried source is redeclared IN AN OVERLAY OF ITS OWN DECLARING FILE,
  * over the stored table, so it keeps the author's `sourceID`, with the
  * source's entry-point gates written on it as note lines ({@link gateLines}):
  * every gate the governor keys on that source (by name, then by `sourceID`)
  * finds its graft target in the variant, exactly as the served copy keeps it
- * by re-rooting the author's own file (R3, route then govern). The file's
+ * by re-rooting the author's own file (route then govern). The file's
  * other names come from a copy of it (`<file><copySuffix>`), and the query
  * model imports every name of the author's model from its declaring file,
  * the redeclared source from the overlay.
@@ -27,24 +27,24 @@
  * persisted table.
  */
 
+import { modelDefOf } from "../../governance/ir/compiled_model";
 import type { ModelDef, ModelMaterializer } from "@malloydata/malloy";
 import * as path from "path";
 import { fileURLToPath, pathToFileURL } from "url";
 import type { GraftRuntime } from "../../gate_classification";
 import { collectEntryPointGates } from "../../gate_classification";
 import { doubleQuotedString, identifier } from "../../malloy_text";
-import {
-   createModelRuntime,
-   type ModelConnectionInput,
-} from "../../model_runtime";
+import type { ModelConnectionInput } from "../../model_runtime";
 import { overlayKey } from "../../overlay_key";
-import { splitSourceID } from "../plan/persisted_view";
-import { SourceMap } from "../plan/source_map";
-import { persistBlankedFiles } from "../persist_blanking";
-import { authorNameImports } from "./author_imports";
+import { splitSourceID } from "../domain/table_plans";
+import { applyEdits, importRewrites } from "../text/declaration_text";
+import { SourceMap } from "../text/source_map";
+import type { GeneratedFiles } from "../text/generated_files";
+import { packageFiles } from "../text/package_files";
+import { authorNameImports, relativeImport } from "./author_imports";
 
 /** A variant compiled over the author's declaring file. */
-export interface CompiledDeclaringFileVariant {
+interface CompiledDeclaringFileVariant {
    materializer?: ModelMaterializer;
    modelDef?: ModelDef;
    /** The runtime the variant compiled in, which a graft on it reloads through. */
@@ -53,14 +53,18 @@ export interface CompiledDeclaringFileVariant {
 }
 
 /** What the leg's declaration callback is handed. */
-export interface DeclaringFileContext {
+interface DeclaringFileContext {
    /** The declaring file's URL (its overlay key is where the variant lives). */
    declaringURL: URL;
    /** The copy of the declaring file, holding its other names. */
    copyURL: URL;
    /** The copy's basename, for an `import` beside the declaring file. */
    copyName: string;
-   /** The redeclared source's name in its declaring file. */
+   /**
+    * The redeclared source's name in its declaring file; empty for a variant
+    * that redeclares no source (only {@link compileDeclaringFileVariant}'s
+    * `alsoRedeclared` names).
+    */
    sourceName: string;
    /**
     * The source's gates, as note lines ending in a newline, to write right
@@ -72,6 +76,8 @@ export interface DeclaringFileContext {
     * that imports the declaring file's names should import them from the copy.
     */
    addFile(url: URL, text: string): void;
+   /** An author file's text, its source-level `#@` lines blanked. */
+   authorText(url: URL): Promise<string | undefined>;
 }
 
 /**
@@ -89,159 +95,309 @@ export async function compileDeclaringFileVariant(args: {
    /** The connections the variant compiles with (a destination's included). */
    config: ModelConnectionInput;
    modelDef: ModelDef;
-   /** The redeclared source's `sourceID` (the author's). */
-   sourceID: string;
+   /**
+    * The redeclared source's `sourceID` (the author's). Absent for a variant
+    * that redeclares only `alsoRedeclared` names, in `declaringURL`.
+    */
+   sourceID?: string;
+   /** The declaring file's URL, when no `sourceID` names it. */
+   declaringURL?: string;
+   /**
+    * Other names the declaring file declares that the overlay redeclares too
+    * (a named query over the redeclared source), so neither the overlay nor
+    * the query model imports them from the copy.
+    */
+   alsoRedeclared?: readonly string[];
+   /**
+    * Names the declaration adds to the overlay that the query model must see
+    * as well (a generated source a redeclared query names).
+    */
+   alsoExported?: readonly string[];
    /** Appended to the declaring file's path to name its copy. */
    copySuffix: string;
    /** The query model's URL, beside the author's model. */
    queryModelURL: URL;
    /** The `##!` line both generated files start with. */
    flags: string;
+   /**
+    * The file set the variant is compiled over in place of the author's
+    * blanked files: a served copy's (`ServedCopyJoinBasis`), keyed by the
+    * author's own file URLs, so the redeclared source keeps its `sourceID`.
+    * Its `modelDef` (the copy's) names what the query model imports; the
+    * gates are still the author's (`modelDef`). The copy's files are read
+    * and compiled with `config`.
+    */
+   basis?: {
+      files: ReadonlyMap<string, string>;
+      modelDef: ModelDef;
+   };
    declare(
       ctx: DeclaringFileContext,
    ): string | { error: string } | Promise<string | { error: string }>;
 }): Promise<CompiledDeclaringFileVariant> {
    const { packagePath, modelPath, packageConfig, modelDef } = args;
-   const declared = splitSourceID(args.sourceID);
-   if (!declared) return { error: "no declaring file" };
-   let declaringFile: string;
-   try {
-      declaringFile = fileURLToPath(declared.url);
-   } catch {
-      return { error: "not a local file" };
-   }
+   const declared =
+      args.sourceID !== undefined
+         ? declaringFileOf(args.sourceID, args.copySuffix)
+         : args.declaringURL !== undefined
+           ? declaringFileAt("", args.declaringURL, args.copySuffix)
+           : { error: "no declaring file" };
+   if ("error" in declared) return declared;
+   const { declaringURL, copyURL, copyName } = declared;
    const modelFile = path.join(packagePath, modelPath);
-   const declaringURL = pathToFileURL(declaringFile);
-   const copyURL = pathToFileURL(`${declaringFile}${args.copySuffix}`);
-   const copyName = path.basename(fileURLToPath(copyURL));
-   const { runtime: reader } = await createModelRuntime(
+   const authorFiles = packageFiles(
       packagePath,
       modelPath,
-      packageConfig,
+      args.basis ? args.config : packageConfig,
    );
-   const readText = async (url: string) => {
-      try {
-         const read = await reader.urlReader.readURL(new URL(url));
-         return typeof read === "string" ? read : read.contents;
-      } catch {
-         return undefined;
-      }
-   };
-   // The author's files with source-level `#@` lines blanked, the declaring
-   // file's under the copy.
-   const blanked = await persistBlankedFiles(modelDef, readText);
+   // The author's files with source-level `#@` lines blanked (or the
+   // basis's), the declaring file's under the copy.
+   const blanked = args.basis
+      ? new Map(args.basis.files)
+      : await authorFiles.blanked(modelDef);
    if (!blanked) return { error: "a source-level #@ line not set aside" };
+   // The model whose names the overlay and the query model import.
+   const namesModel = args.basis?.modelDef ?? modelDef;
    const overlay = new Map<string, string>();
    for (const [url, text] of blanked) {
       if (url !== overlayKey(declaringURL)) overlay.set(url, text);
    }
    const declaringText =
       blanked.get(overlayKey(declaringURL)) ??
-      (await readText(declaringURL.href));
+      (await authorFiles.readIfAny(declaringURL.href));
    if (declaringText === undefined) return { error: "unreadable source" };
-   overlay.set(overlayKey(copyURL), declaringText);
+   overlay.set(copyURL.href, declaringText);
    // The copy's own names, to import into the declaring file's overlay.
-   const copyNames = await namesDeclaredIn(
-      packagePath,
-      modelPath,
-      packageConfig,
-      overlay,
-      copyURL,
-   );
-   let gates: string;
+   const copyNames = await namesDeclaredIn(authorFiles, overlay, copyURL);
+   let gates = "";
    try {
-      gates = gateLines(modelDef, args.sourceID);
+      if (args.sourceID !== undefined) {
+         gates = gateLines(modelDef, args.sourceID);
+      }
    } catch (error) {
       return { error: error instanceof Error ? error.message : String(error) };
    }
    const source = declared.name;
+   const redeclared = new Set([
+      ...(source !== "" ? [source] : []),
+      ...(args.alsoRedeclared ?? []),
+   ]);
+   // Every other author file that imports the declaring file reads its copy,
+   // so a declaration there (a sibling extension of the redeclared source
+   // that reads a column the stored table lacks) compiles as the author's
+   // model does, and only the query model's run target reads the stored
+   // table. The author's model is left alone when it exports a
+   // redeclared name: the query model imports that name from it.
+   const exported = new Set(
+      (namesModel as { exports?: string[] }).exports ?? [],
+   );
+   const modelHref = overlayKey(pathToFileURL(modelFile));
+   for (const importer of importersOf(namesModel, declaringURL)) {
+      if (
+         overlayKey(importer) === modelHref &&
+         [...redeclared].some((n) => exported.has(n))
+      ) {
+         continue;
+      }
+      const text =
+         overlay.get(overlayKey(importer)) ??
+         (await authorFiles.readIfAny(importer.href));
+      if (text === undefined) continue;
+      const retargeted = importsRetargeted(
+         text,
+         importer,
+         declaringURL,
+         copyURL,
+      );
+      if (retargeted !== undefined) overlay.set(importer.href, retargeted);
+   }
    const declaration = await args.declare({
       declaringURL,
       copyURL,
       copyName,
       sourceName: source,
       gates,
-      addFile: (url, text) => overlay.set(overlayKey(url), text),
+      addFile: (url, text) => overlay.set(url.href, text),
+      authorText: async (url) =>
+         blanked.get(overlayKey(url)) ??
+         (await authorFiles.readIfAny(url.href)),
    });
    if (typeof declaration !== "string") return declaration;
-   const others = copyNames.filter((n) => n !== source);
+   const others = copyNames.names.filter((n) => !redeclared.has(n));
    const importOthers =
       others.length > 0
          ? `import { ${others.map((n) => identifier(n)).join(", ")} } from ${doubleQuotedString(copyName)}\n`
          : "";
+   // Exported again, so a file that imports the declaring file whole (an
+   // `index.malloy` re-exporting its sources) still sees every source and
+   // query the author's file declares, not only the redeclared one.
+   const reexported = [
+      ...others.filter((n) => !copyNames.givens.has(n)),
+      ...(args.alsoExported ?? []),
+   ];
+   const exportAll =
+      reexported.length > 0
+         ? `export { ${[...redeclared, ...reexported].map((n) => identifier(n)).join(", ")} }\n`
+         : "";
    overlay.set(
-      overlayKey(declaringURL),
+      declaringURL.href,
       `${args.flags}
 ${importOthers}
 ${declaration}
-`,
+${exportAll}`,
    );
    // The query model: the author's model's names, each from the file that
    // declares it (the redeclared source from its declaring file's overlay).
    const imports = authorNameImports(
-      modelDef,
+      namesModel,
       args.queryModelURL,
       pathToFileURL(modelFile).href,
       {
+         // Seen from the overlay instead (see alsoExported).
+         skip: new Set(args.alsoExported ?? []),
          redirect: {
             from: overlayKey(declaringURL),
             to: copyURL.href,
-            keep: source,
+            keep: redeclared,
          },
       },
    );
+   const extra = (args.alsoExported ?? []).length
+      ? `import { ${(args.alsoExported ?? []).map((n) => identifier(n)).join(", ")} } from ${doubleQuotedString(relativeImport(args.queryModelURL, declaringURL.href) ?? "")}\n`
+      : "";
    overlay.set(
-      overlayKey(args.queryModelURL.href),
+      args.queryModelURL.href,
       `${args.flags}
 ${imports}
-`,
+${extra}`,
    );
-   const { runtime, importBaseURL } = await createModelRuntime(
+   const { runtime, materializer, model } = await packageFiles(
       packagePath,
       modelPath,
       args.config,
-      { overlay },
-   );
-   const materializer = runtime.loadModel(args.queryModelURL, {
-      importBaseURL,
-   });
-   const model = await materializer.getModel();
+   ).compile(args.queryModelURL, overlay);
    return {
       materializer,
-      modelDef: (model as unknown as { _modelDef: ModelDef })._modelDef,
+      modelDef: modelDefOf(model as unknown as { _modelDef: ModelDef }),
       runtime: runtime as unknown as GraftRuntime,
    };
 }
 
-/** The names a file declares (its sources, queries and givens), compiled on its own. */
+/**
+ * Which file a variant of the source `sourceID` names redeclares it in: its
+ * declaring file (a local file, from the `sourceID`), and the copy of it
+ * (`<file><copySuffix>`) that holds the file's other names. An error when the
+ * `sourceID` names no declaring file, or one that is not a local file.
+ */
+export function declaringFileOf(
+   sourceID: string,
+   copySuffix: string,
+): DeclaringFile {
+   const declared = splitSourceID(sourceID);
+   if (!declared) return { error: "no declaring file" };
+   return declaringFileAt(declared.name, declared.url, copySuffix);
+}
+
+type DeclaringFile =
+   | { error: string }
+   | { name: string; declaringURL: URL; copyURL: URL; copyName: string };
+
+/** {@link declaringFileOf} for a file named by its URL, declaring `name`. */
+function declaringFileAt(
+   name: string,
+   url: string,
+   copySuffix: string,
+): DeclaringFile {
+   let declaringFile: string;
+   try {
+      declaringFile = fileURLToPath(url);
+   } catch {
+      return { error: "not a local file" };
+   }
+   const declaringURL = pathToFileURL(declaringFile);
+   const copyURL = pathToFileURL(`${declaringFile}${copySuffix}`);
+   const copyName = path.basename(fileURLToPath(copyURL));
+   return { name, declaringURL, copyURL, copyName };
+}
+
+/**
+ * The names a file declares (its sources, queries and givens), compiled on
+ * its own, with which of them are givens.
+ */
 async function namesDeclaredIn(
-   packagePath: string,
-   modelPath: string,
-   config: ModelConnectionInput,
+   files: GeneratedFiles,
    overlay: ReadonlyMap<string, string>,
    url: URL,
-): Promise<string[]> {
-   const { runtime, importBaseURL } = await createModelRuntime(
-      packagePath,
-      modelPath,
-      config,
-      { overlay },
-   );
-   const model = await runtime.loadModel(url, { importBaseURL }).getModel();
-   const def = (model as unknown as { _modelDef: ModelDef })._modelDef;
+): Promise<{ names: string[]; givens: ReadonlySet<string> }> {
+   const { model } = await files.compile(url, overlay);
+   const def = modelDefOf(model as unknown as { _modelDef: ModelDef });
    const names = new Set<string>();
    for (const [name, entry] of Object.entries(def.contents ?? {})) {
       const located = entry as { location?: { url?: unknown } };
       // Declared in the file itself, not imported into it.
       if (located.location?.url === url.href) names.add(name);
    }
+   const givens = new Set<string>();
    for (const given of Object.values(def.givens ?? {})) {
       const g = given as { name?: unknown; location?: { url?: unknown } };
       if (typeof g.name === "string" && g.location?.url === url.href) {
          names.add(g.name);
+         givens.add(g.name);
       }
    }
-   return [...names].sort();
+   return { names: [...names].sort(), givens };
+}
+
+/**
+ * The author files that import `declaringURL` directly, by the model's import
+ * edges, the declaring file itself left out.
+ */
+function importersOf(modelDef: ModelDef, declaringURL: URL): URL[] {
+   const to = overlayKey(declaringURL);
+   const out = new Map<string, URL>();
+   const imports =
+      (
+         modelDef as {
+            imports?: { importURL?: unknown; location?: { url?: unknown } }[];
+         }
+      ).imports ?? [];
+   for (const i of imports) {
+      const from = i.location?.url;
+      if (typeof from !== "string" || typeof i.importURL !== "string") continue;
+      if (overlayKey(i.importURL) !== to || overlayKey(from) === to) continue;
+      try {
+         out.set(overlayKey(from), new URL(from));
+      } catch {
+         continue;
+      }
+   }
+   return [...out.values()];
+}
+
+/**
+ * `text`, the file at `fileURL`, with each import of `declaringURL` pointed at
+ * `copyURL`. Undefined when nothing is rewritten or the text does not lex.
+ */
+function importsRetargeted(
+   text: string,
+   fileURL: URL,
+   declaringURL: URL,
+   copyURL: URL,
+): string | undefined {
+   const to = overlayKey(declaringURL);
+   const copy = relativeImport(fileURL, copyURL.href);
+   if (copy === undefined) return undefined;
+   const edits = importRewrites(text, (written) => {
+      let resolved: string;
+      try {
+         resolved = new URL(written, fileURL).href;
+      } catch {
+         return undefined;
+      }
+      return overlayKey(resolved) === to ? copy : undefined;
+   });
+   if (!edits || edits.length === 0) return undefined;
+   return applyEdits(text, edits);
 }
 
 /** The routes a row-level gate is written on. */
@@ -250,10 +406,10 @@ const GATE_ROUTES = new Set(["authorize", "access_filter"]);
 /**
  * The source's entry-point gates (the governor's walk: own, inherited, a
  * derivation's base), as note lines for the variant's source, so `govern()`
- * finds them there (R3). Throws when one cannot be written as a single line:
+ * finds them there. Throws when one cannot be written as a single line:
  * the variant is then not compiled and the stored table not read.
  */
-export function gateLines(modelDef: ModelDef, sourceID: string): string {
+function gateLines(modelDef: ModelDef, sourceID: string): string {
    const def = SourceMap.of(modelDef).node(sourceID)?.def;
    if (!def) return "";
    const lines: string[] = [];

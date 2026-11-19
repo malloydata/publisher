@@ -13,6 +13,7 @@ import {
    compilePersistSources,
    duckdbTestConnections,
 } from "../../../test_helpers/incremental_test_harness";
+import { probeSelect, snowflakeScriptingBlock } from "./warehouse_sql";
 import {
    canonicalBoundValue,
    compareBounds,
@@ -26,13 +27,11 @@ import {
    deltaSelect,
    planIncrementalStep,
    probeMaxWatermark,
-   probeSelect,
    probeTargetColumns,
    renderSqlBound,
    seedCoveredThrough,
    shapeMismatch,
    snapshotBound,
-   snowflakeScriptingBlock,
    type SqlRunner,
    warehouseDeltaTarget,
 } from "./incremental_apply";
@@ -294,6 +293,35 @@ describe("probeSelect", () => {
 });
 
 describe("decodeTablePathSegments", () => {
+   it("reads every path as the one parser does, folding bare ASCII letters only", () => {
+      // A hyphen in a bare part, a whole BigQuery path in one pair of
+      // backticks, a partly quoted path: each decodes, as the bind reads it.
+      expect(decodeTablePathSegments("postgres", "proj-x.ds.tbl")).toEqual([
+         "proj-x",
+         "ds",
+         "tbl",
+      ]);
+      expect(decodeTablePathSegments("standardsql", "`p-1.ds.t`")).toEqual([
+         "p-1",
+         "ds",
+         "t",
+      ]);
+      expect(decodeTablePathSegments("standardsql", "`db`.t")).toEqual([
+         "db",
+         "t",
+      ]);
+      // Postgres folds A-Z only; Snowflake a-z only.
+      expect(decodeTablePathSegments("postgres", '"s".Ä')).toEqual(["s", "Ä"]);
+      expect(decodeTablePathSegments("postgres", '"s".ÄB')).toEqual([
+         "s",
+         "Äb",
+      ]);
+      expect(decodeTablePathSegments("snowflake", '"s".straße')).toEqual([
+         "s",
+         "STRAßE",
+      ]);
+   });
+
    it("case-folds a bare Postgres segment and preserves a quoted one", () => {
       expect(decodeTablePathSegments("postgres", "MySchema.MyTable")).toEqual([
          "myschema",
@@ -326,9 +354,8 @@ describe("decodeTablePathSegments", () => {
    });
 
    it("returns undefined for a path it cannot decode, rather than guessing", () => {
-      expect(
-         decodeTablePathSegments("postgres", "proj-x.ds.tbl"),
-      ).toBeUndefined();
+      expect(decodeTablePathSegments("postgres", '"s.t')).toBeUndefined();
+      expect(decodeTablePathSegments("postgres", "s..t")).toBeUndefined();
       // A dialect with no options at all, as opposed to one whose options reject
       // this particular path.
       expect(decodeTablePathSegments("mysql", "t")).toBeUndefined();

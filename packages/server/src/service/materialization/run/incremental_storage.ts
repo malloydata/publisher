@@ -1,27 +1,91 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+/**
+ * The delta target of a `storage=` table ({@link storageDeltaTarget}): the
+ * probes, range read and DML an incremental refresh runs when the source's
+ * warehouse computes the rows and a DuckDB or DuckLake destination holds the
+ * table. Read by incremental_build.ts's storage refresh.
+ *
+ * Runs SQL on two engines through one build session: source-dialect reads
+ * inside the passthrough, DuckDB DML and catalog probes on the destination.
+ * Reports what the warehouse charged for the delta's read.
+ */
+
 import type { DuckDBConnection } from "@malloydata/db-duckdb";
 import type { PersistSource } from "@malloydata/malloy";
 
-import { projectToPublicColumns } from "../plan/build_plan";
+import { projectToStoredColumns, storedColumnOf } from "./run_plan";
 import {
    canonicalBoundValue,
    deltaSelect,
    type DeltaTarget,
    type IncrementalLineage,
+   type SqlRunner,
 } from "./incremental_apply";
 import {
    issuePassthroughRead,
-   STORAGE_TARGET_DIALECT,
    wrapPassthrough,
 } from "./materialization_build_session";
 import type { BuildReadCost } from "./build_read_cost";
+import { markBigQueryRead } from "./bigquery_job_cancel";
 import type { FederatedSourceType } from "../../connection";
 import type { QueryMetadata } from "../../query_metadata";
 import { quoteIdentifier } from "../../quoting";
 import { errMessage } from "../../../utils";
-import { storageTablePath } from "./storage_table_path";
+import { storageTablePath } from "../domain/storage_table_path";
+import { capabilitiesOf, STORAGE_DIALECT } from "../domain/dialect";
+import {
+   decimalTypeOf,
+   guardDeltaDecimals,
+   numericAsTextSQL,
+   postgresNumericColumns,
+} from "./postgres_numeric_precision";
+
+/** What the passthrough's describe and type probe found ({@link postgresNumericColumns}). */
+type NumericRead = Awaited<ReturnType<typeof postgresNumericColumns>>;
+
+/** The table's column types by name, from the destination's own catalog. */
+async function storedTypesOf(
+   session: DuckDBConnection,
+   quotedTablePath: string,
+): Promise<Map<string, string>> {
+   const described = await session.runSQL(`DESCRIBE ${quotedTablePath}`);
+   const rows = (
+      Array.isArray(described) ? described : (described.rows ?? [])
+   ) as Record<string, unknown>[];
+   return new Map(
+      rows.map((r) => [String(r.column_name), String(r.column_type)]),
+   );
+}
+
+/**
+ * The Postgres numeric columns of a delta that the table stores exactly: as a
+ * DECIMAL, or as the text a seed kept when no DECIMAL held it. A column an
+ * older build stored as DOUBLE re-seeds the table before any delta
+ * ({@link StorageDeltaTarget.numericColumnsStoredAsDouble}). Undefined when
+ * there is none.
+ */
+async function exactNumericColumns(
+   session: DuckDBConnection,
+   numericRead: () => Promise<NumericRead>,
+   quotedTablePath: string,
+): Promise<
+   | { columns: string[]; stored: { column: string; storedType: string }[] }
+   | undefined
+> {
+   const { columns, numeric } = await numericRead();
+   if (numeric.length === 0) return undefined;
+   const typeOf = await storedTypesOf(session, quotedTablePath);
+   const stored = numeric.flatMap((column) => {
+      const storedType = typeOf.get(column);
+      return storedType &&
+         (decimalTypeOf(storedType) || storedType.toUpperCase() === "VARCHAR")
+         ? [{ column, storedType }]
+         : [];
+   });
+   return stored.length > 0 ? { columns, stored } : undefined;
+}
 
 /**
  * The delta target for a source materialized into a `storage=` destination — the
@@ -46,6 +110,98 @@ interface StorageDeltaTarget {
     * issued one (it reads only if every check passes).
     */
    readCost(): BuildReadCost | null;
+   /**
+    * The Postgres numeric columns the table stores as DOUBLE: a table built
+    * before a seed kept them exact, which serves binary-float sums
+    * (`0.30000000000000004`) until it is seeded again, since a delta only
+    * INSERTs into the column it has. A seed now stores each as DECIMAL (or
+    * as text when no DECIMAL holds it), so none is left after one. Empty off
+    * Postgres, or when the passthrough's types cannot be read. Reads the
+    * table's own catalog first, and probes Postgres (a describe and a
+    * `LIMIT 0`, nothing runs) only for a table holding a DOUBLE column, with
+    * the one probe the delta then reuses.
+    */
+   numericColumnsStoredAsDouble(): Promise<string[]>;
+}
+
+/**
+ * A DuckDB session as a {@link SqlRunner} that honours the run options' abort
+ * signal: an abort interrupts the statement in flight, so a statement given
+ * up on (the late-row check's timeout) frees the session for the build's
+ * next one instead of holding it. Unlike `interruptOnAbort`, later
+ * statements on the session are not refused: the abort ends one statement,
+ * not the build.
+ */
+export function sessionRunner(session: DuckDBConnection): SqlRunner {
+   return async (sql, options) => {
+      const signal = options?.abortSignal;
+      if (!signal) return session.runSQL(sql);
+      const interrupt = () => {
+         // The node-api connection is library-internal, as in dispose.
+         const connection = (
+            session as unknown as { connection?: { interrupt?: () => void } }
+         ).connection;
+         try {
+            connection?.interrupt?.();
+         } catch {
+            // Best-effort: the statement then runs to its end.
+         }
+      };
+      if (signal.aborted) throw new Error("the statement was cancelled");
+      signal.addEventListener("abort", interrupt, { once: true });
+      try {
+         return await session.runSQL(sql);
+      } finally {
+         signal.removeEventListener("abort", interrupt);
+      }
+   };
+}
+
+/**
+ * The late-row check's read of a stored source's window
+ * (DeltaTarget.windowRows): only the columns it compares, so the warehouse
+ * reads (and bills) those alone, through the seed's read path but not its
+ * cost, which is the delta's. None on BigQuery: there the window is read by a
+ * billed job issuePassthroughRead starts on the session, outside the check's
+ * abort, so a check that timed out would leave the job running and the
+ * session's next statement waiting behind it. A stored BigQuery source is not
+ * checked.
+ */
+function storageWindowRows(params: {
+   session: DuckDBConnection;
+   sourceType: FederatedSourceType;
+   handle: string;
+   persistSource: PersistSource;
+   buildSQL: string;
+   watermarkColumn: string;
+   queryMetadata?: QueryMetadata;
+}): Pick<DeltaTarget, "windowRows"> {
+   if (params.sourceType === "bigquery") return {};
+   const sourceDialect = params.persistSource.dialectName;
+   return {
+      windowRows: async (start, end, columns) => {
+         const projected =
+            `SELECT ${columns.map((c) => quoteIdentifier(c, sourceDialect)).join(", ")} ` +
+            `FROM (${projectToStoredColumns(
+               params.persistSource,
+               deltaSelect({
+                  dialect: sourceDialect,
+                  sourceSQL: params.buildSQL,
+                  watermarkName: params.watermarkColumn,
+                  start,
+                  end,
+               }),
+            )}) AS __c`;
+         const read = await issuePassthroughRead(
+            params.session,
+            params.sourceType,
+            params.handle,
+            projected,
+            params.queryMetadata,
+         );
+         return read.selectSQL;
+      },
+   };
 }
 
 export function storageDeltaTarget(params: {
@@ -92,25 +248,61 @@ export function storageDeltaTarget(params: {
       params.destinationSchema,
    );
    let readCost: BuildReadCost | null = null;
+   // One Postgres probe per refresh, shared by the DOUBLE check and the
+   // delta: the seed's projection names and types the columns a delta reads.
+   let numericProbe: Promise<NumericRead> | undefined;
+   const numericRead = () =>
+      (numericProbe ??= postgresNumericColumns(
+         session,
+         handle,
+         projectToStoredColumns(persistSource, buildSQL),
+         sourceType,
+      ));
 
+   // The build SQL and the stored table name a renamed field's column by its
+   // own name, so the watermark (and, in the DML, the merge keys) are named
+   // that way too.
+   const storedColumn = storedColumnOf(persistSource);
+   const watermarkColumn = storedColumn(lineage.watermarkName);
    return {
       readCost: () => readCost,
+      numericColumnsStoredAsDouble: async () => {
+         if (!capabilitiesOf(sourceType).passthroughNumericAsDouble) return [];
+         // The destination's own catalog first: Postgres is probed only for a
+         // table that holds a DOUBLE column at all.
+         let typeOf: Map<string, string>;
+         try {
+            typeOf = await storedTypesOf(session, quotedTablePath);
+         } catch {
+            // No table to describe: the planner seeds one anyway.
+            return [];
+         }
+         const doubles = new Set(
+            [...typeOf]
+               .filter(([, type]) => type.toUpperCase() === "DOUBLE")
+               .map(([column]) => column),
+         );
+         if (doubles.size === 0) return [];
+         const { numeric } = await numericRead();
+         return numeric.filter((column) => doubles.has(column));
+      },
       target: {
-         dialect: STORAGE_TARGET_DIALECT,
-         runner: (sql) => session.runSQL(sql),
+         dialect: STORAGE_DIALECT,
+         storedColumn,
+         runner: sessionRunner(session),
          quotedTablePath,
          logicalTablePath,
 
          deltaRows: async (start, end) => {
             // Filter INSIDE, project OUTSIDE — the seed's nesting order, so both
             // write the same columns. The watermark is always public (the
-            // publish gate checks it), so the projection cannot hide it.
-            const bounded = projectToPublicColumns(
+            // publish gate checks it), so the projection cannot drop it.
+            const bounded = projectToStoredColumns(
                persistSource,
                deltaSelect({
                   dialect: sourceDialect,
                   sourceSQL: buildSQL,
-                  watermarkName: lineage.watermarkName,
+                  watermarkName: watermarkColumn,
                   start,
                   end,
                }),
@@ -119,24 +311,50 @@ export function storageDeltaTarget(params: {
             // like a full build. On BigQuery the read is billed before the DML's
             // transaction opens, so a failed delta's retry pays again — the same
             // trade as a full build, bounded by the delta.
+            // A numeric the seed stored as DECIMAL (or kept as text) is read as
+            // Postgres's exact text too, and cast into its column only when it
+            // fits; one that does not re-seeds (postgres_numeric_precision.ts).
+            const exact = capabilitiesOf(sourceType).passthroughNumericAsDouble
+               ? await exactNumericColumns(
+                    session,
+                    numericRead,
+                    quotedTablePath,
+                 )
+               : undefined;
             const read = await issuePassthroughRead(
                session,
                sourceType,
                handle,
-               bounded,
+               exact
+                  ? numericAsTextSQL(
+                       bounded,
+                       exact.columns,
+                       exact.stored.map((c) => c.column),
+                       sourceType,
+                    )
+                  : bounded,
                queryMetadata,
             );
             readCost = read.cost;
-            return read.selectSQL;
+            return exact
+               ? guardDeltaDecimals(read.selectSQL, exact.stored)
+               : read.selectSQL;
          },
+
+         ...storageWindowRows({
+            session,
+            sourceType,
+            handle,
+            persistSource,
+            buildSQL,
+            watermarkColumn,
+            queryMetadata,
+         }),
 
          probeSourceFrontier: async () => {
             // Source-dialect through the passthrough, so the warehouse aggregates
             // and one row crosses instead of streaming every row.
-            const column = quoteIdentifier(
-               lineage.watermarkName,
-               sourceDialect,
-            );
+            const column = quoteIdentifier(watermarkColumn, sourceDialect);
             const alias = quoteIdentifier("watermark_max", sourceDialect);
             const inner =
                `SELECT MAX(${column}) AS ${alias} ` +
@@ -146,7 +364,13 @@ export function storageDeltaTarget(params: {
             // Wrapping would make every probe read undefined and seed forever.
             try {
                const result = await session.runSQL(
-                  wrapPassthrough(sourceType, handle, inner),
+                  wrapPassthrough(
+                     sourceType,
+                     handle,
+                     sourceType === "bigquery"
+                        ? markBigQueryRead(session, inner)
+                        : inner,
+                  ),
                );
                const rows = (result?.rows ?? []) as Record<string, unknown>[];
                const raw = rows[0]?.["watermark_max"];

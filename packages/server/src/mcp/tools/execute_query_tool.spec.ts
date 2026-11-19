@@ -137,6 +137,7 @@ function storeWhoseQueryThrows(error: unknown): Partial<EnvironmentStore> {
                getDeclaredQueryMetadata: () => null,
                getModel: () => ({
                   getType: () => "model",
+                  getCompilationError: () => undefined,
                   carriesReportTag: () => false,
                   getModel: async () => ({}),
                   runQuery: async () => {
@@ -187,6 +188,7 @@ function storeCapturingMetadata(
                getDeclaredQueryMetadata: () => null,
                getModel: () => ({
                   getType: () => "model",
+                  getCompilationError: () => undefined,
                   carriesReportTag: () => false,
                   getModel: async () => ({}),
                   runQuery: async (
@@ -711,6 +713,7 @@ describe("execute_query on a package with published versions", () => {
                      getDeclaredQueryMetadata: () => null,
                      getModel: () => ({
                         getType: () => "model",
+                        getCompilationError: () => undefined,
                         carriesReportTag: () => false,
                         getModel: async () => ({}),
                         runQuery: async () => {

@@ -5,7 +5,7 @@
  * Materialization characterization goldens over the repo's persist corpus
  * (phase 5, step 1): every hammer scenario model that materializes, through
  * v1 `#@ persist` / `#@ preaggregate` or v2 `#(materialize)` /
- * `#(preaggregate)` (`test_helpers/persist_corpus.ts`), compiled against its
+ * `#(rollup)` (`test_helpers/persist_corpus.ts`), compiled against its
  * DuckDB stand-in and planned through `collectModelBuildPlan` with the
  * materialize switch on, as a package load plans each model. The persist fixtures are packages,
  * and run through the package goldens instead.
@@ -38,9 +38,10 @@ import * as path from "path";
 import { pathToFileURL } from "url";
 import {
    collectModelBuildPlan,
-   deriveBuildPlanOutcome,
+   derivePackagePlan,
+   finishBuildPlan,
    emptyBuildPlanParts,
-   type CompiledBuildPlan,
+   type FinishedBuildPlan,
 } from "../../../src/service/materialization/plan/build_plan";
 import { overlayKey } from "../../../src/service/overlay_key";
 import {
@@ -50,7 +51,7 @@ import {
    materializes,
    releasingEach,
 } from "../../../src/test_helpers/persist_corpus";
-import { installSettings } from "../../../src/test_helpers/settings_env";
+import { useMaterializationOn } from "../../../src/test_helpers/settings_env";
 import {
    addressesOf,
    GeneratedFiles,
@@ -114,7 +115,7 @@ async function planModel(model: CorpusModel, root: string): Promise<Planned> {
    const generated = new GeneratedFiles();
    const runtimeOver = (overlay?: ReadonlyMap<string, string>) =>
       new Runtime({ urlReader: readerOf(files, overlay), connections });
-   let compiled: CompiledBuildPlan;
+   let compiled: FinishedBuildPlan;
    try {
       const runtime = runtimeOver();
       const materializer = runtime.loadModel(entry);
@@ -138,11 +139,14 @@ async function planModel(model: CorpusModel, root: string): Promise<Planned> {
       for (const [name, c] of model.connections) {
          connectionDigests[name] = await c.getDigest();
       }
-      compiled = {
-         ...parts,
+      // As a package's plan is: each `name=` its own table, before anything
+      // reads an address, and every author collision refused.
+      compiled = finishBuildPlan(parts, {
          connectionDigests,
          connections: new Map([...model.connections]),
-      };
+         versionScoped: false,
+         keepIncrementalUnbuildable: true,
+      });
    } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       return {
@@ -157,7 +161,7 @@ async function planModel(model: CorpusModel, root: string): Promise<Planned> {
    const addresses = addressesOf(compiled);
    learnAddresses(normalizer, addresses);
    const { connections: _connections, ...collected } = compiled;
-   const outcome = deriveBuildPlanOutcome(collected, null);
+   const outcome = derivePackagePlan(collected, null);
    const wirePlan = outcome.plan && {
       ...outcome.plan,
       sources: Object.fromEntries(
@@ -170,8 +174,12 @@ async function planModel(model: CorpusModel, root: string): Promise<Planned> {
    return {
       plan: normalizer.json({
          wirePlan,
+         // A source refused alone as the plan is derived, which the wire plan
+         // then leaves out: an incremental declaration the corpus's DuckDB
+         // stand-in cannot honour (incremental_policy's rule 6), say. The
+         // compiled internals below still show what it would have planned.
+         ...refusedAloneOf(compiled, outcome),
          droppedPersistSources: outcome.droppedPersistSources,
-         rollupsOverStoredBase: outcome.rollupsOverStoredBase,
          rollupsKeepingGates: outcome.rollupsKeepingGates,
          internal: internalPlans(compiled),
       }),
@@ -194,12 +202,9 @@ function stemOf(model: CorpusModel): string {
 const claimed = new Set<string>();
 const planned = new Map<string, Planned>();
 let root: string;
-let restore: () => void = () => {};
 
+useMaterializationOn();
 beforeAll(async () => {
-   restore = installSettings({
-      env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-   }).restore;
    root = fs.mkdtempSync(path.join(os.tmpdir(), "mat-goldens-corpus-"));
    const { models } = await hammerModels(materializes);
    for await (const model of releasingEach(models)) {
@@ -210,7 +215,6 @@ beforeAll(async () => {
 }, 180000);
 
 afterAll(async () => {
-   restore();
    await closeCorpus();
    fs.rmSync(root, { recursive: true, force: true });
 });
@@ -253,3 +257,17 @@ describe("materialization goldens: the hammer persist corpus", () => {
       expect(stale).toEqual([]);
    });
 });
+
+/** The findings deriving the plan added: the sources it refused alone. */
+function refusedAloneOf(
+   compiled: { annotationFindings?: { message: string }[] },
+   outcome: { annotationFindings: { message: string }[] },
+): { refusedAlone?: unknown[] } {
+   const before = new Set(
+      (compiled.annotationFindings ?? []).map((f) => f.message),
+   );
+   const added = outcome.annotationFindings.filter(
+      (f) => !before.has(f.message),
+   );
+   return added.length > 0 ? { refusedAlone: added } : {};
+}

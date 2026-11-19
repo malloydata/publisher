@@ -1,39 +1,44 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { parseOwnedTableComment } from "./table_mark_sql";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { Annotations, type PersistSource } from "@malloydata/malloy";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
+import {
+   openTempDuckDB,
+   type TempDuckDB,
+} from "../../../test_helpers/temp_storage";
 import type { components } from "../../../api";
 import {
    packageTableSuffix,
    versionedTableName,
    versionTableSuffix,
 } from "../../versions/materialization_scope";
-import type { BuildInstruction, ManifestEntry } from "../types";
+import type { BuildInstruction, ManifestEntry } from "../domain/types";
+import { dropOwnNameView, ownNameViewTarget } from "./leftover_name_views";
 import {
-   colocatedNameViewSite,
-   pointNameView,
-   storageNameViewSite,
-   type NameViewContext,
-} from "./name_view";
-import { nameViewComment } from "./name_view_sql";
+   databaseTableSite,
+   storageTableSite,
+   type TableSiteContext,
+} from "./table_site";
+import { ownedTableProbeSql } from "./warehouse_sql";
+import { parseOwnedTableMark } from "./table_mark_sql";
+import { hasReservedTableSuffix } from "../domain/table_name";
 import {
    assertTableOwnable,
    hasAuthorTableName,
-   hasReservedTableSuffix,
+   markedFor,
    markOwnedTable,
    ownedElsewhere,
    ownedTableComment,
    ownedTableMarkSql,
-   ownedTableProbeSql,
    packageRecordsName,
-   parseOwnedTableComment,
    probeTableHolder,
    tableHolderOf,
+   tableLocationOf,
+   relationLocationOf,
    TableOwnershipError,
    TABLE_OWNED_ELSEWHERE,
    TABLE_OWNERSHIP_UNVERIFIED,
@@ -53,6 +58,14 @@ type ApiConnection = components["schemas"]["Connection"];
 
 const A = "env1/pkg_a";
 const B = "env1/pkg_b";
+
+/**
+ * The comment an earlier release marked its `name=` views with: Publisher
+ * makes none now, but still recognizes this package's own (leftover_name_views.ts).
+ */
+const nameViewComment = (mark: { target: string; owner: string }) =>
+   `malloy-publisher:name-view owner=${encodeURIComponent(mark.owner)} ` +
+   `target=${encodeURIComponent(mark.target)}`;
 
 describe("the package's table suffix", () => {
    it("differs per package and per environment, and is stable", () => {
@@ -106,14 +119,132 @@ describe("the ownership mark", () => {
          "malloy-publisher:table owner=a extra",
          "malloy-publisher:tablex owner=a",
          nameViewComment({ target: "t", owner: A }),
+         "malloy-publisher:table owner=a table=",
+         "malloy-publisher:table owner=a tablex=t",
+         "malloy-publisher:table owner=a table=t extra",
+         "malloy-publisher:table table=t owner=a",
       ]) {
          expect(parseOwnedTableComment(comment)).toBeUndefined();
       }
    });
 
+   it("names the table it is on from 0.16.0; a build and a reclaim read the owner of either form", () => {
+      const mark = ownedTableComment(A, "s.t");
+      expect(mark).toBe("malloy-publisher:table owner=env1%2Fpkg_a table=s.t");
+      expect(parseOwnedTableMark(mark)).toEqual({ owner: A, table: "s.t" });
+      expect(parseOwnedTableMark(`"${mark}"`)).toEqual({
+         owner: A,
+         table: "s.t",
+      });
+      expect(parseOwnedTableComment(mark)).toBe(A);
+      // The form before 0.16.0: an owner, no table.
+      expect(parseOwnedTableMark(ownedTableComment(A))).toEqual({ owner: A });
+      expect(parseOwnedTableComment(ownedTableComment(A))).toBe(A);
+      // Where a probe found the one table, else nothing.
+      const at = (location: string | null, kind = "BASE TABLE") => {
+         const [d, sc, n] = location?.split(".") ?? [];
+         return {
+            kind,
+            comment: null,
+            location_database: d,
+            location_schema: sc,
+            location_name: n,
+         };
+      };
+      expect(tableLocationOf([at("db.s.t")])).toBe("db.s.t");
+      expect(tableLocationOf([at("db.s.v", "VIEW"), at("db.s.t")])).toBe(
+         "db.s.t",
+      );
+      expect(tableLocationOf([])).toBeUndefined();
+      expect(tableLocationOf([at("db.a.t"), at("db.b.t")])).toBeUndefined();
+      expect(tableLocationOf([at(null)])).toBeUndefined();
+   });
+
+   it("encodes each part of a location, so a dot in a name cannot spell another place", () => {
+      const at = (
+         database: string | undefined,
+         schema: string,
+         name: string,
+      ) => ({
+         location_database: database,
+         location_schema: schema,
+         location_name: name,
+      });
+      expect(relationLocationOf(at("db", "s", "t"))).toBe("db.s.t");
+      // MySQL reports no database.
+      expect(relationLocationOf(at(undefined, "s", "t"))).toBe("s.t");
+      // `a.b`.`c` and `a`.`b.c` are two places.
+      const one = relationLocationOf(at("db", "a.b", "c"));
+      const two = relationLocationOf(at("db", "a", "b.c"));
+      expect(one).toBe("db.a%2Eb.c");
+      expect(two).toBe("db.a.b%2Ec");
+      expect(one).not.toBe(two);
+      expect(relationLocationOf(at("d b", "s'x", "t%"))).toBe("d%20b.s'x.t%25");
+      // Unreadable: no schema or no name.
+      expect(relationLocationOf({ location_name: "t" })).toBeUndefined();
+      expect(relationLocationOf({ location_schema: "s" })).toBeUndefined();
+      // The mark round-trips the encoded location, and the drop compares
+      // the same spelling: a mark for one place is not proof on the other.
+      const row = (location: Record<string, string>, comment: string) => [
+         { kind: "BASE TABLE", comment, ...location },
+      ];
+      const placeOne = {
+         location_database: "db",
+         location_schema: "a.b",
+         location_name: "c",
+      };
+      const placeTwo = {
+         location_database: "db",
+         location_schema: "a",
+         location_name: "b.c",
+      };
+      const markOne = ownedTableComment(A, one);
+      expect(parseOwnedTableMark(markOne)?.table).toBe(one);
+      expect(markedFor(row(placeOne, markOne), A)).toEqual({ state: "ours" });
+      expect(markedFor(row(placeTwo, markOne), A)).toEqual({
+         state: "unmarked",
+      });
+   });
+
+   it("a caller's drop accepts a mark only on the place it names", () => {
+      const row = (comment: string, location: string | null = "db.s.t") => {
+         const [d, sc, n] = location?.split(".") ?? [];
+         return [
+            {
+               kind: "BASE TABLE",
+               comment,
+               location_database: d,
+               location_schema: sc,
+               location_name: n,
+            },
+         ];
+      };
+      expect(markedFor(row(ownedTableComment(A, "db.s.t")), A)).toEqual({
+         state: "ours",
+      });
+      for (const rows of [
+         row(ownedTableComment(A, "db.s.other")),
+         row(ownedTableComment(A, "db.other.t")),
+         row(ownedTableComment(A)),
+         row(ownedTableComment(A, "db.s.t"), null),
+      ]) {
+         expect(markedFor(rows, A)).toEqual({ state: "unmarked" });
+      }
+      expect(markedFor(row(ownedTableComment(B, "db.s.t")), A).state).toBe(
+         "taken",
+      );
+      // The build's reading is unchanged: the owner alone.
+      expect(tableHolderOf(row(ownedTableComment(A, "s.other")), A)).toEqual({
+         state: "ours",
+      });
+   });
+
    it("is written in each dialect's own table comment", () => {
       expect(ownedTableMarkSql(["s", "t"], A, "postgres")).toBe(
          `COMMENT ON TABLE "s"."t" IS 'malloy-publisher:table owner=env1%2Fpkg_a'`,
+      );
+      expect(ownedTableMarkSql(["s", "t"], A, "postgres", "db.s.t")).toBe(
+         `COMMENT ON TABLE "s"."t" IS 'malloy-publisher:table owner=env1%2Fpkg_a table=db.s.t'`,
       );
       expect(ownedTableMarkSql(["d", "t"], A, "standardsql")).toContain(
          "SET OPTIONS(description = ",
@@ -189,10 +320,19 @@ describe("whose name a table is", () => {
 
    it("the author's only for a name= the author wrote", () => {
       const compiled = {
-         preaggregatePlans: { rollup: {} },
-         materializePlans: {
-            declared: { persist: { name: "t" } },
-            defaulted: { persist: { name: "defaulted" }, nameDefaulted: true },
+         tables: {
+            rollup: { kind: "rollup", rollup: {} },
+            declared: {
+               kind: "materialize",
+               materialize: { persist: { name: "t" } },
+            },
+            defaulted: {
+               kind: "materialize",
+               materialize: {
+                  persist: { name: "defaulted" },
+                  nameDefaulted: true,
+               },
+            },
          },
       } as never;
       expect(
@@ -208,6 +348,7 @@ describe("whose name a table is", () => {
             source("rollup", '#@ persist name="ns.r"\n'),
          ),
       ).toBe(false);
+      // A #(materialize) name= is the author's; a defaulted one is not.
       expect(
          hasAuthorTableName(
             compiled,
@@ -300,23 +441,20 @@ describe("on a DuckDB connection", () => {
          )
       ).rows[0]?.comment;
 
+   let temp: TempDuckDB;
    beforeEach(() => {
-      dir = mkdtempSync(join(tmpdir(), "table-ownership-"));
-      connection = new DuckDBConnection(
-         "table_ownership",
-         join(dir, "wh.duckdb"),
-         dir,
-      );
+      temp = openTempDuckDB("table-ownership-", "table_ownership", {
+         file: "wh.duckdb",
+         workingDirectory: true,
+      });
+      ({ dir, connection } = temp);
    });
-   afterEach(async () => {
-      await connection.close().catch(() => undefined);
-      rmSync(dir, { recursive: true, force: true });
-   });
+   afterEach(() => temp.dispose());
 
    const target = { physicalTableName: "named_t", connectionName: "wh" };
    const check = (owner: string, ownRecords = false) =>
       assertTableOwnable(
-         colocatedNameViewSite(connection),
+         databaseTableSite(connection),
          target,
          owner,
          "named",
@@ -326,14 +464,13 @@ describe("on a DuckDB connection", () => {
    it("a free name is built, and marked once built", async () => {
       await check(A);
       await run("CREATE TABLE named_t AS SELECT 1 AS x");
-      await markOwnedTable(colocatedNameViewSite(connection), "named_t", A);
-      expect(await comment("named_t")).toBe(ownedTableComment(A));
+      await markOwnedTable(databaseTableSite(connection), "named_t", A);
+      // The mark names where the catalog says the table is.
+      expect(await comment("named_t")).toBe(
+         ownedTableComment(A, "wh.main.named_t"),
+      );
       expect(
-         await probeTableHolder(
-            colocatedNameViewSite(connection),
-            "named_t",
-            A,
-         ),
+         await probeTableHolder(databaseTableSite(connection), "named_t", A),
       ).toEqual({ state: "ours" });
       // Its own package builds it again; another is refused, coded.
       await check(A);
@@ -352,22 +489,45 @@ describe("on a DuckDB connection", () => {
       expect(refused.message).toContain("no Publisher mark");
    });
 
-   it("this package's own name= view is its own; any other view is refused", async () => {
+   it("this package's own leftover name= view is its own, replaced by the table; any other view is refused and kept", async () => {
+      // A view an earlier release made over a generation-named table, then
+      // the package moved that source to `#@ persist name=` (unversioned).
       await run("CREATE TABLE g1 AS SELECT 1 AS x");
-      const site = colocatedNameViewSite(connection);
-      await pointNameView(site, "named_t", { target: "g1", owner: A });
-      await check(A);
+      await run("CREATE VIEW named_t AS SELECT * FROM g1");
+      await run(
+         `COMMENT ON VIEW named_t IS '${nameViewComment({ target: "g1", owner: A })}'`,
+      );
+      const site = databaseTableSite(connection);
+      expect(await check(A)).toEqual({ ownView: true });
+      // Another package never treats it as its own, nor drops it.
       expect((await check(B).catch((e) => e)).code).toBe(TABLE_OWNED_ELSEWHERE);
-      await run("DROP VIEW named_t");
-      await run("CREATE VIEW named_t AS SELECT 2 AS x");
+      expect(await dropOwnNameView(site, "named_t", B)).toBe(false);
+      expect(await ownNameViewTarget(site, "named_t", A)).toBe("g1");
+      // Its own package drops it, and the table takes the name.
+      expect(await dropOwnNameView(site, "named_t", A)).toBe(true);
+      expect(await check(A)).toEqual({ ownView: false });
+      // The generation it read is left to the records that name it.
+      expect((await run("SELECT x FROM g1")).rows).toEqual([{ x: 1 }]);
+      // An unmarked view, even one reading this package's table, is refused
+      // and never dropped.
+      await run("CREATE VIEW named_t AS SELECT * FROM g1");
       expect((await check(A, true).catch((e) => e)).code).toBe(
          TABLE_OWNED_ELSEWHERE,
       );
+      expect(await dropOwnNameView(site, "named_t", A)).toBe(false);
+      // A table at the name is never dropped as a view.
+      await run("DROP VIEW named_t");
+      await run("CREATE TABLE named_t AS SELECT 3 AS x");
+      await run(
+         `COMMENT ON TABLE named_t IS '${nameViewComment({ target: "g1", owner: A })}'`,
+      );
+      expect(await dropOwnNameView(site, "named_t", A)).toBe(false);
+      expect((await run("SELECT x FROM named_t")).rows).toEqual([{ x: 3 }]);
    });
 
    it("a name whose holder cannot be read is refused", async () => {
       const failing = {
-         ...colocatedNameViewSite(connection),
+         ...databaseTableSite(connection),
          run: async () => {
             throw new Error("permission denied for information schema");
          },
@@ -395,7 +555,7 @@ describe("on a DuckDB connection", () => {
       expect(
          (
             await assertTableOwnable(
-               { ...colocatedNameViewSite(connection), dialect: "oracle" },
+               { ...databaseTableSite(connection), dialect: "oracle" },
                target,
                A,
                "named",
@@ -406,7 +566,7 @@ describe("on a DuckDB connection", () => {
    });
 
    it("a drop sees a table another package marked", async () => {
-      const site = colocatedNameViewSite(connection);
+      const site = databaseTableSite(connection);
       await run("CREATE TABLE named_t AS SELECT 1 AS x");
       expect(await ownedElsewhere(site, "named_t", A)).toBeUndefined();
       await markOwnedTable(site, "named_t", B);
@@ -416,7 +576,7 @@ describe("on a DuckDB connection", () => {
    });
 
    it("a carried table at the author's name= is reused only while marked as this package's", async () => {
-      const context: NameViewContext = {
+      const context: TableSiteContext = {
          connectionFor: () => connection,
          destinationFor: () => undefined,
          environmentPath: dir,
@@ -436,9 +596,9 @@ describe("on a DuckDB connection", () => {
             realization: "COPY",
          }) as BuildInstruction;
       await run("CREATE TABLE mine AS SELECT 1 AS x");
-      await markOwnedTable(colocatedNameViewSite(connection), "mine", A);
+      await markOwnedTable(databaseTableSite(connection), "mine", A);
       await run("CREATE TABLE theirs AS SELECT 1 AS x");
-      await markOwnedTable(colocatedNameViewSite(connection), "theirs", B);
+      await markOwnedTable(databaseTableSite(connection), "theirs", B);
       await run("CREATE TABLE legacy AS SELECT 1 AS x");
       const names = ["mine", "theirs", "legacy", "gone"];
       const carried = Object.fromEntries(names.map((n) => [n, entry(n)]));
@@ -464,9 +624,12 @@ describe("in a DuckLake destination", () => {
    let session: DuckDBConnection;
    const lake = { name: "lake", type: "ducklake" } as ApiConnection;
 
+   let temp: TempDuckDB;
    beforeEach(async () => {
-      dir = mkdtempSync(join(tmpdir(), "table-ownership-lake-"));
-      session = new DuckDBConnection("table_ownership_lake", ":memory:", dir);
+      temp = openTempDuckDB("table-ownership-lake-", "table_ownership_lake", {
+         workingDirectory: true,
+      });
+      ({ dir, connection: session } = temp);
       await session.runSQL("INSTALL ducklake");
       await session.runSQL("LOAD ducklake");
       await session.runSQL(
@@ -474,13 +637,10 @@ describe("in a DuckLake destination", () => {
             `(DATA_PATH '${join(dir, "data")}')`,
       );
    });
-   afterEach(async () => {
-      await session.close().catch(() => undefined);
-      rmSync(dir, { recursive: true, force: true });
-   });
+   afterEach(() => temp.dispose());
 
    it("a stored table is marked, read back, and refused to another package", async () => {
-      const site = storageNameViewSite("lake", lake, session);
+      const site = storageTableSite("lake", lake, session);
       const target = {
          physicalTableName: "stored_named",
          connectionName: "wh",

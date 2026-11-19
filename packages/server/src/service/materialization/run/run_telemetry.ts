@@ -1,10 +1,31 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+/**
+ * The run and build events of materialization (the telemetry specification
+ * in docs/materialization-v2-plan.md): `materialization.run.started` and `.run.finished` around a
+ * run, `materialization.build.finished` and `.build.failed` per source, and the
+ * build counters and histograms beside them. Each log is one call with the
+ * event name as its message, so a pipeline can key on it; `runId` (the run's
+ * materialization id) and `sourceEntityId` (a digest) join it to the run's
+ * record, which holds the rest.
+ *
+ * Never on an event or a label: row values, given values, gate text, SQL, a
+ * driver's message (it can quote SQL; reduced to {@link errorCodeOf}),
+ * storage aliases or destination locations, credentials. A host-assigned table
+ * name is left off too: only a name Publisher made is logged.
+ *
+ * Surface: {@link RunTelemetry} and {@link withRunTelemetry} around a run, the
+ * `report*` functions per source, and the label helpers. Read by the service,
+ * the instructed build and the run lifecycle.
+ */
+
+import type { RunPlan } from "./run_plan";
+import { instructionTier } from "../domain/placement";
 import { AsyncLocalStorage } from "async_hooks";
 import { getPersistStorageMode } from "../../../config";
 import { causeChain } from "../../../driver_errors";
-import { MaterializationEligibilityError } from "../../../errors";
+import { errorCodeOf } from "../../../error_code";
 import { logger } from "../../../logger";
 import {
    type BuildKind,
@@ -16,27 +37,21 @@ import {
    recordBuildDuration,
    recordBuildOutcome,
    recordBuildReadBytes,
+   recordMaterializationRun,
 } from "../../../materialization_metrics";
-import type { CompiledBuildPlan } from "../plan/build_plan";
-import { PERSISTED_VIEW_COMPANION_SUFFIX } from "../plan/persisted_view";
-import type { BuildInstruction, BuildPlan, ManifestEntry } from "../types";
+import {
+   isPersistedQuerySourceID,
+   PERSISTED_VIEW_COMPANION_SUFFIX,
+} from "../domain/table_plans";
+import {
+   type BuildInstruction,
+   type BuildPlan,
+   isLegacyFailedEntry,
+   type ManifestEntry,
+   type SourceFailure,
+} from "../domain/types";
 import type { BuildRetryable } from "./build_failure_class";
-import { BilledReadNotCapturedError } from "./materialization_build_session";
-
-/**
- * The run and build events of materialization (plan section 5, "Step 4
- * specification"): `materialization.run.started` and `.run.finished` around a
- * run, `materialization.build.finished` and `.build.failed` per source, and the
- * build counters and histograms beside them. Each log is one call with the
- * event name as its message, so a pipeline can key on it; `runId` (the run's
- * materialization id) and `sourceEntityId` (a digest) join it to the run's
- * record, which holds the rest.
- *
- * Never on an event or a label: row values, given values, gate text, SQL, a
- * driver's message (it can quote SQL; reduced to {@link errorCodeOf}),
- * storage aliases or destination locations, credentials. A host-assigned table
- * name is left off too: only a name Publisher made is logged.
- */
+import { BilledReadNotCapturedError } from "./build_attribution";
 
 /** What started a run, on `materialization.run.started`. */
 export const RUN_TRIGGERS = [
@@ -45,18 +60,18 @@ export const RUN_TRIGGERS = [
    "auto",
    "orchestrator",
 ] as const;
-export type RunTrigger = (typeof RUN_TRIGGERS)[number];
+type RunTrigger = (typeof RUN_TRIGGERS)[number];
 
 /**
  * A run's trigger: the scheduler's fire, else a host's instructed run, else a
  * run a publish started, else an explicit request.
  */
 export function runTriggerOf(args: {
-   trigger: "ON_DEMAND" | "SCHEDULER";
+   trigger: "on_demand" | "scheduler";
    runContextTrigger?: string;
    orchestrated: boolean;
 }): RunTrigger {
-   if (args.trigger === "SCHEDULER" || args.runContextTrigger === "scheduler") {
+   if (args.trigger === "scheduler" || args.runContextTrigger === "scheduler") {
       return "schedule";
    }
    if (args.orchestrated) return "orchestrator";
@@ -64,15 +79,21 @@ export function runTriggerOf(args: {
    return "api";
 }
 
-/** What one planned source's build makes (see {@link BuildKind}). */
+/**
+ * What one planned source's build makes (see {@link BuildKind}): its table's
+ * kind, fixed at plan. A source this compile did not plan (the load's plan
+ * can list one the run's own compile does not) is read as a persisted view
+ * by its generated companion's sourceID, else as `persist`.
+ */
 export function buildKindOf(
-   compiled: Pick<CompiledBuildPlan, "preaggregatePlans" | "materializePlans">,
+   compiled: Pick<RunPlan, "tables">,
    sourceID: string | undefined,
 ): BuildKind {
    if (sourceID === undefined) return "persist";
-   if (compiled.preaggregatePlans?.[sourceID]) return "rollup";
-   const materialize = compiled.materializePlans?.[sourceID];
-   if (materialize) return materialize.pair ? "pair" : "materialize";
+   // A persisted query's table is planned as a view's; it reports as a query.
+   if (isPersistedQuerySourceID(sourceID)) return "query";
+   const table = compiled.tables[sourceID];
+   if (table) return table.kind;
    if (sourceID.endsWith(PERSISTED_VIEW_COMPANION_SUFFIX)) return "view";
    return "persist";
 }
@@ -83,7 +104,7 @@ export function buildKindOf(
  * a kind; an address the plan does not list is left to the caller.
  */
 export function buildKindsByAddress(
-   compiled: Pick<CompiledBuildPlan, "preaggregatePlans" | "materializePlans">,
+   compiled: Pick<RunPlan, "tables">,
    plan: Pick<BuildPlan, "sources"> | null | undefined,
 ): Map<string, BuildKind> {
    const kinds = new Map<string, BuildKind>();
@@ -99,9 +120,7 @@ export function buildKindsByAddress(
 export function buildTierOf(
    instruction: Pick<BuildInstruction, "destination">,
 ): BuildTier {
-   return instruction.destination && getPersistStorageMode() !== "off"
-      ? "storage"
-      : "colocated";
+   return instructionTier(instruction, getPersistStorageMode());
 }
 
 /**
@@ -119,37 +138,6 @@ export function failureClassOf(
    if (retryable === false) return "deterministic";
    if (retryable === true) return "transient";
    return "unclassified";
-}
-
-// A code is a short identifier; anything else (a message, a path) is dropped.
-const CODE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$/;
-
-/**
- * An error reduced to a code a log may carry: an eligibility refusal's
- * reason, else Publisher's error kind, else a driver's own code (a SQLSTATE,
- * `ECONNREFUSED`), else the error's class name. Never its message, which can
- * quote SQL or a value. The cause chain is read outermost first: a strategy
- * rewraps a driver's error in a plain `Error` to redact its message.
- */
-export function errorCodeOf(err: unknown): string {
-   const chain = [...causeChain(err)];
-   for (const e of chain) {
-      if (e instanceof MaterializationEligibilityError && e.reason) {
-         return e.reason;
-      }
-      const { kind, code } = e as Error & { kind?: unknown; code?: unknown };
-      for (const candidate of [kind, code]) {
-         if (typeof candidate === "string" && CODE_PATTERN.test(candidate)) {
-            return candidate;
-         }
-      }
-      if (typeof code === "number") return String(code);
-   }
-   // No code anywhere: the most specific class name, outermost first.
-   for (const e of chain) {
-      if (e.name !== "Error" && CODE_PATTERN.test(e.name)) return e.name;
-   }
-   return "Error";
 }
 
 type SourceTally = Record<
@@ -176,6 +164,8 @@ export class RunTelemetry {
       readonly runId: string,
       readonly mode: MaterializationMode,
       readonly packageName: string,
+      /** When the run started, which its duration is measured from. */
+      readonly startedAtMs: number = Date.now(),
    ) {}
 
    /** `materialization.run.started`, once the run holds its tables. */
@@ -190,15 +180,19 @@ export class RunTelemetry {
    }
 
    /**
-    * `materialization.run.finished`: info, warn when partial, error when
-    * failed. The counts are the sources the build counter counted for this
-    * run; the error that ended it, if any, is reduced to its code.
+    * How the run ended, recorded once, on every terminal path: the run
+    * counter and duration (`publisher_materialization_runs_total`, by mode
+    * and outcome) and `materialization.run.finished` (info, warn when
+    * partial, error when failed). The counts are the sources the build
+    * counter counted for this run; the error that ended it, if any, is
+    * reduced to its code. The run's status and manifest are written by the
+    * committer (a committed run) or the lifecycle's settle (a thrown one).
     */
-   finished(
-      outcome: MaterializationOutcome,
-      durationMs: number,
-      err?: unknown,
-   ): void {
+   finished(outcome: MaterializationOutcome, err?: unknown): void {
+      const durationMs = Date.now() - this.startedAtMs;
+      recordMaterializationRun(this.mode, outcome, durationMs);
+      // The background runner does not log a failure reported here again.
+      if (err !== undefined) markRunFailureReported(err);
       const { built, reused, refused, failed, cancelled } = this.tally;
       const level =
          outcome === "failed"
@@ -228,7 +222,7 @@ export class RunTelemetry {
 const reportedRunFailures = new WeakSet<object>();
 
 /** Mark `err` as reported by `materialization.run.finished`. */
-export function markRunFailureReported(err: unknown): void {
+function markRunFailureReported(err: unknown): void {
    if (typeof err === "object" && err !== null) reportedRunFailures.add(err);
 }
 
@@ -377,18 +371,43 @@ export function reportSourceFailed(
       outcome: failureClass === "none" ? "cancelled" : "failed",
       failureClass,
       code: errorCodeOf(err),
-      ...(source.destination ? { destination: source.destination } : {}),
+      ...(source.destination ? { destinationName: source.destination } : {}),
    });
 }
 
 /**
- * A source the eligibility gate refused: counted only. Its warn log, with the
- * refusal, is the gate's own.
+ * A source the eligibility gate refused: counted, and logged as
+ * `materialization.build.refused` with the refusal's reason code. The gate's
+ * message stays on the run's record: it can name a given or a field. Warn
+ * on an orchestrated run, whose host should not instruct a source the plan
+ * refused; info on an auto-run, where the package warning already says so.
  */
-export function reportSourceRefused(kind: BuildKind, tier: BuildTier): void {
+export function reportSourceRefused(
+   source: Omit<SourceIdentity, "sourceEntityId" | "physicalTableName"> & {
+      sourceEntityId?: string;
+   },
+   reason: string | undefined,
+): void {
    const run = currentRun.getStore();
    if (run) run.tally.refused++;
-   recordBuildOutcome({ kind, tier, outcome: "refused" });
+   recordBuildOutcome({
+      kind: source.kind,
+      tier: source.tier,
+      outcome: "refused",
+   });
+   logger[run?.mode === "orchestrated" ? "warn" : "info"](
+      "materialization.build.refused",
+      {
+         ...(run ? { runId: run.runId, packageName: run.packageName } : {}),
+         ...(source.sourceEntityId
+            ? { sourceEntityId: source.sourceEntityId }
+            : {}),
+         sourceName: source.sourceName,
+         kind: source.kind,
+         tier: source.tier,
+         ...(reason ? { reason } : {}),
+      },
+   );
 }
 
 /** A source the run carried forward instead of building: counted only. */
@@ -396,4 +415,26 @@ export function reportSourceReused(kind: BuildKind, tier: BuildTier): void {
    const run = currentRun.getStore();
    if (run) run.tally.reused++;
    recordBuildOutcome({ kind, tier, outcome: "reused" });
+}
+
+/**
+ * How many sources a run built, failed on, and reused, counted from what the
+ * build returned (an instruction can be skipped without building).
+ * `failures` is the authority on what failed; a legacy entry mirroring a
+ * failure (`ManifestEntry.error`) is excluded from the other counts so one
+ * lost source is not also reported as built or reused.
+ */
+export function tallySources(
+   entries: Record<string, ManifestEntry>,
+   failures: Record<string, SourceFailure>,
+   carried: Record<string, ManifestEntry>,
+): { sourcesBuilt: number; sourcesFailed: number; sourcesReused: number } {
+   const built = Object.values(entries).filter(
+      (e) => !isLegacyFailedEntry(e) && !carried[e.sourceEntityId!],
+   );
+   return {
+      sourcesBuilt: built.length,
+      sourcesFailed: Object.keys(failures).length,
+      sourcesReused: Object.keys(carried).filter((id) => !failures[id]).length,
+   };
 }

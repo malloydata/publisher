@@ -33,6 +33,8 @@ const NAME_KEY = new RegExp(
       String.raw`(?:[\w\])]|\?\.)\[\s*[A-Za-z_][A-Za-z0-9_]*\.sourceName\s*\]`,
       String.raw`\.(?:set|get|has|delete|includes)\(\s*[A-Za-z_]*(?:[Ss]ource|[Bb]inding|[Pp]lan|[Rr]ollup|persist)[A-Za-z_]*\.name\b`,
       String.raw`(?:[\w\])]|\?\.)\[\s*[A-Za-z_]*(?:[Ss]ource|[Bb]inding|[Pp]lan|[Rr]ollup)[A-Za-z_]*\.name\s*\]`,
+      // A name matched as a sourceID's prefix (`${name}@url`): a key by name.
+      String.raw`\.startsWith\(\s*\x60\$\{\s*[\w.]*[nN]ame\s*\}@`,
    ].join("|"),
 );
 
@@ -43,48 +45,30 @@ const NAME_KEY = new RegExp(
  */
 const ALLOWED: Record<string, Record<string, string>> = {
    "plan/build_plan.ts": {
-      "if (!planByName.has(source.name)) continue;":
-         "phase 3 (PR 1 follow-up): rollup plans by name within one model; migrate to sourceID",
-      "const rollup = planByName.get(source.name);":
-         "phase 3 (PR 1 follow-up): rollup plans by name within one model; migrate to sourceID",
       "const plan = planByName.get(source.name);":
          "generated #(materialize) build sources by name within one generated companion, where each name is unique; migrate with the rollup plans",
-      "if (include && !include.has(source.name)) continue;":
-         "a scoped run's sourceNames filter is a caller request by name",
    },
    "run/storage_build_strategy.ts": {
-      "}).filter((d) => onPath.has(d.sourceName));":
-         "names on one downstream's path within one model's namespace (the lift is per model)",
+      "names[b.sourceName] = b.sourceIDs;":
+         "the names that read one stored table, each with its own sourceIDs, for the chained build's request",
    },
    "run/run_instructions.ts": {
       "if (include && !include.has(persistSource.name)) continue;":
          "a scoped run's sourceNames filter is a caller request by name",
    },
-   "serve/materialization_serve_transform.ts": {
+   "domain/source_aliases.ts": {
       "const named = byName.get(source.name) ?? [];":
          "planSourceIds resolves a manifest entry's name to plan sourceIDs (name → id index)",
       "byName.set(source.name, named);":
          "planSourceIds resolves a manifest entry's name to plan sourceIDs (name → id index)",
-      "const sourceID = contents?.[binding.sourceName]?.sourceID;":
-         "the model's own namespace, resolving a name to its sourceID",
       "else if (!group.includes(source.name)) group.push(source.name);":
          "aliases grouped per address for rebinding by name in Malloy text",
+   },
+   "domain/binding.ts": {
+      "const sourceID = contents?.[binding.sourceName]?.sourceID;":
+         "the model's own namespace, resolving a name to its sourceID",
       "...(aliasesBySourceName[entry.sourceName] ?? []).filter(":
          "aliases grouped per address for rebinding by name in Malloy text",
-      "const url = ctx.contents[lift.sourceName]?.location?.url;":
-         "the model's own namespace",
-      "dependsOn.set(b.sourceName, set);":
-         "orders one serve shape's bindings by the Malloy names they declare",
-      "if (!remaining.has(b.sourceName)) continue;":
-         "orders one serve shape's bindings by the Malloy names they declare",
-      "const ready = [...dependsOn.get(b.sourceName)!].every((d) =>":
-         "orders one serve shape's bindings by the Malloy names they declare",
-      "remaining.delete(b.sourceName);":
-         "orders one serve shape's bindings by the Malloy names they declare",
-      "if (remaining.has(b.sourceName)) {":
-         "orders one serve shape's bindings by the Malloy names they declare",
-      "givenScopedJoinTargets(contents?.[b.sourceName]?.fields).every(":
-         "the model's own namespace",
    },
    "serve/serve_verdict.ts": {
       "const storageBound = facts.boundStorageNames.has(source.name);":
@@ -94,13 +78,11 @@ const ALLOWED: Record<string, Record<string, string>> = {
       "!facts.freshStorageNames.has(source.name)":
          "phase 3: storage bindings are emitted by name; migrate verdict facts to sourceID with the catalog",
    },
-   "serve/preaggregation_serve_bindings.ts": {
-      "const plan = planByRollupName.get(binding.sourceName);":
-         "phase 3: rollup bindings by generated name; migrate to the rollup's sourceID",
+   "serve_verdicts.ts": {
+      ": [...ids].some((id) => id.startsWith(`${sourceName}@`));":
+         "a verdict fact with no sourceID, matched by the name its sourceIDs start with; migrate with the verdict facts to sourceID",
    },
-   "serve/model_serve_shape.ts": {
-      "} else if (!this.shadowedSourcesLogged.has(binding.sourceName)) {":
-         "log dedupe only",
+   "serve/storage_bindings.ts": {
       "const def = contents?.[binding.sourceName] as":
          "the model's own namespace",
       "const def = contents?.[binding.sourceName];":
@@ -153,6 +135,11 @@ describe("the keying rule: a source's name is never a map key", () => {
       expect(NAME_KEY.test("...(e.sourceName ? [e.sourceName] : []),")).toBe(
          false,
       );
+      // A sourceID matched by its name prefix.
+      expect(
+         NAME_KEY.test("ids.some((id) => id.startsWith(`${sourceName}@`))"),
+      ).toBe(true);
+      expect(NAME_KEY.test("key.startsWith(`${packageName}/`)")).toBe(false);
    });
 
    it("adds no new name-keyed lookup", () => {

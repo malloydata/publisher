@@ -31,11 +31,11 @@ import {
    tablePartitionKeys,
    type PartitionKey,
 } from "./connection";
+import { createIsolatedBuildSession } from "./materialization/run/materialization_build_session";
 import {
    cleanupStorageFiles,
-   createIsolatedBuildSession,
    dropStorageTable,
-} from "./materialization/run/materialization_build_session";
+} from "./materialization/run/storage_admin";
 import { parseS3Endpoint } from "./gcs_s3_utils";
 import { redactPgSecrets } from "../pg_helpers";
 import { quoteIdentifier } from "./quoting";
@@ -478,6 +478,8 @@ export class CatalogAdmin {
             {
                environment: "",
                connection: name,
+               // The admin API addresses a catalog by its own name.
+               catalog: name,
                surface: source.kind === "table" ? "copy" : "load",
             },
             () =>

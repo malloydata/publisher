@@ -53,7 +53,14 @@
       "equalToLive": true,
       "malloy": "run: daily -> { group_by: region; aggregate: grand }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "origin": "materialize",
+            "outcome": "used",
+            "tableId": "a8999c602090e6871ad5e0137fc4a5219414160eaee4711736ac1e1a84f96cd9"
+          }
+        ],
         "notConsidered": [],
         "query": {
           "filteredBy": [],
@@ -66,13 +73,17 @@
           "sourceName": "daily"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "origin": "materialize",
+          "tableId": "a8999c602090e6871ad5e0137fc4a5219414160eaee4711736ac1e1a84f96cd9",
+          "tier": "storage",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "through the index's re-export",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -115,7 +126,14 @@
       "equalToLive": true,
       "malloy": "run: daily_ext -> { group_by: status; aggregate: orders }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "origin": "materialize",
+            "outcome": "used",
+            "tableId": "a8999c602090e6871ad5e0137fc4a5219414160eaee4711736ac1e1a84f96cd9"
+          }
+        ],
         "notConsidered": [],
         "query": {
           "filteredBy": [],
@@ -128,13 +146,17 @@
           "sourceName": "daily_ext"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "origin": "materialize",
+          "tableId": "a8999c602090e6871ad5e0137fc4a5219414160eaee4711736ac1e1a84f96cd9",
+          "tier": "storage",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "an extension through the re-export",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -177,7 +199,14 @@
       "equalToLive": true,
       "malloy": "run: d -> { group_by: region; aggregate: grand }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "origin": "materialize",
+            "outcome": "used",
+            "tableId": "a8999c602090e6871ad5e0137fc4a5219414160eaee4711736ac1e1a84f96cd9"
+          }
+        ],
         "notConsidered": [],
         "query": {
           "filteredBy": [],
@@ -190,13 +219,17 @@
           "sourceName": "d"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "origin": "materialize",
+          "tableId": "a8999c602090e6871ad5e0137fc4a5219414160eaee4711736ac1e1a84f96cd9",
+          "tier": "storage",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "imported under another name, in the importer",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -239,7 +272,14 @@
       "equalToLive": true,
       "malloy": "run: d_plus -> { group_by: is_returned; aggregate: grand }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "origin": "materialize",
+            "outcome": "used",
+            "tableId": "a8999c602090e6871ad5e0137fc4a5219414160eaee4711736ac1e1a84f96cd9"
+          }
+        ],
         "notConsidered": [],
         "query": {
           "filteredBy": [],
@@ -252,13 +292,17 @@
           "sourceName": "d_plus"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "origin": "materialize",
+          "tableId": "a8999c602090e6871ad5e0137fc4a5219414160eaee4711736ac1e1a84f96cd9",
+          "tier": "storage",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "an importer's extension of the renamed import",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -301,7 +345,14 @@
       "equalToLive": true,
       "malloy": "run: by_status -> { group_by: status; aggregate: t is s.sum() }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "origin": "materialize",
+            "outcome": "used",
+            "tableId": "a8999c602090e6871ad5e0137fc4a5219414160eaee4711736ac1e1a84f96cd9"
+          }
+        ],
         "notConsidered": [],
         "query": {
           "filteredBy": [],
@@ -314,13 +365,17 @@
           "sourceName": "by_status"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "origin": "materialize",
+          "tableId": "a8999c602090e6871ad5e0137fc4a5219414160eaee4711736ac1e1a84f96cd9",
+          "tier": "storage",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "an importer's query-shaped source over it",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -366,6 +421,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "materialize",
             "outcome": "used",
             "tableId": "a8999c602090e6871ad5e0137fc4a5219414160eaee4711736ac1e1a84f96cd9"
           }
@@ -383,7 +439,9 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "materialize",
           "tableId": "a8999c602090e6871ad5e0137fc4a5219414160eaee4711736ac1e1a84f96cd9",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []
@@ -436,6 +494,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "materialize",
             "outcome": "used",
             "tableId": "a8999c602090e6871ad5e0137fc4a5219414160eaee4711736ac1e1a84f96cd9"
           }
@@ -453,7 +512,9 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "materialize",
           "tableId": "a8999c602090e6871ad5e0137fc4a5219414160eaee4711736ac1e1a84f96cd9",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []
@@ -506,6 +567,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "materialize",
             "outcome": "used",
             "tableId": "a8999c602090e6871ad5e0137fc4a5219414160eaee4711736ac1e1a84f96cd9"
           }
@@ -523,7 +585,9 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "materialize",
           "tableId": "a8999c602090e6871ad5e0137fc4a5219414160eaee4711736ac1e1a84f96cd9",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []
@@ -576,6 +640,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "materialize",
             "outcome": "used",
             "tableId": "a8999c602090e6871ad5e0137fc4a5219414160eaee4711736ac1e1a84f96cd9"
           }
@@ -593,7 +658,9 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "materialize",
           "tableId": "a8999c602090e6871ad5e0137fc4a5219414160eaee4711736ac1e1a84f96cd9",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []
@@ -646,6 +713,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "materialize",
             "outcome": "used",
             "tableId": "a8999c602090e6871ad5e0137fc4a5219414160eaee4711736ac1e1a84f96cd9"
           }
@@ -663,7 +731,9 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "materialize",
           "tableId": "a8999c602090e6871ad5e0137fc4a5219414160eaee4711736ac1e1a84f96cd9",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []

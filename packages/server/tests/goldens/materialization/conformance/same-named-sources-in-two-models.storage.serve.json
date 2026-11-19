@@ -61,8 +61,8 @@
         "considered": [
           {
             "kind": "materialized",
-            "outcome": "skipped",
-            "reason": "MISSING_FIELD",
+            "origin": "persist",
+            "outcome": "used",
             "tableId": "29824ca9cc0d97d7e28a17d8bf3586eb937dd7e2e8de3585a3f3415d42bb3fd3"
           }
         ],
@@ -78,13 +78,17 @@
           "sourceName": "summary"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "origin": "persist",
+          "tableId": "29824ca9cc0d97d7e28a17d8bf3586eb937dd7e2e8de3585a3f3415d42bb3fd3",
+          "tier": "storage",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "summary in a.malloy",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -130,8 +134,8 @@
         "considered": [
           {
             "kind": "materialized",
-            "outcome": "skipped",
-            "reason": "MISSING_FIELD",
+            "origin": "persist",
+            "outcome": "used",
             "tableId": "16482181baf5fb53a84c99ab0dc9d66ece79526da60885db3ea36f7c9c0617b7"
           }
         ],
@@ -147,13 +151,17 @@
           "sourceName": "summary"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "origin": "persist",
+          "tableId": "16482181baf5fb53a84c99ab0dc9d66ece79526da60885db3ea36f7c9c0617b7",
+          "tier": "storage",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "summary in b.malloy",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -199,6 +207,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "persist",
             "outcome": "used",
             "tableId": "29824ca9cc0d97d7e28a17d8bf3586eb937dd7e2e8de3585a3f3415d42bb3fd3"
           }
@@ -207,6 +216,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "persist",
             "relationship": "sibling",
             "sourceName": "shipped",
             "tableId": "16482181baf5fb53a84c99ab0dc9d66ece79526da60885db3ea36f7c9c0617b7"
@@ -224,7 +234,10 @@
         },
         "servedBy": {
           "kind": "materialized",
-          "tableId": "29824ca9cc0d97d7e28a17d8bf3586eb937dd7e2e8de3585a3f3415d42bb3fd3"
+          "origin": "persist",
+          "tableId": "29824ca9cc0d97d7e28a17d8bf3586eb937dd7e2e8de3585a3f3415d42bb3fd3",
+          "tier": "storage",
+          "via": "served_copy"
         },
         "warnings": []
       },
@@ -276,6 +289,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "persist",
             "outcome": "used",
             "tableId": "16482181baf5fb53a84c99ab0dc9d66ece79526da60885db3ea36f7c9c0617b7"
           }
@@ -284,6 +298,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "persist",
             "relationship": "sibling",
             "sourceName": "placed",
             "tableId": "29824ca9cc0d97d7e28a17d8bf3586eb937dd7e2e8de3585a3f3415d42bb3fd3"
@@ -301,7 +316,10 @@
         },
         "servedBy": {
           "kind": "materialized",
-          "tableId": "16482181baf5fb53a84c99ab0dc9d66ece79526da60885db3ea36f7c9c0617b7"
+          "origin": "persist",
+          "tableId": "16482181baf5fb53a84c99ab0dc9d66ece79526da60885db3ea36f7c9c0617b7",
+          "tier": "storage",
+          "via": "served_copy"
         },
         "warnings": []
       },
@@ -353,6 +371,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "persist",
             "outcome": "used",
             "tableId": "29824ca9cc0d97d7e28a17d8bf3586eb937dd7e2e8de3585a3f3415d42bb3fd3"
           }
@@ -370,7 +389,9 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "persist",
           "tableId": "29824ca9cc0d97d7e28a17d8bf3586eb937dd7e2e8de3585a3f3415d42bb3fd3",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []
@@ -423,6 +444,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "persist",
             "outcome": "used",
             "tableId": "16482181baf5fb53a84c99ab0dc9d66ece79526da60885db3ea36f7c9c0617b7"
           }
@@ -440,7 +462,9 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "persist",
           "tableId": "16482181baf5fb53a84c99ab0dc9d66ece79526da60885db3ea36f7c9c0617b7",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []
@@ -493,6 +517,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "persist",
             "outcome": "used",
             "tableId": "29824ca9cc0d97d7e28a17d8bf3586eb937dd7e2e8de3585a3f3415d42bb3fd3"
           }
@@ -501,6 +526,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "persist",
             "relationship": "sibling",
             "sourceName": "shipped",
             "tableId": "16482181baf5fb53a84c99ab0dc9d66ece79526da60885db3ea36f7c9c0617b7"
@@ -518,7 +544,9 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "persist",
           "tableId": "29824ca9cc0d97d7e28a17d8bf3586eb937dd7e2e8de3585a3f3415d42bb3fd3",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []
@@ -571,6 +599,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "persist",
             "outcome": "used",
             "tableId": "16482181baf5fb53a84c99ab0dc9d66ece79526da60885db3ea36f7c9c0617b7"
           }
@@ -579,6 +608,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "persist",
             "relationship": "sibling",
             "sourceName": "placed",
             "tableId": "29824ca9cc0d97d7e28a17d8bf3586eb937dd7e2e8de3585a3f3415d42bb3fd3"
@@ -596,7 +626,9 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "persist",
           "tableId": "16482181baf5fb53a84c99ab0dc9d66ece79526da60885db3ea36f7c9c0617b7",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []

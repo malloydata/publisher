@@ -16,6 +16,10 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "daily@<hammer>/xpn/xpn.malloy": "persist",
+      "daily_with_avg@<hammer>/xpn/xpn.malloy": "persist"
+    },
     "materializePlans": {},
     "rollupPlans": {},
     "sourceGateOutcomes": {
@@ -34,7 +38,6 @@
     }
   },
   "rollupsKeepingGates": [],
-  "rollupsOverStoredBase": [],
   "wirePlan": {
     "graphs": [
       {
@@ -53,6 +56,8 @@
         ]
       }
     ],
+    "omittedFiles": [],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "daily@<hammer>/xpn/xpn.malloy": {
@@ -83,7 +88,7 @@
         "preaggregate": null,
         "queryMetadata": null,
         "refresh": null,
-        "sourceEntityId": "bd29f84b198b7058b58a1cbef4774d845588da858e70d57921ee712eb72c23a4",
+        "sourceEntityId": "bbd710d6e522f2ecb13f6cc756060a32752660ce8839ed176ebbd7b0729c51c7",
         "sourceID": "daily@<hammer>/xpn/xpn.malloy",
         "sql": "sha256:41531151ec7cdf8b"
       },
@@ -115,7 +120,7 @@
         "preaggregate": null,
         "queryMetadata": null,
         "refresh": null,
-        "sourceEntityId": "bd29f84b198b7058b58a1cbef4774d845588da858e70d57921ee712eb72c23a4",
+        "sourceEntityId": "a488ac5a2b6eb1a61248c5c7a8343146ebecc0ddf02bd092ae29fd8203ba5e21",
         "sourceID": "daily_with_avg@<hammer>/xpn/xpn.malloy",
         "sql": "sha256:41531151ec7cdf8b"
       }

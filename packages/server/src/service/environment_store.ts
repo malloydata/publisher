@@ -1,6 +1,13 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { codesOfLines } from "./annotation_reader";
+import {
+   initFailedLine,
+   redactPgSecrets,
+   redactSignedUrlParams,
+   redactStorageUrls,
+} from "../pg_helpers";
 import { localPackageFingerprint } from "./configured_publish_retry";
 import { Mutex } from "async-mutex";
 import crypto from "crypto";
@@ -35,7 +42,6 @@ import {
 } from "../errors";
 import { getOperationalState, markNotReady, markReady } from "../health";
 import { formatDuration, logger } from "../logger";
-import { redactPgSecrets } from "../pg_helpers";
 import { lazyCounter } from "../telemetry";
 import { assertSafePackageName, safeJoinUnderRoot } from "../path_safety";
 import {
@@ -57,6 +63,7 @@ import { type EnvironmentName, parseEnvironmentName } from "./identity";
 import { VersionStore } from "./versions/version_store";
 import { storageBindingResolverFor } from "./versions/materialization_scope";
 import { withRollupKeyRecords } from "./materialization/run/inline_uniqueness";
+import { keptTablesResolverFor } from "./materialization";
 import type { PackageMemoryGovernor } from "./package_memory_governor";
 import { SERVER_VERSION } from "../version";
 import type {
@@ -80,6 +87,12 @@ import {
 } from "./package_sources";
 type ApiEnvironment = components["schemas"]["Environment"];
 type ApiConnection = components["schemas"]["Connection"];
+/** A load failure's `codes`, when its message carries any (`[code]` lines). */
+function codesField(message: string): { codes?: string[] } {
+   const codes = codesOfLines(message);
+   return codes.length > 0 ? { codes } : {};
+}
+
 type LoadError = NonNullable<
    components["schemas"]["ServerStatus"]["loadErrors"]
 >[number];
@@ -933,18 +946,18 @@ export class EnvironmentStore
       } catch (error) {
          markNotReady();
          // Redacted because initialization errors can carry connection strings.
-         this.initError = redactPgSecrets(messageWithFilesystemCause(error));
+         this.initError = redactSignedUrlParams(
+            redactPgSecrets(messageWithFilesystemCause(error)),
+         );
          const errorData = extractErrorDataFromError(error);
          logger.error("Error initializing environment store", errorData);
          try {
             // The failure counterpart of PUBLISHER_READY, so a waiting script
             // fails fast. Redacted for the same reason as above.
             process.stderr.write(
-               `PUBLISHER_INIT_FAILED error=${JSON.stringify(
-                  redactPgSecrets(
-                     error instanceof Error ? error.message : String(error),
-                  ),
-               )}\n`,
+               initFailedLine(
+                  error instanceof Error ? error.message : String(error),
+               ),
             );
          } catch {
             // A failed stderr write must not mask the logged error above.
@@ -1019,6 +1032,11 @@ export class EnvironmentStore
    private async bindVersionRegistry(
       environment: Environment,
       environmentId: string,
+      /**
+       * The environment's row was created just now, so no version names it:
+       * there is nothing to read for `/status` or to keep when cleaning up.
+       */
+      newRow: boolean = false,
    ): Promise<void> {
       const repository = this.storageManager.getRepository();
       const environmentName = environment.getEnvironmentName();
@@ -1026,7 +1044,7 @@ export class EnvironmentStore
       // Re-establish serve routing when a package loads, from its latest
       // successful materialization — so serving survives a restart, not only
       // a fresh build. The full entry map is returned; the environment splits
-      // it by tier (colocated + storage=) in rebindServeBindingsFromLocalStore.
+      // it by tier (database + storage=) in rebindServeBindingsFromLocalStore.
       // A version of a `scope: version` package reads only its own runs;
       // everything else reads the package's shared runs.
       environment.setStorageBindingResolver(
@@ -1035,6 +1053,9 @@ export class EnvironmentStore
             environmentId,
             withRollupKeyRecords,
          ),
+      );
+      environment.setKeptTablesResolver(
+         keptTablesResolverFor(repository, environmentId),
       );
       this.attachHooks(environment, VERSION_HOOKS);
       environment.bindVersions(repository, environmentId, {
@@ -1081,11 +1102,19 @@ export class EnvironmentStore
             this.cleanupPackageEmbeddings(environmentName, packageName),
       });
       if (alreadyBound) return;
+      // Before any poll can list this environment's versions: /status reads
+      // them from memory from here on. A new row has none, so a create reads
+      // no version row (two database round trips fewer on every create).
+      if (newRow) {
+         environment.primeStatusVersionsEmpty();
+      } else {
+         await environment.primeStatusVersions();
+      }
       try {
          const owned = new Map<string, Set<string>>();
-         for (const version of await repository.listVersionsByEnvironment(
-            environmentId,
-         )) {
+         for (const version of newRow
+            ? []
+            : await repository.listVersionsByEnvironment(environmentId)) {
             const dirs = owned.get(version.packageName) ?? new Set<string>();
             dirs.add(version.dirName);
             owned.set(version.packageName, dirs);
@@ -1155,7 +1184,11 @@ export class EnvironmentStore
       // Its version rules as soon as it has a row: the environment is already
       // served, and a publish to it needs them. A sync below that fails must
       // not leave it without them.
-      await this.bindVersionRegistry(environment, dbEnvironment.id);
+      await this.bindVersionRegistry(
+         environment,
+         dbEnvironment.id,
+         dbEnvironment.created,
+      );
 
       const connectionFailures = await this.addConnections(
          environment,
@@ -1212,7 +1245,7 @@ export class EnvironmentStore
    private async addEnvironmentMetadata(
       environment: Environment,
       repository: ReturnType<typeof this.storageManager.getRepository>,
-   ): Promise<{ id: string; name: string }> {
+   ): Promise<{ id: string; name: string; created: boolean }> {
       const environmentName = environment.metadata?.name;
       if (!environmentName) {
          throw new Error("Environment name is required but not found");
@@ -1229,7 +1262,7 @@ export class EnvironmentStore
       const existingEnvironment =
          await repository.getEnvironmentByName(environmentName);
 
-      let dbEnvironment: { id: string; name: string };
+      let dbEnvironment: { id: string; name: string; created: boolean };
       if (existingEnvironment) {
          const updateData = {
             description: environmentDescription,
@@ -1237,9 +1270,14 @@ export class EnvironmentStore
          };
 
          await repository.updateEnvironment(existingEnvironment.id, updateData);
-         dbEnvironment = { id: existingEnvironment.id, name: environmentName };
+         dbEnvironment = {
+            id: existingEnvironment.id,
+            name: environmentName,
+            created: false,
+         };
       } else {
-         dbEnvironment = await repository.createEnvironment(environmentData);
+         const created = await repository.createEnvironment(environmentData);
+         dbEnvironment = { id: created.id, name: created.name, created: true };
       }
 
       return dbEnvironment;
@@ -1742,35 +1780,39 @@ export class EnvironmentStore
       );
    }
 
+   /**
+    * The body of `GET /status` and `get_status`: the control plane's
+    * heartbeat, so a constant-time read of what this server holds. Each
+    * environment answers from its status snapshot (see
+    * Environment.describeForStatus), so a poll builds no package metadata,
+    * reads nothing from the database and never starts a load, whatever else
+    * the server is doing.
+    */
    public async getStatus(
       options: StatusOptions = {},
    ): Promise<ServerStatusBody> {
-      // Back-pressure reads as "throttled" so the control plane can stop
-      // routing to this worker; "draining" takes precedence.
-      const baseState = getOperationalState();
-      const operationalState = (
-         baseState !== "draining" &&
-         (this.memoryGovernor?.isBackpressured() ?? false)
-            ? "throttled"
-            : baseState
-      ) as ServerStatusBody["operationalState"];
+      const status = this.statusHeader();
+      for (const environment of this.environments.values()) {
+         status.environments.push(
+            environment.describeForStatus({
+               includeLoading: options.includeLoading,
+            }) as ServerStatusBody["environments"][number],
+         );
+      }
+      this.addStatusProblems(status);
+      return status;
+   }
 
-      const status: ServerStatusBody = {
-         timestamp: Date.now(),
-         environments: [],
-         initialized: this.isInitialized,
-         frozenConfig: isPublisherConfigFrozen(),
-         operationalState,
-         version: SERVER_VERSION,
-      };
-      // Whether a publish from a location publishes versions, so an
-      // orchestrator mid-rollout can tell. A server from before versions sends
-      // no field, which means "off".
-      status.packageVersioning = isVersioningEnabled() ? "on" : "off";
-      status.versionPromotion = getVersionPromotionMode();
-      // The Console's model page. Absent, as from a server that predates the
-      // setting, reads as "explorer".
-      status.modelPage = getModelPageMode();
+   /**
+    * `/status` as it was computed before the snapshot: every package listed
+    * (and so a registered one loaded) and every version row read on the call.
+    * The reference the snapshot is proven equal to (status_snapshot.spec.ts);
+    * never on a poll.
+    */
+   public async computeStatusFromListings(
+      options: StatusOptions = {},
+   ): Promise<ServerStatusBody> {
+      const status = this.statusHeader();
 
       // `/status` entries carry each package's serving state; a listing does not.
       const environments = await this.listEnvironments(true, {
@@ -1833,6 +1875,43 @@ export class EnvironmentStore
 
       // Collected AFTER listEnvironments: serialize() loads packages, which is
       // what records their failures.
+      this.addStatusProblems(status);
+      return status;
+   }
+
+   /** The fields of a `/status` body that do not describe an environment. */
+   private statusHeader(): ServerStatusBody {
+      // Back-pressure reads as "throttled" so the control plane can stop
+      // routing to this worker; "draining" takes precedence.
+      const baseState = getOperationalState();
+      const operationalState = (
+         baseState !== "draining" &&
+         (this.memoryGovernor?.isBackpressured() ?? false)
+            ? "throttled"
+            : baseState
+      ) as ServerStatusBody["operationalState"];
+
+      const status: ServerStatusBody = {
+         timestamp: Date.now(),
+         environments: [],
+         initialized: this.isInitialized,
+         frozenConfig: isPublisherConfigFrozen(),
+         operationalState,
+         version: SERVER_VERSION,
+      };
+      // Whether a publish from a location publishes versions, so an
+      // orchestrator mid-rollout can tell. A server from before versions sends
+      // no field, which means "off".
+      status.packageVersioning = isVersioningEnabled() ? "on" : "off";
+      status.versionPromotion = getVersionPromotionMode();
+      // The Console's model page. Absent, as from a server that predates the
+      // setting, reads as "explorer".
+      status.modelPage = getModelPageMode();
+      return status;
+   }
+
+   /** Load errors, stale packages, and why the server is empty or failed. */
+   private addStatusProblems(status: ServerStatusBody): void {
       const loadErrors: LoadError[] = [];
       for (const [environmentName, message] of this.failedEnvironments) {
          loadErrors.push({ environment: environmentName, message });
@@ -1843,6 +1922,7 @@ export class EnvironmentStore
                environment: environmentName,
                package: packageName,
                message,
+               ...codesField(message),
             });
          }
          // Stale packages are SERVING, but from a model older than the files on
@@ -1856,14 +1936,22 @@ export class EnvironmentStore
                environment: environmentName,
                package: packageName,
                message: stale.message,
+               ...codesField(stale.message),
                stale: true,
                failedAt: stale.failedAt,
             });
          }
       }
-      // Absent, not empty, when nothing failed.
+      // Absent, not empty, when nothing failed. A load error can quote a
+      // driver's text: never a storage URL in it (the server's own file
+      // paths, which name no bucket, stay).
       if (loadErrors.length > 0) {
-         status.loadErrors = loadErrors;
+         status.loadErrors = loadErrors.map((e) => ({
+            ...e,
+            ...(e.message !== undefined
+               ? { message: redactStorageUrls(e.message) }
+               : {}),
+         }));
       }
       // The one place a /status poller learns the server found no config.
       if (this.unconfiguredNotice && status.environments.length === 0) {
@@ -1872,8 +1960,6 @@ export class EnvironmentStore
       if (this.initError) {
          status.initError = this.initError;
       }
-
-      return status;
    }
 
    /**
@@ -2442,6 +2528,9 @@ export class EnvironmentStore
                         });
                         await fs.promises.cp(sourcePath, absolutePackagePath, {
                            recursive: true,
+                           // A relative link stays relative, so an in-package link still
+                           // leads inside the copy rather than back into the source.
+                           verbatimSymlinks: true,
                         });
                         logger.info(
                            `Copied package "${packageDir}" (${++mountedCount}/${totalPackages})`,
@@ -2471,6 +2560,9 @@ export class EnvironmentStore
                      });
                      await fs.promises.cp(sourcePath, absolutePackagePath, {
                         recursive: true,
+                        // A relative link stays relative, so an in-package link still
+                        // leads inside the copy rather than back into the source.
+                        verbatimSymlinks: true,
                      });
                      logger.info(
                         `Extracted package "${packageDir}" from ${groupedLocation.startsWith("https://github.com/") && _package.location.includes("/tree/") ? "GitHub subdirectory" : "shared download"} (${++mountedCount}/${totalPackages})`,
@@ -2484,6 +2576,9 @@ export class EnvironmentStore
                   });
                   await fs.promises.cp(tempDownloadPath, absolutePackagePath, {
                      recursive: true,
+                     // A relative link stays relative, so an in-package link still
+                     // leads inside the copy rather than back into the source.
+                     verbatimSymlinks: true,
                   });
                   logger.info(
                      `Copied entire download as package "${packageDir}" (${++mountedCount}/${totalPackages})`,
@@ -2551,8 +2646,12 @@ export class EnvironmentStore
             `Failed to ${selected.action} "${selected.subject}"`,
             errorData,
          );
+         // A local location is a path on this server: the answer names the
+         // package instead. A remote one (a URL) is the caller's own text.
          throw new PackageNotFoundError(
-            `Failed to ${selected.action}: ${selected.subject}`,
+            selected.source === this.packageSources.local
+               ? `Failed to ${selected.action} for package "${packageName}"`
+               : `Failed to ${selected.action}: ${selected.subject}`,
             { cause: error },
          );
       }

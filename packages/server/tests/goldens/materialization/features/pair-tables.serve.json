@@ -78,7 +78,14 @@
       "equalToLive": true,
       "malloy": "run: orders_pair -> { group_by: region; aggregate: order_n, amount_sum, line_n, qty_sum }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "origin": "materialize",
+            "outcome": "used",
+            "tableId": "19d80b436ce31978acec04b3d99ce0adea58a8c832e8f450c8d8052ce14b7016"
+          }
+        ],
         "notConsidered": [],
         "query": {
           "filteredBy": [],
@@ -94,13 +101,17 @@
           "sourceName": "orders_pair"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "origin": "materialize",
+          "tableId": "19d80b436ce31978acec04b3d99ce0adea58a8c832e8f450c8d8052ce14b7016",
+          "tier": "storage",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "one hop: child measures by a parent dimension",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -143,7 +154,14 @@
       "equalToLive": true,
       "malloy": "run: orders_pair -> { group_by: lines.sku; aggregate: qty_sum }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "origin": "materialize",
+            "outcome": "used",
+            "tableId": "19d80b436ce31978acec04b3d99ce0adea58a8c832e8f450c8d8052ce14b7016"
+          }
+        ],
         "notConsidered": [],
         "query": {
           "filteredBy": [],
@@ -156,13 +174,17 @@
           "sourceName": "orders_pair"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "origin": "materialize",
+          "tableId": "19d80b436ce31978acec04b3d99ce0adea58a8c832e8f450c8d8052ce14b7016",
+          "tier": "storage",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "one hop: grouped by the child",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -199,7 +221,16 @@
       "equalToLive": true,
       "malloy": "run: orders_pair -> { aggregate: order_n }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "detail": "The table stores this source once per child of its inlined join_many and the query reads no child field, so it is answered without this table, which would read every child row to count each parent once.",
+            "kind": "materialized",
+            "origin": "materialize",
+            "outcome": "skipped",
+            "reason": "COUNT_SEMANTICS",
+            "tableId": "19d80b436ce31978acec04b3d99ce0adea58a8c832e8f450c8d8052ce14b7016"
+          }
+        ],
         "notConsidered": [],
         "query": {
           "filteredBy": [],
@@ -264,11 +295,19 @@
       "equalToLive": true,
       "malloy": "run: customers_path -> { group_by: segment; aggregate: customer_n, qty_sum }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "origin": "materialize",
+            "outcome": "used",
+            "tableId": "86beef7e3f90b49adcf4a9b57106ab241236ddb36df39ba354767030f794e373"
+          }
+        ],
         "notConsidered": [
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
             "sourceName": "customers_blocks",
             "tableId": "c058478f6fd7ba6db74b5a5bfc1e6e83509095e4f9088595a8f3d8f110b275a9"
@@ -286,13 +325,17 @@
           "sourceName": "customers_path"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "origin": "materialize",
+          "tableId": "86beef7e3f90b49adcf4a9b57106ab241236ddb36df39ba354767030f794e373",
+          "tier": "storage",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a path: the leaf by the root",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -340,11 +383,19 @@
       "equalToLive": true,
       "malloy": "run: customers_path -> { group_by: segment; aggregate: order_n, qty_sum }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "origin": "materialize",
+            "outcome": "used",
+            "tableId": "86beef7e3f90b49adcf4a9b57106ab241236ddb36df39ba354767030f794e373"
+          }
+        ],
         "notConsidered": [
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
             "sourceName": "customers_blocks",
             "tableId": "c058478f6fd7ba6db74b5a5bfc1e6e83509095e4f9088595a8f3d8f110b275a9"
@@ -362,13 +413,17 @@
           "sourceName": "customers_path"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "origin": "materialize",
+          "tableId": "86beef7e3f90b49adcf4a9b57106ab241236ddb36df39ba354767030f794e373",
+          "tier": "storage",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a path: the middle level beside the leaf",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -411,11 +466,19 @@
       "equalToLive": true,
       "malloy": "run: customers_blocks -> { group_by: segment; aggregate: qty_sum }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "origin": "materialize",
+            "outcome": "used",
+            "tableId": "c058478f6fd7ba6db74b5a5bfc1e6e83509095e4f9088595a8f3d8f110b275a9"
+          }
+        ],
         "notConsidered": [
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
             "sourceName": "customers_path",
             "tableId": "86beef7e3f90b49adcf4a9b57106ab241236ddb36df39ba354767030f794e373"
@@ -432,13 +495,17 @@
           "sourceName": "customers_blocks"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "origin": "materialize",
+          "tableId": "c058478f6fd7ba6db74b5a5bfc1e6e83509095e4f9088595a8f3d8f110b275a9",
+          "tier": "storage",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "blocks: the first block",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -481,11 +548,19 @@
       "equalToLive": true,
       "malloy": "run: customers_blocks -> { group_by: segment; aggregate: big_n }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "origin": "materialize",
+            "outcome": "used",
+            "tableId": "c058478f6fd7ba6db74b5a5bfc1e6e83509095e4f9088595a8f3d8f110b275a9"
+          }
+        ],
         "notConsidered": [
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
             "sourceName": "customers_path",
             "tableId": "86beef7e3f90b49adcf4a9b57106ab241236ddb36df39ba354767030f794e373"
@@ -502,13 +577,17 @@
           "sourceName": "customers_blocks"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "origin": "materialize",
+          "tableId": "c058478f6fd7ba6db74b5a5bfc1e6e83509095e4f9088595a8f3d8f110b275a9",
+          "tier": "storage",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "blocks: the second block",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -556,11 +635,21 @@
       "equalToLive": true,
       "malloy": "run: customers_blocks -> { group_by: segment; aggregate: qty_sum, big_n }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "detail": "The table stores more than one inlined join_many, one block of rows each, and the query reads more than one of them (live aggregates each by its own key over their cross product, which no block holds), so it is answered without this table.",
+            "kind": "materialized",
+            "origin": "materialize",
+            "outcome": "skipped",
+            "reason": "COUNT_SEMANTICS",
+            "tableId": "c058478f6fd7ba6db74b5a5bfc1e6e83509095e4f9088595a8f3d8f110b275a9"
+          }
+        ],
         "notConsidered": [
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
             "sourceName": "customers_path",
             "tableId": "86beef7e3f90b49adcf4a9b57106ab241236ddb36df39ba354767030f794e373"
@@ -645,6 +734,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "materialize",
             "outcome": "used",
             "tableId": "19d80b436ce31978acec04b3d99ce0adea58a8c832e8f450c8d8052ce14b7016"
           }
@@ -665,7 +755,9 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "materialize",
           "tableId": "19d80b436ce31978acec04b3d99ce0adea58a8c832e8f450c8d8052ce14b7016",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []
@@ -718,6 +810,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "materialize",
             "outcome": "used",
             "tableId": "19d80b436ce31978acec04b3d99ce0adea58a8c832e8f450c8d8052ce14b7016"
           }
@@ -735,7 +828,9 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "materialize",
           "tableId": "19d80b436ce31978acec04b3d99ce0adea58a8c832e8f450c8d8052ce14b7016",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []
@@ -783,6 +878,7 @@
           {
             "detail": "The table stores this source once per child of its inlined join_many and the query reads no child field, so it is answered without this table, which would read every child row to count each parent once.",
             "kind": "materialized",
+            "origin": "materialize",
             "outcome": "skipped",
             "reason": "COUNT_SEMANTICS",
             "tableId": "19d80b436ce31978acec04b3d99ce0adea58a8c832e8f450c8d8052ce14b7016"
@@ -855,6 +951,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "materialize",
             "outcome": "used",
             "tableId": "86beef7e3f90b49adcf4a9b57106ab241236ddb36df39ba354767030f794e373"
           }
@@ -863,6 +960,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
             "sourceName": "customers_blocks",
             "tableId": "c058478f6fd7ba6db74b5a5bfc1e6e83509095e4f9088595a8f3d8f110b275a9"
@@ -881,7 +979,9 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "materialize",
           "tableId": "86beef7e3f90b49adcf4a9b57106ab241236ddb36df39ba354767030f794e373",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []
@@ -938,10 +1038,9 @@
       "path": {
         "considered": [
           {
-            "detail": "The table stores an inlined join_many flat, which cannot answer this query exactly (an aggregate above the inlined path's last join beside fields below it, which live aggregates by that join's key), so it is answered without this table.",
             "kind": "materialized",
-            "outcome": "skipped",
-            "reason": "COUNT_SEMANTICS",
+            "origin": "materialize",
+            "outcome": "used",
             "tableId": "86beef7e3f90b49adcf4a9b57106ab241236ddb36df39ba354767030f794e373"
           }
         ],
@@ -949,6 +1048,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
             "sourceName": "customers_blocks",
             "tableId": "c058478f6fd7ba6db74b5a5bfc1e6e83509095e4f9088595a8f3d8f110b275a9"
@@ -966,13 +1066,17 @@
           "sourceName": "customers_path"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "origin": "materialize",
+          "tableId": "86beef7e3f90b49adcf4a9b57106ab241236ddb36df39ba354767030f794e373",
+          "tier": "storage",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a path: the middle level beside the leaf",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "on"
     },
     {
@@ -1018,6 +1122,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "materialize",
             "outcome": "used",
             "tableId": "c058478f6fd7ba6db74b5a5bfc1e6e83509095e4f9088595a8f3d8f110b275a9"
           }
@@ -1026,6 +1131,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
             "sourceName": "customers_path",
             "tableId": "86beef7e3f90b49adcf4a9b57106ab241236ddb36df39ba354767030f794e373"
@@ -1043,7 +1149,9 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "materialize",
           "tableId": "c058478f6fd7ba6db74b5a5bfc1e6e83509095e4f9088595a8f3d8f110b275a9",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []
@@ -1096,6 +1204,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "materialize",
             "outcome": "used",
             "tableId": "c058478f6fd7ba6db74b5a5bfc1e6e83509095e4f9088595a8f3d8f110b275a9"
           }
@@ -1104,6 +1213,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
             "sourceName": "customers_path",
             "tableId": "86beef7e3f90b49adcf4a9b57106ab241236ddb36df39ba354767030f794e373"
@@ -1121,7 +1231,9 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "materialize",
           "tableId": "c058478f6fd7ba6db74b5a5bfc1e6e83509095e4f9088595a8f3d8f110b275a9",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []
@@ -1180,6 +1292,7 @@
           {
             "detail": "The table stores more than one inlined join_many, one block of rows each, and the query reads more than one of them (live aggregates each by its own key over their cross product, which no block holds), so it is answered without this table.",
             "kind": "materialized",
+            "origin": "materialize",
             "outcome": "skipped",
             "reason": "COUNT_SEMANTICS",
             "tableId": "c058478f6fd7ba6db74b5a5bfc1e6e83509095e4f9088595a8f3d8f110b275a9"
@@ -1189,6 +1302,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
             "sourceName": "customers_path",
             "tableId": "86beef7e3f90b49adcf4a9b57106ab241236ddb36df39ba354767030f794e373"

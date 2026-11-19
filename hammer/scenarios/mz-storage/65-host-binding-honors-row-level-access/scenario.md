@@ -28,18 +28,20 @@ manifest still points at a real, correct table until convergence catches up.
 
 Givens are the shape that needs this. `#(access_filter)` does not: it is evaluated on the
 original model surface before routing is chosen (`model.ts` `assertAuthorized`, then
-`assertAuthorizedForAllSources`), and a non-portable shape self-corrects through the
-fallback ladder.
+`assertAuthorizedForAllSources`), and the served copy keeps the author's text, gates
+and all, so a row-level gate is grafted onto the served copy's own compile when the
+answer runs.
 
 Nothing downstream can re-impose this filter, and it is worth being precise about why,
-because the serve shape DOES re-apply a source's own terms — that is how a
+because the served copy DOES apply a source's own terms at read — that is how a
 tenant-scoped source is served per caller
-(`partitioned-mz/tenant-scoped-source-serves-per-caller`). What it re-applies is the
-source's `filterList`. `scoped_rollup` has none: its given was read while the relation
-was built, so the predicate was substituted into the artifact and there is no term left
-on the source to re-emit. A filter inside frozen rows cannot be re-applied over them.
-That is the same property that makes this shape a build refusal, so a binding for it has
-to be refused too.
+(`partitioned-mz/tenant-scoped-source-serves-per-caller`). What it applies is the
+source's own text: a re-root replaces the declaration's base with the stored table and
+keeps its `extend` blocks, `where:` included. `scoped_rollup` has none: its given was
+read while the relation was built, so the predicate was substituted into the artifact
+and there is no term left on the source to apply again. A filter inside frozen rows
+cannot be re-applied over them. That is the same property that makes this shape a
+build refusal, so a binding for it has to be refused too.
 
 This scenario builds a legitimate given-FREE source, then binds the given-FILTERED
 source to that same real table and queries it with `REGION=US`. A live serve returns
@@ -130,15 +132,16 @@ Expect:
 
 The positive half, and what separates this scenario from
 `host-binding-of-unplanned-source`: `scoped_rollup` was compiled, EXAMINED, and
-refused — with the tier it would have built under and the reason. There, the source
-is in neither collection, because Malloy never admitted it as a persist source at
-all, and the bind path can only report that it was never examined.
+refused — with the tier it would have built under and the reason. There, the
+source carries no `#@ persist` at all, so it is in neither collection. The bind
+refuses both the same way: it honors a name only when `plan.sources` holds it as
+eligible, whether or not the plan refused it.
 
 Expect:
 
 | source        | tier    | reason                   |
 | ------------- | ------- | ------------------------ |
-| scoped_rollup | storage | given_in_persisted_query |
+| scoped_rollup | storage | reads_given |
 
 ## Query the eligible source
 

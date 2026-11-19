@@ -2,28 +2,28 @@
 // SPDX-License-Identifier: MIT
 
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import * as fs from "fs";
-import * as os from "os";
 import * as path from "path";
 import * as sinon from "sinon";
 import { logger } from "../../src/logger";
 import { resetMaterializationTelemetryForTesting } from "../../src/materialization_metrics";
 import { Environment } from "../../src/service/environment";
-import type { EnvironmentStore } from "../../src/service/environment_store";
 import { MaterializationService } from "../../src/service/materialization/run/materialization_service";
 import type {
    Materialization,
    ResourceRepository,
 } from "../../src/storage/DatabaseInterface";
 import { DuckDBConnection } from "../../src/storage/duckdb/DuckDBConnection";
-import { createDuckDBRepository } from "../../src/storage/duckdb/DuckDBRepository";
-import { initializeSchema } from "../../src/storage/duckdb/schema";
 import {
    startMetricsHarness,
    type MetricsHarness,
 } from "../../src/test_helpers/metrics_harness";
 import { installSettings } from "../../src/test_helpers/settings_env";
 import { writePackageFiles } from "../../src/test_helpers/temp_package";
+import {
+   openTempStorage,
+   disposeTempStorage,
+} from "../../src/test_helpers/temp_storage";
+import { serviceOverEnvironment } from "../../src/test_helpers/materialization_service_harness";
 
 /**
  * The run and build telemetry of a real materialization run (plan section 5,
@@ -81,31 +81,23 @@ describe("materialization run telemetry, through a real build", () => {
       restoreSettings = installSettings({
          env: { PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: "true" },
       }).restore;
-      root = fs.realpathSync(
-         fs.mkdtempSync(path.join(os.tmpdir(), "mat-run-telemetry-")),
-      );
-      const envPath = path.join(root, "env");
-      fs.mkdirSync(envPath);
+      const storage = await openTempStorage("mat-run-telemetry-", {
+         id: ENV_ID,
+         name: ENV,
+      });
+      ({ root, db, repo } = storage);
+      const { envPath } = storage;
       writePackageFiles(
          path.join(envPath, PKG),
          { "model.malloy": MODEL },
          { manifest: { name: PKG, description: "fixture" } },
       );
-      db = new DuckDBConnection(":memory:");
-      await db.initialize();
-      await initializeSchema(db);
-      await db.run(
-         "INSERT INTO environments (id, name, path, created_at, updated_at) VALUES (?, ?, ?, now(), now())",
-         [ENV_ID, ENV, envPath],
-      );
-      repo = createDuckDBRepository(db);
       env = await Environment.create(ENV, envPath, [WAREHOUSE as never]);
       await env.addPackage(PKG);
-      service = new MaterializationService({
-         storageManager: { getRepository: () => repo },
-         getEnvironment: async () => env,
-         getLoadedEnvironments: () => [env],
-      } as unknown as EnvironmentStore);
+      service = serviceOverEnvironment(
+         () => repo,
+         () => env,
+      );
 
       harness = await startMetricsHarness();
       resetMaterializationTelemetryForTesting();
@@ -132,8 +124,7 @@ describe("materialization run telemetry, through a real build", () => {
       resetMaterializationTelemetryForTesting();
       await harness.shutdown();
       await env.closeAllConnections().catch(() => undefined);
-      await db.close();
-      fs.rmSync(root, { recursive: true, force: true });
+      await disposeTempStorage({ db, root });
       restoreSettings();
    });
 
@@ -173,7 +164,7 @@ describe("materialization run telemetry, through a real build", () => {
       expect(
          await builds({
             kind: "persist",
-            tier: "colocated",
+            tier: "database",
             outcome: "built",
             failure_class: "none",
          }),
@@ -181,7 +172,7 @@ describe("materialization run telemetry, through a real build", () => {
       expect(
          await builds({
             kind: "persist",
-            tier: "colocated",
+            tier: "database",
             outcome: "failed",
             failure_class: "unclassified",
          }),
@@ -194,7 +185,7 @@ describe("materialization run telemetry, through a real build", () => {
          (
             await harness.collectHistogram(
                "publisher_materialization_build_duration_ms",
-               { kind: "persist", tier: "colocated", method: "full" },
+               { kind: "persist", tier: "database", method: "full" },
             )
          ).count,
       ).toBe(2);
@@ -222,7 +213,7 @@ describe("materialization run telemetry, through a real build", () => {
          meta: {
             runId: first.id,
             kind: "persist",
-            tier: "colocated",
+            tier: "database",
             method: "full",
             sourceName: "good",
          },

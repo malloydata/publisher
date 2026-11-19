@@ -168,7 +168,7 @@ describe("REST query writes exactly one record", () => {
             rest(storeOf(model), { modelPath: "nope.malloy" }),
          ).rejects.toThrow();
          expect(records()).toMatchObject([
-            { outcome: "refused_surface", status: 404 },
+            { outcome: "not_found", status: 404 },
          ]);
       });
    });
@@ -321,7 +321,7 @@ describe("MCP execute_query writes exactly one record", () => {
             EXTRA,
          );
          expect(result.isError).toBe(true);
-         expect(records()).toMatchObject([{ outcome: "refused_surface" }]);
+         expect(records()).toMatchObject([{ outcome: "not_found" }]);
       });
    });
 
@@ -470,7 +470,7 @@ describe("legacy notebook cell writes exactly one record", () => {
             "nope",
          ),
       ).rejects.toThrow();
-      expect(records()).toMatchObject([{ outcome: "refused_surface" }]);
+      expect(records()).toMatchObject([{ outcome: "not_found" }]);
    });
 
    it("on a refusal inside the model", async () => {

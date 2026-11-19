@@ -39,7 +39,7 @@ import {
    resolveCloudStorageCredentials,
 } from "./gcs_s3_utils";
 import { assembleEnvironmentConnections } from "./connection_config";
-import { listStorageTables } from "./materialization/run/materialization_build_session";
+import { listStorageTables } from "./materialization/run/storage_admin";
 import {
    ConnectionPoolExhaustedError,
    internalErrorToHttpError,
@@ -2846,12 +2846,31 @@ describe("connection integration tests", () => {
             restoreSettings = installSettings({
                env: { PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: "true" },
             }).restore;
+
+            // An error only a statement that ran can raise.
+            const result = await testConnectionConfig({
+               name: "setup_sql_gate",
+               type: "duckdb",
+               duckdbConnection: {
+                  setupSQL: "SELECT error('setupSQL ran')",
+               },
+            });
+
+            expect(result.status).toBe("failed");
+            expect(result.errorMessage).toContain("setupSQL ran");
+         });
+
+         it("runs setupSQL confined to the environment directory", async () => {
+            restoreSettings = installSettings({
+               env: { PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: "true" },
+            }).restore;
             const marker = path.join(dir, "ran.csv");
 
             const result = await testConnectionConfig(markerConfig(marker));
 
-            expect(result.status).toBe("ok");
-            expect(await exists(marker)).toBe(true);
+            // A write outside it is refused (duckdb_lockdown.ts).
+            expect(result.status).toBe("failed");
+            expect(await exists(marker)).toBe(false);
          });
       });
 

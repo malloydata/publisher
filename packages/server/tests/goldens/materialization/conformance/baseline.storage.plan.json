@@ -15,6 +15,10 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "daily@<pkg>/m.malloy": "persist",
+      "daily_ext@<pkg>/m.malloy": "persist"
+    },
     "materializePlans": {},
     "rollupPlans": {},
     "sourceGateOutcomes": {
@@ -51,6 +55,8 @@
         ]
       }
     ],
+    "omittedFiles": [],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "daily@<pkg>/m.malloy": {

@@ -10,14 +10,15 @@ on:
       - "packages/server/src/service/connection.ts"
       - "packages/server/src/service/connection.spec.ts"
       - "packages/server/src/service/ducklake_init_race.spec.ts"
+      - "packages/server/src/service/ducklake_attach_race_postgres.spec.ts"
+      - "packages/server/src/service/duckdb_lockdown.ts"
+      - "packages/server/src/service/duckdb_instance_sharing.ts"
+      - "packages/server/src/service/ducklake_catalog_unavailable.ts"
       - "packages/server/src/service/proxy.ts"
-      - "packages/server/src/test_helpers/ssh_tunnel_harness.ts"
-      - "packages/server/src/service/materialization/run/materialization_build_session.ts"
-      - "packages/server/src/service/materialization/run/build_read_cost.ts"
-      - "packages/server/src/service/materialization/run/build_query_tag.ts"
+      # The harnesses and fixtures every spec below is built on.
+      - "packages/server/src/test_helpers/**"
       - "packages/server/tests/component/storage_build_bigquery.component.spec.ts"
-      # Produces the value the manifest assertion pins.
-      - "packages/server/src/service/materialization/run/**"
+      - "packages/server/tests/component/storage_build_bigquery_cancel.component.spec.ts"
       # The metadata bag's own contract, and the dialect-aware escaper the
       # Snowflake lookup builds its literal with.
       - "packages/server/src/service/query_metadata.ts"
@@ -25,9 +26,22 @@ on:
       # The admin API's catalog routes, whose tests (tests/integration/admin_catalogs)
       # run against this job's Postgres.
       - "packages/server/src/service/catalog_admin.ts"
-      - "packages/server/src/service/materialization/run/storage_table_load.ts"
       - "packages/server/src/service/statement_usage.ts"
       - "packages/server/tests/integration/admin_catalogs/**"
+      # Materialization: the manifest's read-cost value, each dialect's
+      # catalog read of a database table's column types, and the specs that
+      # need a real Postgres (a DuckLake catalog, a Postgres warehouse, the run
+      # store's Postgres semantics), with everything they exercise. The
+      # environment holds the lock a version's rebind races a refresh under.
+      - "packages/server/src/service/materialization/**"
+      - "packages/server/src/service/environment.ts"
+      - "packages/server/src/storage/**"
+      - "packages/server/tests/component/materialization_key_check_rebind.component.spec.ts"
+      - "packages/server/tests/component/materialization_stale_chain.component.spec.ts"
+      - "packages/server/tests/component/database_table_alter_at_bind.component.spec.ts"
+      - "packages/server/tests/component/database_truncation_types.component.spec.ts"
+      - "packages/server/tests/component/r4/**"
+      - "packages/server/tests/integration/materialization/**"
       # The passthrough surfaces this job exists to catch are provided by the
       # DuckDB extensions, which move with a dependency bump rather than with any
       # file above.
@@ -40,14 +54,15 @@ on:
       - "packages/server/src/service/connection.ts"
       - "packages/server/src/service/connection.spec.ts"
       - "packages/server/src/service/ducklake_init_race.spec.ts"
+      - "packages/server/src/service/ducklake_attach_race_postgres.spec.ts"
+      - "packages/server/src/service/duckdb_lockdown.ts"
+      - "packages/server/src/service/duckdb_instance_sharing.ts"
+      - "packages/server/src/service/ducklake_catalog_unavailable.ts"
       - "packages/server/src/service/proxy.ts"
-      - "packages/server/src/test_helpers/ssh_tunnel_harness.ts"
-      - "packages/server/src/service/materialization/run/materialization_build_session.ts"
-      - "packages/server/src/service/materialization/run/build_read_cost.ts"
-      - "packages/server/src/service/materialization/run/build_query_tag.ts"
+      # The harnesses and fixtures every spec below is built on.
+      - "packages/server/src/test_helpers/**"
       - "packages/server/tests/component/storage_build_bigquery.component.spec.ts"
-      # Produces the value the manifest assertion pins.
-      - "packages/server/src/service/materialization/run/**"
+      - "packages/server/tests/component/storage_build_bigquery_cancel.component.spec.ts"
       # The metadata bag's own contract, and the dialect-aware escaper the
       # Snowflake lookup builds its literal with.
       - "packages/server/src/service/query_metadata.ts"
@@ -55,9 +70,22 @@ on:
       # The admin API's catalog routes, whose tests (tests/integration/admin_catalogs)
       # run against this job's Postgres.
       - "packages/server/src/service/catalog_admin.ts"
-      - "packages/server/src/service/materialization/run/storage_table_load.ts"
       - "packages/server/src/service/statement_usage.ts"
       - "packages/server/tests/integration/admin_catalogs/**"
+      # Materialization: the manifest's read-cost value, each dialect's
+      # catalog read of a database table's column types, and the specs that
+      # need a real Postgres (a DuckLake catalog, a Postgres warehouse, the run
+      # store's Postgres semantics), with everything they exercise. The
+      # environment holds the lock a version's rebind races a refresh under.
+      - "packages/server/src/service/materialization/**"
+      - "packages/server/src/service/environment.ts"
+      - "packages/server/src/storage/**"
+      - "packages/server/tests/component/materialization_key_check_rebind.component.spec.ts"
+      - "packages/server/tests/component/materialization_stale_chain.component.spec.ts"
+      - "packages/server/tests/component/database_table_alter_at_bind.component.spec.ts"
+      - "packages/server/tests/component/database_truncation_types.component.spec.ts"
+      - "packages/server/tests/component/r4/**"
+      - "packages/server/tests/integration/materialization/**"
       # The passthrough surfaces this job exists to catch are provided by the
       # DuckDB extensions, which move with a dependency bump rather than with any
       # file above.
@@ -67,7 +95,7 @@ on:
   workflow_dispatch:
 
 env:
-  BUN_VERSION: 1.3.13
+  BUN_VERSION: 1.4.4
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 # The GITHUB_TOKEN is read-only for every job here; a job that needs more
@@ -115,6 +143,30 @@ jobs:
           --health-retries 5
         ports:
           - 5432:5432
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: mysql
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -uroot -pmysql"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 24
+        ports:
+          - 3306:3306
+      # Trino's coordinator takes tens of seconds to accept queries; its image
+      # ships the health check. Bounded: about three minutes, then the job
+      # fails rather than waits.
+      trino:
+        image: trinodb/trino:476
+        options: >-
+          --health-cmd /usr/lib/trino/bin/health-check
+          --health-interval 5s
+          --health-timeout 5s
+          --health-start-period 10s
+          --health-retries 36
+        ports:
+          - 8080:8080
 
     steps:
       - name: Checkout code
@@ -126,7 +178,7 @@ jobs:
           bun-version: ${{ env.BUN_VERSION }}
 
       - name: Install dependencies
-        run: bun install
+        run: scripts/ci-install-with-retry.sh bun install
 
       - name: Setup BigQuery credentials
         env:
@@ -205,6 +257,17 @@ jobs:
           cd packages/server
           bun test --timeout 120000 ./src/service/ducklake_init_race.spec.ts
 
+      # Overlapping first lookups of one DuckLake storage destination with an
+      # S3 secret, on this job's Postgres: the catalog stays attached, and a
+      # locked instance that lost it reopens. Skipped everywhere this variable
+      # is not set.
+      - name: Run DuckLake destination attach race test
+        env:
+          PUBLISHER_TEST_POSTGRES_URL: "postgresql://postgres:postgres@localhost:5432/malloy_test"
+        run: |
+          cd packages/server
+          bun test --timeout 120000 ./src/service/ducklake_attach_race_postgres.spec.ts
+
       # The admin API's catalogs against a real catalog database: creates,
       # loads, ownership through the owner role, error reasons, snapshot
       # deletion. Skipped everywhere this variable is not set.
@@ -214,6 +277,36 @@ jobs:
         run: |
           cd packages/server
           bun test --timeout 120000 ./tests/integration/admin_catalogs
+
+      # Each dialect's catalog read of a database table's column types, and the
+      # big-integer cast it feeds, served against live on real Postgres, MySQL
+      # and Trino (a memory catalog). Skipped where these variables are unset.
+      - name: Run database native-type integration tests
+        env:
+          PUBLISHER_TEST_POSTGRES_URL: postgres://postgres:postgres@localhost:5432/malloy_test
+          PUBLISHER_TEST_MYSQL_URL: mysql://root:mysql@127.0.0.1:3306
+          PUBLISHER_TEST_TRINO_URL: http://localhost:8080
+        run: |
+          cd packages/server
+          bun test --timeout 100000 ./src/service/materialization/run/database_native_types.spec.ts
+
+      # The materialization specs that skip unless a Postgres is reachable:
+      # DuckLake destinations on a Postgres catalog, a Postgres warehouse's
+      # native column types, cross-package tables, the v1 cutover and its
+      # leftover views, the rebind and stale-chain races, and the Postgres
+      # tiers of the database served-copy specs (a database table altered
+      # after its build among them, and a stored time truncation, which is not
+      # drift), rollup conformance on a Postgres origin, built in Postgres
+      # and in a DuckLake destination, an incremental delta reading rows that
+      # land late, a Postgres `real` served from both tiers as live writes
+      # it, and a storage= copy's string order and groups under the source
+      # column's collation (en_US, ICU, nondeterministic, C).
+      - name: Run Postgres-gated materialization tests
+        env:
+          PUBLISHER_TEST_POSTGRES_URL: postgresql://postgres:postgres@localhost:5432/malloy_test
+        run: |
+          cd packages/server
+          bun test --timeout 200000 --max-workers=1 ./src/service/materialization/run/v1_cutover_postgres.spec.ts ./src/service/materialization/run/leftover_name_views_postgres.spec.ts ./src/service/materialization/run/case_variant_renames_postgres.spec.ts ./tests/component/materialization_key_check_rebind.component.spec.ts ./tests/component/materialization_stale_chain.component.spec.ts ./tests/integration/materialization/cross_package_tables.integration.spec.ts ./tests/integration/materialization/storage_postgres_native_types.integration.spec.ts ./tests/integration/materialization/storage_postgres_decimal_precision.integration.spec.ts ./tests/integration/materialization/storage_sandbox_source.integration.spec.ts ./tests/integration/materialization/storage_ducklake_postgres_bigint.integration.spec.ts ./src/service/materialization/run/database_served_copy.spec.ts ./tests/component/r4/database_storage_parity.component.spec.ts ./tests/component/r4/served_big_integers.component.spec.ts ./tests/component/r4/served_copy_database.component.spec.ts ./tests/component/r4/served_copy_pair_counts.component.spec.ts ./tests/component/r4/materialize_storage_type_drift.component.spec.ts ./tests/component/database_table_alter_at_bind.component.spec.ts ./tests/component/database_truncation_types.component.spec.ts ./tests/component/materialization_rollup_over_incremental_base.component.spec.ts ./tests/component/database_table_drift_substituted.component.spec.ts ./tests/component/database_table_drift_value_loss.component.spec.ts ./tests/component/r4/rollup_postgres_parity.component.spec.ts ./tests/component/materialization_incremental_late_rows.component.spec.ts ./tests/component/r4/served_float4.component.spec.ts ./tests/component/r4/storage_string_order_collation.component.spec.ts
 
       # The storage= build's warehouse read reaches BigQuery job records the unit
       # suite cannot: bigquery_execute's returned job id, the child job a
@@ -230,3 +323,12 @@ jobs:
           cd packages/server
           bun test --timeout 100000 ./tests/component/storage_build_bigquery.component.spec.ts
 
+
+      # A cancelled storage= build over BigQuery cancels its BigQuery job, not
+      # only DuckDB's wait for it (F-22). Uses the BQ_PRESTO_TRINO_KEY service
+      # account set up above (GOOGLE_APPLICATION_CREDENTIALS and
+      # BIGQUERY_TEST_PROJECT_ID); the read is compute-only, so 0 bytes billed.
+      - name: Run storage= build BigQuery cancel test
+        run: |
+          cd packages/server
+          bun test --timeout 200000 ./tests/component/storage_build_bigquery_cancel.component.spec.ts

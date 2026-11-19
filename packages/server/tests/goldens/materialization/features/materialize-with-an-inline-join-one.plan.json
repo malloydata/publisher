@@ -15,6 +15,10 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "orders_wide@<pkg>/m.malloy": "materialize",
+      "orders_wide_local@<pkg>/m.malloy": "materialize"
+    },
     "materializePlans": {
       "orders_wide@<pkg>/m.malloy": {
         "buildSourceName": "orders_wide__mat",
@@ -418,6 +422,8 @@
         ]
       }
     ],
+    "omittedFiles": [],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "orders_wide@<pkg>/m.malloy": {
@@ -496,7 +502,7 @@
         "freshness": null,
         "modelPath": "m.malloy",
         "name": "orders_wide",
-        "origin": "persist",
+        "origin": "materialize",
         "preaggregate": null,
         "queryMetadata": null,
         "refresh": null,
@@ -583,7 +589,7 @@
         "freshness": null,
         "modelPath": "m.malloy",
         "name": "orders_wide_local",
-        "origin": "persist",
+        "origin": "materialize",
         "preaggregate": null,
         "queryMetadata": null,
         "refresh": null,

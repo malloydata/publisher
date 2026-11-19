@@ -9,7 +9,10 @@
  *
  * Every finding is a coded publish warning (`annotation-near-miss`), never a
  * refusal: a route that merely looks like one of ours may be another app's,
- * and the outcome rule warns on what it cannot be sure of. The gate spellings
+ * and the outcome rule warns on what it cannot be sure of. The one exception
+ * is a near miss of a materialization route or directive (`#(materialise)`,
+ * `#@ persits`), which fails the load (`materialization-near-miss`), as a
+ * misspelled gate does. The gate spellings
  * the load refuses (`collectAuthorizeNearMisses`), including a misspelled
  * gate such as `#(authorise)` (`misspelledGateRoute`), are left to that
  * refusal, and the matching itself is shared with it (`isRouteAttempt`).
@@ -28,6 +31,7 @@ import { getMaterializeEnabled } from "../config";
 import {
    editDistance,
    foldRouteName,
+   MATERIALIZATION_NEAR_MISS_CODE,
    MATERIALIZE_V2_ROUTES,
    payloadOfNote,
    PUBLISHER_ROUTES,
@@ -68,8 +72,8 @@ const OWNED_V1_ROUTES: readonly string[] = OWNED_ROUTES.filter(
 
 /**
  * The owned routes in force: the v2 routes only with the materialize switch
- * on. Off, nothing reads `#(materialize)` or `#(preaggregate)`, so the scan
- * reads them as it did before they were registered: `#(preaggregate)` is
+ * on. Off, nothing reads `#(materialize)` or `#(rollup)`, so the scan
+ * reads them as it did before they were registered: `#(rollup)` is
  * reaching for `#@ preaggregate`, which works there.
  */
 function ownedRoutes(): readonly string[] {
@@ -83,6 +87,12 @@ function routeIsRead(route: string): boolean {
       (!MATERIALIZE_V2_ROUTES.has(route) || getMaterializeEnabled())
    );
 }
+
+/** The routes a materialization declaration is written on. */
+const MATERIALIZATION_ROUTES: ReadonlySet<string> = new Set([
+   "@",
+   ...MATERIALIZE_V2_ROUTES,
+]);
 
 /** The `#@` directives that make a source persist or roll up. */
 const PERSIST_DIRECTIVES: readonly string[] = ["persist", "preaggregate"];
@@ -122,10 +132,15 @@ function misspelledOwnedRoute(name: string): Intended | undefined {
          best = { route, distance };
       }
    }
-   if (best) return { spelling: `#(${best.route})`, route: best.route };
-   const directive = PERSIST_DIRECTIVES.find(
-      (d) => foldRouteName(d) === folded,
-   );
+   // Never point at a deprecated spelling: `#(preaggregate)` is `#(rollup)`.
+   if (best) {
+      const spelled = best.route === "preaggregate" ? "rollup" : best.route;
+      return { spelling: `#(${spelled})`, route: best.route };
+   }
+   // With v2 off, `#(rollup)` and `#(preaggregate)` reach for v1's line.
+   const directive =
+      PERSIST_DIRECTIVES.find((d) => foldRouteName(d) === folded) ??
+      (folded === "rollup" ? "preaggregate" : undefined);
    return directive ? { spelling: `#@ ${directive}`, route: "@" } : undefined;
 }
 
@@ -253,10 +268,20 @@ export function annotationNearMisses(
          });
          continue;
       }
+      // A near miss of a materialization route or directive fails the load,
+      // as a misspelled gate does: a declaration that silently does nothing
+      // is an invalid annotation. Not when the route is spelled exactly but
+      // switched off (`#(rollup)` with PUBLISHER_MATERIALIZE=false):
+      // that is the deployment's choice, not the author's mistake.
+      const materialization =
+         MATERIALIZATION_ROUTES.has(intended.route) &&
+         !MATERIALIZE_V2_ROUTES.has(routeOfNote(note.text.trimStart()) ?? "");
       findings.push({
          route: intended.route,
-         tier: "unservable",
-         code: ANNOTATION_NEAR_MISS_CODE,
+         tier: materialization ? "malformed" : "unservable",
+         code: materialization
+            ? MATERIALIZATION_NEAR_MISS_CODE
+            : ANNOTATION_NEAR_MISS_CODE,
          message:
             `\`${written}\` is not read as \`${intended.spelling}\`, so it does ` +
             `nothing (did you mean \`${intended.spelling}\`?)`,

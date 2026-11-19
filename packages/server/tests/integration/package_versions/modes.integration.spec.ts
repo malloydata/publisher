@@ -27,7 +27,11 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
-import { RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
+import {
+   deleteLeftoverEnvironment,
+   RestE2EEnv,
+   startRestE2E,
+} from "../../harness/rest_e2e";
 import { installVariables } from "../../../src/test_helpers/settings_env";
 
 const ENV_NAME = "versioning-modes-env";
@@ -166,7 +170,7 @@ const ROUTES: Route[] = [
             method: "POST",
             headers: json,
             body: JSON.stringify({
-               sqlStatement: "SELECT n FROM read_csv_auto('data_*.csv')",
+               sqlStatement: "SELECT n FROM read_csv_auto('data/data_*.csv')",
             }),
          }).then((res) => probe(res, marker(/\\?"n\\?":\s*\\?"?(\d+)/))),
    },
@@ -179,7 +183,7 @@ const ROUTES: Route[] = [
             method: "POST",
             headers: json,
             body: JSON.stringify({
-               sqlStatement: "SELECT n FROM read_csv_auto('data_*.csv')",
+               sqlStatement: "SELECT n FROM read_csv_auto('data/data_*.csv')",
             }),
          }).then((res) => probe(res)),
    },
@@ -190,7 +194,7 @@ const ROUTES: Route[] = [
             method: "POST",
             headers: json,
             body: JSON.stringify({
-               sqlStatement: "SELECT n FROM read_csv_auto('data_*.csv')",
+               sqlStatement: "SELECT n FROM read_csv_auto('data/data_*.csv')",
             }),
          }).then((res) => probe(res)),
    },
@@ -297,7 +301,10 @@ describe("package versions across promotion modes and package kinds", () => {
          path.join(dir, `marker_${n}.malloy`),
          `source: marker is duckdb.sql("SELECT ${n} as m")\n`,
       );
-      await fs.writeFile(path.join(dir, `data_${n}.csv`), `n\n${n}\n`);
+      // In a subdirectory: the sandbox refuses a relative glob over the
+      // package's top level (duckdb_lockdown.ts, relativeReadEntries).
+      await fs.mkdir(path.join(dir, "data"));
+      await fs.writeFile(path.join(dir, "data", `data_${n}.csv`), `n\n${n}\n`);
       await fs.writeFile(
          path.join(dir, "notes.malloynb"),
          `>>>markdown\n# notebook answers ${n}\n`,
@@ -389,6 +396,9 @@ describe("package versions across promotion modes and package kinds", () => {
       env = await startRestE2E();
       baseUrl = env.baseUrl;
       scratch = await fs.mkdtemp(path.join(os.tmpdir(), "versioning-modes-"));
+      for (const name of [ENV_NAME, PLAIN_ENV]) {
+         await deleteLeftoverEnvironment(baseUrl, name);
+      }
       const created = await fetch(`${baseUrl}/api/v0/environments`, {
          method: "POST",
          headers: json,

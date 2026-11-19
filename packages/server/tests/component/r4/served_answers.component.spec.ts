@@ -4,7 +4,7 @@
 /**
  * Wrong answers and misleading reports the conformance fixture
  * (ms2data/service#7098) found on main, each proven through the real package
- * path (conformance/package_harness.ts): a package is loaded, its plan built
+ * path (src/test_helpers/conformance/package_runner.ts): a package is loaded, its plan built
  * as a build would build it, bound, and queried.
  *
  * Where a report is the subject, the proof is the SQL that ran: the tables a
@@ -22,7 +22,7 @@ import {
    type LoadedFixture,
    loadFixture,
    withSwitch,
-} from "./conformance/package_harness";
+} from "../../../src/test_helpers/conformance/package_runner";
 import { rowDifference, type Row } from "./harness";
 
 const HEADER = "##! experimental { persistence }";
@@ -87,7 +87,12 @@ async function run(
 function tablesById(fixture: LoadedFixture): Map<string, string> {
    const out = new Map<string, string>();
    for (const s of Object.values(fixture.pkg.getBuildPlan()?.sources ?? {})) {
-      out.set(s.sourceEntityId, (s.annotationFields?.name || s.name).trim());
+      // The table the build wrote: a readable name when no name= chose it.
+      out.set(
+         s.sourceEntityId,
+         fixture.tables[s.sourceEntityId] ??
+            (s.annotationFields?.name || s.name).trim(),
+      );
    }
    return out;
 }
@@ -166,7 +171,7 @@ const SUMMARY_QUERY =
    "run: summary -> { group_by: region; aggregate: t is total.sum() }";
 
 describe("the path report names exactly the tables the SQL read", () => {
-   it("a colocated #(materialize) source is built, served by the served copy from its own warehouse, and reported", async () => {
+   it("a database #(materialize) source is built, served by the served copy from its own warehouse, and reported", async () => {
       const { fixture, live } = await loadBuilt(
          {
             "m.malloy": `import "raw.malloy"
@@ -183,9 +188,7 @@ source: summary is orders_raw -> {
       try {
          // Built into the source's own warehouse, and read there by the
          // served copy (phase 3 pull request 6).
-         expect(fixture.built).toEqual([
-            { name: "summary", tier: "colocated" },
-         ]);
+         expect(fixture.built).toEqual([{ name: "summary", tier: "database" }]);
          expect(codes(fixture, "materialize-not-built")).toEqual([]);
          expect(fixture.verdicts).toEqual(["summary:serves"]);
          const ran = await run(fixture, "m.malloy", SUMMARY_QUERY);
@@ -198,7 +201,7 @@ source: summary is orders_raw -> {
       }
    });
 
-   it("a colocated #@ -persist reader recomputes live and is reported live; its sibling reads the table and is reported", async () => {
+   it("a database #@ -persist reader recomputes live and is reported live; its sibling reads the table and is reported", async () => {
       const queries = {
          reader: {
             model: "m.malloy",
@@ -260,7 +263,7 @@ source: summary_kept is summary extend {
    });
 });
 
-describe("a model without the persistence flag beside a bound colocated table", () => {
+describe("a model without the persistence flag beside a bound database table", () => {
    it("still answers, live", async () => {
       const queries = {
          a: { model: "a.malloy", query: SUMMARY_QUERY },
@@ -298,7 +301,7 @@ source: plain is orders_raw extend { measure: c is count() }
    });
 });
 
-describe("a colocated table named by a reserved word", () => {
+describe("a database table named by a reserved word", () => {
    it('is read quoted (name="order") and answers equal to live', async () => {
       const query =
          "run: `order` -> { group_by: `select`, `order`; aggregate: c is `count`.sum(), `group` }";
@@ -353,16 +356,15 @@ const SAME_NAMED_QUERIES = {
 
 describe("same-named sources in two models (#6644)", () => {
    for (const [tier, annotation] of [
-      ["colocated", "#@ persist"],
+      ["database", "#@ persist"],
       ["storage", '#@ persist storage="lake"'],
    ] as const) {
-      it(`v1 ${tier} with no name=: neither model reads the other's rows, both answer live`, async () => {
+      it(`v1 ${tier} with no name=: each takes a readable name of its own, builds, and serves its own rows`, async () => {
          const { fixture, live } = await loadBuilt(
             sameNamed(annotation),
             SAME_NAMED_QUERIES,
          );
          try {
-            // Both still build, into the one table; the later overwrote it.
             expect(fixture.built.map((b) => b.name)).toEqual([
                "summary",
                "summary",
@@ -373,35 +375,35 @@ describe("same-named sources in two models (#6644)", () => {
                   SAME_NAMED_QUERIES[key].model,
                   SUMMARY_QUERY,
                );
-               // Before: a.malloy answered with b.malloy's rows.
+               // Before #6644: a.malloy answered with b.malloy's rows.
                expect(rowDifference(live[key], ran.rows)).toBeUndefined();
-               expect(ran.servedBy).toBe("live");
-               expectReportMatchesSQL(fixture, ran);
+               expect(ran.servedBy).toBe("materialized");
+               // A storage table is read through its destination's alias,
+               // which the report check does not resolve.
+               if (tier === "database") expectReportMatchesSQL(fixture, ran);
             }
             expect(fixture.verdicts).toEqual([
-               "summary:live:refused",
-               "summary:live:refused",
+               "summary:serves",
+               "summary:serves",
             ]);
-            const warning = fixture.warnings.find((w) =>
-               w.message?.includes('same materialized table "summary"'),
-            );
-            expect(warning?.message).toContain("answered live");
+            expect(
+               fixture.warnings.filter((w) =>
+                  w.message?.includes("same materialized table"),
+               ),
+            ).toEqual([]);
          } finally {
             await fixture.dispose();
          }
       });
    }
 
-   it("#(materialize) with no name= is not built, says to add name=, and both answer live", async () => {
+   it("#(materialize) with no name=: each takes a readable name of its own, builds, and serves its own rows", async () => {
       const { fixture, live } = await loadBuilt(
          sameNamed('#(materialize) storage="lake"', ""),
          SAME_NAMED_QUERIES,
       );
       try {
-         expect(fixture.built).toEqual([]);
-         const refused = codes(fixture, "materialize-not-built");
-         expect(refused.map((w) => w.subject)).toEqual(["summary", "summary"]);
-         for (const w of refused) expect(w.message).toContain("name=");
+         expect(codes(fixture, "materialize-not-built")).toEqual([]);
          for (const key of ["a", "b"] as const) {
             const ran = await run(
                fixture,
@@ -409,14 +411,14 @@ describe("same-named sources in two models (#6644)", () => {
                SUMMARY_QUERY,
             );
             expect(rowDifference(live[key], ran.rows)).toBeUndefined();
-            expect(ran.servedBy).toBe("live");
+            expect(ran.servedBy).toBe("materialized");
          }
       } finally {
          await fixture.dispose();
       }
    });
 
-   it("#(materialize) whose default name collides with a v1 table is refused; the v1 source still serves", async () => {
+   it("#(materialize) whose default name is a v1 name= is not refused: a defaulted table carries the package's suffix, and both serve", async () => {
       const files = {
          "a.malloy": `${HEADER}
 import "raw.malloy"
@@ -447,10 +449,11 @@ source: summary is orders_raw -> {
       };
       const { fixture, live } = await loadBuilt(files, queries);
       try {
-         expect(fixture.built).toEqual([{ name: "placed", tier: "storage" }]);
-         const refused = codes(fixture, "materialize-not-built");
-         expect(refused).toHaveLength(1);
-         expect(refused[0].message).toContain('"placed" (a.malloy)');
+         expect(fixture.built.map((b) => b.name).sort()).toEqual([
+            "placed",
+            "summary",
+         ]);
+         expect(codes(fixture, "materialize-not-built")).toEqual([]);
          for (const key of ["a", "b"] as const) {
             const ran = await run(
                fixture,
@@ -459,7 +462,10 @@ source: summary is orders_raw -> {
             );
             expect(rowDifference(live[key], ran.rows)).toBeUndefined();
          }
-         expect(fixture.verdicts).toEqual(["placed:serves"]);
+         expect(fixture.verdicts.sort()).toEqual([
+            "placed:serves",
+            "summary:serves",
+         ]);
       } finally {
          await fixture.dispose();
       }
@@ -492,37 +498,89 @@ source: summary is orders_raw -> {
          await fixture.dispose();
       }
    });
-   it("#(materialize) with equal explicit name=s is refused on both, naming the other, and both answer live", async () => {
-      const { fixture, live } = await loadBuilt(
-         sameNamed('#(materialize) storage="lake" name="s_dup"', ""),
-         SAME_NAMED_QUERIES,
-      );
-      try {
-         expect(fixture.built).toEqual([]);
-         const refused = codes(fixture, "materialize-not-built");
-         expect(refused.map((w) => w.subject)).toEqual(["summary", "summary"]);
-         for (const w of refused) {
-            expect(w.message).toContain("name= `s_dup`");
-            expect(w.message).toContain("distinct name=");
-         }
-         expect(refused.map((w) => w.message).join("\n")).toContain(
-            '"summary" (a.malloy)',
-         );
-         expect(refused.map((w) => w.message).join("\n")).toContain(
-            '"summary" (b.malloy)',
-         );
-         for (const key of ["a", "b"] as const) {
-            const ran = await run(
-               fixture,
-               SAME_NAMED_QUERIES[key].model,
-               SUMMARY_QUERY,
+   describe("one name= on two sources, under PERSIST_COLLISION_ENFORCE=false", () => {
+      // By default the package fails to load
+      // (`materialization-table-collision`, materialization_load_policy.spec.ts);
+      // under the operator's opt-out each is refused alone and answers live.
+      beforeAll(async () => {
+         restore();
+         restore = withSwitch("on", { PERSIST_COLLISION_ENFORCE: "false" });
+         await freshLoadPool();
+      });
+      afterAll(async () => {
+         restore();
+         restore = withSwitch("on");
+         await freshLoadPool();
+      });
+
+      for (const [tier, annotation] of [
+         ["database", '#@ persist name="s_dup"'],
+         ["storage", '#@ persist storage="lake" name="s_dup"'],
+      ] as const) {
+         it(`v1 ${tier}: neither model reads the other's rows, both answer live`, async () => {
+            const { fixture, live } = await loadBuilt(
+               sameNamed(annotation),
+               SAME_NAMED_QUERIES,
             );
-            expect(rowDifference(live[key], ran.rows)).toBeUndefined();
-            expect(ran.servedBy).toBe("live");
-         }
-      } finally {
-         await fixture.dispose();
+            try {
+               for (const key of ["a", "b"] as const) {
+                  const ran = await run(
+                     fixture,
+                     SAME_NAMED_QUERIES[key].model,
+                     SUMMARY_QUERY,
+                  );
+                  expect(rowDifference(live[key], ran.rows)).toBeUndefined();
+                  expect(ran.servedBy).toBe("live");
+               }
+               expect(fixture.verdicts).toEqual([
+                  "summary:live:refused",
+                  "summary:live:refused",
+               ]);
+               const warning = fixture.warnings.find((w) =>
+                  w.message?.includes('same materialized table "s_dup"'),
+               );
+               expect(warning?.code).toBe("persist-not-built");
+            } finally {
+               await fixture.dispose();
+            }
+         });
       }
+
+      it("#(materialize) with equal explicit name=s is refused on both, naming the other, and both answer live", async () => {
+         const { fixture, live } = await loadBuilt(
+            sameNamed('#(materialize) storage="lake" name="s_dup"', ""),
+            SAME_NAMED_QUERIES,
+         );
+         try {
+            expect(fixture.built).toEqual([]);
+            const refused = codes(fixture, "materialize-not-built");
+            expect(refused.map((w) => w.subject)).toEqual([
+               "summary",
+               "summary",
+            ]);
+            for (const w of refused) {
+               expect(w.message).toContain("name= `s_dup`");
+               expect(w.message).toContain("distinct name=");
+            }
+            expect(refused.map((w) => w.message).join("\n")).toContain(
+               '"summary" (a.malloy)',
+            );
+            expect(refused.map((w) => w.message).join("\n")).toContain(
+               '"summary" (b.malloy)',
+            );
+            for (const key of ["a", "b"] as const) {
+               const ran = await run(
+                  fixture,
+                  SAME_NAMED_QUERIES[key].model,
+                  SUMMARY_QUERY,
+               );
+               expect(rowDifference(live[key], ran.rows)).toBeUndefined();
+               expect(ran.servedBy).toBe("live");
+            }
+         } finally {
+            await fixture.dispose();
+         }
+      });
    });
 
    it("v1 sources with one table and the SAME definition share it legitimately: built, served, no collision", async () => {
@@ -619,8 +677,8 @@ source: summary is orders_raw -> {
   aggregate: total is amount.sum()
 }
 
-#(materialize) name="colocated_tbl"
-source: colocated is orders_raw -> {
+#(materialize) name="database_tbl"
+source: database is orders_raw -> {
   group_by: region
   aggregate: total is amount.sum()
 }
@@ -630,23 +688,23 @@ source: colocated is orders_raw -> {
       );
       try {
          // Before: "summary:live:shadowed" although the served copy answers it.
-         // A colocated one is served by the served copy too, from its own
+         // A database one is served by the served copy too, from its own
          // warehouse (phase 3 pull request 6).
          expect(fixture.verdicts.sort()).toEqual([
-            "colocated:serves",
+            "database:serves",
             "summary:serves",
          ]);
          expect(codes(fixture, "materialize-not-built")).toEqual([]);
          const ran = await run(fixture, "m.malloy", SUMMARY_QUERY);
          expect(ran.servedBy).toBe("materialized");
-         const colocated = await run(
+         const database = await run(
             fixture,
             "m.malloy",
-            "run: colocated -> { group_by: region; aggregate: t is total.sum() }",
+            "run: database -> { group_by: region; aggregate: t is total.sum() }",
          );
-         expect(colocated.servedBy).toBe("materialized");
-         expect(reads(colocated.sql, "colocated_tbl")).toBe(true);
-         expectReportMatchesSQL(fixture, colocated);
+         expect(database.servedBy).toBe("materialized");
+         expect(reads(database.sql, "database_tbl")).toBe(true);
+         expectReportMatchesSQL(fixture, database);
       } finally {
          await fixture.dispose();
       }

@@ -13,6 +13,9 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "daily@<pkg>/facts.malloy": "materialize"
+    },
     "materializePlans": {
       "daily@<pkg>/facts.malloy": {
         "buildSourceName": "daily__mat",
@@ -101,6 +104,8 @@
         ]
       }
     ],
+    "omittedFiles": [],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "daily@<pkg>/facts.malloy": {
@@ -135,7 +140,7 @@
         "freshness": null,
         "modelPath": "facts.malloy",
         "name": "daily",
-        "origin": "persist",
+        "origin": "materialize",
         "preaggregate": null,
         "queryMetadata": null,
         "refresh": null,

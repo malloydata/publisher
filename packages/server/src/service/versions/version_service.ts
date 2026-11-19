@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 
 import { Mutex } from "async-mutex";
-import * as fs from "fs";
 import * as path from "path";
 import type { VersionPromotionMode } from "../../config";
 import {
@@ -21,6 +20,8 @@ import {
 import { compareSemver, isSemver, versionSpellingKey } from "./semver";
 import { VersionCache, VersionEvictedDuringLoadError } from "./version_cache";
 import { StagedVersion, VersionStore } from "./version_store";
+import { pathToFileURL } from "url";
+import { readPackageURL } from "../../utils";
 
 /** The registry calls the version rules use. */
 export type VersionRegistry = Pick<
@@ -34,6 +35,7 @@ export type VersionRegistry = Pick<
    | "setLatestVersion"
    | "setVersionArchiveStatus"
    | "setVersionManifestPath"
+   | "markVersionHostOwned"
    | "deleteVersion"
    | "deletePackageIfNoVersions"
 >;
@@ -46,12 +48,17 @@ export type VersionRegistry = Pick<
 export interface VersionHost<P> {
    /**
     * Compile the version whose files are at `versionPath`, bound to
-    * `manifestPath` when one is set. Throws when it does not load.
+    * `manifestPath` when one is set. A `hostOwned` version with no manifest
+    * serves live, never this server's own run store. Throws when it does not
+    * load.
     */
    loadVersion(
       packageName: string,
       versionPath: string,
-      version: Pick<Version, "versionId" | "manifestPath" | "sourceLocation">,
+      version: Pick<
+         Version,
+         "versionId" | "manifestPath" | "sourceLocation" | "hostOwned"
+      >,
    ): Promise<P>;
    /** Release a loaded version's connections; it is no longer served. */
    releaseVersion(packageName: string, versionId: string, loaded: P): void;
@@ -106,8 +113,19 @@ export interface VersionHost<P> {
    removePackageRecord(packageName: string): Promise<void>;
    /** The build manifest a loaded version is bound to now, or null. */
    boundManifestOf?(loaded: P): string | null;
+   /**
+    * Whether the loaded version carries the host-owned mark: a host manifest
+    * it names actually bound, or a host built it. Not merely naming one.
+    */
+   hostMarked?(loaded: P): boolean;
    /** A version became served; `isLatest` says whether it is `latest`. */
    onVersionLoaded?(packageName: string, loaded: P, isLatest: boolean): void;
+   /**
+    * A write to the package's version rows or its `latest` settled (or
+    * failed). Awaited before the write returns, so what the host reads then
+    * is what the write left. Must not throw.
+    */
+   recordsChanged?(packageName: string): Promise<void>;
    /** Whether a materialization of this version is running now. */
    isVersionBuilding?(packageName: string, versionId: string): boolean;
    /**
@@ -355,6 +373,20 @@ export class VersionService<P = unknown> {
       return records.versions.has(raw) ? raw : undefined;
    }
 
+   /**
+    * The package's `latest` and its versions in publish order, read from the
+    * registry now. Not kept: what requests read is unchanged by this read.
+    */
+   async versionRecords(
+      packageName: string,
+   ): Promise<{ latest: string | null; versions: Version[] }> {
+      const records = await this.readRecords(packageName);
+      return {
+         latest: records.latest,
+         versions: [...records.versions.values()],
+      };
+   }
+
    /** Whether the package has any published version. */
    async isVersioned(packageName: string): Promise<boolean> {
       return (await this.recordsOf(packageName)).versions.size > 0;
@@ -416,6 +448,12 @@ export class VersionService<P = unknown> {
     */
    private forgetRecords(packageName: string): void {
       this.records.delete(packageName);
+   }
+
+   /** A write to the package's rows settled: forget them, and tell the host. */
+   private async recordsWritten(packageName: string): Promise<void> {
+      this.forgetRecords(packageName);
+      await this.host?.recordsChanged?.(packageName);
    }
 
    /**
@@ -644,6 +682,7 @@ export class VersionService<P = unknown> {
                   versionId,
                   manifestPath: options.manifestLocation || null,
                   sourceLocation: options.sourceLocation,
+                  hostOwned: false,
                },
             );
             const refusal = options.validate?.(loaded);
@@ -658,6 +697,9 @@ export class VersionService<P = unknown> {
                   sourceLocation: options.sourceLocation,
                   manifestPath: options.manifestLocation || null,
                   description: staged.description,
+                  // Its load bound the host manifest it names (not one whose
+                  // fetch failed): the row is marked in the same insert.
+                  hostOwned: host.hostMarked?.(loaded) ?? false,
                },
                promoteOnPublish(versionId, options.promotion),
             );
@@ -897,15 +939,13 @@ export class VersionService<P = unknown> {
       version: Pick<Version, "packageName" | "dirName">,
    ): Promise<Record<string, unknown> | null> {
       try {
-         const text = await fs.promises.readFile(
-            path.join(
-               this.requireStore().versionPath(
-                  version.packageName,
-                  version.dirName,
-               ),
-               "publisher.json",
-            ),
-            "utf8",
+         const versionRoot = this.requireStore().versionPath(
+            version.packageName,
+            version.dirName,
+         );
+         const text = await readPackageURL(
+            versionRoot,
+            pathToFileURL(path.join(versionRoot, "publisher.json")),
          );
          const parsed: unknown = JSON.parse(text);
          if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
@@ -1155,6 +1195,21 @@ export class VersionService<P = unknown> {
    private readonly packagesToRemove = new Set<string>();
 
    /**
+    * Record that a host owns the version: a manifest it named bound, or a
+    * run it instructed committed. Never cleared. Takes no lock (a bind
+    * calls it holding the version's); a version with no row yet (one being
+    * published) is marked by its publish's commit instead.
+    */
+   async markHostOwned(packageName: string, versionId: string): Promise<void> {
+      await this.registry.markVersionHostOwned(
+         this.environmentId,
+         packageName,
+         versionId,
+      );
+      await this.recordsWritten(packageName);
+   }
+
+   /**
     * Bind a version to a build manifest, or to none (null: serves live). The
     * binding is serving state, not content, so it is the one thing about a
     * published version that changes. An archived version is refused before
@@ -1259,7 +1314,7 @@ export class VersionService<P = unknown> {
             versionId,
          );
       } finally {
-         this.forgetRecords(packageName);
+         await this.recordsWritten(packageName);
       }
       if (moved) {
          this.latestSeen.set(packageName, versionId);
@@ -1301,7 +1356,7 @@ export class VersionService<P = unknown> {
          try {
             return await fn();
          } finally {
-            this.forgetRecords(packageName);
+            await this.recordsWritten(packageName);
          }
       });
    }

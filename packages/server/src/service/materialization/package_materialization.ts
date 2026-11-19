@@ -1,114 +1,105 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import {
-   getDialect,
-   isSourceDef,
-   type MalloyConfig,
-   type SourceDef,
-} from "@malloydata/malloy";
-import {
-   findingSeverity,
-   MATERIALIZE_V2_ROUTES,
-   type PackageAnnotationFinding,
-} from "../annotation_reader";
+/**
+ * The package facade: one package version's materialization, composing
+ * plan/, run/ and serve/ for `Package` and `Environment`, and the module's
+ * one door for them. It holds the version's bindings, its snapshot and
+ * whether a host owns it, and delegates the rest to three collaborators:
+ *
+ * | Concern | Held by |
+ * | --- | --- |
+ * | The plan: load, stale, refresh, when current | {@link PlanLifecycle} (`plan_lifecycle.ts`) |
+ * | Serve verdicts, the preview, the path report's catalog | {@link ServeVerdicts} (`serve_verdicts.ts`) |
+ * | Package warnings and publish rejections | `package_warnings.ts` |
+ * | Bind a manifest, swap the snapshot, push it to the models | this facade |
+ *
+ * Its public surface is wide, not narrow: sixty-two members, most of
+ * them one accessor or one warning list each, in these groups: the package's
+ * identity and files; the plan's lifecycle; the binding (bind, mark bound,
+ * live, failed or host-owned, the manifest it holds); what it pushes to the
+ * models (serving context, destinations, deployment facts); the serve
+ * verdicts; and one method per package-warning family plus the load gate's
+ * text, which `Package` composes in its own order. `facade_surface.spec.ts`
+ * lists every public name, so the surface only shrinks.
+ *
+ * Effects: logs, and the bind metrics.
+ */
+
+import type { Connection, MalloyConfig } from "@malloydata/malloy";
 import { components } from "../../api";
+import type { ChainBuildRequest, ChainBuildText } from "./domain/chain_build";
 import {
-   getMaterializeGatedSources,
-   getPersistCollisionEnforce,
    getMaterializeEnabled,
+   getPersistCollisionEnforce,
    getPersistStorageMode,
-   getV1ServedCopyMode,
 } from "../../config";
-import { PACKAGE_MANIFEST_NAME } from "../../constants";
-import { BuildPlanRefreshingError } from "../../errors";
 import { logger } from "../../logger";
 import {
-   recordBuildPlanComputeDuration,
-   recordBuildPlanComputeFailed,
-   recordColocatedBindDropped,
-   recordConnectionDigestSkipped,
-   recordEligibilityRefused,
-   type EligibilityRefusalReason,
+   recordSourceBound,
+   recordSourceDeclined,
+   recordStoredColumnTypeMismatch,
 } from "../../materialization_metrics";
 import type { LoadPackageOutcome } from "../../package_load/package_load_pool";
-import { errMessage } from "../../utils";
 import type { Model } from "../model";
 import type { PackageModelPolicy } from "../model_policy";
-import type {
-   BuildPlanPackage,
-   ColocatedSourceEligibility,
-   SourceEligibility,
-} from "./plan/build_plan";
-import { computePackageBuildPlan } from "./plan/build_plan_compile";
-import type { MaterializePlan } from "./plan/build_file_generator";
+import type { BuildPlanPackage } from "./plan/build_plan";
 import {
-   incrementalPolicyAdvisories,
-   incrementalPolicyRejections,
-   type IncrementalPolicySource,
-} from "./plan/incremental_policy";
-import type {
-   PreaggregateViolation,
-   PreaggregateViolationCode,
-} from "./plan/preaggregation_validation";
-import { CronEvaluator } from "./run/cron_evaluator";
+   collisionGateLines,
+   invalidFindingLines,
+   loadGateText,
+   nearMissGateLines,
+   planCollisions,
+   preaggregateGateLines,
+} from "./plan/load_gate_text";
+import { incrementalPolicyAdvisories } from "./plan/incremental_policy";
+import type { PersistNameProblem } from "./domain/package_plan";
 import {
-   evaluateManifestFreshness,
-   filterFreshManifest,
-} from "./run/freshness";
+   type Binding,
+   type BindingKind,
+   makeSnapshot,
+   pin,
+   type Snapshot,
+} from "./domain/binding";
+import { observedDatabaseColumns } from "./run/database_column_read";
 import {
-   type BoundTable,
-   type LiveTableVerdict,
-   liveVerdictKey,
-   type MaterializedTableCatalog,
-   type PlannedTable,
-} from "./serve/query_path";
-import {
-   deriveServeBindings,
-   groupAliasesByName,
-   planSourceIds,
-   type ServeBinding,
-} from "./serve/materialization_serve_transform";
-import {
-   SERVED_COPY_WARNING_CODE,
-   type ServedCopyProblem,
-} from "./serve/served_copy_serve";
-import {
-   deriveColocatedServeBindings,
+   applyObservedColumns,
+   type DriftDeclaration,
+   bindDatabaseEntries,
+   bindStorageEntries,
+   deriveDatabaseServeBindings,
+   type ObservedDrift,
+   type UnreadTable,
+   kindFromPlan,
    v1StoredColumnsOf,
-} from "./serve/colocated_bindings";
-import { namesServedCopyAlias } from "./serve/served_copy_config";
-import { STORED_COLUMN_TYPE_MISMATCH_CODE } from "./stored_column_types";
+} from "./serve/bind";
+import type { ServeVerdict, ViewServeVerdict } from "./serve/serve_verdict";
 import {
-   computeServeVerdicts,
-   VERDICT_WARNING_CODES,
-   type ServeVerdict,
-   type ViewServeVerdict,
-} from "./serve/serve_verdict";
-import { storageTablePath } from "./run/storage_table_path";
-import { persistTableTarget } from "./plan/eligibility_collect";
-import { quoteManifestTablePath } from "../quoting";
-import { structsReachedFrom } from "../governance/ir/source_graph";
-import { CLASSIFICATION_COVERAGE } from "../classification";
-import { reachableSourceIDs, SourceMap } from "./plan/source_map";
+   type BoundTableTypeFinding,
+   boundTableTypeFindings,
+   type DatabaseDriftFinding,
+   databaseDriftFindings,
+} from "./serve/storage_bindings";
+import { STORED_COLUMN_TYPE_MISMATCH_CODE } from "./stored_column_types";
+import { tablePathParts } from "../quoting";
+import * as warnings from "./package_warnings";
+import { PlanLifecycle } from "./plan_lifecycle";
+import { type DeploymentFacts, ServeVerdicts } from "./serve_verdicts";
+import { SourceMap } from "./text/source_map";
+import type { KeptTable } from "./domain/types";
+import type { LateRows } from "./domain/types";
+import { isRollupOrigin, originOfTable } from "./domain/table_plans";
+import { queryTimezoneOf } from "../governance/ir/compiled_model";
 import type {
    BuildManifest,
    BuildPlan,
    FreshnessManifest,
    ManifestEntry,
-} from "./types";
+   ObservedColumns,
+} from "./domain/types";
 
 type ApiPackage = components["schemas"]["Package"];
 type ApiPackageWarning = NonNullable<ApiPackage["warnings"]>[number];
-
-/**
- * `#@ preaggregate` violations that only warn: refusing them would stop
- * already-published packages loading (see formatInvalidPreaggregatePolicy).
- */
-const PREAGG_WARN_ONLY: ReadonlySet<PreaggregateViolationCode> = new Set([
-   "non_public_measure",
-   "grain_dimension_not_public",
-]);
 
 /**
  * Project wire entries to the `sourceEntityId -> { tableName }` map that
@@ -124,17 +115,17 @@ export function toTableNameManifest(
    return out;
 }
 
-/**
- * What the environment answers about where a package's tables can be written
- * (P13), read live. `undefined` from either means "not known", which never
- * warns.
- */
-export interface DeploymentFacts {
-   /** The configured storage destinations, or undefined when the list is not authoritative. */
-   destinationNames(): readonly string[] | undefined;
-   /** Whether a connection's configured type can create a table. */
-   connectionCanHoldTable(connectionName: string): boolean | undefined;
+/** A bound table's path as a person reads it: its parts, unquoted. */
+function tableNameOf(name: string | undefined): { tableName?: string } {
+   if (!name) return {};
+   return { tableName: (tablePathParts(name, "") ?? [name]).join(".") };
 }
+
+/** Tries to read a table a bind left unread, before polls alone retry it. */
+const UNREAD_RETRY_ATTEMPTS = 10;
+/** The first retry's delay; each next one doubles, up to {@link UNREAD_RETRY_MAX_MS}. */
+const UNREAD_RETRY_BASE_MS = 1_000;
+const UNREAD_RETRY_MAX_MS = 60_000;
 
 /** What a {@link PackageMaterialization} reads of the package that holds it. */
 export interface PackageMaterializationOwner {
@@ -147,179 +138,182 @@ export interface PackageMaterializationOwner {
    modelPolicy(): PackageModelPolicy;
    packagePath(): string;
    malloyConfig(): MalloyConfig;
+   /** One of the package's connections, by name, for the bind's column read. */
+   connection(connectionName: string): Promise<Connection>;
    /** The package, for a main-thread build-plan compute. */
    buildPlanPackage: BuildPlanPackage;
    /**
     * The sources callers may query, by the model that publishes them, or
-    * undefined when every source is queryable. Optional: a spec's owner need
-    * not curate.
+    * undefined when every source is queryable.
     */
-   publishedSurface?():
+   publishedSurface():
       | { modelPath: string; names: string[]; queries?: string[] }[]
       | undefined;
 }
 
-/**
- * How long a reader of the build plan waits for a re-derivation after a
- * connection change before it answers 503 with Retry-After instead. Long
- * enough for an ordinary package's recompile, short enough that a caller's
- * own timeout never fires first.
- */
-export const BUILD_PLAN_REFRESH_WAIT_MS = 10_000;
+/** The facade as `Package.materialization()` hands it out: without the plan's state. */
+export type PackageMaterializationView = Omit<PackageMaterialization, "plan">;
 
-/**
- * The code on the warning for a `#@ persist` source a compile-time gate
- * refused (a row-level gate, a free parameter, a given in the persisted query,
- * or a `storage=` source the storage gate refuses). Not counted as an
- * annotation finding: the annotation is well formed.
- */
-export const PERSIST_SOURCE_REFUSED_CODE = "persist-source-refused";
-
-/**
- * The code on the warning for a rollup whose build found its join_one key
- * repeated ({@link PackageMaterialization.repeatedJoinOneKeyWarnings}).
- */
-export const PREAGGREGATE_JOIN_ONE_KEY_REPEATED_CODE =
-   "preaggregate-join-one-key-repeated";
-
-/** The live serve verdicts the path report reads, by table and by source. */
-interface LiveVerdicts {
-   byTable: ReadonlyMap<string, LiveTableVerdict>;
-   bySource: ReadonlyMap<string, LiveTableVerdict>;
-}
-
-/**
- * A package's materialization state: its build plan and which sources may be
- * served from a materialized table, the manifest it is bound to (both tiers),
- * the serve routing it pushes onto its models, and the persistence-policy
- * findings a publish and a load judge it by. Held by `Package`, which
- * delegates to it only what callers outside this module use.
- */
 export class PackageMaterialization {
-   /** The environment's storage destinations for a serve-shape compile; see {@link setServeDestinationConfig}. */
+   /**
+    * The plan, and everything compiled beside it. Read by the facade's
+    * collaborators; `Package`'s test hooks set its eligibility through it,
+    * and `Package.materialization()` leaves it out.
+    */
+   readonly plan: PlanLifecycle;
+   /** The serve verdicts over the plan and the bindings here. */
+   readonly verdicts: ServeVerdicts;
+   /** The environment's storage destinations for a serve-shape compile. */
    private serveDestinationConfig?: () => MalloyConfig;
-   /** The environment's deployment facts, read live; see {@link setDeploymentFacts}. */
+   /** The environment's deployment facts, read live. */
    private deploymentFacts?: DeploymentFacts;
-   /** A destination's schema by name, resolved live; see {@link setServeDestinationSchema}. */
+   /** A destination's schema by name, resolved live. */
    private serveDestinationSchema?: (
       destinationName: string,
    ) => string | undefined;
-   // Bound build manifest (sourceEntityId -> { tableName }): routes persist
-   // sources to their materialized tables for served queries and the /compile
-   // preview alike, so previewed SQL matches executed SQL. Surfaced on /status
-   // so the control plane can confirm a worker bound it.
+   /**
+    * The database manifest entries bound now, freshness fields and key
+    * checks included: the snapshot's `entries`. Undefined when serving live.
+    */
+   private databaseEntries: FreshnessManifest | undefined;
+   /**
+    * The tables the newest auto-run lists as kept after a rename
+    * (Reclaimer.reclaimRenamedTables), set by that run.
+    */
+   private keptTables: readonly KeptTable[] = [];
+   /**
+    * The same entries as table names only, the manifest models hydrate with
+    * and /compile reads. Surfaced on /status so the control plane can confirm
+    * a worker bound it.
+    */
    private buildManifestEntries: BuildManifest["entries"] | undefined;
-   // The full wire entries, freshness fields included, so the serve path can
-   // re-evaluate age vs window per query. Undefined when serving live.
-   private freshnessEntries: FreshnessManifest | undefined;
-   // `storage=` serve bindings, pushed onto each Model for the virtual-source
-   // serve transform. A storage source serves cross-connection through these,
-   // not through the same-connection manifest above.
-   private storageServeBindings: ReturnType<typeof deriveServeBindings> = [];
-   // Memoized freshness-filtered manifest, recomputed when an entry crosses its
-   // window (`validUntil`) or a rebind clears it. Infinity: stable until rebind.
-   private freshManifestCache:
-      | { manifest: BuildManifest["entries"]; validUntil: number }
+   /**
+    * What the bind read of each database table's columns from its warehouse
+    * ({@link readDatabaseColumns}), for the entries bound with it: one read
+    * per table per bind, never per query. Undefined for a bind that read
+    * none (a hand-made bind), whose tables are read as their build wrote them.
+    */
+   private observedColumns: ReadonlyMap<string, ObservedColumns> | undefined;
+   /** What the last snapshot found of the observation: drift, and tables not read. */
+   /** The pending re-read of the tables the last read left unread. */
+   /** Set by {@link dispose}: the package is released. */
+   private disposed = false;
+   private unreadRetry:
+      | { timer: ReturnType<typeof setTimeout>; attempt: number }
       | undefined;
-   private manifestBindingStatus: "unbound" | "bound" | "live_fallback" =
+   private observedOutcome: {
+      drifted: ObservedDrift[];
+      unread: UnreadTable[];
+   } = { drifted: [], unread: [] };
+   /** The `storage=` bindings a host's or a run's manifest made. */
+   private storageBindings: readonly Binding[] = [];
+   /**
+    * The `lateRows` the bound `storage=` entries carry, by content address:
+    * an incremental table's late-row check, which outlives the binding's own
+    * shape. The database entries carry theirs on {@link databaseEntries}.
+    */
+   private storageLateRows: ReadonlyMap<string, LateRows> = new Map();
+   /** {@link snapshot}, keyed on every fact it is made from. */
+   private snapshotMemo:
+      | { key: readonly unknown[]; snapshot: Snapshot; signature: string }
+      | undefined;
+   /** The bindings the models last compiled their served copies over. */
+   private publishedBindings: readonly Binding[] | undefined;
+   private manifestBindingStatus: "unbound" | "bound" | "bind_failed" =
       "unbound";
    private manifestEntryCount = 0;
    private boundManifestUri: string | null = null;
-   // The persist build plan, computed once at load from the unbound models, so
-   // it is stable per (package version, connection config). Null when the
-   // package declares no persist source.
-   buildPlan: BuildPlan | null = null;
    /**
-    * The plan's generated `#(materialize)` build sources, by sourceID, pushed
-    * to each model's served copy with the bindings. Kept across a failed
-    * re-derivation, like the plan's last good bindings.
+    * A host owns this version's binding: a manifest it named bound, or its
+    * instructed run committed (see Environment.isHostOwned). Never cleared:
+    * a later clear leaves the version live, not back on this server's store.
     */
-   materializePlans: Record<string, MaterializePlan> = {};
-   /** The build plan could not be derived at load (see applyLoadBuildPlan). */
-   private buildPlanFailed = false;
+   private hostOwned = false;
    /**
-    * Set when a connection edit makes the plan stale, and resolved once a
-    * re-derivation started after the latest edit has finished (see
-    * refreshBuildPlan). Readers that must not see the pre-edit plan wait on it.
+    * The declined bindings already warned of under the plan they were
+    * judged by ({@link logDecline}); a new plan warns afresh.
     */
-   private buildPlanStale:
-      | { promise: Promise<void>; resolve: () => void }
-      | undefined;
-   /** Bumped by each markBuildPlanStale, so a refresh knows if it is the latest. */
-   private buildPlanStaleSeq = 0;
-   /** The re-derivation in flight, so refreshes run one at a time. */
-   private buildPlanRefreshChain: Promise<boolean> = Promise.resolve(true);
-   // Keyed on the plan it came from, so a reload recomputes it.
+   private warnedDeclines: { plan: unknown; keys: Set<string> } = {
+      plan: undefined,
+      keys: new Set(),
+   };
+   /**
+    * The type findings of the bound `storage=` tables a model's own
+    * `#@ persist` check does not make ({@link boundTableTypeFindings}), as of
+    * the last publish.
+    */
+   private boundTypeFindings: readonly BoundTableTypeFinding[] = [];
    private preaggregateEntityIdCache:
       | { plan: BuildPlan | null; ids: ReadonlySet<string> }
       | undefined;
-   // Keyed on the plan, the bound entries and the live verdicts it came from.
-   private tableCatalogCache:
-      | {
-           plan: BuildPlan | null;
-           bound: FreshnessManifest | undefined;
-           liveVerdicts: LiveVerdicts | undefined;
-           catalog: MaterializedTableCatalog;
-        }
-      | undefined;
-   // Keyed on every fact a verdict reads that is not the clock.
-   private liveVerdictCache:
-      | {
-           key: readonly unknown[];
-           verdicts: LiveVerdicts | undefined;
-        }
-      | undefined;
-   // `#@ persist` sources Malloy's build walk did not plan, which
-   // would silently serve live. Warned, and refused at build.
-   private droppedPersistSources: { name: string; modelPath: string }[] = [];
-   /** Rollups over a gated base whose gates are grafted at read (row 1). */
-   private rollupsKeepingGates = new Set<string>();
-   private rollupsOverStoredBase: { baseName: string; modelPath?: string }[] =
-      [];
-   private annotationFindings: PackageAnnotationFinding[] = [];
-   // Which sources may be served from a materialized table, decided at compile
-   // where the compiled sources exist; binding does not recompile. `undefined`
-   // means NOT KNOWN (the plan compute failed) and is refused like "nothing is
-   // eligible": an unknown answer must not read as consent.
-   sourceEligibility: SourceEligibility | undefined = undefined;
-   // The colocated (same-connection) analogue, keyed by sourceEntityId. Same
-   // "undefined means refuse" rule.
-   colocatedSourceEligibility: ColocatedSourceEligibility | undefined =
-      undefined;
-   // Incremental-refresh gate inputs, resolved at compile because the rules read
-   // the compiled schema, which the wire plan lacks. Empty when the plan compute
-   // failed; safe, as the build only dispatches a delta it can read.
-   incrementalPolicySources: IncrementalPolicySource[] = [];
-   /**
-    * Every connection a persist source builds on, from the last derived plan
-    * (including skipped and refused sources), so a connection edit that
-    * creates or fixes one re-derives the plan (see planConnectionNames).
-    */
-   private buildConnectionNames: ReadonlySet<string> = new Set();
-   /**
-    * The last good plan, kept only for binding while a failed re-derivation
-    * leaves {@link buildPlan} null (see refreshBuildPlan): a host's rebind then
-    * matches its entries as it did before the edit. Never handed out by
-    * getBuildPlan, so no route or run validates against it. Cleared when a
-    * plan is derived.
-    */
-   private servingPlanWhileUnavailable: BuildPlan | null = null;
-   /**
-    * Connections edited since the plan was last derived (see
-    * markBuildPlanStale). A failed re-derivation keeps colocated eligibility
-    * only for sources on connections outside this set: a colocated table lives
-    * in, and is read through, its connection, so one the edit changed may now
-    * be a different warehouse. Cleared when a plan is derived.
-    */
-   private connectionsChangedSinceDerived = new Set<string>();
-   /**
-    * Whether the last failed refresh failed in the load pool (a worker timeout
-    * or crash), which a retry can clear, rather than in the plan compute, which
-    * fails the same way until the model or a connection changes.
-    */
-   private lastRefreshFailedTransiently = false;
 
-   constructor(private readonly owner: PackageMaterializationOwner) {}
+   constructor(private readonly owner: PackageMaterializationOwner) {
+      this.plan = new PlanLifecycle(owner, () => this.publish());
+      this.verdicts = new ServeVerdicts({
+         plan: this.plan,
+         packageName: () => owner.packageName(),
+         models: () => owner.models(),
+         publishedSurface: () => owner.publishedSurface(),
+         snapshot: () => this.snapshot(),
+         storageBindings: () => this.storageBindings,
+         databaseEntries: () => this.databaseEntries,
+         deploymentFacts: () => this.deploymentFacts,
+         destinationSchema: (name) => this.serveDestinationSchema?.(name),
+         declarationOf: this.declarationLookup,
+         persistedViewBuildIDs: () => this.persistedViewBuildIDs(),
+      });
+   }
+
+   // ---- The plan (PlanLifecycle) ------------------------------------------
+
+   getBuildPlan(): BuildPlan | null {
+      return this.plan.buildPlan;
+   }
+
+   /** Whether the build plan could not be derived, so `getBuildPlan` says nothing. */
+   isBuildPlanUnavailable(): boolean {
+      return this.plan.failed;
+   }
+
+   /** See {@link PlanLifecycle.load}. */
+   applyLoadBuildPlan(
+      workerPlan: LoadPackageOutcome["buildPlan"],
+   ): Promise<number | undefined> {
+      return this.plan.load(workerPlan);
+   }
+
+   /** See {@link PlanLifecycle.markStale}. */
+   markBuildPlanStale(changedConnections: Iterable<string> = []): void {
+      this.plan.markStale(changedConnections);
+   }
+
+   lastBuildPlanRefreshFailedTransiently(): boolean {
+      return this.plan.lastRefreshFailedTransiently();
+   }
+
+   isBuildPlanStale(): boolean {
+      return this.plan.isStale();
+   }
+
+   /** See {@link PlanLifecycle.refresh}; publishes the snapshot after. */
+   refreshBuildPlan(
+      derive: () => Promise<LoadPackageOutcome["buildPlan"]>,
+      options: { retryFailed?: boolean; isStale?: () => boolean } = {},
+   ): Promise<boolean> {
+      return this.plan.refresh(derive, options);
+   }
+
+   /** See {@link PlanLifecycle.whenCurrent}. */
+   whenBuildPlanCurrent(timeoutMs?: number): Promise<void> {
+      return this.plan.whenCurrent(timeoutMs);
+   }
+
+   /** See {@link PlanLifecycle.connectionNames}. */
+   planConnectionNames(): ReadonlySet<string> | null {
+      return this.plan.connectionNames();
+   }
+
+   // ---- Bindings and the snapshot -----------------------------------------
 
    /**
     * What the package is bound to, for `Package.getOperationalFields`: the
@@ -328,7 +322,7 @@ export class PackageMaterialization {
     * file.
     */
    bindingState(): {
-      manifestBindingStatus: "unbound" | "bound" | "live_fallback";
+      manifestBindingStatus: "unbound" | "bound" | "bind_failed";
       manifestEntryCount: number;
       boundManifestUri: string | null;
       storageServeBindings: NonNullable<ApiPackage["storageServeBindings"]>;
@@ -337,135 +331,13 @@ export class PackageMaterialization {
          manifestBindingStatus: this.manifestBindingStatus,
          manifestEntryCount: this.manifestEntryCount,
          boundManifestUri: this.boundManifestUri,
-         storageServeBindings: this.storageServeBindings.map((b) => ({
-            origin: b.origin ?? "persist",
+         storageServeBindings: this.storageBindings.map((b) => ({
+            origin: originOfTable(b.kind, b.sourceIDs?.[0] ?? ""),
             sourceName: b.sourceName,
             storageDestinationName: b.destinationName,
             tablePath: b.tablePath,
          })),
       };
-   }
-
-   /** The persist build plan, or null when the package declares no persist source. */
-   getBuildPlan(): BuildPlan | null {
-      return this.buildPlan;
-   }
-
-   /** Whether the build plan could not be derived at load, so `getBuildPlan` says nothing. */
-   isBuildPlanUnavailable(): boolean {
-      return this.buildPlanFailed;
-   }
-
-   /** Legal-but-probably-unintended incremental declarations, as warnings. */
-   incrementalPolicyAdvisories(): ApiPackageWarning[] {
-      return incrementalPolicyAdvisories(this.incrementalPolicySources);
-   }
-
-   /**
-    * Apply the persist build plan, derived from the unbound models so it
-    * reflects the canonical build. The worker normally supplies it; deriving
-    * it here recompiles every model on this thread, so that happens only when
-    * the worker left it at its soft deadline. Best-effort: a failure is logged
-    * and the package serves without a plan.
-    *
-    * A failure leaves both eligibilities unknown, which refuses every storage
-    * AND colocated serve binding until a load succeeds: serving live is slower,
-    * an unexamined binding could be wrong.
-    *
-    * Returns how long it took, or undefined when it failed.
-    */
-   async applyLoadBuildPlan(
-      workerPlan: LoadPackageOutcome["buildPlan"],
-   ): Promise<number | undefined> {
-      const buildPlanPhaseStart = performance.now();
-      try {
-         // Before a failed plan throws, matching the main-thread derivation,
-         // which counts these as it goes.
-         for (const [reason, count] of Object.entries(
-            workerPlan?.eligibilityRefused ?? {},
-         )) {
-            for (let i = 0; i < (count ?? 0); i++) {
-               recordEligibilityRefused(reason as EligibilityRefusalReason);
-            }
-         }
-         for (const connectionName of workerPlan?.digestSkipped ?? []) {
-            recordConnectionDigestSkipped();
-            logger.warn(
-               "Skipping connection digest; connection did not resolve",
-               { connectionName },
-            );
-         }
-         if (workerPlan && !workerPlan.ok) {
-            throw new Error(workerPlan.error);
-         }
-         const {
-            plan,
-            droppedPersistSources,
-            rollupsOverStoredBase,
-            annotationFindings,
-            sourceEligibility,
-            colocatedSourceEligibility,
-            incrementalDeclarations,
-            buildConnectionNames,
-            materializePlans,
-            rollupsKeepingGates,
-         } = workerPlan
-            ? workerPlan.outcome
-            : await computePackageBuildPlan(this.owner.buildPlanPackage);
-         this.buildPlan = plan;
-         this.materializePlans = materializePlans ?? {};
-         this.rollupsKeepingGates = new Set(rollupsKeepingGates ?? []);
-         this.buildPlanFailed = false;
-         this.servingPlanWhileUnavailable = null;
-         this.droppedPersistSources = droppedPersistSources;
-         this.rollupsOverStoredBase = rollupsOverStoredBase ?? [];
-         // `?? []`: an outcome a worker built before this field existed.
-         this.annotationFindings = annotationFindings ?? [];
-         this.sourceEligibility = sourceEligibility;
-         this.colocatedSourceEligibility = colocatedSourceEligibility;
-         // `?? []`: an outcome a worker built before this field existed.
-         this.buildConnectionNames = new Set(buildConnectionNames ?? []);
-         this.incrementalPolicySources = Object.entries(plan?.sources ?? {})
-            .filter(([sourceID]) => incrementalDeclarations[sourceID])
-            .map(([sourceID, source]) => ({
-               sourceName: source.name,
-               modelPath: source.modelPath,
-               dialect: source.dialect,
-               storageDestination: source.annotationFields?.storage,
-               // So the gate can spot two sources resolving to one table.
-               sourceEntityId: source.sourceEntityId,
-               declaration: incrementalDeclarations[sourceID],
-            }));
-         recordBuildPlanComputeDuration(
-            workerPlan
-               ? workerPlan.durationMs
-               : performance.now() - buildPlanPhaseStart,
-            workerPlan ? "worker" : "main_thread",
-         );
-         return performance.now() - buildPlanPhaseStart;
-      } catch (err) {
-         this.buildPlanFailed = true;
-         // Nothing from the previous load describes this one: a failed
-         // re-derivation after a connection edit must not leave the pre-edit
-         // plan and eligibility in force, or a run would validate against
-         // addresses the build no longer computes (ms2data/service#6145).
-         // Unknown eligibility refuses every new binding (fail closed).
-         this.buildPlan = null;
-         this.sourceEligibility = undefined;
-         this.colocatedSourceEligibility = undefined;
-         this.incrementalPolicySources = [];
-         this.rollupsOverStoredBase = [];
-         this.rollupsKeepingGates = new Set();
-         recordBuildPlanComputeFailed();
-         logger.warn(
-            `Failed to compute build plan for package ${this.owner.packageName()}`,
-            {
-               packageName: this.owner.packageName(),
-               error: errMessage(err),
-            },
-         );
-      }
-      return undefined;
    }
 
    /** The bound manifest entries, or undefined when serving live; reused by /compile. */
@@ -474,7 +346,7 @@ export class PackageMaterialization {
    }
 
    /**
-    * Whether a non-empty colocated manifest is bound. A pure-storage refresh may
+    * Whether a non-empty database manifest is bound. A pure-storage refresh may
     * skip the recompile only if nothing is substituted now or was before.
     */
    hasBoundTableNameManifest(): boolean {
@@ -484,184 +356,107 @@ export class PackageMaterialization {
       );
    }
 
-   /**
-    * Whether `storage=` serve bindings exist, so a refresh whose storage entries
-    * vanished still clears them.
-    */
+   /** Whether `storage=` serve bindings exist, so a refresh whose entries vanished still clears them. */
    hasStorageServeBindings(): boolean {
-      return this.storageServeBindings.length > 0;
+      return this.storageBindings.length > 0;
    }
 
    /**
-    * The freshness-filtered manifest at `now`: a table is used only within its
-    * window, else per its `fallback` (`live`/`fail` drop it, `stale_ok` keeps
-    * it); an entry with no window always routes. Undefined when unbound.
-    * Memoized: fresh→stale is monotonic, so one `validUntil` deadline suffices.
+    * The database entries a query may read at `now` (fresh, un-gated, or
+    * stale under `stale_ok`), as table names: what /compile reads. Undefined
+    * when nothing is bound.
     */
    getFreshBuildManifest(
       now: number = Date.now(),
    ): BuildManifest["entries"] | undefined {
-      if (!this.freshnessEntries) return undefined;
-      if (this.freshManifestCache && now < this.freshManifestCache.validUntil) {
-         return this.freshManifestCache.manifest;
-      }
-      const { manifest, nextStaleSince } = filterFreshManifest(
-         this.freshnessEntries,
-         new Date(now),
-      );
-      this.freshManifestCache = {
-         manifest,
-         validUntil: nextStaleSince ?? Infinity,
-      };
-      return manifest;
+      if (!this.databaseEntries) return undefined;
+      return pin(this.snapshot(), new Date(now)).compilerManifest.entries;
    }
 
-   /** Install the per-query freshness resolvers for every model; idempotent. */
-   wireFreshnessResolvers(): void {
-      this.owner.modelPolicy().setFreshnessResolvers({
-         manifest: () => this.getFreshBuildManifest(),
+   /** Point every model's policy at this package's snapshot; idempotent. */
+   wireServingResolvers(): void {
+      this.owner.modelPolicy().setServingResolvers({
+         snapshot: () => this.snapshot(),
          preaggregateEntityIds: () => this.getPreaggregateEntityIds(),
-         materializedTables: () => this.materializedTableCatalog(),
+         materializedTables: () => this.verdicts.tableCatalog(),
       });
    }
 
    /**
-    * The package's materialized tables as the path report reads them: every
-    * planned source by `sourceID`, and the colocated tables bound now.
-    * Memoized on the plan and the bound entries, both replaced wholesale.
+    * Every table this package serves now, as one immutable snapshot: the
+    * `storage=` bindings, each kind read off the current plan, the database
+    * tables the served copy reads, and the database entries. Memoized on
+    * every fact it is made from, and the bindings array is kept while they
+    * do not change, so caches keyed by it survive an unrelated rebind.
     */
-   materializedTableCatalog(): MaterializedTableCatalog {
-      const liveVerdicts = this.liveVerdictsByTable();
-      const cached = this.tableCatalogCache;
-      if (
-         cached &&
-         cached.plan === this.buildPlan &&
-         cached.bound === this.freshnessEntries &&
-         cached.liveVerdicts === liveVerdicts
-      ) {
-         return cached.catalog;
+   snapshot(): Snapshot {
+      const plan = this.plan;
+      const key = [
+         this.storageBindings,
+         this.databaseEntries,
+         this.observedColumns,
+         plan.buildPlan,
+         plan.servingPlan(),
+         plan.materializePlans,
+         plan.databaseSourceEligibility,
+         this.owner.models(),
+         getMaterializeEnabled(),
+      ];
+      const memo = this.snapshotMemo;
+      if (memo && memo.key.every((part, i) => part === key[i])) {
+         return memo.snapshot;
       }
-      const planned = new Map<string, PlannedTable>();
-      for (const [sourceID, source] of Object.entries(
-         this.buildPlan?.sources ?? {},
-      )) {
-         if (!source.sourceEntityId) continue;
-         planned.set(sourceID, {
-            sourceID,
-            name: source.name,
-            sourceEntityId: source.sourceEntityId,
-            origin:
-               source.origin === "preaggregate" ? "preaggregate" : "persist",
-            ...(source.modelPath ? { modelPath: source.modelPath } : {}),
-         });
-      }
-      const bound: Record<string, BoundTable> = {};
-      for (const [sourceEntityId, entry] of Object.entries(
-         this.freshnessEntries ?? {},
-      )) {
-         bound[sourceEntityId] = {
-            tableName: entry.tableName,
-            ...(entry.dataAsOf ? { dataAsOf: entry.dataAsOf } : {}),
-            ...(entry.keyUniqueness
-               ? { keyUniqueness: entry.keyUniqueness }
-               : {}),
-         };
-      }
-      const catalog: MaterializedTableCatalog = {
-         planned,
-         bound,
-         ...(liveVerdicts
-            ? {
-                 liveVerdicts: liveVerdicts.byTable,
-                 sourceVerdicts: liveVerdicts.bySource,
-              }
-            : {}),
+      const kindOf = this.bindingKinds();
+      // Each database table held to the columns its warehouse holds now.
+      const observed = applyObservedColumns({
+         entries: this.databaseEntries ?? {},
+         bindings: this.databaseServeBindings(),
+         observed: this.observedColumns,
+         declared: (id) => this.driftDeclaration(id),
+      });
+      this.observedOutcome = {
+         drifted: observed.drifted,
+         unread: observed.unread,
       };
-      this.tableCatalogCache = {
-         plan: this.buildPlan,
-         bound: this.freshnessEntries,
-         liveVerdicts,
-         catalog,
-      };
-      return catalog;
+      const bindings = [
+         ...this.storageBindings.map((b) => {
+            const kind = kindOf(b);
+            return kind === b.kind ? b : { ...b, kind };
+         }),
+         ...observed.bindings,
+      ];
+      const signature = JSON.stringify(bindings);
+      const snapshot = makeSnapshot(
+         memo && memo.signature === signature
+            ? memo.snapshot.bindings
+            : Object.freeze(bindings),
+         this.observedColumns ? observed.entries : (this.databaseEntries ?? {}),
+      );
+      this.snapshotMemo = { key, snapshot, signature };
+      return snapshot;
    }
 
    /**
-    * The tables no query can be answered from, by their serve verdicts, for
-    * the path report: keyed by tier and `sourceEntityId`
-    * ({@link liveVerdictKey}), a table only when every planned source sharing
-    * it on that tier is `live`. Staleness is left out, since the
-    * report decides it per query from the window it reads now, and every other
-    * reason reads no clock, so this is memoized on the facts the verdicts read
-    * (each replaced wholesale, except the deployment facts, which key it by
-    * what they answer for this plan) and costs a query a key compare plus one
-    * fact read per planned source.
+    * The host port's `chainBuildText` for this package version: the text a
+    * chained `storage=` build of the request's downstream compiles from,
+    * written by the served copy of a model that declares it, the downstream's
+    * own file first. Declines when no model of the package declares it.
     */
-   private liveVerdictsByTable(): LiveVerdicts | undefined {
-      const models = this.owner.models();
-      const key = [
-         this.buildPlan,
-         this.freshnessEntries,
-         this.buildManifestEntries,
-         this.storageServeBindings,
-         this.sourceEligibility,
-         this.colocatedSourceEligibility,
-         this.rollupsOverStoredBase,
-         getPersistStorageMode(),
-         models,
-         // The deployment facts are read live, not replaced wholesale, so
-         // they key the memo by what they answer for this plan.
-         this.deploymentSignature(),
-         // So is each model's served copy, which compiles after the bind and
-         // is dropped on invalidation; a `#(materialize)` verdict reads it.
-         this.servedCopyState(models).signature,
-      ];
-      const cached = this.liveVerdictCache;
-      if (cached && cached.key.every((part, i) => part === key[i])) {
-         return cached.verdicts;
+   chainBuildText(request: ChainBuildRequest): ChainBuildText {
+      const declaringURL = request.downstream.sourceID
+         .split("@")
+         .slice(1)
+         .join("@");
+      const models = [...this.owner.models()].sort(
+         ([a], [b]) =>
+            Number(declaringURL.endsWith(`/${b}`)) -
+            Number(declaringURL.endsWith(`/${a}`)),
+      );
+      for (const [, model] of models) {
+         const text = model.chainBuildText(request);
+         if (text !== undefined) return text;
       }
-      let verdicts: LiveVerdicts | undefined;
-      if (this.buildPlan) {
-         const sources = this.buildPlan.sources ?? {};
-         const perTable = new Map<string, ServeVerdict[]>();
-         const bySource = new Map<string, LiveTableVerdict>();
-         for (const verdict of this.serveVerdicts()) {
-            if (
-               verdict.verdict === "live" &&
-               verdict.reason &&
-               verdict.reason !== "stale" &&
-               !bySource.has(verdict.sourceID)
-            ) {
-               bySource.set(verdict.sourceID, {
-                  reason: verdict.reason,
-                  sourceName: verdict.sourceName,
-               });
-            }
-            const entityId = sources[verdict.sourceID]?.sourceEntityId;
-            if (!entityId) continue;
-            const key = liveVerdictKey(verdict.tier, entityId);
-            const list = perTable.get(key) ?? [];
-            list.push(verdict);
-            perTable.set(key, list);
-         }
-         const byTable = new Map<string, LiveTableVerdict>();
-         for (const [tableKey, tableVerdicts] of perTable) {
-            const live = tableVerdicts.every(
-               (v) => v.verdict === "live" && v.reason && v.reason !== "stale",
-            );
-            if (!live) continue;
-            const first = tableVerdicts[0];
-            const plan = sources[first.sourceID];
-            byTable.set(tableKey, {
-               reason: first.reason as string,
-               sourceName:
-                  plan?.preaggregate?.baseSourceName ?? first.sourceName,
-            });
-         }
-         verdicts = { byTable, bySource };
-      }
-      this.liveVerdictCache = { key, verdicts };
-      return verdicts;
+      return { declined: "no model of this package declares the downstream" };
    }
 
    /**
@@ -670,23 +465,24 @@ export class PackageMaterialization {
     * could share). Memoized on plan identity; the plan is replaced wholesale.
     */
    getPreaggregateEntityIds(): ReadonlySet<string> {
-      if (this.preaggregateEntityIdCache?.plan === this.buildPlan) {
+      const plan = this.plan.buildPlan;
+      if (this.preaggregateEntityIdCache?.plan === plan) {
          return this.preaggregateEntityIdCache.ids;
       }
       const ids = new Set<string>();
-      for (const source of Object.values(this.buildPlan?.sources ?? {})) {
-         if (source.origin === "preaggregate" && source.sourceEntityId) {
+      for (const source of Object.values(plan?.sources ?? {})) {
+         if (isRollupOrigin(source.origin) && source.sourceEntityId) {
             ids.add(source.sourceEntityId);
          }
       }
-      this.preaggregateEntityIdCache = { plan: this.buildPlan, ids };
+      this.preaggregateEntityIdCache = { plan, ids };
       return ids;
    }
 
    /**
     * Record that `uri`'s manifest is bound. Asserted rather than derived from
-    * the entry count (a bind may carry no colocated entries); called after both
-    * tiers apply, so it overrides {@link recordManifestBinding}.
+    * the entry count (a bind may carry no database entries); called after both
+    * tiers apply.
     */
    markManifestBound(uri: string): void {
       this.boundManifestUri = uri;
@@ -694,304 +490,494 @@ export class PackageMaterialization {
    }
 
    /**
+    * Record that no manifest is bound and the package serves live: a cleared
+    * `manifestLocation` with nothing taking its place. The status otherwise
+    * keeps naming a manifest that bound nothing (an empty one) or did not
+    * bind (a failed fetch). Binds nothing; a caller with tables bound drops
+    * them too.
+    */
+   markServingLive(): void {
+      this.boundManifestUri = null;
+      this.manifestBindingStatus = "unbound";
+   }
+
+   /** Record that a host owns this version's binding ({@link hostOwned}). */
+   markHostOwned(): void {
+      this.hostOwned = true;
+   }
+
+   /** Whether a host owns this version's binding ({@link hostOwned}). */
+   isHostOwned(): boolean {
+      return this.hostOwned;
+   }
+
+   /**
     * Mark that a configured `manifestLocation` could not be fetched/bound, so
     * the package is serving live despite intending to be materialized-routed.
     */
    markManifestBindFailed(): void {
-      this.manifestBindingStatus = "live_fallback";
-   }
-
-   /** Store the latest bind's entries; an empty map reverts to live (unbound). */
-   recordManifestBinding(entries: FreshnessManifest): void {
-      const count = Object.keys(entries).length;
-      this.freshnessEntries = count > 0 ? entries : undefined;
-      this.buildManifestEntries =
-         count > 0 ? toTableNameManifest(entries) : undefined;
-      this.manifestEntryCount = count;
-      this.manifestBindingStatus = count > 0 ? "bound" : "unbound";
-      this.freshManifestCache = undefined;
-      if (count === 0) {
-         this.boundManifestUri = null;
-      }
-      this.refreshColocatedServeBindings();
+      this.manifestBindingStatus = "bind_failed";
    }
 
    /**
-    * Drop the rollup key checks (known limitation 29) bound for these content
+    * Bind a manifest, either half or both, and swap the snapshot every model
+    * reads by one reference: a query already routing keeps the one it
+    * pinned.
+    *
+    * - `database`: the database entries, filtered POSITIVELY against the
+    *   database eligibility (a miss is dropped, not fatal) and quoted for
+    *   their dialects; an empty map reverts that tier to live. With
+    *   `databaseAsGiven`, recorded as given: a reload that recompiled every
+    *   model against them, which relies on the per-query `#(authorize)`
+    *   graft, not on this filter.
+    * - `storage`: the `storage=` entries a host vouches for, minus any this
+    *   package's eligibility gate refuses and any built from another
+    *   definition of their source. The host knows WHICH table backs a source,
+    *   not WHETHER a frozen table may serve it: only a compile knows that.
+    */
+   bind(update: {
+      database?: FreshnessManifest;
+      databaseAsGiven?: boolean;
+      /**
+       * What {@link readDatabaseColumns} read of `database`'s tables: each
+       * table is then read as its warehouse holds it now. Every server bind
+       * passes it; absent, the tables are read as their builds wrote them.
+       */
+      observed?: ReadonlyMap<string, ObservedColumns>;
+      storage?: Record<string, ManifestEntry>;
+      /** Models a reload just installed: publish to them even when the bindings did not move. */
+      models?: "installed";
+   }): void {
+      if (update.database) {
+         this.adoptDatabase(
+            update.databaseAsGiven
+               ? update.database
+               : this.admitDatabase(update.database),
+         );
+         this.observedColumns = update.observed;
+         this.cancelUnreadRetry();
+      }
+      if (update.storage) {
+         this.storageBindings = this.admitStorage(update.storage);
+         this.storageLateRows = new Map(
+            Object.entries(update.storage).flatMap(([id, entry]) =>
+               entry.lateRows ? [[id, entry.lateRows]] : [],
+            ),
+         );
+      }
+      this.publish(update.models);
+      if (update.database && update.observed) {
+         this.logObservedOutcome();
+         this.scheduleUnreadRetry(1);
+      }
+   }
+
+   /**
+    * Whether the bound database tables include one the bind could not read
+    * (it answers live): a poll that finds the manifest unchanged binds again
+    * rather than skip, so the table is read once it can be.
+    */
+   hasUnreadDatabaseTables(): boolean {
+      return this.knownUnread().length > 0;
+   }
+
+   /**
+    * The unread tables this package reads: an entry whose address its plan
+    * or a served binding names. A manifest entry for a table no source here
+    * reads (another definition's) is neither warned of nor rebound for.
+    */
+   private knownUnread(): UnreadTable[] {
+      this.snapshot();
+      // The bindings before the observation leaves the unread ones out.
+      const known = new Set<string>(
+         this.databaseServeBindings().map((b) => b.virtualHandle),
+      );
+      for (const source of Object.values(
+         (this.plan.servingPlan() ?? this.plan.buildPlan)?.sources ?? {},
+      )) {
+         if (source.sourceEntityId) known.add(source.sourceEntityId);
+      }
+      return this.observedOutcome.unread.filter((u) =>
+         known.has(u.sourceEntityId),
+      );
+   }
+
+   /**
+    * The package is released: cancel the unread tables' retry, and schedule
+    * none after it, so no timer outlives its package.
+    */
+   dispose(): void {
+      this.disposed = true;
+      this.cancelUnreadRetry();
+   }
+
+   private cancelUnreadRetry(): void {
+      if (this.unreadRetry) clearTimeout(this.unreadRetry.timer);
+      this.unreadRetry = undefined;
+   }
+
+   /**
+    * Read again, with backoff, the tables this bind left unread (a read that
+    * failed or timed out), so a transient failure does not keep a table live
+    * until something else binds. Stops when every table is read, when a bind
+    * replaces these entries, or after {@link UNREAD_RETRY_ATTEMPTS} tries.
+    */
+   private scheduleUnreadRetry(attempt: number): void {
+      this.cancelUnreadRetry();
+      if (this.disposed) return;
+      const observed = this.observedColumns;
+      const entries = this.databaseEntries;
+      if (!observed || !entries || attempt > UNREAD_RETRY_ATTEMPTS) return;
+      // Only tables a source here reads: another definition's never is.
+      const unread = this.knownUnread()
+         .map((u) => u.sourceEntityId)
+         .filter((id) => {
+            const o = observed.get(id);
+            return (
+               o !== undefined && "unread" in o && Object.hasOwn(entries, id)
+            );
+         });
+      if (unread.length === 0) return;
+      const delay = Math.min(
+         UNREAD_RETRY_BASE_MS * 2 ** (attempt - 1),
+         UNREAD_RETRY_MAX_MS,
+      );
+      const timer = setTimeout(() => {
+         void this.retryUnread(entries, observed, unread, attempt);
+      }, delay);
+      (timer as { unref?: () => void }).unref?.();
+      this.unreadRetry = { timer, attempt };
+   }
+
+   private async retryUnread(
+      entries: FreshnessManifest,
+      observed: ReadonlyMap<string, ObservedColumns>,
+      unread: string[],
+      attempt: number,
+   ): Promise<void> {
+      const current = () =>
+         !this.disposed &&
+         this.databaseEntries === entries &&
+         this.observedColumns === observed;
+      if (!current()) return;
+      const reread = await this.readDatabaseColumns(
+         Object.fromEntries(unread.map((id) => [id, entries[id]])),
+      );
+      // A bind while the read ran replaced what it was reading for.
+      if (!current()) return;
+      const next = new Map(observed);
+      for (const [id, o] of reread) next.set(id, o);
+      this.observedColumns = next;
+      this.publish();
+      // Only what this retry read: the rest was logged and counted already.
+      this.logObservedOutcome(new Set(unread));
+      this.scheduleUnreadRetry(attempt + 1);
+   }
+
+   /**
+    * Read each database table's columns from its warehouse, for a bind of
+    * `entries` ({@link bind}'s `observed`): one schema read per table, on
+    * the connection its entry names (else its plan source's). A table whose
+    * read fails is answered live at that bind, with a warning.
+    */
+   async readDatabaseColumns(
+      entries: FreshnessManifest,
+   ): Promise<ReadonlyMap<string, ObservedColumns>> {
+      const planConnections = new Map<string, string>();
+      for (const source of Object.values(this.plan.buildPlan?.sources ?? {})) {
+         if (source.sourceEntityId && source.connectionName) {
+            planConnections.set(source.sourceEntityId, source.connectionName);
+         }
+      }
+      return observedDatabaseColumns({
+         entries,
+         connectionNameOf: (id) =>
+            entries[id]?.connectionName ?? planConnections.get(id),
+         connection: (name) => this.owner.connection(name),
+      });
+   }
+
+   /**
+    * Log and count what the bind's column read found: drifted tables, each
+    * column of them the package warning reports counted as a `storage=`
+    * table's is, and tables it could not read. `only`: the tables a retry
+    * read again, so a table is counted and logged once per read of it.
+    */
+   private logObservedOutcome(only?: ReadonlySet<string>): void {
+      const read = (id: string) => only === undefined || only.has(id);
+      for (const finding of this.databaseDriftFindings()) {
+         if (!read(finding.sourceEntityId)) continue;
+         for (const m of finding.mismatches) {
+            recordStoredColumnTypeMismatch("serve", m.declaredType);
+         }
+      }
+      for (const drift of this.observedOutcome.drifted) {
+         if (!read(drift.sourceEntityId)) continue;
+         const asDouble = drift.columns.filter((c) => c.storedAsDouble);
+         if (asDouble.length > 0) {
+            logger.warn(
+               "A DuckLake table holds a 128-bit integer column as a DOUBLE, so it is never read as exact: each such column is answered live where live keeps more digits",
+               {
+                  code: warnings.DATABASE_COLUMN_TYPE_MISMATCH_CODE,
+                  packageName: this.owner.packageName(),
+                  sourceEntityId: drift.sourceEntityId,
+                  columns: asDouble,
+               },
+            );
+            if (asDouble.length === drift.columns.length) continue;
+         }
+         const reported = drift.columns.filter(
+            (c) => !c.storedAsDouble && !c.castOnly,
+         );
+         if (reported.length === 0) continue;
+         logger.warn(
+            "A database table's column types changed outside a build; each changed column is read through a faithful cast or answered live",
+            {
+               code: warnings.DATABASE_COLUMN_TYPE_MISMATCH_CODE,
+               packageName: this.owner.packageName(),
+               sourceEntityId: drift.sourceEntityId,
+               columns: reported,
+            },
+         );
+      }
+      for (const miss of this.observedOutcome.unread) {
+         if (!read(miss.sourceEntityId)) continue;
+         logger.warn(
+            "Could not read a database table's column types at bind; its sources answer live, and it is read again",
+            {
+               packageName: this.owner.packageName(),
+               sourceEntityId: miss.sourceEntityId,
+               reason: miss.reason,
+               ...(miss.detail !== undefined ? { error: miss.detail } : {}),
+            },
+         );
+      }
+   }
+
+   /** The database entries bound now, by identity: a bind replaces them wholesale. */
+   boundDatabaseEntries(): FreshnessManifest | undefined {
+      return this.databaseEntries;
+   }
+
+   /**
+    * Drop the rollup key checks bound for these content
     * addresses: a run is about to write their tables, so what a check found
     * over the rows before no longer describes them. The routing itself is
-    * kept; the join-to-rollup leg reads the table as unknown until a run
+    * kept; the join-to-rollup branch reads the table as unknown until a run
     * binds a new check.
     */
    forgetKeyUniqueness(sourceEntityIds: Iterable<string>): void {
       const ids = new Set(sourceEntityIds);
-      // A stored table's own primary key check, on its storage binding.
-      if (
-         this.storageServeBindings.some(
-            (b) => b.primaryKeys && ids.has(b.virtualHandle),
-         )
-      ) {
-         this.storageServeBindings = this.storageServeBindings.map((b) => {
-            if (!b.primaryKeys || !ids.has(b.virtualHandle)) return b;
-            const { primaryKeys: _forgotten, ...rest } = b;
+      // A stored table's own primary key check, and a stored rollup's key
+      // check, on its storage binding.
+      const checked = (b: Binding) =>
+         (b.primaryKeys || b.rollupKey) && ids.has(b.virtualHandle);
+      if (this.storageBindings.some(checked)) {
+         this.storageBindings = this.storageBindings.map((b) => {
+            if (!checked(b)) return b;
+            const {
+               primaryKeys: _forgotten,
+               rollupKey: _forgottenKey,
+               ...rest
+            } = b;
             return rest;
          });
-         this.pushStorageServeBindingsToModels();
       }
-      const entries = this.freshnessEntries;
-      if (!entries) return;
+      const entries = this.databaseEntries;
       let next: FreshnessManifest | undefined;
       for (const id of ids) {
-         const entry = entries[id];
+         const entry = entries?.[id];
          if (!entry?.keyUniqueness) continue;
          next ??= { ...entries };
          const { keyUniqueness: _forgotten, ...rest } = entry;
          next[id] = rest;
       }
-      if (!next) return;
-      this.freshnessEntries = next;
-      this.tableCatalogCache = undefined;
+      // A database pair table's leaf key check rides on its binding
+      // (`primaryKeys`): the snapshot drops it too.
+      if (next) this.databaseEntries = next;
+      this.publish();
    }
 
-   /**
-    * Restore colocated (same-connection) serve routing on load WITHOUT
-    * recompiling: routing is a per-query `buildManifest` override, so setting
-    * the entries suffices. An empty map reverts to live.
-    *
-    * Filtered POSITIVELY against {@link colocatedSourceEligibility}; a miss is
-    * dropped, not fatal. This filter covers only this load-time restore path.
-    * The three paths through `Package.reloadAllModels` record entries UNFILTERED
-    * and rely on the per-query `#(authorize)` graft
-    * (`Model.buildGraftedMaterializer`); do not treat this check as a boundary
-    * they pass through.
-    */
-   bindColocatedServeManifest(entries: FreshnessManifest): void {
-      const eligibility = this.colocatedSourceEligibility;
-      const eligibleEntityIds = eligibility?.eligibleEntityIds;
-      const allowed: FreshnessManifest = {};
-      let dropped = 0;
-      const dialects = this.dialectsByEntityId();
-      for (const [sourceEntityId, entry] of Object.entries(entries)) {
-         if (eligibleEntityIds?.has(sourceEntityId)) {
-            // Malloy pastes `tableName` into `FROM` verbatim, so a table named
-            // by a reserved word (`name="order"`) or needing case preserved
-            // reaches the warehouse only quoted, as the builder CREATEd it and
-            // as `Package.reloadAllModels` binds it. The dialect is the plan's
-            // for this content address; a quoted name passes through.
-            const dialect = dialects.get(sourceEntityId);
-            allowed[sourceEntityId] = dialect
-               ? {
-                    ...entry,
-                    tableName: quoteManifestTablePath(entry.tableName, dialect),
-                 }
-               : entry;
-            continue;
+   /** Store the database entries; an empty map reverts to live (unbound). */
+   private adoptDatabase(entries: FreshnessManifest): void {
+      const count = Object.keys(entries).length;
+      this.databaseEntries = count > 0 ? entries : undefined;
+      this.buildManifestEntries =
+         count > 0 ? toTableNameManifest(entries) : undefined;
+      this.manifestEntryCount = count;
+      this.manifestBindingStatus = count > 0 ? "bound" : "unbound";
+      if (count === 0) {
+         this.boundManifestUri = null;
+      }
+   }
+
+   /** The database entries the bind admits, logging and counting the rest. */
+   private admitDatabase(entries: FreshnessManifest): FreshnessManifest {
+      const eligibility = this.plan.databaseSourceEligibility;
+      const dialects = new Map<string, string>();
+      for (const source of Object.values(this.plan.buildPlan?.sources ?? {})) {
+         if (source.sourceEntityId && source.dialect) {
+            dialects.set(source.sourceEntityId, source.dialect);
          }
-         dropped++;
-         const reason =
-            eligibility === undefined
-               ? "the package build plan could not be computed, so no source was examined for eligibility"
-               : (eligibility.refused[sourceEntityId] ??
-                 "the source is not in the package build plan, so it was never examined (a `#@ persist` on a non-query-shaped source is dropped)");
-         recordColocatedBindDropped(
-            eligibility === undefined ? "build_plan_unavailable" : "refused",
-         );
-         logger.warn(
-            "Refusing a colocated serve binding: the source is not eligible to be served from a materialized table",
+      }
+      const admitted = bindDatabaseEntries({ entries, eligibility, dialects });
+      for (const _entry of Object.keys(admitted.entries)) recordSourceBound();
+      for (const decline of admitted.declined) {
+         recordSourceDeclined(decline.reason);
+         this.logDecline(
+            `database\u0000${decline.sourceEntityId}\u0000${decline.reason}`,
+            "Refusing a database serve binding: the source is not eligible to be served from a materialized table",
             {
                packageName: this.owner.packageName(),
-               sourceEntityId,
-               reason,
+               sourceEntityId: decline.sourceEntityId,
+               // The decline's code: its text can name a host's table.
+               reason: decline.reason,
             },
          );
       }
-      if (eligibility === undefined && dropped > 0) {
+      if (eligibility === undefined && admitted.declined.length > 0) {
          // The whole default tier just reverted to live, not one source.
          logger.warn(
-            "Colocated serve bindings dropped package-wide: the build plan never computed, so no source could be examined for eligibility",
-            { packageName: this.owner.packageName(), droppedCount: dropped },
+            "Database serve bindings dropped package-wide: the build plan never computed, so no source could be examined for eligibility",
+            {
+               packageName: this.owner.packageName(),
+               droppedCount: admitted.declined.length,
+            },
          );
       }
-      this.recordManifestBinding(allowed);
-   }
-
-   /** Each planned source's dialect, by its content address. */
-   private dialectsByEntityId(): Map<string, string> {
-      const out = new Map<string, string>();
-      for (const source of Object.values(this.buildPlan?.sources ?? {})) {
-         if (source.sourceEntityId && source.dialect) {
-            out.set(source.sourceEntityId, source.dialect);
-         }
-      }
-      return out;
+      return admitted.entries;
    }
 
    /**
-    * Bind the `storage=` serve bindings a host vouches for, minus any this
-    * package's eligibility gate refuses, and push them onto every model.
-    *
-    * The host knows WHICH table backs a source, not WHETHER a frozen table may
-    * serve it: only a compile knows that. A `given`-referencing source binds
-    * per query for row-level access, so one shared table would hand every
-    * caller the builder's rows (a source can gain a `given` after its build).
-    *
-    * Eligibility must be POSITIVE: a failed plan compute or a source missing
-    * from the plan must not read as consent. Refused bindings are dropped, and
-    * that source serves live, which is always correct.
-    *
-    * A published version also binds only the tables its own definition built.
-    * Storage bindings are keyed by source NAME, and the versions of a
-    * `scope: package` package share its tables under unchanged names, so an
-    * entry whose `sourceEntityId` none of this version's same-named sources
-    * has was built by another version's definition, and that source serves
-    * live. (The colocated tier is keyed by content address already.)
+    * Log a declined binding: warned the first time under a plan, then at
+    * debug, since a rebind of an unchanged manifest (a poll) declines the
+    * same entries again. A new plan (a reload, a refresh) warns again, so a
+    * decline that comes back after a fix is seen.
     */
-   bindStorageServeBindings(entries: Record<string, ManifestEntry>): void {
-      const plan = this.buildPlan ?? this.servingPlanWhileUnavailable;
-      const derived = deriveServeBindings(
-         this.owner.versionId() === undefined
-            ? entries
-            : this.ownEntries(entries),
-         groupAliasesByName(Object.values(plan?.sources ?? {})),
-         this.serveDestinationSchema,
-         planSourceIds(plan?.sources ?? {}),
-      );
-      const eligibility = this.sourceEligibility;
-      // Keyed by sourceID (the source map's keying rule): a binding passes when
-      // one of the plan sources it materializes was examined and found
-      // eligible. A rollup passes under its own synthesized sourceID.
-      const eligible = new Set(eligibility?.eligible ?? []);
-      // A binding is kept for its ELIGIBLE sources only: two models may declare
-      // same-named sources with identical SQL (one table), one gated and
-      // refused. Narrowing the binding's sourceIDs keeps the refused one off
-      // the table in its own model, where admitting the binding whole would
-      // have served it (fails closed).
-      const allowed = derived.flatMap((binding) => {
-         const ids = binding.sourceIDs ?? [];
-         const admitted = ids.filter((id) => eligible.has(id));
-         if (admitted.length > 0) {
-            return [
-               admitted.length === ids.length
-                  ? binding
-                  : { ...binding, sourceIDs: admitted },
-            ];
-         }
-         const refusal = ids
-            .map((id) => eligibility?.refused[id])
-            .find((reason) => reason !== undefined);
-         const reason =
-            eligibility === undefined
-               ? "the package build plan could not be computed, so no source was examined for eligibility"
-               : (refusal ??
-                 (ids.length === 0
-                    ? "the table names no source of this package's build plan, so none was examined"
-                    : "the source is not in the package build plan, so it was never examined (a `#@ persist` on a non-query-shaped source is dropped)"));
-         logger.warn(
+   private logDecline(
+      key: string,
+      message: string,
+      fields: Record<string, unknown>,
+   ): void {
+      const plan = this.plan.buildPlan;
+      if (this.warnedDeclines.plan !== plan) {
+         this.warnedDeclines = { plan, keys: new Set() };
+      }
+      if (this.warnedDeclines.keys.has(key)) {
+         logger.debug(message, fields);
+         return;
+      }
+      this.warnedDeclines.keys.add(key);
+      logger.warn(message, fields);
+   }
+
+   /** The `storage=` bindings the bind admits, logging the rest. */
+   private admitStorage(entries: Record<string, ManifestEntry>): Binding[] {
+      const admitted = bindStorageEntries({
+         entries,
+         plan: this.plan.servingPlan(),
+         destinationSchema: this.serveDestinationSchema,
+         eligibility: this.plan.sourceEligibility,
+         kindOf: this.bindingKinds(),
+      });
+      // Once per stored table: a source's alias names share its binding's
+      // virtual handle.
+      for (const _table of new Set(
+         admitted.bindings.map((b) => b.virtualHandle),
+      ))
+         recordSourceBound();
+      for (const sourceName of admitted.otherDefinition) {
+         // Its own table is missing: the one there is another definition's.
+         recordSourceDeclined("missing_table");
+         logger.info(
+            "Serving a source live: its stored table was built from another definition",
+            {
+               packageName: this.owner.packageName(),
+               ...(this.owner.versionId() !== undefined
+                  ? { versionId: this.owner.versionId() }
+                  : {}),
+               sourceName,
+            },
+         );
+      }
+      for (const decline of admitted.declined) {
+         recordSourceDeclined(decline.reason);
+         this.logDecline(
+            `storage\u0000${decline.sourceName}\u0000${decline.reason}`,
             "Refusing a storage serve binding: the source is not eligible to be served from a materialized table",
             {
                packageName: this.owner.packageName(),
-               sourceName: binding.sourceName,
+               sourceName: decline.sourceName,
                // A generated rollup name means nothing to an operator alone.
-               ...(binding.origin === "preaggregate"
-                  ? { kind: "pre-aggregation rollup" }
-                  : {}),
-               reason,
-            },
-         );
-         return [];
-      });
-      this.storageServeBindings = allowed;
-      this.pushStorageServeBindingsToModels();
-   }
-
-   /**
-    * The entries this version's own sources built: same name, same content
-    * address. See {@link bindStorageServeBindings}.
-    */
-   private ownEntries(
-      entries: Record<string, ManifestEntry>,
-   ): Record<string, ManifestEntry> {
-      const plan = this.buildPlan ?? this.servingPlanWhileUnavailable;
-      const own = new Set(
-         Object.values(plan?.sources ?? {}).map(
-            (source) => `${source.name}\u0000${source.sourceEntityId}`,
-         ),
-      );
-      const kept: Record<string, ManifestEntry> = {};
-      for (const [key, entry] of Object.entries(entries)) {
-         if (own.has(`${entry.sourceName}\u0000${entry.sourceEntityId}`)) {
-            kept[key] = entry;
-            continue;
-         }
-         logger.info(
-            "Serving a source live: its stored table was built from another version's definition",
-            {
-               packageName: this.owner.packageName(),
-               versionId: this.owner.versionId(),
-               sourceName: entry.sourceName,
+               ...(decline.rollup ? { kind: "pre-aggregation rollup" } : {}),
+               // The decline's code: its text can name a host's table.
+               reason: decline.reason,
             },
          );
       }
-      return kept;
+      return admitted.bindings;
    }
 
-   /**
-    * Compile each model's pre-aggregation companion so the serve path can route
-    * to a rollup. Re-run after a manifest bind, since the companion compiles
-    * against the manifest. A no-op for a model with no `#@ preaggregate`.
-    */
-   async pushPreaggregateServeModels(): Promise<void> {
-      for (const model of this.owner.models().values()) {
-         await model.buildPreaggregateServeModel(
-            this.owner.packagePath(),
-            this.owner.malloyConfig(),
-            this.buildManifestEntries,
-         );
-      }
+   /** A binding's kind, read off the current plan (`kindFromPlan`). */
+   private bindingKinds(): (b: Binding) => BindingKind {
+      const plan = {
+         materializeSourceIDs: new Set(Object.keys(this.plan.materializePlans)),
+         viewBuildSourceIDs: this.persistedViewBuildIDs(),
+      };
+      return (b) => kindFromPlan(b, plan);
    }
 
    /**
     * A declaration's compiled definition, from the package model that holds it
     * as a node of its own (the model that declares or imports it). A model
-    * that reaches a source only through a join (an index importing the file
-    * that joins it, #6643) holds the join, not the declaration, so its served
-    * copy finds the declaration here.
+    * that reaches a source only through a join holds the join, not the
+    * declaration, so its served copy finds the declaration here. One function
+    * for the package's life: the served-copy context is compared by identity.
     */
-   private declarationOf(sourceID: string): unknown {
+   /**
+    * A rollup's base, by its name in the model the plan entry came from, as
+    * the rollup leg reads the base's zone.
+    */
+   private baseDeclaration(source: {
+      modelPath?: string;
+      preaggregate?: { baseSourceName?: string } | null;
+   }): unknown {
+      const name = source.preaggregate?.baseSourceName;
+      const model = source.modelPath
+         ? this.owner.models().get(source.modelPath)
+         : undefined;
+      if (!name || !model) return undefined;
+      const map = SourceMap.of(model.getModelDef());
+      const id = map.sourceIDOf(name);
+      return id === undefined ? undefined : map.node(id)?.def;
+   }
+
+   private readonly declarationLookup = (sourceID: string): unknown => {
       for (const model of this.owner.models().values()) {
-         const def = SourceMap.of(model.getModelDef?.()).node(sourceID)?.def;
+         const def = SourceMap.of(model.getModelDef()).node(sourceID)?.def;
          if (def) return def;
       }
       return undefined;
-   }
+   };
 
    /**
-    * The served copy's bindings for the colocated `#(materialize)` tables the
-    * bound manifest holds (colocated_bindings.ts), admitted by the colocated
-    * tier's positive eligibility, keyed by content address as that tier is.
+    * The served copy's bindings for the database `#(materialize)` and v1
+    * `#@ persist` tables the bound build manifest holds, admitted by the
+    * database tier's positive eligibility, keyed by content address.
     */
-   private colocatedServeBindings(): ServeBinding[] {
-      const plan = this.buildPlan ?? this.servingPlanWhileUnavailable;
-      const sources = plan?.sources ?? {};
-      const eligible = this.colocatedSourceEligibility?.eligibleEntityIds;
-      // The v1 cutover (G1): v1 colocated `#@ persist` tables too, once the
-      // switch is past `off` (under `shadow` the model keeps them off its own
-      // served copy; Model.setServeBindings).
-      const v1 = getV1ServedCopyMode() !== "off";
-      const viewBuilds = v1 ? this.persistedViewBuildIDs() : undefined;
-      return deriveColocatedServeBindings({
-         entries: this.freshnessEntries,
+   private databaseServeBindings(): Binding[] {
+      const sources = this.plan.servingPlan()?.sources ?? {};
+      const eligible = this.plan.databaseSourceEligibility?.eligibleEntityIds;
+      const viewBuilds = this.persistedViewBuildIDs();
+      return deriveDatabaseServeBindings({
+         entries: this.databaseEntries,
          planSources: sources,
-         materializePlans: this.materializePlans,
+         materializePlans: this.plan.materializePlans,
          eligible: (sourceID) =>
             !!eligible?.has(sources[sourceID]?.sourceEntityId ?? ""),
-         ...(v1
-            ? {
-                 v1Schema: (sourceID: string) =>
-                    v1StoredColumnsOf(this.declarationOf(sourceID)),
-                 notV1: (sourceID: string) => !!viewBuilds?.has(sourceID),
-              }
-            : {}),
+         v1Schema: (sourceID) =>
+            v1StoredColumnsOf(this.declarationLookup(sourceID)),
+         notV1: (sourceID) => viewBuilds.has(sourceID),
       });
    }
 
@@ -999,61 +985,92 @@ export class PackageMaterialization {
    private persistedViewBuildIDs(): Set<string> {
       const ids = new Set<string>();
       for (const model of this.owner.models().values()) {
-         // Optional: a model a spec stands in for need not implement it.
-         for (const b of model.persistedViewBuilds?.() ?? []) {
+         for (const b of model.persistedViewBuilds() ?? []) {
             ids.add(b.buildSourceID);
          }
       }
       return ids;
    }
 
-   /** What {@link pushStorageServeBindingsToModels} last pushed, colocated. */
-   private colocatedBindingsSignature = "";
+   /**
+    * Recompute the snapshot and, when its bindings changed (or for models a
+    * reload just installed), hand every model its served copy's context and
+    * have it compile its served copy over the snapshot now, so a copy that
+    * does not compile is a package warning before any query. Never throws.
+    * Models read the snapshot itself per query, through their policy
+    * ({@link wireServingResolvers}).
+    */
+   private publish(models?: "installed"): void {
+      const { bindings } = this.snapshot();
+      if (bindings === this.publishedBindings && !models) return;
+      this.publishedBindings = bindings;
+      for (const model of this.owner.models().values()) {
+         this.setServedCopyContextOn(model);
+         void model.prepareServedCopy();
+      }
+      this.bindTypeFindings(bindings);
+   }
 
    /**
-    * Push the bindings again when the colocated `#(materialize)` tables the
-    * served copy would read changed (a manifest bind, a re-derived plan).
+    * Read the bound tables' type findings once per publish, counting and
+    * logging each table's mismatched columns there, as a model's own are.
     */
-   private refreshColocatedServeBindings(): void {
-      if (
-         colocatedSignature(this.colocatedServeBindings()) !==
-         this.colocatedBindingsSignature
-      ) {
-         this.pushStorageServeBindingsToModels();
+   private bindTypeFindings(bindings: readonly Binding[]): void {
+      this.boundTypeFindings = boundTableTypeFindings(
+         bindings,
+         this.plan.buildPlan,
+         {
+            materializePlans: this.plan.materializePlans,
+            queryTimezone: (sourceID, source) =>
+               queryTimezoneOf(
+                  source.preaggregate
+                     ? this.baseDeclaration(source)
+                     : this.declarationLookup(sourceID),
+               ),
+         },
+      );
+      for (const finding of this.boundTypeFindings) {
+         for (const m of finding.mismatches) {
+            recordStoredColumnTypeMismatch("serve", m.declaredType);
+         }
+         logger.warn(
+            "Stored column types do not match the declared Malloy types",
+            {
+               code: STORED_COLUMN_TYPE_MISMATCH_CODE,
+               packageName: this.owner.packageName(),
+               source: finding.subject,
+               kind: finding.binding.kind,
+               columns: finding.mismatches,
+            },
+         );
       }
    }
 
    /**
-    * Push the current serve bindings onto every loaded model: the storage
-    * tier's, and the colocated `#(materialize)` tables only the served copy
-    * reads.
+    * Hand every loaded model the package directory, connections and plans its
+    * served copy, rollup and persisted-view legs compile with, before any
+    * binding exists. A database rollup is read through the build manifest,
+    * which a bind sets without pushing bindings, so its leg needs this from
+    * load.
     */
-   pushStorageServeBindingsToModels(): void {
-      const colocated = this.colocatedServeBindings();
-      this.colocatedBindingsSignature = colocatedSignature(colocated);
-      const bindings =
-         colocated.length === 0
-            ? this.storageServeBindings
-            : [...this.storageServeBindings, ...colocated];
+   pushServedCopyContextToModels(): void {
       for (const model of this.owner.models().values()) {
-         // Optional: a model a spec stands in for need not implement them.
-         model.setServedCopyContext?.(
-            this.owner.packagePath(),
-            this.owner.malloyConfig(),
-            this.materializePlans,
-            (sourceID) => this.declarationOf(sourceID),
-         );
-         model.setServeBindings(bindings);
-         // Compiled at bind so a served copy that does not compile is a
-         // package warning before any query; never throws.
-         void model.prepareServedCopy?.();
+         this.setServedCopyContextOn(model);
       }
+   }
+
+   private setServedCopyContextOn(model: Model): void {
+      model.setServedCopyContext(
+         this.owner.packagePath(),
+         this.owner.malloyConfig(),
+         this.plan.materializePlans,
+         this.declarationLookup,
+      );
    }
 
    /**
     * How a serve binding names a destination's schema, so it reads the table
-    * where the build wrote it (storageTablePath). Absent, every destination is
-    * `main`, the pre-existing layout.
+    * where the build wrote it. Absent, every destination is `main`.
     */
    setServeDestinationSchema(
       resolver: (destinationName: string) => string | undefined,
@@ -1063,19 +1080,17 @@ export class PackageMaterialization {
 
    /**
     * Give the package the environment's deployment facts its publish warnings
-    * read (P13): which storage destinations exist, and which connections can
-    * hold a table. Read live on every package read, so a destination
-    * configured after the load clears its warning with no reload. Absent,
-    * nothing is warned.
+    * read, read live on every package read, so a destination configured
+    * after the load clears its warning with no reload.
     */
    setDeploymentFacts(facts: DeploymentFacts): void {
       this.deploymentFacts = facts;
    }
 
    /**
-    * Set the connections serve shapes compile against: the environment's
-    * storage destinations. Kept apart from the package's own MalloyConfig so no author
-    * model can reach a destination. Absent ⇒ queries serve live.
+    * Set the connections stored tables are read through: the environment's
+    * storage destinations, kept apart from the package's own MalloyConfig so
+    * no author model can reach a destination. Absent ⇒ queries serve live.
     */
    setServeDestinationConfig(provider: () => MalloyConfig): void {
       this.serveDestinationConfig = provider;
@@ -1089,1106 +1104,197 @@ export class PackageMaterialization {
       }
    }
 
-   /** Drop every model's memoized serve shape, when its destinations are replaced. */
-   invalidateServeShapes(): void {
+   /** Drop every model's compiled serving legs, when its destinations are replaced. */
+   invalidateCompiledLegs(): void {
       for (const model of this.owner.models().values()) {
-         model.invalidateServeShapeCache();
+         model.invalidateCompiledLegs();
       }
    }
 
-   /**
-    * Mark the plan stale after a connection edit. Every content address folds
-    * in its connection's digest, and the digest reads connection config (host,
-    * database, project, role, the setup SQL a statement timeout is applied
-    * through, …), so an edit can move the address of every source on it. Until
-    * {@link refreshBuildPlan} re-derives it, {@link whenBuildPlanCurrent}
-    * holds readers back: the plan computed before the edit would hand out the
-    * old addresses, a host would echo ledger entries recorded under them, they
-    * would pass create-time validation against that same plan, and the run's
-    * own compile would refuse them as "measured under a different definition"
-    * (ms2data/service#6145).
-    */
-   markBuildPlanStale(changedConnections: Iterable<string> = []): void {
-      for (const name of changedConnections) {
-         this.connectionsChangedSinceDerived.add(name);
-      }
-      this.buildPlanStaleSeq++;
-      if (!this.buildPlanStale) {
-         let resolve!: () => void;
-         const promise = new Promise<void>((r) => (resolve = r));
-         this.buildPlanStale = { promise, resolve };
-      }
-   }
+   // ---- Verdicts (ServeVerdicts) ------------------------------------------
 
-   /** See {@link lastRefreshFailedTransiently}. */
-   lastBuildPlanRefreshFailedTransiently(): boolean {
-      return this.lastRefreshFailedTransiently;
-   }
-
-   /** Whether a connection edit has made the plan stale and it is not re-derived yet. */
-   isBuildPlanStale(): boolean {
-      return this.buildPlanStale !== undefined;
-   }
-
-   /**
-    * Re-derive the plan if it is stale, with `derive` supplying the outcome
-    * (the load worker's, so the recompile stays off this thread; undefined
-    * falls back to deriving here, as a load does past its soft deadline).
-    * Serialized; a refresh that finds the plan current does nothing, so a
-    * burst of edits costs one re-derivation per package. The waiters are
-    * released only by a refresh that started after the latest edit, so a late
-    * edit re-derives again. Resolves true when the plan was derived, false
-    * when it failed (the plan is then unavailable, see applyLoadBuildPlan).
-    */
-   refreshBuildPlan(
-      derive: () => Promise<LoadPackageOutcome["buildPlan"]>,
-      { retryFailed = false }: { retryFailed?: boolean } = {},
-   ): Promise<boolean> {
-      const run = this.buildPlanRefreshChain.then(async () => {
-         // A retry of a failed re-derivation runs while the plan is
-         // unavailable but not stale (readers get 409, not a wait).
-         const retrying = retryFailed && this.buildPlanFailed;
-         if (!this.buildPlanStale && !retrying) return !this.buildPlanFailed;
-         const seq = this.buildPlanStaleSeq;
-         // What serving reads from the last good plan. A failed re-derivation
-         // keeps it (below): storage eligibility is keyed by name and does not
-         // move with connection config, and colocated eligibility only admits
-         // addresses the last good plan computed, which is what was serving.
-         // So bindings in force, and a host's rebind while the plan is
-         // unavailable, keep serving instead of dropping the package to live.
-         // Only run creation is refused (409) until a retry succeeds.
-         const lastGoodPlan =
-            this.buildPlan ?? this.servingPlanWhileUnavailable;
-         const lastGood = {
-            sourceEligibility: this.sourceEligibility,
-            colocatedSourceEligibility: this.colocatedSourceEligibility,
-            incrementalPolicySources: this.incrementalPolicySources,
-            rollupsOverStoredBase: this.rollupsOverStoredBase,
-            buildConnectionNames: this.buildConnectionNames,
-         };
-         let workerPlan: LoadPackageOutcome["buildPlan"];
-         let poolFailed = false;
-         try {
-            workerPlan = await derive();
-         } catch (err) {
-            poolFailed = true;
-            workerPlan = {
-               ok: false,
-               error: errMessage(err),
-               durationMs: 0,
-               digestSkipped: [],
-               eligibilityRefused: {},
-            };
-         }
-         const derived =
-            (await this.applyLoadBuildPlan(workerPlan)) !== undefined;
-         this.lastRefreshFailedTransiently = !derived && poolFailed;
-         if (derived) {
-            this.connectionsChangedSinceDerived.clear();
-         } else if (lastGood.sourceEligibility !== undefined) {
-            Object.assign(this, lastGood);
-            this.colocatedSourceEligibility = withoutChangedConnections(
-               lastGood.colocatedSourceEligibility,
-               lastGoodPlan,
-               this.connectionsChangedSinceDerived,
-            );
-            this.servingPlanWhileUnavailable = lastGoodPlan;
-         }
-         if (seq === this.buildPlanStaleSeq && this.buildPlanStale) {
-            this.buildPlanStale.resolve();
-            this.buildPlanStale = undefined;
-         }
-         // The plan's addresses and eligibility decide the colocated tables
-         // the served copy reads.
-         this.refreshColocatedServeBindings();
-         return derived;
-      });
-      this.buildPlanRefreshChain = run.catch(() => false);
-      return run;
-   }
-
-   /**
-    * Resolves once the plan reflects the current connections (see
-    * markBuildPlanStale). Past `timeoutMs` it rejects with
-    * BuildPlanRefreshingError, a 503 with Retry-After, rather than hold the
-    * caller's request.
-    */
-   async whenBuildPlanCurrent(
-      timeoutMs: number = BUILD_PLAN_REFRESH_WAIT_MS,
-   ): Promise<void> {
-      const stale = this.buildPlanStale;
-      if (!stale) return;
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      try {
-         await Promise.race([
-            stale.promise,
-            new Promise<never>((_, reject) => {
-               timer = setTimeout(
-                  () =>
-                     reject(
-                        new BuildPlanRefreshingError(
-                           `The build plan of package ${this.owner.packageName()} is being re-derived after a connection change. Retry shortly.`,
-                        ),
-                     ),
-                  timeoutMs,
-               );
-            }),
-         ]);
-      } finally {
-         if (timer) clearTimeout(timer);
-      }
-   }
-
-   /**
-    * The connections this package's persist sources build on, from the plan,
-    * so a connection edit re-derives only the packages it can move. Null when
-    * the plan is unavailable (unknown, so any edit re-derives it).
-    */
-   planConnectionNames(): ReadonlySet<string> | null {
-      if (this.buildPlanFailed) return null;
-      return new Set([
-         ...Object.values(this.buildPlan?.sources ?? {}).map(
-            (source) => source.connectionName,
-         ),
-         // Sources the plan skipped (their connection did not resolve) or
-         // refused: creating or fixing that connection must re-derive.
-         ...this.buildConnectionNames,
-      ]);
-   }
-
-   /**
-    * One warning per `storage=` base whose `#@ preaggregate storage=` rollups
-    * were left out: they can neither build nor serve over a stored base yet
-    * (#6293), so the base serves from its stored table and the rollups do not
-    * exist.
-    */
-   rollupsOverStoredBaseWarnings(): ApiPackageWarning[] {
-      // With the storage tier off the base itself serves live, which
-      // storageWarnings already says; "reads the stored table" would be false.
-      if (getPersistStorageMode() === "off") return [];
-      return this.rollupsOverStoredBase.map((r) => ({
-         ...(r.modelPath ? { model: r.modelPath } : {}),
-         subject: r.baseName,
-         code: "preaggregate-over-stored-base",
-         severity: "warn" as const,
-         message:
-            `declares '#@ preaggregate storage=' rollups, but is itself ` +
-            `persisted with 'storage=', so the rollups are not built: a rollup ` +
-            `over a stored base cannot build or serve yet, and queries read the ` +
-            `base's stored table instead.` +
-            (getMaterializeEnabled()
-               ? ` Write the rollup as '#(preaggregate) grain=[…] storage=…' ` +
-                 `on the measure, which builds and serves over a stored base.`
-               : ""),
-      }));
-   }
-
-   /**
-    * Warnings for `#@ persist` sources Malloy's build walk did not plan (e.g.
-    * a filtered pass-through), which would otherwise silently serve
-    * live. Independent of {@link buildPlan}: a package whose only persist
-    * source is dropped has no plan.
-    */
-   droppedPersistWarnings(): ApiPackageWarning[] {
-      return this.droppedPersistSources.map((d) => ({
-         model: d.modelPath,
-         subject: d.name,
-         code: "persist-not-materializable",
-         severity: "warn" as const,
-         message:
-            `is annotated '#@ persist' but was not recognized as a ` +
-            `materializable source, so nothing is materialized and it is served ` +
-            `live. Only query/aggregate sources build; a filtered pass-through ` +
-            `does not. Persist a query source, or invoke a parameterized source ` +
-            `with a bound argument.`,
-      }));
-   }
-
-   /**
-    * The findings on authored `#@` annotations, as package warnings: a
-    * malformed one (an unparseable tag, a retired key) is `error`, refused at
-    * publish; an unservable one (an unknown key) is `warn`.
-    */
-   annotationFindingWarnings(): ApiPackageWarning[] {
-      return this.annotationFindings.map((finding) => ({
-         ...(finding.model ? { model: finding.model } : {}),
-         ...(finding.subject ? { subject: finding.subject } : {}),
-         message: finding.rewrite
-            ? `${finding.message}; ${finding.rewrite}`
-            : finding.message,
-         code: finding.code,
-         severity: findingSeverity(finding),
-      }));
-   }
-
-   /**
-    * One warning per bound `#(preaggregate)` rollup whose last build found its
-    * join_one key repeated (known limitation 29's check, `keyUniqueness`
-    * false): the data breaks a `join_one` declared on that key, so queries
-    * that read it beside other aggregates are answered live, and live itself
-    * counts each parent once per repeated row. Recomputed from what is bound,
-    * so it clears once a build finds the key unique, or forgets the check.
-    */
-   repeatedJoinOneKeyWarnings(): ApiPackageWarning[] {
-      const warnings: ApiPackageWarning[] = [];
-      const bySourceEntity = new Map(
-         Object.values(this.buildPlan?.sources ?? {}).flatMap((source) =>
-            source.sourceEntityId ? [[source.sourceEntityId, source]] : [],
-         ),
-      );
-      for (const [sourceEntityId, entry] of Object.entries(
-         this.freshnessEntries ?? {},
-      )) {
-         // The rollup's own key check only: an entry may carry just the
-         // query sources' primary key checks (`parentKeys`), which say
-         // nothing of a join_one keyed on the rollup's grain.
-         const check = entry.keyUniqueness;
-         if (check?.unique !== false || check.keyColumn === undefined) {
-            continue;
-         }
-         const rollup = bySourceEntity.get(sourceEntityId)?.preaggregate;
-         if (!rollup) continue;
-         const source = bySourceEntity.get(sourceEntityId);
-         warnings.push({
-            ...(source?.modelPath ? { model: source.modelPath } : {}),
-            subject: rollup.baseSourceName,
-            code: PREAGGREGATE_JOIN_ONE_KEY_REPEATED_CODE,
-            severity: "warn",
-            message:
-               `holds \`${check.keyColumn}\` more than once, found by its ` +
-               `#(preaggregate) rollup's last build (grain ` +
-               `${rollup.grainDimensions.join(", ")}): a join_one keyed on it ` +
-               `is not unique in the data, so live repeats each joining row ` +
-               `once per match. Queries that read that join_one beside other ` +
-               `aggregates are answered live. Fix the data or declare the ` +
-               `join as join_many.`,
-         });
-      }
-      return warnings;
-   }
-
-   /**
-    * Warnings for the `#@ persist` sources the compile-time gates refused,
-    * coded {@link PERSIST_SOURCE_REFUSED_CODE}. Not an annotation finding: the
-    * annotation is well formed; the source it sits on cannot be materialized.
-    * Each carries the gate's message verbatim, so there is one wording to
-    * maintain.
-    * A rollup's `subject` is its BASE source (its own name is generated), and
-    * is omitted when the base is unavailable.
-    */
-   persistRefusalWarnings(): ApiPackageWarning[] {
-      const refused = this.buildPlan?.refusedSources;
-      if (!refused) return [];
-      return Object.entries(refused).map(([sourceID, source]) => {
-         const subject =
-            source.tier === "preaggregate"
-               ? this.buildPlan?.sources?.[sourceID]?.preaggregate
-                    ?.baseSourceName
-               : source.name;
-         const warning: ApiPackageWarning = {
-            message: source.message,
-            code: PERSIST_SOURCE_REFUSED_CODE,
-            severity: "warn",
-         };
-         if (source.modelPath) warning.model = source.modelPath;
-         if (subject) warning.subject = subject;
-         return warning;
-      });
-   }
-
-   /**
-    * Warnings for `storage=` sources the serve path is not honoring, per
-    * {@link getPersistStorageMode}: `off` ignores the annotation, `write-only`
-    * builds but does not route. `on` warns nothing.
-    */
-   storageWarnings(): ApiPackageWarning[] {
-      const mode = getPersistStorageMode();
-      if (mode === "on" || !this.buildPlan?.sources) return [];
-      const warnings: ApiPackageWarning[] = [];
-      for (const source of Object.values(this.buildPlan.sources)) {
-         const storage = source.annotationFields?.storage?.trim();
-         if (!storage) continue;
-         // A rollup gets its own wording: nobody queries it by name and there is
-         // no live reading of it; queries are answered from the base. It is named
-         // by its base source and grain (what the author typed), never its
-         // generated name. In the default `off` mode this is the only signal.
-         // The grain is a SET: the wire carries sorted dimensions, not the
-         // authored order.
-         const rollup = source.preaggregate;
-         const at = rollup
-            ? `Measures of \`${rollup.baseSourceName}\` pre-aggregated at grain ` +
-              `(${rollup.grainDimensions.join(", ")}) declare `
-            : "";
-         const message = rollup
-            ? mode === "off"
-               ? `${at}storage="${storage}", but PERSIST_STORAGE_MODE is off, so ` +
-                 `the rollup is not built. Queries that would have used it are ` +
-                 `answered from \`${rollup.baseSourceName}\` instead — correct, ` +
-                 `but unaccelerated.`
-               : `${at}storage="${storage}", and the rollup is built, but ` +
-                 `PERSIST_STORAGE_MODE is write-only, so the serve path does not ` +
-                 `route to it. Queries are answered from ` +
-                 `\`${rollup.baseSourceName}\` — correct, but unaccelerated.`
-            : mode === "off"
-              ? `declares storage="${storage}" but PERSIST_STORAGE_MODE is off; ` +
-                `the annotation is ignored and the source is served live from ` +
-                `its own warehouse.`
-              : `is materialized into storage "${storage}" but ` +
-                `PERSIST_STORAGE_MODE is write-only; the serve path is not ` +
-                `routed to the materialized table (served live).`;
-         warnings.push({
-            model: source.modelPath ?? "",
-            subject: rollup ? rollup.baseSourceName : source.name,
-            message,
-         });
-      }
-      return warnings;
-   }
-
-   /**
-    * Warnings for a model whose served copy (materialization v2) leaves
-    * sources unserved: it did not compile, a cross-connection join waits for
-    * the other side to build, or a source could not be re-rooted. Those
-    * sources serve through today's serve shape, or live. Empty when the served
-    * copy is off.
-    */
-   servedCopyWarnings(): ApiPackageWarning[] {
-      const warnings: ApiPackageWarning[] = [];
-      for (const [modelPath, model] of this.owner.models()) {
-         const leftOut = model.crossConnectionLeftOutDefinitions?.() ?? [];
-         // What read a left-out join goes with it; nothing leaves silently.
-         const readers = leftOut.filter((l) => !l.crossConnection);
-         if (readers.length > 0) {
-            warnings.push({
-               model: modelPath,
-               code: SERVED_COPY_WARNING_CODE,
-               severity: "warn",
-               message:
-                  "These definitions read a join left out across connections, so this model loads without them: " +
-                  readers
-                     .map((l) =>
-                        l.declaration
-                           ? `\`${l.declaration}.${l.name}\``
-                           : `\`${l.name}\``,
-                     )
-                     .join(", ") +
-                  ".",
-            });
-         }
-         for (const l of leftOut) {
-            if (!l.crossConnection) continue;
-            warnings.push({
-               model: modelPath,
-               subject: l.declaration ?? l.name,
-               code: SERVED_COPY_WARNING_CODE,
-               severity: "warn",
-               message:
-                  `This model joins sources on different connections (the join \`${l.name}\`), ` +
-                  "which does not compile live, so it loads without that join and what reads it. " +
-                  "Queries that need it are answered once both sides are built into one storage destination.",
-            });
-         }
-         const problems = model.servedCopyProblems?.() ?? [];
-         // A join already inlined, but kept as written: its own warning says
-         // why, so the cross-connection one does not advise inlining it.
-         const keptInline = new Set(
-            problems
-               .filter((p) => p.reason === "inline_join_kept")
-               .map((p) => `${p.sourceName}\u0000${p.join}`),
-         );
-         for (const p of problems) {
-            warnings.push({
-               model: modelPath,
-               ...(p.sourceName ? { subject: p.sourceName } : {}),
-               code: SERVED_COPY_WARNING_CODE,
-               severity: "warn",
-               message: servedCopyProblemMessage(
-                  p,
-                  keptInline.has(`${p.sourceName}\u0000${p.join}`),
-               ),
-            });
-            // The coded warning the compile of record's own check raises.
-            for (const message of p.coverage ?? []) {
-               warnings.push({
-                  model: modelPath,
-                  ...(p.sourceName ? { subject: p.sourceName } : {}),
-                  code: CLASSIFICATION_COVERAGE,
-                  severity: "warn",
-                  message,
-               });
-            }
-         }
-      }
-      return warnings;
-   }
-
-   /**
-    * Warnings for stored columns whose type does not serve as the type Malloy
-    * declares for them (ms2data/service#6642), one per source and column. A
-    * castable column is read through a cast to its declared type, and a
-    * rebuild stores that type; any other is answered live. Read from the
-    * bindings bound now, so it follows the manifest rather than the load. Keyed
-    * by the source's sourceID, so two models' same-named sources both report,
-    * and a source several models import reports once.
-    */
-   storedColumnTypeWarnings(): ApiPackageWarning[] {
-      const warnings: ApiPackageWarning[] = [];
-      const seen = new Set<string>();
-      for (const [modelPath, model] of this.owner.models()) {
-         // Optional: a model a spec stands in for need not implement it.
-         for (const {
-            sourceName,
-            sourceID,
-            mismatches,
-         } of model.storedColumnTypeMismatches?.() ?? []) {
-            for (const m of mismatches) {
-               const key = `${sourceID ?? `${modelPath}\u0000${sourceName}`}\u0000${m.column}`;
-               if (seen.has(key)) continue;
-               seen.add(key);
-               warnings.push({
-                  model: modelPath,
-                  subject: sourceName,
-                  code: STORED_COLUMN_TYPE_MISMATCH_CODE,
-                  severity: "warn",
-                  message:
-                     `stores column \`${m.column}\` as ${m.storedType}, not its ` +
-                     `declared Malloy type \`${m.declaredType}\`. ` +
-                     (m.handling === "cast"
-                        ? `It is read through a cast to \`${m.declaredType}\`, ` +
-                          `so it still serves from storage; the next build ` +
-                          `stores the declared type.`
-                        : `No cast reproduces its values faithfully, so queries ` +
-                          `that read it are answered live. Give the field a ` +
-                          `native cast in the model (for example \`::"double"\`) ` +
-                          `so the warehouse returns the declared type.`),
-               });
-            }
-         }
-      }
-      return warnings;
-   }
-
-   /**
-    * Each materialized source's serve verdict (materialization v2, D2;
-    * ms2data/service#6277): whether queries are answered from its table, and
-    * when not, why and what to change. Read from the plan and the binding as
-    * they stand now, so it follows each bind. `views` adds per-view verdicts
-    * (a preview, see {@link previewServeVerdicts}).
-    */
+   /** See {@link ServeVerdicts.verdicts}. */
    serveVerdicts(
       views?: ReadonlyMap<string, ViewServeVerdict[]>,
    ): ServeVerdict[] {
-      if (!this.buildPlan && this.rollupsOverStoredBase.length === 0) return [];
-      try {
-         return this.computeVerdicts(views);
-      } catch (error) {
-         // Reporting only: a verdict that cannot be computed must not fail
-         // the dry run, the package read or the status poll that carries it.
-         logger.warn("Could not compute serve verdicts", {
-            packageName: this.owner.packageName(),
-            error: errMessage(error),
-         });
-         return [];
-      }
+      return this.verdicts.verdicts(views);
    }
 
-   private computeVerdicts(
-      views?: ReadonlyMap<string, ViewServeVerdict[]>,
-   ): ServeVerdict[] {
-      const models = this.owner.models();
-      const index = this.entryPointIndex(models);
-      const persistedViews = new Map<
-         string,
-         { sourceID: string; sourceName: string; viewName: string }
-      >();
-      for (const model of models.values()) {
-         for (const v of model.persistedViewBuilds?.() ?? []) {
-            persistedViews.set(v.buildSourceID, v);
-         }
-      }
-      const servedStorageNames = new Set<string>();
-      for (const model of models.values()) {
-         for (const name of model.servedStorageSourceNames?.() ?? []) {
-            servedStorageNames.add(name);
-         }
-      }
-      const servedCopy = this.servedCopyState(models);
-      const materializeIDs = new Set(Object.keys(this.materializePlans));
-      const now = new Date();
-      const freshStorageNames = new Set(
-         this.storageServeBindings
-            .filter(
-               (b) =>
-                  evaluateManifestFreshness(
-                     {
-                        tableName: b.tablePath,
-                        dataAsOf: b.freshAsOf,
-                        freshnessWindowSeconds: b.freshnessWindowSeconds,
-                        freshnessFallback: b.freshnessFallback,
-                     },
-                     now,
-                  ) === "serve_table",
-            )
-            .map((b) => b.sourceName),
+   /** See {@link ServeVerdicts.preview}. */
+   previewServeVerdicts(): Promise<ServeVerdict[]> {
+      return this.verdicts.preview();
+   }
+
+   // ---- Warnings and publish rejections (package_warnings.ts) -------------
+
+   annotationFindingWarnings(): ApiPackageWarning[] {
+      return warnings.annotationFindingWarnings(this.plan.annotationFindings);
+   }
+
+   /** The refusal warnings a planner's finding made (see annotationFindingWarnings). */
+   findingRefusalWarnings(): ApiPackageWarning[] {
+      return this.persistRefusalWarnings(
+         (id) => id in this.plan.refusalNotices,
       );
-      const reads = (
-         ids: ReadonlySet<string>,
-         sourceID: string | undefined,
-         sourceName: string,
-      ) =>
-         sourceID !== undefined
-            ? ids.has(sourceID)
-            : [...ids].some((id) => id.startsWith(`${sourceName}@`));
-      return computeServeVerdicts({
-         plan: this.buildPlan,
-         storageMode: getPersistStorageMode(),
-         reachable: (sourceID, sourceName) =>
-            index?.reached === undefined ||
-            reads(index.reached, sourceID, sourceName),
-         gated: (sourceID, sourceName) => {
-            const reaching = (index?.roots ?? []).filter((root) =>
-               reads(root.ids, sourceID, sourceName),
-            );
-            return reaching.length > 0 && reaching.every((root) => root.gated);
-         },
-         servedCopyKeepsGates: getMaterializeGatedSources(),
-         rollupKeepsGates: (sourceID) => this.rollupsKeepingGates.has(sourceID),
-         refusedAtBind: (sourceID, source, tier) =>
-            this.refusedAtBind(sourceID, source, tier),
-         boundEntityIds: new Set(Object.keys(this.buildManifestEntries ?? {})),
-         freshEntityIds: new Set(
-            Object.keys(this.getFreshBuildManifest(now.getTime()) ?? {}),
-         ),
-         boundStorageNames: new Set(
-            this.storageServeBindings.map((b) => b.sourceName),
-         ),
-         servedStorageNames,
-         freshStorageNames,
-         rollupsOverStoredBase: this.rollupsOverStoredBase,
-         materialize: (sourceID) => {
-            if (!materializeIDs.has(sourceID)) return undefined;
-            if (!servedCopy.on) return "off";
-            return servedCopy.ids.has(sourceID) || servedCopy.pending
-               ? "serves"
-               : "not_served";
-         },
-         persistedViewOf: (sourceID) => persistedViews.get(sourceID),
-         views,
-         destinationConfigured: (name) => this.destinationConfigured(name),
-         connectionCanHoldTable: (name) =>
-            this.deploymentFacts?.connectionCanHoldTable(name),
+   }
+
+   /** The tables the newest auto-run lists as kept after a rename. */
+   setKeptTables(tables: readonly KeptTable[]): void {
+      this.keptTables = tables;
+   }
+
+   keptTableWarnings(): ApiPackageWarning[] {
+      return warnings.keptTableWarnings(this.plan.buildPlan, this.keptTables);
+   }
+
+   /**
+    * The `lateRows` the bound manifest entries report (database and
+    * `storage=`), by content address: what the warning names, and what an
+    * incremental delta carries until a rebuild.
+    */
+   boundLateRows(): ReadonlyMap<string, LateRows> {
+      const bound = new Map(this.storageLateRows);
+      for (const [id, entry] of Object.entries(this.databaseEntries ?? {})) {
+         if (entry.lateRows) bound.set(id, entry.lateRows);
+      }
+      return bound;
+   }
+
+   /** See package_warnings.ts, `lateRowWarnings`. */
+   lateRowWarnings(): ApiPackageWarning[] {
+      return warnings.lateRowWarnings(
+         this.plan.buildPlan,
+         this.boundLateRows(),
+      );
+   }
+
+   repeatedJoinOneKeyWarnings(): ApiPackageWarning[] {
+      return warnings.repeatedJoinOneKeyWarnings(
+         this.plan.buildPlan,
+         this.databaseEntries,
+         this.storageBindings,
+      );
+   }
+
+   persistRefusalWarnings(
+      only?: (sourceID: string) => boolean,
+   ): ApiPackageWarning[] {
+      return warnings.persistRefusalWarnings(
+         this.plan.buildPlan,
+         this.plan.refusedRollups,
+         this.plan.materializePlans,
+         this.plan.refusalNotices,
+         only,
+      );
+   }
+
+   storageWarnings(): ApiPackageWarning[] {
+      return warnings.storageWarnings(
+         this.plan.buildPlan,
+         getPersistStorageMode(),
+      );
+   }
+
+   servedCopyWarnings(): ApiPackageWarning[] {
+      const materialized = this.plan.materializePlans;
+      return warnings.servedCopyWarnings(this.owner.models(), (sourceID) =>
+         Object.hasOwn(materialized, sourceID),
+      );
+   }
+
+   storedColumnTypeWarnings(): ApiPackageWarning[] {
+      return warnings.storedColumnTypeWarnings(
+         this.owner.models(),
+         this.boundTypeFindings,
+         this.databaseDriftFindings(),
+      );
+   }
+
+   /**
+    * The database tables whose columns the last bind found moved outside a
+    * build, as the `storage-column-type-mismatch` warning reports them.
+    */
+   private databaseDriftFindings(): DatabaseDriftFinding[] {
+      this.snapshot();
+      const { drifted } = this.observedOutcome;
+      if (drifted.length === 0) return [];
+      return databaseDriftFindings(drifted, this.plan.buildPlan, {
+         queryTimezone: this.driftQueryTimezone,
       });
    }
 
-   /** See {@link ServeVerdictFacts.destinationConfigured}. */
-   private destinationConfigured(name: string): boolean | undefined {
-      const names = this.deploymentFacts?.destinationNames();
-      return names === undefined ? undefined : names.includes(name);
-   }
-
-   /**
-    * What the deployment facts answer for this plan's sources, as a string:
-    * the {@link liveVerdictsByTable} memo's key part for facts the
-    * environment can change under a loaded package.
-    */
-   /**
-    * What the models' served copies answer from storage, by author
-    * `sourceID`: every model's, since a source is re-rooted in each model that
-    * reads it. `on` when any model's served copy is enabled, `pending` when one
-    * has yet to compile, and a `signature` that changes whenever either does.
-    */
-   private servedCopyState(models: ReadonlyMap<string, Model>): {
-      on: boolean;
-      pending: boolean;
-      ids: ReadonlySet<string>;
-      signature: string;
-   } {
-      let on = false;
-      let pending = false;
-      const ids = new Set<string>();
-      for (const model of models.values()) {
-         const reread = model.servedCopySourceIDs?.();
-         if (reread === undefined) continue;
-         on = true;
-         if (reread === "pending") pending = true;
-         else for (const id of reread) ids.add(id);
-      }
-      const signature = on
-         ? `${pending ? "pending" : "compiled"}:${[...ids].sort().join(",")}`
-         : "off";
-      return { on, pending, ids, signature };
-   }
-
-   private deploymentSignature(): string {
-      if (!this.deploymentFacts) return "";
-      const parts: string[] = [];
-      for (const source of Object.values(this.buildPlan?.sources ?? {})) {
-         const destination = source.annotationFields?.storage?.trim();
-         parts.push(
-            destination
-               ? `d:${destination}=${this.destinationConfigured(destination)}`
-               : `c:${source.connectionName}=${this.deploymentFacts.connectionCanHoldTable(source.connectionName)}`,
-         );
-      }
-      return parts.join("|");
-   }
-
-   /**
-    * Why the bind refuses a planned source, as {@link bindStorageServeBindings}
-    * and {@link bindColocatedServeManifest} decide it, or undefined when it
-    * keeps it. Storage requires a positive eligibility, as the bind does.
-    * Colocated rollups need not appear in the colocated record, so only an
-    * authored source missing from it, or one it names as refused, counts.
-    */
-   private refusedAtBind(
+   /** The time zone a moved column of `source`'s table is read in. */
+   private readonly driftQueryTimezone = (
       sourceID: string,
-      source: { name: string; sourceEntityId: string; origin?: string },
-      tier: "colocated" | "storage",
-   ): string | undefined {
-      if (tier === "storage") {
-         const eligibility = this.sourceEligibility;
-         if (!eligibility || eligibility.eligible.includes(sourceID)) {
-            return undefined;
-         }
-         return (
-            eligibility.refused[sourceID] ??
-            "the source was never examined for eligibility"
-         );
-      }
-      const eligibility = this.colocatedSourceEligibility;
-      if (!eligibility) return undefined;
-      const refused = eligibility.refused[source.sourceEntityId];
-      if (refused !== undefined) return refused;
-      if (
-         source.origin !== "preaggregate" &&
-         !eligibility.eligibleEntityIds.has(source.sourceEntityId)
-      ) {
-         return "the source was never examined for eligibility";
-      }
-      return undefined;
+      source: NonNullable<NonNullable<BuildPlan>["sources"]>[string],
+   ): string | undefined =>
+      queryTimezoneOf(
+         source.preaggregate
+            ? this.baseDeclaration(source)
+            : this.declarationLookup(sourceID),
+      );
+
+   /**
+    * What a substituted database table's moved columns must read as, by its
+    * content address: its build source's declared columns and reader's time
+    * zone, the inputs {@link databaseDriftFindings} reads, so the bind and
+    * the warning decide each column alike.
+    */
+   private driftDeclaration(
+      sourceEntityId: string,
+   ): DriftDeclaration | undefined {
+      const found = Object.entries(this.plan.buildPlan?.sources ?? {}).find(
+         ([, s]) => s.sourceEntityId === sourceEntityId,
+      );
+      if (!found) return undefined;
+      const [sourceID, source] = found;
+      const queryTimezone = this.driftQueryTimezone(sourceID, source);
+      return {
+         columns: source.columns ?? [],
+         connectionName: source.connectionName,
+         ...(queryTimezone ? { queryTimezone } : {}),
+      };
    }
 
    /**
-    * {@link serveVerdicts} with each stored source's named views compiled
-    * against a serve shape, before anything is built (ms2data/service#7090):
-    * the shape is declared from the plan's output columns, the types the build
-    * stores, so it needs no table. Costs one shape compile per model and one
-    * compile per view, so it runs only where a caller asks for a preview.
+    * A warning per bound database table the bind could not read, while it
+    * is unread (`database-table-unread`).
     */
-   async previewServeVerdicts(): Promise<ServeVerdict[]> {
-      let bindings: ServeBinding[];
-      try {
-         bindings = this.previewServeBindings();
-      } catch (error) {
-         logger.warn("Could not declare the preview's serve bindings", {
-            packageName: this.owner.packageName(),
-            error: errMessage(error),
-         });
-         bindings = [];
-      }
-      const views = new Map<string, ViewServeVerdict[]>();
-      if (bindings.length > 0) {
-         for (const model of this.owner.models().values()) {
-            try {
-               const found = await model.previewStorageViews(bindings);
-               // Keyed by sourceID: a model that imports the source reports
-               // the same views as the one that declares it.
-               for (const [sourceID, verdicts] of found) {
-                  if (!views.has(sourceID)) views.set(sourceID, verdicts);
-               }
-            } catch (error) {
-               logger.debug("Could not preview a model's storage views", {
-                  packageName: this.owner.packageName(),
-                  error: errMessage(error),
-               });
-            }
-         }
-      }
-      const verdicts = this.serveVerdicts(views);
-      if (getV1ServedCopyMode() === "off") return verdicts;
-      try {
-         return await this.withCutoverPaths(verdicts);
-      } catch (error) {
-         logger.warn("Could not preview the v1 cutover's serve paths", {
-            packageName: this.owner.packageName(),
-            error: errMessage(error),
-         });
-         return verdicts;
-      }
+   databaseTableUnreadWarnings(): ApiPackageWarning[] {
+      return warnings.databaseTableUnreadWarnings(
+         this.knownUnread().map((u) => ({
+            ...u,
+            ...tableNameOf(this.databaseEntries?.[u.sourceEntityId]?.tableName),
+         })),
+         this.plan.servingPlan() ?? this.plan.buildPlan,
+         this.unreadRetry !== undefined,
+      );
    }
 
-   /**
-    * The v1 cutover's serve path on each verdict (6e, plan question 15): the
-    * served copy compiled over bindings declared from the plan's output
-    * columns, `storage=` ones as {@link previewServeBindings} declares them
-    * and colocated ones as the cutover binds them, names the sources it
-    * re-roots; a rollup is the rollup leg's. Nothing is built or read.
-    */
-   private async withCutoverPaths(
-      verdicts: ServeVerdict[],
-   ): Promise<ServeVerdict[]> {
-      const plan = this.buildPlan ?? this.servingPlanWhileUnavailable;
-      const sources = plan?.sources ?? {};
-      const eligible = this.colocatedSourceEligibility?.eligibleEntityIds;
-      const viewBuilds = this.persistedViewBuildIDs();
-      const entries: FreshnessManifest = {};
-      for (const source of Object.values(sources)) {
-         if (source.annotationFields?.storage?.trim()) continue;
-         entries[source.sourceEntityId] = {
-            tableName: `preview_${source.sourceEntityId}`,
-            connectionName: source.connectionName,
-         };
-      }
-      // A v1 `storage=` table stores the persisted query's own output (before
-      // an extend block's `rename:` or `except:`, nests included), as the
-      // bind will read it; a `#(materialize)` plan's columns are its own.
-      const bindings = [
-         ...this.previewServeBindings().map((b) => {
-            const sourceID = b.sourceIDs?.[0];
-            if (!sourceID || this.materializePlans?.[sourceID]) return b;
-            const schema = v1StoredColumnsOf(this.declarationOf(sourceID));
-            return schema?.length ? { ...b, schema } : b;
-         }),
-         ...deriveColocatedServeBindings({
-            entries,
-            planSources: sources,
-            materializePlans: this.materializePlans,
-            eligible: (sourceID) =>
-               !!eligible?.has(sources[sourceID]?.sourceEntityId ?? ""),
-            v1Schema: (sourceID) =>
-               v1StoredColumnsOf(this.declarationOf(sourceID)),
-            notV1: (sourceID) => viewBuilds.has(sourceID),
-         }).map((b) => previewNativeSchema(b, sources)),
-      ];
-      const rerooted = new Set<string>();
-      const throughBase = new Set<string>();
-      const gateDeclined = new Set<string>();
-      const problems = new Map<string, string>();
-      for (const model of this.owner.models().values()) {
-         const preview = await model.previewServedCopy?.(bindings);
-         for (const id of preview?.rerooted ?? []) rerooted.add(id);
-         for (const id of preview?.throughBase ?? []) throughBase.add(id);
-         for (const id of preview?.gateDeclined ?? []) gateDeclined.add(id);
-         for (const p of preview?.problems ?? []) {
-            if (p.sourceID && !problems.has(p.sourceID)) {
-               problems.set(p.sourceID, p.reason);
-            }
-         }
-      }
-      return verdicts.map((v) => {
-         if (v.origin === "preaggregate") {
-            return { ...v, cutoverPath: "rollup" };
-         }
-         // A row-level gate declared on a base the re-root replaces cannot
-         // be grafted on the served copy: its queries are answered live.
-         if (gateDeclined.has(v.sourceID)) {
-            return {
-               ...v,
-               cutoverPath: "live",
-               cutoverReason: "inherited_gate",
-            };
-         }
-         if (rerooted.has(v.sourceID)) {
-            return { ...v, cutoverPath: "served_copy" };
-         }
-         // An extension of a re-rooted source, left as written: it reads
-         // that source's table by name.
-         if (throughBase.has(v.sourceID) && !problems.has(v.sourceID)) {
-            return {
-               ...v,
-               cutoverPath: "served_copy",
-               cutoverReason: "through_base",
-            };
-         }
-         return {
-            ...v,
-            cutoverPath: "live",
-            cutoverReason:
-               problems.get(v.sourceID) ?? v.reason ?? "not_rerooted",
-         };
-      });
+   nativeSchemaWarnings(): ApiPackageWarning[] {
+      return warnings.nativeSchemaWarnings(
+         this.snapshot().bindings,
+         this.owner.models(),
+         this.plan.materializePlans,
+      );
    }
 
-   /**
-    * One serve binding per planned `storage=` source, as its first build would
-    * bind it: declared from the plan's output columns at the DuckDB types the
-    * build stores them as (see stored_column_types.ts). The table it names is
-    * never read; a preview only compiles.
-    */
-   previewServeBindings(): ServeBinding[] {
-      const out: ServeBinding[] = [];
-      for (const [sourceID, source] of Object.entries(
-         this.buildPlan?.sources ?? {},
-      )) {
-         const destinationName = source.annotationFields?.storage?.trim();
-         if (!destinationName || source.origin === "preaggregate") continue;
-         const schema = (source.columns ?? []).flatMap((column) => {
-            const type = PREVIEW_STORED_TYPES[String(column.type ?? "")];
-            return column.name && type ? [{ name: column.name, type }] : [];
-         });
-         if (schema.length === 0) continue;
-         out.push({
-            sourceName: source.name,
-            sourceIDs: [sourceID],
-            origin: "persist",
-            destinationName,
-            virtualHandle: source.sourceEntityId,
-            tablePath: storageTablePath(
-               destinationName,
-               `preview_${source.sourceEntityId}`,
-               this.serveDestinationSchema?.(destinationName),
-            ),
-            schema,
-         });
-      }
-      return out;
-   }
-
-   /**
-    * The publish warnings a serve verdict carries, from one verdict pass:
-    * `unreachable` (`materialization-unreachable`: nothing on the published
-    * surface reads the source, so its table is built for no query;
-    * ms2data/service#6277), and the deployment facts (P13): a `storage=`
-    * destination the environment does not configure
-    * (`materialization-destination-missing`), or a colocated source on a
-    * connection that cannot create tables
-    * (`materialization-connection-cannot-hold-table`). Unservable, not
-    * malformed: the package loads, the source serves live, and a deployment
-    * warning clears once the deployment changes, with no reload. The other
-    * live verdicts already carry a warning of their own (storage mode,
-    * refusals, rollups over a stored base).
-    */
+   /** The publish warnings a serve verdict carries, from one verdict pass. */
    verdictWarnings(): ApiPackageWarning[] {
-      // serveVerdicts degrades to none on a throw, so a package read never fails here.
-      return this.serveVerdicts().flatMap((v) => {
-         const code = v.reason ? VERDICT_WARNING_CODES[v.reason] : undefined;
-         if (!code) return [];
-         return [
-            {
-               model: v.modelPath ?? "",
-               subject: v.sourceName,
-               code,
-               severity: "warn" as const,
-               message: v.message + " " + (v.fixes ?? []).join(" "),
-            },
-         ];
-      });
+      return warnings.verdictWarnings(this.serveVerdicts());
    }
 
-   /** Memo for {@link entryPointIndex}, keyed on the models map it read. */
-   private entryPointMemo:
-      | { models: Map<string, Model>; index: EntryPointIndex | undefined }
-      | undefined;
-
-   /**
-    * The package's entry points (what callers may query) and what each
-    * reads, or undefined when that cannot be told. Memoized on the models
-    * map, which a load or reload replaces wholesale along with the surface it
-    * curates, so the status poll does no walk of its own.
-    */
-   private entryPointIndex(
-      models: Map<string, Model>,
-   ): EntryPointIndex | undefined {
-      if (this.entryPointMemo?.models === models) {
-         return this.entryPointMemo.index;
-      }
-      let index: EntryPointIndex | undefined;
-      try {
-         index = this.buildEntryPointIndex(models);
-      } catch (error) {
-         logger.debug("Could not read which sources the entry points reach", {
-            packageName: this.owner.packageName(),
-            error: errMessage(error),
-         });
-         index = undefined;
-      }
-      this.entryPointMemo = { models, index };
-      return index;
+   /** Legal-but-probably-unintended incremental declarations, as warnings. */
+   incrementalPolicyAdvisories(): ApiPackageWarning[] {
+      return incrementalPolicyAdvisories(this.plan.incrementalPolicySources);
    }
 
-   /**
-    * Each entry point a caller may query (a published source or named query,
-    * or every model's when the package curates nothing), the sourceIDs it
-    * reads, and whether it carries a row-level gate, the question routing
-    * asks of a query's entry point. Undefined when a model has no compiled
-    * definition: a false `unreachable` or `row_level_gate` is a false alarm,
-    * so unknown stays quiet.
-    */
-   private buildEntryPointIndex(
-      models: Map<string, Model>,
-   ): EntryPointIndex | undefined {
-      const surface = this.owner.publishedSurface?.();
-      const entries =
-         surface ??
-         [...models].map(([modelPath, model]) => ({
-            modelPath,
-            names: (model.getSources?.() ?? []).flatMap((source) =>
-               source.name ? [source.name] : [],
-            ),
-            queries: (model.getQueries?.() ?? []).flatMap((query) =>
-               query.name ? [query.name] : [],
-            ),
-         }));
-      const roots: EntryPointIndex["roots"] = [];
-      for (const { modelPath, names, queries } of entries) {
-         const model = models.get(modelPath);
-         const modelDef = model?.getModelDef?.();
-         if (!model || !modelDef) return undefined;
-         const gatedSources = new Set(
-            (model.getSources?.(true) ?? []).flatMap((source) =>
-               source.name &&
-               ((source.authorize?.length ?? 0) > 0 ||
-                  (source.accessFilter?.length ?? 0) > 0)
-                  ? [source.name]
-                  : [],
-            ),
-         );
-         const sourceRoot = (name: string, gated: boolean): void => {
-            const entry = modelDef.contents?.[name];
-            if (!entry || !isSourceDef(entry)) return;
-            roots.push({
-               gated,
-               ids: reachableSourceIDs(
-                  structsReachedFrom([entry], modelDef),
-                  modelDef,
-               ),
-            });
-         };
-         for (const name of names) sourceRoot(name, gatedSources.has(name));
-         // A published named query reads its source, and whatever its
-         // pipeline names; it is gated as that source is.
-         for (const name of queries ?? []) {
-            const query = modelDef.contents?.[name] as
-               | { type?: string; structRef?: unknown }
-               | undefined;
-            if (query?.type !== "query") continue;
-            const ref = query.structRef;
-            const base =
-               typeof ref === "string"
-                  ? modelDef.contents?.[ref]
-                  : (ref as SourceDef | undefined);
-            const ids = reachableSourceIDs([query], modelDef);
-            if (base && isSourceDef(base)) {
-               for (const id of reachableSourceIDs(
-                  structsReachedFrom([base], modelDef),
-                  modelDef,
-               )) {
-                  ids.add(id);
-               }
-            }
-            roots.push({
-               gated: typeof ref === "string" && gatedSources.has(ref),
-               ids,
-            });
-         }
-      }
-      const reached =
-         surface === undefined
-            ? undefined
-            : new Set(roots.flatMap((root) => [...root.ids]));
-      return { roots, reached };
-   }
-
-   /**
-    * The Malloy Persistence policy's REJECTION rules: a non-empty result fails a
-    * publish and disarms the scheduler (warn-only at load). Advisory findings go
-    * to materializationConfigWarnings. Cross-package scope rules are not
-    * checked: the build plan is intra-package only.
-    */
+   /** See `persistencePolicyWarnings` in package_warnings.ts. */
    persistencePolicyWarnings(): string[] {
-      const warnings: string[] = [];
-      const sources = this.buildPlan?.sources
-         ? Object.values(this.buildPlan.sources)
-         : [];
-      const materialization = this.owner.metadata().materialization;
-      const packageSchedule = materialization?.schedule ?? null;
-      const packageFreshness = materialization?.freshness ?? null;
-      const scope = this.owner.metadata().scope ?? "package";
-
-      // Rule 1: per-source sharing/schedule are retired.
-      for (const source of sources) {
-         const fields = source.annotationFields ?? {};
-         if (fields.sharing !== undefined) {
-            warnings.push(
-               `#@ persist source "${source.name}" declares sharing=... which is ` +
-                  `no longer supported: scope is a single package-level mode. Set ` +
-                  `"materialization": { "scope": "version" | "package" } in ` +
-                  `${PACKAGE_MANIFEST_NAME} instead.`,
-            );
-         }
-         if (fields.schedule !== undefined) {
-            warnings.push(
-               `#@ persist source "${source.name}" declares schedule=... which is ` +
-                  `no longer supported: a schedule is package-root-only. Declare ` +
-                  `"materialization.schedule" at the ${PACKAGE_MANIFEST_NAME} root ` +
-                  `(requires "scope": "version") instead.`,
-            );
-         }
-      }
-
-      // Rule 2: a package-level cron is legal only with scope: version.
-      if (packageSchedule && scope !== "version") {
-         warnings.push(
-            `materialization.schedule (cron) in ${PACKAGE_MANIFEST_NAME} requires ` +
-               `"scope": "version": a package-scoped lineage is reused across ` +
-               `versions, so a single per-version cadence is meaningless. Set ` +
-               `"scope": "version", or remove the schedule.`,
-         );
-      }
-
-      // Rule 3: schedule and freshness are mutually exclusive.
-      if (packageSchedule) {
-         const freshnessDeclared =
-            !!(
-               packageFreshness &&
-               (packageFreshness.window || packageFreshness.fallback)
-            ) || sources.some((s) => s.freshness != null);
-         if (freshnessDeclared) {
-            warnings.push(
-               `materialization.schedule and freshness are mutually exclusive in ` +
-                  `${PACKAGE_MANIFEST_NAME}: declare either a schedule (power tier) ` +
-                  `or freshness (objective tier), never both.`,
-            );
-         }
-      }
-
-      // Rule 4: a valid 5-field cron, here so publish, PATCH, load and the
-      // scheduler all apply one rule and a bad cron cannot silently never arm.
-      if (packageSchedule && !new CronEvaluator().isValid(packageSchedule)) {
-         warnings.push(
-            `materialization.schedule in ${PACKAGE_MANIFEST_NAME} is not a valid ` +
-               `5-field UNIX cron: ${JSON.stringify(packageSchedule)}. Use ` +
-               `"minute hour day-of-month month day-of-week" (no L/W/#/? ` +
-               `extensions).`,
-         );
-      }
-
-      return warnings;
-   }
-
-   /**
-    * The publish refusal for `#@` lines that do not parse, and for malformed
-    * materialization v2 declarations (an unknown key on `#(materialize)` or
-    * `#(preaggregate)`, whose key sets are closed), one per line, or "" when
-    * none. Publish only: a load warns (the finding rides
-    * `Package.warnings`), so a package already published keeps loading and its
-    * schedule keeps running, and a metadata PATCH is not refused for it. Kept
-    * out of {@link persistencePolicyWarnings}, which the scheduler and the
-    * metadata PATCH both read.
-    */
-   formatUnparseableAnnotations(): string {
-      return this.annotationFindings
-         .filter(
-            (finding) =>
-               finding.code === "persist-unparseable" ||
-               (finding.tier === "malformed" &&
-                  MATERIALIZE_V2_ROUTES.has(finding.route)),
-         )
-         .map(
-            (finding) =>
-               `${finding.model ? `${finding.model}: ` : ""}${finding.message}`,
-         )
-         .join("\n");
+      return warnings.persistencePolicyWarnings(
+         this.plan.buildPlan,
+         this.owner.metadata(),
+      );
    }
 
    /** The {@link persistencePolicyWarnings}, one per line, or "" if valid. */
@@ -2197,323 +1303,94 @@ export class PackageMaterialization {
    }
 
    /**
-    * REJECTION messages for incremental-refresh declarations (rules in
-    * incremental_policy). Unlike {@link persistencePolicyWarnings}, a non-empty
-    * result also fails the LOAD.
+    * Every invalid materialization annotation, one per line with its code, or
+    * "" when there is none: every `malformed` finding, and two sources an
+    * author's names put on one table (unless `PERSIST_COLLISION_ENFORCE=false`).
+    * Each fails the publish AND the load, on every path: an invalid annotation
+    * is the author's to fix, never something to serve around. A valid
+    * annotation Publisher cannot build is a `*-not-built` warning instead.
     */
-   incrementalPolicyWarnings(): string[] {
-      return incrementalPolicyRejections(this.incrementalPolicySources);
-   }
-
-   /** The {@link incrementalPolicyWarnings}, one per line, or "" if valid. */
-   formatInvalidIncrementalPolicy(): string {
-      return this.incrementalPolicyWarnings().join("\n");
+   formatInvalidAnnotations(): string {
+      return [
+         ...invalidFindingLines(this.plan.annotationFindings),
+         ...(getPersistCollisionEnforce()
+            ? collisionGateLines(this.persistenceCollisions())
+            : []),
+      ].join("\n");
    }
 
    /**
-    * REJECTION messages for `#@ preaggregate` declarations that cannot take
-    * effect (rules in preaggregation_validation), strict at publish AND load:
-    * pre-aggregation is invisible when it works, so an ignored declaration
-    * would show correct numbers and no acceleration, with no one told.
-    *
-    * The access-modifier pair only warns: refusing would stop already-published
-    * packages loading, and an inherited annotation on a hiding source yields
-    * advice the author cannot follow. Warning is safe because the planner
-    * itself skips hidden fields (planSourcePreaggregation), so nothing is built.
+    * The load gate's text, or "" when the package is valid: the one text
+    * (plan/load_gate_text.ts) over this load's plan, its models' own lines
+    * and the raw text's `name=` problems, the same a run over the files, a
+    * re-derivation and a package compile read off the plan they derive.
     */
-   formatInvalidPreaggregatePolicy(): string {
-      return this.preaggregateMessages(
-         (code) => !PREAGG_WARN_ONLY.has(code),
-      ).join("\n");
+   loadGateText(nameProblems: readonly PersistNameProblem[]): string {
+      const models = [...this.owner.models()];
+      return loadGateText(
+         {
+            plan: this.plan.buildPlan,
+            annotationFindings: this.plan.annotationFindings,
+            incrementalDeclarations: this.plan.incrementalDeclarations,
+            materializePlans: this.plan.materializePlans,
+            persistedViews: this.plan.persistedViews,
+            modelGateLines: {
+               preaggregate: models.flatMap(([modelPath, model]) =>
+                  preaggregateGateLines(
+                     modelPath,
+                     model.preaggregateViolations(),
+                  ),
+               ),
+               nearMiss: this.nearMissLines(),
+               nameProblems: [...nameProblems],
+            },
+         },
+         {
+            enforceCollisions: getPersistCollisionEnforce(),
+            versionScoped: this.plan.versionOwnsTables(),
+         },
+      );
    }
 
-   /** The access-modifier violations, surfaced at load as warnings. */
-   preaggregateAccessWarnings(): ApiPackageWarning[] {
-      return this.preaggregateFindings((code) =>
-         PREAGG_WARN_ONLY.has(code),
-      ).map(({ modelPath, violation }) => ({
-         model: modelPath,
-         subject: violation.fieldName ?? violation.sourceName,
-         message: violation.message,
-         code: "preaggregate-hidden-field",
+   /** Each model's misspelled materialization routes, one line each. */
+   nearMissLines(): string[] {
+      return [...this.owner.models()].flatMap(([modelPath, model]) =>
+         nearMissGateLines(modelPath, model.annotationNearMisses?.() ?? []),
+      );
+   }
+
+   /** See `formatInvalidPreaggregatePolicy` in package_warnings.ts. */
+   formatInvalidPreaggregatePolicy(): string {
+      return warnings.formatInvalidPreaggregatePolicy(this.owner.models());
+   }
+
+   /**
+    * Within-package persist-target COLLISIONS: distinct sources resolving to
+    * one physical table in one destination, where each build would overwrite
+    * the other. A publish refusal unless `PERSIST_COLLISION_ENFORCE=false`,
+    * and a warning at load either way; none is served from the shared table.
+    */
+   persistenceCollisionWarnings(): string[] {
+      return this.persistenceCollisions().map((c) => c.message);
+   }
+
+   /** The collisions as refusals, under `PERSIST_COLLISION_ENFORCE=false`. */
+   persistenceCollisionRefusals(): ApiPackageWarning[] {
+      return this.persistenceCollisions().map(({ message, code, subject }) => ({
+         message,
+         code,
+         subject,
+         reason: "table_name_collision",
          severity: "warn" as const,
       }));
    }
 
-   private preaggregateMessages(
-      keep: (code: PreaggregateViolationCode) => boolean,
-   ): string[] {
-      return this.preaggregateFindings(keep).map(
-         // Source names repeat across models; name the file.
-         ({ modelPath, violation }) => `${modelPath}: ${violation.message}`,
+   private persistenceCollisions(): ReturnType<typeof planCollisions> {
+      if (!this.plan.buildPlan) return [];
+      return planCollisions(
+         this.plan.buildPlan,
+         this.plan.materializePlans,
+         this.plan.versionOwnsTables(),
       );
    }
-
-   /** Violations kept by `keep`, paired with their model, unformatted for both consumers. */
-   private preaggregateFindings(
-      keep: (code: PreaggregateViolationCode) => boolean,
-   ): { modelPath: string; violation: PreaggregateViolation }[] {
-      const findings: {
-         modelPath: string;
-         violation: PreaggregateViolation;
-      }[] = [];
-      for (const [modelPath, model] of this.owner.models()) {
-         for (const violation of model.preaggregateViolations()) {
-            if (keep(violation.code)) findings.push({ modelPath, violation });
-         }
-      }
-      return findings;
-   }
-
-   /**
-    * Within-package persist-target COLLISIONS: distinct sources (by
-    * `sourceEntityId`) resolving to one physical table in one destination,
-    * where each build would overwrite the other. Imports of the same source are
-    * not flagged. The destination comes from the DECLARED annotation, so the
-    * storage kill switch never hides a collision.
-    *
-    * A publish refusal unless `PERSIST_COLLISION_ENFORCE=false` opts out, and
-    * a warning at load either way. Either way none of them is served
-    * from the shared table (`sharedTables` in eligibility_collect.ts): it
-    * holds whichever build ran last, so each answers live. Cross-version and
-    * cross-package collisions need the host's global view.
-    */
-   persistenceCollisionWarnings(): string[] {
-      const sources = this.buildPlan?.sources
-         ? Object.values(this.buildPlan.sources)
-         : [];
-      const targets = new Map<
-         string,
-         { name: string; destination: string; sources: Map<string, string> }
-      >();
-      for (const source of sources) {
-         // The one definition of a collision, shared with the serve refusal.
-         const {
-            key,
-            name: physicalName,
-            destination,
-         } = persistTableTarget(
-            source.annotationFields ?? {},
-            source.name,
-            source.connectionName,
-         );
-         const bucket = targets.get(key) ?? {
-            name: physicalName,
-            destination,
-            sources: new Map<string, string>(),
-         };
-         // Keyed by sourceEntityId so identical-content imports collapse to one.
-         bucket.sources.set(source.sourceEntityId, source.name);
-         targets.set(key, bucket);
-      }
-      const warnings: string[] = [];
-      for (const {
-         name,
-         destination,
-         sources: colliding,
-      } of targets.values()) {
-         if (colliding.size < 2) continue;
-         const names = [...colliding.values()].sort();
-         warnings.push(
-            `#@ persist sources ${names
-               .map((n) => `"${n}"`)
-               .join(", ")} all resolve to the same materialized table ` +
-               `"${name}" in destination "${destination}". Distinct sources ` +
-               `must not share a physical target — the second build would ` +
-               `overwrite the first, and a serve binding or GC drop for one ` +
-               `would affect the other, so none is served from it and queries ` +
-               `on them are answered live. Give each a distinct #@ persist name=.`,
-         );
-      }
-      return warnings;
-   }
-
-   /** Collisions as a publish rejection; "" when `PERSIST_COLLISION_ENFORCE=false`. */
-   formatPersistenceCollisionRejections(): string {
-      if (!getPersistCollisionEnforce()) return "";
-      const collisions = this.persistenceCollisionWarnings();
-      if (collisions.length === 0) return "";
-      // The operator's opt-out, named once, after the author's fix.
-      return [
-         ...collisions,
-         "A deployment that must publish such a package anyway can set " +
-            "PERSIST_COLLISION_ENFORCE=false, which warns instead and serves " +
-            "the colliding sources live.",
-      ].join("\n");
-   }
-}
-
-/** See PackageMaterialization's entry-point index. */
-interface EntryPointIndex {
-   /** Each entry point: the sourceIDs it reads, and whether a row-level gate sits on it. */
-   roots: { gated: boolean; ids: Set<string> }[];
-   /** Every sourceID an entry point reads; undefined when the package curates nothing. */
-   reached: Set<string> | undefined;
-}
-
-/**
- * The DuckDB type a preview declares a stored column as, by its Malloy type:
- * what the build stores (stored_column_types.ts casts string, boolean and date
- * to these; numbers and timestamps already arrive as one). A column of any
- * other type is left off, and a view reading it previews as live.
- */
-const PREVIEW_STORED_TYPES: Readonly<Record<string, string>> = {
-   string: "VARCHAR",
-   number: "DOUBLE",
-   boolean: "BOOLEAN",
-   date: "DATE",
-   timestamp: "TIMESTAMP",
-   timestamptz: "TIMESTAMP WITH TIME ZONE",
-};
-
-/**
- * Colocated eligibility from the last good plan, less every address a source on
- * a changed connection builds: those tables were built through the connection
- * as it was, and are read through it as it is now. Refused with a reason, so
- * the bind's log says why they serve live until the plan is re-derived.
- */
-function withoutChangedConnections(
-   eligibility: ColocatedSourceEligibility | undefined,
-   plan: BuildPlan | null,
-   changed: ReadonlySet<string>,
-): ColocatedSourceEligibility | undefined {
-   if (!eligibility || changed.size === 0) return eligibility;
-   const dropped = new Set<string>();
-   for (const source of Object.values(plan?.sources ?? {})) {
-      if (changed.has(source.connectionName))
-         dropped.add(source.sourceEntityId);
-   }
-   if (dropped.size === 0) return eligibility;
-   const refused = { ...eligibility.refused };
-   for (const address of dropped) {
-      if (eligibility.eligibleEntityIds.has(address)) {
-         refused[address] =
-            "its connection changed and the build plan could not be re-derived yet";
-      }
-   }
-   return {
-      eligibleEntityIds: new Set(
-         [...eligibility.eligibleEntityIds].filter((a) => !dropped.has(a)),
-      ),
-      refused,
-   };
-}
-
-/**
- * A caller-safe sentence for why a served copy leaves a source unserved. The
- * compiler's own message stays in the logs: it can name the destination alias.
- */
-/**
- * The compiler's own reasons in a compile error, as `: <reason>; <reason>.`:
- * each diagnostic's message without its file and source excerpt, so a package
- * warning names why without the server's paths. A reason that names a
- * served-copy alias (a join refused across connections) is left out: the
- * alias stays in the server log. `.` when there are none.
- */
-function compilerReasons(detail: string | undefined): string {
-   const reasons = [...(detail ?? "").matchAll(/^line \d+: (.+)$/gm)]
-      .map((m) => m[1].trim())
-      .filter((reason) => !namesServedCopyAlias(reason));
-   return reasons.length > 0 ? `: ${reasons.join("; ")}.` : ".";
-}
-
-function servedCopyProblemMessage(
-   problem: ServedCopyProblem,
-   inlinedButKept = false,
-): string {
-   const { reason, join } = problem;
-   switch (reason) {
-      case "compile_failed":
-         return "This model's served copy does not compile, so its stored sources serve through the serve shape or live.";
-      case "cross_connection_unbuilt":
-         return "This model joins sources from different connections; its served copy compiles once both sides are built into one destination, and serves live until then.";
-      case "column_types":
-         return "This source's stored column types differ from the types the model declares, or one cannot be declared on its table, so the served copy leaves it to the serve shape.";
-      case "no_declaration":
-         return "This source's declaration was not found in the compiled model, so the served copy leaves it to the serve shape.";
-      case "range_not_found":
-      case "definition_not_parsed":
-         return "This source's declaration could not be re-rooted on its table, so the served copy leaves it to the serve shape.";
-      case "pair_join_not_found":
-         return "This source inlines a join_many that is not declared on its own in its own trailing `extend` (a source it is built from declares it, or its `join_many:` statement declares other joins too), so its pair table cannot be read with the join as a record and the served copy leaves it as written.";
-      case "pair_not_compiled":
-         return "This source's pair table (an inlined join_many) could not be read as the source with its join as a record (its text reads a measure or view of the joined source through the join, which the record does not carry), so the served copy leaves it as written.";
-      case "reroot_not_compiled":
-         return (
-            "This source's re-root on its stored table does not compile in the served copy (the server log has the compiler's message)." +
-            " The served copy leaves it as written, so it answers live, and the model's other stored sources still serve. This is a Publisher bug; please report it."
-         );
-      case "read_terms_not_kept":
-         return "This source filters by a given in a place its stored table cannot keep, or is filtered and reached here only through a join, so the served copy leaves it as written rather than answer every caller alike.";
-      case "fields_not_carried":
-         return "This source inherits fields (a measure, view or join declared on the source it is built from) that its stored table does not carry, so the served copy leaves it as written.";
-      case "cross_connection_join":
-         return (
-            `This source is stored in a destination its join${join ? ` \`${join}\`` : ""} cannot reach: ` +
-            "the joined source reads another connection. Queries that use the join are answered live; " +
-            "the others read the stored table. To serve them too, " +
-            (inlinedButKept
-               ? "fix what keeps the inlined join from being answered from its stored columns (the warning on " +
-                 "this join says what), materialize the joined source into the same destination, or keep this " +
-                 "source colocated."
-               : "inline the join (inline=), materialize the joined source into the same destination, or keep " +
-                 "this source colocated.")
-         );
-      case "inline_join_kept":
-         return (
-            `This source inlines its join${join ? ` \`${join}\`` : ""} (inline=), but its served copy does not compile ` +
-            "with the join answered from the stored columns, so the join is kept as written and every query " +
-            "through it reads the joined source through the join" +
-            compilerReasons(problem.detail) +
-            " A definition that reads the joined source past one hop (a join of the joined source), or reads " +
-            "one of its measures or views, is the usual cause."
-         );
-      case "classification_not_kept":
-         return (
-            "This source's served copy reaches fields its compile of record does not (a join left out " +
-            "across connections, answered once both sides are built), and the load's classification " +
-            "checks flag them there, so its queries are not answered from the stored tables: " +
-            [...(problem.leaks ?? []), ...(problem.coverage ?? [])].join(" ")
-         );
-   }
-}
-
-/** The colocated bindings' identity, to push only when they change. */
-function colocatedSignature(bindings: readonly ServeBinding[]): string {
-   return bindings
-      .map(
-         (b) =>
-            `${b.sourceIDs?.join(",")}@${b.destinationName}/${b.virtualHandle}/${b.tablePath}/${b.freshAsOf ?? ""}/${b.freshnessWindowSeconds ?? ""}/${b.freshnessFallback ?? ""}`,
-      )
-      .sort()
-      .join("|");
-}
-
-/**
- * A dry run's colocated binding with the warehouse types a build would
- * capture (`ManifestEntry.nativeSchema`), so it predicts the cast a big-integer
- * column is read through: each column as the dialect's own type for a
- * `bigint` number. A preview has no table to read; the real build's capture
- * can only be as wide or wider, and a type Malloy does not read as `bigint`
- * answers that column live, which no dry run can foresee.
- */
-function previewNativeSchema(
-   binding: ServeBinding,
-   sources: Readonly<Record<string, { dialect?: string }>>,
-): ServeBinding {
-   const dialect = sources[binding.sourceIDs?.[0] ?? ""]?.dialect;
-   if (!binding.colocated || !dialect) return binding;
-   let type: string;
-   try {
-      type = getDialect(dialect).malloyTypeToSQLType({
-         type: "number",
-         numberType: "bigint",
-      });
-   } catch {
-      return binding;
-   }
-   return {
-      ...binding,
-      nativeSchema: binding.schema.map((c) => ({ name: c.name, type })),
-   };
 }

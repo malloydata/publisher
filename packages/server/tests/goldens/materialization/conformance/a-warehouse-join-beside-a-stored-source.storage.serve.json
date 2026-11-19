@@ -13,7 +13,7 @@
     "warnings": [
       {
         "code": "served-copy-not-served",
-        "message": "This source is stored in a destination its join `c` cannot reach: the joined source reads another connection. Queries that use the join are answered live; the others read the stored table. To serve them too, inline the join (inline=), materialize the joined source into the same destination, or keep this source colocated.",
+        "message": "This source is stored in a destination its join `c` cannot reach: the joined source reads another connection. Queries that use the join are answered live; the others read the stored table. To serve them too, inline the join (inline=), materialize the joined source into the same destination, or build this source in its own database (drop `storage=`).",
         "subject": "orders_b"
       }
     ]
@@ -58,6 +58,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "persist",
             "outcome": "used",
             "tableId": "820d6af004bafcff7762f225f8837cdf222b2d7dfa966299a5f66b074f48d280"
           }
@@ -73,7 +74,10 @@
         },
         "servedBy": {
           "kind": "materialized",
-          "tableId": "820d6af004bafcff7762f225f8837cdf222b2d7dfa966299a5f66b074f48d280"
+          "origin": "persist",
+          "tableId": "820d6af004bafcff7762f225f8837cdf222b2d7dfa966299a5f66b074f48d280",
+          "tier": "storage",
+          "via": "served_copy"
         },
         "warnings": []
       },
@@ -183,6 +187,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "persist",
             "outcome": "used",
             "tableId": "820d6af004bafcff7762f225f8837cdf222b2d7dfa966299a5f66b074f48d280"
           }
@@ -198,7 +203,9 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "persist",
           "tableId": "820d6af004bafcff7762f225f8837cdf222b2d7dfa966299a5f66b074f48d280",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []

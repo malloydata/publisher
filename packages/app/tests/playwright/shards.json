@@ -1,0 +1,45 @@
+{
+   "1": [
+      "dashboard-builder.spec.ts",
+      "dashboard-create.spec.ts",
+      "notebook-cells.spec.ts",
+      "notebook-layout.spec.ts",
+      "package-asset-urls.spec.ts",
+      "package-dashboards.spec.ts",
+      "package-data-apps.spec.ts",
+      "package-databases.spec.ts",
+      "package-materializations.spec.ts",
+      "package-models.spec.ts",
+      "report-routes.spec.ts"
+   ],
+   "2": [
+      "builder-documents.spec.ts",
+      "builder-exit-guard.spec.ts",
+      "dashboard-text-tile.spec.ts",
+      "embedded-host.spec.ts",
+      "environment-connections.spec.ts",
+      "environments.spec.ts",
+      "model-page-givens.spec.ts",
+      "model-page-literals.spec.ts",
+      "model-viewer.spec.ts",
+      "notebook-authorize.spec.ts",
+      "notebook-builder.spec.ts",
+      "notebook-givens-url.spec.ts",
+      "notebook-readme-links.spec.ts",
+      "theming.spec.ts"
+   ],
+   "3": [
+      "builder-affordances.spec.ts",
+      "builder-chart-type.spec.ts",
+      "builder-filter-chip.spec.ts",
+      "builder-misfiled.spec.ts",
+      "builder-request-budget.spec.ts",
+      "notebook-givens.spec.ts",
+      "package-notebooks.spec.ts",
+      "package-served-notebook.spec.ts",
+      "package-versions.spec.ts",
+      "packages.spec.ts",
+      "report-authoring.spec.ts",
+      "report-listing-retry.spec.ts"
+   ]
+}

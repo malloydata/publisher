@@ -63,7 +63,14 @@
       "equalToLive": true,
       "malloy": "run: order_facts -> { group_by: c.segment; aggregate: w is c.west_n, t is amount.sum() }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "origin": "materialize",
+            "outcome": "used",
+            "tableId": "ced04b2336c2cf76901620ecf674c5152d408fad1d03e7774cd61f272389778e"
+          }
+        ],
         "notConsidered": [],
         "query": {
           "filteredBy": [],
@@ -77,13 +84,17 @@
           "sourceName": "order_facts"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "origin": "materialize",
+          "tableId": "ced04b2336c2cf76901620ecf674c5152d408fad1d03e7774cd61f272389778e",
+          "tier": "storage",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a measure over the joined source's internal column, from the index",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -126,7 +137,14 @@
       "equalToLive": true,
       "malloy": "run: customer_dim -> { group_by: segment; aggregate: west_n }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "origin": "materialize",
+            "outcome": "used",
+            "tableId": "bf4286a91b893ea3bbeb2399ae99134474169fa1ea85a6dec9df7b2e2c845f59"
+          }
+        ],
         "notConsidered": [],
         "query": {
           "filteredBy": [],
@@ -139,13 +157,17 @@
           "sourceName": "customer_dim"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "origin": "materialize",
+          "tableId": "bf4286a91b893ea3bbeb2399ae99134474169fa1ea85a6dec9df7b2e2c845f59",
+          "tier": "storage",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "the joined source's measure, in its own file",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -196,6 +218,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "materialize",
             "outcome": "used",
             "tableId": "ced04b2336c2cf76901620ecf674c5152d408fad1d03e7774cd61f272389778e"
           }
@@ -214,7 +237,9 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "materialize",
           "tableId": "ced04b2336c2cf76901620ecf674c5152d408fad1d03e7774cd61f272389778e",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []
@@ -267,6 +292,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "materialize",
             "outcome": "used",
             "tableId": "bf4286a91b893ea3bbeb2399ae99134474169fa1ea85a6dec9df7b2e2c845f59"
           }
@@ -284,7 +310,9 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "materialize",
           "tableId": "bf4286a91b893ea3bbeb2399ae99134474169fa1ea85a6dec9df7b2e2c845f59",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []

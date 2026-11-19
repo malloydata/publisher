@@ -3,7 +3,7 @@
 
 /**
  * R4 for join-to-rollup in a storage destination (materialization v2, A7,
- * known limitation 26): a joined source's `#(preaggregate) storage=` rollup is
+ * known limitation 26): a joined source's `#(rollup) storage=` rollup is
  * read through the join when the query's source is stored in the same
  * destination (a `#(materialize) storage=` table, or a `#@ persist storage=`
  * source) and served through the served copy. The variant declares the query
@@ -19,8 +19,10 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { malloyCountsChildlessParentsAsZero } from "../../../src/service/materialization/serve/join_rollup";
-import { installSettings } from "../../../src/test_helpers/settings_env";
+import {
+   installSettings,
+   useMaterializationOn,
+} from "../../../src/test_helpers/settings_env";
 import {
    buildScenario,
    DESTINATION,
@@ -55,29 +57,29 @@ const S = ` storage="${DESTINATION}"`;
 /** The joined sources, with their rollups in the destination. */
 const children = `source: segments is duckdb.table('segs_raw') extend {
   primary_key: seg_id
-  #(preaggregate) grain=["flight_id"]${S}
-  #(preaggregate) grain=["flight_id", "kind"]${S}
+  #(rollup) grain=["flight_id"]${S}
+  #(rollup) grain=["flight_id", "kind"]${S}
   measure: seg_miles is miles.sum()
-  #(preaggregate) grain=["flight_id"]${S}
-  #(preaggregate) grain=["flight_id", "kind"]${S}
+  #(rollup) grain=["flight_id"]${S}
+  #(rollup) grain=["flight_id", "kind"]${S}
   measure: longest is miles.max()
-  #(preaggregate) grain=["flight_id"]${S}
+  #(rollup) grain=["flight_id"]${S}
   measure: shortest is miles.min()
-  #(preaggregate) grain=["flight_id"]${S}
+  #(rollup) grain=["flight_id"]${S}
   measure: p_miles is miles.sum() { where: kind = 'p' }
-  #(preaggregate) grain=["flight_id"]${S}
+  #(rollup) grain=["flight_id"]${S}
   measure: spread is longest - shortest
-  #(preaggregate) grain=["flight_id"]${S}
+  #(rollup) grain=["flight_id"]${S}
   measure: seg_count is count()
 }
 
 source: crew is duckdb.table('crew_raw') extend {
   primary_key: flight_id
-  #(preaggregate) grain=["flight_id"]${S}
+  #(rollup) grain=["flight_id"]${S}
   measure: crew_size is size.sum()
-  #(preaggregate) grain=["flight_id"]${S}
+  #(rollup) grain=["flight_id"]${S}
   measure: crew_count is count()
-  #(preaggregate) grain=["flight_id"]${S}
+  #(rollup) grain=["flight_id"]${S}
   measure: most_hours is duty_hours.max()
 }
 `;
@@ -209,6 +211,19 @@ const SERVED = [
       "a count through a join_one (unmatched parents count zero live too)",
       "run: flights -> { group_by: carrier; aggregate: crew.crew_count }",
    ],
+   // Known limitation 29: `crew` holds each flight at most once, and its
+   // rollup's build checked it over the rows it read, as a database one's
+   // does, so the parent's own aggregates read the join_one as live does.
+   [
+      "the parent's own aggregates beside a join_one checked unique",
+      "run: flights -> { group_by: carrier; aggregate: flight_count, crew.crew_size }",
+   ],
+   // A query's own zone, reading nothing through the join that the build
+   // evaluated in the model's zone (b-tz-caller).
+   [
+      "a query in its own time zone that reads no time through the join",
+      "run: flights -> { timezone: 'America/Los_Angeles'; group_by: carrier; aggregate: segments.seg_miles }",
+   ],
 ] as const;
 
 const DECLINED = [
@@ -232,16 +247,6 @@ const DECLINED = [
       "run: flights -> { group_by: carrier; aggregate: c is segments.count() }",
       "COUNT_SEMANTICS",
    ],
-   [
-      "a query in its own time zone",
-      "run: flights -> { timezone: 'America/Los_Angeles'; group_by: carrier; aggregate: segments.seg_miles }",
-      "TIME_ZONE",
-   ],
-   [
-      "the parent's own aggregates beside a join_one",
-      "run: flights -> { group_by: carrier; aggregate: flight_count, crew.crew_size }",
-      "COUNT_SEMANTICS",
-   ],
 ] as const;
 
 for (const [kind, model, materialize] of [
@@ -249,12 +254,9 @@ for (const [kind, model, materialize] of [
    ["#@ persist storage=", persistModel, false],
 ] as const) {
    describe(`R4: join-to-rollup in a storage destination, query source stored by ${kind}`, () => {
-      let restore: () => void;
       let fixture: R4Fixture;
+      useMaterializationOn();
       beforeAll(async () => {
-         restore = installSettings({
-            env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-         }).restore;
          fixture = await buildScenario({
             files: { "m.malloy": model },
             seedSql,
@@ -263,7 +265,6 @@ for (const [kind, model, materialize] of [
          });
       });
       afterAll(async () => {
-         restore();
          await disposeScenarios();
       });
 
@@ -280,28 +281,11 @@ for (const [kind, model, materialize] of [
          });
       }
 
-      const skipsUnmatched = malloyCountsChildlessParentsAsZero();
-      const count =
-         "run: flights -> { group_by: carrier; aggregate: segments.seg_count }";
-      it.if(!skipsUnmatched)(
-         "answers a count through a join_many without the rollup until malloydata/malloy#3208 (COUNT_SEMANTICS)",
-         async () => {
-            expectNotFromRollup(
-               await fixture.run({ name: "count", malloy: count }),
-            );
-            expect(await rollupReasons(fixture, count)).toContain(
-               "COUNT_SEMANTICS",
-            );
-         },
-      );
-      it.if(skipsUnmatched)(
-         "serves a count through a join_many once malloydata/malloy#3208 is pinned",
-         async () => {
-            expectServedFromRollup(
-               await fixture.run({ name: "count", malloy: count }),
-            );
-         },
-      );
+      it("serves a count through a join_many", async () => {
+         const malloy =
+            "run: flights -> { group_by: carrier; aggregate: segments.seg_count }";
+         expectServedFromRollup(await fixture.run({ name: "count", malloy }));
+      });
 
       it("refuses an internal field to the caller, as live does", async () => {
          fixture.setBindings(fixture.bindings);
@@ -329,6 +313,7 @@ for (const [kind, model, materialize] of [
          expect(path?.considered).toContainEqual({
             tableId: fixture.tableIds.flights,
             kind: "materialized",
+            origin: "persist",
             outcome: "used",
          });
       });
@@ -338,7 +323,7 @@ for (const [kind, model, materialize] of [
             "run: flights -> { group_by: carrier; aggregate: segments.seg_miles }";
          fixture.setBindings(
             fixture.bindings.map((b) =>
-               b.origin === "preaggregate"
+               b.kind === "rollup"
                   ? b
                   : {
                        ...b,
@@ -365,7 +350,7 @@ for (const [kind, model, materialize] of [
             "run: flights -> { group_by: carrier; aggregate: segments.seg_miles }";
          fixture.setBindings(
             fixture.bindings.map((b) =>
-               b.origin === "preaggregate"
+               b.kind === "rollup"
                   ? {
                        ...b,
                        freshAsOf: "2020-01-01T00:00:00.000Z",
@@ -398,20 +383,17 @@ for (const [kind, model, materialize] of [
 }
 
 describe("R4: join-to-rollup in a storage destination, the joined source stored there too", () => {
-   let restore: () => void;
    let fixture: R4Fixture;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: {
             "m.malloy": `#(materialize)${S}
 source: segments is duckdb.table('segs_raw') extend {
   primary_key: seg_id
-  #(preaggregate) grain=["flight_id"]${S}
+  #(rollup) grain=["flight_id"]${S}
   measure: seg_miles is miles.sum()
-  #(preaggregate) grain=["flight_id"]${S}
+  #(rollup) grain=["flight_id"]${S}
   measure: longest is miles.max()
 }
 
@@ -431,7 +413,6 @@ source: flights is duckdb.table('flights_raw') extend {
       });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 
@@ -455,13 +436,10 @@ source: flights is duckdb.table('flights_raw') extend {
 });
 
 describe("R4: join-to-rollup in a storage destination re-applies the query source's read terms", () => {
-   let restore: () => void;
    let fixture: R4Fixture;
    const B = "2026-11-10 00:00:00";
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: {
             "m.malloy": `##! experimental.givens
@@ -491,7 +469,6 @@ source: last30 is duckdb.table('flights_raw') extend {
       });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 
@@ -550,7 +527,7 @@ source: flights is duckdb.table('flights_raw') extend {
 #(access_filter) kind = 'p'
 source: p_segs is duckdb.table('segs_raw') extend {
   primary_key: seg_id
-  #(preaggregate) grain=["flight_id", "kind"]${S}
+  #(rollup) grain=["flight_id", "kind"]${S}
   measure: p_seg_miles is miles.sum()
 }
 
@@ -571,33 +548,46 @@ source: open_flights is duckdb.table('flights_raw') extend {
       await disposeScenarios();
    });
 
-   it("answers a gated entry point without the rollup, with its gate held (CONTRACT)", async () => {
+   it("answers a gated entry point from the ungated joined source's rollup, with its gate held (g-mixed)", async () => {
+      // The query source is redeclared in an overlay of the served copy's own
+      // copy of its file, so its gate is grafted and proven on the answer.
       const malloy =
          "run: flights -> { group_by: carrier; aggregate: segments.seg_miles }";
-      const run = await fixture.run({
-         name: "gated",
-         malloy,
-         givens: { CARRIER: "AA" },
-      });
-      expectNotFromRollup(run);
-      expect(run.served.map((r) => r.carrier)).toEqual(["AA"]);
-      expect(await rollupReasons(fixture, malloy, { CARRIER: "AA" })).toContain(
-         "CONTRACT",
-      );
+      for (const carrier of ["AA", "BB"]) {
+         const run = await fixture.run({
+            name: `gated ${carrier}`,
+            malloy,
+            givens: { CARRIER: carrier },
+         });
+         expectServedFromRollup(run);
+         expect(run.served.map((r) => r.carrier)).toEqual([carrier]);
+      }
    });
 
-   it("builds no storage= rollup over a gated joined source, which stays behind its review switch", async () => {
-      // The rollup over `p_segs` is not built (a `storage=` rollup over a
-      // gated base waits for the managed tier's review), so a query through
-      // the join reads no rollup.
+   it("reads a gated joined source's storage= rollup only on that source, never through the join", async () => {
+      // Since #1876 a `storage=` rollup over a base's own gate is built, as a
+      // database one is (P3/P4): `p_segs`'s rollup is bound, and a query on
+      // `p_segs` itself reads it with the gate re-applied.
       expect(
          fixture.bindings.some((b) =>
             (b.sourceIDs ?? []).some((id) => id.includes("p_segs")),
          ),
-      ).toBe(false);
+      ).toBe(true);
+      const direct = await fixture.run({
+         name: "the gated source itself",
+         malloy:
+            "run: p_segs -> { group_by: flight_id; aggregate: p_seg_miles; order_by: flight_id }",
+      });
+      expect(rowDifference(direct.live, direct.served)).toBeUndefined();
+      // Through the join, the joined source's gate is not a gate of the
+      // query (live does not apply it: row-level-access.md), and the join
+      // branch declines a rollup over a gated base: no rollup answers, and
+      // the answer equals live's.
       const malloy =
          "run: open_flights -> { group_by: carrier; aggregate: p_segs.p_seg_miles }";
-      expectNotFromRollup(await fixture.run({ name: "gated child", malloy }));
+      const through = await fixture.run({ name: "gated child", malloy });
+      expectNotFromRollup(through);
+      expect(rowDifference(through.live, through.served)).toBeUndefined();
       fixture.setBindings(fixture.bindings);
       const { path } = await fixture.runAsIs(malloy);
       expect(path?.servedBy.kind).not.toBe("rollup");
@@ -610,12 +600,9 @@ source: open_flights is duckdb.table('flights_raw') extend {
 });
 
 describe("R4: join-to-rollup in a storage destination keeps the served copy's own rules", () => {
-   let restore: () => void;
    let fixture: R4Fixture;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: {
             "m.malloy": `##! experimental.persistence
@@ -660,7 +647,6 @@ source: flights_pairs is duckdb.table('flights_raw') extend {
       });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 
@@ -706,11 +692,11 @@ source: flights_pairs is duckdb.table('flights_raw') extend {
 describe("R4: join-to-rollup in a storage destination, over a source with its own time zone", () => {
    // A rollup over a zoned source is planned when a source in the same zone
    // joins it (preaggregate-time-zone's exception), in a storage= destination
-   // too: the join leg reads it when the joining source is stored there.
+   // too: the join branch reads it when the joining source is stored there.
    const zonedModel = `source: segs_la is duckdb.table('segs_raw') extend {
   timezone: 'America/Los_Angeles'
   primary_key: seg_id
-  #(preaggregate) grain=["flight_id"]${S}
+  #(rollup) grain=["flight_id"]${S}
   measure: seg_miles is miles.sum()
 }
 #(materialize)${S}
@@ -720,12 +706,9 @@ source: flights_la is duckdb.table('flights_raw') extend {
   join_many: segs_la on segs_la.flight_id = id
 }
 `;
-   let restore: () => void;
    let fixture: R4Fixture;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: { "m.malloy": zonedModel },
          seedSql,
@@ -734,7 +717,6 @@ source: flights_la is duckdb.table('flights_raw') extend {
       });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 
@@ -757,7 +739,6 @@ source: flights_la is duckdb.table('flights_raw') extend {
  * the rollup (`COUNT_SEMANTICS`).
  */
 describe("R4: join-to-rollup in a storage destination, over a stored query source whose key the data breaks", () => {
-   let restore: () => void;
    let repeated: R4Fixture;
    let nulled: R4Fixture;
    let persisted: R4Fixture;
@@ -775,10 +756,8 @@ describe("R4: join-to-rollup in a storage destination, over a stored query sourc
       (NULL, 'BB', 350, TIMESTAMP '2026-11-02 10:00:00'),
       (3, 'BB', 300, TIMESTAMP '2026-11-01 10:00:00')`);
    const seedWith = (flights: string) => [flights, ...seedSql.slice(1)];
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       repeated = await buildScenario({
          files: { "m.malloy": materializeModel },
          seedSql: seedWith(REPEATED),
@@ -807,7 +786,6 @@ describe("R4: join-to-rollup in a storage destination, over a stored query sourc
       });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 
@@ -859,4 +837,72 @@ describe("R4: join-to-rollup in a storage destination, over a stored query sourc
          });
       }
    }
+});
+
+/**
+ * The joined source's own primary key NULL in the data (see the database
+ * case in join_rollup.component.spec.ts): live counts and sums `segments`
+ * over the rows whose `seg_id` is not NULL, the rollup in the destination
+ * over every row. The rollup's build checks the key on the base's
+ * connection, and a count or sum through the join is answered live.
+ */
+describe("R4: join-to-rollup (A7) in a storage destination, the joined source's primary key NULL", () => {
+   let fixture: R4Fixture;
+   useMaterializationOn();
+   beforeAll(async () => {
+      fixture = await buildScenario({
+         files: {
+            "m.malloy": `##! experimental.access_modifiers
+source: segments is duckdb.table('segs_raw') extend {
+  primary_key: seg_id
+  #(rollup) grain=["flight_id"]${S}
+  measure: seg_miles is miles.sum()
+  #(rollup) grain=["flight_id"]${S}
+  measure: seg_count is count()
+  #(rollup) grain=["flight_id"]${S}
+  measure: longest is miles.max()
+}
+#(materialize)${S}
+source: flights is duckdb.table('flights_raw') extend {
+  primary_key: id
+  join_many: segments on segments.flight_id = id
+}
+`,
+         },
+         seedSql: [
+            seedSql[0]!,
+            `CREATE TABLE segs_raw AS SELECT * FROM (VALUES
+               (10, 1, 'p', 2.0), (11, 1, 'q', 3.0), (NULL, 1, 'p', 9.0),
+               (12, 2, 'p', 4.0), (14, 3, 'q', 1.0), (16, 3, 'p', 7.0)
+             ) AS t(seg_id, flight_id, kind, miles)`,
+         ],
+         materialize: true,
+         preaggregate: true,
+      });
+   });
+   afterAll(async () => {
+      await disposeScenarios();
+   });
+
+   for (const malloy of [
+      "run: flights -> { group_by: carrier; aggregate: segments.seg_miles }",
+      "run: flights -> { group_by: carrier; aggregate: segments.seg_count }",
+   ]) {
+      it(`answers ${malloy} live (COUNT_SEMANTICS)`, async () => {
+         expectNotFromRollup(await fixture.run({ name: malloy, malloy }));
+         expect(await rollupReasons(fixture, malloy)).toContain(
+            "COUNT_SEMANTICS",
+         );
+      });
+   }
+
+   it("serves a max, which live reads every row for", async () => {
+      expectServedFromRollup(
+         await fixture.run({
+            name: "max",
+            malloy:
+               "run: flights -> { group_by: carrier; aggregate: segments.longest }",
+         }),
+      );
+   });
 });

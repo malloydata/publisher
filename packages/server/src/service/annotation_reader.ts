@@ -11,11 +11,15 @@
  * helpers for annotation bundles (own notes, model notes, positions); this
  * module is about routes.
  *
- * Materialization v2's routes (`#(materialize)`, `#(preaggregate)`) are in the
+ * Materialization v2's routes (`#(materialize)`, `#(rollup)`) are in the
  * registry with their closed key sets, and are read only with the materialize
  * switch on (`PUBLISHER_MATERIALIZE`): see {@link MATERIALIZE_V2_ROUTES}.
  */
 
+import {
+   freshnessWindowSeconds,
+   isFreshnessFallback,
+} from "./materialization/domain/freshness";
 import {
    payloadOf,
    routeOf,
@@ -24,6 +28,9 @@ import {
 } from "@malloydata/malloy";
 import { parseAnnotation, type Tag } from "@malloydata/malloy-tag";
 import { parseBounded, parseRouteTag } from "./motly";
+import type { components } from "../api";
+
+type RefusedSource = components["schemas"]["RefusedSource"];
 
 /** Malloy's routing for one note: its route, `""` for a MOTLY tag, `undefined` when the prefix is malformed. */
 export function routeOfNote(text: string): string | undefined {
@@ -238,14 +245,41 @@ const PERSIST_KEYS: ReadonlySet<string> = new Set([
    "persist",
    "name",
    "storage",
-   "realization",
    "refresh",
    "watermark",
    "merge_key",
+   "lookback",
    "freshness",
    "queryMetadata",
-   "partition",
 ]);
+
+/** The keys of a `freshness` group (`freshness.window=`, `freshness.fallback=`). */
+const FRESHNESS_KEYS: ReadonlySet<string> = new Set(["window", "fallback"]);
+
+/**
+ * Why a `freshness` group's values cannot be read, or undefined: a window
+ * that is not a whole number and a unit (`s`, `m`, `h`, `d`, `w`), or a
+ * fallback other than `live`, `stale_ok`, `fail`. The one grammar every
+ * mechanism reads (materialization/domain/freshness.ts).
+ */
+export function freshnessValueProblem(group: {
+   has(...path: string[]): boolean;
+   text(...path: string[]): string | undefined;
+}): string | undefined {
+   if (group.has("window")) {
+      const window = group.text("window");
+      if (
+         window === undefined ||
+         freshnessWindowSeconds(window) === undefined
+      ) {
+         return 'has a freshness.window= that is not a whole number and a unit (s, m, h, d or w), such as freshness.window="24h"';
+      }
+   }
+   if (group.has("fallback") && !isFreshnessFallback(group.text("fallback"))) {
+      return "has a freshness.fallback= that is not one of live, stale_ok, fail";
+   }
+   return undefined;
+}
 
 /** The pre-aggregation directive's keys, on the same `#@` route. */
 const PREAGGREGATE_KEYS: ReadonlySet<string> = new Set([
@@ -257,7 +291,7 @@ const PREAGGREGATE_KEYS: ReadonlySet<string> = new Set([
 /**
  * `#(materialize)`'s keys (materialization v2, P13): the `#@ persist` keys it
  * carries onto its generated build source, and `inline`, which the plan reads.
- * A closed set: any other key is malformed, refused at publish.
+ * A closed set: any other key is malformed, which fails the publish and the load.
  */
 export const MATERIALIZE_KEYS: ReadonlySet<string> = new Set([
    "name",
@@ -265,32 +299,56 @@ export const MATERIALIZE_KEYS: ReadonlySet<string> = new Set([
    "refresh",
    "watermark",
    "merge_key",
-   "partition",
+   "lookback",
    "freshness",
    "queryMetadata",
    "inline",
 ]);
 
 /**
- * `#(preaggregate)`'s keys (materialization v2, A1): the grain it stores a
- * measure at, and where (a `storage=` destination, or a `namespace=` in the
- * source's own warehouse). A closed set: any other key is malformed.
+ * `#(rollup)`'s keys (materialization v2, A1): the grain it stores a
+ * measure at, where (a `storage=` destination, or a `name=` whose container
+ * places it in the source's own warehouse; `namespace=` is that container's
+ * deprecated spelling), and its `freshness` group, as on `#@ persist`. A
+ * closed set: any other key is malformed.
  */
-export const PREAGGREGATE_ROUTE_KEYS: ReadonlySet<string> = new Set([
+export const ROLLUP_ROUTE_KEYS: ReadonlySet<string> = new Set([
    "grain",
    "storage",
+   "name",
    "namespace",
+   "freshness",
 ]);
+
+/**
+ * The rewrite for a `partition=` on `#@ persist` or `#(materialize)`, both of
+ * which once laid a storage table out by the named columns. Partitioning was a
+ * layout choice only, never isolation, so dropping the key costs scan time and
+ * nothing else.
+ */
+const PARTITION_RETIRED =
+   "remove it: partition= is not supported, and the stored table is written " +
+   "unpartitioned. It was a layout choice only, so the cost is scan time; " +
+   "what each caller sees is unchanged";
+
+/** The rewrite for a `sharing=` on a materialization route. */
+const SHARING_RETIRED =
+   "set materialization.scope in publisher.json; a source no longer chooses its own sharing";
+
+/** The rewrite for a `schedule=` on a materialization route. */
+const SCHEDULE_RETIRED =
+   "set materialization.schedule in publisher.json; a source no longer sets its own schedule";
 
 /**
  * The materialization v2 routes. Each is read only with the materialize switch
  * on (`PUBLISHER_MATERIALIZE`); off, nothing reads them and the near-miss scan
- * treats them as it did before they were registered. A key outside a v2
- * route's set is malformed (`<route>-unknown-key`), refused at publish, where
- * an unknown key on v1's `#@` route only warns (P13).
+ * treats them as it did before they were registered. A key outside a
+ * route's set is malformed (`<route>-unknown-key`), on every route.
  */
 export const MATERIALIZE_V2_ROUTES: ReadonlySet<string> = new Set([
    "materialize",
+   "rollup",
+   // `#(rollup)`'s deprecated spelling, read the same for one release.
    "preaggregate",
 ]);
 
@@ -321,14 +379,25 @@ export const PUBLISHER_ROUTES: Readonly<Record<string, RouteSpec>> = {
       payload: "tag",
       keys: new Set([...PERSIST_KEYS, ...PREAGGREGATE_KEYS]),
       retiredKeys: {
-         sharing:
-            "set materialization.scope in publisher.json; a source no longer chooses its own sharing",
-         schedule:
-            "set materialization.schedule in publisher.json; a source no longer sets its own schedule",
+         sharing: SHARING_RETIRED,
+         schedule: SCHEDULE_RETIRED,
+         partition: PARTITION_RETIRED,
+         realization:
+            "remove it: every table is built by CREATE TABLE AS SELECT",
       },
    },
-   materialize: { payload: "tag", keys: MATERIALIZE_KEYS },
-   preaggregate: { payload: "tag", keys: PREAGGREGATE_ROUTE_KEYS },
+   materialize: {
+      payload: "tag",
+      keys: MATERIALIZE_KEYS,
+      retiredKeys: {
+         sharing: SHARING_RETIRED,
+         schedule: SCHEDULE_RETIRED,
+         partition: PARTITION_RETIRED,
+      },
+   },
+   rollup: { payload: "tag", keys: ROLLUP_ROUTE_KEYS },
+   // `#(rollup)`'s deprecated spelling, read the same for one release.
+   preaggregate: { payload: "tag", keys: ROLLUP_ROUTE_KEYS },
    "!": { payload: "tag" },
    "": { payload: "tag" },
 };
@@ -338,28 +407,115 @@ export const PUBLISHER_ROUTES: Readonly<Record<string, RouteSpec>> = {
  * their own message rather than a vaguer "unknown key". Narrower than the
  * `@` route's `keys`, which also hold the `#@ preaggregate` line's keys: a
  * persist source is checked against this set, a rollup against its own.
- * Anything else is a load-time warning, never a refusal, so a new directive
- * needs no Publisher change.
+ * The set is closed, as every materialization route's is: anything else is
+ * `persist-unknown-key`, which fails the publish and the load, so a new
+ * directive needs a Publisher change.
  */
 export const RECOGNIZED_PERSIST_KEYS: ReadonlySet<string> = new Set([
    ...PERSIST_KEYS,
    ...Object.keys(PUBLISHER_ROUTES["@"]?.retiredKeys ?? {}),
 ]);
 
+/**
+ * The word a route's codes are spelled with: `persist` for `#@`, `rollup`
+ * for `#(rollup)` and its deprecated spelling `#(preaggregate)`, and the
+ * route's own name otherwise.
+ */
+function codeRouteOf(route: string): string {
+   if (route === "@") return "persist";
+   return route === "preaggregate" ? "rollup" : route;
+}
+
+/**
+ * The materialization warning-code taxonomy. The suffix tells the outcome:
+ *
+ *  - `*-invalid`, `*-unknown-key`, `*-retired-key`, `*-unparseable` and
+ *    {@link MATERIALIZATION_TABLE_COLLISION_CODE} name an invalid annotation.
+ *    They appear only on a load failure (the publish 4xx and `loadErrors`),
+ *    never as a warning on a serving package.
+ *  - `*-not-built` names a valid annotation Publisher cannot build here (an
+ *    environment, dialect, capacity or governance limit): that item alone is
+ *    refused, answers live, and the package loads. Severity `warn`, never
+ *    `error`.
+ */
+export const MATERIALIZE_INVALID_CODE = "materialize-invalid";
+export const PERSIST_INVALID_CODE = "persist-invalid";
+export const ROLLUP_INVALID_CODE = "rollup-invalid";
+export const PERSIST_VIEW_INVALID_CODE = "persist-view-invalid";
+export const PERSIST_QUERY_INVALID_CODE = "persist-query-invalid";
+export const PERSIST_VIEW_UNPARSEABLE_CODE = "persist-view-unparseable";
+export const PERSIST_QUERY_UNPARSEABLE_CODE = "persist-query-unparseable";
+/** Two sources an author's `name=` puts on one table. */
+export const MATERIALIZATION_TABLE_COLLISION_CODE =
+   "materialization-table-collision";
+/** A storage source the deployment's `PERSIST_STORAGE_MODE` does not honour. */
+export const MATERIALIZATION_STORAGE_MODE_CODE = "materialization-storage-mode";
+/** A misspelled materialization route or directive (`#(materialise)`). */
+export const MATERIALIZATION_NEAR_MISS_CODE = "materialization-near-miss";
+/** A valid `#@ persist` source Publisher refuses alone. */
+export const PERSIST_NOT_BUILT_CODE = "persist-not-built";
+/** A valid `#(materialize)` source Publisher refuses alone. */
+export const MATERIALIZE_NOT_BUILT_CODE = "materialize-not-built";
+/** A valid rollup, or one measure of it, Publisher refuses alone. */
+export const ROLLUP_NOT_BUILT_CODE = "rollup-not-built";
+/**
+ * A rollup declared with a deprecated spelling, v1's `#@ preaggregate` or
+ * `#(rollup)`'s alias `#(preaggregate)`: still read, with this warning, whose
+ * message names the spelling it found.
+ */
+export const DEPRECATED_PREAGGREGATE_ANNOTATION_CODE =
+   "deprecated-preaggregate-annotation";
+/**
+ * A rollup placed with `namespace=`, the deprecated spelling of its `name=`
+ * container: still read, for one release, with this warning.
+ */
+export const ROLLUP_NAMESPACE_DEPRECATED_CODE = "deprecated-rollup-namespace";
+
+/**
+ * A load failure's line: `text` ended with a full stop, then its `[code]`.
+ */
+export function codedLine(text: string, code: string): string {
+   const trimmed = text.trimEnd();
+   return `${/[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`} [${code}]`;
+}
+
+/**
+ * The codes of a load failure's {@link codedLine}s, in order, each once: what
+ * a `loadErrors` entry carries as `codes`, so a client never parses the
+ * message for them.
+ */
+export function codesOfLines(text: string): string[] {
+   const codes = [...text.matchAll(/ \[([a-z][a-z0-9-]*)\]$/gm)].map(
+      (m) => m[1],
+   );
+   return [...new Set(codes)];
+}
+
 /** One diagnostic about an annotation, with its tier from the outcome rule. */
 export interface AnnotationFinding {
    route: string;
    /**
-    * `malformed`: it cannot be read as written, and is refused at publish.
-    * `unservable`: well-formed but not honoured here; a coded warning, served
-    * live. `deprecated`: still read, with its rewrite.
+    * `malformed`: it cannot be read as written (an invalid annotation), and
+    * fails the publish and the load. `unservable`: well-formed but not
+    * honoured here; a coded warning, served live. `deprecated`: still read,
+    * with its rewrite.
     */
    tier: "malformed" | "unservable" | "deprecated";
    /** Stable, for counting and for clients: `persist-unknown-key`. */
    code: string;
+   /**
+    * For an `unservable` finding that is a refusal: its bounded
+    * `RefusedSource.reason` (`table_name_collision`), carried as the
+    * package warning's `reason`.
+    */
+   reason?: string;
    message: string;
    /** The fix, when there is one. */
    rewrite?: string;
+   /** For a retired key: the key. */
+   key?: string;
+   /** The key was written inside the `persist` key (`#@ persist { … }`). */
+   nested?: true;
    /** The source or field the annotation is on. */
    subject?: string;
    at?: DocumentLocation;
@@ -368,10 +524,8 @@ export interface AnnotationFinding {
 /**
  * A route's tag, read without the server's environment (see `parseRouteTag`),
  * and a finding for each top-level key the route does not accept or has
- * retired. The findings are reported at the tier the callers already use:
- * an unknown key is `unservable` (a warning), a retired one `malformed`. On a
- * v2 route ({@link MATERIALIZE_V2_ROUTES}) the key set is closed, so an
- * unknown key is `malformed` too.
+ * retired. Both are `malformed`, which fails the publish and the load: every
+ * route's key set is closed.
  */
 export function readRouteTag(
    annotations: Annotations,
@@ -390,7 +544,7 @@ export function readRouteTag(
          : `#(${route})`;
    if (accepted) {
       for (const [key] of tag.entries()) {
-         const retired = spec?.retiredKeys?.[key];
+         const retired = retiredRewrite(spec, key);
          if (retired !== undefined) {
             findings.push({
                route,
@@ -398,16 +552,86 @@ export function readRouteTag(
                code: `${route === "@" ? "persist" : route}-retired-key`,
                message: `\`${key}=\` is no longer read on \`${spelled}\``,
                rewrite: retired,
+               key,
             });
          } else if (!accepted.has(key)) {
             const near = nearestKey(key, accepted);
             findings.push({
                route,
-               tier: MATERIALIZE_V2_ROUTES.has(route)
-                  ? "malformed"
-                  : "unservable",
-               code: `${route === "@" ? "persist" : route}-unknown-key`,
+               // Every materialization route's key set is closed: a typo
+               // (`nmae=`) would otherwise build under a defaulted name.
+               tier: "malformed",
+               code: `${codeRouteOf(route)}-unknown-key`,
                message: `\`${key}=\` is not a key \`${spelled}\` reads, so it does nothing${near ? ` (did you mean \`${near}=\`?)` : ""}`,
+            });
+         }
+      }
+      // A key written inside `persist` (`#@ persist { partition="day" }`) is
+      // read as the top-level one is (the one placement rule, plan/
+      // declaration.ts), so a retired one there is retired too, and an
+      // unknown one (`#@ persist { nmae="t" }`) is unknown: the set is closed.
+      if (route === "@") {
+         const nestedKeys = new Set(
+            [...accepted].filter((k) => PERSIST_KEYS.has(k) && k !== "persist"),
+         );
+         for (const [key] of tag.tag("persist")?.entries() ?? []) {
+            const retired = retiredRewrite(spec, key);
+            if (retired !== undefined) {
+               findings.push({
+                  route,
+                  tier: "malformed",
+                  code: "persist-retired-key",
+                  message: `\`${key}=\` is no longer read on \`#@ persist { … }\``,
+                  rewrite: retired,
+                  key,
+                  nested: true,
+               });
+            } else if (!nestedKeys.has(key)) {
+               const near = nearestKey(key, nestedKeys);
+               findings.push({
+                  route,
+                  tier: "malformed",
+                  code: "persist-unknown-key",
+                  message: `\`${key}=\` is not a key \`#@ persist { … }\` reads, so it does nothing${near ? ` (did you mean \`${near}=\`?)` : ""}`,
+                  nested: true,
+               });
+            }
+         }
+      }
+      // `freshness` is a group of two keys on every route that carries it
+      // (`freshness.window=`, `freshness.fallback=`), written flat or inside
+      // `persist`; another key in it does nothing.
+      const groups =
+         route === "@"
+            ? [tag.tag("freshness"), tag.tag("persist", "freshness")]
+            : accepted.has("freshness")
+              ? [tag.tag("freshness")]
+              : [];
+      for (const group of groups) {
+         // A value the publisher cannot read is invalid, on `#@ persist` as
+         // on every route that takes the group (`#(materialize)` and the
+         // rollup routes check theirs where they are planned).
+         if (route === "@" && group) {
+            const problem = freshnessValueProblem(group);
+            if (problem !== undefined) {
+               findings.push({
+                  route,
+                  tier: "malformed",
+                  code: PERSIST_INVALID_CODE,
+                  message: `\`#@ persist\` ${problem}`,
+                  nested: true,
+               });
+            }
+         }
+         for (const [key] of group?.entries() ?? []) {
+            if (FRESHNESS_KEYS.has(key)) continue;
+            const near = nearestKey(key, FRESHNESS_KEYS);
+            findings.push({
+               route,
+               tier: "malformed",
+               code: `${codeRouteOf(route)}-unknown-key`,
+               message: `\`freshness.${key}=\` is not a key \`${spelled}\` reads, so it does nothing${near ? ` (did you mean \`freshness.${near}=\`?)` : ""}`,
+               nested: true,
             });
          }
       }
@@ -425,7 +649,10 @@ export function persistAnnotationFindings(
    annotations: Annotations,
    subject: string,
    model?: string,
-   { incremental = false }: { incremental?: boolean } = {},
+   {
+      incremental = false,
+      subjectKind = "source",
+   }: { incremental?: boolean; subjectKind?: "source" | "query" } = {},
 ): PackageAnnotationFinding[] {
    return readRouteTag(annotations, "@", RECOGNIZED_PERSIST_KEYS).findings.map(
       (finding) => {
@@ -437,12 +664,25 @@ export function persistAnnotationFindings(
                : "";
          return {
             ...finding,
-            message: `#@ persist source "${subject}": ${finding.message}${consequence}`,
+            message: `#@ persist ${subjectKind} "${subject}": ${finding.message}${consequence}`,
             subject,
             ...(model ? { model } : {}),
          };
       },
    );
+}
+
+/**
+ * What to write instead of `key` when `spec` retires it, or undefined. An own
+ * key only: `constructor=` or `toString=` is an unknown key, never one
+ * inherited from `Object.prototype`.
+ */
+function retiredRewrite(
+   spec: RouteSpec | undefined,
+   key: string,
+): string | undefined {
+   const retired = spec?.retiredKeys;
+   return retired && Object.hasOwn(retired, key) ? retired[key] : undefined;
 }
 
 /**
@@ -480,13 +720,28 @@ export function editDistance(a: string, b: string): number {
    return previous[b.length] ?? 0;
 }
 
-/** A finding as a package load carries it: which model it is in, when known. */
-export type PackageAnnotationFinding = AnnotationFinding & { model?: string };
+/**
+ * A finding as a package load carries it: which model it is in, when known,
+ * and, for a valid declaration that is not built (`unservable`), the
+ * refusal record the build plan lists it under (`refusedSources`).
+ */
+export type PackageAnnotationFinding = AnnotationFinding & {
+   model?: string;
+   refused?: RefusalKey;
+};
+
+/** Where a refused declaration sits in the build plan's `refusedSources`. */
+export interface RefusalKey {
+   sourceID: string;
+   name: string;
+   tier: RefusedSource["tier"];
+   reason: RefusedSource["reason"];
+}
 
 /**
  * A `#@` tag Malloy's build walk could not parse. Malloy drops the source from
  * the build entirely, so nothing else records that it was annotated: this is
- * the only trace, and it is malformed (refused at publish).
+ * the only trace, and it is malformed: it fails the publish and the load.
  */
 export function persistUnparseableFinding(
    entry: { message: string; at?: DocumentLocation },
@@ -501,11 +756,9 @@ export function persistUnparseableFinding(
    const message = planned
       ? `#@ persist source "${planned.subject}": the #@ line${where} ` +
         `\`${planned.line.trim()}\` does not parse (${entry.message}), so its ` +
-        `directives are not read: the source is built from its other #@ ` +
-        `lines without them. Fix the line's syntax.`
+        `directives cannot be read. Fix the line's syntax.`
       : `a #@ annotation${where} does not parse (${entry.message}), so the ` +
-        `source it is on is not materialized and is served live. Fix the ` +
-        `annotation's syntax.`;
+        `source it is on cannot be read. Fix the annotation's syntax.`;
    return {
       route: "@",
       tier: "malformed",

@@ -13,6 +13,9 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "spaced@<pkg>/m.malloy": "materialize"
+    },
     "materializePlans": {
       "spaced@<pkg>/m.malloy": {
         "buildSourceName": "spaced__mat",
@@ -74,6 +77,8 @@
         ]
       }
     ],
+    "omittedFiles": [],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "spaced@<pkg>/m.malloy": {
@@ -96,7 +101,7 @@
         "freshness": null,
         "modelPath": "m.malloy",
         "name": "spaced",
-        "origin": "persist",
+        "origin": "materialize",
         "preaggregate": null,
         "queryMetadata": null,
         "refresh": null,

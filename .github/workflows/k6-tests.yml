@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
 
 env:
-  BUN_VERSION: 1.3.13
+  BUN_VERSION: 1.4.4
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 # The GITHUB_TOKEN is read-only for every job here; a job that needs more
@@ -48,7 +48,7 @@ jobs:
       - name: Build server
         run: |
           echo "Bun cache hit: ${{ steps.bun-cache.outputs.cache-hit }}"
-          bun install --frozen-lockfile
+          scripts/ci-install-with-retry.sh bun install --frozen-lockfile
           bun run build
         env:
           BUN_CONFIG_SKIP_POSTINSTALL_SCRIPTS: "1"
@@ -60,7 +60,7 @@ jobs:
       - name: Install k6-tests dependencies
         run: |
           cd packages/server/k6-tests
-          bun install --frozen-lockfile
+          "$GITHUB_WORKSPACE/scripts/ci-install-with-retry.sh" bun install --frozen-lockfile
 
       - name: Generate k6 API clients
         run: |
@@ -104,7 +104,7 @@ jobs:
 
       - name: Start npx server
         run: |
-          cd packages/server && npx malloy-publisher --port 4002 --server_root ./ &
+          cd packages/server && npx malloy-publisher --port 4002 --root ./ &
           sleep 12
           # Verify server is running
           response=$(curl -s http://localhost:4002/api/v0/projects || echo "failed")
@@ -125,7 +125,7 @@ jobs:
           echo "Server is running on port 4002"
         env:
           GOOGLE_APPLICATION_CREDENTIALS: ${{ env.GOOGLE_APPLICATION_CREDENTIALS }}
-          DISABLE_RESPONSE_LOGGING: true
+          PUBLISHER_LOGGING_RESPONSE_BODIES_ENABLED: "false"
 
       # Smoke test runs for 1 minute total with 5 virtual users
       - name: Run k6 smoke test

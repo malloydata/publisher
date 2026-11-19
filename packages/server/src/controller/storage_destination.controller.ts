@@ -15,7 +15,7 @@ import {
    cleanupStorageFiles,
    dropStorageTable,
    listStorageTables,
-} from "../service/materialization/run/materialization_build_session";
+} from "../service/materialization/run/storage_admin";
 import { parseEnvironmentName } from "../service/identity";
 
 type ApiConnection = components["schemas"]["Connection"];
@@ -85,10 +85,10 @@ export class StorageDestinationController {
             environmentPath: environment.getEnvironmentPath(),
          });
       } catch (error) {
-         recordDropTables("failure", "storage");
+         recordDropTables("failure", "storage", "delete");
          throw error;
       }
-      recordDropTables("success", "storage");
+      recordDropTables("success", "storage", "delete");
       logger.info("Dropped a storage destination table", {
          environmentName,
          destinationName,

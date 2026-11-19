@@ -22,12 +22,23 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { pathToFileURL } from "url";
-import { RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
+import {
+   deleteLeftoverEnvironment,
+   RestE2EEnv,
+   startRestE2E,
+} from "../../harness/rest_e2e";
 
 const ENV_NAME = "manifest-location-env";
 const PKG = "persist-test";
 const FIXTURE = path.resolve(__dirname, "../../fixtures/persist-test");
-const BOUND_TABLE = "order_summary_from_manifest";
+/**
+ * The table every manifest here binds: a temporary table on the version's
+ * sandbox, made from one SELECT (raw SQL on the sandbox runs only as a single
+ * SELECT, duckdb_lockdown.ts), so its name is the one the route returns.
+ */
+let BOUND_TABLE = "";
+/** The rows BOUND_TABLE holds: a count no live answer gives. */
+const BOUND_ROWS = 13;
 
 let env: (RestE2EEnv & { stop(): Promise<void> }) | undefined;
 let baseUrl = "";
@@ -88,9 +99,8 @@ function writeManifest(name: string, sourceEntityId: string): string {
 }
 
 /**
- * Run the persisted source. Live, it computes from the package's CSV and
- * answers 200; bound, it reads BOUND_TABLE, which does not exist, so the
- * answer names that table.
+ * Run the persisted source: live, from the package's CSV; bound, from
+ * BOUND_TABLE's BOUND_ROWS rows.
  */
 async function runOrderSummary(): Promise<{ status: number; text: string }> {
    const res = await fetch(
@@ -100,6 +110,7 @@ async function runOrderSummary(): Promise<{ status: number; text: string }> {
          headers: { "content-type": "application/json" },
          body: JSON.stringify({
             query: "run: order_summary -> { aggregate: c is count() }",
+            compactJson: true,
          }),
       },
    );
@@ -109,13 +120,23 @@ async function runOrderSummary(): Promise<{ status: number; text: string }> {
 async function expectBoundTo(location: string): Promise<void> {
    const version = await call("GET", `/${PKG}/versions/1.0.0`);
    expect(version.json.manifestLocation).toBe(location);
+   // Served from the bound table: its BOUND_ROWS rows, not live's.
    const served = await runOrderSummary();
-   expect(served.status).not.toBe(200);
-   expect(served.text).toContain(BOUND_TABLE);
+   expect(served.status).toBe(200);
+   expect(countOf(served.text)).toBe(BOUND_ROWS);
+}
+
+/** The `c` a run of the persisted source answered. */
+function countOf(text: string): number {
+   const body = JSON.parse(text) as { result?: string };
+   const rows = JSON.parse(body.result ?? "[]") as { c: number }[];
+   return Number(rows[0]?.c);
 }
 
 async function expectLive(): Promise<void> {
-   expect((await runOrderSummary()).status).toBe(200);
+   const live = await runOrderSummary();
+   expect(live.status).toBe(200);
+   expect(countOf(live.text)).not.toBe(BOUND_ROWS);
 }
 
 describe("a version bound to a manifest on this server's disk", () => {
@@ -127,6 +148,7 @@ describe("a version bound to a manifest on this server's disk", () => {
       );
       env = await startRestE2E();
       baseUrl = env.baseUrl;
+      await deleteLeftoverEnvironment(baseUrl, ENV_NAME);
       const created = await fetch(`${baseUrl}/api/v0/environments`, {
          method: "POST",
          headers: { "content-type": "application/json" },
@@ -147,6 +169,21 @@ describe("a version bound to a manifest on this server's disk", () => {
          "1.0.0",
       ]);
       sourceEntityId = await orderSummarySourceEntityId();
+      // The table every manifest here binds, in the version's own DuckDB:
+      // BOUND_ROWS rows, so an answer read from it is told from live's.
+      const created_ = await fetch(
+         `${api(`/${PKG}/connections/duckdb/sqlTemporaryTable`)}?versionId=1.0.0`,
+         {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+               sqlStatement: `SELECT 'c' || i AS category, 1::BIGINT AS total_orders, 1::BIGINT AS total_revenue FROM range(${BOUND_ROWS}) t(i)`,
+            }),
+         },
+      );
+      expect(created_.status).toBeLessThan(300);
+      BOUND_TABLE = ((await created_.json()) as { table?: string }).table ?? "";
+      expect(BOUND_TABLE).not.toBe("");
    }, 180_000);
 
    afterAll(async () => {

@@ -53,7 +53,14 @@
       "equalToLive": true,
       "malloy": "run: monthly -> { group_by: order_month; aggregate: share }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "origin": "materialize",
+            "outcome": "used",
+            "tableId": "f7dbab505c7424aa1adaf396d8d73d71fa879daf4555000bae1091204f49b988"
+          }
+        ],
         "notConsidered": [],
         "query": {
           "filteredBy": [],
@@ -66,13 +73,17 @@
           "sourceName": "monthly"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "origin": "materialize",
+          "tableId": "f7dbab505c7424aa1adaf396d8d73d71fa879daf4555000bae1091204f49b988",
+          "tier": "storage",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a stored month, with its doc",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -120,7 +131,14 @@
       "equalToLive": true,
       "malloy": "run: monthly -> { group_by: created_hour, order_week; aggregate: t is total.sum() }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "origin": "materialize",
+            "outcome": "used",
+            "tableId": "f7dbab505c7424aa1adaf396d8d73d71fa879daf4555000bae1091204f49b988"
+          }
+        ],
         "notConsidered": [],
         "query": {
           "filteredBy": [],
@@ -134,13 +152,17 @@
           "sourceName": "monthly"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "origin": "materialize",
+          "tableId": "f7dbab505c7424aa1adaf396d8d73d71fa879daf4555000bae1091204f49b988",
+          "tier": "storage",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a stored hour and week",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -191,7 +213,14 @@
       "equalToLive": true,
       "malloy": "run: monthly -> { where: order_month = @2025-01; group_by: region; aggregate: t is total.sum() }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "origin": "materialize",
+            "outcome": "used",
+            "tableId": "f7dbab505c7424aa1adaf396d8d73d71fa879daf4555000bae1091204f49b988"
+          }
+        ],
         "notConsidered": [],
         "query": {
           "filteredBy": [
@@ -206,13 +235,17 @@
           "sourceName": "monthly"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "origin": "materialize",
+          "tableId": "f7dbab505c7424aa1adaf396d8d73d71fa879daf4555000bae1091204f49b988",
+          "tier": "storage",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a filter on a stored timeframe",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -254,7 +287,14 @@
       "equalToLive": true,
       "malloy": "run: monthly -> { select: region, discount_rate; order_by: region, discount_rate }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "origin": "materialize",
+            "outcome": "used",
+            "tableId": "f7dbab505c7424aa1adaf396d8d73d71fa879daf4555000bae1091204f49b988"
+          }
+        ],
         "notConsidered": [],
         "query": {
           "filteredBy": [],
@@ -266,13 +306,17 @@
           "sourceName": "monthly"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "origin": "materialize",
+          "tableId": "f7dbab505c7424aa1adaf396d8d73d71fa879daf4555000bae1091204f49b988",
+          "tier": "storage",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a percent column selected",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -318,6 +362,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "materialize",
             "outcome": "used",
             "tableId": "f7dbab505c7424aa1adaf396d8d73d71fa879daf4555000bae1091204f49b988"
           }
@@ -335,7 +380,9 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "materialize",
           "tableId": "f7dbab505c7424aa1adaf396d8d73d71fa879daf4555000bae1091204f49b988",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []
@@ -393,6 +440,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "materialize",
             "outcome": "used",
             "tableId": "f7dbab505c7424aa1adaf396d8d73d71fa879daf4555000bae1091204f49b988"
           }
@@ -411,7 +459,9 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "materialize",
           "tableId": "f7dbab505c7424aa1adaf396d8d73d71fa879daf4555000bae1091204f49b988",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []
@@ -472,6 +522,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "materialize",
             "outcome": "used",
             "tableId": "f7dbab505c7424aa1adaf396d8d73d71fa879daf4555000bae1091204f49b988"
           }
@@ -491,7 +542,9 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "materialize",
           "tableId": "f7dbab505c7424aa1adaf396d8d73d71fa879daf4555000bae1091204f49b988",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []
@@ -543,6 +596,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "materialize",
             "outcome": "used",
             "tableId": "f7dbab505c7424aa1adaf396d8d73d71fa879daf4555000bae1091204f49b988"
           }
@@ -559,7 +613,9 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "materialize",
           "tableId": "f7dbab505c7424aa1adaf396d8d73d71fa879daf4555000bae1091204f49b988",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []

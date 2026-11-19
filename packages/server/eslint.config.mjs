@@ -9,6 +9,11 @@ import tsParser from "@typescript-eslint/parser";
 import globals from "globals";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+   MATERIALIZATION_HEADER_ALLOWLIST,
+   MATERIALIZATION_HISTORY_ALLOWLIST,
+   MATERIALIZATION_IMPORT_ALLOWLIST,
+} from "./materialization_allowlists.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -216,6 +221,38 @@ const LEGACY_MALLOYNB_IMPORT = {
 // has a violation the list does not name (fix the import; do not add it).
 // ---------------------------------------------------------------------------
 const SERVER_SRC = path.join(__dirname, "src");
+const MZ = /^service\/materialization(\/|$)/;
+const MZ_DOMAIN = /^service\/materialization\/domain(\/|$)/;
+const MZ_TEXT = /^service\/materialization\/text(\/|$)/;
+const MZ_PLAN = /^service\/materialization\/plan(\/|$)/;
+const MZ_RUN = /^service\/materialization\/run(\/|$)/;
+const MZ_SERVE = /^service\/materialization\/serve(\/|$)/;
+const MZ_ENTRY = "service/materialization";
+const MZ_FACADE = new Set([
+   "service/materialization/index.ts",
+   "service/materialization/package_materialization.ts",
+   "service/materialization/package_warnings.ts",
+   "service/materialization/plan_lifecycle.ts",
+   "service/materialization/serve_verdicts.ts",
+]);
+const MZ_SHARED_LEAVES = new Set([
+   "service/materialization/host.ts",
+   "service/materialization/stored_column_types.ts",
+]);
+const mzLayerOf = (p) =>
+   /^service\/materialization\/(plan|run|serve)(\/|$)/.exec(p)?.[1];
+const TEXT_MAY_IMPORT = (m) =>
+   MZ_DOMAIN.test(m) ||
+   /^service\/governance\/ir(\/|$)/.test(m) ||
+   m === "service/malloy_text" ||
+   m === "service/overlay_key" ||
+   m === "service/annotation_reader" ||
+   // The annotation bundle's texts, which a variant's view notes read.
+   m === "service/annotations" ||
+   // The Compiler port's factory: text/generated_files.ts compiles through it.
+   m === "service/model_runtime" ||
+   // The one Malloy lexer core, shared with the caller-text reader.
+   m === "service/malloy_lexer_core";
 const IMPORT_DIRECTION_RULES = [
    {
       id: "R1",
@@ -248,8 +285,85 @@ const IMPORT_DIRECTION_RULES = [
       message:
          "the domain (service/**) must not depend on the retrieval module (retrieval/**); retrieval depends on the domain",
    },
+   // Materialization's layers (service/materialization/README.md). `domain/`
+   // and `text/` are pure leaves; `plan/`, `run/` and `serve/` are siblings
+   // over them that never import one another; only the facade composes them,
+   // and the rest of the server enters through `index.ts` or `domain/`.
+   {
+      id: "R5",
+      from: (f) => MZ_DOMAIN.test(f),
+      to: (m) => !MZ_DOMAIN.test(m) && m !== "api",
+      allowTypeImports: false,
+      message:
+         "materialization/domain/ is the shared vocabulary: it imports only itself and api.ts types",
+   },
+   {
+      id: "R6",
+      from: (f) => MZ_TEXT.test(f),
+      to: (m) => !MZ_TEXT.test(m) && !TEXT_MAY_IMPORT(m),
+      allowTypeImports: false,
+      message:
+         "materialization/text/ imports only domain/, governance/ir, malloy_text.ts, overlay_key.ts, annotation_reader.ts, annotations.ts, model_runtime.ts (the Compiler port's factory) and malloy_lexer_core.ts",
+   },
+   {
+      id: "R7",
+      from: (f) => MZ_PLAN.test(f),
+      to: (m) => MZ_RUN.test(m) || MZ_SERVE.test(m) || m === "service/model",
+      allowTypeImports: false,
+      message:
+         "materialization/plan/ compiles and never runs: it must not import run/, serve/ or service/model.ts",
+   },
+   {
+      id: "R8",
+      from: (f) =>
+         MZ_RUN.test(f) || MZ_SERVE.test(f) || MZ_SHARED_LEAVES.has(f),
+      to: (m, f) =>
+         (MZ_PLAN.test(m) || MZ_RUN.test(m) || MZ_SERVE.test(m)) &&
+         mzLayerOf(m) !== mzLayerOf(f),
+      allowTypeImports: false,
+      message:
+         "plan/, run/ and serve/ are siblings and never import one another, nor do the modules they share (host.ts, stored_column_types.ts); what two of them need belongs in domain/ or text/",
+   },
+   {
+      id: "R9",
+      from: (f) => /^service\/governance\//.test(f),
+      to: (m) => MZ.test(m) && !MZ_DOMAIN.test(m),
+      allowTypeImports: false,
+      message:
+         "governance/ imports nothing of materialization but materialization/domain/",
+   },
+   {
+      id: "R10",
+      from: (f) => !MZ.test(f),
+      to: (m) => MZ.test(m) && !MZ_DOMAIN.test(m) && m !== MZ_ENTRY,
+      allowTypeImports: false,
+      message:
+         "outside materialization/, import only materialization/index.ts and materialization/domain/",
+   },
+   {
+      id: "H5",
+      from: (f) => MZ.test(f) && !MZ_RUN.test(f) && !MZ_FACADE.has(f),
+      to: (m) => m === "logger" || m === "materialization_metrics",
+      allowTypeImports: true,
+      message:
+         "telemetry is emitted from run/, the facade and the query pipeline only: return a value and let the shell log or count it",
+   },
+   {
+      id: "H6",
+      from: (f) =>
+         MZ_PLAN.test(f) ||
+         MZ_SERVE.test(f) ||
+         MZ_DOMAIN.test(f) ||
+         MZ_TEXT.test(f),
+      to: (m) => m === "config",
+      allowTypeImports: true,
+      message:
+         "plan/, serve/, domain/ and text/ read no setting: the shell reads the switches once (domain/switches.ts) and passes them down",
+   },
 ];
-export const IMPORT_DIRECTION_ALLOWLIST = {};
+export const IMPORT_DIRECTION_ALLOWLIST = {
+   ...MATERIALIZATION_IMPORT_ALLOWLIST,
+};
 
 const toPosix = (p) => p.split(path.sep).join("/");
 const importDirectionRule = {
@@ -279,7 +393,7 @@ const importDirectionRule = {
             .replace(/\.(ts|js|mjs|cjs)$/, "")
             .replace(/\/index$/, "");
          for (const r of rules) {
-            if (!r.to(target)) continue;
+            if (!r.to(target, from)) continue;
             if (typeOnly && r.allowTypeImports) continue;
             const key = `${from} -> ${target}`;
             if (Object.hasOwn(allow, key)) continue;
@@ -324,8 +438,116 @@ const importDirectionRule = {
       };
    },
 };
+// ---------------------------------------------------------------------------
+// Materialization's documentation checks (service/materialization/README.md).
+//
+//   H1  every non-spec module under materialization/ opens, after the
+//       license, with a block comment saying what it is responsible for.
+//   H2  no history in a comment there: no ticket number, `phase N`, `step N`
+//       or `pull request N` label, or date, and no plan or review label
+//       standing for a concept (`P10`, `G3`, `known limitation 29`,
+//       `question 14`, `g-mixed`): spell the concept. History belongs in the
+//       commit message.
+//
+// Both allow no exceptions: their lists in materialization_allowlists.mjs are
+// empty, and src/service/materialization/layer_rules.spec.ts fails on any
+// violation.
+// ---------------------------------------------------------------------------
+const mzFileOf = (context) => {
+   const filename = context.filename ?? context.getFilename();
+   const rel = toPosix(path.relative(SERVER_SRC, filename));
+   return rel.startsWith("service/materialization/") ? rel : undefined;
+};
+const moduleHeaderRule = {
+   meta: {
+      type: "suggestion",
+      docs: { description: "A materialization module opens with a header" },
+      schema: [
+         {
+            type: "object",
+            properties: { allow: { type: "object" } },
+            additionalProperties: false,
+         },
+      ],
+   },
+   create(context) {
+      const file = mzFileOf(context);
+      if (!file) return {};
+      const allow = context.options[0]?.allow ?? {};
+      if (Object.hasOwn(allow, file)) return {};
+      return {
+         Program(node) {
+            const source = context.sourceCode ?? context.getSourceCode();
+            const first = node.body[0];
+            const before = first
+               ? source.getCommentsBefore(first)
+               : source.getAllComments();
+            if (before.some((c) => c.type === "Block")) return;
+            context.report({
+               node: first ?? node,
+               message: `Module header H1: open ${file} with a block comment saying what the module is responsible for, its surface, invariants and effects.`,
+            });
+         },
+      };
+   },
+};
+/**
+ * A ticket number, a `phase N`, `step N` or `pull request N` label, or a
+ * date, in a comment.
+ */
+export const HISTORY_IN_COMMENT =
+   /#\d{3,}\b|\bphase \d|\bstep \d+[a-z]?\b|\bpull request \d|\b20\d\d-\d\d-\d\d\b|\bknown limitation \d|\bquestion \d|\bg-mixed\b|\bPR \d|\b\w+\/\w+#\d/gi;
+/**
+ * A plan or review label standing for a concept, from the plan's own
+ * series: the plan audit's P1–P14, the gate findings G1–G8, the architecture
+ * audit's A1–A7, D1–D3, H1–H6 and R3–R10, a finding id (`P2-41`, `F-08`).
+ * Labels that collide with ordinary words (R1/R2, the leaks L1–L3, a
+ * question Qn) count only in parentheses, as the plan cites them (`(R2)`);
+ * a percentile (`P95`), a quarter (`Q1`) or a cache level (`L2`) do not.
+ * Case-sensitive, so a duration (`2d`) or a directory (`r4`) is not one.
+ */
+export const LABEL_IN_COMMENT =
+   /\b(?:P(?:1[0-4]|[1-9])|G[1-8]|A[1-7]|D[1-3]|H[1-6]|R(?:10|[3-9]))(?:-\d+)?\b|\((?:R[12]|L[1-3]|Q\d{1,2})\)|\bF-\d{2}\b/g;
+const noHistoryCommentsRule = {
+   meta: {
+      type: "suggestion",
+      docs: { description: "No history in a materialization comment" },
+      schema: [
+         {
+            type: "object",
+            properties: { allow: { type: "object" } },
+            additionalProperties: false,
+         },
+      ],
+   },
+   create(context) {
+      const file = mzFileOf(context);
+      if (!file) return {};
+      const allowed = context.options[0]?.allow?.[file]?.count ?? 0;
+      return {
+         "Program:exit"(node) {
+            const source = context.sourceCode ?? context.getSourceCode();
+            let count = 0;
+            for (const c of source.getAllComments()) {
+               count += (c.value.match(HISTORY_IN_COMMENT) ?? []).length;
+               count += (c.value.match(LABEL_IN_COMMENT) ?? []).length;
+            }
+            if (count > allowed) {
+               context.report({
+                  node,
+                  message: `History in comments H2: ${file} has ${count} ticket numbers, phase, step or plan labels or dates in comments, ${allowed} allowed. Move them to the commit message.`,
+               });
+            }
+         },
+      };
+   },
+};
 const publisherPlugin = {
-   rules: { "import-direction": importDirectionRule },
+   rules: {
+      "import-direction": importDirectionRule,
+      "module-header": moduleHeaderRule,
+      "no-history-comments": noHistoryCommentsRule,
+   },
 };
 
 export default [
@@ -490,6 +712,22 @@ export default [
       },
    },
    {
+      // Materialization's documentation checks (H1, H2). Specs are exempt.
+      files: ["src/service/materialization/**/*.ts"],
+      ignores: ["src/**/*.spec.ts"],
+      plugins: { publisher: publisherPlugin },
+      rules: {
+         "publisher/module-header": [
+            "error",
+            { allow: MATERIALIZATION_HEADER_ALLOWLIST },
+         ],
+         "publisher/no-history-comments": [
+            "error",
+            { allow: MATERIALIZATION_HISTORY_ALLOWLIST },
+         ],
+      },
+   },
+   {
       // Every setting is read through the registry (src/settings), never from
       // process.env, so no read can bypass its names, types and precedence.
       // Specs and test helpers set up processes and are exempt.
@@ -511,5 +749,11 @@ export default [
             },
          ],
       },
+   },
+   {
+      // Bun's `use…` fixtures register before/after hooks, not React state, so
+      // a spec may call them at a file's top level.
+      files: ["src/**/*.spec.ts", "tests/**/*.ts"],
+      rules: { "react-hooks/rules-of-hooks": "off" },
    },
 ];

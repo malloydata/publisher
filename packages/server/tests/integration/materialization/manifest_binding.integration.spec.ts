@@ -8,8 +8,13 @@ import * as fsp from "fs/promises";
 import os from "os";
 import path from "path";
 import { fileURLToPath } from "url";
-import { RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
+import {
+   deleteLeftoverEnvironment,
+   RestE2EEnv,
+   startRestE2E,
+} from "../../harness/rest_e2e";
 import { pollFor, TERMINAL_STATUSES, waitUntilOk } from "./polling";
+import { recordConnectionsAsForTests } from "../../../src/service/connection_type";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -35,12 +40,21 @@ describe("Manifest binding via Package.manifestLocation (E2E)", () => {
    let baseUrl: string;
    let tmpDir: string;
 
+   // The fixture's sources are on the package's DuckDB sandbox, which stands
+   // in for a warehouse here: the serve side admits a `storage=` binding only
+   // for a source whose connection a `storage=` build can read.
+   let restoreConnectionTypes: (() => void) | undefined;
+
    beforeAll(async () => {
+      restoreConnectionTypes = recordConnectionsAsForTests({
+         duckdb: "postgres",
+      });
       env = await startRestE2E();
       baseUrl = env.baseUrl;
       tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "manifest-bind-"));
 
       const fixtureDir = path.resolve(__dirname, "../../fixtures/persist-test");
+      await deleteLeftoverEnvironment(baseUrl, PROJECT_NAME);
       const createRes = await fetch(`${baseUrl}/api/v0/environments`, {
          method: "POST",
          headers: { "Content-Type": "application/json" },
@@ -68,6 +82,7 @@ describe("Manifest binding via Package.manifestLocation (E2E)", () => {
       await env?.stop();
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
       env = null;
+      restoreConnectionTypes?.();
    });
 
    function url(p: string): string {
@@ -379,7 +394,7 @@ describe("Manifest binding via Package.manifestLocation (E2E)", () => {
          ]);
          // The bound URI is recorded even though no tableName manifest bound.
          expect(patched.boundManifestUri).toBe(manifestFile);
-         // And it reports BOUND despite the zero colocated entry count. This is
+         // And it reports BOUND despite the zero database entry count. This is
          // what a control plane reads to decide whether the worker honoured the
          // manifest it distributed; reporting `unbound` after a successful bind
          // reads as drift, and the package is rebound on every reconcile tick.
@@ -410,9 +425,9 @@ describe("Manifest binding via Package.manifestLocation (E2E)", () => {
          const failed = (await (
             await patchPackage({ manifestLocation: missing })
          ).json()) as Record<string, unknown>;
-         expect(failed.manifestBindingStatus).toBe("live_fallback");
+         expect(failed.manifestBindingStatus).toBe("bind_failed");
 
-         // A pure-`storage=` manifest binds with no colocated entry to recompile, so
+         // A pure-`storage=` manifest binds with no database entry to recompile, so
          // nothing on that path recomputes the status — the successful bind has to
          // report itself. Otherwise the package stays live_fallback while healthily
          // bound, which reads as degraded to a caller that alerts on it.
@@ -457,7 +472,7 @@ describe("Manifest binding via Package.manifestLocation (E2E)", () => {
          const failed = (await (
             await patchPackage({ manifestLocation: missing })
          ).json()) as Record<string, unknown>;
-         expect(failed.manifestBindingStatus).toBe("live_fallback");
+         expect(failed.manifestBindingStatus).toBe("bind_failed");
          expect(failed.manifestEntryCount).toBe(1);
          expect(failed.boundManifestUri).toBe(manifestFile);
          expect(await queryOrderSummaryStatus()).toBe(200);
@@ -522,7 +537,7 @@ describe("Manifest binding via Package.manifestLocation (E2E)", () => {
       expect(patched.manifestLocation).toBe(missing);
       // The configured location is retained, but the binding is reported as a
       // degraded live fallback (not "bound") with nothing actually bound.
-      expect(patched.manifestBindingStatus).toBe("live_fallback");
+      expect(patched.manifestBindingStatus).toBe("bind_failed");
       expect(patched.manifestEntryCount).toBe(0);
       expect(patched.boundManifestUri ?? null).toBeNull();
 

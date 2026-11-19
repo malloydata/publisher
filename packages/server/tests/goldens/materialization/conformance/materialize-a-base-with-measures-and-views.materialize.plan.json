@@ -13,6 +13,9 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "orders_m@<pkg>/m.malloy": "materialize"
+    },
     "materializePlans": {
       "orders_m@<pkg>/m.malloy": {
         "buildSourceName": "orders_m__mat",
@@ -147,6 +150,8 @@
         ]
       }
     ],
+    "omittedFiles": [],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "orders_m@<pkg>/m.malloy": {
@@ -201,7 +206,7 @@
         "freshness": null,
         "modelPath": "m.malloy",
         "name": "orders_m",
-        "origin": "persist",
+        "origin": "materialize",
         "preaggregate": null,
         "queryMetadata": null,
         "refresh": null,

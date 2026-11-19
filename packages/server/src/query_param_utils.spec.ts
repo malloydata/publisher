@@ -55,13 +55,13 @@ describe("invalidBooleanMessage", () => {
    });
 
    it("carries the caller's own param name and method", () => {
-      // The same message serves every boolean param, so the destructive one
+      // The same message serves every boolean param, so one sent on a POST
       // must not suggest a GET.
       expect(
-         invalidBooleanMessage("dropTables", "1", "DELETE", "/api/v0/m/1"),
+         invalidBooleanMessage("dryRun", "1", "POST", "/api/v0/e/packages"),
       ).toBe(
-         `Invalid dropTables value "1": expected "true" or "false". ` +
-            `Fix: DELETE /api/v0/m/1?dropTables=true.`,
+         `Invalid dryRun value "1": expected "true" or "false". ` +
+            `Fix: POST /api/v0/e/packages?dryRun=true.`,
       );
    });
 

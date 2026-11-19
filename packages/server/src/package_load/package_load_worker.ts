@@ -35,8 +35,8 @@ import {
 import * as fs from "fs";
 import * as path from "path";
 import { AsyncLocalStorage } from "node:async_hooks";
+import { createHash } from "node:crypto";
 import { parentPort, threadId, workerData } from "node:worker_threads";
-import recursive from "recursive-readdir";
 import { fileURLToPath, pathToFileURL } from "url";
 
 import {
@@ -48,6 +48,7 @@ import {
 } from "../constants";
 import { isReportEligiblePath, readReportTagOfText } from "../service/report";
 import { HackyDataStylesAccumulator } from "../data_styles";
+import { overlayKey } from "../service/overlay_key";
 import { PackageManifestError } from "../errors";
 import { deserializeError, serializeError } from "./error_wire";
 import {
@@ -83,38 +84,39 @@ import {
    ignoredRetrievalWarnings,
    readPackageRetrieval,
 } from "../service/package_retrieval_settings";
-import { errMessage, ignoreDotfiles } from "../utils";
+import {
+   confinedPackagePath,
+   errMessage,
+   ImportOutsidePackageError,
+   importOutsidePackageProblem,
+   listPackageTree,
+   readPackageURL,
+} from "../utils";
 import { RpcWaitAccountant } from "./rpc_wait_accountant";
 import { acceptBundledExperimentalDialects } from "../service/experimental_dialects";
-import {
-   setEligibilityRefusalSink,
-   type EligibilityRefusalReason,
-} from "../materialization_metrics";
 import { logger } from "../logger";
-import { getV1ServedCopyMode } from "../config";
-import {
-   tryCompileSynthesizedPreaggregation,
-   type SynthesizedPreaggregation,
-   type SynthesizedRuntimeFactory,
-} from "../service/materialization/plan/preaggregation_compile";
+import { installProcessSafetyHandlers } from "../process_safety";
+import type { SynthesizedRuntimeFactory } from "../service/materialization";
 import { type InFlightAnswer, SchemaCache } from "./schema_cache";
 import { plainLogEntry } from "./worker_log";
 import { renderTagTargets } from "../service/render_tag_targets";
-import {
-   loadLeavingOutCrossConnectionJoins,
-   type LeftOutDefinition,
-} from "../service/materialization/plan/cross_connection_joins";
+import { governsAccess } from "../service/governance/ir/array_query";
+import { recordConnectionType } from "../service/connection_type";
+import type { EligibilityRefusals } from "../service/materialization/domain/package_plan";
 import {
    collectModelBuildPlan,
-   deriveBuildPlanOutcome,
+   derivePackagePlan,
    emptyBuildPlanParts,
+   finishPackagePlan,
    mergeBuildPlanParts,
-   resolveConnectionDigests,
-   resolvePackageConnections,
+   newCrossFileCompanions,
    type BuildPlanParts,
+   type CrossFileCompanions,
    type WirePackageMaterialization,
 } from "../service/materialization/plan/build_plan";
 import type {
+   CompileServedCopyRequest,
+   CompileServedCopyResult,
    ConnectionMetadata,
    ConnectionMetadataRequest,
    ConnectionMetadataResponse,
@@ -132,6 +134,7 @@ import type {
    SerializedNotebookCell,
    WorkerBuildPlan,
    WorkerLogMessage,
+   WorkerUnhandledRejectionMessage,
 } from "./protocol";
 import { PACKAGE_LOAD_PROTOCOL_VERSION } from "./protocol";
 
@@ -145,6 +148,16 @@ if (!parentPort) {
 acceptBundledExperimentalDialects();
 
 const port = parentPort;
+
+// An unhandled rejection in a worker would otherwise end the thread. The main
+// thread logs and counts it (see WorkerUnhandledRejectionMessage).
+installProcessSafetyHandlers((report) => {
+   const msg: WorkerUnhandledRejectionMessage = {
+      type: "unhandled-rejection",
+      ...report,
+   };
+   port.postMessage(msg);
+});
 
 // ──────────────────────────────────────────────────────────────────────
 // RPC plumbing for worker → main calls
@@ -216,13 +229,10 @@ const schemaCache = new SchemaCache<CachedSchema>(
 interface JobContext {
    jobId: string;
    packagePath: string;
-   refusals: Partial<Record<EligibilityRefusalReason, number>>;
 }
 
-/** The running job, carried across awaits so jobs' logs and refusals never mix. */
+/** The running job, carried across awaits so jobs' logs never mix. */
 const jobContext = new AsyncLocalStorage<JobContext>();
-
-setEligibilityRefusalSink(() => jobContext.getStore()?.refusals);
 
 // OpenTelemetry log export exists only on the main thread, so a job's log
 // entries are intercepted at `write` (where every call arrives as winston's
@@ -509,10 +519,16 @@ function serializeFetchOptions(options: FetchSchemaOptions): {
 }
 
 // ──────────────────────────────────────────────────────────────────────
-// URLReader: file:// → fs; everything else proxies to main thread
+// URLReader: file:// → fs, inside the package only; everything else proxies
+// to the main thread
 // ──────────────────────────────────────────────────────────────────────
 
-function makeWorkerUrlReader(job: LoadPackageRequest): {
+function makeWorkerUrlReader(
+   job: Pick<
+      LoadPackageRequest,
+      "packagePath" | "requestId" | "overlay" | "replacement"
+   >,
+): {
    readURL: (url: URL) => Promise<string>;
 } {
    // The replacement and the overlay, by resolved path; the replacement wins.
@@ -532,7 +548,7 @@ function makeWorkerUrlReader(job: LoadPackageRequest): {
             const filePath = fileURLToPath(url);
             const held = inMemory.get(path.resolve(filePath));
             if (held !== undefined) return held;
-            return fs.promises.readFile(filePath, "utf8");
+            return readPackageURL(job.packagePath, url);
          }
          const response = await callMain<ReadUrlResponse>((requestId) => {
             const req: ReadUrlRequest = {
@@ -558,7 +574,12 @@ function makeWorkerUrlReader(job: LoadPackageRequest): {
  * lookups of one name share one metadata RPC, since a compile fans out many
  * lookups before any resolves.
  */
-function buildWorkerMalloyConfig(job: LoadPackageRequest): MalloyConfig {
+function buildWorkerMalloyConfig(
+   job: Pick<
+      LoadPackageRequest,
+      "packagePath" | "requestId" | "defaultConnectionName" | "environmentName"
+   >,
+): MalloyConfig {
    const proxies = new Map<string, ProxyConnection>();
    const inflight = new Map<string, Promise<ProxyConnection>>();
 
@@ -586,10 +607,13 @@ function buildWorkerMalloyConfig(job: LoadPackageRequest): MalloyConfig {
                         port.postMessage(req);
                      },
                   );
-                  const proxy = new ProxyConnection(
-                     response.metadata,
-                     job.requestId,
-                     job.environmentName,
+                  const proxy = recordConnectionType(
+                     new ProxyConnection(
+                        response.metadata,
+                        job.requestId,
+                        job.environmentName,
+                     ),
+                     response.metadata.connectionType,
                   );
                   proxies.set(effectiveName, proxy);
                   inflight.delete(effectiveName);
@@ -650,9 +674,9 @@ async function declaredReportPaths(
       const modelPath = normalizeModelPath(entry);
       if (!known.has(modelPath) || !isReportEligiblePath(modelPath)) continue;
       try {
-         const text = await fs.promises.readFile(
-            path.join(packagePath, modelPath),
-            "utf8",
+         const text = await readPackageURL(
+            packagePath,
+            pathToFileURL(path.join(packagePath, modelPath)),
          );
          if (readReportTagOfText(text).status === "report")
             reports.add(modelPath);
@@ -686,7 +710,21 @@ async function readPackageMetadata(
    agents?: unknown;
 }> {
    const manifestPath = path.join(packagePath, PACKAGE_MANIFEST_NAME);
-   const contents = await fs.promises.readFile(manifestPath, "utf8");
+   // Inside the package only, and one answer for any manifest that cannot be
+   // read (a link out of the package, a directory, no permission), naming
+   // nothing it holds or where it leads.
+   let contents: string;
+   try {
+      contents = await readPackageURL(packagePath, pathToFileURL(manifestPath));
+   } catch (error) {
+      // The package's own file it may not read keeps its errno for the
+      // operator; a refusal (a link out, to anything or nothing) says nothing.
+      if (!(error instanceof ImportOutsidePackageError)) throw error;
+      throw new PackageManifestError(
+         `${PACKAGE_MANIFEST_NAME} could not be read. It must be a readable ` +
+            `file inside the package.`,
+      );
+   }
    let parsed: {
       name?: string;
       description?: string;
@@ -702,12 +740,12 @@ async function readPackageMetadata(
    };
    try {
       parsed = JSON.parse(contents);
-   } catch (error) {
+   } catch {
       // A PackageManifestError (424), not a bare SyntaxError the pool would
-      // report as a worker outage.
+      // report as a worker outage. The parser's message quotes the text, so
+      // it is not repeated.
       throw new PackageManifestError(
-         `Invalid ${PACKAGE_MANIFEST_NAME}: it is not valid JSON ` +
-            `(${error instanceof Error ? error.message : String(error)}). ` +
+         `Invalid ${PACKAGE_MANIFEST_NAME}: it is not valid JSON. ` +
             `The package is not served until the file parses. Fix: make it ` +
             `valid JSON; a trailing comma or an unquoted key is the usual cause.`,
       );
@@ -715,7 +753,8 @@ async function readPackageMetadata(
    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
       throw new PackageManifestError(
          `Invalid ${PACKAGE_MANIFEST_NAME}: expected a JSON object, got ` +
-            `${JSON.stringify(parsed)}. Fix: { "name": "my-package" }.`,
+            `${Array.isArray(parsed) ? "an array" : parsed === null ? "null" : `a ${typeof parsed}`}. ` +
+            `Fix: { "name": "my-package" }.`,
       );
    }
    // Scope has two homes (canonical `materialization.scope`, deprecated root);
@@ -789,7 +828,7 @@ async function readPackageMetadata(
  * so sorting keeps it stable across reloads and servers.
  */
 async function listPackageFiles(packagePath: string): Promise<string[]> {
-   const files = await recursive(packagePath, [ignoreDotfiles]);
+   const files = await listPackageTree(packagePath);
    return (
       files
          .map((full: string) =>
@@ -934,7 +973,7 @@ function sharedRuntimeForModel(
 
 /**
  * Per-load state for the work done on the main thread's behalf (build plan,
- * render-tag results, companions). Each model's share runs right after its
+ * render-tag results, entities). Each model's share runs right after its
  * compile, so no compiled model is held past it.
  */
 interface LoadContext {
@@ -945,6 +984,11 @@ interface LoadContext {
    softDeadline: number;
    /** Each `.malloy` model's plan parts, when the request asked for a plan. */
    planParts?: Map<string, BuildPlanParts>;
+   /**
+    * The companions of cross-file parents' files, compiled once for the
+    * package's plan and shared by every model it collects.
+    */
+   crossFileCompanions?: CrossFileCompanions;
    /** Each model's position in the package's model order. */
    modelOrder: Map<string, number>;
    /** A model failed in a load that wants a plan, which fails anyway; stop the work. */
@@ -981,45 +1025,16 @@ async function compileMalloyModel(
 
    const shared = sharedRuntimeForModel(job, malloyConfig, files, modelURL);
    const { textFor, fileTexts } = shared;
-   let runtime = shared.runtime;
-   let mm = runtime.loadModel(modelURL, { importBaseURL });
-   let compiled: Awaited<ReturnType<ModelMaterializer["getModel"]>>;
-   // Files the build view serves in place of the author's (#6982), by URL.
-   let buildView: ReadonlyMap<string, string> | undefined;
-   let crossConnectionLeftOut: LeftOutDefinition[] | undefined;
-   try {
-      compiled = await mm.getModel();
-   } catch (first) {
-      const reader = makeWorkerUrlReader(job);
-      const view = await loadLeavingOutCrossConnectionJoins({
-         firstError: first,
-         // The text the failed compile read (the job's replacement or
-         // overlay, else the file), which its problems' positions index.
-         readText: (url) => textFor(new URL(url)),
-         load: async (overlay) => {
-            const rt = jobRuntime(
-               job,
-               malloyConfig,
-               overlaidReader(reader, overlay),
-            );
-            const m = rt.loadModel(modelURL, { importBaseURL });
-            return { rt, m, model: await m.getModel() };
-         },
-      });
-      if (!view) throw first;
-      runtime = view.result.rt;
-      mm = view.result.m;
-      compiled = view.result.model;
-      buildView = view.overlay;
-      crossConnectionLeftOut = view.leftOut;
-   }
+   const runtime = shared.runtime;
+   const mm = runtime.loadModel(modelURL, { importBaseURL });
+   const compiled = await mm.getModel();
    const modelDef = compiled._modelDef;
 
    const { sources, queries, filterMap, givens, sourceInfos, warnings } =
       await extractCheckedModel(mm, compiled);
 
    const compileDurationMs = performance.now() - compileStart;
-   const { renderTagResults, preaggregateCompanion } =
+   const { renderTagResults, renderTagResultsDigest } =
       await prepareForMainThread(job, malloyConfig, load, {
          modelPath,
          materializer: mm,
@@ -1028,7 +1043,6 @@ async function compileMalloyModel(
          importBaseURL,
          queries,
          sources,
-         buildView,
       });
    const entities = await planEntitiesForMainThread(job, malloyConfig, load, {
       relativePath: modelPath,
@@ -1055,7 +1069,6 @@ async function compileMalloyModel(
       // DocumentLocation out of them is cutting the same snapshot the
       // coordinates were computed against. See SerializedModel.
       modelSourceText: textFor(modelURL),
-      ...(crossConnectionLeftOut ? { crossConnectionLeftOut } : {}),
       dataStyles: dataStylesForModel(
          files,
          modelURL.toString(),
@@ -1063,11 +1076,11 @@ async function compileMalloyModel(
       ),
       compileDurationMs,
       problems: job.collectProblems ? compiled.problems : undefined,
-      authorizeWarnings:
-         warnings.length > 0 ? warnings.map((w) => w.message) : undefined,
+      gateWarnings: warnings.length > 0 ? warnings : undefined,
       renderTagResults,
-      preaggregateCompanion,
+      renderTagResultsDigest,
       entities,
+      governsAccess: governsAccess(modelDef),
    };
 }
 
@@ -1095,7 +1108,10 @@ async function planEntitiesForMainThread(
    let text = file.texts.get(file.absolutePath);
    if (text === undefined) {
       try {
-         text = await fs.promises.readFile(file.absolutePath, "utf8");
+         text = await readPackageURL(
+            job.packagePath,
+            pathToFileURL(file.absolutePath),
+         );
       } catch {
          return undefined;
       }
@@ -1118,12 +1134,42 @@ async function planEntitiesForMainThread(
 }
 
 /**
+ * A field's `reference_id` in a result's annotation text, as JSON quotes it:
+ * a UUID Malloy draws afresh on every compile, an identity for drilling and
+ * not part of any tag the check reads.
+ */
+const REFERENCE_ID = /reference_id = \\"[0-9a-f-]{36}\\"/g;
+
+/**
+ * The digest of every render-tag target's prepared result, labels included:
+ * the whole input of the main thread's tag check bar the validator itself, so
+ * equal digests mean equal findings (SerializedModel.renderTagResultsDigest).
+ * Each compile's fresh `reference_id`s are blanked first, or no two loads of
+ * one model would agree. `JSON.stringify` drops an undefined property and
+ * writes NaN as null, so results differing only there share a digest; a
+ * `Malloy.Result` is plain JSON-shaped data, where neither carries meaning.
+ * Undefined when a result cannot be serialized.
+ */
+function digestRenderTagResults(
+   results: { label: string; result?: Malloy.Result }[],
+): string | undefined {
+   try {
+      const json = JSON.stringify(results).replace(
+         REFERENCE_ID,
+         'reference_id = \\"\\"',
+      );
+      return createHash("sha256").update(json).digest("hex");
+   } catch {
+      return undefined;
+   }
+}
+
+/**
  * Do one compiled model's share of the main thread's work: render-tag
- * results, pre-aggregation companion, build-plan parts. Past the soft
- * deadline (checked before each target and the companion) the rest is left to
- * the main thread, so a slow package loads rather than hitting the job limit.
- * Plan parts are still collected after a companion that started in time,
- * since they need no recompile. Never throws: a failure fails at most the plan.
+ * results, then build-plan parts. Past the soft deadline (checked before each
+ * target and before the parts) the rest is left to the main thread, so a slow
+ * package loads rather than hitting the job limit. Never throws: a failure
+ * fails at most the plan.
  */
 async function prepareForMainThread(
    job: LoadPackageRequest,
@@ -1137,12 +1183,10 @@ async function prepareForMainThread(
       importBaseURL: URL;
       queries: Parameters<typeof renderTagTargets>[0];
       sources: Parameters<typeof renderTagTargets>[1];
-      /** The build view's files (#6982), read in place of the author's. */
-      buildView?: ReadonlyMap<string, string>;
    },
 ): Promise<{
    renderTagResults?: { label: string; result?: Malloy.Result }[];
-   preaggregateCompanion?: { modelDef?: unknown };
+   renderTagResultsDigest?: string;
 }> {
    if (load.failed) return {};
    const pastDeadline = (): boolean => performance.now() >= load.softDeadline;
@@ -1181,6 +1225,11 @@ async function prepareForMainThread(
       }
    }
 
+   const renderTagResultsDigest =
+      renderTagResults.length === targets.length
+         ? digestRenderTagResults(renderTagResults)
+         : undefined;
+
    const order = load.modelOrder.get(modelPath) ?? 0;
    let wantsPlan =
       load.planParts !== undefined &&
@@ -1194,53 +1243,23 @@ async function prepareForMainThread(
 
    // The runtime the companion compiles in: the model's own, reading the
    // synthesized model's text from the overlay.
-   const companionRuntime: SynthesizedRuntimeFactory = async (overlay) => {
-      const files = overlaidReader(
-         makeWorkerUrlReader(job),
-         model.buildView ?? new Map(),
-      );
-      return {
-         runtime: jobRuntime(job, malloyConfig, {
-            readURL: (url: URL) => {
-               const text = overlay.get(url.href);
-               return text !== undefined
-                  ? Promise.resolve(text)
-                  : files.readURL(url);
-            },
-         }),
-         importBaseURL,
-      };
-   };
-   // One compile serves both the main thread and the plan, since a build
-   // manifest is read only at query prepare. Undefined when not wanted or
-   // left to the main thread; null when there is no usable rollup.
-   const companion: SynthesizedPreaggregation | null | undefined =
-      (job.withPreaggregateCompanions || wantsPlan) &&
-      !load.failed &&
-      !pastDeadline()
-         ? // Under the v1 cutover a v1 rollup is the rollup leg's (G4), so
-           // no composite is compiled; null, so the plan is still made here.
-           getV1ServedCopyMode() === "on"
-            ? null
-            : ((await tryCompileSynthesizedPreaggregation({
-                 packagePath: job.packagePath,
-                 modelPath,
-                 contents: model.model._modelDef.contents as Record<
-                    string,
-                    unknown
-                 >,
-                 getRuntime: companionRuntime,
-              })) ?? null)
-         : undefined;
-
+   const companionRuntime: SynthesizedRuntimeFactory = async (overlay) => ({
+      runtime: jobRuntime(
+         job,
+         malloyConfig,
+         overlaidReader(makeWorkerUrlReader(job), overlay),
+      ),
+      importBaseURL,
+   });
    // Rechecked, since another model may have left the plan to the main
-   // thread meanwhile. The deadline is not rechecked: the parts need no
-   // recompile now, and abandoning them would make the main thread compile
-   // every model.
+   // thread meanwhile.
    if (wantsPlan && load.planLeftToMainThread) {
       wantsPlan = false;
    }
-   if (wantsPlan && companion !== undefined && !load.failed) {
+   if (wantsPlan && (load.failed || pastDeadline())) {
+      // The deadline passed while the render-tag results were prepared.
+      load.planLeftToMainThread = true;
+   } else if (wantsPlan) {
       load.planStart ??= performance.now();
       try {
          const parts = emptyBuildPlanParts();
@@ -1251,7 +1270,8 @@ async function prepareForMainThread(
             malloyModel: model.model,
             runtime: model.runtime,
             getRuntime: companionRuntime,
-            synthesized: companion,
+            crossFileCompanions: (load.crossFileCompanions ??=
+               newCrossFileCompanions()),
          });
          load.planParts?.set(modelPath, parts);
       } catch (error) {
@@ -1262,20 +1282,9 @@ async function prepareForMainThread(
             };
          }
       }
-   } else if (wantsPlan) {
-      // The deadline passed while the companion was being decided.
-      load.planLeftToMainThread = true;
    }
 
-   return {
-      renderTagResults,
-      preaggregateCompanion:
-         !job.withPreaggregateCompanions || companion === undefined
-            ? undefined
-            : companion
-              ? { modelDef: companion.model._modelDef }
-              : {},
-   };
+   return { renderTagResults, renderTagResultsDigest };
 }
 
 async function compileNotebookModel(
@@ -1289,7 +1298,7 @@ async function compileNotebookModel(
    const importBaseURL = new URL(".", modelURL);
 
    const { runtime, urlReader } = buildRuntimeForModel(job, malloyConfig);
-   const fileContents = await fs.promises.readFile(modelURL, "utf8");
+   const fileContents = await readPackageURL(job.packagePath, modelURL);
    const { materializer, cells } = await compileNotebookCells(
       runtime,
       importBaseURL,
@@ -1329,11 +1338,18 @@ async function compileNotebookModel(
       dataStyles: urlReader.getHackyAccumulatedDataStyles(),
       compileDurationMs: performance.now() - compileStart,
       problems: job.collectProblems ? compiled?.problems : undefined,
-      authorizeWarnings:
-         checked && checked.warnings.length > 0
-            ? checked.warnings.map((w) => w.message)
-            : undefined,
+      gateWarnings:
+         checked && checked.warnings.length > 0 ? checked.warnings : undefined,
+      governsAccess: modelDef ? governsAccess(modelDef) : undefined,
    };
+}
+
+/** Whether the job compiles `modelPath` from text it carries, not the disk. */
+function heldInMemory(job: LoadPackageRequest, modelPath: string): boolean {
+   return (
+      job.replacement?.modelPath === modelPath ||
+      (job.overlay ?? []).some((file) => file.modelPath === modelPath)
+   );
 }
 
 async function compileOneModel(
@@ -1344,6 +1360,15 @@ async function compileOneModel(
    files: JobFiles,
 ): Promise<SerializedModel> {
    try {
+      // A model or notebook file that is itself a link out of the package is
+      // refused before it is read, as an import out of it is. Text held in
+      // memory (a dry run's replacement or overlay) is not on disk to check.
+      if (!heldInMemory(job, modelPath)) {
+         await confinedPackagePath(
+            job.packagePath,
+            pathToFileURL(path.join(job.packagePath, modelPath)),
+         );
+      }
       if (modelPath.endsWith(MODEL_FILE_SUFFIX)) {
          return await compileMalloyModel(
             job,
@@ -1378,7 +1403,9 @@ async function compileOneModel(
          // Classified before serializing (the check reads the stack), so it
          // crosses as a compile problem rather than an outage.
          compilationError: serializeError(
-            translatorMalloyError(error) ?? error,
+            error instanceof ImportOutsidePackageError
+               ? importOutsidePackageProblem()
+               : (translatorMalloyError(error) ?? error),
          ),
       };
    }
@@ -1469,6 +1496,8 @@ async function loadPackage(
       modelPaths,
       load,
       packageMetadata.materialization ?? null,
+      // Only a published version's tables are named per version.
+      !!job.publishedVersion && packageMetadata.scope === "version",
    );
    const loadEnd = performance.now();
    return {
@@ -1505,15 +1534,14 @@ async function finishWorkerBuildPlan(
    modelPaths: string[],
    load: LoadContext,
    materializationConfig: WirePackageMaterialization | null,
+   versionScoped: boolean,
 ): Promise<WorkerBuildPlan | undefined> {
    if (!load.planParts || load.failed || load.planLeftToMainThread) {
       return undefined;
    }
    const start = performance.now();
-   const refusals = (): Partial<Record<EligibilityRefusalReason, number>> => ({
-      ...(jobContext.getStore()?.refusals ?? {}),
-   });
-   const digestSkipped: string[] = [];
+   const eligibilityRefused: EligibilityRefusals = {};
+   let digestSkipped: string[] = [];
    try {
       if (load.planError) throw new Error(load.planError.message);
       const parts = emptyBuildPlanParts();
@@ -1523,28 +1551,21 @@ async function finishWorkerBuildPlan(
          if (!own) throw new Error(`Model ${modelPath} did not compile`);
          mergeBuildPlanParts(parts, own);
       }
-      const connections = await resolvePackageConnections(
-         {
-            getMalloyConnection: (name: string) =>
-               malloyConfig.connections.lookupConnection(name),
-         },
-         parts.builds.map((b) => b.connectionName),
-      );
-      const connectionDigests = await resolveConnectionDigests(
-         connections,
-         parts.builds,
-         (name) => digestSkipped.push(name),
-      );
-      const outcome = deriveBuildPlanOutcome(
-         { ...parts, connectionDigests },
-         materializationConfig,
-      );
+      const finished = await finishPackagePlan(parts, {
+         getMalloyConnection: (name: string) =>
+            malloyConfig.connections.lookupConnection(name),
+         versionScoped,
+      });
+      digestSkipped = finished.digestSkipped;
       return {
          ok: true,
-         outcome,
+         packagePlan: derivePackagePlan(
+            finished.compiled,
+            materializationConfig,
+            eligibilityRefused,
+         ),
          durationMs: performance.now() - (load.planStart ?? start),
          digestSkipped,
-         eligibilityRefused: refusals(),
       };
    } catch (error) {
       return {
@@ -1552,7 +1573,7 @@ async function finishWorkerBuildPlan(
          error: errMessage(error),
          durationMs: performance.now() - (load.planStart ?? start),
          digestSkipped,
-         eligibilityRefused: refusals(),
+         eligibilityRefused,
       };
    }
 }
@@ -1587,14 +1608,83 @@ port.on("message", (message: MainToWorkerMessage) => {
       void runJob(message);
       return;
    }
+   if (message.type === "compile-served-copy") {
+      inFlightJobs.add(message.requestId);
+      void runServedCopyJob(message);
+      return;
+   }
    dispatchMainResponse(message);
 });
+
+/**
+ * Compile one pass of a served copy (see CompileServedCopyRequest): the
+ * package's model over the re-rooted files, as `packageFiles(...).loadModel`
+ * compiles it on the main thread. Its failure is the result, in-band.
+ */
+async function compileServedCopy(
+   job: CompileServedCopyRequest,
+): Promise<CompileServedCopyResult> {
+   const start = performance.now();
+   const done = (
+      outcome: Pick<CompileServedCopyResult, "modelDef" | "error">,
+   ): CompileServedCopyResult => ({
+      type: "compile-served-copy-result",
+      requestId: job.requestId,
+      protocolVersion: PACKAGE_LOAD_PROTOCOL_VERSION,
+      ...outcome,
+      compileDurationMs: performance.now() - start,
+   });
+   try {
+      const files = new Map(job.files);
+      const packageReader = makeWorkerUrlReader(job);
+      const urlReader = new HackyDataStylesAccumulator({
+         readURL: async (url: URL): Promise<string> =>
+            files.get(overlayKey(url)) ?? packageReader.readURL(url),
+      });
+      const runtime = new Runtime({
+         urlReader,
+         config: buildWorkerMalloyConfig(job),
+      });
+      // Not a `file://` template, which parses host=`D:` on Windows.
+      const modelURL = pathToFileURL(path.join(job.packagePath, job.modelPath));
+      const model = await runtime
+         .loadModel(modelURL, { importBaseURL: new URL(".", modelURL) })
+         .getModel();
+      return done({ modelDef: model._modelDef });
+   } catch (error) {
+      return done({ error: serializeError(error) });
+   }
+}
+
+async function runServedCopyJob(job: CompileServedCopyRequest): Promise<void> {
+   const context: JobContext = {
+      jobId: job.requestId,
+      packagePath: job.packagePath,
+   };
+   try {
+      port.postMessage(
+         await jobContext.run(context, () => compileServedCopy(job)),
+      );
+   } catch (error) {
+      // Answer the job in-band rather than leave it waiting for the job timeout.
+      const result: CompileServedCopyResult = {
+         type: "compile-served-copy-result",
+         requestId: job.requestId,
+         protocolVersion: PACKAGE_LOAD_PROTOCOL_VERSION,
+         error: serializeError(error),
+         compileDurationMs: 0,
+      };
+      port.postMessage(result);
+   } finally {
+      inFlightJobs.delete(job.requestId);
+      maybeExit();
+   }
+}
 
 async function runJob(job: LoadPackageRequest): Promise<void> {
    const context: JobContext = {
       jobId: job.requestId,
       packagePath: job.packagePath,
-      refusals: {},
    };
    try {
       const result = await jobContext.run(context, () => loadPackage(job));

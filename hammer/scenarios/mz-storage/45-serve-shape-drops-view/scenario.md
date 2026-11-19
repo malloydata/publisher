@@ -8,16 +8,18 @@ Copyright (c) Credible Data Inc.
 SPDX-License-Identifier: MIT
 -->
 
-# Serve-shape ladder: a non-reproducible VIEW is dropped, base still routes
+# A view through a join the served copy leaves out answers live, base still routes
 
-The serve-shape fallback ladder drops the riskiest refinement category and retries
-(full → drop views → drop views+joins → base-only), so turning storage on can
-never make a query wrong. `join-to-non-persisted` pins the JOIN rung via an inline
-join traversal; this pins the **view** rung: a materialized source carries a named
-view (turtle) that traverses a join to a NON-materialized source. That view can't
-be reproduced over the stored columns, so the view category is dropped from the
-serve shape — a query over the source's own fields still routes to the table,
-while a query THROUGH the view falls back to live.
+Turning storage on must never make a query wrong, and one definition the stored
+table cannot answer must not cost the source its table. `join-to-non-persisted`
+pins that for an inline join traversal; this pins it for a **view**: a materialized
+source carries a named view (turtle) that traverses a join to a NON-materialized
+source. In the served copy `orders` is re-rooted on its lake table while `regions`
+stays on `orders_pg`, so Malloy refuses the join across connections. The served
+copy leaves the join out, with every definition that reads it (here the view), and
+keeps the rest of the source — a query over the source's own fields still routes
+to the table, while a query THROUGH the view is declined (`cross_connection`) and
+answered live.
 
 Same mutation-then-rerun proof as the join scenario: after a mutation the base
 aggregate stays stale (routed), the view reflects the change (served live).
@@ -117,8 +119,9 @@ Expect:
 
 ## Query via view (again)
 
-Fresh `1150` for North ⇒ the view category was dropped from the serve shape and
-the view query fell back to live, while base serving (above) kept working.
+Fresh `1150` for North ⇒ the view was left out of the served copy with the join it
+reads, and the view query was answered live, while base serving (above) kept
+working.
 
 Expect:
 

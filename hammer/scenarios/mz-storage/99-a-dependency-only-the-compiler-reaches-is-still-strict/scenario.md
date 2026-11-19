@@ -10,7 +10,7 @@ SPDX-License-Identifier: MIT
 
 # A dependency only the compiler reaches is still strict
 
-`daily` is a colocated persist source whose own `extend {}` joins the persisted
+`daily` is a database persist source whose own `extend {}` joins the persisted
 `counts`; `rollup` is a `storage=` source over `daily` that reads
 `c.order_count` through that join. The walk over the model stops at `daily`,
 so it never names `counts`. The compiler does: `rollup`'s SQL inlines

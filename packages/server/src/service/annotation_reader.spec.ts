@@ -4,6 +4,8 @@
 import { describe, expect, it } from "bun:test";
 import { Annotations } from "@malloydata/malloy";
 import {
+   codedLine,
+   codesOfLines,
    findingSeverity,
    indexNotePayload,
    isIndexNote,
@@ -22,7 +24,7 @@ import {
    routeOfNote,
    tagPayloadKeys,
 } from "./annotation_reader";
-import { GENERATOR_KEYS } from "./materialization/plan/build_file_generator";
+import { GENERATOR_KEYS } from "./materialization/plan/materialize_plan";
 
 function annotationsOf(lines: string[]): Annotations {
    return new Annotations({
@@ -105,6 +107,7 @@ describe("the #@ route's keys", () => {
             "refresh",
             "watermark",
             "merge_key",
+            "lookback",
             "freshness",
             "queryMetadata",
             "partition",
@@ -120,7 +123,29 @@ describe("the #@ route's keys", () => {
       }
    });
 
-   it("finds an unknown key (a warning) and a retired one (refused), and nothing else", () => {
+   it("finds an unknown key written inside persist, or in a freshness group", () => {
+      const { findings } = readRouteTag(
+         annotationsOf([
+            `#@ persist { nmae="t" storage="lake" } freshness.windw="1h"`,
+         ]),
+         "@",
+         RECOGNIZED_PERSIST_KEYS,
+      );
+      expect(findings.map((f) => [f.code, f.tier, f.message])).toEqual([
+         [
+            "persist-unknown-key",
+            "malformed",
+            "`nmae=` is not a key `#@ persist { … }` reads, so it does nothing (did you mean `name=`?)",
+         ],
+         [
+            "persist-unknown-key",
+            "malformed",
+            "`freshness.windw=` is not a key `#@` reads, so it does nothing (did you mean `freshness.window=`?)",
+         ],
+      ]);
+   });
+
+   it("finds an unknown key and a retired one, both malformed, and nothing else", () => {
       const { tag, findings } = readRouteTag(
          annotationsOf([
             `#@ persist name="orders" merge_keys="id" schedule="0 * * * *"`,
@@ -131,10 +156,74 @@ describe("the #@ route's keys", () => {
       expect(
          findings.map((f) => [f.code, f.tier, f.message.split("`")[1]]),
       ).toEqual([
-         ["persist-unknown-key", "unservable", "merge_keys="],
+         ["persist-unknown-key", "malformed", "merge_keys="],
          ["persist-retired-key", "malformed", "schedule="],
       ]);
       expect(findings[1]?.rewrite).toContain("materialization.schedule");
+   });
+});
+
+describe("a key named after an Object.prototype member", () => {
+   it("is an unknown key, never a retired one, at the top level and inside persist", () => {
+      const { findings } = readRouteTag(
+         annotationsOf([
+            `#@ persist name="orders" constructor="x" toString="y" { hasOwnProperty="z" }`,
+         ]),
+         "@",
+         RECOGNIZED_PERSIST_KEYS,
+      );
+      expect(findings.map((f) => [f.code, f.message.split("`")[1]])).toEqual([
+         ["persist-unknown-key", "constructor="],
+         ["persist-unknown-key", "toString="],
+      ]);
+      expect(findings.every((f) => f.rewrite === undefined)).toBe(true);
+   });
+
+   it("is an unknown key on #(materialize)", () => {
+      const { findings } = readRouteTag(
+         annotationsOf([`#(materialize) constructor="x" toString="y"`]),
+         "materialize",
+      );
+      expect(findings.map((f) => [f.code, f.tier])).toEqual([
+         ["materialize-unknown-key", "malformed"],
+         ["materialize-unknown-key", "malformed"],
+      ]);
+   });
+});
+
+describe("the retired partition= key", () => {
+   it("is malformed on #@ persist, with a rewrite that says to remove it", () => {
+      const { findings } = readRouteTag(
+         annotationsOf([`#@ persist name="orders" partition="day"`]),
+         "@",
+         RECOGNIZED_PERSIST_KEYS,
+      );
+      expect(findings.map((f) => [f.code, f.tier])).toEqual([
+         ["persist-retired-key", "malformed"],
+      ]);
+      expect(findings[0]?.rewrite).toMatch(
+         /^remove it: partition= is not supported/,
+      );
+   });
+
+   it("is malformed written inside the persist key too", () => {
+      const { findings } = readRouteTag(
+         annotationsOf([`#@ persist { name="orders" partition="day" }`]),
+         "@",
+         RECOGNIZED_PERSIST_KEYS,
+      );
+      expect(findings.map((f) => [f.code, f.tier, f.key, f.nested])).toEqual([
+         ["persist-retired-key", "malformed", "partition", true],
+      ]);
+   });
+
+   it("is retired on #(materialize), not a key it accepts", () => {
+      expect(PUBLISHER_ROUTES["materialize"]?.keys?.has("partition")).toBe(
+         false,
+      );
+      expect(PUBLISHER_ROUTES["materialize"]?.retiredKeys?.partition).toMatch(
+         /^remove it: partition= is not supported/,
+      );
    });
 });
 
@@ -145,16 +234,22 @@ describe("the materialization v2 routes", () => {
       );
    });
 
-   it("registers #(preaggregate) with A1's keys: grain, storage, namespace", () => {
-      expect(PUBLISHER_ROUTES["preaggregate"]).toMatchObject({
-         payload: "tag",
-      });
-      expect(
-         [...(PUBLISHER_ROUTES["preaggregate"]?.keys ?? [])].sort(),
-      ).toEqual(["grain", "namespace", "storage"]);
+   it("registers #(rollup) with its keys: grain, storage, name (and the deprecated namespace), and freshness", () => {
+      // `#(preaggregate)` is its deprecated spelling, read the same.
+      for (const route of ["rollup", "preaggregate"]) {
+         expect(PUBLISHER_ROUTES[route]).toMatchObject({ payload: "tag" });
+         expect([...(PUBLISHER_ROUTES[route]?.keys ?? [])].sort()).toEqual([
+            "freshness",
+            "grain",
+            "name",
+            "namespace",
+            "storage",
+         ]);
+      }
       expect([...MATERIALIZE_V2_ROUTES].sort()).toEqual([
          "materialize",
          "preaggregate",
+         "rollup",
       ]);
    });
 
@@ -166,11 +261,16 @@ describe("the materialization v2 routes", () => {
             "nmae=",
             "name",
          ],
+         ["rollup", '#(rollup) grian=["a"]', "grian=", "grain"],
+         // The deprecated spelling's code is `#(rollup)`'s.
          ["preaggregate", '#(preaggregate) grian=["a"]', "grian=", "grain"],
       ] as const) {
          const { findings } = readRouteTag(annotationsOf([line]), route);
          expect(findings.map((f) => [f.code, f.tier])).toEqual([
-            [`${route}-unknown-key`, "malformed"],
+            [
+               `${route === "materialize" ? "materialize" : "rollup"}-unknown-key`,
+               "malformed",
+            ],
          ]);
          expect(findings[0]?.message).toContain(`\`${key}\``);
          expect(findings[0]?.message).toContain(`did you mean \`${near}=\`?`);
@@ -187,7 +287,7 @@ describe("the materialization v2 routes", () => {
 
    it("does not read a v2 route glued to its payload, which Malloy routes nowhere", () => {
       expect(publisherRouteOf('#(materialize)name="t"')).toBeUndefined();
-      expect(publisherRouteOf('#(preaggregate)grain=["a"]')).toBeUndefined();
+      expect(publisherRouteOf('#(rollup)grain=["a"]')).toBeUndefined();
       expect(publisherRouteOf('#(materialize) name="t"')).toBe("materialize");
       // The routes that were always read glued still are.
       expect(publisherRouteOf('#(carries)["none"]')).toBe("carries");
@@ -226,14 +326,16 @@ describe("persist annotation findings", () => {
          "m.malloy",
          { subject: "daily", line: '#@ refresh="incremental" watermark="x' },
       );
-      expect(planned.message).toContain("built from its other #@ lines");
-      expect(planned.message).not.toContain("served live");
+      expect(planned.message).toContain('#@ persist source "daily"');
+      expect(planned.message).toContain("does not parse");
+      expect(planned.tier).toBe("malformed");
       expect(planned.subject).toBe("daily");
       const dropped = persistUnparseableFinding(
          { message: "unterminated string" },
          "m.malloy",
       );
-      expect(dropped.message).toContain("served live");
+      expect(dropped.message).toContain("Fix the annotation's syntax");
+      expect(dropped.tier).toBe("malformed");
    });
 
    it("checks a persist source against the persist keys, not the preaggregate ones", () => {
@@ -245,12 +347,13 @@ describe("persist annotation findings", () => {
       expect(findings).toEqual([
          expect.objectContaining({
             code: "persist-unknown-key",
-            tier: "unservable",
+            tier: "malformed",
             subject: "daily",
             model: "m.malloy",
          }),
       ]);
-      expect(findingSeverity(findings[0])).toBe("warn");
+      // It fails the load, so it is never a warning on a serving package.
+      expect(findingSeverity(findings[0])).toBe("error");
    });
 
    it("builds the unparseable finding Malloy's build log reports, naming the line", () => {
@@ -465,5 +568,26 @@ describe("tagPayloadKeys", () => {
       expect(tagPayloadKeys("n=(1 sharing=x)")).toEqual(["n", "sharing"]);
       expect(tagPayloadKeys("'sharing'=x")).toEqual(["sharing"]);
       expect(tagPayloadKeys("@env.X= n=")).toEqual(["n"]);
+   });
+});
+
+describe("codesOfLines", () => {
+   it("reads each coded line's code, in order, each once", () => {
+      const message = [
+         codedLine("orders: storage= names nothing", "persist-invalid"),
+         "a line with no code",
+         codedLine("daily: unknown key merge_keys=", "persist-unknown-key"),
+         codedLine("again", "persist-invalid"),
+      ].join("\n");
+      expect(codesOfLines(message)).toEqual([
+         "persist-invalid",
+         "persist-unknown-key",
+      ]);
+   });
+
+   it("reads nothing from a message with no coded line", () => {
+      expect(codesOfLines("the model does not compile [see the log]")).toEqual(
+         [],
+      );
    });
 });

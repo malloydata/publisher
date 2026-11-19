@@ -24,6 +24,11 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "orders_base@<pkg>/base.malloy": "materialize",
+      "orders_rollup@<pkg>/base.malloy": "materialize",
+      "orders_rollup_x@<pkg>/rollup.malloy": "materialize"
+    },
     "materializePlans": {
       "orders_base@<pkg>/base.malloy": {
         "buildSourceName": "orders_base__mat",
@@ -203,6 +208,8 @@
         ]
       }
     ],
+    "omittedFiles": [],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "orders_base@<pkg>/base.malloy": {
@@ -229,7 +236,7 @@
         "freshness": null,
         "modelPath": "base.malloy",
         "name": "orders_base",
-        "origin": "persist",
+        "origin": "materialize",
         "preaggregate": null,
         "queryMetadata": null,
         "refresh": null,
@@ -261,7 +268,7 @@
         "freshness": null,
         "modelPath": "base.malloy",
         "name": "orders_rollup",
-        "origin": "persist",
+        "origin": "materialize",
         "preaggregate": null,
         "queryMetadata": null,
         "refresh": null,
@@ -293,7 +300,7 @@
         "freshness": null,
         "modelPath": "rollup.malloy",
         "name": "orders_rollup_x",
-        "origin": "persist",
+        "origin": "materialize",
         "preaggregate": null,
         "queryMetadata": null,
         "refresh": null,

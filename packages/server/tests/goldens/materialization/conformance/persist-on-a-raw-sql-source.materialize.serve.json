@@ -53,7 +53,14 @@
       "equalToLive": true,
       "malloy": "run: raw_direct -> { group_by: region; aggregate: total }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "origin": "materialize",
+            "outcome": "used",
+            "tableId": "d315aa74c60e26bdae2de1c53ed1a5dbd279d607ad66f56d81a4684721304742"
+          }
+        ],
         "notConsidered": [],
         "query": {
           "filteredBy": [],
@@ -66,13 +73,17 @@
           "sourceName": "raw_direct"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "origin": "materialize",
+          "tableId": "d315aa74c60e26bdae2de1c53ed1a5dbd279d607ad66f56d81a4684721304742",
+          "tier": "storage",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "the source itself",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -118,6 +129,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "materialize",
             "outcome": "used",
             "tableId": "d315aa74c60e26bdae2de1c53ed1a5dbd279d607ad66f56d81a4684721304742"
           }
@@ -135,7 +147,9 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "materialize",
           "tableId": "d315aa74c60e26bdae2de1c53ed1a5dbd279d607ad66f56d81a4684721304742",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []

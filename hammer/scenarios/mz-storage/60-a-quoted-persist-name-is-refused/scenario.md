@@ -21,7 +21,7 @@ author quoting is exactly how a name could close the identifier and append state
 
 Malloy's tag parser honours the escapes, so `name="\"Quoted Tbl\""` reaches Publisher
 as `"Quoted Tbl"` with literal quote characters. This is the `storage=` case;
-`a-quoted-persist-name-is-refused-colocated` is the colocated one.
+`a-quoted-persist-name-is-refused-database` is the database one.
 
 Decided 2026-11-11: author quoting is not supported. Parsing and escaping an author's
 quoting per dialect would reopen the injection surface #1106 closed, and nothing needs

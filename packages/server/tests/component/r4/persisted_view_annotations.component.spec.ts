@@ -5,7 +5,7 @@
  * R4 for a persisted view's annotations: a `#@ persist` view's answer returns
  * each output column with the annotations live's does (`#(classification)`,
  * `#(doc)`, render tags such as `# currency` and `# label`, a multi-line
- * `#|`…`|#` note), colocated and
+ * `#|`…`|#` note), database and
  * `storage=`, for a column, a computed dimension, a timeframe, a measure and
  * a nest; and the access record reads the same fields as live.
  */
@@ -13,7 +13,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { unrecordedAudit } from "../../../src/service/access_record";
 import { QueryPrivileges } from "../../../src/service/model_query_request";
-import { installSettings } from "../../../src/test_helpers/settings_env";
+import { useMaterializationOn } from "../../../src/test_helpers/settings_env";
 import {
    buildScenario,
    DESTINATION,
@@ -98,7 +98,7 @@ const authorNotes = (f: Field) =>
       .filter((v) => !v.startsWith("#(malloy)"));
 
 describe.each([
-   ["colocated", (v: string): string => `#@ persist name="orders_${v}"`, true],
+   ["database", (v: string): string => `#@ persist name="orders_${v}"`, true],
    [
       "in a storage destination",
       (_v: string): string => `#@ persist storage="${DESTINATION}"`,
@@ -106,20 +106,17 @@ describe.each([
    ],
 ] as const)(
    "R4: a persisted view %s answers with live's annotations",
-   (_label, persist, colocated) => {
-      let restore: () => void;
+   (_label, persist, database) => {
       let fixture: R4Fixture;
+      useMaterializationOn();
       beforeAll(async () => {
-         restore = installSettings({
-            env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-         }).restore;
          fixture = await buildScenario({
             files: { "m.malloy": model(persist) },
             seedSql,
             persistedViews: true,
-            ...(colocated
+            ...(database
                ? {
-                    colocated: [
+                    database: [
                        "orders__by_month__view",
                        "orders__by_buyer__view",
                        "orders__nested__view",
@@ -129,7 +126,6 @@ describe.each([
          });
       });
       afterAll(async () => {
-         restore();
          await disposeScenarios();
       });
 
@@ -237,14 +233,15 @@ describe.each([
          });
       }
 
-      // A nested view is stored colocated only (a destination holds no nest).
-      it.if(colocated)(
-         "returns a nest's columns with their annotations",
+      // A nested view is stored in the database tier only (a destination holds no nest),
+      // and answered live: its nest's stored rows cannot be rebuilt exactly.
+      it.if(database)(
+         "answers a nested view live, with a nest's columns and their annotations",
          async () => {
             const { live, served } = await both("run: orders -> nested");
             expect(live.error).toBeUndefined();
             expect(served.error).toBeUndefined();
-            expect(served.servedBy).toBe("view");
+            expect(served.servedBy).toBe("live");
             expect(rowDifference(live.rows, served.rows)).toBeUndefined();
             expect(live.nestedNotes["by_buyer.revenue"]).toContain(
                "# currency",

@@ -13,6 +13,9 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "two_stage@<pkg>/m.malloy": "materialize"
+    },
     "materializePlans": {
       "two_stage@<pkg>/m.malloy": {
         "buildSourceName": "two_stage__mat",
@@ -83,6 +86,8 @@
         ]
       }
     ],
+    "omittedFiles": [],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "two_stage@<pkg>/m.malloy": {
@@ -109,7 +114,7 @@
         "freshness": null,
         "modelPath": "m.malloy",
         "name": "two_stage",
-        "origin": "persist",
+        "origin": "materialize",
         "preaggregate": null,
         "queryMetadata": null,
         "refresh": null,

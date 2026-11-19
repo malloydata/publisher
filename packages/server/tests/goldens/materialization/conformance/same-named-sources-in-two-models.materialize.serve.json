@@ -1,20 +1,21 @@
 {
   "bind": {
     "buildErrors": {},
-    "built": [],
-    "verdicts": [],
-    "warnings": [
+    "built": [
       {
-        "code": "materialize-not-built",
-        "message": "#(materialize) on source \"summary\" is not built, so the source is served live: with no name=, its table takes the source's name `summary` in \"lake\", which \"summary\" (b.malloy) also writes, so each build would overwrite the other and one source would read the other's rows; give each source a distinct name=.",
-        "subject": "summary"
+        "name": "summary",
+        "tier": "storage"
       },
       {
-        "code": "materialize-not-built",
-        "message": "#(materialize) on source \"summary\" is not built, so the source is served live: with no name=, its table takes the source's name `summary` in \"lake\", which \"summary\" (a.malloy) also writes, so each build would overwrite the other and one source would read the other's rows; give each source a distinct name=.",
-        "subject": "summary"
+        "name": "summary",
+        "tier": "storage"
       }
-    ]
+    ],
+    "verdicts": [
+      "summary:serves",
+      "summary:serves"
+    ],
+    "warnings": []
   },
   "queries": [
     {
@@ -57,7 +58,14 @@
       "equalToLive": true,
       "malloy": "run: summary -> { group_by: region; aggregate: t is total.sum() }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "origin": "materialize",
+            "outcome": "used",
+            "tableId": "2bc8e6b03947bd397184af804c21e9d894683327921d58b6b411e3faaec2465f"
+          }
+        ],
         "notConsidered": [],
         "query": {
           "filteredBy": [],
@@ -70,13 +78,17 @@
           "sourceName": "summary"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "origin": "materialize",
+          "tableId": "2bc8e6b03947bd397184af804c21e9d894683327921d58b6b411e3faaec2465f",
+          "tier": "storage",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "summary in a.malloy",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -119,7 +131,14 @@
       "equalToLive": true,
       "malloy": "run: summary -> { group_by: region; aggregate: t is total.sum() }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "origin": "materialize",
+            "outcome": "used",
+            "tableId": "dd6c6173497ad72575666949d2ef30d23439f8ebbd55ed53dc98b1744ceab392"
+          }
+        ],
         "notConsidered": [],
         "query": {
           "filteredBy": [],
@@ -132,13 +151,17 @@
           "sourceName": "summary"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "origin": "materialize",
+          "tableId": "dd6c6173497ad72575666949d2ef30d23439f8ebbd55ed53dc98b1744ceab392",
+          "tier": "storage",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "summary in b.malloy",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -181,8 +204,24 @@
       "equalToLive": true,
       "malloy": "run: placed -> { group_by: region; aggregate: t is total.sum() }",
       "path": {
-        "considered": [],
-        "notConsidered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "origin": "materialize",
+            "outcome": "used",
+            "tableId": "2bc8e6b03947bd397184af804c21e9d894683327921d58b6b411e3faaec2465f"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "origin": "materialize",
+            "relationship": "sibling",
+            "sourceName": "summary",
+            "tableId": "dd6c6173497ad72575666949d2ef30d23439f8ebbd55ed53dc98b1744ceab392"
+          }
+        ],
         "query": {
           "filteredBy": [],
           "groupedBy": [
@@ -194,13 +233,17 @@
           "sourceName": "placed"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "origin": "materialize",
+          "tableId": "2bc8e6b03947bd397184af804c21e9d894683327921d58b6b411e3faaec2465f",
+          "tier": "storage",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a.malloy's summary imported as placed",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -243,8 +286,24 @@
       "equalToLive": true,
       "malloy": "run: shipped -> { group_by: region; aggregate: t is total.sum() }",
       "path": {
-        "considered": [],
-        "notConsidered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "origin": "materialize",
+            "outcome": "used",
+            "tableId": "dd6c6173497ad72575666949d2ef30d23439f8ebbd55ed53dc98b1744ceab392"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "origin": "materialize",
+            "relationship": "sibling",
+            "sourceName": "summary",
+            "tableId": "2bc8e6b03947bd397184af804c21e9d894683327921d58b6b411e3faaec2465f"
+          }
+        ],
         "query": {
           "filteredBy": [],
           "groupedBy": [
@@ -256,13 +315,17 @@
           "sourceName": "shipped"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "origin": "materialize",
+          "tableId": "dd6c6173497ad72575666949d2ef30d23439f8ebbd55ed53dc98b1744ceab392",
+          "tier": "storage",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "b.malloy's summary imported as shipped",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -305,7 +368,14 @@
       "equalToLive": true,
       "malloy": "run: summary -> { group_by: region; aggregate: t is total.sum() }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "origin": "materialize",
+            "outcome": "used",
+            "tableId": "2bc8e6b03947bd397184af804c21e9d894683327921d58b6b411e3faaec2465f"
+          }
+        ],
         "notConsidered": [],
         "query": {
           "filteredBy": [],
@@ -318,13 +388,17 @@
           "sourceName": "summary"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "origin": "materialize",
+          "tableId": "2bc8e6b03947bd397184af804c21e9d894683327921d58b6b411e3faaec2465f",
+          "tier": "storage",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "summary in a.malloy",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "on"
     },
     {
@@ -367,7 +441,14 @@
       "equalToLive": true,
       "malloy": "run: summary -> { group_by: region; aggregate: t is total.sum() }",
       "path": {
-        "considered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "origin": "materialize",
+            "outcome": "used",
+            "tableId": "dd6c6173497ad72575666949d2ef30d23439f8ebbd55ed53dc98b1744ceab392"
+          }
+        ],
         "notConsidered": [],
         "query": {
           "filteredBy": [],
@@ -380,13 +461,17 @@
           "sourceName": "summary"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "origin": "materialize",
+          "tableId": "dd6c6173497ad72575666949d2ef30d23439f8ebbd55ed53dc98b1744ceab392",
+          "tier": "storage",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "summary in b.malloy",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "on"
     },
     {
@@ -429,8 +514,24 @@
       "equalToLive": true,
       "malloy": "run: placed -> { group_by: region; aggregate: t is total.sum() }",
       "path": {
-        "considered": [],
-        "notConsidered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "origin": "materialize",
+            "outcome": "used",
+            "tableId": "2bc8e6b03947bd397184af804c21e9d894683327921d58b6b411e3faaec2465f"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "origin": "materialize",
+            "relationship": "sibling",
+            "sourceName": "summary",
+            "tableId": "dd6c6173497ad72575666949d2ef30d23439f8ebbd55ed53dc98b1744ceab392"
+          }
+        ],
         "query": {
           "filteredBy": [],
           "groupedBy": [
@@ -442,13 +543,17 @@
           "sourceName": "placed"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "origin": "materialize",
+          "tableId": "2bc8e6b03947bd397184af804c21e9d894683327921d58b6b411e3faaec2465f",
+          "tier": "storage",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "a.malloy's summary imported as placed",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "on"
     },
     {
@@ -491,8 +596,24 @@
       "equalToLive": true,
       "malloy": "run: shipped -> { group_by: region; aggregate: t is total.sum() }",
       "path": {
-        "considered": [],
-        "notConsidered": [],
+        "considered": [
+          {
+            "kind": "materialized",
+            "origin": "materialize",
+            "outcome": "used",
+            "tableId": "dd6c6173497ad72575666949d2ef30d23439f8ebbd55ed53dc98b1744ceab392"
+          }
+        ],
+        "notConsidered": [
+          {
+            "built": true,
+            "kind": "materialized",
+            "origin": "materialize",
+            "relationship": "sibling",
+            "sourceName": "summary",
+            "tableId": "2bc8e6b03947bd397184af804c21e9d894683327921d58b6b411e3faaec2465f"
+          }
+        ],
         "query": {
           "filteredBy": [],
           "groupedBy": [
@@ -504,13 +625,17 @@
           "sourceName": "shipped"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "origin": "materialize",
+          "tableId": "dd6c6173497ad72575666949d2ef30d23439f8ebbd55ed53dc98b1744ceab392",
+          "tier": "storage",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "b.malloy's summary imported as shipped",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "on"
     }
   ]

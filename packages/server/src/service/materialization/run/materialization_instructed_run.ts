@@ -1,10 +1,26 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+/**
+ * What one instructed run reads and records ({@link InstructedRun}): its fixed
+ * inputs and the per-source outcomes its build loop accumulates. Also the
+ * instruction lookup ({@link indexInstructions}, {@link resolveInstruction}),
+ * the refusals made before anything is written
+ * ({@link assertNoTableCollisions}, {@link assertInstructedDestinationWritable}),
+ * and {@link recordInstructedBuildFailure}. Read by the materialization
+ * service, the instructed build and run instructions.
+ *
+ * Writes nothing outside the run object; logs and counts instructions that
+ * give one content address two tables, and logs two definitions on one table.
+ * The checks throw before any table is touched.
+ */
+
+import { instructsUnwritableDestination } from "../domain/placement";
 import type { Manifest, PersistSource } from "@malloydata/malloy";
 import {
    BadRequestError,
    MaterializationEligibilityError,
+   TableOwnershipError,
 } from "../../../errors";
 import { logger } from "../../../logger";
 import type {
@@ -22,51 +38,119 @@ import type {
    ManifestEntry,
    RefusedSource,
    SourceFailure,
-} from "../types";
+} from "../domain/types";
 import { errMessage } from "../../../utils";
 import {
    getPersistCollisionEnforce,
    getPersistStorageMode,
 } from "../../../config";
-import { redactPgSecrets } from "../../../pg_helpers";
+import { redactPgSecrets, redactStorageUrls } from "../../../pg_helpers";
 import {
+   addressSQL,
    computeSourceEntityId,
-   sourcesInBuildOrder,
-   type CompiledBuildPlan,
-} from "../plan/build_plan";
-import type { IncrementalRunContext } from "./incremental_build";
+   declaredStorage,
+   type RunPlan,
+} from "./run_plan";
+import { sourcesInBuildOrder } from "../domain/compiled_build_plan";
 import {
    classifySourceFailure,
    failedUpstreamsOf,
    type FailedUpstream,
 } from "./build_failure_class";
+import { redactConnectionSecrets } from "./connection_redaction";
 import {
-   declaredStorage,
-   physicalTargetKey,
-   redactConnectionSecrets,
    type BuildEnvironment,
-   type BuildQueryMetadata,
    type ChainedPlanFacts,
-} from "./materialization_run_support";
-import type { NameViewIntent, NameViewRecord, OwnNameTable } from "./name_view";
+   type WarehouseReach,
+} from "./build_upstreams";
+import { type BuildQueryMetadata } from "./build_query_tag";
+import type { IncrementalRunContext } from "./incremental_build";
 import type { UniquenessLedger } from "./inline_uniqueness";
+import type { Materialization } from "../../../storage/DatabaseInterface";
+import { tableNameParts, tableNamesMeet } from "../domain/table_name";
+import {
+   isPersistedResultSourceID,
+   originOfTable,
+} from "../domain/table_plans";
+import { tableNamesFoldCase } from "../domain/storage_table_path";
 import { reportSourceFailed } from "./run_telemetry";
 
+/** One instructed run: what `InstructedBuild.run` reads. */
+export interface InstructedBuildOptions {
+   compiled: RunPlan;
+   /**
+    * The declared freshness window of each table, by address, at the run's
+    * start: a rollup reads its base's stored table only when that table is
+    * inside the rollup's window then (instructed_build.ts). Absent, no
+    * window is declared anywhere.
+    */
+   freshness?: {
+      windowSecondsAt(sourceEntityId: string): number | undefined;
+      at: Date;
+   };
+   environment: BuildEnvironment;
+   instructions: BuildInstruction[];
+   seedEntries: Record<string, ManifestEntry>;
+   signal: AbortSignal;
+   strict?: boolean;
+   /** Used only to reclaim this run's storage tables on failure. */
+   owner?: { environmentId: string; packageName: string };
+   buildMetadata?: BuildQueryMetadata;
+   /** Undefined leaves every source on the full-rebuild path. */
+   incremental?: IncrementalRunContext;
+   /**
+    * Auto-run refusals, named in the error of a run whose every instructed
+    * source failed so it accounts for every unbuilt source.
+    */
+   priorRefusals?: RefusedSource[];
+   /**
+    * Tiers auto-run already cleared (see deriveSelfInstructions); a listed
+    * source is not asserted again.
+    */
+   clearedTiers?: ReadonlyMap<string, EligibilityTier>;
+   /**
+    * The host instructed this run (orchestrated): a host-supplied upstream
+    * entry at the wrong tier is refused, not recomputed (see
+    * ChainedPlanFacts.hostInstructed).
+    */
+   hostInstructed?: boolean;
+   /** What a strict build does with the warehouse recompute. */
+   warehouseReach?: WarehouseReach;
+   /**
+    * Auto-run only: the inline uniqueness checks' passes, read from the run
+    * before and recorded for the run after (inline_uniqueness.ts). Undefined
+    * runs every check as compiled.
+    */
+   uniqueness?: UniquenessLedger;
+   /**
+    * The package's runs, from its own records: what tells a table at a
+    * `name=` this package wrote from anyone else's (table_ownership.ts).
+    * Absent: no such table is ever recognized, and every one refuses.
+    */
+   packageRuns?: () => Promise<Materialization[]>;
+}
+
 /** The eligibility gate a source was cleared by. */
-export type EligibilityTier = "storage" | "colocated";
+export type EligibilityTier = "storage" | "database";
 
 /**
  * Everything one instructed build run reads and records, in one place: the
  * run's fixed inputs, and the per-source outcomes the loop accumulates and the
  * run reports when it ends.
  */
-export interface InstructedRun {
-   compiled: CompiledBuildPlan;
-   environment: BuildEnvironment;
-   owner?: { environmentId: string; packageName: string };
-   buildMetadata?: BuildQueryMetadata;
-   incremental?: IncrementalRunContext;
-   clearedTiers?: ReadonlyMap<string, EligibilityTier>;
+export interface InstructedRun
+   extends Pick<
+      InstructedBuildOptions,
+      | "compiled"
+      | "environment"
+      | "owner"
+      | "buildMetadata"
+      | "incremental"
+      | "clearedTiers"
+      | "packageRuns"
+      | "uniqueness"
+      | "freshness"
+   > {
    planFacts: ChainedPlanFacts;
    index: InstructionIndex;
    manifest: Manifest;
@@ -89,7 +173,7 @@ export interface InstructedRun {
    failedReasons: string[];
    refusals: MaterializationEligibilityError[];
    /**
-    * Refusals not yet recorded against their address (ms2data/service#7078).
+    * Refusals not yet recorded against their address.
     * A refused source can share its content address with an eligible sibling
     * (a base and its `extend`); the refusal is decided after the loop, so it
     * fails the address only when no sibling built it, whatever the order.
@@ -103,16 +187,16 @@ export interface InstructedRun {
    priorRefusedIDs: ReadonlySet<string>;
    /**
     * The planned sources on each content address, computed on first use (see
-    * colocatedRefusalOn). A source whose address cannot be computed is absent.
+    * databaseRefusalOn). A source whose address cannot be computed is absent.
     */
    sourceIDsByAddress?: Map<string, string[]>;
    /**
-    * Per content address, the sources on it the colocated gate refuses, in
-    * sourceID order; decided on first use (see colocatedRefusalOn).
+    * Per content address, the sources on it the database gate refuses, in
+    * sourceID order; decided on first use (see databaseRefusalOn).
     */
-   colocatedRefusalsByAddress?: Map<string, ColocatedRefusal[]>;
+   databaseRefusalsByAddress?: Map<string, DatabaseRefusal[]>;
    /**
-    * Set when a source its own gate admits was not built because a colocated
+    * Set when a source its own gate admits was not built because a database
     * sibling on its table is refused; such a run is not failed as one whose
     * every source was refused.
     */
@@ -124,32 +208,23 @@ export interface InstructedRun {
    // table CONTAINS, the coordinate says which table it IS, and only the latter
    // answers "have I written this already".
    writtenTargets: Map<string, { sourceEntityId: string; sourceName: string }>;
-   /** The `name=` views the sources this run built call for (name_view.ts). */
-   nameViewIntents?: NameViewIntent[];
    /**
-    * Auto-run's inline uniqueness passes: the run before's, and this run's
-    * own (inline_uniqueness.ts). Absent: every check runs as compiled.
+    * Tables whose build failed this run, by the same key, with the error: a
+    * second route to one takes that failure instead of building it again.
     */
-   uniqueness?: UniquenessLedger;
-   /**
-    * By view key: the `name=` views whose name preflight found held by a
-    * table this package's own run wrote, which the view replaces.
-    */
-   nameViewOwnTables?: Map<string, OwnNameTable>;
+   failedTargets?: Map<string, { sourceEntityId: string; err: unknown }>;
    /** The run's cancellation: a source failing after it is `cancelled`. */
    signal?: AbortSignal;
-   /** This package's own views a built table replaced at its name. */
-   replacedNameViews?: NameViewRecord[];
-   /** Whether this package's records say it wrote a table at a view's name. */
-   ownNameTableAt?: (
-      intent: NameViewIntent,
-   ) => Promise<OwnNameTable | undefined>;
-   /** Whether another run of this package is building now. */
-   otherRunActive?: () => Promise<boolean>;
+   /**
+    * Tables built from a stored table the plan's edges do not name (a rollup
+    * over its base's table), by address: what each read, for its freshness
+    * anchor (freshness_stamp.ts).
+    */
+   readFrom?: Map<string, string[]>;
 }
 
-/** One source the colocated gate refuses, as colocatedRefusalOn reports it. */
-export interface ColocatedRefusal {
+/** One source the database gate refuses, as databaseRefusalOn reports it. */
+export interface DatabaseRefusal {
    sourceID: string;
    name: string;
    reason: EligibilityRefusalReason | undefined;
@@ -172,7 +247,7 @@ export interface PendingRefusal {
    sourceID: string;
    /**
     * True when the source's own gate refused it; false when it is refused only
-    * because a sibling on its colocated address is. An address's recorded
+    * because a sibling on its database address is. An address's recorded
     * failure prefers an own refusal, so it names the gated source whatever the
     * run order.
     */
@@ -180,7 +255,7 @@ export interface PendingRefusal {
 }
 
 /** A run's instructions, indexed both ways a source can find its own. */
-export interface InstructionIndex {
+interface InstructionIndex {
    bySourceID: Map<string, BuildInstruction>;
    bySourceEntityId: Map<string, BuildInstruction>;
 }
@@ -244,7 +319,8 @@ export function indexInstructions(
 export function resolveInstruction(
    index: InstructionIndex,
    persistSource: PersistSource,
-   connectionDigests: CompiledBuildPlan["connectionDigests"],
+   connectionDigests: RunPlan["connectionDigests"],
+   tableFolds?: RunPlan["tableFolds"],
 ): ResolvedInstruction | undefined {
    // sourceID first, so the caller's sourceEntityId scheme stays opaque; the
    // sourceEntityId lookup is the fallback for instructions without one.
@@ -262,7 +338,12 @@ export function resolveInstruction(
    // throw as "no match" rather than abort every other instructed source.
    let sourceEntityId: string;
    try {
-      sourceEntityId = computeSourceEntityId(persistSource, connectionDigests);
+      sourceEntityId = computeSourceEntityId(
+         persistSource,
+         connectionDigests,
+         undefined,
+         tableFolds,
+      );
    } catch {
       return undefined;
    }
@@ -283,21 +364,48 @@ export function resolveInstruction(
  * setting is `false` (it is on by default).
  */
 export function assertNoTableCollisions(
-   builds: CompiledBuildPlan["builds"],
-   sources: CompiledBuildPlan["sources"],
-   connectionDigests: CompiledBuildPlan["connectionDigests"],
+   builds: RunPlan["builds"],
+   tables: RunPlan["tables"],
+   connectionDigests: RunPlan["connectionDigests"],
    index: InstructionIndex,
+   tableFolds?: RunPlan["tableFolds"],
 ): void {
+   // Keyed by the table segment on its connection or destination: `main.t`
+   // and `t` may be one table, as the plan's collision check reads them
+   // (tableNamesMeet).
    const claimedBy = new Map<
       string,
-      { sourceName: string; sourceEntityId: string }
+      {
+         sourceName: string;
+         sourceEntityId: string;
+         table: string;
+         sql?: string;
+      }[]
    >();
-   const collisions: { first: string; second: string; table: string }[] = [];
+   const collisions: {
+      first: string;
+      second: string;
+      table: string;
+      /** Same query, different stored columns (foldDistinctTableNames). */
+      sameQuery: boolean;
+   }[] = [];
+   const sqlOf = (source: PersistSource) => {
+      try {
+         return addressSQL(source);
+      } catch {
+         return undefined;
+      }
+   };
    for (const build of builds) {
-      for (const persistSource of sourcesInBuildOrder(build, sources)) {
+      for (const persistSource of sourcesInBuildOrder(build, tables)) {
          let address: string;
          try {
-            address = computeSourceEntityId(persistSource, connectionDigests);
+            address = computeSourceEntityId(
+               persistSource,
+               connectionDigests,
+               undefined,
+               tableFolds,
+            );
          } catch {
             // getSQL() throws for a source the eligibility gate is about to
             // refuse with a clean 422. That refusal is the build loop's to
@@ -308,22 +416,40 @@ export function assertNoTableCollisions(
             index.bySourceID.get(persistSource.sourceID) ??
             index.bySourceEntityId.get(address);
          if (!instruction) continue;
-         // Must be the same key as the build loop's write guard, or this
-         // pre-pass and the guard disagree on what a collision is.
-         const target = physicalTargetKey(instruction, build.connectionName);
-         const claim = claimedBy.get(target);
-         if (!claim) {
-            claimedBy.set(target, {
-               sourceName: persistSource.name,
-               sourceEntityId: address,
-            });
-         } else if (claim.sourceEntityId !== address) {
+         // Compared as the plan compares them: folded where the
+         // destination folds table names to one case.
+         const table = tableNamesFoldCase(
+            persistSource.dialectName,
+            !!instruction.destination,
+         )
+            ? instruction.physicalTableName.toLowerCase()
+            : instruction.physicalTableName;
+         const target = JSON.stringify([
+            instruction.destination ? "destination" : "connection",
+            instruction.destination ?? build.connectionName,
+            tableNameParts(table).leaf,
+         ]);
+         const claims = claimedBy.get(target) ?? [];
+         const sql = sqlOf(persistSource);
+         const other = claims.find(
+            (c) =>
+               c.sourceEntityId !== address && tableNamesMeet(c.table, table),
+         );
+         if (other) {
             collisions.push({
-               first: claim.sourceName,
+               first: other.sourceName,
                second: persistSource.name,
                table: instruction.physicalTableName,
+               sameQuery: sql !== undefined && sql === other.sql,
             });
          }
+         claims.push({
+            sourceName: persistSource.name,
+            sourceEntityId: address,
+            table,
+            sql,
+         });
+         claimedBy.set(target, claims);
       }
    }
    for (const c of collisions) {
@@ -337,8 +463,12 @@ export function assertNoTableCollisions(
       const detail = collisions
          .map(
             (c) =>
-               `'${c.first}' and '${c.second}' compile to different SQL but ` +
-               `both materialize into table '${c.table}'`,
+               `'${c.first}' and '${c.second}' ` +
+               (c.sameQuery
+                  ? `compile to the same query but store different columns, ` +
+                    `yet both materialize`
+                  : `compile to different SQL but both materialize`) +
+               ` into table '${c.table}'`,
          )
          .join("; ");
       throw new MaterializationEligibilityError({
@@ -359,9 +489,9 @@ export function assertNoTableCollisions(
 export function assertInstructedDestinationWritable(
    persistSource: PersistSource,
    instruction: BuildInstruction,
-   compiled: CompiledBuildPlan,
+   compiled: RunPlan,
 ): void {
-   if (instruction.destination && getPersistStorageMode() === "off") {
+   if (instructsUnwritableDestination(instruction, getPersistStorageMode())) {
       throw new BadRequestError(
          `Source '${persistSource.name}' was instructed to build into ` +
             `storage destination '${instruction.destination}', but ` +
@@ -381,7 +511,7 @@ export function assertInstructedDestinationWritable(
    // reading of `storage=` makes the source warehouse right.
    //
    // Thrown per source, not per run, because these causes hit some sources
-   // and not others; failing the run would take down unrelated colocated
+   // and not others; failing the run would take down unrelated database
    // sources too.
    const declared = declaredStorage(persistSource);
    if (declared && !instruction.destination) {
@@ -389,7 +519,7 @@ export function assertInstructedDestinationWritable(
       // synthesized, so it is named by its base and grain, which the author
       // wrote. The grain renders as a set: the wire plan sorts and dedupes
       // dimensions, so quoting it would misrepresent the author's order.
-      const rollup = compiled.preaggregatePlans?.[persistSource.sourceID];
+      const rollup = compiled.tables[persistSource.sourceID]?.rollup;
       throw new BadRequestError(
          (rollup
             ? `Measures of \`${rollup.baseSourceName}\` ` +
@@ -440,7 +570,7 @@ export function recordInstructedBuildFailure(
          run.environment.getApiConnection(persistSource.connectionName),
       );
    } catch {
-      reason = redactPgSecrets(errMessage(buildErr));
+      reason = redactStorageUrls(redactPgSecrets(errMessage(buildErr)));
    }
    // Classified against the upstreams that already failed in this run: a
    // dependent refused because its upstream failed fails for the upstream's
@@ -489,14 +619,20 @@ export function recordInstructedBuildFailure(
       physicalTableName: instruction.physicalTableName,
       reason,
       // Omitted when the error is not recognized, so the consumer keeps its
-      // own judgment, as for a Publisher that predates the field.
-      ...(retryable !== undefined ? { retryable } : {}),
-      // Lets a consumer tell a colocated failure from a `storage=` one; it
+      // own judgment, as for a Publisher that predates the field; and for a
+      // source the run's cancel stopped, which did not fail (the run settles
+      // CANCELLED, and its status is the signal).
+      ...(retryable !== undefined && !run.signal?.aborted ? { retryable } : {}),
+      // Lets a consumer tell a database failure from a `storage=` one; it
       // keys by `storageDestinationName ?? connectionName`, like a
       // successful ManifestEntry.
       connectionName: persistSource.connectionName,
       ...(instruction.destination
          ? { storageDestinationName: instruction.destination }
+         : {}),
+      // A bounded code beside the prose, for a refusal a client branches on.
+      ...(buildErr instanceof TableOwnershipError
+         ? { code: buildErr.code }
          : {}),
    };
    // Deprecated mirror into `entries` for consumers that read the failure
@@ -511,4 +647,53 @@ export function recordInstructedBuildFailure(
       materializedTableId: instruction.materializedTableId,
       error: reason,
    } as ManifestEntry;
+}
+
+/**
+ * The record a run keeps for a source the eligibility gate refused, in the
+ * plan's `RefusedSource` shape so both report it identically.
+ */
+export function refusalRecord(
+   persistSource: PersistSource,
+   err: MaterializationEligibilityError,
+   tier: RefusedSource["tier"],
+   modelPath: string | undefined,
+   /** Its planned table's kind, which names its mechanism (`origin`). */
+   kind?: Parameters<typeof originOfTable>[0],
+): RefusedSource {
+   return {
+      origin:
+         tier === "preaggregate"
+            ? "rollup"
+            : originOfTable(
+                 kind ??
+                    (isPersistedResultSourceID(persistSource.sourceID)
+                       ? "view"
+                       : "persist"),
+                 persistSource.sourceID,
+              ),
+      name: persistSource.name,
+      sourceID: persistSource.sourceID,
+      ...(modelPath ? { modelPath } : {}),
+      tier,
+      reason: err.reason || "authorize",
+      message: errMessage(err),
+   };
+}
+
+/**
+ * The run-level refusal when every targeted source was refused. Several
+ * refusals are joined so the run names every source, not only the first.
+ */
+export function allSourcesRefusedError(
+   errors: MaterializationEligibilityError[],
+): MaterializationEligibilityError {
+   if (errors.length === 1) return errors[0];
+   const reason = errors.every((e) => e.reason === errors[0].reason)
+      ? errors[0].reason
+      : undefined;
+   return new MaterializationEligibilityError({
+      message: errors.map((e) => e.message).join("; "),
+      reason,
+   });
 }

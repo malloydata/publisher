@@ -78,29 +78,40 @@ source: p is raw -> { select: * } extend { where: org_id = $ORG_ID }`,
       });
    });
 
-   it("admits a filter inherited through extend, which is how a shared scope is written", async () => {
+   it("refuses a filter inherited through extend: only the persisted source's own declaration is re-applied at read", async () => {
       const source = await persistSource(
          `#@ persist name="p" storage=lake
 source: p is scoped extend { where: s != 'zzz' }`,
       );
+      // The build still leaves the term out; what refuses is that the read
+      // would not put it back.
       expect(await buildSQL(source)).not.toContain('org_id"=1');
-
       const result = admitGivenPositions(source);
-      expect(result.ok).toBe(true);
-      // `filterList` accumulates through `extend`, so the base's term arrives
-      // here as the source's own and is stripped like one. The source's OWN
-      // static term is not returned: only a term that reads a given has to be
-      // re-applied with a caller's value, and a static one rides the serve
-      // shape's ordinary filter re-emission whether or not this pass names it.
-      if (result.ok) {
-         expect(result.terms).toEqual([
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+         expect(result.reason).toBe("inherited_where_with_given");
+         expect(result.detail).toContain("`where: org_id = $ORG_ID`");
+         expect(result.detail).toContain(
+            "move the given-reading `where:` onto the persisted source itself",
+         );
+      }
+   });
+
+   it("admits the term on the persisted source's own extend", async () => {
+      const source = await persistSource(
+         `#@ persist name="p" storage=lake
+source: p is raw -> { select: * } extend { where: org_id = $ORG_ID }`,
+      );
+      expect(admitGivenPositions(source)).toEqual({
+         ok: true,
+         terms: [
             {
                code: "org_id = $ORG_ID",
                givens: ["ORG_ID"],
                columns: ["org_id"],
             },
-         ]);
-      }
+         ],
+      });
    });
 
    it("reports no terms for a source with only a static where:", async () => {
@@ -124,7 +135,7 @@ source: p is raw -> { where: org_id = $ORG_ID; select: * }`,
 
       const result = admitGivenPositions(source);
       expect(result.ok).toBe(false);
-      if (!result.ok) expect(result.reason).toBe("given_in_persisted_query");
+      if (!result.ok) expect(result.reason).toBe("reads_given");
    });
 
    it("refuses a given in a group_by, which lands as a projected column", async () => {
@@ -136,7 +147,7 @@ source: p is raw -> { group_by: s, mine is org_id = $ORG_ID; aggregate: n is cou
 
       const result = admitGivenPositions(source);
       expect(result.ok).toBe(false);
-      if (!result.ok) expect(result.reason).toBe("given_in_persisted_query");
+      if (!result.ok) expect(result.reason).toBe("reads_given");
    });
 
    it("refuses a query over a given-scoped input source", async () => {
@@ -152,7 +163,7 @@ source: p is scoped -> { group_by: s; aggregate: n is count() }`,
 
       const result = admitGivenPositions(source);
       expect(result.ok).toBe(false);
-      if (!result.ok) expect(result.reason).toBe("given_in_persisted_query");
+      if (!result.ok) expect(result.reason).toBe("reads_given");
    });
 });
 
@@ -170,8 +181,9 @@ source: p is raw -> { select: * } extend { dimension: mine is org_id = $ORG_ID }
       const result = admitGivenPositions(source);
       expect(result.ok).toBe(false);
       if (!result.ok) {
-         expect(result.reason).toBe("dynamic_projection");
-         expect(result.detail).toContain("mine");
+         // One reason on every route; the detail names where the given sits.
+         expect(result.reason).toBe("reads_given");
+         expect(result.detail).toContain("the field 'mine' reads a given");
       }
    });
 
@@ -187,7 +199,8 @@ source: p is raw -> { select: * } extend {
       const result = admitGivenPositions(source);
       expect(result.ok).toBe(false);
       if (!result.ok) {
-         expect(result.reason).toBe("dynamic_join");
+         expect(result.reason).toBe("reads_given");
+         expect(result.detail).toContain("`on:` condition");
          // The alias the author wrote, not the joined source's `sql://` identity.
          expect(result.detail).toContain("'v'");
       }
@@ -205,7 +218,8 @@ source: p is raw -> { select: * } extend {
       const result = admitGivenPositions(source);
       expect(result.ok).toBe(false);
       if (!result.ok) {
-         expect(result.reason).toBe("dynamic_joined_where");
+         expect(result.reason).toBe("reads_given");
+         expect(result.detail).toContain("the source joined as 'v'");
          expect(result.detail).toContain("refinement");
       }
    });
@@ -333,14 +347,14 @@ source: p is raw -> { select: * } extend {
       const result = admitGivenPositions(source);
       expect(result.ok).toBe(false);
       if (!result.ok) {
-         expect(result.reason).toBe("dynamic_joined_where");
+         expect(result.reason).toBe("reads_given");
          expect(result.detail).toContain("'live_grants'");
          expect(result.detail).toContain("storage destination");
       }
    });
 
-   it("refuses the join when the grant table is persisted colocated, without storage=", async () => {
-      // Only a storage binding is on the serve shape, so a colocated grant table
+   it("refuses the join when the grant table is persisted in the database tier, without storage=", async () => {
+      // Only a storage binding is on the serve shape, so a database grant table
       // leaves the join nothing to be re-emitted against.
       const source = await persistSourceWithGrants(
          `#@ persist name="colo_grants"
@@ -354,7 +368,10 @@ source: p is raw -> { select: * } extend {
       );
       const result = admitGivenPositions(source);
       expect(result.ok).toBe(false);
-      if (!result.ok) expect(result.reason).toBe("dynamic_joined_where");
+      if (!result.ok) {
+         expect(result.reason).toBe("reads_given");
+         expect(result.detail).toContain("the source joined as 'g'");
+      }
    });
 
    it("refuses the join when the grant table's own build would bake a given", async () => {
@@ -369,7 +386,7 @@ source: p is raw -> { select: * } extend {
       const result = admitGivenPositions(source);
       expect(result.ok).toBe(false);
       if (!result.ok) {
-         expect(result.reason).toBe("dynamic_joined_where");
+         expect(result.reason).toBe("reads_given");
          expect(result.detail).toContain("BUILT");
       }
    });
@@ -406,7 +423,7 @@ source: p is raw -> { select: * } extend {
       );
       expect(refused.ok).toBe(false);
       if (!refused.ok) {
-         expect(refused.reason).toBe("dynamic_joined_where");
+         expect(refused.reason).toBe("reads_given");
          expect(refused.detail).toContain("'teams'");
       }
    });
@@ -421,7 +438,10 @@ source: p is raw -> { select: * } extend {
       );
       const result = admitGivenPositions(source);
       expect(result.ok).toBe(false);
-      if (!result.ok) expect(result.reason).toBe("dynamic_projection");
+      if (!result.ok) {
+         expect(result.reason).toBe("reads_given");
+         expect(result.detail).toContain("the field 'mine' reads a given");
+      }
    });
 
    it("still refuses a given in the join's on: condition", async () => {
@@ -433,6 +453,9 @@ source: p is raw -> { select: * } extend {
       );
       const result = admitGivenPositions(source);
       expect(result.ok).toBe(false);
-      if (!result.ok) expect(result.reason).toBe("dynamic_join");
+      if (!result.ok) {
+         expect(result.reason).toBe("reads_given");
+         expect(result.detail).toContain("`on:` condition");
+      }
    });
 });

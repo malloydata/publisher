@@ -10,7 +10,10 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { installSettings } from "../../../src/test_helpers/settings_env";
+import {
+   installSettings,
+   useMaterializationOn,
+} from "../../../src/test_helpers/settings_env";
 import {
    buildScenario,
    disposeScenarios,
@@ -55,22 +58,25 @@ source: aa_flights is flights extend {
 `;
 
 describe("R4: a persisted view answers its exact call, equal to live", () => {
-   let restore: () => void;
    let fixture: R4Fixture;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: { "m.malloy": model },
          seedSql,
          persistedViews: true,
-         colocated: ["flights__nested__view"],
+         database: ["flights__nested__view"],
       });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
+   });
+
+   it("refuses a nested view database at plan: no read could use its table", () => {
+      expect(fixture.viewRefusals.some((r) => r.includes("nests"))).toBe(true);
+      expect(
+         fixture.bindings.some((b) => b.sourceName === "flights__nested__view"),
+      ).toBe(false);
    });
 
    it("refuses a view whose result reads the current time, with a warning", () => {
@@ -94,7 +100,6 @@ describe("R4: a persisted view answers its exact call, equal to live", () => {
          "run: flights -> by_carrier -> { aggregate: total is n.sum() }",
          true,
       ],
-      ["a nested view, colocated", "run: flights -> nested", false],
    ];
    for (const [label, malloy, storage] of served) {
       it(`serves ${label} from the view's table, equal to live`, async () => {
@@ -132,7 +137,7 @@ describe("R4: a persisted view answers its exact call, equal to live", () => {
       [
          "a refined call",
          "run: flights -> by_carrier + { limit: 1 }",
-         "MISSING_FIELD",
+         "SHAPE_MISMATCH",
       ],
       [
          "a hand-written look-alike with identical SQL",
@@ -146,6 +151,10 @@ describe("R4: a persisted view answers its exact call, equal to live", () => {
          undefined,
       ],
       ["a view that is not persisted", "run: flights -> plain", undefined],
+      // Its nest's stored rows cannot be rebuilt exactly (a `select:` nest's
+      // duplicates, an empty nest), so the plan refuses it (`nested_result`)
+      // on either tier and no table is built.
+      ["a nested view, database", "run: flights -> nested", undefined],
       [
          "a caller's redefinition of the source",
          "source: flights2 is flights\nrun: flights2 -> by_carrier",
@@ -190,6 +199,29 @@ describe("R4: a persisted view answers its exact call, equal to live", () => {
          "NOT_BUILT",
       );
    });
+
+   it("reports a view past its freshness window STALE and answers live", async () => {
+      fixture.setBindings(
+         fixture.bindings.map((b) =>
+            b.sourceName === "flights__by_carrier__view"
+               ? {
+                    ...b,
+                    freshAsOf: "2020-01-01T00:00:00.000Z",
+                    freshnessWindowSeconds: 60,
+                    freshnessFallback: "live",
+                 }
+               : b,
+         ),
+      );
+      const { path, servedFrom } = await fixture.runAsIs(
+         "run: flights -> by_carrier",
+      );
+      expect(servedFrom).not.toBe("storage");
+      expect(path?.servedBy.kind).toBe("live");
+      expect(path?.considered.find((c) => c.kind === "view")?.reason).toBe(
+         "STALE",
+      );
+   });
 });
 
 const gatedModel = `##! experimental { givens }
@@ -223,7 +255,7 @@ for (const gatedSwitch of [true, false]) {
             files: { "m.malloy": gatedModel },
             seedSql,
             persistedViews: true,
-            colocated: ["ops__by_tenant__view"],
+            database: ["ops__by_tenant__view"],
          });
       });
       afterAll(async () => {
@@ -268,7 +300,7 @@ for (const gatedSwitch of [true, false]) {
             if (gatedSwitch) {
                expect(result.path?.servedBy.kind).toBe("view");
             } else {
-               expect(view?.reason).toBe("CONTRACT");
+               expect(view?.reason).toBe("ROW_LEVEL_GATE");
             }
          });
       }
@@ -319,7 +351,7 @@ describe("R4: a persisted view on an extension with an inherited lock and its ow
          files: { "m.malloy": twoGateModel },
          seedSql,
          persistedViews: true,
-         colocated: ["ops__by_tenant__view"],
+         database: ["ops__by_tenant__view"],
       });
    });
    afterAll(async () => {
@@ -395,12 +427,9 @@ source: public_flights is flights include {
 `;
 
 describe("R4: a persisted view answers only on the source whose statement annotates it", () => {
-   let restore: () => void;
    let fixture: R4Fixture;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: { "m.malloy": declaringModel },
          seedSql,
@@ -408,7 +437,6 @@ describe("R4: a persisted view answers only on the source whose statement annota
       });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 
@@ -487,7 +515,7 @@ for (const gatedSwitch of [true, false]) {
             files: { "m.malloy": joinGatedModel },
             seedSql,
             persistedViews: true,
-            colocated: ["ops__by_joined_tenant__view"],
+            database: ["ops__by_joined_tenant__view"],
          });
       });
       afterAll(async () => {

@@ -3,7 +3,6 @@
 
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "fs";
-import * as os from "os";
 import * as path from "path";
 import { __setPackageLoadPoolForTests } from "../../../package_load/package_load_pool";
 import type {
@@ -11,23 +10,25 @@ import type {
    ResourceRepository,
 } from "../../../storage/DatabaseInterface";
 import { DuckDBConnection } from "../../../storage/duckdb/DuckDBConnection";
-import { createDuckDBRepository } from "../../../storage/duckdb/DuckDBRepository";
-import { initializeSchema } from "../../../storage/duckdb/schema";
 import { installSettings } from "../../../test_helpers/settings_env";
 import { writePackageFiles } from "../../../test_helpers/temp_package";
 import { unrecordedAudit } from "../../access_record";
 import { Environment } from "../../environment";
-import type { EnvironmentStore } from "../../environment_store";
 import { parsePackageName, VersionRef } from "../../identity";
 import { QueryPrivileges } from "../../model_query_request";
 import type { Package } from "../../package";
 import { storageBindingResolverFor } from "../../versions/materialization_scope";
 import { MaterializationService } from "./materialization_service";
+import {
+   openTempStorage,
+   disposeTempStorage,
+} from "../../../test_helpers/temp_storage";
+import { serviceOverEnvironment } from "../../../test_helpers/materialization_service_harness";
 
 /**
  * The v1 cutover on a real Postgres (the R4 subset the
- * fixture cannot reach, and G7): v1 colocated `#@ persist` tables, one of them
- * incremental, built through real builds with PUBLISHER_V1_SERVED_COPY=on and
+ * fixture cannot reach, and G7): v1 database `#@ persist` tables, one of them
+ * incremental, built through real builds and
  * answered from the served copy equal to live, before and after a delta. Date
  * truncations stored by Postgres as timestamps exercise G5's read cast there.
  */
@@ -138,7 +139,7 @@ function sortRows(rows: Row[]): string {
 
 for (const flag of [true, false])
    describe.skipIf(!POSTGRES_URL)(
-      `v1 colocated #@ persist on Postgres under the cutover (${flag ? "flagged" : "unflagged"} file)`,
+      `v1 database #@ persist on Postgres under the cutover (${flag ? "flagged" : "unflagged"} file)`,
       () => {
          let root: string;
          let envPath: string;
@@ -224,24 +225,17 @@ for (const flag of [true, false])
                env: {
                   PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: "true",
                   PUBLISHER_MATERIALIZE: "true",
-                  PUBLISHER_V1_SERVED_COPY: "on",
                },
             }).restore;
             await __setPackageLoadPoolForTests(null);
-            root = fs.realpathSync(
-               fs.mkdtempSync(path.join(os.tmpdir(), "v1-cutover-pg-")),
-            );
-            envPath = path.join(root, "env");
+            ({ root, envPath, db, repo } = await openTempStorage(
+               "v1-cutover-pg-",
+               {
+                  id: ENV_ID,
+                  name: ENV,
+               },
+            ));
             sourcesPath = path.join(root, "sources");
-            fs.mkdirSync(envPath);
-            db = new DuckDBConnection(":memory:");
-            await db.initialize();
-            await initializeSchema(db);
-            await db.run(
-               "INSERT INTO environments (id, name, path, created_at, updated_at) VALUES (?, ?, ?, now(), now())",
-               [ENV_ID, ENV, envPath],
-            );
-            repo = createDuckDBRepository(db);
             env = await Environment.create(ENV, envPath, [
                {
                   name: "warehouse",
@@ -274,11 +268,10 @@ for (const flag of [true, false])
             env.setStorageBindingResolver(
                storageBindingResolverFor(repo, ENV_ID),
             );
-            service = new MaterializationService({
-               storageManager: { getRepository: () => repo },
-               getEnvironment: async () => env,
-               getLoadedEnvironments: () => [env],
-            } as unknown as EnvironmentStore);
+            service = serviceOverEnvironment(
+               () => repo,
+               () => env,
+            );
             await sql(`DROP SCHEMA IF EXISTS ${SCHEMA} CASCADE`);
             await sql(`CREATE SCHEMA ${SCHEMA}`);
             await sql(`CREATE TABLE ${q("ev")} AS SELECT * FROM (VALUES
@@ -294,8 +287,7 @@ for (const flag of [true, false])
                () => undefined,
             );
             await env.closeAllConnections().catch(() => undefined);
-            await db.close();
-            fs.rmSync(root, { recursive: true, force: true });
+            await disposeTempStorage({ db, root });
             restore();
             await __setPackageLoadPoolForTests(null);
          });
@@ -307,7 +299,8 @@ for (const flag of [true, false])
                const first = await build();
                expect(first.status).toBe("MANIFEST_FILE_READY");
                const verdicts = (await pkg())
-                  .getServeVerdicts()
+                  .materialization()
+                  .serveVerdicts()
                   .map((v) => `${v.sourceName}:${v.verdict}`)
                   .sort();
                expect(verdicts).toEqual(["ev_all:serves", "ev_inc:serves"]);

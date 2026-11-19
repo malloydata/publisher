@@ -4,8 +4,8 @@
 import { Manifest } from "@malloydata/malloy";
 import { beforeEach, describe, expect, it } from "bun:test";
 import * as sinon from "sinon";
-import { BuildInstruction, LedgerEntry } from "../types";
-import { NATIVE_SCHEMA_ROW_LIMIT } from "./colocated_native_types";
+import { BuildInstruction, LedgerEntry } from "../domain/types";
+import { NATIVE_SCHEMA_ROW_LIMIT } from "./database_native_types";
 import { indexCallerLedger } from "./incremental_build";
 import { fakeSource } from "../../../test_helpers/materialization_test_fixtures";
 import { createMocks } from "../../../test_helpers/materialization_service_harness";
@@ -74,6 +74,12 @@ describe("buildOneSource: incremental refresh", () => {
          }
          if (sql.includes("LIMIT 1")) {
             return { rows: nonEmpty ? [{ present: 1 }] : [] };
+         }
+         // The newest stored watermark at or below the recorded boundary: a
+         // table holding rows right up to it, so a delta starts there.
+         if (/ <= (DATE|TIMESTAMP) '/.test(sql)) {
+            const atOrBelow = /<= DATE '([^']+)'/.exec(sql)?.[1];
+            return { rows: [{ watermark_max: atOrBelow ?? null }] };
          }
          if (sql.includes("watermark_max")) {
             return { rows: [{ watermark_max: "2024-06-20" }] };
@@ -153,7 +159,7 @@ describe("buildOneSource: incremental refresh", () => {
          ...(params.reseed === undefined ? {} : { reseed: params.reseed }),
       } as BuildInstruction;
       return (
-         ctx.service as unknown as {
+         ctx.service.collaborators as unknown as {
             buildOneSource: (...args: unknown[]) => Promise<{
                sourceEntityId: string;
                physicalTableName: string;
@@ -161,23 +167,23 @@ describe("buildOneSource: incremental refresh", () => {
                ledger?: LedgerEntry;
             }>;
          }
-      ).buildOneSource(
-         source,
+      ).buildOneSource({
+         persistSource: source,
          instruction,
-         { runSQL: params.runSQL },
-         params.manifest ?? new Manifest(),
-         {
+         connection: { runSQL: params.runSQL },
+         manifest: params.manifest ?? new Manifest(),
+         environment: {
             getApiConnection: () => {
                throw new Error("no connection config in this test");
             },
+            getEnvironmentName: () => "env",
             getEnvironmentPath: () => "/tmp/env",
          },
-         {},
-         undefined,
-         params.context,
+         builtEntries: {},
+         incremental: params.context,
          // The content address, which is the ledger's key.
-         "abcdef1234567890",
-      );
+         contentSourceEntityId: "abcdef1234567890",
+      });
    }
 
    it("applies the delta INSTEAD of the CTAS, and advances the boundary", async () => {
@@ -407,7 +413,7 @@ describe("buildOneSource: incremental refresh", () => {
          'CREATE TABLE "orders_v1_abcdef123456" AS (SELECT * FROM t)',
          // Postgres: the swap is one implicit transaction in one call.
          'DROP TABLE IF EXISTS "orders_v1";\nALTER TABLE "orders_v1_abcdef123456" RENAME TO "orders_v1";',
-         // Then the built table's column types (colocated_native_types.ts).
+         // Then the built table's column types (database_native_types.ts).
          "SELECT row_to_json(c) AS row FROM (SELECT a.attname AS name, format_type(a.atttypid, a.atttypmod) AS type, a.attnum FROM pg_attribute a WHERE a.attrelid = to_regclass('\"orders_v1\"') AND a.attnum > 0 AND NOT a.attisdropped) c ORDER BY c.attnum",
       ]);
       expect(upsert.called).toBe(false);
@@ -427,30 +433,30 @@ describe("buildOneSource: incremental refresh", () => {
          dialectName: "duckdb",
       });
       await (
-         ctx.service as unknown as {
+         ctx.service.collaborators as unknown as {
             buildOneSource: (...args: unknown[]) => Promise<unknown>;
          }
-      ).buildOneSource(
-         source,
-         {
+      ).buildOneSource({
+         persistSource: source,
+         instruction: {
             sourceEntityId: "abcdef1234567890",
             materializedTableId: "mt-1",
             physicalTableName: "orders_v1",
             realization: "COPY",
          } as BuildInstruction,
-         { runSQL },
-         new Manifest(),
-         {
+         connection: { runSQL },
+         manifest: new Manifest(),
+         environment: {
             getApiConnection: () => {
                throw new Error("no connection config in this test");
             },
+            getEnvironmentName: () => "env",
             getEnvironmentPath: () => "/tmp/env",
          },
-         {},
-         undefined,
-         context,
-         "abcdef1234567890",
-      );
+         builtEntries: {},
+         incremental: context,
+         contentSourceEntityId: "abcdef1234567890",
+      });
       // The staging drop, the CTAS, the one-transaction swap, and the read of
       // the built table's column types.
       expect(runSQL.getCalls().map((c) => c.args[0])).toHaveLength(4);

@@ -1,0 +1,11 @@
+import "./marts/deep/report.malloy"
+import "core/orders.malloy"
+
+source: nested_all is report
+
+#(doc) Expect order_count 3, amount_total 600.
+query: check_nested is nested_all -> {
+  aggregate:
+    order_count
+    amount_total
+}

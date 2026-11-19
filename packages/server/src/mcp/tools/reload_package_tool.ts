@@ -8,6 +8,7 @@ import type { PackageController } from "../../controller/package.controller";
 import { buildMalloyUri } from "../handler_utils";
 import { registerGuardedTool } from "../register_tool";
 import { jsonResource } from "../tool_response";
+import { withoutRetainedAliases } from "../../service/materialization";
 
 const reloadShape = {
    environmentName: z
@@ -46,7 +47,7 @@ const RELOAD_DESCRIPTION = `Reload a package in a watched environment so edits t
 
 Receipt: a reload succeeds whether or not it saw your edit. sourceContentSha hashes the model, skill and agent files (and the manifest's agents), so if you edited one of those and it is unchanged, the edit never reached the server. Data, other publisher.json keys and retrieval settings are not hashed.
 
-${RELOAD_FAILURE_IS_SAFE} compile_model at scope "package" first is the faster way to see diagnostics. It reports the compile, render-tag and dashboard findings a reload would; every other package warning (storage, persist, materialization, explores, surface, discovery, deprecated .malloynb or #(filter), among others) appears only here.
+${RELOAD_FAILURE_IS_SAFE} compile_model at scope "package" first is the faster way to see diagnostics. It reports the compile, render-tag and dashboard findings a reload would, and what the load refuses or leaves unbuilt among the materialization annotations; every other package warning (storage, bound tables, explores, surface, discovery, deprecated .malloynb or #(filter), among others) appears only here.
 
 ## Parameters
 - environmentName, packageName (required): the package to recompile. Use the names get_context returns.
@@ -120,8 +121,12 @@ export function registerReloadPackageTool(
             ...(pkg.description !== undefined && {
                description: pkg.description,
             }),
+            // A renamed code's retained alias repeats its warning, same
+            // message, for REST clients; an agent reads it once.
             ...(pkg.warnings !== undefined &&
-               pkg.warnings.length > 0 && { warnings: pkg.warnings }),
+               pkg.warnings.length > 0 && {
+                  warnings: withoutRetainedAliases(pkg.warnings),
+               }),
             // An explores entry that did not resolve to a model, so a
             // mistyped explores edit is not silently swallowed.
             ...(pkg.exploresWarnings !== undefined &&

@@ -14,6 +14,9 @@
       }
     ],
     "droppedPersistSources": [],
+    "kinds": {
+      "mzn_orders@<hammer>/mzn/mzn.malloy": "materialize"
+    },
     "materializePlans": {
       "mzn_orders@<hammer>/mzn/mzn.malloy": {
         "buildSourceName": "mzn_orders__mat",
@@ -88,7 +91,6 @@
     }
   },
   "rollupsKeepingGates": [],
-  "rollupsOverStoredBase": [],
   "wirePlan": {
     "graphs": [
       {
@@ -103,6 +105,8 @@
         ]
       }
     ],
+    "omittedFiles": [],
+    "omittedSources": [],
     "refusedSources": {},
     "sources": {
       "mzn_orders@<hammer>/mzn/mzn.malloy": {
@@ -137,7 +141,7 @@
         "freshness": null,
         "modelPath": "mzn.malloy",
         "name": "mzn_orders",
-        "origin": "persist",
+        "origin": "materialize",
         "preaggregate": null,
         "queryMetadata": null,
         "refresh": null,

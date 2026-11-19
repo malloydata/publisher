@@ -3,6 +3,8 @@
 
 import { quotedIdentifier, quotedPath, stringLiteral } from "./malloy_text";
 import { INCREMENTAL_NO_MERGE_KEY_CODE } from "./materialization/plan/incremental_policy";
+import { recordConnectionType } from "./connection_type";
+import { withNameProblems, withRetainedAliases } from "./materialization";
 import * as fs from "fs/promises";
 import * as path from "path";
 import { pathToFileURL } from "url";
@@ -34,7 +36,6 @@ import type { SourceAddress } from "./entities/internal_types";
 import { toApiEntities } from "./entities/to_api";
 import { isUnconditionalDenyAuthorize } from "./entities/access_gates";
 import { splitSourcePath } from "./entities/explore_walk";
-import recursive from "recursive-readdir";
 import { components } from "../api";
 import {
    getPackageLoadPool,
@@ -61,6 +62,8 @@ import {
    ServiceUnavailableError,
 } from "../errors";
 import { applyExtensionSessionSettings } from "./connection";
+import { authorSqlRefusals, sandboxedDuckDBOptions } from "./duckdb_lockdown";
+import { closeMalloyConfig, ownDuckDBConnection } from "./duckdb_hard_close";
 import { formatDuration, logger } from "../logger";
 import {
    recordReportDiscovery,
@@ -97,18 +100,28 @@ import {
    BuildManifest,
    BuildPlan,
    FreshnessManifest,
-   ManifestEntry,
-} from "./materialization/types";
-import { errMessage, ignoreDotfiles } from "../utils";
+} from "./materialization/domain/types";
+import type {
+   ChainBuildRequest,
+   ChainBuildText,
+} from "./materialization/domain/chain_build";
+import type { KeptTable, LateRows } from "./materialization/domain/types";
+import {
+   confinedPackagePath,
+   errMessage,
+   listPackageTree,
+   readPackageURL,
+} from "../utils";
 import { packageResource } from "../api_resource";
 import { isPackageInlineFieldsEnabled } from "../config";
 import type {
-   ColocatedSourceEligibility,
+   DatabaseSourceEligibility,
+   PersistNameProblem,
    SourceEligibility,
-} from "./materialization/plan/build_plan";
+} from "./materialization/domain/package_plan";
 import {
-   type DeploymentFacts,
    PackageMaterialization,
+   type PackageMaterializationView,
    toTableNameManifest,
 } from "./materialization/package_materialization";
 import {
@@ -122,6 +135,12 @@ import {
    deprecatedFormatWarnings,
    recordDeprecatedFormatUsage,
 } from "./deprecated/lints";
+import {
+   arrayQueryJoinRefusal,
+   arrayQueryJoins,
+   governsAccess,
+   noteGovernsAccess,
+} from "./governance/ir/array_query";
 import {
    carriesCeilingLeaks,
    classificationLeaks,
@@ -175,8 +194,13 @@ import {
    type ReportTag,
 } from "./report";
 import { sqlLiteral } from "./introspection_sql";
-import { isQuotedIdentifierPath, quoteManifestTablePath } from "./quoting";
+import { quoteManifestTablePath, UnquotableIdentifierError } from "./quoting";
 import { Model } from "./model";
+import {
+   callerVisibleText,
+   rewriteErrorMessage,
+   withPackageRelativeErrors,
+} from "../package_relative_text";
 import {
    PackageModelPolicy,
    type OffSurfaceContext,
@@ -186,7 +210,7 @@ import {
    type ApiSecureGivenSummary,
    summarizeSecureGivens,
 } from "./secure_givens";
-import { assertPersistNamesQuoted } from "./materialization/plan/persist_annotation_validation";
+import { persistNameProblems } from "./materialization/plan/persist_annotation_validation";
 import {
    applyLoadGates,
    assertOutcomeStagesAvailable,
@@ -380,7 +404,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
     * The package's materialization state: build plan, eligibility, bound
     * manifest, serve routing and persistence-policy findings.
     */
-   private readonly materialization = new PackageMaterialization({
+   private readonly mz = new PackageMaterialization({
       packageName: () => this.packageName,
       versionId: () => this.getVersionId(),
       metadata: () => this.packageMetadata,
@@ -388,29 +412,60 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       modelPolicy: () => this.modelPolicy,
       packagePath: () => this.packagePath,
       malloyConfig: () => this.malloyConfig,
+      connection: (name) => this.getMalloyConnection(name),
       buildPlanPackage: this,
       publishedSurface: () => this.publishedSurface(),
    });
+   /**
+    * The package's materialization: its plan, bindings, verdicts and
+    * warnings. Callers reach the facade through this one accessor.
+    */
+   public materialization(): PackageMaterializationView {
+      return this.mz;
+   }
    // The load path is the only writer of these; the accessors let a spec that
-   // isolates a filter set them on the package, where they used to live
-   // (protected, not private: nothing in this class reads the setters).
+   // isolates a filter set them on the package.
    private get buildPlan(): BuildPlan | null {
-      return this.materialization.buildPlan;
+      return this.mz.plan.buildPlan;
    }
    private set buildPlan(plan: BuildPlan | null) {
-      this.materialization.buildPlan = plan;
+      this.mz.plan.buildPlan = plan;
    }
    protected set sourceEligibility(eligibility: SourceEligibility | undefined) {
-      this.materialization.sourceEligibility = eligibility;
+      this.mz.plan.sourceEligibility = eligibility;
    }
-   protected set colocatedSourceEligibility(
-      eligibility: ColocatedSourceEligibility | undefined,
+   protected set databaseSourceEligibility(
+      eligibility: DatabaseSourceEligibility | undefined,
    ) {
-      this.materialization.colocatedSourceEligibility = eligibility;
+      this.mz.plan.databaseSourceEligibility = eligibility;
    }
    // Non-fatal render-tag findings across the models; a bad tag does not fail
    // the load, so this is its signal.
    private renderTagWarnings: ApiPackageWarning[] = [];
+   /**
+    * What the models were last compiled against (by {@link reloadAllModels},
+    * or by a load given its manifest), so a rebind can skip the compile.
+    * `compiledFor` is the part of the entries a compile reads
+    * ({@link compileKeyOf}); `bound` the whole entries last bound (freshness
+    * and schemas too), undefined while none has been; `quoted` the entries
+    * the compile quoted, from `quotedFrom`. Every other part is compared by
+    * identity: any other reload, database bind or plan change since makes
+    * the next rebind recompile.
+    */
+   private reloadedFor:
+      | {
+           compiledFor: string;
+           bound: string | undefined;
+           quotedFrom: string;
+           quoted: FreshnessManifest;
+           models: Map<string, Model>;
+           database: unknown;
+           buildPlan: unknown;
+           connectionEdits: number;
+        }
+      | undefined;
+   /** Bumped by each connection edit {@link markBuildPlanStale} records. */
+   private connectionEdits = 0;
    /** The annotations the entities extraction left out, as warnings. */
    private entitiesWarnings: ApiPackageWarning[] = [];
    private reportWarnings: ApiPackageWarning[] = [];
@@ -462,6 +517,9 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       "Time taken to load a Malloy package",
       { buckets: LOAD_DURATION_BUCKETS_MS },
    );
+
+   /** The `#@ persist name=` mistakes the raw text of its models shows. */
+   private persistNameProblems: PersistNameProblem[] = [];
 
    constructor(
       environmentName: string,
@@ -879,7 +937,24 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
        * entities-findings counts, and logs a failure as the caller's answer
        * rather than as an error, since nothing served is affected.
        */
-      options: { dryRun?: boolean } = {},
+      options: {
+         dryRun?: boolean;
+         /**
+          * The published version this load is, which names its tables per
+          * version under `scope: "version"`: set before the load is judged, so
+          * the collision check keys the names the version's runs write.
+          */
+         versionId?: string;
+         /**
+          * The database entries of the manifest the package is about to be
+          * bound to, read while it compiles: its models are hydrated over
+          * them, so the bind that follows (`reloadAllModels` with
+          * `ifChanged`) binds without compiling the package a second time.
+          * Undefined, or a read that fails, loads it as with none; nothing is
+          * bound until that bind.
+          */
+         database?: Promise<FreshnessManifest | undefined>;
+      } = {},
    ): Promise<Package> {
       return withSpan(
          "publisher.package.load",
@@ -889,13 +964,19 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             "publisher.package.dry_run": options.dryRun === true,
          },
          () =>
-            Package.load(
-               environmentName,
-               packageName,
-               packagePath,
-               environmentMalloyConfig,
-               cleanupDirectoryOnFailure,
-               options.dryRun === true,
+            // A failed load's message names the package's files
+            // package-relative, whichever path loaded it.
+            withPackageRelativeErrors(packagePath, () =>
+               Package.load(
+                  environmentName,
+                  packageName,
+                  packagePath,
+                  environmentMalloyConfig,
+                  cleanupDirectoryOnFailure,
+                  options.dryRun === true,
+                  options.versionId,
+                  options.database,
+               ),
             ),
       );
    }
@@ -907,6 +988,8 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       environmentMalloyConfig: PackageConnectionInput,
       cleanupDirectoryOnFailure: boolean,
       dryRun: boolean,
+      versionId?: string,
+      database?: Promise<FreshnessManifest | undefined>,
    ): Promise<Package> {
       assertSafeEnvironmentPath(packagePath);
       const startTime = performance.now();
@@ -938,17 +1021,21 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             startTime,
             manifestValidationTime,
             dryRun,
+            versionId,
+            database,
          );
       } catch (error) {
          // No caller ever holds a package whose load failed, so its own
          // connections (the package DuckDB the load opened) close here; the
          // environment's connections are not the package's and stay open.
-         await malloyConfig?.shutdown("close").catch((shutdownError) => {
-            logger.warn(
-               `Failed to close the connections of package ${packageName} after a failed load`,
-               { error: errMessage(shutdownError) },
-            );
-         });
+         if (malloyConfig) {
+            await closeMalloyConfig(malloyConfig).catch((shutdownError) => {
+               logger.warn(
+                  `Failed to close the connections of package ${packageName} after a failed load`,
+                  { error: errMessage(shutdownError) },
+               );
+            });
+         }
          Package.reportFailedLoad(packageName, error, startTime, dryRun);
          if (cleanupDirectoryOnFailure) {
             await Package.removeFailedPackageDirectory(packagePath);
@@ -1079,6 +1166,16 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       const models = new Map<string, Model>();
       const renderTagWarnings: ApiPackageWarning[] = [];
       const timings = { hydrateMs: 0, renderValidationMs: 0 };
+      // A model's compile error is read by every caller of the package (a
+      // query's 424, get_context, the package's warnings): it names the
+      // package's files package-relative and no other server path, whether
+      // it is thrown or kept on a placeholder.
+      const callerVisible = (err: Error): Error => {
+         rewriteErrorMessage(err, (message) =>
+            callerVisibleText(message, packagePath),
+         );
+         return err;
+      };
       const placeholder = (
          sm: LoadPackageOutcome["models"][number],
          err: Error,
@@ -1087,7 +1184,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             packageName,
             sm.modelPath,
             sm.modelType,
-            err,
+            callerVisible(err),
             {
                policy: ctx.modelPolicy.forModel(sm.modelPath),
                sourceText:
@@ -1102,7 +1199,9 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       for (const sm of outcome.models) {
          await yielder.maybeYield();
          if (sm.compilationError) {
-            const err = Model.deserializeCompilationError(sm.compilationError);
+            const err = callerVisible(
+               Model.deserializeCompilationError(sm.compilationError),
+            );
             if (onCompileError === "throw") {
                logger.error("Model compilation failed", {
                   packageName,
@@ -1166,6 +1265,11 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             continue;
          } finally {
             timings.hydrateMs += performance.now() - hydrateStart;
+         }
+         // The worker walked its own copy of the IR to answer this, so the
+         // load gate and the governor never walk a model that governs nothing.
+         if (sm.governsAccess !== undefined) {
+            noteGovernsAccess(model.getModelDef(), sm.governsAccess);
          }
          let warnings: Awaited<ReturnType<Model["validateRenderTags"]>>;
          const validationStart = performance.now();
@@ -1317,6 +1421,8 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       startTime: number,
       manifestValidationTime: number,
       dryRun: boolean,
+      versionId?: string,
+      database?: Promise<FreshnessManifest | undefined>,
    ): Promise<Package> {
       const pool = getPackageLoadPool();
       const dispatchTime = performance.now();
@@ -1329,16 +1435,49 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             malloyConfig,
             defaultConnectionName: "duckdb",
             computeBuildPlan: true,
-            withPreaggregateCompanions: true,
             withEntities: true,
+            ...(versionId !== undefined ? { publishedVersion: true } : {}),
          }),
       );
-      const [outcome, databases] = await Promise.all([
+      const [outcome, databases, databaseEntries] = await Promise.all([
          workerOutcome,
          Package.readDatabases(packagePath, malloyConfig),
+         // The bind that follows reports a failed read; this load serves live.
+         database?.catch(() => undefined),
       ]);
       assertOutcomeStagesAvailable(outcome);
       const workerDoneTime = performance.now();
+      // The worker compiled without them: a build manifest changes the SQL
+      // a query generates (through the hydration runtime), never the IR a
+      // compile produces, and the build plan describes the canonical build.
+      // So hydrating over them serves what a reload against them serves.
+      let compiledFor:
+         | {
+              key: string;
+              requested: string;
+              quoted: FreshnessManifest;
+           }
+         | undefined;
+      if (databaseEntries && Object.keys(databaseEntries).length > 0) {
+         compiledFor = {
+            key: Package.compileKeyOf(databaseEntries),
+            requested: JSON.stringify(databaseEntries),
+            quoted: await Package.quoteTableNames(
+               packageName,
+               (connectionName) =>
+                  malloyConfig.connections.lookupConnection(connectionName),
+               databaseEntries,
+               Package.planConnectionsOf(
+                  outcome.buildPlan?.ok
+                     ? outcome.buildPlan.packagePlan.plan
+                     : null,
+               ),
+            ),
+         };
+      }
+      const buildManifest = compiledFor
+         ? toTableNameManifest(compiledFor.quoted)
+         : undefined;
       logger.info("Package load via worker pool completed", {
          packageName,
          manifestValidationMs: dispatchTime - manifestValidationTime,
@@ -1367,6 +1506,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       let models: Map<string, Model>;
       let renderTagWarnings: ApiPackageWarning[];
       let hydrationTimings: { hydrateMs: number; renderValidationMs: number };
+      const nameProblems: PersistNameProblem[] = [];
       try {
          ({
             models,
@@ -1374,20 +1514,29 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             timings: hydrationTimings,
          } = await Package.hydrateWorkerModels(
             outcome,
-            { packageName, packagePath, malloyConfig, modelPolicy },
+            {
+               packageName,
+               packagePath,
+               malloyConfig,
+               modelPolicy,
+               buildManifest,
+            },
             "throw",
             async (sm) => {
-               // Reject an unquoted `#@ persist name=`: it is dropped from the
-               // build plan, so the source would never materialize. Reads the
-               // raw source, the ground truth for quoting. `.malloy` only,
-               // because `#@ persist` cannot appear in a `.malloynb`; widen this
-               // if that changes, to keep the identifier-injection check.
+               // An unquoted or unsafe `#@ persist name=`, read from the raw
+               // source, the ground truth for quoting; the load gate fails
+               // with every one, beside the package's other invalid
+               // annotations. `.malloy` only, because `#@ persist` cannot
+               // appear in a `.malloynb`; widen this if that changes, to keep
+               // the identifier-injection check.
                if (sm.modelPath.endsWith(MODEL_FILE_SUFFIX)) {
-                  const modelSource = await fs.readFile(
-                     path.join(packagePath, sm.modelPath),
-                     "utf-8",
+                  const modelSource = await readPackageURL(
+                     packagePath,
+                     pathToFileURL(path.join(packagePath, sm.modelPath)),
                   );
-                  assertPersistNamesQuoted(modelSource, sm.modelPath);
+                  nameProblems.push(
+                     ...persistNameProblems(modelSource, sm.modelPath),
+                  );
                }
             },
          ));
@@ -1416,6 +1565,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          modelPolicy,
       );
       pkg.dryRun = dryRun;
+      pkg.persistNameProblems = nameProblems;
       let reportTimings: Awaited<ReturnType<Package["discoverReports"]>>;
       let buildPlanMs: Awaited<
          ReturnType<PackageMaterialization["applyLoadBuildPlan"]>
@@ -1427,22 +1577,30 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          pkg.renderTagWarnings =
             pkg.surfacedRenderTagWarnings(renderTagWarnings);
          pkg.adoptOutcomeMetadata(outcome);
+         // Before the gates judge it: a version names its tables per version.
+         if (versionId !== undefined) {
+            pkg.updateStoredMetadata({ versionId });
+         }
          // No manifest is bound yet, so this serves live until a bind.
-         pkg.materialization.wireFreshnessResolvers();
+         pkg.mz.wireServingResolvers();
          pkg.refreshServingIdentity();
 
-         buildPlanMs = await pkg.materialization.applyLoadBuildPlan(
-            outcome.buildPlan,
-         );
+         buildPlanMs = await pkg.mz.applyLoadBuildPlan(outcome.buildPlan);
+         // Before any bind, so a database rollup bound later is routed.
+         pkg.mz.pushServedCopyContextToModels();
 
          await applyLoadGates(pkg);
          const entitiesStarted = performance.now();
          await pkg.computeEntities(Package.entityPlansOf(outcome));
          entitiesMs = performance.now() - entitiesStarted;
-         // After the gates, so a bad declaration is rejected before a companion is
-         // compiled. Unbound, the companion recomputes from the base until a bind.
-         await pkg.materialization.pushPreaggregateServeModels();
          pkg.logEmptyDiscoveryWarnings();
+         // Compiled against them, bound to none yet (see `database`).
+         if (compiledFor) {
+            pkg.reloadedFor = pkg.reloadKey(compiledFor.key, undefined, {
+               from: compiledFor.requested,
+               quoted: compiledFor.quoted,
+            });
+         }
       } catch (err) {
          if (!dryRun) {
             recordPackageLoadPhases(
@@ -1490,18 +1648,73 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       return this.packageMetadata.versionId ?? undefined;
    }
 
+   /** `getPackageMetadata().scope`, without building the rest of the metadata. */
+   public getMaterializationScope(): string | null | undefined {
+      return this.packageMetadata.scope;
+   }
+
+   /**
+    * The build manifest the package is configured to bind, as
+    * `getPackageMetadata().manifestLocation` reports it, without building the
+    * rest of the metadata.
+    */
+   public getManifestLocation(): string | null | undefined {
+      return this.packageMetadata.manifestLocation;
+   }
+
    public getPackageName(): string {
       return this.packageName;
    }
 
+   /**
+    * The host port's `forgetKeyUniqueness`: a run about to write these
+    * tables drops their bound key checks first (see
+    * PackageMaterialization.forgetKeyUniqueness).
+    */
+   /** The host port's `boundLateRows` (PackageMaterialization.boundLateRows). */
+   public boundLateRows(): ReadonlyMap<string, LateRows> {
+      return this.mz.boundLateRows();
+   }
+
+   public forgetKeyUniqueness(sourceEntityIds: Iterable<string>): void {
+      this.mz.forgetKeyUniqueness(sourceEntityIds);
+   }
+
+   /** The host port's `boundTableNames`: every database table bound now. */
+   public boundTableNames(): string[] {
+      const names = new Set<string>();
+      for (const entries of [
+         this.mz.getBuildManifestEntries(),
+         this.mz.boundDatabaseEntries(),
+      ]) {
+         for (const entry of Object.values(entries ?? {})) {
+            if (entry.tableName) names.add(entry.tableName);
+         }
+      }
+      return [...names];
+   }
+
+   /**
+    * The host port's `setKeptTables`: the tables the newest auto-run lists as
+    * kept after a rename (see PackageMaterialization.setKeptTables).
+    */
+   public setKeptTables(tables: readonly KeptTable[]): void {
+      this.mz.setKeptTables(tables);
+   }
+
+   /** The host port's `chainBuildText` (see PackageMaterialization.chainBuildText). */
+   public chainBuildText(request: ChainBuildRequest): ChainBuildText {
+      return this.mz.chainBuildText(request);
+   }
+
    /** The persist build plan, or null when the package declares no persist source. */
    public getBuildPlan(): BuildPlan | null {
-      return this.materialization.getBuildPlan();
+      return this.mz.getBuildPlan();
    }
 
    /** Whether the build plan could not be derived at load, so `getBuildPlan` says nothing. */
    public isBuildPlanUnavailable(): boolean {
-      return this.materialization.isBuildPlanUnavailable();
+      return this.mz.isBuildPlanUnavailable();
    }
 
    /** The package-level `materialization` config, the least specific layer; null when none. */
@@ -1804,7 +2017,10 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             // from the revision its range describes.
             text:
                model.getCompiledSourceText() ??
-               (await fs.readFile(absolutePath, "utf-8")),
+               (await readPackageURL(
+                  this.packagePath,
+                  pathToFileURL(absolutePath),
+               )),
          });
       }
       return modelFiles;
@@ -1923,33 +2139,37 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             message,
             severity: "warn" as const,
          })),
-         ...this.materialization.storageWarnings(),
-         ...this.materialization.storedColumnTypeWarnings(),
-         ...this.materialization.servedCopyWarnings(),
-         ...this.materialization.droppedPersistWarnings(),
-         ...this.materialization.rollupsOverStoredBaseWarnings(),
-         ...this.materialization.repeatedJoinOneKeyWarnings(),
-         ...this.materialization.annotationFindingWarnings(),
+         ...this.mz.storageWarnings(),
+         ...this.mz.storedColumnTypeWarnings(),
+         ...this.mz.nativeSchemaWarnings(),
+         ...this.mz.databaseTableUnreadWarnings(),
+         ...this.mz.servedCopyWarnings(),
+         ...this.mz.repeatedJoinOneKeyWarnings(),
+         ...this.mz.lateRowWarnings(),
+         ...this.mz.keptTableWarnings(),
+         ...this.mz.annotationFindingWarnings(),
          ...this.annotationNearMissWarnings(),
-         ...this.materialization.persistRefusalWarnings(),
+         ...this.mz.persistRefusalWarnings(),
          // One verdict pass: unreachable, and the deployment facts (P13).
-         ...this.materialization.verdictWarnings(),
+         ...this.mz.verdictWarnings(),
          // Not in exploresWarnings: an import-only file must not block publish.
          ...this.emptyDiscoveryWarnings(),
          ...deprecatedFormatWarnings(this.models),
          ...this.classificationWarningsMemoized(),
          ...this.joinBypassWarnings(),
+         ...this.gateLoadWarnings(),
          ...ambiguousDashboardNameWarnings(this),
          // The 404s a broken surface causes name models that are not broken.
          ...this.brokenSurfaceWarnings(),
          ...(this.surfaceWidenedWarning !== undefined
             ? [{ message: this.surfaceWidenedWarning }]
             : []),
-         // A collision spans sources, so it has no subject; the message names them.
-         ...this.persistenceCollisionWarnings().map((message) => ({ message })),
-         ...this.preaggregateAccessWarnings(),
+         // A collision spans sources, so it has no subject; the message names
+         // them. Only under PERSIST_COLLISION_ENFORCE=false: otherwise it
+         // fails the load (formatInvalidAnnotations).
+         ...this.mz.persistenceCollisionRefusals(),
          // Legal but probably unintended, e.g. a typo'd merge_key=.
-         ...this.materialization.incrementalPolicyAdvisories(),
+         ...this.mz.incrementalPolicyAdvisories(),
          ...materializationConfigWarnings({
             declarations: this.queryMetadataDeclarations(),
             effectiveMerges: this.queryMetadataEffectiveMerges(),
@@ -1957,7 +2177,9 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          }),
       ];
       if (allWarnings.length > 0) {
-         metadata.warnings = allWarnings;
+         // A renamed code is repeated under the code 0.14.0 shipped, this
+         // release only.
+         metadata.warnings = withRetainedAliases(allWarnings);
       }
       return metadata;
    }
@@ -1979,7 +2201,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       | "sourceContentSha"
       | "storageServeBindings"
    > {
-      const binding = this.materialization.bindingState();
+      const binding = this.mz.bindingState();
       return {
          manifestBindingStatus: binding.manifestBindingStatus,
          manifestEntryCount: binding.manifestEntryCount,
@@ -1992,93 +2214,10 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       };
    }
 
-   /** The bound manifest entries, or undefined when serving live; reused by /compile. */
-   public getBuildManifestEntries(): BuildManifest["entries"] | undefined {
-      return this.materialization.getBuildManifestEntries();
-   }
-
-   /** See {@link PackageMaterialization.hasBoundTableNameManifest}. */
-   public hasBoundTableNameManifest(): boolean {
-      return this.materialization.hasBoundTableNameManifest();
-   }
-
-   /** See {@link PackageMaterialization.hasStorageServeBindings}. */
-   public hasStorageServeBindings(): boolean {
-      return this.materialization.hasStorageServeBindings();
-   }
-
-   /** See {@link PackageMaterialization.getPreaggregateEntityIds}. */
-   public getPreaggregateEntityIds(): ReadonlySet<string> {
-      return this.materialization.getPreaggregateEntityIds();
-   }
-
-   /** See {@link PackageMaterialization.markManifestBound}. */
-   public markManifestBound(uri: string): void {
-      this.materialization.markManifestBound(uri);
-   }
-
-   /** See {@link PackageMaterialization.markManifestBindFailed}. */
-   public markManifestBindFailed(): void {
-      this.materialization.markManifestBindFailed();
-   }
-
-   /** See {@link PackageMaterialization.bindColocatedServeManifest}. */
-   public bindColocatedServeManifest(entries: FreshnessManifest): void {
-      this.materialization.bindColocatedServeManifest(entries);
-   }
-
-   /** See {@link PackageMaterialization.forgetKeyUniqueness}. */
-   public forgetKeyUniqueness(sourceEntityIds: Iterable<string>): void {
-      this.materialization.forgetKeyUniqueness(sourceEntityIds);
-   }
-
-   /** See {@link PackageMaterialization.bindStorageServeBindings}. */
-   public bindStorageServeBindings(
-      entries: Record<string, ManifestEntry>,
-   ): void {
-      this.materialization.bindStorageServeBindings(entries);
-   }
-
-   /** See {@link PackageMaterialization.setServeDestinationSchema}. */
-   public setServeDestinationSchema(
-      resolver: (destinationName: string) => string | undefined,
-   ): void {
-      this.materialization.setServeDestinationSchema(resolver);
-   }
-
-   /** See {@link PackageMaterialization.setDeploymentFacts}. */
-   public setDeploymentFacts(facts: DeploymentFacts): void {
-      this.materialization.setDeploymentFacts(facts);
-   }
-
-   /** See {@link PackageMaterialization.setServeDestinationConfig}. */
-   public setServeDestinationConfig(provider: () => MalloyConfig): void {
-      this.materialization.setServeDestinationConfig(provider);
-   }
-
-   /** See {@link PackageMaterialization.invalidateServeShapes}. */
-   public invalidateServeShapes(): void {
-      this.materialization.invalidateServeShapes();
-   }
-
    /** See {@link PackageMaterialization.markBuildPlanStale}. */
    public markBuildPlanStale(changedConnections: Iterable<string> = []): void {
-      this.materialization.markBuildPlanStale(changedConnections);
-   }
-
-   /** See {@link PackageMaterialization.lastBuildPlanRefreshFailedTransiently}. */
-   public lastBuildPlanRefreshFailedTransiently(): boolean {
-      return this.materialization.lastBuildPlanRefreshFailedTransiently();
-   }
-
-   /** See {@link PackageMaterialization.isBuildPlanStale}. */
-   public isBuildPlanStale(): boolean {
-      return this.materialization.isBuildPlanStale();
-   }
-
-   /** See {@link PackageMaterialization.planConnectionNames}. */
-   public planConnectionNames(): ReadonlySet<string> | null {
-      return this.materialization.planConnectionNames();
+      this.connectionEdits++;
+      this.mz.markBuildPlanStale(changedConnections);
    }
 
    /**
@@ -2089,9 +2228,9 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
     * Resolves true when it was derived.
     */
    public refreshBuildPlan(
-      options: { retryFailed?: boolean } = {},
+      options: { retryFailed?: boolean; isStale?: () => boolean } = {},
    ): Promise<boolean> {
-      return this.materialization.refreshBuildPlan(async () => {
+      return this.mz.refreshBuildPlan(async () => {
          const outcome = await loadOutcomeOrThrow(
             getPackageLoadPool().loadPackage({
                packagePath: this.packagePath,
@@ -2100,6 +2239,9 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
                malloyConfig: this.malloyConfig,
                defaultConnectionName: "duckdb",
                computeBuildPlan: true,
+               ...(this.getVersionId() !== undefined
+                  ? { publishedVersion: true }
+                  : {}),
                // Behind publishes, reloads and compiles: a connection edit's
                // re-derivations never hold a user's load up for more than
                // the one already running.
@@ -2112,7 +2254,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
 
    /** See {@link PackageMaterialization.whenBuildPlanCurrent}. */
    public whenBuildPlanCurrent(timeoutMs?: number): Promise<void> {
-      return this.materialization.whenBuildPlanCurrent(timeoutMs);
+      return this.mz.whenBuildPlanCurrent(timeoutMs);
    }
 
    /**
@@ -2169,22 +2311,12 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
 
    /** See {@link PackageMaterialization.persistencePolicyWarnings}. */
    public persistencePolicyWarnings(): string[] {
-      return this.materialization.persistencePolicyWarnings();
+      return this.mz.persistencePolicyWarnings();
    }
 
    /** See {@link PackageMaterialization.formatInvalidPersistencePolicy}. */
    public formatInvalidPersistencePolicy(): string {
-      return this.materialization.formatInvalidPersistencePolicy();
-   }
-
-   /** See {@link PackageMaterialization.incrementalPolicyWarnings}. */
-   public incrementalPolicyWarnings(): string[] {
-      return this.materialization.incrementalPolicyWarnings();
-   }
-
-   /** See {@link PackageMaterialization.formatInvalidIncrementalPolicy}. */
-   public formatInvalidIncrementalPolicy(): string {
-      return this.materialization.formatInvalidIncrementalPolicy();
+      return this.mz.formatInvalidPersistencePolicy();
    }
 
    /**
@@ -2219,6 +2351,41 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       return classificationLeaks(this.models, isListed, includeHidden).join(
          "\n",
       );
+   }
+
+   /**
+    * REJECTION messages, one per model, for a join written inside a query on
+    * an array in a model that governs access ({@link governsAccess}): no
+    * check of Publisher's can follow what that join reads. Every model is
+    * read, listed or not, since a published source can import a hidden one.
+    */
+   public formatArrayQueryJoins(): string {
+      const messages: string[] = [];
+      for (const [modelPath, model] of this.models) {
+         const modelDef = model.getModelDef();
+         // Governance first, and most models govern nothing: the load worker
+         // answered it for a model it compiled (noted at hydration), so such
+         // a model costs a lookup here, where the join walk reads every node.
+         if (!governsAccess(modelDef)) continue;
+         const joins = arrayQueryJoins(modelDef);
+         const refusal = arrayQueryJoinRefusal(`Model ${modelPath}`, joins);
+         if (refusal) messages.push(refusal);
+      }
+      return messages.join("\n");
+   }
+
+   /**
+    * Author SQL in this package's models that would not run read-only on a
+    * DuckDB connection, one line per refusal (duckdb_lockdown.ts).
+    */
+   public async formatAuthorSqlRefusals(): Promise<string> {
+      const lines: string[] = [];
+      for (const [modelPath, model] of this.models) {
+         lines.push(
+            ...(await authorSqlRefusals(modelPath, model.getModelDef())),
+         );
+      }
+      return lines.join("\n");
    }
 
    /** The async input of {@link formatCarriesCeilingLeaks}, prepared before a listing is judged. */
@@ -2278,14 +2445,55 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       }));
    }
 
-   /** See {@link PackageMaterialization.formatInvalidPreaggregatePolicy}. */
-   public formatInvalidPreaggregatePolicy(): string {
-      return this.materialization.formatInvalidPreaggregatePolicy();
+   /**
+    * Every invalid materialization annotation, one per line, or "": the
+    * package's own ({@link PackageMaterialization.formatInvalidAnnotations})
+    * and a misspelled materialization route or directive. Fails the publish
+    * and the load.
+    */
+   public formatInvalidAnnotations(): string {
+      return withNameProblems(this.persistNameProblems, [
+         this.mz.formatInvalidAnnotations(),
+         ...this.mz.nearMissLines(),
+      ]);
    }
 
-   /** See {@link PackageMaterialization.formatUnparseableAnnotations}. */
-   public formatUnparseableAnnotations(): string {
-      return this.materialization.formatUnparseableAnnotations();
+   /**
+    * The load gate's text: every invalid materialization annotation in the
+    * package, one line each with its code, or "" when it is valid. The load
+    * fails with it; a run over the package's files, a re-derivation and a
+    * package compile read the same text off the plan they derive
+    * (plan/load_gate_text.ts).
+    */
+   public formatLoadGateText(): string {
+      return this.mz.loadGateText(this.persistNameProblems);
+   }
+
+   /**
+    * One warning per non-fatal gate finding a model's load made: a gate an
+    * entry point cannot express (it denies every request), or one that reads
+    * no given or negates a membership test. Logged at load as well.
+    */
+   private gateLoadWarnings(): ApiPackageWarning[] {
+      // A source several models import is checked in each; it is reported
+      // once, on the first model that found it.
+      const seen = new Set<string>();
+      const warnings: ApiPackageWarning[] = [];
+      for (const [modelPath, model] of this.models) {
+         for (const w of model.gateLoadWarnings()) {
+            const key = `${w.code}\u0000${w.sourceName}\u0000${w.message}`;
+            if (seen.has(key)) continue;
+            seen.add(key);
+            warnings.push({
+               model: modelPath,
+               subject: w.sourceName,
+               code: w.code,
+               severity: "warn",
+               message: w.message,
+            });
+         }
+      }
+      return warnings;
    }
 
    /**
@@ -2295,16 +2503,12 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
     */
    public annotationFindingWarnings(): ApiPackageWarning[] {
       return [
-         ...this.materialization.droppedPersistWarnings(),
-         ...this.materialization.annotationFindingWarnings(),
-         ...this.materialization.rollupsOverStoredBaseWarnings(),
-         // Not materialization-unreachable: it reports what the surface
-         // curates, not an annotation finding.
-         ...this.preaggregateAccessWarnings(),
+         ...this.mz.annotationFindingWarnings(),
+         ...this.mz.findingRefusalWarnings(),
          ...this.annotationNearMissWarnings(),
          // The incremental declaration's own advisory is about the annotation;
          // the shared-address one is about the SQL, so it is not counted.
-         ...this.materialization
+         ...this.mz
             .incrementalPolicyAdvisories()
             .filter((w) => w.code === INCREMENTAL_NO_MERGE_KEY_CODE),
       ].filter((warning) => warning.code !== undefined);
@@ -2313,11 +2517,17 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    /**
     * Annotations the package's model files wrote that do nothing: a near miss
     * of a route Publisher owns (`annotation-near-miss`), or a prefix Malloy
-    * cannot route (`annotation-malformed-route`). Warnings, never refusals.
-    * Each model reports only the notes in its own file, so a shared import
-    * is reported once.
+    * cannot route (`annotation-malformed-route`). Warnings, never refusals; a
+    * near miss of a materialization route (`materialization-near-miss`) fails
+    * the load instead (see {@link formatInvalidAnnotations}). Each model
+    * reports only the notes in its own file, so a shared import is reported
+    * once.
     */
    public annotationNearMissWarnings(): ApiPackageWarning[] {
+      return this.nearMissWarnings().filter((w) => w.severity !== "error");
+   }
+
+   private nearMissWarnings(): ApiPackageWarning[] {
       const warnings: ApiPackageWarning[] = [];
       for (const [modelPath, model] of this.models) {
          // Optional: a model a spec stands in for need not implement it.
@@ -2338,37 +2548,13 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    }
 
    /**
-    * Each materialized source's serve verdict, as the binding stands now (see
-    * {@link PackageMaterialization.serveVerdicts}). Served at
-    * `GET …/packages/{pkg}/status`: the entry-point walk is memoized per load,
-    * so a poll only loops over the plan.
-    */
-   public getServeVerdicts(): ApiServeVerdict[] {
-      return this.materialization.serveVerdicts();
-   }
-
-   /**
     * {@link getServeVerdicts} with each stored source's named views compiled
-    * against a serve shape declared from the plan, before anything is built
-    * (ms2data/service#7090). For a dry run: it compiles.
+    * against a compile-only served copy over bindings declared from the
+    * plan's output columns, before anything is built. For a dry run: it
+    * compiles.
     */
    public async previewServeVerdicts(): Promise<ApiServeVerdict[]> {
-      return this.materialization.previewServeVerdicts();
-   }
-
-   /** See {@link PackageMaterialization.preaggregateAccessWarnings}. */
-   public preaggregateAccessWarnings(): ApiPackageWarning[] {
-      return this.materialization.preaggregateAccessWarnings();
-   }
-
-   /** See {@link PackageMaterialization.persistenceCollisionWarnings}. */
-   public persistenceCollisionWarnings(): string[] {
-      return this.materialization.persistenceCollisionWarnings();
-   }
-
-   /** See {@link PackageMaterialization.formatPersistenceCollisionRejections}. */
-   public formatPersistenceCollisionRejections(): string {
-      return this.materialization.formatPersistenceCollisionRejections();
+      return this.mz.previewServeVerdicts();
    }
 
    /**
@@ -2514,51 +2700,117 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
     * Quote each manifest table path for its connection's dialect, mirroring how
     * the builder CREATEs it: Malloy pastes `tableName` into `FROM` verbatim, so
     * on a case-folding engine the case-preserved name is reachable only quoted.
-    * An already-quoted name passes through.
-    *
-    * Verbatim otherwise in two different cases: no `connectionName` (an
-    * engine-folding producer; benign), or an unresolvable one (a
-    * misconfiguration; that entry is degraded and logged at ERROR, not the
-    * whole bind, since it could not serve anyway).
+    * A name written as SQL is parsed and re-quoted. An entry with no
+    * `connectionName` is quoted for its plan source's connection. An entry
+    * with no connection either way, an unresolvable one, or a name the
+    * dialect cannot read or quote is left out (logged at ERROR, that entry
+    * alone), so its source answers live: no name is inlined as given.
     */
-   private async quoteBoundTableNames(
+   private quoteBoundTableNames(
       entries: FreshnessManifest,
+   ): Promise<FreshnessManifest> {
+      return Package.quoteTableNames(
+         this.packageName,
+         (connectionName) => this.getMalloyConnection(connectionName),
+         entries,
+         Package.planConnectionsOf(this.buildPlan),
+      );
+   }
+
+   /** Each planned source's connection, by its content address. */
+   private static planConnectionsOf(
+      plan: BuildPlan | null | undefined,
+   ): Map<string, string> {
+      const out = new Map<string, string>();
+      for (const source of Object.values(plan?.sources ?? {})) {
+         if (source.sourceEntityId && source.connectionName) {
+            out.set(source.sourceEntityId, source.connectionName);
+         }
+      }
+      return out;
+   }
+
+   /** {@link quoteBoundTableNames} for a package not constructed yet. */
+   private static async quoteTableNames(
+      packageName: string,
+      lookupConnection: (connectionName: string) => Promise<Connection>,
+      entries: FreshnessManifest,
+      planConnections: ReadonlyMap<string, string> = new Map(),
    ): Promise<FreshnessManifest> {
       const out: FreshnessManifest = {};
       for (const [sourceEntityId, entry] of Object.entries(entries)) {
-         let tableName = entry.tableName;
-         if (entry.connectionName && !isQuotedIdentifierPath(tableName)) {
-            try {
-               const connection = await this.getMalloyConnection(
-                  entry.connectionName,
-               );
-               tableName = quoteManifestTablePath(
-                  tableName,
-                  connection.dialectName,
-               );
-            } catch (err) {
-               recordManifestBindDegraded();
-               logger.error(
-                  `Manifest entry '${sourceEntityId}' names connection ` +
-                     `'${entry.connectionName}', which this package cannot ` +
-                     `resolve: binding its table path unquoted, so this source ` +
-                     `will not serve on a case-folding engine (and queries ` +
-                     `against it fail regardless, since Malloy needs the ` +
-                     `connection to run them). Fix: ensure a connection named ` +
-                     `'${entry.connectionName}' exists in this package's ` +
-                     `config, or rebuild the manifest against the current config.`,
-                  {
-                     packageName: this.packageName,
-                     sourceEntityId,
-                     connectionName: entry.connectionName,
-                     error: err instanceof Error ? err.message : String(err),
-                  },
-               );
-            }
+         // The entry's own connection, else its plan source's, as the
+         // column read finds it (readDatabaseColumns).
+         const connectionName =
+            entry.connectionName ?? planConnections.get(sourceEntityId);
+         // Never inlined as given: a name with no dialect to quote it in, or
+         // one its dialect cannot read or quote, is not bound, and its
+         // source answers live.
+         const leaveOut = (problem: string, error?: string) => {
+            recordManifestBindDegraded();
+            logger.error(
+               `Manifest entry '${sourceEntityId}' ${problem}, so it is not ` +
+                  `bound and its source answers live.`,
+               {
+                  packageName,
+                  sourceEntityId,
+                  ...(connectionName ? { connectionName } : {}),
+                  ...(error ? { error } : {}),
+               },
+            );
+         };
+         if (!connectionName) {
+            leaveOut(
+               "names no connection, and the build plan has no source at its " +
+                  "address to name one, so no dialect quotes its table. Fix: " +
+                  "rebuild the manifest, which records each entry's connection",
+            );
+            continue;
+         }
+         let connection: Connection;
+         try {
+            connection = await lookupConnection(connectionName);
+         } catch (err) {
+            leaveOut(
+               `names connection '${connectionName}', which this package ` +
+                  `cannot resolve. Fix: ensure a connection named ` +
+                  `'${connectionName}' exists in this package's config, or ` +
+                  `rebuild the manifest against the current config`,
+               err instanceof Error ? err.message : String(err),
+            );
+            continue;
+         }
+         let tableName: string;
+         try {
+            tableName = quoteManifestTablePath(
+               entry.tableName,
+               connection.dialectName,
+            );
+         } catch (err) {
+            if (!(err instanceof UnquotableIdentifierError)) throw err;
+            leaveOut(
+               "names a table its connection's dialect cannot read or quote. " +
+                  "Fix: rebuild the manifest, or correct the entry's table name",
+               err.message,
+            );
+            continue;
          }
          out[sourceEntityId] = { ...entry, tableName };
       }
       return out;
+   }
+
+   /**
+    * Close this package's own connections (its DuckDB sandbox), freeing the
+    * sandbox's native database once its last query settles
+    * (duckdb_hard_close.ts). The environment's connections are not the
+    * package's and stay open.
+    */
+   public releaseConnections(): Promise<void> {
+      // Nothing of this package's runs after it is released: its unread
+      // tables' retry timer goes too.
+      this.mz.dispose();
+      return closeMalloyConfig(this.malloyConfig);
    }
 
    public getMalloyConfig(): MalloyConfig {
@@ -2585,9 +2837,55 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
     * surface from publisher.json and re-applies serve routing to the new
     * models, which a fresh package has none of yet.
     */
-   public async reloadAllModels(entries: FreshnessManifest): Promise<void> {
+   public async reloadAllModels(
+      entries: FreshnessManifest,
+      options: { ifChanged?: boolean } = {},
+   ): Promise<boolean> {
+      const requested = JSON.stringify(entries);
+      const compiledFor = Package.compileKeyOf(entries);
+      if (options.ifChanged && this.isCompiledFor(compiledFor)) {
+         const last = this.reloadedFor!;
+         // Unchanged, but a table the last bind could not read answers live
+         // until one reads it: bind again, which reads it again.
+         if (last.bound === requested && !this.mz.hasUnreadDatabaseTables()) {
+            logger.debug(
+               "Skipped reloading models: the manifest is unchanged",
+               {
+                  packageName: this.packageName,
+               },
+            );
+            return false;
+         }
+         // The same tables, with other freshness or schemas (or not bound
+         // yet, after a load that compiled against them): what a compile
+         // reads is unchanged, so only the bind moves.
+         const quoted =
+            last.quotedFrom === requested
+               ? last.quoted
+               : await this.quoteBoundTableNames(entries);
+         this.mz.bind({
+            database: quoted,
+            databaseAsGiven: true,
+            // Each table's columns as its warehouse holds them now.
+            observed: await this.mz.readDatabaseColumns(quoted),
+            // The first bind over a load's models publishes to them, as the
+            // reload it stands in for would have.
+            ...(last.bound === undefined ? { models: "installed" } : {}),
+         });
+         this.reloadedFor = this.reloadKey(compiledFor, requested, {
+            from: requested,
+            quoted,
+         });
+         logger.debug("Rebound the manifest without recompiling the models", {
+            packageName: this.packageName,
+         });
+         return false;
+      }
       // Quote BEFORE any projection: everything downstream reads these entries.
       entries = await this.quoteBoundTableNames(entries);
+      // Each table's columns as its warehouse holds them now, read once for
+      // this bind (one schema read per table), before the models move.
+      const observed = await this.mz.readDatabaseColumns(entries);
       const buildManifest = toTableNameManifest(entries);
       const modelPaths = Array.from(this.models.keys());
       logger.info("Reloading all models with build manifest", {
@@ -2604,7 +2902,6 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             malloyConfig: this.malloyConfig,
             defaultConnectionName: "duckdb",
             buildManifest,
-            withPreaggregateCompanions: true,
          }),
       );
 
@@ -2641,17 +2938,33 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       this.noteSurfaceChangeFrom(previousSurface);
       this.packageMetadata.queryableSources =
          outcome.packageMetadata.queryableSources;
-      this.packageMetadata.manifestLocation =
-         outcome.packageMetadata.manifestLocation ?? null;
+      // A version's binding is serving state on its registry row, which a
+      // reload keeps; its publisher.json is immutable content. Only a package
+      // with no versions keeps its `manifestLocation` in publisher.json.
+      if (this.getVersionId() === undefined) {
+         this.packageMetadata.manifestLocation =
+            outcome.packageMetadata.manifestLocation ?? null;
+      }
       this.applyDiscoveryPolicyToModels();
       this.applySiblingModelResolverToModels();
       // Applies the query boundary too, against the refreshed explore set.
       this.installReports(discovery);
-      // New models start with no serve routing; re-apply it.
-      this.materialization.pushStorageServeBindingsToModels();
-      this.materialization.pushServeDestinationConfigToModels();
-      // Also where a manifest bind lands, so the companion compiles against it.
-      await this.materialization.pushPreaggregateServeModels();
+      // New models read the snapshot through their new policy; compile
+      // their served copies over it now, once: the destinations and the
+      // entries they were compiled with go first, so the one compile the
+      // publish starts is not invalidated and started again.
+      this.mz.wireServingResolvers();
+      this.mz.pushServeDestinationConfigToModels();
+      this.mz.bind({
+         database: entries,
+         databaseAsGiven: true,
+         observed,
+         models: "installed",
+      });
+      this.reloadedFor = this.reloadKey(compiledFor, requested, {
+         from: requested,
+         quoted: entries,
+      });
       // Read against the reports installed above.
       this.renderTagWarnings =
          this.surfacedRenderTagWarnings(renderTagWarnings);
@@ -2663,10 +2976,73 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          discovery,
          discoveryMs + performance.now() - lintStarted,
       );
-      this.materialization.recordManifestBinding(entries);
-      this.materialization.wireFreshnessResolvers();
       warnInvalidExplores(this);
       this.logEmptyDiscoveryWarnings();
+      return true;
+   }
+
+   /**
+    * The part of database entries a compile reads: each table's name and
+    * the connection it is quoted for (the models' build manifest is
+    * `toTableNameManifest` of the quoted entries). Freshness, schemas and key
+    * checks are read per query and by the bind, never by a compile.
+    */
+   private static compileKeyOf(entries: FreshnessManifest): string {
+      return JSON.stringify(
+         Object.keys(entries)
+            .sort()
+            .map((id) => [
+               id,
+               entries[id].tableName,
+               entries[id].connectionName ?? null,
+            ]),
+      );
+   }
+
+   /**
+    * What the models compile over now, against entries whose compile key is
+    * `compiledFor`, last bound as `bound` (requested entries as JSON,
+    * unquoted; undefined when none were), with `quoting.quoted` the entries
+    * requested as `quoting.from`, quoted.
+    */
+   private reloadKey(
+      compiledFor: string,
+      bound: string | undefined,
+      quoting: { from: string; quoted: FreshnessManifest },
+   ): NonNullable<Package["reloadedFor"]> {
+      return {
+         compiledFor,
+         bound,
+         quotedFrom: quoting.from,
+         quoted: quoting.quoted,
+         models: this.models,
+         database: this.mz.boundDatabaseEntries(),
+         buildPlan: this.mz.getBuildPlan(),
+         connectionEdits: this.connectionEdits,
+      };
+   }
+
+   /**
+    * Whether the models were last compiled against entries with compile key
+    * `compiledFor`, and nothing has moved since.
+    */
+   private isCompiledFor(compiledFor: string): boolean {
+      const last = this.reloadedFor;
+      if (!last) return false;
+      // A plan a connection edit made stale may not hold the tables its
+      // re-derivation will; recompile, as before, rather than keep them.
+      if (this.mz.isBuildPlanStale()) return false;
+      // A model a reload left as a placeholder may compile now.
+      for (const model of this.models.values()) {
+         if (model.getCompilationError()) return false;
+      }
+      return (
+         last.compiledFor === compiledFor &&
+         last.models === this.models &&
+         last.database === this.mz.boundDatabaseEntries() &&
+         last.buildPlan === this.mz.getBuildPlan() &&
+         last.connectionEdits === this.connectionEdits
+      );
    }
 
    public async getModelFileText(modelPath: string): Promise<string> {
@@ -2716,13 +3092,20 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             )
             .map(async (modelPath) => {
                let error: string | undefined;
-               try {
-                  await this.models.get(modelPath)?.getModel();
-               } catch (modelError) {
-                  error =
-                     modelError instanceof Error
-                        ? modelError.message
-                        : undefined;
+               const model = this.models.get(modelPath);
+               if (model?.getType() === "model") {
+                  // What getModel() throws, without building (and
+                  // serializing) the compiled model it would return.
+                  error = model.getCompilationError()?.message;
+               } else {
+                  try {
+                     await model?.getModel();
+                  } catch (modelError) {
+                     error =
+                        modelError instanceof Error
+                           ? modelError.message
+                           : undefined;
+                  }
                }
                return {
                   environmentName: this.environmentName,
@@ -2756,9 +3139,9 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       try {
          return (
             model.getCompiledSourceText() ??
-            (await fs.readFile(
-               safeJoinUnderRoot(this.packagePath, modelPath),
-               "utf8",
+            (await readPackageURL(
+               this.packagePath,
+               pathToFileURL(safeJoinUnderRoot(this.packagePath, modelPath)),
             ))
          );
       } catch {
@@ -3510,9 +3893,13 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       const malloyConfig = new MalloyConfig(
          {
             connections: {
+               // Caller SQL and model text reach the sandbox, so it runs
+               // under Malloy's sandboxed policy: no network, its filesystem
+               // confined to the package directory (duckdb_lockdown.ts).
                duckdb: {
                   is: "duckdb",
                   databasePath: ":memory:",
+                  ...sandboxedDuckDBOptions(packagePath),
                },
             },
          },
@@ -3525,12 +3912,16 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          lookupConnection: async (name?: string) => {
             if (!name || name === "duckdb") {
                const connection = await base.lookupConnection(name);
+               // The package's own sandbox: releasing the package frees it.
+               ownDuckDBConnection(malloyConfig, connection);
                // Pin the sandbox against implicit auto-install too, or
                // EXTENSION_FETCH_POLICY local-only would have a network hole.
                if (connection instanceof DuckDBConnection) {
                   await applyExtensionSessionSettings(connection);
                }
-               return connection;
+               // The sandbox is a DuckDB connection the package owns, which a
+               // `storage=` build cannot read (materialization eligibility).
+               return recordConnectionType(connection, "duckdb");
             }
             // The *current* environment config, so a connection swap needs no reload.
             return getEnvironmentMalloyConfig().connections.lookupConnection(
@@ -3563,17 +3954,46 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          packagePath,
          PACKAGE_MANIFEST_NAME,
       );
+      // One answer for every manifest Publisher will not read: missing, a
+      // link out of the package (whatever it leads to, or nothing), or not a
+      // file. So the manifest cannot tell what lies outside the package.
+      const notThere = () => {
+         logger.error(`Can't find ${packageConfigPath}`);
+         return new PackageNotFoundError(
+            callerVisibleText(
+               `Package manifest for ${packagePath} does not exist.`,
+               packagePath,
+            ),
+         );
+      };
+      // A package directory Publisher may not open is reported as such (its
+      // errno), not as a missing manifest: that is the operator's own tree.
       try {
-         await fs.stat(packageConfigPath);
+         await fs.realpath(packagePath);
+      } catch (error) {
+         const code = (error as NodeJS.ErrnoException).code;
+         if (code === "ENOENT" || code === "ENOTDIR") throw notThere();
+         throw error;
+      }
+      let real: string;
+      try {
+         real = await confinedPackagePath(
+            packagePath,
+            pathToFileURL(packageConfigPath),
+         );
+      } catch {
+         throw notThere();
+      }
+      let stat: Awaited<ReturnType<typeof fs.stat>>;
+      try {
+         stat = await fs.stat(real);
       } catch (error) {
          // Only ENOENT/ENOTDIR mean "does not exist"; an EACCES is rethrown as itself.
          const code = (error as NodeJS.ErrnoException).code;
          if (code !== "ENOENT" && code !== "ENOTDIR") throw error;
-         logger.error(`Can't find ${packageConfigPath}`);
-         throw new PackageNotFoundError(
-            `Package manifest for ${packagePath} does not exist.`,
-         );
+         throw notThere();
       }
+      if (!stat.isFile()) throw notThere();
    }
 
    private static async readDatabases(
@@ -3609,10 +4029,21 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
                   databasePath,
                   error: message,
                });
+               // Named by the file's package-relative path, with the
+               // connection's own reason, never the SQL the probe compiled;
+               // that reason names the package's files package-relative and
+               // no other path.
+               const reason =
+                  error instanceof MalloyError && error.problems.length > 0
+                     ? error.problems.map((p) => p.message).join("; ")
+                     : message;
+               const readable = callerVisibleText(reason, packagePath);
                return {
                   path: databasePath,
                   type: "embedded" as const,
-                  error: message,
+                  error: readable.startsWith(`Cannot read ${databasePath}`)
+                     ? readable
+                     : `Cannot read ${databasePath}: ${readable}`,
                };
             }
          }),
@@ -3622,8 +4053,8 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    private static async getDatabasePaths(
       packagePath: string,
    ): Promise<string[]> {
-      const files = await recursive(packagePath, [ignoreDotfiles]);
-      return files
+      const files = await listPackageTree(packagePath);
+      const candidates = files
          .map((fullPath: string) => {
             return path.relative(packagePath, fullPath).replace(/\\/g, "/");
          })
@@ -3638,6 +4069,21 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
                modelPath.endsWith(".xlsx")
             );
          });
+      // Only a regular file inside the package is probed: a link out of it,
+      // to a file or a directory, is not read through the connection.
+      const probed: string[] = [];
+      for (const relativePath of candidates) {
+         try {
+            const real = await confinedPackagePath(
+               packagePath,
+               pathToFileURL(path.join(packagePath, relativePath)),
+            );
+            if ((await fs.stat(real)).isFile()) probed.push(relativePath);
+         } catch {
+            // Outside the package, missing or unreadable: not probed.
+         }
+      }
+      return probed;
    }
 
    private static async getDatabaseInfo(
@@ -3701,6 +4147,19 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       const stored: Record<string, unknown> = { ...packageMetadata };
       for (const key of COMPUTED_PACKAGE_FIELDS) delete stored[key];
       return stored as ApiPackage;
+   }
+
+   /**
+    * `setPackageMetadata({ ...getPackageMetadata(), ...fields })` without
+    * building the metadata's computed fields (its warnings pass among them),
+    * which `setPackageMetadata` drops anyway.
+    */
+   public updateStoredMetadata(fields: ApiPackage): void {
+      this.setPackageMetadata({
+         ...this.packageMetadata,
+         name: this.packageName,
+         ...fields,
+      });
    }
 
    public setPackageMetadata(packageMetadata: ApiPackage) {

@@ -56,8 +56,8 @@
         "considered": [
           {
             "kind": "materialized",
-            "outcome": "skipped",
-            "reason": "MISSING_FIELD",
+            "origin": "persist",
+            "outcome": "used",
             "tableId": "4365b8d3eda178e6b33df6bcaad07414941c816f5a3fac47ef192273eea6c732"
           }
         ],
@@ -73,13 +73,17 @@
           "sourceName": "nested"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "origin": "persist",
+          "tableId": "4365b8d3eda178e6b33df6bcaad07414941c816f5a3fac47ef192273eea6c732",
+          "tier": "storage",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "the top level",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -123,14 +127,14 @@
         },
         "source": "nested"
       },
-      "equalToLive": true,
+      "equalToLive": false,
       "malloy": "run: nested -> { group_by: by_status.status; aggregate: n is by_status.n.sum() }",
       "path": {
         "considered": [
           {
             "kind": "materialized",
-            "outcome": "skipped",
-            "reason": "MISSING_FIELD",
+            "origin": "persist",
+            "outcome": "used",
             "tableId": "4365b8d3eda178e6b33df6bcaad07414941c816f5a3fac47ef192273eea6c732"
           }
         ],
@@ -146,13 +150,17 @@
           "sourceName": "nested"
         },
         "servedBy": {
-          "kind": "live"
+          "kind": "materialized",
+          "origin": "persist",
+          "tableId": "4365b8d3eda178e6b33df6bcaad07414941c816f5a3fac47ef192273eea6c732",
+          "tier": "storage",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "through the nested rows",
-      "servedBy": "live",
-      "servedFrom": null,
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "off"
     },
     {
@@ -198,6 +206,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "persist",
             "outcome": "used",
             "tableId": "4365b8d3eda178e6b33df6bcaad07414941c816f5a3fac47ef192273eea6c732"
           }
@@ -215,7 +224,9 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "persist",
           "tableId": "4365b8d3eda178e6b33df6bcaad07414941c816f5a3fac47ef192273eea6c732",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []
@@ -266,12 +277,13 @@
         },
         "source": "nested"
       },
-      "equalToLive": true,
+      "equalToLive": false,
       "malloy": "run: nested -> { group_by: by_status.status; aggregate: n is by_status.n.sum() }",
       "path": {
         "considered": [
           {
             "kind": "materialized",
+            "origin": "persist",
             "outcome": "used",
             "tableId": "4365b8d3eda178e6b33df6bcaad07414941c816f5a3fac47ef192273eea6c732"
           }
@@ -289,7 +301,9 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "persist",
           "tableId": "4365b8d3eda178e6b33df6bcaad07414941c816f5a3fac47ef192273eea6c732",
+          "tier": "storage",
           "via": "served_copy"
         },
         "warnings": []

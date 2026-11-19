@@ -22,10 +22,10 @@ rebound parents rather than over the raw source.
 
 What the answers below rest on, stated because they cannot show it: a filter is
 not part of what gets BUILT, so once their filters are set aside these two
-sources are the same relation. They content-address identically and share ONE
-physical table — pinned below — and it holds every row, including the ones both
-filters exclude. The artifact is deliberately wider than the source, and every
-reader of it owes the filter. That is why the read side is guarded as closely as
+sources are the same relation. They compile to one build, and, each having its own
+`name=`, get a table each — pinned below — and each holds every row, including the
+ones both filters exclude. The artifact is deliberately wider than the source, and
+every reader of it owes the filter. That is why the read side is guarded as closely as
 it is in `filter-survives-the-serve-shape-ladder`: the rows to be excluded are
 sitting in the table.
 
@@ -108,10 +108,11 @@ Expect:
 
 ## Connection lake_probe
 
-Two declared `name=` values, ONE physical table: with their filters set aside the
-two sources are the same relation, so the build content-addresses them together.
-A second table here would mean the filter had entered the build, which would make
-the read-side filter a double application rather than the only one.
+Two declared `name=` values, two physical tables: a different `name=` is a
+different table, though with their filters set aside the two sources are the same
+relation (one build). The answers above, read through each source's own filter
+from a table that holds every row, are what show the filter stayed out of the
+build.
 
 ```sql
 SELECT count(*) AS n FROM information_schema.tables
@@ -122,4 +123,4 @@ Expect:
 
 | n:num |
 | ----- |
-| 1     |
+| 2     |

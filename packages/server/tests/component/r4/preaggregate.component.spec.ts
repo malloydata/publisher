@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * R4 for `#(preaggregate)` (materialization v2, phase 4): with
+ * R4 for `#(rollup)` (materialization v2, phase 4): with
  * PUBLISHER_MATERIALIZE on, a query a rollup reproduces is answered from the
- * rollup's table, colocated or in a storage destination, and equals live; a
+ * rollup's table, database or in a storage destination, and equals live; a
  * query it cannot reproduce is answered live with the path report's reason.
  * One scenario per rule: A2 (qualifying measures, join-level aggregates), A3
  * (a rollup over a `storage=` base, #6293), A5 (givens, time zones), A6
@@ -14,7 +14,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import * as path from "path";
-import { installSettings } from "../../../src/test_helpers/settings_env";
+import { useMaterializationOn } from "../../../src/test_helpers/settings_env";
 import {
    buildScenario,
    DESTINATION,
@@ -41,7 +41,7 @@ const seedSql = [
     ) AS t(order_id, kind, qty)`,
 ];
 
-/** `#(preaggregate)` lines, colocated or into the scenario's destination. */
+/** `#(rollup)` lines, database or into the scenario's destination. */
 function model(placement: string): string {
    return `##! experimental { givens sql_functions }
 given: MIN_AMOUNT :: number is 0
@@ -56,26 +56,26 @@ source: orders is duckdb.table('orders_raw') extend {
   dimension:
     order_day is order_time.day
     line_kind is lines.kind
-  #(preaggregate) grain=["category"]${placement}
-  #(preaggregate) grain=["category", "order_day"]${placement}
+  #(rollup) grain=["category"]${placement}
+  #(rollup) grain=["category", "order_day"]${placement}
   measure: total is amount.sum()
-  #(preaggregate) grain=["category"]${placement}
+  #(rollup) grain=["category"]${placement}
   measure: order_count is count()
-  #(preaggregate) grain=["category"]${placement}
+  #(rollup) grain=["category"]${placement}
   measure: biggest is amount.max()
-  #(preaggregate) grain=["category"]${placement}
+  #(rollup) grain=["category"]${placement}
   measure: east_total is amount.sum() { where: region = 'east' }
-  #(preaggregate) grain=["category"]${placement}
+  #(rollup) grain=["category"]${placement}
   measure: per_order is coalesce(amount.sum() / count(), 0)
-  #(preaggregate) grain=["carrier"]${placement}
+  #(rollup) grain=["carrier"]${placement}
   measure: fleet is carriers.fleet.sum()
-  #(preaggregate) grain=["carrier", "category"]${placement}
+  #(rollup) grain=["carrier", "category"]${placement}
   measure: fleet_by_category is carriers.fleet.sum()
-  #(preaggregate) grain=["category", "line_kind"]${placement}
+  #(rollup) grain=["category", "line_kind"]${placement}
   measure: line_total is amount.sum()
-  #(preaggregate) grain=["carrier", "category"]${placement}
+  #(rollup) grain=["carrier", "category"]${placement}
   measure: top_fleet is carriers.fleet.max()
-  #(preaggregate) grain=["carrier", "category"]${placement}
+  #(rollup) grain=["carrier", "category"]${placement}
   measure: low_fleet is carriers.fleet.min()
   view: by_category is { group_by: category; aggregate: total }
   # bar_chart
@@ -448,14 +448,18 @@ const LIVE = [
    ],
 ] as const;
 
+/**
+ * Each routed case runs one query twice over a fixture built once: seconds at
+ * most, even under coverage. A stuck case fails at this bound rather than
+ * holding the suite for the run's default timeout.
+ */
+const CASE_TIMEOUT_MS = 30_000;
+
 function scenarioSuite(label: string, placement: string): void {
-   describe(`R4: #(preaggregate) rollups ${label} answer equal to live`, () => {
-      let restore: () => void;
+   describe(`R4: #(rollup) rollups ${label} answer equal to live`, () => {
       let fixture: R4Fixture;
+      useMaterializationOn();
       beforeAll(async () => {
-         restore = installSettings({
-            env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-         }).restore;
          fixture = await buildScenario({
             files: { "m.malloy": model(placement) },
             seedSql,
@@ -463,27 +467,34 @@ function scenarioSuite(label: string, placement: string): void {
          });
       });
       afterAll(async () => {
-         restore();
          await disposeScenarios();
       });
 
       for (const [name, malloy] of SERVED) {
-         it(`serves ${name}`, async () => {
-            expectServedFromRollup(await fixture.run({ name, malloy }));
-         });
+         it(
+            `serves ${name}`,
+            async () => {
+               expectServedFromRollup(await fixture.run({ name, malloy }));
+            },
+            CASE_TIMEOUT_MS,
+         );
       }
       for (const [name, malloy, reason] of LIVE) {
-         it(`answers ${name} live (${reason})`, async () => {
-            const run = await fixture.run({ name, malloy });
-            expectLive(run);
-            fixture.setBindings(fixture.bindings);
-            const { path } = await fixture.runAsIs(malloy);
-            expect(
-               path?.considered
-                  .filter((c) => c.kind === "rollup")
-                  .map((c) => c.reason),
-            ).toContain(reason);
-         });
+         it(
+            `answers ${name} live (${reason})`,
+            async () => {
+               const run = await fixture.run({ name, malloy });
+               expectLive(run);
+               fixture.setBindings(fixture.bindings);
+               const { path } = await fixture.runAsIs(malloy);
+               expect(
+                  path?.considered
+                     .filter((c) => c.kind === "rollup")
+                     .map((c) => c.reason),
+               ).toContain(reason);
+            },
+            CASE_TIMEOUT_MS,
+         );
       }
 
       it("keeps the rollups' tables off the serve shape and the served copy", () => {
@@ -491,23 +502,23 @@ function scenarioSuite(label: string, placement: string): void {
          // compile (and fail) every query against it.
          fixture.setBindings(fixture.bindings);
          const internals = fixture.model as unknown as {
-            storageServe: { serveBindings: unknown[] };
+            storageTables(): { kept: unknown[] };
             servedCopy: { hasBindings(): boolean };
          };
-         // A storage= rollup is bound; a colocated one has no binding.
+         // A storage= rollup is bound; a database one has no binding.
          expect(fixture.bindings.length > 0).toBe(placement !== "");
-         expect(internals.storageServe.serveBindings).toEqual([]);
+         expect(internals.storageTables().kept).toEqual([]);
          expect(internals.servedCopy.hasBindings()).toBe(false);
       });
 
-      it(`reports servedFrom ${placement ? "storage" : "null"} for a rollup answer`, async () => {
+      it(`reports servedFrom ${placement ? "storage" : "database"} for a rollup answer`, async () => {
          const run = await fixture.run({
             name: "servedFrom",
             malloy: "run: orders -> { group_by: category; aggregate: total }",
          });
          expectServedFromRollup(run);
          // `storage` means a table in a `storage=` destination answered.
-         expect(run.servedFrom).toBe(placement ? "storage" : null);
+         expect(run.servedFrom).toBe(placement ? "storage" : "database");
       });
 
       it("routes a query that supplies a given (A5)", async () => {
@@ -523,16 +534,13 @@ function scenarioSuite(label: string, placement: string): void {
    });
 }
 
-scenarioSuite("built colocated", "");
+scenarioSuite("built in the database tier", "");
 scenarioSuite("built into a storage destination", ` storage="${DESTINATION}"`);
 
-describe("R4: a #(preaggregate) rollup over a storage= base (#6293)", () => {
-   let restore: () => void;
+describe("R4: a #(rollup) rollup over a storage= base (#6293)", () => {
    let fixture: R4Fixture;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: {
             "m.malloy": `##! experimental.persistence
@@ -541,7 +549,7 @@ source: daily is duckdb.table('orders_raw') -> {
   group_by: category, region, d is order_time.day
   aggregate: amount_sum is amount.sum()
 } extend {
-  #(preaggregate) grain=["category"] storage="${DESTINATION}"
+  #(rollup) grain=["category"] storage="${DESTINATION}"
   measure: total is amount_sum.sum()
 }
 `,
@@ -551,7 +559,6 @@ source: daily is duckdb.table('orders_raw') -> {
       });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 
@@ -574,24 +581,21 @@ source: daily is duckdb.table('orders_raw') -> {
    });
 });
 
-describe("R4: a #(preaggregate) rollup and the model's givens", () => {
+describe("R4: a #(rollup) rollup and the model's givens", () => {
    // The given is declared in a file the model imports whole, so the model's
    // `contents` carries it with no location: a query reading $MIN_AMOUNT
    // compiles against the rollup only because the variant imports the model's
    // givens from the file declaring each (author_imports.ts).
-   let restore: () => void;
    let fixture: R4Fixture;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: {
             "m.malloy": `##! experimental.givens
 import "givens.malloy"
 
 source: orders is duckdb.table('orders_raw') extend {
-  #(preaggregate) grain=["category"]
+  #(rollup) grain=["category"]
   measure: total is amount.sum()
 }
 `,
@@ -604,7 +608,6 @@ given: MIN_AMOUNT :: number is 0
       });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 
@@ -631,13 +634,10 @@ given: MIN_AMOUNT :: number is 0
    });
 });
 
-describe("R4: a #(preaggregate) rollup over a source whose rows read a given", () => {
-   let restore: () => void;
+describe("R4: a #(rollup) rollup over a source whose rows read a given", () => {
    let fixture: R4Fixture;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: {
             "m.malloy": `##! experimental.givens
@@ -645,8 +645,14 @@ given: REGION :: string is 'east'
 
 source: scoped is duckdb.table('orders_raw') extend {
   where: region = $REGION
-  #(preaggregate) grain=["category"]
+  #(rollup) grain=["category"]
   measure: scoped_total is amount.sum()
+}
+
+// Read no given, so the companion is never empty.
+source: open is duckdb.table('orders_raw') extend {
+  #(rollup) grain=["category"]
+  measure: open_total is amount.sum()
 }
 `,
          },
@@ -655,11 +661,17 @@ source: scoped is duckdb.table('orders_raw') extend {
       });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 
-   it("leaves out a rollup whose rows read a given, and answers live", async () => {
+   it("leaves out a rollup whose rows read a given it cannot re-apply, and answers live", async () => {
+      // Its where: reads `region`, which the grain does not keep
+      // (r4/rollup_gaps serves one whose grain does).
+      expect(
+         fixture.rollupRefusals.filter((r) => r.sourceName === "scoped"),
+      ).toEqual([
+         { reason: "given_where_over_unstored_field", sourceName: "scoped" },
+      ]);
       expect(
          Object.keys(fixture.rollupTables).filter((n) =>
             n.startsWith("scoped__rollup__"),
@@ -676,29 +688,26 @@ source: scoped is duckdb.table('orders_raw') extend {
    });
 });
 
-describe("R4: a #(preaggregate) rollup under a gated entry point", () => {
-   let restore: () => void;
+describe("R4: a #(rollup) rollup under a gated entry point", () => {
    let fixture: R4Fixture;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: {
             "m.malloy": `##! experimental.givens
 given: REGION :: string is 'east'
 #(access_filter) region = $REGION
 source: orders is duckdb.table('orders_raw') extend {
-  #(preaggregate) grain=["category", "region"]
+  #(rollup) grain=["category", "region"]
   measure: total is amount.sum()
 }
 source: open is duckdb.table('orders_raw') extend {
-  #(preaggregate) grain=["category"]
+  #(rollup) grain=["category"]
   measure: total is amount.sum()
 }
 // An ungated base, read through a gated extension.
 source: base is duckdb.table('orders_raw') extend {
-  #(preaggregate) grain=["category", "region"]
+  #(rollup) grain=["category", "region"]
   measure: base_total is amount.sum()
 }
 #(access_filter) region = $REGION
@@ -710,29 +719,28 @@ source: mine is base extend {}
       });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 
-   it("answers live, as the gate requires, and says CONTRACT", async () => {
+   it("answers from the rollup past its own gate (G3), each caller's rows, equal to live", async () => {
       const malloy = "run: orders -> { group_by: category; aggregate: total }";
-      const run = await fixture.run({
-         name: "gated",
-         malloy,
-         givens: { REGION: "east" },
-      });
-      expectLive(run);
-      // The gate held: only the east rows are counted.
-      expect(run.live).toEqual(
-         expect.arrayContaining([
-            expect.objectContaining({ category: "A", total: 10 }),
-         ]),
-      );
+      for (const region of ["east", "west"]) {
+         const run = await fixture.run({
+            name: `gated ${region}`,
+            malloy,
+            givens: { REGION: region },
+            truthSql: `SELECT category, CAST(SUM(amount) AS DOUBLE) AS total FROM orders_raw WHERE region = '${region}' GROUP BY 1`,
+         });
+         expectServedFromRollup(run);
+         expect(rowDifference(run.truth ?? [], run.served)).toBeUndefined();
+      }
    });
 
-   it("builds no rollup over the gated source, though its grain keeps the gate's field (row 21)", () => {
+   it("builds the rollup over the source's own gate, its grain keeping the gate's field (G3)", () => {
       const built = Object.keys(fixture.rollupTables);
-      expect(built.filter((n) => n.startsWith("orders__rollup__"))).toEqual([]);
+      expect(
+         built.filter((n) => n.startsWith("orders__rollup__")),
+      ).toHaveLength(1);
       // The ungated sources' rollups are still built.
       expect(built.some((n) => n.startsWith("open__rollup__"))).toBe(true);
       expect(built.some((n) => n.startsWith("base__rollup__"))).toBe(true);
@@ -763,24 +771,21 @@ source: mine is base extend {}
    });
 });
 
-describe("R4: a #(preaggregate) rollup under #(authorize)", () => {
-   let restore: () => void;
+describe("R4: a #(rollup) rollup under #(authorize)", () => {
    let fixture: R4Fixture;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: {
             "m.malloy": `##! experimental.givens
 given: ROLE :: string is 'viewer'
 #(authorize) 'admin' = $ROLE
 source: orders is duckdb.table('orders_raw') extend {
-  #(preaggregate) grain=["category"]
+  #(rollup) grain=["category"]
   measure: total is amount.sum()
 }
 source: open is duckdb.table('orders_raw') extend {
-  #(preaggregate) grain=["category"]
+  #(rollup) grain=["category"]
   measure: total is amount.sum()
 }
 `,
@@ -790,7 +795,6 @@ source: open is duckdb.table('orders_raw') extend {
       });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 
@@ -821,28 +825,25 @@ source: open is duckdb.table('orders_raw') extend {
    });
 });
 
-describe("R4: a #(preaggregate) rollup over a rolling window (S25b)", () => {
-   let restore: () => void;
+describe("R4: a #(rollup) rollup over a rolling window (S25b)", () => {
    let fixture: R4Fixture;
    const query = "run: recent -> { group_by: category; aggregate: total }";
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: {
             "m.malloy": `source: recent is duckdb.table('orders_raw') extend {
   where: order_time > now - 40 days
-  #(preaggregate) grain=["category"]
+  #(rollup) grain=["category"]
   measure: total is amount.sum()
 }
 source: orders is duckdb.table('orders_raw') extend {
   dimension: is_recent is order_time > now - 40 days
-  #(preaggregate) grain=["category", "is_recent"]
+  #(rollup) grain=["category", "is_recent"]
   measure: total is amount.sum()
-  #(preaggregate) grain=["category"]
+  #(rollup) grain=["category"]
   measure: recent_total is amount.sum() { where: order_time > now - 40 days }
-  #(preaggregate) grain=["category"]
+  #(rollup) grain=["category"]
   measure: all_total is amount.sum()
 }
 `,
@@ -854,7 +855,6 @@ source: orders is duckdb.table('orders_raw') extend {
       });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 
@@ -890,7 +890,6 @@ source: orders is duckdb.table('orders_raw') extend {
 });
 
 describe("R4: a join-level max and min over a rollup, with NULLs and empty groups (row 23)", () => {
-   let restore: () => void;
    let fixture: R4Fixture;
    // Category C's only carrier matches no carrier row, D's carrier is NULL,
    // and carrier BB's fleet is NULL: each live max or min there is NULL.
@@ -903,21 +902,19 @@ describe("R4: a join-level max and min over a rollup, with NULLs and empty group
          ('AA', 5), ('BB', NULL), ('CC', 11)
        ) AS t(code, fleet)`,
    ];
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: {
             "m.malloy": `source: carriers is duckdb.table('carriers_raw') extend { primary_key: code }
 source: orders is duckdb.table('orders_raw') extend {
   primary_key: id
   join_one: carriers with carrier
-  #(preaggregate) grain=["carrier", "category"]
+  #(rollup) grain=["carrier", "category"]
   measure: top_fleet is carriers.fleet.max()
-  #(preaggregate) grain=["carrier", "category"]
+  #(rollup) grain=["carrier", "category"]
   measure: low_fleet is carriers.fleet.min()
-  #(preaggregate) grain=["carrier", "category"]
+  #(rollup) grain=["carrier", "category"]
   measure: spread is coalesce(carriers.fleet.max() - carriers.fleet.min(), -1)
 }
 `,
@@ -927,7 +924,6 @@ source: orders is duckdb.table('orders_raw') extend {
       });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 
@@ -970,17 +966,14 @@ source: orders is duckdb.table('orders_raw') extend {
 });
 
 describe("R4: a persisted view of the name answers before a rollup (R1, row 11)", () => {
-   let restore: () => void;
    let fixture: R4Fixture;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: {
             "m.malloy": `##! experimental.persistence
 source: orders is duckdb.table('orders_raw') extend {
-  #(preaggregate) grain=["category"]
+  #(rollup) grain=["category"]
   measure: total is amount.sum()
   #@ persist storage="${DESTINATION}"
   view: by_category is { group_by: category; aggregate: total }
@@ -997,7 +990,6 @@ source: orders is duckdb.table('orders_raw') extend {
       });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 
@@ -1039,18 +1031,15 @@ source: orders is duckdb.table('orders_raw') extend {
 });
 
 describe("R4: a named view whose file changed since the model compiled (row 11)", () => {
-   let restore: () => void;
    let fixture: R4Fixture;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: {
             "m.malloy": `source: orders is duckdb.table('orders_raw') extend {
-  #(preaggregate) grain=["category"]
+  #(rollup) grain=["category"]
   measure: total is amount.sum()
-  #(preaggregate) grain=["category"]
+  #(rollup) grain=["category"]
   measure: east_ is amount.sum() { where: region = 'east' }
   view: by_category is { group_by: category; aggregate: total }
 }
@@ -1061,7 +1050,6 @@ describe("R4: a named view whose file changed since the model compiled (row 11)"
       });
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 
@@ -1096,18 +1084,15 @@ describe("R4: a named view whose file changed since the model compiled (row 11)"
 });
 
 describe("R4: a refinement view whose file changed since the model compiled (row 11)", () => {
-   let restore: () => void;
    let fixture: R4Fixture;
+   useMaterializationOn();
    beforeAll(async () => {
-      restore = installSettings({
-         env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
-      }).restore;
       fixture = await buildScenario({
          files: {
             "m.malloy": `source: orders is duckdb.table('orders_raw') extend {
-  #(preaggregate) grain=["category"]
+  #(rollup) grain=["category"]
   measure: total is amount.sum()
-  #(preaggregate) grain=["category"]
+  #(rollup) grain=["category"]
   measure: east_ is amount.sum() { where: region = 'east' }
   view: base_view is { group_by: category; aggregate: total }
   view: refines_base is base_view + { where: category = 'A' }
@@ -1137,7 +1122,6 @@ describe("R4: a refinement view whose file changed since the model compiled (row
       );
    });
    afterAll(async () => {
-      restore();
       await disposeScenarios();
    });
 

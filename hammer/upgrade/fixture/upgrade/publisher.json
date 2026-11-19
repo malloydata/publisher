@@ -1,0 +1,5 @@
+{
+   "name": "upgrade",
+   "version": "1.0.0",
+   "description": "Upgrade-test fixture: one source per materialization route, built by one release and served by the next"
+}

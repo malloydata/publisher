@@ -24,7 +24,7 @@ import { pollFor, TERMINAL_STATUSES } from "./polling";
 /**
  * Two environments, two packages each, all on ONE Postgres schema and ONE
  * DuckLake storage destination, every package declaring the same four
- * sources with its own rows: a colocated `#@ persist` named after its
+ * sources with its own rows: a database `#@ persist` named after its
  * source, a `#@ persist name=`, a `#(materialize) storage=` named after its
  * source, and a `#(materialize) storage= name=`. Built and queried through a
  * real server: every package must answer every source with its own rows,
@@ -234,22 +234,22 @@ describe.skipIf(!url)("tables of packages that share a schema", () => {
       );
       // Four default-named tables, one per package, and one name= table.
       expect(
-         marks.filter((r) => String(r.name).startsWith("summary__p")),
+         marks.filter((r) => /__summary__p[0-9a-f]{8}$/.test(String(r.name))),
       ).toHaveLength(4);
       expect(marks.find((r) => r.name === "named_t")?.comment).toBe(
-         "malloy-publisher:table owner=e1%2Fpa",
+         // The mark names where the catalog says the table is.
+         `malloy-publisher:table owner=e1%2Fpa table=${warehouse}.public.named_t`,
       );
    });
 
-   it("deleting a refused package's runs with their tables leaves the other package's table", async () => {
+   it("deleting a refused package's runs leaves the other package's table", async () => {
       const list = (await (
          await fetch(`${api("e1", "pb")}/materializations`)
       ).json()) as { id: string; status: string }[];
       for (const m of list.filter((r) => r.status !== "PENDING")) {
-         await fetch(
-            `${api("e1", "pb")}/materializations/${m.id}?dropTables=true`,
-            { method: "DELETE" },
-         );
+         await fetch(`${api("e1", "pb")}/materializations/${m.id}`, {
+            method: "DELETE",
+         });
       }
       const tables = (
          await pgRows(
