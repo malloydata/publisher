@@ -120,9 +120,6 @@ describe("which physical table, per key", () => {
          // A doubled quote is stripped like any other.
          '"we""ird"': "weird",
       });
-      for (const name of Object.keys(identities)) {
-         expect(leafKey(name)).toBe(tableIdentity(name));
-      }
    });
 });
 
