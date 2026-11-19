@@ -1,11 +1,20 @@
 # `materialization/serve/`
 
 Turns committed manifest entries into what a query may read, and answers a
-query from a stored table or declines. Three legs answer: the view leg (a
-persisted view called exactly), the rollup leg, and the served copy (the
-author's source re-rooted on its stored table, gates and all). Served equals
-live, rows, result types and annotations, or the leg declines and the query is
-answered live.
+query from a stored table or declines. Four legs answer: the view leg (a
+persisted view called exactly), the query leg (a persisted named query called
+exactly), the rollup leg, and the served copy (the author's source re-rooted on
+its stored table, gates and all). Served equals live, rows, result types and
+annotations, or the leg declines and the query is answered live.
+
+Whether an answer a leg produced is used is one decision, `admitRead`
+(`domain/admission.ts`): the row scope, the caller's own filters, the result's
+order and grouping, and, past an entry-point gate, the gate policy, exactness,
+zone and collation. `read_admission.ts` is its shell: it gathers the facts the
+decision asks for, each only when asked. The collation probes read the
+warehouse, so they sit behind a port (`CollationProbe`, in
+`gate_reads_types.ts`); `gate_collation.ts` implements it, and the decision
+reads only the probes' answers.
 
 ## Modules
 
@@ -44,9 +53,11 @@ answered live.
 ## Dependency rule
 
 May import: `domain/`, `text/`, governance's gate collection and
-`filter_binding_guard`. Must not import `plan/` or `run/` (rule R8). Reads
-no warehouse and emits no telemetry (H5); the edges that remain are listed,
-each with the step that removes it, in `materialization_allowlists.mjs`.
+`filter_binding_guard`. Must not import `plan/` or `run/` (rule R8). Emits no
+metrics; three modules log a failed compile once per variant, then at debug
+(H5 lists them). The one warehouse read is the collation probe, behind its
+port. The edges that remain are listed, each with the step that removes it,
+in `materialization_allowlists.mjs`.
 
 Every leg reads tables through one pin (`domain/binding.ts`): the query
 pipeline pins the model's snapshot once, before routing, and passes it to each

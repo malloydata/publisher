@@ -303,6 +303,16 @@ a source that should not answer schema questions to outsiders wants a lock as we
   not exhaustive (a DuckDB connection attaching the destination in its `setupSQL` is not caught),
   so treat it as a backstop, not the control. The destination's own credentials are the control.
 
+### Stored tables read past a gate
+
+A gated query answered from a stored table is held to one list of rules, decided in one place
+(`admitRead`): the row scope, the caller's own filters, the result's order and grouping, whether
+the leg and every table it read keep the gate, and whether every column the gate reads is stored
+exactly, without a zone, and compared as its source compares it. Anything that cannot be read is
+answered live. The list is in [materialization.md](materialization.md#the-rules-every-table-read-past-a-gate-is-held-to).
+The gate itself is still proven by `govern()` on every answer, and it holds only on reads through
+Publisher, never on a direct read of a destination.
+
 ## Where author code executes today
 
 One surface runs author-written JavaScript, and it runs it with everything the viewer has.
