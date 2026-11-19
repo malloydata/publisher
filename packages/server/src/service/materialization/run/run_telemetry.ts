@@ -20,10 +20,12 @@
  * the instructed build and the run lifecycle.
  */
 
+import type { RunPlan } from "./run_plan";
+import { instructionTier } from "../domain/placement";
 import { AsyncLocalStorage } from "async_hooks";
 import { getPersistStorageMode } from "../../../config";
 import { causeChain } from "../../../driver_errors";
-import { errorCodeOf } from "./error_code";
+import { errorCodeOf } from "../../../error_code";
 import { logger } from "../../../logger";
 import {
    type BuildKind,
@@ -35,19 +37,21 @@ import {
    recordBuildDuration,
    recordBuildOutcome,
    recordBuildReadBytes,
+   recordMaterializationRun,
 } from "../../../materialization_metrics";
-import type { CompiledBuildPlan } from "../domain/compiled_build_plan";
 import {
    isPersistedQuerySourceID,
    PERSISTED_VIEW_COMPANION_SUFFIX,
 } from "../domain/table_plans";
-import type {
-   BuildInstruction,
-   BuildPlan,
-   ManifestEntry,
+import {
+   type BuildInstruction,
+   type BuildPlan,
+   isLegacyFailedEntry,
+   type ManifestEntry,
+   type SourceFailure,
 } from "../domain/types";
 import type { BuildRetryable } from "./build_failure_class";
-import { BilledReadNotCapturedError } from "./materialization_build_session";
+import { BilledReadNotCapturedError } from "./build_attribution";
 
 /** What started a run, on `materialization.run.started`. */
 export const RUN_TRIGGERS = [
@@ -63,11 +67,11 @@ type RunTrigger = (typeof RUN_TRIGGERS)[number];
  * run a publish started, else an explicit request.
  */
 export function runTriggerOf(args: {
-   trigger: "ON_DEMAND" | "SCHEDULER";
+   trigger: "on_demand" | "scheduler";
    runContextTrigger?: string;
    orchestrated: boolean;
 }): RunTrigger {
-   if (args.trigger === "SCHEDULER" || args.runContextTrigger === "scheduler") {
+   if (args.trigger === "scheduler" || args.runContextTrigger === "scheduler") {
       return "schedule";
    }
    if (args.orchestrated) return "orchestrator";
@@ -82,7 +86,7 @@ export function runTriggerOf(args: {
  * by its generated companion's sourceID, else as `persist`.
  */
 export function buildKindOf(
-   compiled: Pick<CompiledBuildPlan, "tables">,
+   compiled: Pick<RunPlan, "tables">,
    sourceID: string | undefined,
 ): BuildKind {
    if (sourceID === undefined) return "persist";
@@ -100,7 +104,7 @@ export function buildKindOf(
  * a kind; an address the plan does not list is left to the caller.
  */
 export function buildKindsByAddress(
-   compiled: Pick<CompiledBuildPlan, "tables">,
+   compiled: Pick<RunPlan, "tables">,
    plan: Pick<BuildPlan, "sources"> | null | undefined,
 ): Map<string, BuildKind> {
    const kinds = new Map<string, BuildKind>();
@@ -116,9 +120,7 @@ export function buildKindsByAddress(
 export function buildTierOf(
    instruction: Pick<BuildInstruction, "destination">,
 ): BuildTier {
-   return instruction.destination && getPersistStorageMode() !== "off"
-      ? "storage"
-      : "colocated";
+   return instructionTier(instruction, getPersistStorageMode());
 }
 
 /**
@@ -162,6 +164,8 @@ export class RunTelemetry {
       readonly runId: string,
       readonly mode: MaterializationMode,
       readonly packageName: string,
+      /** When the run started, which its duration is measured from. */
+      readonly startedAtMs: number = Date.now(),
    ) {}
 
    /** `materialization.run.started`, once the run holds its tables. */
@@ -176,15 +180,19 @@ export class RunTelemetry {
    }
 
    /**
-    * `materialization.run.finished`: info, warn when partial, error when
-    * failed. The counts are the sources the build counter counted for this
-    * run; the error that ended it, if any, is reduced to its code.
+    * How the run ended, recorded once, on every terminal path: the run
+    * counter and duration (`publisher_materialization_runs_total`, by mode
+    * and outcome) and `materialization.run.finished` (info, warn when
+    * partial, error when failed). The counts are the sources the build
+    * counter counted for this run; the error that ended it, if any, is
+    * reduced to its code. The run's status and manifest are written by the
+    * committer (a committed run) or the lifecycle's settle (a thrown one).
     */
-   finished(
-      outcome: MaterializationOutcome,
-      durationMs: number,
-      err?: unknown,
-   ): void {
+   finished(outcome: MaterializationOutcome, err?: unknown): void {
+      const durationMs = Date.now() - this.startedAtMs;
+      recordMaterializationRun(this.mode, outcome, durationMs);
+      // The background runner does not log a failure reported here again.
+      if (err !== undefined) markRunFailureReported(err);
       const { built, reused, refused, failed, cancelled } = this.tally;
       const level =
          outcome === "failed"
@@ -214,7 +222,7 @@ export class RunTelemetry {
 const reportedRunFailures = new WeakSet<object>();
 
 /** Mark `err` as reported by `materialization.run.finished`. */
-export function markRunFailureReported(err: unknown): void {
+function markRunFailureReported(err: unknown): void {
    if (typeof err === "object" && err !== null) reportedRunFailures.add(err);
 }
 
@@ -407,4 +415,26 @@ export function reportSourceReused(kind: BuildKind, tier: BuildTier): void {
    const run = currentRun.getStore();
    if (run) run.tally.reused++;
    recordBuildOutcome({ kind, tier, outcome: "reused" });
+}
+
+/**
+ * How many sources a run built, failed on, and reused, counted from what the
+ * build returned (an instruction can be skipped without building).
+ * `failures` is the authority on what failed; a legacy entry mirroring a
+ * failure (`ManifestEntry.error`) is excluded from the other counts so one
+ * lost source is not also reported as built or reused.
+ */
+export function tallySources(
+   entries: Record<string, ManifestEntry>,
+   failures: Record<string, SourceFailure>,
+   carried: Record<string, ManifestEntry>,
+): { sourcesBuilt: number; sourcesFailed: number; sourcesReused: number } {
+   const built = Object.values(entries).filter(
+      (e) => !isLegacyFailedEntry(e) && !carried[e.sourceEntityId!],
+   );
+   return {
+      sourcesBuilt: built.length,
+      sourcesFailed: Object.keys(failures).length,
+      sourcesReused: Object.keys(carried).filter((id) => !failures[id]).length,
+   };
 }

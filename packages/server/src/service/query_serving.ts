@@ -7,31 +7,30 @@
  *
  * The query pipeline (`model_serving.ts`) makes the legs for its pin
  * (`makeLegs`, serve/leg.ts) and routes over them with {@link variantsOf}:
- * each leg becomes one router candidate, and this is where the gate policy is
- * asked (before an attempt, by leg kind; after it, over the bindings the
- * answer read), where a `LegDecline` is read for the path report, and where a
- * leg's skip is logged. A leg does neither. {@link answerOf} turns the
+ * each leg becomes one router candidate, and this is where read admission
+ * is asked (before an attempt, by leg kind; after it, over the bindings the
+ * answer read: `serve/read_admission.ts`), where a `LegDecline` is read for
+ * the path report, and where a leg's skip is logged. A leg does neither. {@link answerOf} turns the
  * router's decision into the {@link Answer} every reader derives from, and
  * {@link queryPathFor} assembles the path report from it.
  *
  * Adding a leg needs nothing here: a leg module, its `makeLegs` entry and its
- * decline rows, and the router, the gate policy and the reports read it
+ * decline rows, and the router, read admission and the reports read it
  * through the answer.
  */
 
 import type { ModelDef, QueryMaterializer } from "@malloydata/malloy";
 import { gateSwitches, getPersistStorageMode } from "../config";
 import {
-   answerKeepsGates,
-   GATE_LEGS,
-   legMayPassGate,
-   SERVING_GATE_CONTEXT,
-} from "./materialization/domain/gate_policy";
+   type CollationProbe,
+   collationProbe,
+   ReadAdmission,
+} from "./materialization/serve/read_admission";
 import { logger } from "../logger";
 import { SourceMap, sourceChain } from "./materialization/text/source_map";
 import {
    type Binding,
-   isColocated,
+   isDatabase,
    type Pinned,
    type Snapshot,
 } from "./materialization/domain/binding";
@@ -39,6 +38,7 @@ import type { ServedCopyServe } from "./materialization/serve/served_copy_serve"
 import {
    explanationOfDecline,
    isDeclineOf,
+   LegDecline,
 } from "./materialization/domain/leg_decline";
 import {
    type ApiQueryPath,
@@ -59,6 +59,8 @@ import {
    LIVE_ANSWER,
    type QueryFacts,
 } from "./materialization/serve/leg";
+import { storageServes } from "./materialization/domain/placement";
+import { originOfTable } from "./materialization/domain/table_plans";
 import {
    readPreparedQuery,
    resolveStructRefSource,
@@ -69,20 +71,28 @@ import type {
    VariantSkipExplanation,
 } from "./query_router";
 
-/** The decline vocabulary's name for each leg's codes. */
-const DECLINING_LEG = {
-   view: "view",
-   // The query leg declines in the view leg's codes (`view_*`).
-   query: "view",
-   rollup: "rollup",
-   served: "served_copy",
-} as const satisfies Record<LegKind, string>;
+/**
+ * The decline vocabularies each leg's codes are in. The query leg declines
+ * in its own (`query_*`) and, through the caller-text checks it shares with
+ * the view leg, in the view leg's (`view_*`).
+ */
+const DECLINING_LEGS = {
+   view: ["view"],
+   query: ["query", "view"],
+   rollup: ["rollup"],
+   served: ["served_copy"],
+} as const satisfies Record<LegKind, readonly string[]>;
+
+/** Whether `err` is a decline of the leg `kind`, in any of its vocabularies. */
+function isLegDecline(kind: LegKind, err: unknown): err is LegDecline {
+   return DECLINING_LEGS[kind].some((leg) => isDeclineOf(err, leg));
+}
 
 /** What each leg's skip is logged as, at debug. */
 const SKIP_MESSAGE: Record<LegKind, string> = {
    view: "the persisted view does not answer this query",
    query: "the persisted named query does not answer this query",
-   rollup: "no #(preaggregate) rollup answers this query",
+   rollup: "no #(rollup) rollup answers this query",
    served: "served copy cannot answer this query",
 };
 
@@ -94,63 +104,53 @@ function logSkip(kind: LegKind, modelPath: string, err: unknown): void {
    if (!logger.isDebugEnabled()) return;
    logger.debug(SKIP_MESSAGE[kind], {
       modelPath,
-      code: isDeclineOf(err, DECLINING_LEG[kind]) ? err.code : "error",
+      code: isLegDecline(kind, err) ? err.code : "error",
       error: err instanceof Error ? err.message : String(err),
    });
 }
 
 /**
  * The router's candidates for one query: one per leg, in the legs' order.
- * The gate policy (`domain/gate_policy.ts`) decides, its switches read once
- * for the query, whether a leg may be tried past an entry-point gate (R3:
- * the leg compiles the author's own text, gates included, so `govern()`
- * grafts and proves the gate on it) and whether the answer it produced keeps
- * the gates given the tables it read.
+ * Read admission (`serve/read_admission.ts`, deciding by the pure
+ * `admitRead`), its switches read once for the query, decides whether a leg
+ * may be tried past an entry-point gate (R3: the leg compiles the author's
+ * own text, gates included, so `govern()` grafts and proves the gate on it),
+ * and whether the answer it produced is used: before the gate, by the row
+ * scope and the caller's own filters; past it, by every rule.
  */
 export function variantsOf(
    legs: readonly Leg[],
    facts: QueryFacts,
    pinned: Pinned,
-   args: { modelPath: string },
+   args: { modelPath: string; probe?: CollationProbe },
 ): Variant<LegAnswer>[] {
-   const switches = gateSwitches();
-   return legs.map((leg) => {
-      // A leg with no row in the gate policy (the query leg) is never tried
-      // past an entry-point gate: the policy fails closed.
-      const gateLeg = (GATE_LEGS as readonly LegKind[]).includes(leg.kind)
-         ? (leg.kind as (typeof GATE_LEGS)[number])
-         : undefined;
-      return {
-         kind: leg.kind,
-         applicable: leg.applies(facts, pinned),
-         keepsContracts:
-            gateLeg !== undefined &&
-            legMayPassGate(gateLeg, switches, SERVING_GATE_CONTEXT),
-         keepsContractsFor: (answer: LegAnswer) =>
-            gateLeg !== undefined &&
-            answerKeepsGates(
-               gateLeg,
-               answer.gateTablesRead ?? answer.tablesRead ?? [],
-               switches,
-               SERVING_GATE_CONTEXT,
-            ),
-         attempt: async () => {
-            const answer = await leg.attempt(facts, pinned);
-            if (leg.kind === "served") {
-               logger.debug("Serving query from the served copy (virtual)", {
-                  modelPath: args.modelPath,
-                  tables: (answer.tablesRead ?? []).map((b) => b.sourceName),
-               });
-            }
-            return { runnable: answer.runnable, extra: answer };
-         },
-         explain: (err): VariantSkipExplanation | undefined =>
-            isDeclineOf(err, DECLINING_LEG[leg.kind])
-               ? explanationOfDecline(err)
-               : undefined,
-         onSkip: (err) => logSkip(leg.kind, args.modelPath, err),
-      };
-   });
+   const admission = new ReadAdmission(
+      facts,
+      gateSwitches(),
+      args.probe ?? collationProbe,
+   );
+   return legs.map((leg) => ({
+      kind: leg.kind,
+      applicable: leg.applies(facts, pinned),
+      keepsContracts: admission.mayAttempt(leg.kind),
+      keepsContractsFor: async (answer: LegAnswer) =>
+         (await admission.admit(leg.kind, answer, true)).used,
+      attempt: async () => {
+         const answer = await leg.attempt(facts, pinned);
+         const outcome = await admission.admit(leg.kind, answer, false);
+         if (!outcome.used && "decline" in outcome) throw outcome.decline;
+         if (leg.kind === "served") {
+            logger.debug("Serving query from the served copy (virtual)", {
+               modelPath: args.modelPath,
+               tables: (answer.tablesRead ?? []).map((b) => b.sourceName),
+            });
+         }
+         return { runnable: answer.runnable, extra: answer };
+      },
+      explain: (err): VariantSkipExplanation | undefined =>
+         isLegDecline(leg.kind, err) ? explanationOfDecline(err) : undefined,
+      onSkip: (err) => logSkip(leg.kind, args.modelPath, err),
+   }));
 }
 
 /** The answer the router's decision describes, before anything runs. */
@@ -164,13 +164,13 @@ export function answerOf(route: RouteDecision<LegAnswer>): Answer {
       answer: route.extra,
       pastEntryPointGate: route.pastEntryPointGate === true,
       runFailed: false,
-      colocatedRead: new Set<string>(),
+      databaseRead: new Set<string>(),
    });
 }
 
 /**
  * The build manifest a run is handed, wrapped to record which entries Malloy
- * looked up and found: the colocated tables it substituted. Malloy looks a
+ * looked up and found: the database tables it substituted. Malloy looks a
  * persisted source up by its key in exactly one place (`persistedTableFor`,
  * `buildManifest.entries[buildId]`), so a hit is a table the SQL reads, with no
  * reading of the SQL text.
@@ -248,7 +248,7 @@ export interface QueryServingHost {
    admitsSourceByName(name: string): boolean;
    /** Every source's `sourceID` chain in the model. */
    sourceChains(): ReadonlyMap<string, readonly string[]>;
-   /** The `#(preaggregate)` rollup leg (materialization v2, phase 4). */
+   /** The `#(rollup)` rollup leg (materialization v2, phase 4). */
    readonly rollupVariants: RollupVariantServe;
    /** The `#@ persist` view leg (materialization v2, phase 4, P14). */
    readonly persistedViews: PersistedViewServe;
@@ -293,7 +293,7 @@ export async function queryPathFor(
          viewName: args.viewName,
       });
       const { pinned } = args;
-      // The colocated tables bound when the query was pinned.
+      // The database tables bound when the query was pinned.
       const planned = host.materializedTables();
       const catalog = planned && {
          ...planned,
@@ -332,10 +332,10 @@ export async function queryPathFor(
       const toTable = (b: Binding): StorageTable => ({
          sourceName: b.sourceName,
          sourceIDs: b.sourceIDs,
-         origin: b.kind === "rollup" ? "preaggregate" : "persist",
+         origin: originOfTable(b.kind, b.sourceIDs?.[0] ?? ""),
          tablePath: b.tablePath,
          freshAsOf: b.freshAsOf,
-         ...(isColocated(b) ? { colocated: true as const } : {}),
+         ...(isDatabase(b) ? { database: true as const } : {}),
       });
       const storageTables = host.storageTables(pinned.snapshot);
       const published = args.includeHidden ? undefined : host.publishedNames();
@@ -344,7 +344,7 @@ export async function queryPathFor(
          modelPath: host.modelPath,
          chain: chainOfQuerySource(struct, modelDef, host.modelDef()),
          catalog,
-         freshColocated: pinned.hasEntries
+         freshDatabase: pinned.hasEntries
             ? new Set(Object.keys(pinned.compilerManifest.entries))
             : undefined,
          // The `storage=` tables, the `#(materialize)` tables the served copy
@@ -365,7 +365,7 @@ export async function queryPathFor(
          rollups: variantRollups.map((r) => ({ ...r, variant: true })),
          // Every `storage=` source carries a package warning when the tier
          // is off or write-only (see storageWarnings).
-         storageWarned: getPersistStorageMode() !== "on",
+         storageWarned: !storageServes(getPersistStorageMode()),
          considered: answer.considered,
          storageTablesRead: routed?.tablesRead?.map(toTable),
          ...(answer.leg === "rollup"
@@ -382,7 +382,7 @@ export async function queryPathFor(
                .map((b) => b.tablePath),
          ),
          runFailed: answer.leg !== "live" && answer.runFailed,
-         colocatedRead: answer.colocatedRead,
+         databaseRead: answer.databaseRead,
          ...(viewTable ? { view: viewTable } : {}),
          ...(routed?.rollupMember ? { rollupMember: routed.rollupMember } : {}),
          ...(variantRollups.length > 0

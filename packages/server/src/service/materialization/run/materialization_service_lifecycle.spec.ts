@@ -122,7 +122,7 @@ describe("MaterializationService", () => {
                reseed: false,
                sourceNames: ["orders"],
                mode: "auto",
-               trigger: "ON_DEMAND",
+               trigger: "on_demand",
             },
          ]);
       });
@@ -141,7 +141,7 @@ describe("MaterializationService", () => {
                reseed: false,
                sourceNames: null,
                mode: "auto",
-               trigger: "ON_DEMAND",
+               trigger: "on_demand",
             },
          );
       });
@@ -154,12 +154,12 @@ describe("MaterializationService", () => {
 
          await ctx.service.createMaterialization("my-env", "pkg", {
             forceRefresh: true,
-            trigger: "SCHEDULER",
+            trigger: "scheduler",
          });
 
          expect(
             ctx.repository.createMaterialization.firstCall.args[3],
-         ).toMatchObject({ mode: "auto", trigger: "SCHEDULER" });
+         ).toMatchObject({ mode: "auto", trigger: "scheduler" });
       });
 
       it("rejects when an active materialization already exists", async () => {
@@ -516,7 +516,7 @@ describe("runBuild (branch behavior)", () => {
                | undefined;
             strictUpstreams?: boolean | undefined;
             warehouseReach?: "recompute" | "refuse";
-            trigger?: "ON_DEMAND" | "SCHEDULER";
+            trigger?: "on_demand" | "scheduler";
          },
          signal: AbortSignal,
       ) => Promise<void>;
@@ -811,7 +811,7 @@ describe("runBuild (branch behavior)", () => {
                sourceNames: undefined,
                forceRefresh: true,
                buildInstructions: undefined,
-               trigger: "SCHEDULER",
+               trigger: "scheduler",
             },
             new AbortController().signal,
          );
@@ -875,7 +875,7 @@ describe("runBuild (branch behavior)", () => {
             reportSourceBuilt(
                {
                   kind: "persist",
-                  tier: "colocated",
+                  tier: "database",
                   sourceEntityId: "build-orders",
                   sourceName: "orders",
                },
@@ -920,7 +920,7 @@ describe("runBuild (branch behavior)", () => {
          ).toEqual([
             {
                kind: "persist",
-               tier: "colocated",
+               tier: "database",
                outcome: "built",
                failure_class: "none",
             },
@@ -1145,7 +1145,7 @@ describe("runBuild (branch behavior)", () => {
       opts: Partial<{
          forceRefresh: boolean;
          reseed: boolean;
-         trigger: "ON_DEMAND" | "SCHEDULER";
+         trigger: "on_demand" | "scheduler";
          buildInstructions: unknown[];
          ledger: unknown[];
       }>,
@@ -1162,7 +1162,7 @@ describe("runBuild (branch behavior)", () => {
             forceRefresh: false,
             reseed: false,
             buildInstructions: undefined,
-            trigger: "ON_DEMAND",
+            trigger: "on_demand",
             ...opts,
          } as unknown as Parameters<typeof svc.runBuild>[3],
          new AbortController().signal,
@@ -1192,7 +1192,7 @@ describe("runBuild (branch behavior)", () => {
       // Including an ON_DEMAND API caller, which is the case that used to
       // re-seed. A force says "do not reuse an unchanged table"; for an
       // incremental source, which is never reused, that is not a request at all.
-      for (const trigger of ["ON_DEMAND", "SCHEDULER"] as const) {
+      for (const trigger of ["on_demand", "scheduler"] as const) {
          expect(
             await contextArgsFor({ forceRefresh: true, trigger }),
          ).toMatchObject({ forceRefresh: false });
@@ -1213,7 +1213,7 @@ describe("runBuild (branch behavior)", () => {
       // Not conditioned on the trigger: a scheduled run that explicitly asks to
       // rebuild gets a rebuild.
       expect(
-         await contextArgsFor({ reseed: true, trigger: "SCHEDULER" }),
+         await contextArgsFor({ reseed: true, trigger: "scheduler" }),
       ).toMatchObject({ forceRefresh: true });
       expect(
          await contextArgsFor({ reseed: false, forceRefresh: true }),
@@ -1275,7 +1275,7 @@ describe("runInBackground (terminal recording)", () => {
 
    it("keeps the real error's message in the metadata when a cancel races a failure", async () => {
       ctx.repository.getMaterializationById.resolves(
-         makeMaterialization({ metadata: { trigger: "ON_DEMAND" } }),
+         makeMaterialization({ metadata: { trigger: "on_demand" } }),
       );
       const bg = background();
       bg.runInBackground("bg-race", async () => {
@@ -1289,7 +1289,7 @@ describe("runInBackground (terminal recording)", () => {
       ).toMatchObject({
          status: "CANCELLED",
          error: "Cancelled",
-         metadata: { trigger: "ON_DEMAND", errorAtCancel: "deadlock detected" },
+         metadata: { trigger: "on_demand", errorAtCancel: "deadlock detected" },
       });
    });
 

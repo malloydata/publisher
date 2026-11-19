@@ -141,7 +141,7 @@
         "freshness": null,
         "modelPath": "mzn.malloy",
         "name": "mzn_orders",
-        "origin": "persist",
+        "origin": "materialize",
         "preaggregate": null,
         "queryMetadata": null,
         "refresh": null,

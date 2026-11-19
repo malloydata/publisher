@@ -48,7 +48,7 @@ import {
 
 /**
  * Ends the name of a build copy: the author's file with one materialized
- * source's given-reading `where:` terms taken out (P2).
+ * source's given-reading `where:` terms taken out.
  */
 const MATERIALIZE_BUILD_COPY_SUFFIX = ".materialize-build.malloy";
 
@@ -63,12 +63,12 @@ export function buildCopyName(modelFileName: string, index: number): string {
 
 /**
  * The build copy of one planned source's declaring file: `text` with that
- * source's left-out read-time terms replaced by `true` (P2, and a current-time
+ * source's left-out read-time terms replaced by `true` (and a current-time
  * upper bound), so a query over the
  * copy's source applies every `where:` but those, or why a term cannot be
  * placed (see {@link termSpans}), which refuses the source rather than guess.
  *
- * With `liftAccess` (P3), the source's own access modifiers are lifted too
+ * With `liftAccess`, the source's own access modifiers are lifted too
  * ({@link accessLiftEdits}) and the declaration is wrapped in
  * `include { public: * }`, which lifts the `internal` fields it inherits, so
  * the build can select its hidden fields. A field private on a source it
@@ -80,9 +80,9 @@ export function buildCopyName(modelFileName: string, index: number): string {
  * query over it) without that other's term, and store its rows for every
  * caller. In a copy of its own, a source that reads another such source still
  * reads that one's given, and the eligibility gate refuses its build
- * (`given_in_persisted_query`).
+ * (`reads_given`).
  *
- * For an extension table (P10), `chain` names its parent's plan and the file
+ * For an extension table, `chain` names its parent's plan and the file
  * the parent's build source is imported from: the copy also re-roots the
  * parent's declaration on that build source ({@link rerootOnBuildSource}) and
  * imports it, so the extension, as written, reads the parent's table.
@@ -223,7 +223,7 @@ export function buildCopyDeclarationAt(
    return undefined;
 }
 
-/** Lifts the `internal` fields a build copy's source inherits (P3). */
+/** Lifts the `internal` fields a build copy's source inherits. */
 const LIFT_INHERITED = " include { public: * }";
 
 /** The compiler flag `include { … }` needs, as the build copy's first line. */
@@ -235,11 +235,11 @@ const ACCESS_NOT_LIFTED =
 
 /**
  * The edits {@link buildCopyText} makes to `text`: the plan's given-reading
- * terms (P2) and its current-time terms that hold an upper bound (Rolling
+ * terms and its current-time terms that hold an upper bound (Rolling
  * windows), its own or inherited, replaced by `true`; with `parent`, the parent's declaration
- * re-rooted on its build source (P10); and with `liftAccess`, the plan's own
+ * re-rooted on its build source; and with `liftAccess`, the plan's own
  * declaration's access modifiers lifted and the declaration wrapped in
- * `include { public: * }` (P3), with the flag `include` needs as the copy's
+ * `include { public: * }`, with the flag `include` needs as the copy's
  * first line. The lift edits only the plan's own declaration, so a chained
  * extension's build sees its hidden fields lifted over its parent's re-root
  * exactly as over the raw chain.
@@ -358,7 +358,7 @@ export function chainCopyName(
 
 /**
  * The build copy of an extension table whose parent is declared in another
- * file (P10 across files), as two texts:
+ * file (across files), as two texts:
  *
  *  - `parentCopy`, the parent's file with the parent re-rooted on its build
  *    source ({@link rerootOnBuildSource}), which it imports from
@@ -368,7 +368,12 @@ export function chainCopyName(
  *    given-reading and left-out current-time terms, its lifted access) and
  *    every `import` of the parent's file pointed at `parentCopy` instead
  *    (`importOf` answers, for an import's path as written, the path to write
- *    in its place, or undefined to keep it).
+ *    in its place, or undefined to keep it);
+ *  - `betweenCopies`, for a chain that passes through files between the
+ *    extension's and the parent's (`between`, the extension's side first),
+ *    each such file unedited but for its `import`s of the next file on the
+ *    chain, pointed at that file's copy by its own `importOf`; the
+ *    extension's `importOf` points at the first of them.
  *
  * So the extension, as written, reads the parent's table. Why not, when an
  * edit cannot be placed, the parent does not re-root, or no `import` of the
@@ -382,8 +387,14 @@ export function crossFileCopyTexts(args: {
    parent: MaterializePlan;
    buildSourceFrom: string;
    importOf: (written: string) => string | undefined;
+   between?: {
+      text: string;
+      importOf: (written: string) => string | undefined;
+   }[];
    liftAccess?: boolean;
-}): { copy: string; parentCopy: string } | { reason: string } {
+}):
+   | { copy: string; parentCopy: string; betweenCopies: string[] }
+   | { reason: string } {
    const { plan, parent } = args;
    const reroot = parentRerootEdit(args.parentText, plan, parent);
    if (reroot === undefined) return { reason: PARENT_NOT_REROOTED };
@@ -412,12 +423,22 @@ export function crossFileCopyTexts(args: {
    }
    const copy = applyEdits(args.text, [...own.edits, ...imports]);
    if (copy === undefined) return { reason: NOT_FOUND };
-   return { copy, parentCopy };
+   const betweenCopies: string[] = [];
+   for (const file of args.between ?? []) {
+      const rewrites = importRewrites(file.text, file.importOf);
+      if (rewrites === undefined || rewrites.length === 0) {
+         return { reason: PARENT_IMPORT_NOT_REWRITTEN };
+      }
+      const rewritten = applyEdits(file.text, rewrites);
+      if (rewritten === undefined) return { reason: NOT_FOUND };
+      betweenCopies.push(rewritten);
+   }
+   return { copy, parentCopy, betweenCopies };
 }
 
 const PARENT_IMPORT_NOT_REWRITTEN =
-   "the extension's file does not import the parent's file in a way its " +
-   "build copy can point at the parent's re-rooted copy";
+   "a file on the chain does not import the next one in a way its build " +
+   "copy can point at that file's copy, which reaches the parent re-rooted";
 
 const PARENT_NOT_REROOTED =
    "the parent's declaration could not be re-rooted on its build source";
@@ -429,7 +450,7 @@ const PARENT_NOT_REROOTED =
  * ({@link rerootOnBuildSource}), and the build source imported from
  * `importFrom`: a query over the source in the copy reads its stored table
  * through a run's build manifest. Read by the rollup companion, so a
- * colocated rollup over a colocated `#(materialize)` base builds from the
+ * database rollup over a database `#(materialize)` base builds from the
  * base's table (rollup_compile.ts). Undefined when the declaration is not
  * where `declaration` says or does not re-root.
  */
@@ -452,7 +473,7 @@ export function storedSourceCopyText(
 }
 
 /**
- * A parent's declaration in an extension's build copy (P10): `<name> is
+ * A parent's declaration in an extension's build copy: `<name> is
  * <build source>`, then the blocks that undo its renames
  * ({@link inverseRenameBlocks}), then its own trailing `extend` run less each
  * computed dimension its table stores, so the stored column stands in for it,

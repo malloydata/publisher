@@ -101,9 +101,9 @@ A query that fails tells you whose problem it is. Branch on `reason`, not on the
   - `CONNECTION_AUTH_FAILED`: the database rejected the connection's user, password, key or token.
   - `CONNECTION_NOT_FOUND`: the model names a connection the environment does not have, usually
     one deleted after the package was loaded.
-- **403 with `reason: STORAGE_ACCESS_DENIED`:** the database ran the query, and the storage holding
-  a table's data (a DuckLake data path, an object-store bucket) refused its read. When the path is one the environment configures (a DuckLake data path),
-  the query and the model are fine; do not retry until the database's storage credentials are fixed. Otherwise check the path the query reads. The query route
+- **403 with `reason: STORAGE_ACCESS_DENIED` or `PATH_ACCESS_DENIED`:** the database ran the query, and the storage holding
+  a table's data (a DuckLake data path, an object-store bucket) refused its read. `STORAGE_ACCESS_DENIED`: the path is one the environment configures (a DuckLake data path, a storage destination),
+  so the query and the model are fine; do not retry until the database's storage credentials are fixed. `PATH_ACCESS_DENIED`: the path is one the query or the model reads itself; check that path and the caller's grant to it. The query route
   and the raw `sqlQuery` route answer it alike; the body names what you read and never a storage
   path, which is in the server log. Any other 4xx that carries the database's text has its URLs
   replaced with `<storage path>`.
@@ -113,6 +113,22 @@ A query that fails tells you whose problem it is. Branch on `reason`, not on the
 
 For `CONNECTION_FAILED` and `CONNECTION_AUTH_FAILED` the body carries a fixed message, because the
 driver's text can name a host or a user; it is in the server log.
+
+A gate's refusal is a **403 with `reason: ACCESS_DENIED`**: supply the givens the gate reads.
+
+Starting a materialization (`POST …/packages/{pkg}/materializations`) answers, beside the version
+reasons:
+
+- **400 with `reason: BUILD_INSTRUCTIONS_INVALID`:** the body or the build instructions are not a run
+  this package can take: a field of the wrong shape, an unknown `sourceEntityId`, a table named
+  twice, a ledger entry that does not fit. The message names which; retrying unchanged fails the
+  same way.
+- **409 with `reason: MATERIALIZATION_CONFLICT`:** another run is active, or another run is writing a
+  table this one would write: both clear on their own, so retry later. Or the package or version
+  is served from a host manifest and the request has no `buildInstructions`, or a run of a version
+  that is not latest touches the tables its versions share: neither clears until the request or
+  the package changes. The message says which. **409 with `reason: BUILD_PLAN_UNAVAILABLE`:** the build plan
+  could not be derived; reload the package.
 
 ## Live API explorer
 

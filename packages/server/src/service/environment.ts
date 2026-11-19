@@ -113,6 +113,7 @@ import {
 } from "./compile_source";
 import { type OverlayFile } from "./request_overlay";
 import { destinationSchemaOf } from "./materialization/domain/storage_table_path";
+import { storageWritable } from "./materialization/domain/placement";
 
 export {
    COMPILE_SCOPES,
@@ -353,17 +354,17 @@ export type PackageListingOptions = {
 
 /**
  * What a version binds from a set of entries, in one form whoever bound it:
- * the colocated entries its models compile and bind over, and the `storage=`
+ * the database entries its models compile and bind over, and the `storage=`
  * entries as {@link splitManifestEntries} gives them, keys sorted at every
  * depth. A read of the store and a run's own load compare equal exactly when
  * they bind the same, whatever key order the store (a jsonb column, say)
  * gives back.
  */
 function storeBindingSignature(
-   colocated: FreshnessManifest,
+   database: FreshnessManifest,
    storage: Record<string, ManifestEntry>,
 ): string {
-   return canonicalJson({ colocated, storage });
+   return canonicalJson({ database, storage });
 }
 
 /**
@@ -564,6 +565,11 @@ export class Environment {
    private readonly storeBindingReads = new WeakMap<Package, string>();
    // The loaded versions already settled once they became findable.
    private readonly settledVersions = new WeakSet<Package>();
+   // The versions a host owns (see isHostOwned), by `package@version`, for
+   // every version marked in this process: a copy whose load read its row
+   // before the mark still counts. A loaded copy's own mark is on its
+   // materialization (PackageMaterialization.isHostOwned).
+   private readonly hostOwnedVersionKeys = new Set<string>();
    // Called when a version is archived, to reclaim the tables it alone owns.
    // Set by EnvironmentStore (see setVersionArchivedHook).
    private versionArchivedHook:
@@ -1006,7 +1012,12 @@ export class Environment {
             this.destinations,
             destinationRoot,
             false,
-            { origin: "storage-destination" },
+            {
+               origin: "storage-destination",
+               // A destination reopened without its catalog: serve shapes
+               // compiled against the closed connection recompile.
+               onDuckLakeReopened: () => this.invalidateCompiledLegs(),
+            },
          );
       } catch (error) {
          logger.error(
@@ -2249,7 +2260,7 @@ export class Environment {
     * build. Best-effort: a lookup failure leaves the package serving live.
     *
     * Both tiers come from the same manifest ({@link splitManifestEntries}):
-    *  - colocated → {@link Package.bindColocatedServeManifest}, a per-query
+    *  - database → {@link Package.bindDatabaseServeManifest}, a per-query
     *    override with no recompile; restored regardless of
     *    `PERSIST_STORAGE_MODE`, which does not gate a plain `#@ persist`.
     *  - storage= → {@link Package.bindStorageServeBindings}; only when the
@@ -2258,7 +2269,8 @@ export class Environment {
     * Skipped when the package has a `manifestLocation`: the host's manifest is
     * then authoritative, and this rebind (which runs after
     * {@link bindManifestIfConfigured}) would overwrite it with a possibly
-    * staler local generation.
+    * staler local generation. Skipped too for a version a host owns with no
+    * manifest bound ({@link isHostOwned}): the host cleared it to serve live.
     */
    private async rebindServeBindingsFromLocalStore(
       pkg: Package,
@@ -2283,7 +2295,7 @@ export class Environment {
       ) {
          return;
       }
-      if (pkg.getManifestLocation()) return;
+      if (this.isHostOwned(pkg)) return;
       const packageName = pkg.getPackageName();
       try {
          const rawEntries = await this.storageBindingResolver(
@@ -2298,14 +2310,14 @@ export class Environment {
          if (Object.keys(rawEntries).length === 0) return;
          if (Object.keys(tableNameManifest).length > 0) {
             pkg.materialization().bind({
-               colocated: tableNameManifest,
+               database: tableNameManifest,
                observed: await pkg
                   .materialization()
                   .readDatabaseColumns(tableNameManifest),
             });
          }
          if (
-            getPersistStorageMode() !== "off" &&
+            storageWritable(getPersistStorageMode()) &&
             Object.keys(storageEntries).length > 0
          ) {
             pkg.materialization().bind({ storage: storageEntries });
@@ -2922,9 +2934,14 @@ export class Environment {
          environmentId,
          new VersionStore(this.environmentPath),
          {
-            loadVersion: (packageName, versionPath, version) =>
+            loadVersion: (packageName, versionPath, version, options) =>
                this.trackPackageLoad(packageName, () =>
-                  this.loadVersionPackage(packageName, versionPath, version),
+                  this.loadVersionPackage(
+                     packageName,
+                     versionPath,
+                     version,
+                     options?.refreshSchemas === true,
+                  ),
                ),
             trackPublish: (packageName, fn) =>
                this.trackPackageLoad(packageName, fn),
@@ -2965,16 +2982,25 @@ export class Environment {
             ensurePackageRecord: hooks.ensurePackageRecord,
             removePackageRecord: hooks.removePackageRecord,
             boundManifestOf: (loaded) => loaded.getManifestLocation() ?? null,
+            hostMarked: (loaded) => loaded.materialization().isHostOwned(),
             isVersionBuilding: (packageName, versionId) =>
                this.versionBuilds.has(`${packageName}@${versionId}`),
             onVersionArchived: (packageName, versionId) =>
                this.versionArchivedHook?.(packageName, versionId),
-            onVersionDeleted: (packageName, versionId) =>
-               this.versionDeletedHook?.(packageName, versionId),
+            onVersionDeleted: (packageName, versionId) => {
+               // A version published again under this id starts unmarked.
+               this.hostOwnedVersionKeys.delete(`${packageName}@${versionId}`);
+               this.versionDeletedHook?.(packageName, versionId);
+            },
             reclaimOwedBy: async (packageName, versionId) => {
                await this.owedReclaimHook?.(packageName, versionId);
             },
             packageRemoved: (packageName) => {
+               for (const key of this.hostOwnedVersionKeys) {
+                  if (key.startsWith(`${packageName}@`)) {
+                     this.hostOwnedVersionKeys.delete(key);
+                  }
+               }
                this.clearPackageLoadFailure(packageName);
                this.transition(packageName, { type: "unregister" });
                hooks.packageRemoved?.(packageName);
@@ -3011,13 +3037,15 @@ export class Environment {
          versionId: string;
          manifestPath: string | null;
          sourceLocation: string | null;
+         hostOwned: boolean;
       },
+      refreshSchemas: boolean = false,
    ): Promise<Package> {
       // A failed load names the version's files package-relative, as a
       // failed reload does, never this server's version folder.
       return withPackageRelativeErrors(versionPath, async () => {
          // Read the manifest while the version compiles, and compile it
-         // once: its models hydrate over the colocated entries, so the bind
+         // once: its models hydrate over the database entries, so the bind
          // below binds them without the reload a bind after a plain load
          // would run. A read that fails is reported by that bind.
          const manifest = version.manifestPath
@@ -3032,10 +3060,11 @@ export class Environment {
             false,
             {
                versionId: version.versionId,
-               colocated: manifest?.then(
+               database: manifest?.then(
                   (fetched) => fetched.tableNameManifest,
                   () => undefined,
                ),
+               ...(refreshSchemas ? { refreshSchemas } : {}),
             },
          );
          this.attachDestinationServeConfig(loaded);
@@ -3049,6 +3078,9 @@ export class Environment {
                : {}),
             manifestLocation: version.manifestPath,
          });
+         // Marked by its row; one whose manifest binds below is marked by
+         // that bind (markHostOwned).
+         if (version.hostOwned) loaded.materialization().markHostOwned();
          await this.bindManifestIfConfigured(loaded, manifest);
          await this.rebindServeBindingsFromLocalStore(loaded);
          return loaded;
@@ -3090,7 +3122,8 @@ export class Environment {
     * version's lock, so two of these never apply out of the order they read
     * in. `read` answers for the version as a reader (see ServingReader);
     * `onlyIfMoved` skips a bind when the store says what this version last
-    * bound from it. A version bound to a host manifest is the host's.
+    * bound from it. A version a host owns ({@link isHostOwned}) is the
+    * host's, bound to its manifest or live.
     *
     * A version whose rebind fails is taken out of service at once: it would
     * otherwise keep a binding the store no longer vouches for, possibly a
@@ -3118,7 +3151,7 @@ export class Environment {
                   versionId,
                   "rebind it from the store",
                   async (pkg): Promise<"done" | "retry"> => {
-                     if (pkg.getManifestLocation()) {
+                     if (this.isHostOwned(pkg)) {
                         return "done";
                      }
                      try {
@@ -3235,7 +3268,7 @@ export class Environment {
 
    /**
     * Bind store entries ({@link splitStoreEntries}) to a package bound to no
-    * host manifest: the colocated ones recompile the models when there is
+    * host manifest: the database ones recompile the models when there is
     * something to substitute or clear, the `storage=` ones replace the
     * storage bindings (unless the storage tier is off). A version remembers
     * what it bound (see storeBindingReads).
@@ -3256,7 +3289,7 @@ export class Environment {
          await pkg.reloadAllModels(tableNameManifest);
          reloaded = true;
       }
-      if (getPersistStorageMode() !== "off") {
+      if (storageWritable(getPersistStorageMode())) {
          pkg.materialization().bind({ storage: storageEntries });
       }
       if (pkg.getVersionId() !== undefined) {
@@ -3269,11 +3302,14 @@ export class Environment {
     * After its host manifest is cleared, bind what this server's own store
     * holds for the package (or version), so tables already built here serve
     * at once; with none, or when the store cannot be read, revert it to
-    * live. An unversioned package reads the store only where it restores
-    * from it on load ({@link restoreUnversionedFromLocalStore}); elsewhere
-    * it goes live, as it would load. `wasBound`: it served bound tables
-    * before the clear. Says whether the models were recompiled. The caller
-    * holds the package's (or version's) lock.
+    * live. A version a host owns ({@link isHostOwned}) always goes live: the
+    * host cleared it to stop serving stored tables, which it may be about to
+    * drop, so what this server's store holds for it is not to be served. An
+    * unversioned package reads the store only where it restores from it on
+    * load ({@link restoreUnversionedFromLocalStore}); elsewhere it goes live,
+    * as it would load. `wasBound`: it served bound tables before the clear.
+    * Says whether the models were recompiled. The caller holds the package's
+    * (or version's) lock.
     */
    private async bindLocalStoreOrLive(
       pkg: Package,
@@ -3281,8 +3317,9 @@ export class Environment {
    ): Promise<boolean> {
       let entries: Record<string, ManifestEntry> = {};
       const restores =
-         pkg.getVersionId() !== undefined ||
-         this.restoreUnversionedFromLocalStore;
+         (pkg.getVersionId() !== undefined && !this.isHostOwned(pkg)) ||
+         (pkg.getVersionId() === undefined &&
+            this.restoreUnversionedFromLocalStore);
       if (this.storageBindingResolver && restores) {
          try {
             entries = await this.storageBindingResolver(
@@ -3306,11 +3343,115 @@ export class Environment {
             this.splitStoreEntries(pkg, entries),
          );
       }
+      // Nothing bound now: the binding status still names the manifest that
+      // was (an empty one, or one whose fetch failed), so say live.
+      pkg.materialization().markServingLive();
       if (!wasBound) return false;
       // Drop both tiers so nothing still routes to a materialized table.
       await pkg.reloadAllModels({});
       pkg.materialization().bind({ storage: {} });
       return true;
+   }
+
+   /**
+    * Mark a loaded version host-owned, in memory and on its registry row
+    * (which a version being published does not have yet: its publish's
+    * commit records the mark, see VersionHost.hostMarked). A row that cannot
+    * be written is logged: the version is host-owned until it unloads.
+    */
+   private async markHostOwned(pkg: Package): Promise<void> {
+      const versionId = pkg.getVersionId();
+      const mz = pkg.materialization();
+      if (versionId === undefined || mz.isHostOwned()) return;
+      mz.markHostOwned();
+      this.hostOwnedVersionKeys.add(`${pkg.getPackageName()}@${versionId}`);
+      await this.versionService
+         ?.markHostOwned(pkg.getPackageName(), versionId)
+         .catch((error) =>
+            logger.warn("Could not record that a host owns a version", {
+               packageName: pkg.getPackageName(),
+               versionId,
+               error: errMessage(error),
+            }),
+         );
+   }
+
+   /**
+    * A host's instructed run of a version is about to commit: the host owns
+    * the version from now on, as a bind would make it (see isHostOwned).
+    * Under the version's lock, so no load, settle or rebind interleaves: a
+    * loaded copy bound to no manifest that serves what this server's store
+    * holds goes live now, as a clear would leave it.
+    */
+   public async markVersionHostOwned(
+      packageName: string,
+      versionId: string,
+   ): Promise<void> {
+      const versions = this.versionService;
+      if (!versions) return;
+      await this.trackPackageLoad(packageName, () =>
+         versions.withVersionLock(packageName, versionId, async () => {
+            this.hostOwnedVersionKeys.add(`${packageName}@${versionId}`);
+            const loaded = versions.cache.peek(packageName, versionId);
+            if (!loaded) {
+               await versions
+                  .markHostOwned(packageName, versionId)
+                  .catch((error) =>
+                     logger.warn(
+                        "Could not record that a host owns a version",
+                        {
+                           packageName,
+                           versionId,
+                           error: errMessage(error),
+                        },
+                     ),
+                  );
+               return;
+            }
+            await this.markHostOwned(loaded);
+            if (loaded.getManifestLocation()) return;
+            const mz = loaded.materialization();
+            if (
+               mz.hasBoundTableNameManifest() ||
+               mz.hasStorageServeBindings()
+            ) {
+               // Never fails the run before it commits: its tables would
+               // go unrecorded. A copy that does not recompile keeps its
+               // database tables until it next loads, live (host-owned).
+               try {
+                  await loaded.reloadAllModels({});
+               } catch (error) {
+                  logger.warn(
+                     "Could not take a version a host built live; it serves live from its next load",
+                     { packageName, versionId, error: errMessage(error) },
+                  );
+               }
+               mz.bind({ storage: {} });
+            }
+            mz.markServingLive();
+         }),
+      );
+   }
+
+   /**
+    * Whether a host owns the binding of this package: it is bound to a host
+    * manifest now, or it is a version a host has bound (a manifest it named
+    * bound) or built (its instructed run committed) at least once: its
+    * registry row's `hostOwned`, which survives a restart. A host-owned
+    * package never binds this server's own run store: with no manifest it
+    * serves live until the host binds it again. A version a host never bound
+    * or built (standalone, or orchestrated by this server) is not.
+    */
+   public isHostOwned(pkg: Package): boolean {
+      const versionId = pkg.getVersionId();
+      return (
+         Boolean(pkg.getManifestLocation()) ||
+         pkg.materialization().isHostOwned() ||
+         (versionId !== undefined &&
+            this.hostOwnedVersionKeys.has(
+               `${pkg.getPackageName()}@${versionId}`,
+            ))
+      );
    }
 
    /** Rebind a loaded version to a build manifest, or revert it to live. */
@@ -3330,9 +3471,10 @@ export class Environment {
                this.bindManifest(loaded, manifestPath),
             );
          } else {
-            // Cleared: what this server's own store holds for it now serves,
-            // at once, else it serves live. Inline rather than through
-            // rebindVersionFromStore, whose version lock the caller holds.
+            // Cleared: a host-owned version serves live; another serves what
+            // this server's own store holds for it, at once, else live.
+            // Inline rather than through rebindVersionFromStore, whose
+            // version lock the caller holds.
             await this.trackPackageLoad(packageName, () =>
                this.bindLocalStoreOrLive(loaded, wasBound),
             );
@@ -3350,9 +3492,15 @@ export class Environment {
       /**
        * `versionId`: which version to read; absent means `latest`. A
        * malformed one is refused (400) only when this environment has
-       * versions to consult.
+       * versions to consult. `refreshSchemas`: a reload refetches the
+       * schemas the package reads (an explicit reload; a watch-mode reload
+       * keeps them).
        */
-      options: { allowAdmission?: boolean; versionId?: VersionRef } = {},
+      options: {
+         allowAdmission?: boolean;
+         versionId?: VersionRef;
+         refreshSchemas?: boolean;
+      } = {},
    ): Promise<Package> {
       // The sink-side check (path_safety.ts); the brand says it already ran.
       assertSafePackageName(packageName);
@@ -3420,7 +3568,11 @@ export class Environment {
             );
             if (versioned) return versioned.loaded;
          }
-         return this._loadOrGetPackageLocked(packageName, reload);
+         return this._loadOrGetPackageLocked(
+            packageName,
+            reload,
+            options.refreshSchemas === true,
+         );
       });
    }
 
@@ -3428,6 +3580,7 @@ export class Environment {
    private async _loadOrGetPackageLocked(
       packageName: string,
       reload: boolean = false,
+      refreshSchemas: boolean = false,
    ): Promise<Package> {
       const existingPackage = this.packages.get(packageName);
       if (existingPackage !== undefined && !reload) {
@@ -3435,7 +3588,8 @@ export class Environment {
       }
       await this.assertNotVersionedLocked(packageName, existingPackage);
 
-      const load = () => this.loadPackageLocked(packageName, existingPackage);
+      const load = () =>
+         this.loadPackageLocked(packageName, existingPackage, refreshSchemas);
       if (!reload) return load();
       return withSpan(
          "publisher.package.reload",
@@ -3451,6 +3605,7 @@ export class Environment {
    private loadPackageLocked(
       packageName: string,
       existingPackage: Package | undefined,
+      refreshSchemas: boolean = false,
    ): Promise<Package> {
       return this.trackPackageLoad(packageName, async () => {
          this.transition(packageName, { type: "beginLoad" });
@@ -3472,6 +3627,8 @@ export class Environment {
                      packageName,
                      packagePath,
                      () => this.malloyConfig.malloyConfig,
+                     false,
+                     refreshSchemas ? { refreshSchemas } : {},
                   );
                   this.attachDestinationServeConfig(created);
                   await this.commitLoadedPackage(packageName, created, {
@@ -3551,7 +3708,8 @@ export class Environment {
 
    public async addPackage(
       packageName: string,
-      options: { allowAdmission?: boolean } = {},
+      /** `refreshSchemas`: a publish refetches the schemas the package reads. */
+      options: { allowAdmission?: boolean; refreshSchemas?: boolean } = {},
    ) {
       assertSafePackageName(packageName);
       const packagePath = safeJoinUnderRoot(this.environmentPath, packageName);
@@ -3579,12 +3737,13 @@ export class Environment {
       );
 
       return this.withPackageLock(packageName, () =>
-         this._addPackageLocked(packageName),
+         this._addPackageLocked(packageName, options.refreshSchemas === true),
       );
    }
 
    private async _addPackageLocked(
       packageName: string,
+      refreshSchemas: boolean,
    ): Promise<Package | undefined> {
       const packagePath = safeJoinUnderRoot(this.environmentPath, packageName);
       const existingPackage = this.packages.get(packageName);
@@ -3601,6 +3760,8 @@ export class Environment {
                packageName,
                packagePath,
                () => this.malloyConfig.malloyConfig,
+               false,
+               refreshSchemas ? { refreshSchemas } : {},
             );
             this.attachDestinationServeConfig(addedPackage);
             await this.commitLoadedPackage(packageName, addedPackage, {
@@ -3822,6 +3983,10 @@ export class Environment {
             ...(options.versionId !== undefined
                ? { versionId: options.versionId }
                : {}),
+            // A publish, a PATCH that reinstalls, a reload from a location
+            // and their dry run are all explicit, so each reads its tables'
+            // columns as the warehouse holds them now.
+            refreshSchemas: true,
          },
       );
       this.attachDestinationServeConfig(pkg);
@@ -4100,7 +4265,7 @@ export class Environment {
     * Every materialization run lands here, so the recompile (~1.1 MB of RSS
     * never reclaimed) is skipped when there is nothing to substitute now and
     * nothing was before: a `tableName` manifest is resolved at compile time,
-    * and a package that dropped its last colocated entry must still recompile
+    * and a package that dropped its last database entry must still recompile
     * to revert it.
     */
    public async reloadAllModelsForPackage(
@@ -4155,19 +4320,21 @@ export class Environment {
     * slip between them: one that waits on the lock reads the store after the
     * run is MANIFEST_FILE_READY, so it binds this run's manifest, never the
     * one before it. A version that is not loaded binds from the store when
-    * it next loads, which is after `commit`, so it counts as loaded.
+    * it next loads, which is after `commit`, so it counts as loaded, unless
+    * its registry row says a host owns it.
     *
-    * A package or version bound to a host manifest (`manifestLocation`)
-    * serves the host's tables: the run's entries, neither tier, are applied
-    * to it. Creating such a run is refused up front (409); this holds when a
+    * A package or version bound to a host manifest (`manifestLocation`),
+    * or a version a host owns ({@link isHostOwned}), serves the host's
+    * tables or live: the run's entries, neither tier, are applied to it.
+    * Creating such a run is refused up front (409); this holds when a
     * manifest is bound while one runs. The run still commits its rows, and
     * says it was not served, as one whose bind did not take does.
     */
    public async loadRunManifest(params: {
       packageName: string;
       versionId?: string;
-      /** The colocated entries, compiled in as the build manifest. */
-      colocated: FreshnessManifest;
+      /** The database entries, compiled in as the build manifest. */
+      database: FreshnessManifest;
       /** The full entries, of which the `storage=` ones are bound. */
       storage: Record<string, ManifestEntry>;
       commit: (outcome: RunManifestLoad) => Promise<void>;
@@ -4178,13 +4345,30 @@ export class Environment {
          pkg: Package | undefined,
       ): Promise<RunManifestLoad> => {
          if (!pkg) {
-            return versionId !== undefined
-               ? { loaded: true }
-               : {
-                    loaded: false,
-                    step: "reload",
-                    error: `Package ${packageName} is not loaded`,
-                 };
+            if (versionId !== undefined) {
+               // Not loaded: it binds from the store when it next loads,
+               // unless a host owns it, when this run's tables never serve.
+               const row = await this.versionService
+                  ?.getVersion(packageName, versionId)
+                  .catch(() => undefined);
+               if (row?.manifestPath || row?.hostOwned) {
+                  return {
+                     loaded: false,
+                     step: "bind",
+                     error:
+                        "a host owns this version (it is bound to a host " +
+                        "manifest, or was bound or built by a host): it " +
+                        "serves the host's manifest or live, so this run's " +
+                        "tables are not served",
+                  };
+               }
+               return { loaded: true };
+            }
+            return {
+               loaded: false,
+               step: "reload",
+               error: `Package ${packageName} is not loaded`,
+            };
          }
          // With a manifestLocation the host is authoritative, for both tiers.
          const manifestLocation = pkg.getManifestLocation();
@@ -4198,10 +4382,22 @@ export class Environment {
                   `this run's tables are not served`,
             };
          }
+         // A version a host owns with no manifest serves live until the
+         // host binds it again.
+         if (this.isHostOwned(pkg)) {
+            return {
+               loaded: false,
+               step: "bind",
+               error:
+                  `bound by a host while the run built: a version a host ` +
+                  `has bound serves the host's manifest or live, so this ` +
+                  `run's tables are not served`,
+            };
+         }
          try {
-            const has = Object.keys(params.colocated).length > 0;
+            const has = Object.keys(params.database).length > 0;
             if (has || pkg.materialization().hasBoundTableNameManifest()) {
-               await pkg.reloadAllModels(params.colocated);
+               await pkg.reloadAllModels(params.database);
             }
          } catch (err) {
             return { loaded: false, step: "reload", error: errMessage(err) };
@@ -4220,7 +4416,7 @@ export class Environment {
             this.storeBindingReads.set(
                pkg,
                storeBindingSignature(
-                  params.colocated,
+                  params.database,
                   splitManifestEntries(
                      params.storage,
                      `run (package ${packageName} version ${versionId})`,
@@ -4259,7 +4455,7 @@ export class Environment {
     * store says it serves, and is called under the package's lock, which
     * the bind holds too, so nothing created under the same lock (a load, a
     * reload, an unversioned run's start) lands between the read and the
-    * bind. The colocated entries recompile the models when there is
+    * bind. The database entries recompile the models when there is
     * something to substitute or clear (a build's auto-load baked the
     * substitution in); the `storage=` entries, when `read` returns them,
     * replace the storage bindings, empty reverting to live. Used after a
@@ -4270,7 +4466,7 @@ export class Environment {
    public async rebindPackageFromStore(
       packageName: string,
       read: () => Promise<{
-         colocated: FreshnessManifest;
+         database: FreshnessManifest;
          storage?: Record<string, ManifestEntry>;
       }>,
    ): Promise<void> {
@@ -4294,12 +4490,12 @@ export class Environment {
                );
                return;
             }
-            const { colocated, storage } = await read();
+            const { database, storage } = await read();
             if (
-               Object.keys(colocated).length > 0 ||
+               Object.keys(database).length > 0 ||
                pkg.materialization().hasBoundTableNameManifest()
             ) {
-               await pkg.reloadAllModels(colocated);
+               await pkg.reloadAllModels(database);
             }
             if (storage) pkg.materialization().bind({ storage: storage });
          }),
@@ -4349,16 +4545,16 @@ export class Environment {
          const hasStorage = Object.keys(storageEntries).length > 0;
          const hadStorage = pkg.materialization().hasStorageServeBindings();
 
-         // Colocated substitution is resolved at compile time, so it needs a
+         // Database substitution is resolved at compile time, so it needs a
          // recompile, skipped when there is nothing to substitute or clear.
-         const hasColocated = Object.keys(tableNameManifest).length > 0;
-         const hadColocated = pkg.materialization().hasBoundTableNameManifest();
+         const hasDatabase = Object.keys(tableNameManifest).length > 0;
+         const hadDatabase = pkg.materialization().hasBoundTableNameManifest();
 
          // Recompile first: it is the only step that can throw, and the catch
          // reports "no manifest applied", which would be false if the new
          // storage bindings were already routing.
          const recompiled =
-            (hasColocated || hadColocated) &&
+            (hasDatabase || hadDatabase) &&
             (await pkg.reloadAllModels(tableNameManifest, {
                ifChanged: recompile === "if-changed",
             }));
@@ -4372,6 +4568,10 @@ export class Environment {
          // rebinds on anything but `bound`. Entry counts distinguish empty.
          pkg.materialization().markManifestBound(manifestLocation);
          recordManifestBind("success");
+         // A host manifest bound: the host owns the version from now on.
+         // Only here, so a manifest that never binds (a mistyped URL) marks
+         // nothing.
+         await this.markHostOwned(pkg);
          logger.info("Bound build manifest to package", {
             environmentName: this.environmentName,
             packageName,

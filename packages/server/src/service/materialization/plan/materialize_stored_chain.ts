@@ -7,6 +7,11 @@
  * table, then the declarations from the parent to the extension as the build
  * copy writes them, and nothing else of the file.
  *
+ * The declarations may come from several files: the parent's, each file the
+ * chain passes through, and the extension's. Carried into one text, they are
+ * compiled together only when each reads its names alike there
+ * (materialize_compile.ts, `carriesAlike`).
+ *
  * Read by the companion compiler, which checks the chain compiles before it
  * chains, and by the `storage=` build.
  *
@@ -31,7 +36,7 @@ import { buildSourceBody, importAlias } from "./build_file_generator";
 
 /**
  * The text a `storage=` extension table's build compiles in its destination
- * (P10): the parent's declaration and each one on the path to the
+ *: the parent's declaration and each one on the path to the
  * extension's, edited as the build copy edits them (the parent re-rooted on
  * its build source, the extension's given-reading terms out) and nothing else
  * of the file, so the build reads no source but the parent's stored table.
@@ -55,6 +60,12 @@ export function storedChainText(
        * the path declared there, is read from it.
        */
       parentText?: string;
+      /**
+       * Each file the chain passes through between the extension's and the
+       * parent's (`buildsOver.crossFile.via`), by URL: the declarations on
+       * the path declared there are read from it, unedited.
+       */
+      between?: ReadonlyMap<string, string>;
    } = {},
 ): StoredChain | undefined {
    const over = plan.buildsOver;
@@ -63,6 +74,7 @@ export function storedChainText(
    const ownURL = over.path[over.path.length - 1]?.url;
    const parentText = over.crossFile ? options.parentText : text;
    if (parentText === undefined) return undefined;
+   const between = options.between ?? new Map<string, string>();
    // Each file's edits: one file's both, or the parent's re-root in its file
    // and the extension's own edits in the extension's.
    const edited = new Map<string, TextEdit[]>();
@@ -80,12 +92,22 @@ export function storedChainText(
    }
    const statements: string[] = [];
    for (const { url, range } of [over.declaration, ...over.path]) {
-      const inParent = over.crossFile !== undefined && url !== ownURL;
-      const from_ = inParent ? parentText : text;
+      const inBetween =
+         over.crossFile !== undefined && url !== ownURL && between.has(url);
+      const inParent =
+         over.crossFile !== undefined && url !== ownURL && !inBetween;
+      if (inParent && url !== over.declaration.url) return undefined;
+      const from_ = inBetween
+         ? between.get(url)!
+         : inParent
+           ? parentText
+           : text;
       const from = offsetOf(from_, range.start);
       const to = offsetOf(from_, range.end);
       if (from < 0 || to < from) return undefined;
-      const inside = (edited.get(inParent ? "parent" : "own") ?? [])
+      const inside = (
+         inBetween ? [] : (edited.get(inParent ? "parent" : "own") ?? [])
+      )
          .filter((e) => e.start >= from && e.end <= to)
          .map((e) => ({ ...e, start: e.start - from, end: e.end - from }));
       const declaration = applyEdits(from_.slice(from, to), inside);
@@ -95,11 +117,12 @@ export function storedChainText(
    }
    return {
       parentBuildSourceName: parent.buildSourceName,
-      // The lift's `include { public: * }` needs its flag here too (P3).
+      // The lift's `include { public: * }` needs its flag here too.
       flags: [
          ...new Set([
             ...documentFlagLines(text),
             ...(over.crossFile ? documentFlagLines(parentText) : []),
+            ...[...between.values()].flatMap(documentFlagLines),
             ...(options.liftAccess ? [ACCESS_FLAG] : []),
          ]),
       ],
@@ -116,7 +139,7 @@ export interface StoredColumnType {
 
 /**
  * The model a `storage=` extension table builds from in its destination
- * (P10): the parent's build source declared as the virtual source of its
+ *: the parent's build source declared as the virtual source of its
  * stored table on `connectionName`, the extension's {@link StoredChain} over
  * it, and the extension's generated build source, `#@ persist storage=`, last.
  * Its given-reading terms are not written: the build leaves them out, and the

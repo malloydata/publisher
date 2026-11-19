@@ -58,12 +58,18 @@ source: daily is orders -> {
       // The served copy answers a v1 `storage=` table (the v1 cutover).
       expect(path?.servedBy).toEqual({
          kind: "materialized",
+         origin: "persist",
          tier: "storage",
          tableId: daily,
          via: "served_copy",
       });
       expect(path?.considered).toEqual([
-         { tableId: daily, kind: "materialized", outcome: "used" },
+         {
+            tableId: daily,
+            kind: "materialized",
+            origin: "persist",
+            outcome: "used",
+         },
       ]);
       expect(JSON.stringify(path)).not.toContain(fixture.bindings[0].tablePath);
    });
@@ -79,6 +85,7 @@ source: daily is orders -> {
          {
             tableId: daily,
             kind: "materialized",
+            origin: "persist",
             outcome: "skipped",
             // The compiler's message stays in the logs: it names the
             // synthesized serve-shape sources.
@@ -104,6 +111,7 @@ source: daily is orders -> {
          {
             tableId: daily,
             kind: "materialized",
+            origin: "persist",
             outcome: "skipped",
             reason: "STALE",
          },
@@ -127,16 +135,16 @@ source: daily is orders -> {
          );
          expect(
             await harness.collectCounter("publisher_query_route_total", {
-               leg: "served",
+               leg: "materialized",
                outcome: "skipped",
                reason: "STALE",
             }),
          ).toBe(1);
          expect(
             await harness.collectCounter("publisher_query_route_total", {
-               leg: "served",
+               leg: "materialized",
                outcome: "skipped",
-               reason: "WARNED",
+               reason: "NOT_SERVED",
             }),
          ).toBe(0);
       } finally {
@@ -163,12 +171,51 @@ source: daily is orders -> {
          {
             tableId: daily,
             kind: "materialized",
+            origin: "persist",
             outcome: "skipped",
-            reason: "RUN_FAILED",
+            reason: "READ_FAILED",
          },
       ]);
       // The store's error (here a table path) is never on the wire.
       expect(JSON.stringify(path)).not.toContain("no_such_table");
+   });
+
+   // A binder error naming a catalog the destination does not hold is a
+   // misbinding, not a worker that lost its catalog (connection.ts confirms
+   // that against the instance, and only then answers live whatever the
+   // fallback): it keeps the binding's fallback.
+   it("keeps the fallback for a binder error naming a catalog the destination does not hold", async () => {
+      for (const freshnessFallback of [undefined, "fail" as const]) {
+         fixture.setBindings(
+            fixture.bindings.map((b) => {
+               const { freshnessFallback: _, ...rest } = b;
+               return {
+                  ...rest,
+                  tablePath: "lost_catalog.main.daily",
+                  ...(freshnessFallback ? { freshnessFallback } : {}),
+               };
+            }),
+         );
+         await expect(
+            fixture.runAsIs(
+               "run: daily -> { group_by: region; aggregate: t is total.sum() }",
+            ),
+         ).rejects.toThrow(/Catalog "lost_catalog" does not exist/);
+      }
+   });
+
+   it("still fails a missing table, not catalog, whose fallback does not allow live", async () => {
+      fixture.setBindings(
+         fixture.bindings.map((b) => {
+            const { freshnessFallback: _, ...rest } = b;
+            return { ...rest, tablePath: "lake.no_such_table" };
+         }),
+      );
+      await expect(
+         fixture.runAsIs(
+            "run: daily -> { group_by: region; aggregate: t is total.sum() }",
+         ),
+      ).rejects.toThrow();
    });
 
    it("reports nothing considered for a source with no table", async () => {

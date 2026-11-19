@@ -184,15 +184,22 @@ describe("collection routes refuse ?reload", () => {
          );
       });
 
-      it("refuses a malformed dropTables as a malformed boolean", async () => {
-         const res = await fetch(
-            `${baseUrl}/api/v0/environments/${MISSING_ENV}/packages/nope/materializations/m1?dropTables=1`,
-            { method: "DELETE" },
-         );
-         expect(res.status).toBe(400);
-         const json = (await res.json()) as { message: string };
-         expect(json.message).toContain(`Invalid dropTables value "1"`);
-         expect(json.message).toContain("Fix: DELETE ");
+      it("refuses a malformed dropTables with a fix that omits it", async () => {
+         // The malformed-boolean fix would suggest dropTables=true, which is
+         // refused too; an old client following it would loop.
+         for (const value of ["1", "yes"]) {
+            const path = `/api/v0/environments/${MISSING_ENV}/packages/nope/materializations/m1`;
+            const res = await fetch(`${baseUrl}${path}?dropTables=${value}`, {
+               method: "DELETE",
+            });
+            expect(res.status).toBe(400);
+            const json = (await res.json()) as { message: string };
+            expect(json.message).toBe(
+               `Invalid dropTables value "${value}": a materialization delete ` +
+                  `is record-only and takes no dropTables. Fix: DELETE ${path} ` +
+                  `(omit dropTables, or send dropTables=false).`,
+            );
+         }
       });
 
       it("accepts dropTables=false, which older clients send on every delete", async () => {

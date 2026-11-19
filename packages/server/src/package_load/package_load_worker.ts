@@ -94,26 +94,26 @@ import {
 } from "../utils";
 import { RpcWaitAccountant } from "./rpc_wait_accountant";
 import { acceptBundledExperimentalDialects } from "../service/experimental_dialects";
-import {
-   setEligibilityRefusalSink,
-   type EligibilityRefusalReason,
-} from "../materialization_metrics";
 import { logger } from "../logger";
+import { installProcessSafetyHandlers } from "../process_safety";
 import type { SynthesizedRuntimeFactory } from "../service/materialization";
-import { type InFlightAnswer, SchemaCache } from "./schema_cache";
+import {
+   DeferredForgets,
+   type InFlightAnswer,
+   SchemaCache,
+} from "./schema_cache";
 import { plainLogEntry } from "./worker_log";
 import { renderTagTargets } from "../service/render_tag_targets";
 import { governsAccess } from "../service/governance/ir/array_query";
 import { recordConnectionType } from "../service/connection_type";
+import type { EligibilityRefusals } from "../service/materialization/domain/package_plan";
 import {
    collectModelBuildPlan,
-   deriveBuildPlanOutcome,
+   derivePackagePlan,
    emptyBuildPlanParts,
-   finishBuildPlan,
+   finishPackagePlan,
    mergeBuildPlanParts,
    newCrossFileCompanions,
-   resolveConnectionDigests,
-   resolvePackageConnections,
    type BuildPlanParts,
    type CrossFileCompanions,
    type WirePackageMaterialization,
@@ -138,6 +138,7 @@ import type {
    SerializedNotebookCell,
    WorkerBuildPlan,
    WorkerLogMessage,
+   WorkerUnhandledRejectionMessage,
 } from "./protocol";
 import { PACKAGE_LOAD_PROTOCOL_VERSION } from "./protocol";
 
@@ -151,6 +152,16 @@ if (!parentPort) {
 acceptBundledExperimentalDialects();
 
 const port = parentPort;
+
+// An unhandled rejection in a worker would otherwise end the thread. The main
+// thread logs and counts it (see WorkerUnhandledRejectionMessage).
+installProcessSafetyHandlers((report) => {
+   const msg: WorkerUnhandledRejectionMessage = {
+      type: "unhandled-rejection",
+      ...report,
+   };
+   port.postMessage(msg);
+});
 
 // ──────────────────────────────────────────────────────────────────────
 // RPC plumbing for worker → main calls
@@ -218,17 +229,27 @@ const schemaCache = new SchemaCache<CachedSchema>(
    (workerData as { schemaCacheBytes?: number } | null)?.schemaCacheBytes ?? 0,
 );
 
+/** What other workers refetched, forgotten here between jobs. */
+const deferredForgets = new DeferredForgets(schemaCache);
+
+/**
+ * A refreshing load's refresh (see LoadPackageRequest.refreshTimestamp): its
+ * stamp, and the cache keys it has refetched so far. Each key is refetched
+ * once per load; later asks in the load share that fetch or its entry.
+ */
+interface SchemaRefresh {
+   timestamp: number;
+   refetched: Set<string>;
+}
+
 /** What a job carries while it runs in this worker (see runJob). */
 interface JobContext {
    jobId: string;
    packagePath: string;
-   refusals: Partial<Record<EligibilityRefusalReason, number>>;
 }
 
-/** The running job, carried across awaits so jobs' logs and refusals never mix. */
+/** The running job, carried across awaits so jobs' logs never mix. */
 const jobContext = new AsyncLocalStorage<JobContext>();
-
-setEligibilityRefusalSink(() => jobContext.getStore()?.refusals);
 
 // OpenTelemetry log export exists only on the main thread, so a job's log
 // entries are intercepted at `write` (where every call arrives as winston's
@@ -262,16 +283,19 @@ class ProxyConnection {
    private readonly jobId: string;
    /** Prefix of this connection's schema-cache keys. */
    private readonly cacheScope: string;
+   private readonly refresh: SchemaRefresh | undefined;
 
    constructor(
       metadata: ConnectionMetadata,
       jobId: string,
       environmentScope: string,
+      refresh?: SchemaRefresh,
    ) {
       this.name = metadata.name;
       this.dialectName = metadata.dialectName;
       this.digest = metadata.digest;
       this.jobId = jobId;
+      this.refresh = refresh;
       // The environment is in the key because a digest can be a configured
       // fingerprint, and two environments must never share what one can see.
       // The generation retires entries when the connection is replaced.
@@ -308,8 +332,13 @@ class ProxyConnection {
       const errors: Record<string, string> = {};
       const joined: [string, Promise<InFlightAnswer<CachedSchema>>][] = [];
       const missing: Record<string, string> = {};
+      const refetch: Record<string, string> = {};
       for (const [key, tablePath] of Object.entries(tables)) {
          const cacheKey = this.tableCacheKey(tablePath);
+         if (this.claimRefetch(cacheKey)) {
+            refetch[key] = tablePath;
+            continue;
+         }
          const hit = schemaCache.get(cacheKey);
          const pending =
             hit === undefined ? schemaCache.joinInFlight(cacheKey) : undefined;
@@ -321,19 +350,16 @@ class ProxyConnection {
             missing[key] = tablePath;
          }
       }
-      if (Object.keys(missing).length > 0) {
-         const request = this.fetchSchemaForTablesFromMain(missing, options);
-         for (const [key, tablePath] of Object.entries(missing)) {
-            schemaCache.trackInFlight(
-               this.tableCacheKey(tablePath),
-               request.then((r) => ({
-                  value: r.schemas[key],
-                  error: r.errors[key],
-               })),
-            );
-         }
-         const fetched = await request;
-         this.cacheTableSchemas(missing, fetched.schemas);
+      const fetches = [this.fetchAndCacheTables(missing, options)];
+      if (this.refresh && Object.keys(refetch).length > 0) {
+         fetches.push(
+            this.fetchAndCacheTables(refetch, {
+               ...options,
+               refreshTimestamp: this.refresh.timestamp,
+            }),
+         );
+      }
+      for (const fetched of await Promise.all(fetches)) {
          Object.assign(schemas, fetched.schemas);
          Object.assign(errors, fetched.errors);
       }
@@ -349,6 +375,47 @@ class ProxyConnection {
          }
       }
       return { schemas, errors };
+   }
+
+   /**
+    * Fetch `tables` through the main thread, recorded as under way so
+    * concurrent asks share the fetch, and cache what comes back.
+    */
+   private async fetchAndCacheTables(
+      tables: Record<string, string>,
+      options: FetchSchemaOptions,
+   ): Promise<{
+      schemas: Record<string, TableSourceDef>;
+      errors: Record<string, string>;
+   }> {
+      if (Object.keys(tables).length === 0) return { schemas: {}, errors: {} };
+      const request = this.fetchSchemaForTablesFromMain(tables, options);
+      for (const [key, tablePath] of Object.entries(tables)) {
+         schemaCache.trackInFlight(
+            this.tableCacheKey(tablePath),
+            request.then((r) => ({
+               value: r.schemas[key],
+               error: r.errors[key],
+            })),
+         );
+      }
+      const fetched = await request;
+      this.cacheTableSchemas(tables, fetched.schemas);
+      return fetched;
+   }
+
+   /**
+    * Whether a refreshing load must refetch `cacheKey`: true the first time
+    * the load asks for it, when its cached entry is dropped so the load's
+    * later asks wait on the refetch rather than read the old entry. Another
+    * fetch already under way is not joined, since it may answer from the
+    * main thread's cache.
+    */
+   private claimRefetch(cacheKey: string): boolean {
+      if (!this.refresh || this.refresh.refetched.has(cacheKey)) return false;
+      this.refresh.refetched.add(cacheKey);
+      schemaCache.forget(cacheKey);
+      return true;
    }
 
    private cacheTableSchemas(
@@ -414,9 +481,10 @@ class ProxyConnection {
          }
          return refreshed;
       }
-      const hit = schemaCache.get(cacheKey);
+      const refetch = this.claimRefetch(cacheKey);
+      const hit = refetch ? undefined : schemaCache.get(cacheKey);
       if (hit) return { structDef: hit as SQLSourceDef };
-      const pending = schemaCache.joinInFlight(cacheKey);
+      const pending = refetch ? undefined : schemaCache.joinInFlight(cacheKey);
       if (pending) {
          const answer = await pending;
          if (answer.value) {
@@ -425,7 +493,12 @@ class ProxyConnection {
          }
          return { error: answer.error ?? "No schema returned for the SQL" };
       }
-      const request = this.fetchSchemaForSQLStructFromMain(sentence, options);
+      const request = this.fetchSchemaForSQLStructFromMain(
+         sentence,
+         refetch && this.refresh
+            ? { ...options, refreshTimestamp: this.refresh.timestamp }
+            : options,
+      );
       schemaCache.trackInFlight(
          cacheKey,
          request.then((r) => ({ value: r.structDef, error: r.error })),
@@ -575,6 +648,7 @@ function buildWorkerMalloyConfig(
       LoadPackageRequest,
       "packagePath" | "requestId" | "defaultConnectionName" | "environmentName"
    >,
+   refresh?: SchemaRefresh,
 ): MalloyConfig {
    const proxies = new Map<string, ProxyConnection>();
    const inflight = new Map<string, Promise<ProxyConnection>>();
@@ -608,6 +682,7 @@ function buildWorkerMalloyConfig(
                         response.metadata,
                         job.requestId,
                         job.environmentName,
+                        refresh,
                      ),
                      response.metadata.connectionType,
                   );
@@ -969,7 +1044,7 @@ function sharedRuntimeForModel(
 
 /**
  * Per-load state for the work done on the main thread's behalf (build plan,
- * render-tag results, companions). Each model's share runs right after its
+ * render-tag results, entities). Each model's share runs right after its
  * compile, so no compiled model is held past it.
  */
 interface LoadContext {
@@ -1030,7 +1105,7 @@ async function compileMalloyModel(
       await extractCheckedModel(mm, compiled);
 
    const compileDurationMs = performance.now() - compileStart;
-   const { renderTagResults, renderTagResultsDigest, preaggregateCompanion } =
+   const { renderTagResults, renderTagResultsDigest } =
       await prepareForMainThread(job, malloyConfig, load, {
          modelPath,
          materializer: mm,
@@ -1072,11 +1147,9 @@ async function compileMalloyModel(
       ),
       compileDurationMs,
       problems: job.collectProblems ? compiled.problems : undefined,
-      authorizeWarnings:
-         warnings.length > 0 ? warnings.map((w) => w.message) : undefined,
+      gateWarnings: warnings.length > 0 ? warnings : undefined,
       renderTagResults,
       renderTagResultsDigest,
-      preaggregateCompanion,
       entities,
       governsAccess: governsAccess(modelDef),
    };
@@ -1164,11 +1237,10 @@ function digestRenderTagResults(
 
 /**
  * Do one compiled model's share of the main thread's work: render-tag
- * results, pre-aggregation companion, build-plan parts. Past the soft
- * deadline (checked before each target and the companion) the rest is left to
- * the main thread, so a slow package loads rather than hitting the job limit.
- * Plan parts are still collected after a companion that started in time,
- * since they need no recompile. Never throws: a failure fails at most the plan.
+ * results, then build-plan parts. Past the soft deadline (checked before each
+ * target and before the parts) the rest is left to the main thread, so a slow
+ * package loads rather than hitting the job limit. Never throws: a failure
+ * fails at most the plan.
  */
 async function prepareForMainThread(
    job: LoadPackageRequest,
@@ -1186,7 +1258,6 @@ async function prepareForMainThread(
 ): Promise<{
    renderTagResults?: { label: string; result?: Malloy.Result }[];
    renderTagResultsDigest?: string;
-   preaggregateCompanion?: { modelDef?: unknown };
 }> {
    if (load.failed) return {};
    const pastDeadline = (): boolean => performance.now() >= load.softDeadline;
@@ -1251,24 +1322,15 @@ async function prepareForMainThread(
       ),
       importBaseURL,
    });
-   // A v1 rollup is the rollup leg's (G4), so no composite companion is
-   // compiled: null ("no usable rollup") whenever the plan or the main
-   // thread would have asked for one, so the plan is still made here.
-   const companion: null | undefined =
-      (job.withPreaggregateCompanions || wantsPlan) &&
-      !load.failed &&
-      !pastDeadline()
-         ? null
-         : undefined;
-
    // Rechecked, since another model may have left the plan to the main
-   // thread meanwhile. The deadline is not rechecked: the parts need no
-   // recompile now, and abandoning them would make the main thread compile
-   // every model.
+   // thread meanwhile.
    if (wantsPlan && load.planLeftToMainThread) {
       wantsPlan = false;
    }
-   if (wantsPlan && companion !== undefined && !load.failed) {
+   if (wantsPlan && (load.failed || pastDeadline())) {
+      // The deadline passed while the render-tag results were prepared.
+      load.planLeftToMainThread = true;
+   } else if (wantsPlan) {
       load.planStart ??= performance.now();
       try {
          const parts = emptyBuildPlanParts();
@@ -1291,20 +1353,9 @@ async function prepareForMainThread(
             };
          }
       }
-   } else if (wantsPlan) {
-      // The deadline passed while the companion was being decided.
-      load.planLeftToMainThread = true;
    }
 
-   return {
-      renderTagResults,
-      renderTagResultsDigest,
-      // No composite companion is compiled any more (G4): `{}` says so.
-      preaggregateCompanion:
-         !job.withPreaggregateCompanions || companion === undefined
-            ? undefined
-            : {},
-   };
+   return { renderTagResults, renderTagResultsDigest };
 }
 
 async function compileNotebookModel(
@@ -1358,10 +1409,8 @@ async function compileNotebookModel(
       dataStyles: urlReader.getHackyAccumulatedDataStyles(),
       compileDurationMs: performance.now() - compileStart,
       problems: job.collectProblems ? compiled?.problems : undefined,
-      authorizeWarnings:
-         checked && checked.warnings.length > 0
-            ? checked.warnings.map((w) => w.message)
-            : undefined,
+      gateWarnings:
+         checked && checked.warnings.length > 0 ? checked.warnings : undefined,
       governsAccess: modelDef ? governsAccess(modelDef) : undefined,
    };
 }
@@ -1453,7 +1502,11 @@ async function loadPackage(
       job.packagePath,
       modelPaths,
    );
-   const malloyConfig = buildWorkerMalloyConfig(job);
+   const refresh: SchemaRefresh | undefined =
+      job.refreshTimestamp !== undefined
+         ? { timestamp: job.refreshTimestamp, refetched: new Set() }
+         : undefined;
+   const malloyConfig = buildWorkerMalloyConfig(job, refresh);
 
    const replacementMatchedExisting = job.replacement
       ? modelPaths.includes(job.replacement.modelPath)
@@ -1529,6 +1582,7 @@ async function loadPackage(
       packageMetadata,
       models,
       replacementMatchedExisting,
+      ...(refresh ? { refreshedSchemaKeys: [...refresh.refetched] } : {}),
       loadDurationMs: loadEnd - loadStart,
       timings: {
          // Clamped: rounding can nudge it slightly negative.
@@ -1562,10 +1616,8 @@ async function finishWorkerBuildPlan(
       return undefined;
    }
    const start = performance.now();
-   const refusals = (): Partial<Record<EligibilityRefusalReason, number>> => ({
-      ...(jobContext.getStore()?.refusals ?? {}),
-   });
-   const digestSkipped: string[] = [];
+   const eligibilityRefused: EligibilityRefusals = {};
+   let digestSkipped: string[] = [];
    try {
       if (load.planError) throw new Error(load.planError.message);
       const parts = emptyBuildPlanParts();
@@ -1575,32 +1627,21 @@ async function finishWorkerBuildPlan(
          if (!own) throw new Error(`Model ${modelPath} did not compile`);
          mergeBuildPlanParts(parts, own);
       }
-      const connections = await resolvePackageConnections(
-         {
-            getMalloyConnection: (name: string) =>
-               malloyConfig.connections.lookupConnection(name),
-         },
-         parts.builds.map((b) => b.connectionName),
-      );
-      const connectionDigests = await resolveConnectionDigests(
-         connections,
-         parts.builds,
-         (name) => digestSkipped.push(name),
-      );
-      const outcome = deriveBuildPlanOutcome(
-         finishBuildPlan(parts, {
-            connectionDigests,
-            connections,
-            versionScoped,
-         }),
-         materializationConfig,
-      );
+      const finished = await finishPackagePlan(parts, {
+         getMalloyConnection: (name: string) =>
+            malloyConfig.connections.lookupConnection(name),
+         versionScoped,
+      });
+      digestSkipped = finished.digestSkipped;
       return {
          ok: true,
-         outcome,
+         packagePlan: derivePackagePlan(
+            finished.compiled,
+            materializationConfig,
+            eligibilityRefused,
+         ),
          durationMs: performance.now() - (load.planStart ?? start),
          digestSkipped,
-         eligibilityRefused: refusals(),
       };
    } catch (error) {
       return {
@@ -1608,7 +1649,7 @@ async function finishWorkerBuildPlan(
          error: errMessage(error),
          durationMs: performance.now() - (load.planStart ?? start),
          digestSkipped,
-         eligibilityRefused: refusals(),
+         eligibilityRefused,
       };
    }
 }
@@ -1639,13 +1680,17 @@ port.on("message", (message: MainToWorkerMessage) => {
          port.postMessage(errMsg);
          return;
       }
-      inFlightJobs.add(message.requestId);
+      jobStarted(message.requestId);
       void runJob(message);
       return;
    }
    if (message.type === "compile-served-copy") {
-      inFlightJobs.add(message.requestId);
+      jobStarted(message.requestId);
       void runServedCopyJob(message);
+      return;
+   }
+   if (message.type === "forget-schemas") {
+      deferredForgets.forget(message.keys);
       return;
    }
    dispatchMainResponse(message);
@@ -1695,15 +1740,23 @@ async function runServedCopyJob(job: CompileServedCopyRequest): Promise<void> {
    const context: JobContext = {
       jobId: job.requestId,
       packagePath: job.packagePath,
-      refusals: {},
    };
    try {
       port.postMessage(
          await jobContext.run(context, () => compileServedCopy(job)),
       );
+   } catch (error) {
+      // Answer the job in-band rather than leave it waiting for the job timeout.
+      const result: CompileServedCopyResult = {
+         type: "compile-served-copy-result",
+         requestId: job.requestId,
+         protocolVersion: PACKAGE_LOAD_PROTOCOL_VERSION,
+         error: serializeError(error),
+         compileDurationMs: 0,
+      };
+      port.postMessage(result);
    } finally {
-      inFlightJobs.delete(job.requestId);
-      maybeExit();
+      jobEnded(job.requestId);
    }
 }
 
@@ -1711,7 +1764,6 @@ async function runJob(job: LoadPackageRequest): Promise<void> {
    const context: JobContext = {
       jobId: job.requestId,
       packagePath: job.packagePath,
-      refusals: {},
    };
    try {
       const result = await jobContext.run(context, () => loadPackage(job));
@@ -1724,9 +1776,19 @@ async function runJob(job: LoadPackageRequest): Promise<void> {
       };
       port.postMessage(errMsg);
    } finally {
-      inFlightJobs.delete(job.requestId);
-      maybeExit();
+      jobEnded(job.requestId);
    }
+}
+
+function jobStarted(jobId: string): void {
+   inFlightJobs.add(jobId);
+   deferredForgets.jobStarted(jobId);
+}
+
+function jobEnded(jobId: string): void {
+   inFlightJobs.delete(jobId);
+   deferredForgets.jobEnded(jobId);
+   maybeExit();
 }
 
 function maybeExit(): void {

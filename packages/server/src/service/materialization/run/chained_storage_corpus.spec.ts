@@ -56,7 +56,7 @@ import { declaredStorage } from "../plan/persist_source_fields";
 import { reachPersisted } from "../text/source_map";
 import { authorModelLiftContext } from "../text/author_model";
 import type { ManifestEntry } from "../domain/types";
-import { chainedPlanFacts } from "./materialization_run_support";
+import { chainedPlanFacts } from "./build_upstreams";
 import { StorageBuildStrategy } from "./storage_build_strategy";
 
 const GOLDEN = path.join(__dirname, "chained_storage_corpus.golden.json");

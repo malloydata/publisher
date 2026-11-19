@@ -3,7 +3,7 @@
 
 /**
  * The storage tier's half of the mixed-fleet guarantee
- * (`run/v1_mixed_fleet_manifest.spec.ts` pins the colocated half): during the
+ * (`run/v1_mixed_fleet_manifest.spec.ts` pins the database half): during the
  * rollout of the v1 cutover's retirement (6g), an older worker built a v1
  * `#@ preaggregate storage=` rollup as `__preagg__`, and this one builds it as
  * `__rollup__`, at another address. Handed the older worker's storage entry,
@@ -83,7 +83,7 @@ async function bindStored(
    fixture: Fixture,
    entries: Record<string, Record<string, unknown>>,
 ) {
-   fixture.pkg.materialization().bind({ colocated: {} });
+   fixture.pkg.materialization().bind({ database: {} });
    fixture.pkg.materialization().bind({ storage: entries as never });
    for (const modelPath of fixture.pkg.getModelPaths()) {
       await fixture.pkg.getModel(modelPath)?.prepareServedCopy();

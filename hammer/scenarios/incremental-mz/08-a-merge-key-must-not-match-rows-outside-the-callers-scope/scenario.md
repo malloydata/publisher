@@ -28,8 +28,8 @@ tenant's refresh overwrites another tenant's stored rows.
 
 The rule is that a refresh may only write rows the author's filter admits.
 
-Colocated on purpose (`#@ persist` with no `storage=`). The colocated gate has
-never refused a given reference, and incremental runs on colocated tables, so this
+Database on purpose (`#@ persist` with no `storage=`). The database gate has
+never refused a given reference, and incremental runs on database tables, so this
 combination needs nothing from the storage tier to be reachable.
 
 ## Publisher

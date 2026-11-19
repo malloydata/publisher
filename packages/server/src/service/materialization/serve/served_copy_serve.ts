@@ -9,18 +9,20 @@
  * It reads a source's own table, `#(materialize)` or v1 `#@ persist`
  * (never a rollup's or a persisted view's): a `storage=` table only while
  * the host has storage destinations to serve from
- * (`PERSIST_STORAGE_MODE=on`), a colocated one always.
+ * (`PERSIST_STORAGE_MODE=on`), a database one always.
  *
  * The served copy compiles in a runtime whose connections are the package's
  * own plus each storage destination under a per-process alias
  * (served_copy_config.ts), so the author's text never names a destination. A
- * colocated table (`deriveColocatedServeBindings`, bind.ts) is read through
+ * database table (`deriveDatabaseServeBindings`, bind.ts) is read through
  * the source's own connection, which the package's connections already hold,
- * so a copy of colocated tables alone needs no storage tier.
+ * so a copy of database tables alone needs no storage tier.
  * A compile failure leaves the model's sources answering live and is
  * reported as a coded package warning.
  */
 
+import { isDuckLakeCatalogUnavailable } from "../../ducklake_catalog_unavailable";
+import { CompiledCopyLanes } from "./served_copy_lanes";
 import { createHash } from "crypto";
 import { requireUnique, verdictOf } from "../domain/key_check";
 import {
@@ -77,13 +79,7 @@ import {
    storedColumnReadPlan,
    storedTypeServesAs,
 } from "../stored_column_types";
-import { annotatedJoinedOutput } from "../../governance/ir/joined_field_output";
 import {
-   joinGrainAggregatePaths,
-   queryFieldUsagePaths,
-   queryTimezones,
-   structRefName,
-   type PreparedQueryView,
    readPreparedQuery,
    resolveStructRefSource,
 } from "../../governance/ir/prepared_query";
@@ -97,8 +93,6 @@ import {
    type FlatPair,
 } from "../../governance/ir/pair_flat_query";
 import {
-   boundTablePath,
-   sqlReadsTable,
    sqlTableReads,
    tablesReadForGates,
    buildVirtualMap,
@@ -109,7 +103,7 @@ import {
    bindingServesModelSource,
    deriveServeBindings,
    EMPTY_SNAPSHOT,
-   isColocated,
+   isDatabase,
    pin,
    type Pinned,
    type Snapshot,
@@ -142,8 +136,11 @@ import {
    type TraceMode,
 } from "./served_copy_containment";
 import { logger } from "../../../logger";
-import { lexAll, offsetOf } from "../text/malloy_lexer";
-import { confirmedAncestors, keptAncestorChain } from "../text/kept_ancestors";
+import { offsetOf } from "../text/malloy_lexer";
+import {
+   confirmedAncestors,
+   keptAncestorChainOrDeclared,
+} from "../text/kept_ancestors";
 import { classificationFindingsBySource } from "../../classification_findings";
 import {
    readSourceClassifications,
@@ -157,18 +154,37 @@ import {
 } from "../text/cross_connection_text";
 import type { LeftOutDefinition } from "../text/definition_cut";
 import { LegDecline, type ServedCopyDeclineCode } from "../domain/leg_decline";
-import type { ServedCopyProblemReason } from "../domain/source_decline";
 import { compiledImports, compiledTextReader } from "../../../utils";
+import type {
+   AnswerAttempt,
+   Compiled,
+   ServedCopyProblem,
+   VirtualMap,
+} from "./served_copy_types";
+import {
+   chainZoneOf,
+   checkGateColumnsKept,
+   checkOptOut,
+   checkRecordJoins,
+   checkSourceZone,
+   checkZonedColumns,
+   inlineBaseZoneOf,
+   readsInAnotherZone,
+   readsRerootedTables,
+   readZonesOf,
+   recordJoinsRead,
+   ZONED_TRUNCATION_REASON,
+} from "./served_copy_checks";
 
-type VirtualMap = Map<string, Map<string, string>>;
+export type { ServedCopyProblem } from "./served_copy_types";
 
 /**
  * The connection a binding's table is read through in the served copy: a
- * storage destination under its server-only alias, a colocated table on the
+ * storage destination under its server-only alias, a database table on the
  * source's own connection, which the package's connections already hold.
  */
 function servedConnectionOf(b: Binding): string {
-   return isColocated(b)
+   return isDatabase(b)
       ? b.destinationName
       : servedCopyAlias(b.destinationName);
 }
@@ -176,17 +192,9 @@ function servedConnectionOf(b: Binding): string {
 /** Nothing bound, pinned: what a copy reads with no host tables. */
 const NOTHING_PINNED = pin(EMPTY_SNAPSHOT, new Date(0));
 
-/** No storage destination: a served copy of colocated tables alone. */
+/** No storage destination: a served copy of database tables alone. */
 const NO_DESTINATIONS = (): MalloyConfig =>
    new MalloyConfig({ connections: {} });
-
-/** The caller's detail for a join-grain aggregate through an inlined join. */
-const JOIN_GRAIN_DETAIL =
-   "The query aggregates at the grain of a join whose fields this table stores inline (a measure of the joined source, or an aggregate such as j.x.sum() or j.count()), which only the join computes, so it is answered live.";
-
-/** The caller's detail for a query that returns an annotated field of an inlined join. */
-const JOINED_ANNOTATIONS_DETAIL =
-   "The query returns a field of a join whose fields this table stores inline, and the field carries annotations (a #(doc), a #(classification), a render tag) that the stored copy cannot attach to it, so it is answered live.";
 
 /** The caller's detail for a query that reads two blocks of a pair table, or one it cannot place. */
 const PAIR_BLOCKS_DETAIL =
@@ -246,14 +254,6 @@ function readsMissingName(
    });
 }
 
-/** Why a query reading a timestamp truncation in a zone it was not built in is declined. */
-const ZONED_TRUNCATION_REASON =
-   "the query reads a timestamp truncation stored in another zone than the one it reads it in";
-
-/** Why a query reading a zone-dependent column in a zone it was not built in is declined. */
-const ZONED_COLUMN_REASON =
-   "the query reads a value stored in another time zone than the one it reads it in (a computed dimension or a timestamp truncation)";
-
 /** Malloy's codes for a compile that reads a field the model does not have. */
 const MISSING_FIELD_CODES: ReadonlySet<string> = new Set([
    "field-not-found",
@@ -263,48 +263,13 @@ const MISSING_FIELD_CODES: ReadonlySet<string> = new Set([
 /** The code on a package warning for a served copy that did not compile or re-root. */
 export const SERVED_COPY_WARNING_CODE = "served-copy-not-served";
 
-/** Why a model's served copy, or one source in it, is not served. */
-export interface ServedCopyProblem {
-   /**
-    * The left-out source's identity, when the problem is one source's: what a
-    * caller keys on (the keying rule), never its name.
-    */
-   sourceID?: string;
-   /** The source, when the problem is one source's. */
-   sourceName?: string;
-   reason: ServedCopyProblemReason;
-   /**
-    * For `cross_connection_join`: the join the served copy leaves out, because
-    * it reads a source on another connection than the destination its source
-    * is stored in. For `inline_join_kept`: the inlined join_one the served
-    * copy keeps as written, because the copy did not compile with the record
-    * of stored columns in its place (`detail` says why).
-    */
-   join?: string;
-   /**
-    * For `classification_not_kept`: the served copy's `#(carries)` leaks on
-    * the source, in the words the load would refuse it with, and its
-    * classification-coverage findings, which the compile of record does not
-    * have.
-    */
-   leaks?: string[];
-   coverage?: string[];
-   /** The compiler's message, for logs and the package warning only. */
-   detail?: string;
-   /**
-    * For `definition_not_parsed`: the columns the source's kept
-    * `include { … }` hides that its stored table does not hold.
-    */
-   hiddenUnstored?: string[];
-}
-
 /** What the served copy reads from the model that owns it. */
 interface ServedCopyHost {
    modelPath(): string;
    modelDef(): unknown;
    /**
     * The storage destinations, while the storage tier serves
-    * (`PERSIST_STORAGE_MODE=on`); undefined otherwise, when only colocated
+    * (`PERSIST_STORAGE_MODE=on`); undefined otherwise, when only database
     * tables are read.
     */
    serveDestinationConfig(): (() => MalloyConfig) | undefined;
@@ -358,150 +323,6 @@ interface ServedCopyHost {
    }): Promise<Awaited<ReturnType<CopyLoad>> | undefined>;
 }
 
-interface Compiled {
-   key: string;
-   /** The invalidation generation it was compiled under. */
-   generation: number;
-   /**
-    * The bindings it was compiled over: those it may read at the pin, by
-    * identity. A pin whose bindings differ only in what the compile does not
-    * read ({@link compileInputOf}) reuses it, rebound to those bindings.
-    */
-   over: readonly Binding[];
-   /**
-    * The block every multi-path pair table is read for in this copy (see
-    * {@link ServedCopyServe.ensureCompiled}); 0 for the copy compiled at bind.
-    */
-   lane: number;
-   materializer?: ModelMaterializer;
-   /** The served copy's compiled model, read (never edited) for source chains. */
-   modelDef?: unknown;
-   /** Whether any source in {@link modelDef} names a row-level gate; read once. */
-   hasRowLevelGates?: boolean;
-   /** The runtime it compiled in: a row-level graft reloads through it (R3). */
-   runtime?: GraftRuntime;
-   /** The `sourceID`s of sources that opt out with `#@ -persist`. */
-   optOutIDs?: ReadonlySet<string>;
-   /**
-    * The `sourceID`s of sources whose surface in the served copy has a
-    * `#(carries)` leak or an unclassified field that the compile of record
-    * does not: the served copy never answers a query on one.
-    */
-   unsafeIDs?: ReadonlySet<string>;
-   /** Bindings actually re-rooted, with their destination under its alias. */
-   rerooted: Binding[];
-   /**
-    * Extensions of a re-rooted source left as written, which read their
-    * base's table by name: each with its chain of ancestor `sourceID`s and the
-    * base its text names (see `readsRerootedBase`).
-    */
-   throughBase?: readonly {
-      sourceID: string;
-      sourceName: string;
-      chain: readonly string[];
-      baseName?: string;
-   }[];
-   /**
-    * Tables that store a computed dimension (`#(materialize)`) whose value
-    * may depend on the time zone, by table path: one of the source's own the
-    * probe compiler did not clear (P9), or an inlined join's or pair table's
-    * child column; or whose rows the probe did not clear (a `where:` with a
-    * timestamp literal). The build evaluated it in the default timezone, so a
-    * query that sets its own `timezone:` would read values live computes
-    * differently.
-    */
-   computedTables?: ReadonlySet<string>;
-   /**
-    * Each re-root's zone-dependent stored columns, by its `sourceID` (two
-    * sources can share one content-addressed table): a computed dimension
-    * the probe compiler did not clear of the zone, and a restated timestamp
-    * truncation, each built in the re-root's zone and read in the query's
-    * (`checkZonedColumns`).
-    */
-   zonedColumns?: ReadonlyMap<string, ReadonlySet<string>>;
-   /**
-    * The zone each re-root's table was built in, by its `sourceID`: its own
-    * or one it inherits, read from the author's model ({@link chainZoneOf}).
-    */
-   builtZones?: ReadonlyMap<string, string | undefined>;
-   /** The author's model, whose sources keep the zones they inherit. */
-   authorModelDef?: unknown;
-   /**
-    * Each re-root's timestamp truncations left out because they were stored
-    * in another zone than any read's (`zonedTruncations`), by its
-    * `sourceID`, so a query that reads one is declined with that reason.
-    */
-   zonedLeftOut?: ReadonlyMap<string, ReadonlySet<string>>;
-   /**
-    * The join_ones each table answers from stored columns (an inlined join,
-    * {@link InlinedJoin}), by table path, each with the joined fields the
-    * author annotated: a query that aggregates at one's grain is declined
-    * (`count_semantics`), and so is one that returns an annotated field as a
-    * column (`joined_annotations`), whose notes a record cannot carry.
-    */
-   inlinedJoins?: ReadonlyMap<string, ReadonlyMap<string, ReadonlySet<string>>>;
-   /**
-    * The tables whose re-root leaves stored columns out of its `type:`
-    * (`columnsLeftOut`: a column no cast reads as its declared type, a
-    * big-integer column no native cast reads exactly, an undeclarable one),
-    * by table path. A query naming one fails to compile and answers live;
-    * a wildcard (`select: *`) expands without it, so a query reading one of
-    * these tables is checked against the author's compile of it.
-    */
-   leftOutTables?: ReadonlySet<string>;
-   /** The columns each re-root leaves out, by its `sourceID`. */
-   leftOutColumns?: ReadonlyMap<string, readonly string[]>;
-   aliased: Binding[];
-   problems: ServedCopyProblem[];
-   /**
-    * Queries this compiled copy declined for their shape (they read no
-    * re-rooted table, or read an opted-out source), by query text, with the
-    * reason. Neither depends on the givens or the clock, only on the query and
-    * this compile, so a repeat is declined without compiling it again
-    * (decision 6). Dropped with the compile: a rebind or reload starts empty.
-    */
-   declined?: Map<string, LegDecline>;
-   /**
-    * The pair tables (inlined join_many, P5) the copy reads flat: a query that
-    * reads one is checked against it (governance/ir/pair_flat_query.ts).
-    */
-   pairs?: readonly {
-      sourceID: string;
-      tablePath: string;
-      pair: FlatPair;
-      /**
-       * For a table of several inlined paths: every block's path, by block
-       * number, which a query is read against to pick the block it reads.
-       */
-      blocks?: readonly { join: string; hops?: readonly string[] }[];
-      /**
-       * The joined source's fields that carry annotations, which the record
-       * cannot: a query that returns one as a column is declined
-       * (`joined_annotations`), as for an inlined join_one.
-       */
-      annotatedChildFields: ReadonlySet<string>;
-   }[];
-   /**
-    * What the row-level gates on a pair source's entry point read of its
-    * inlined path, by path, entry point and gate text: they are grafted on
-    * the copy after the query is checked, so the check reads them itself.
-    */
-   pairGatesRead?: Map<string, Promise<{ level: number; fansOut: boolean }>>;
-   /**
-    * Definitions left out because a join they read crosses connections in the
-    * served copy (question 11): a query that reads one skips the served copy
-    * with reason `cross_connection`.
-    */
-   leftOut?: readonly LeftOutDefinition[];
-   /**
-    * The overlay the copy compiled from (the re-rooted files, by overlay
-    * key) and the connections it compiled with: the join-to-rollup branch
-    * compiles a variant over the same files (see {@link ServedCopyServe.joinRollupBasis}).
-    */
-   files?: ReadonlyMap<string, string>;
-   config?: ModelConnectionInput;
-}
-
 /**
  * A re-root with the author's declaration it was made from: the guards compare
  * the served copy's compile of it against this definition, which is the
@@ -512,14 +333,14 @@ type AuthorReroot = Reroot & {
    authorDef: unknown;
    /**
     * For a `#(materialize)` re-root: its rows depend on the zone it was built
-    * in, which the probe compiler did not clear (P9): a `where:` term or base
+    * in, which the probe compiler did not clear: a `where:` term or base
     * relation whose SQL moves with the zone. Any read in another zone is
     * declined.
     */
    zonedRows?: true;
    /**
     * For a `#(materialize)` re-root: the stored computed dimensions the probe
-    * compiler did not clear of the zone (P9), each as the build evaluated it
+    * compiler did not clear of the zone, each as the build evaluated it
     * in the re-root's zone. Only a read of one in another zone is declined.
     */
    zonedDimensions?: string[];
@@ -536,7 +357,7 @@ type AuthorReroot = Reroot & {
     * one fails to compile here and answers live; their absence is not a lost
     * field. For a v1 re-root, the columns no cast reads as their declared
     * type; on any re-root, the big-integer columns no native cast reads
-    * exactly (known limitation 12: one stored as a float, a warehouse whose
+    * exactly (one stored as a float, a warehouse whose
     * bigint type Malloy does not read back as one).
     */
    columnsLeftOut?: readonly string[];
@@ -609,72 +430,6 @@ function rerootFailureKey(
    return `${packagePath}\0${modelPath}\0${hash.digest("hex")}`;
 }
 
-/**
- * What a served copy's compile reads of a binding: everything but how fresh
- * the table is (`freshAsOf`, its window and fallback, which decide only
- * whether the pin reads it) and what the router reads of it beside the copy
- * (`ownGateKept`, a rollup's key check). A field added to `Binding` is read
- * here until it is listed, so a new input recompiles rather than reuses.
- * Memoized per binding, which is replaced, never edited.
- */
-const compileInputs = new WeakMap<Binding, string>();
-export function compileInputOf(b: Binding): string {
-   let input = compileInputs.get(b);
-   if (input === undefined) {
-      const {
-         freshAsOf: _freshAsOf,
-         freshnessWindowSeconds: _window,
-         freshnessFallback: _fallback,
-         ownGateKept: _gateKept,
-         rollupKey: _rollupKey,
-         ...read
-      } = b;
-      input = JSON.stringify(read);
-      compileInputs.set(b, input);
-   }
-   return input;
-}
-
-/** The compile key of the bindings a copy is compiled over, in any order. */
-function compileKeyOf(bindings: readonly Binding[]): string {
-   return bindings.map(compileInputOf).sort().join("\u0000");
-}
-
-/** Whether two binding lists are the same bindings, by identity, in order. */
-function sameBindings(a: readonly Binding[], b: readonly Binding[]): boolean {
-   return a.length === b.length && a.every((x, i) => x === b[i]);
-}
-
-/**
- * `compiled` answering for `bindings`, whose compile key is its own: the same
- * compile, with each binding it reports (re-rooted, aliased) replaced by the
- * one of `bindings` that reads alike, so an answer reports the pin's
- * freshness, never the compile's. Undefined when two of `bindings` read
- * alike, since which is which cannot be told.
- */
-function reboundTo(
-   compiled: Compiled,
-   bindings: readonly Binding[],
-): Compiled | undefined {
-   const byInput = new Map<string, Binding>();
-   for (const b of bindings) {
-      const input = compileInputOf(b);
-      if (byInput.has(input)) return undefined;
-      byInput.set(input, b);
-   }
-   const now = (b: Binding): Binding => byInput.get(compileInputOf(b)) ?? b;
-   const rerooted = compiled.rerooted.map(now);
-   return {
-      ...compiled,
-      over: bindings,
-      rerooted,
-      aliased: rerooted.map((b, i) => ({
-         ...b,
-         destinationName: compiled.aliased[i].destinationName,
-      })),
-   };
-}
-
 /** One model's served copy. */
 export class ServedCopyServe {
    private packagePath?: string;
@@ -682,25 +437,11 @@ export class ServedCopyServe {
    private materializePlans: Readonly<Record<string, MaterializePlan>> = {};
    /** A declaration's definition from the package model that holds it. */
    private declarationOf?: (sourceID: string) => unknown;
-   /**
-    * The compiled copy for each block a multi-path pair table is read for
-    * (lane 0, compiled at bind, reads every table's first block; another is
-    * compiled the first time a query reads that block).
-    */
-   private compiledLanes = new Map<number, Compiled>();
-   private inFlightLanes = new Map<
-      number,
-      {
-         key: string;
-         generation: number;
-         promise: Promise<Compiled>;
-      }
-   >();
-   /** Bumped on every invalidation, so a compile started before it is never kept. */
-   private generation = 0;
-   /** Requests for a compiled copy so far, and the latest whose copy each lane keeps. */
-   private turns = 0;
-   private keptTurn = new Map<number, number>();
+   /** The compiled copy per pair-table block, and the compiles in flight. */
+   private readonly lanes = new CompiledCopyLanes<Compiled>(
+      (key, generation, bindings, lane, asOfMs) =>
+         this.compile(key, generation, bindings, lane, asOfMs),
+   );
 
    constructor(private readonly host: ServedCopyHost) {}
 
@@ -735,7 +476,7 @@ export class ServedCopyServe {
 
    /**
     * Whether any binding of `snapshot` could re-root a source (before
-    * compiling): a colocated table, or a storage table while the storage
+    * compiling): a database table, or a storage table while the storage
     * tier serves.
     */
    hasBindings(snapshot: Snapshot = this.current().snapshot): boolean {
@@ -746,11 +487,11 @@ export class ServedCopyServe {
     * Whether the served copy may read a binding: a source's own table (never
     * a rollup's or a persisted view's); a storage table only while the host
     * has storage destinations to serve from (`PERSIST_STORAGE_MODE=on`); a
-    * colocated table always, on its own connection.
+    * database table always, on its own connection.
     */
    private usable(b: Binding): boolean {
       if (b.kind !== "persist" && b.kind !== "materialize") return false;
-      return isColocated(b) || !!this.host.serveDestinationConfig();
+      return isDatabase(b) || !!this.host.serveDestinationConfig();
    }
 
    /** The host's tables, pinned now, for a caller outside a query. */
@@ -760,9 +501,7 @@ export class ServedCopyServe {
 
    /** Drop the compiled copy (bindings, destinations or the model changed). */
    invalidate(): void {
-      this.generation++;
-      this.compiledLanes.clear();
-      this.inFlightLanes.clear();
+      this.lanes.invalidate();
    }
 
    /**
@@ -771,7 +510,7 @@ export class ServedCopyServe {
     * first compile.
     */
    rerootedSourceIDs(): ReadonlySet<string> | undefined {
-      const compiled = this.compiledLanes.get(0);
+      const compiled = this.lanes.kept(0);
       if (!compiled) return undefined;
       return new Set(compiled.rerooted.flatMap((b) => b.sourceIDs ?? []));
    }
@@ -784,7 +523,7 @@ export class ServedCopyServe {
     * load-time checks flag: those are declined at query time.
     */
    servedThroughBaseSourceIDs(): ReadonlySet<string> {
-      const compiled = this.compiledLanes.get(0);
+      const compiled = this.lanes.kept(0);
       if (!compiled?.throughBase) return new Set();
       const ids = new Set(compiled.rerooted.flatMap((b) => b.sourceIDs ?? []));
       const names = new Set(compiled.rerooted.map((b) => b.sourceName));
@@ -809,7 +548,7 @@ export class ServedCopyServe {
     * ({@link gateCannotGraft}): their queries are declined and answered live.
     */
    gateDeclinedSourceIDs(): ReadonlySet<string> {
-      const compiled = this.compiledLanes.get(0);
+      const compiled = this.lanes.kept(0);
       const out = new Set<string>();
       if (!compiled || !this.mayHaveRowLevelGates(compiled)) return out;
       for (const b of compiled.rerooted) {
@@ -861,7 +600,7 @@ export class ServedCopyServe {
 
    /** Why the last compile left sources unserved; empty before the first. */
    problems(): readonly ServedCopyProblem[] {
-      return this.compiledLanes.get(0)?.problems ?? [];
+      return this.lanes.kept(0)?.problems ?? [];
    }
 
    /** The served copy's compiled model, compiling it first; for reading only. */
@@ -897,7 +636,7 @@ export class ServedCopyServe {
       gateTablesRead: Binding[];
       /**
        * The served copy's compiled model, where a row-level gate is grafted
-       * when this answer runs (R3): the gate's text is the author's, kept in
+       * when this answer runs: the gate's text is the author's, kept in
        * the copy, so the graft and its proofs read the same compile that runs.
        */
       graftScope: GraftScope;
@@ -941,14 +680,18 @@ export class ServedCopyServe {
          reason: string,
          code: ServedCopyDeclineCode,
          callerDetail?: string,
+         tableIds?: readonly string[],
       ): never => {
          const memo = (compiled.declined ??= new Map());
          if (memo.size >= DECLINED_LIMIT) memo.clear();
-         const error = new LegDecline(code, callerDetail, { message: reason });
+         const error = new LegDecline(code, callerDetail, {
+            message: reason,
+            ...(tableIds ? { tableIds } : {}),
+         });
          memo.set(queryString, error);
          throw error;
       };
-      // A query through a join left out across connections (question 11)
+      // A query through a join left out across connections
       // fails to compile for the field it reads: declined as
       // `cross_connection`, which depends only on the query and this compile.
       const compiling = async <T>(work: () => Promise<T>): Promise<T> => {
@@ -969,6 +712,46 @@ export class ServedCopyServe {
             );
             if (zoned.size > 0 && readsMissingName(zoned, error, queryString)) {
                decline(ZONED_TRUNCATION_REASON, "served_copy_time_zone");
+            }
+            // A stored column the re-root leaves out of its table's type (no
+            // cast reads what the table holds as the source declares it: the
+            // table altered outside a build, or the source retyped since).
+            const storedLeftOut = new Set(
+               [...(compiled.leftOutColumns?.values() ?? [])].flatMap((n) => [
+                  ...n,
+               ]),
+            );
+            if (
+               storedLeftOut.size > 0 &&
+               readsMissingName(storedLeftOut, error, queryString)
+            ) {
+               // The names the compile could not find, where it says.
+               const missing = new Set(
+                  [
+                     ...String(
+                        error instanceof Error ? error.message : error,
+                     ).matchAll(/'([^']+)' is not defined/g),
+                  ].map((m) => m[1]),
+               );
+               const read = [...storedLeftOut].filter((n) => missing.has(n));
+               const named = read.length > 0 ? read : [...storedLeftOut];
+               // The tables whose re-root leaves one of those columns out.
+               const sourceIDs = new Set(
+                  [...(compiled.leftOutColumns ?? [])]
+                     .filter(([, names]) =>
+                        names.some((n) => named.includes(n)),
+                     )
+                     .map(([sourceID]) => sourceID),
+               );
+               const tableIds = compiled.aliased
+                  .filter((b) => b.sourceIDs?.some((id) => sourceIDs.has(id)))
+                  .map((b) => b.virtualHandle);
+               decline(
+                  "the query reads a stored column the served copy leaves out of its table's type",
+                  "served_copy_column_left_out",
+                  `the stored table cannot answer with live's columns: no cast reads ${named.map((c) => `column \`${c}\``).join(", ")} as declared`,
+                  tableIds,
+               );
             }
             throw error;
          }
@@ -1015,6 +798,7 @@ export class ServedCopyServe {
       await this.checkGateGraft(attempt);
       await checkOptOut(attempt);
       const { sql, tablesRead } = await readsRerootedTables(attempt);
+      await checkGateColumnsKept(attempt, tablesRead);
       await checkSourceZone(attempt);
       await this.checkResultShape(attempt, tablesRead);
       const pairsRead = await pairsReadPerTable(
@@ -1174,8 +958,8 @@ export class ServedCopyServe {
    }
 
    /**
-    * What the join-to-rollup branch (A7) builds on to answer a query in a
-    * storage destination (known limitation 26): the copy's re-rooted files
+    * What the join-to-rollup branch builds on to answer a query in a
+    * storage destination: the copy's re-rooted files
     * and connections, over which it compiles the query's source with one
     * join re-pointed at a joined source's rollup in the same destination,
     * and the checks this copy runs on a query it answers, for the tables
@@ -1336,92 +1120,17 @@ export class ServedCopyServe {
    }
 
    /**
-    * The compiled copy for `lane`: every pair table that stores several
-    * inlined paths is read for its block of that number (its last, past its
-    * own count), the rest of the copy as at lane 0. Lane 0 is the copy a
-    * query is first compiled in; another is compiled only when a query reads
-    * that block, and kept like lane 0 until the next invalidation.
+    * The compiled copy for `lane` ({@link CompiledCopyLanes.ensure}): every
+    * pair table that stores several inlined paths is read for its block of
+    * that number (its last, past its own count), the rest of the copy as at
+    * lane 0.
     */
-   private async ensureCompiled(pinned: Pinned, lane = 0): Promise<Compiled> {
-      // Each request's turn: a compile an older request awaited never
-      // replaces the copy a newer one kept.
-      const turn = ++this.turns;
-      const keep = (compiled: Compiled): void => {
-         if ((this.keptTurn.get(lane) ?? 0) > turn) return;
-         this.keptTurn.set(lane, turn);
-         this.compiledLanes.set(lane, compiled);
-      };
-      const bindings = this.freshBindings(pinned);
-      const generation = this.generation;
-      const current = this.compiledLanes.get(lane);
-      // The same bindings as the copy compiled over, by identity: no key to
-      // read (a query's usual case).
-      if (
-         current &&
-         current.generation === generation &&
-         sameBindings(current.over, bindings)
-      ) {
-         // Kept again under this turn: an older request still compiling
-         // must not replace the copy this one answered from.
-         keep(current);
-         return current;
-      }
-      const key = compileKeyOf(bindings);
-      if (current && current.key === key && current.generation === generation) {
-         const reused = reboundTo(current, bindings);
-         if (reused) {
-            keep(reused);
-            return reused;
-         }
-      }
-      let inFlight = this.inFlightLanes.get(lane);
-      if (
-         !inFlight ||
-         inFlight.key !== key ||
-         inFlight.generation !== generation
-      ) {
-         const started = {
-            key,
-            generation,
-            promise: this.compile(
-               key,
-               generation,
-               bindings,
-               lane,
-               pinned.asOf.getTime(),
-            ),
-         };
-         this.inFlightLanes.set(lane, started);
-         void started.promise.finally(() => {
-            if (this.inFlightLanes.get(lane) === started) {
-               this.inFlightLanes.delete(lane);
-            }
-         });
-         inFlight = started;
-      }
-      const awaited = await inFlight.promise;
-      // A compile this pin joined over bindings that differ only in what the
-      // compile does not read answers with this pin's bindings.
-      const rebound = sameBindings(awaited.over, bindings)
-         ? awaited
-         : reboundTo(awaited, bindings);
-      // Two of this pin's bindings read alike, so which is which cannot be
-      // told: compile over them as they are.
-      const compiled =
-         rebound ??
-         (await this.compile(
-            key,
-            generation,
-            bindings,
-            lane,
-            pinned.asOf.getTime(),
-         ));
-      // An invalidation while it compiled makes it stale: keep it only when
-      // it is still the current generation's. A copy over another snapshot
-      // is kept too, unless a later request kept its own: the latest
-      // request's copy is what the warnings report.
-      if (compiled.generation === this.generation) keep(compiled);
-      return compiled;
+   private ensureCompiled(pinned: Pinned, lane = 0): Promise<Compiled> {
+      return this.lanes.ensure(
+         this.freshBindings(pinned),
+         lane,
+         pinned.asOf.getTime(),
+      );
    }
 
    /**
@@ -1513,7 +1222,7 @@ export class ServedCopyServe {
          columns,
          def,
          fieldsByName,
-         chainZoneOf(map, def),
+         chainZoneOf(map, def) ?? inlineBaseZoneOf(def),
       );
       if (zoned.leftOut.length > 0) {
          // Left out like any column no read gives exactly, with its own
@@ -1611,7 +1320,7 @@ export class ServedCopyServe {
          ...(inlinedJoins.length > 0 ? { inlinedJoins } : {}),
          ...(columnsLeftOut.length > 0 ? { columnsLeftOut } : {}),
          // An `except:` naming a column the table does not store has nothing
-         // to exclude on any re-root, v1 or `#(materialize)` (P2-29).
+         // to exclude on any re-root, v1 or `#(materialize)`.
          dropsUnstoredExcepts: true as const,
          ...(!plan
             ? {
@@ -1640,7 +1349,7 @@ export class ServedCopyServe {
       const { binding, node, sourceName, def, fieldsByName, problems } =
          subject;
       let { columns, columnsLeftOut } = kept;
-      // A column live answers above 2^53 (a BIGINT, known limitation 12) is
+      // A column live answers above 2^53 (a BIGINT) is
       // read through its native type, which keeps every digit; one no cast
       // reads exactly is left out, so only a query reading it answers live.
       const ownReads = bigIntegerReadsOf(
@@ -1752,12 +1461,12 @@ export class ServedCopyServe {
    /**
     * The trailing `extend` runs of a `#(materialize)` source's ancestors, in
     * its own file or the files it imports, root first
-    * ({@link keptAncestorChain}, confirmed against each file's
+    * ({@link keptAncestorChainOrDeclared}, confirmed against each file's
     * text), which its re-root keeps ahead of its own blocks. Kept
-    * for an extension table (P10), whose table holds every one of their rows
+    * for an extension table, whose table holds every one of their rows
     * and stored columns, so it loses no measure, join or view any of them
     * declares; and for one whose bases declare a measure, view or join it
-    * inherits (G8), which the re-root would otherwise lose. Undefined when
+    * inherits, which the re-root would otherwise lose. Undefined when
     * the source is neither, or no such ancestor is on the walk: a source with
     * none keeps only its own blocks (decision 2). A base's given-reading
     * `where:` or dimension is never left out of a build (it refuses the
@@ -1772,18 +1481,23 @@ export class ServedCopyServe {
       if (!plan) return undefined;
       // Across files: an extension in a file that imports its base's file
       // keeps that base's blocks too, so it is re-rooted on its own table
-      // rather than left reading its base's (P2-22).
+      // rather than left reading its base's.
       const confirmed = confirmedAncestors(
          fileText,
          reroot.url,
          reroot.range,
-         keptAncestorChain(map, reroot.sourceID, reroot.url),
+         keptAncestorChainOrDeclared(
+            map,
+            reroot.sourceID,
+            reroot.url,
+            fileText,
+         ),
       );
       const needed =
          confirmed.some(
             (a) => this.materializePlans[a.sourceID] !== undefined,
          ) ||
-         // G8: a base the re-root replaces declares a measure, view or join
+         // A base the re-root replaces declares a measure, view or join
          // the source inherits; only its block, written again over the
          // table, keeps it (else the source is not carried, call 2).
          confirmed.some((a) => declaresBlocks(map.node(a.sourceID)?.def));
@@ -2004,7 +1718,7 @@ export class ServedCopyServe {
       // An extension of a re-rooted source reads it by name already, and
       // re-rooting the extension too would replace the base it inherits its
       // parent's fields from. Leave it as written, unless it is an extension
-      // table (P10): a `#(materialize)` source with its own table, whose
+      // table: a `#(materialize)` source with its own table, whose
       // re-root keeps its ancestors' blocks in its file (`keptBlocks`), so it
       // loses nothing it inherits from them.
       // The chain comes from the source map; the declaration's own text,
@@ -2050,7 +1764,7 @@ export class ServedCopyServe {
          return reads;
       };
       // An extension table that does not compile over its kept blocks falls
-      // back to what it was before P10: left as written when it reads a
+      // back to the extension as written when it reads a
       // re-rooted base, else re-rooted with its own blocks only.
       const withoutKept = new Map<
          (typeof candidates)[number],
@@ -2080,7 +1794,7 @@ export class ServedCopyServe {
       const over = bindings;
       const problems: ServedCopyProblem[] = [];
       // Storage bindings reach here only with destinations (`usable`); a
-      // copy of colocated tables alone needs none.
+      // copy of database tables alone needs none.
       const destinations =
          this.host.serveDestinationConfig() ?? NO_DESTINATIONS;
       // No table to re-root on: the copy is the author's model, so there is
@@ -2188,7 +1902,7 @@ export class ServedCopyServe {
             destinations(),
             new Set(
                rerooted
-                  .filter((b) => !isColocated(b))
+                  .filter((b) => !isDatabase(b))
                   .map((b) => b.destinationName),
             ),
          );
@@ -2379,6 +2093,19 @@ export class ServedCopyServe {
             runtime: servedRuntime,
          } = await load(overlay));
       } catch (err) {
+         // A destination catalog the worker lost (connection.ts reopens it)
+         // is not the copy's text: neither contained to a source nor
+         // remembered, or a failure recorded while the destination reopens
+         // would outlive the invalidation that reopen triggers. A compile
+         // reports it as a `failed-to-fetch-table-schema` problem quoting the
+         // typed error, which the check reads too.
+         if (isDuckLakeCatalogUnavailable(err)) {
+            problems.push({
+               reason: "compile_failed",
+               detail: err instanceof Error ? err.message : String(err),
+            });
+            return "failed";
+         }
          if (withoutLeftOutColumn(state, copy, err)) return "retry";
          if (this.contain(state, copy, err, copy.files, "precise", !!known)) {
             if (!known) this.rememberFailure(failureKey, err, state.asOf);
@@ -2490,7 +2217,6 @@ export class ServedCopyServe {
             {
                modelPath: this.host.modelPath(),
                sourceName: c.reroot.sourceName,
-               problem: f.message,
             },
          );
          if (c.reroot.inlinedJoins?.length) {
@@ -2589,7 +2315,7 @@ export class ServedCopyServe {
                .map((c) => c.binding.tablePath),
          ),
          // A stored computed dimension of the source's own, unless the probe
-         // compiler found it the same in every zone (P9), holds the value
+         // compiler found it the same in every zone, holds the value
          // the build computed in the source's zone; a restated timestamp
          // truncation is truncated again at read. Each is declined only
          // where a query reads it in another zone (`checkZonedColumns`).
@@ -2773,7 +2499,7 @@ function keepInlinedJoins(state: CopyPassState, error: unknown): boolean {
 /**
  * A column left out of its source's `type:` (a v1 column no cast
  * makes faithful; a big-integer column no native cast reads
- * exactly, known limitation 12). When the model's own text names it
+ * exactly). When the model's own text names it
  * (a dimension or measure over it, an extension's dimension), the
  * copy cannot compile with it gone: that source is left as written
  * and answers live, and every other source keeps its table.
@@ -2843,7 +2569,7 @@ function withoutPairs(state: CopyPassState, detail: string): boolean {
 
 /**
  * The bind guard (`proveReroot`): a re-rooted source keeps every
- * field the author's has, each exactly as hidden (P3), and applies
+ * field the author's has, each exactly as hidden, and applies
  * every filter the author's applies at read. One that does not is
  * left as written, and the copy compiled again. A field it inherited
  * from a base the re-root replaced (a measure, a view, a join
@@ -3007,7 +2733,7 @@ function materializedColumnsOf(
             : [];
       }),
       def,
-      !isColocated(binding),
+      !isDatabase(binding),
    );
    const castTo = new Map(
       typePlan.casts.map((c) => [
@@ -3026,12 +2752,12 @@ function materializedColumnsOf(
       }
       const type = stored.get(c.column);
       // A column live types as warehouse-native (a UUID) has no stored
-      // spelling, so a colocated table's captured columns leave it out: it is
+      // spelling, so a database table's captured columns leave it out: it is
       // left out here too, so only a query reading it answers live, as a
       // `storage=` table's is (declarableColumns).
       if (
          type === undefined &&
-         isColocated(binding) &&
+         isDatabase(binding) &&
          liveTypesAsNative(fieldsByName.get(c.dimension))
       ) {
          columnsLeftOut.push(c.column);
@@ -3084,7 +2810,7 @@ function materializedColumnsOf(
    }
    // A joined big-integer field is read through its native type in the
    // record; one no cast reads exactly leaves the source to its
-   // fallback (known limitation 12).
+   // fallback.
    const readOptions = bigIntegerOptionsOf(def, binding);
    const joinedReads = joined.map((j) => {
       const fields = joinedFieldsAt(def.fields, [j.join]);
@@ -3095,7 +2821,7 @@ function materializedColumnsOf(
             type: "",
             field: fields.find((f) => fieldNameOf(f) === c.name),
          })),
-         { ...readOptions, ducklake: !isColocated(binding) },
+         { ...readOptions, ducklake: !isDatabase(binding) },
       );
    });
    // A joined field live types as a warehouse-native type has no
@@ -3192,7 +2918,7 @@ function v1ColumnsOf(
       subject;
    const { problems } = subject;
    let columnsLeftOut: string[] = [];
-   // A v1 table, colocated or `storage=`, holds the columns its build query
+   // A v1 table, database or `storage=`, holds the columns its build query
    // emits, hidden ones too: its columns are every column it holds, with no
    // access modifier, and the author's own text after the query (kept
    // whole, `keepsIncludes`) renames, drops and re-hides them, so a measure
@@ -3213,7 +2939,7 @@ function v1ColumnsOf(
    const typePlan = storedColumnReadPlan(
       narrowed,
       declaredColumnsOf(def.fields),
-      { queryTimezone: queryTimezoneOf(def), ducklake: !isColocated(binding) },
+      { queryTimezone: queryTimezoneOf(def), ducklake: !isDatabase(binding) },
    );
    const castTo = new Map(
       typePlan.casts.map((c) => [
@@ -3281,277 +3007,6 @@ function v1ColumnsOf(
 }
 
 /**
- * The query's SQL on the copy, compiled eagerly so a query the copy cannot
- * answer fails inside the router's attempt, not at run time past the
- * fallback, and the re-rooted tables it reads. A query that reads none would
- * only add work over live: declined, so the next candidate answers (a table
- * on the queried source's chain that is not re-rooted carries a package
- * warning saying why).
- */
-async function readsRerootedTables(
-   attempt: AnswerAttempt,
-): Promise<{ sql: string; tablesRead: Binding[] }> {
-   const { compiled, runnable, virtualMap, givens, compiling } = attempt;
-   const sql = await compiling(() =>
-      runnable.getSQL({ virtualMap, givens: givens as never }),
-   );
-   const tablesRead = compiled.rerooted.filter((b) =>
-      sqlReadsTable(sql, boundTablePath(b)),
-   );
-   if (tablesRead.length === 0) {
-      attempt.decline(
-         "the query reads no re-rooted table",
-         "served_copy_not_served",
-      );
-   }
-   return { sql, tablesRead };
-}
-
-/**
- * The joins an answer reads as a record of stored columns (an inlined
- * join_one, or a pair table's join_many read flat), with each one's
- * annotated fields: an aggregate at a record join's grain would be computed
- * per row of the source, which live's join answers instead.
- */
-function recordJoinsRead(
-   compiled: Compiled,
-   tablesRead: readonly Binding[],
-   pairsRead: Awaited<ReturnType<typeof pairsReadPerTable>>,
-): {
-   inlined: Set<string>;
-   annotated: Map<string, ReadonlySet<string>>;
-} {
-   const inlined = new Set<string>();
-   const annotated = new Map<string, ReadonlySet<string>>();
-   for (const b of tablesRead) {
-      for (const [join, fields] of compiled.inlinedJoins?.get(b.tablePath) ??
-         []) {
-         inlined.add(join);
-         annotated.set(join, fields);
-      }
-   }
-   for (const p of pairsRead)
-      annotated.set(p.pair.join, p.annotatedChildFields);
-   return { inlined, annotated };
-}
-
-/**
- * A backstop under every answer: the source the query runs on, and each one
- * on its chain the author's model declares, must compute in the same zone in
- * the copy as in the author's model (their `queryTimezone`, which Malloy
- * gives a query's first stage). A re-root that dropped a zone (one the source
- * inherits from the base it replaces) would compute every query on it in
- * another zone than live: declined, never served. Fails closed on a source
- * that cannot be resolved.
- */
-async function checkSourceZone(attempt: AnswerAttempt): Promise<void> {
-   const { compiled, decline, prepared } = attempt;
-   const author = compiled.authorModelDef;
-   if (author === undefined) return;
-   const zoneOf = (def: unknown) => {
-      const z = (def as { queryTimezone?: unknown } | undefined)?.queryTimezone;
-      return typeof z === "string" ? z : undefined;
-   };
-   let differs: boolean;
-   try {
-      const view = await prepared();
-      const struct = resolveStructRefSource<unknown>(
-         view.structRef as never,
-         compiled.modelDef as never,
-      );
-      if (struct === undefined) {
-         differs = true;
-      } else {
-         const served = SourceMap.of(compiled.modelDef);
-         const authored = SourceMap.of(author);
-         const name = structRefName(view.structRef);
-         const authorStruct =
-            name !== undefined
-               ? resolveStructRefSource<unknown>(name as never, author as never)
-               : undefined;
-         differs =
-            (authorStruct !== undefined &&
-               !sameZone(zoneOf(struct), zoneOf(authorStruct))) ||
-            served.chainOf(struct).some((id) => {
-               const a = authored.node(id);
-               return (
-                  a !== undefined &&
-                  !sameZone(zoneOf(served.node(id)?.def), zoneOf(a.def))
-               );
-            });
-      }
-   } catch {
-      differs = true;
-   }
-   if (differs) {
-      decline(
-         "the source the query runs on computes in another time zone in the served copy than in the author's model",
-         "served_copy_time_zone",
-      );
-   }
-}
-
-/**
- * The zones a query reads its stored tables in: `read`, the zone its first
- * stage computes in (its own `timezone:`, which overrides the source's, else
- * the zone the source it runs on sets or inherits from anything on its chain,
- * `ny is orders extend { timezone: … }`, which its text never names, else the
- * default); `set`, every zone its text sets, a later stage's or a nest's
- * included; and `chain`, the `sourceID`s the source derives from. A joined
- * source's own `timezone:` is not applied through the join, so a table read
- * through one is read in `read` too. Undefined when the source cannot be
- * resolved.
- */
-interface ReadZones {
-   read: string | undefined;
-   set: string[];
-   chain: ReadonlySet<string>;
-}
-
-function readZonesOf(
-   compiled: Compiled,
-   view: Pick<PreparedQueryView, "query" | "structRef" | "pipeline">,
-): ReadZones | undefined {
-   try {
-      const struct = resolveStructRefSource<unknown>(
-         view.structRef as never,
-         compiled.modelDef as never,
-      );
-      if (struct === undefined) return undefined;
-      const map = SourceMap.of(compiled.modelDef);
-      const chain = map.chainOf(struct);
-      const first = (
-         Array.isArray(view.pipeline) ? view.pipeline[0] : undefined
-      ) as { queryTimezone?: unknown } | undefined;
-      const own =
-         typeof first?.queryTimezone === "string"
-            ? first.queryTimezone
-            : undefined;
-      // The author's source of the same name keeps a zone it inherits, which
-      // its re-root in the copy can drop.
-      const name = structRefName(view.structRef);
-      const author =
-         name !== undefined && compiled.authorModelDef !== undefined
-            ? resolveStructRefSource<unknown>(
-                 name as never,
-                 compiled.authorModelDef as never,
-              )
-            : undefined;
-      return {
-         read:
-            own ??
-            chainZoneOf(map, struct) ??
-            (author !== undefined
-               ? chainZoneOf(SourceMap.of(compiled.authorModelDef), author)
-               : undefined),
-         set: queryTimezones(view.query),
-         chain: new Set(chain),
-      };
-   } catch {
-      return undefined;
-   }
-}
-
-/**
- * The zone a source computes in: its own, or the one it inherits from
- * anything on its chain (`ny is orders extend { timezone: … }`).
- */
-function chainZoneOf(map: SourceMap, struct: unknown): string | undefined {
-   return (
-      queryTimezoneOf(struct) ??
-      map
-         .chainOf(struct)
-         .map((id) => queryTimezoneOf(map.node(id)?.def))
-         .find((z) => z !== undefined)
-   );
-}
-
-/**
- * Whether a query whose zones are `zones` ({@link readZonesOf}) reads `table`
- * in another time zone than the one it was built in (`builtZones`);
- * an explicit `'UTC'` is the default zone ({@link sameZone}). One rule
- * for every zone-dependent stored value: a computed dimension, a rolling
- * window's cut-off, and a restated timestamp truncation. Fails closed on a
- * source that cannot be resolved, and on a table whose stored source is not
- * known.
- */
-function readsInAnotherZone(
-   compiled: Compiled,
-   zones: ReadZones | undefined,
-   table: Binding,
-): boolean {
-   const id = table.sourceIDs?.[0];
-   if (
-      zones === undefined ||
-      id === undefined ||
-      !compiled.builtZones?.has(id)
-   ) {
-      return true;
-   }
-   const built = compiled.builtZones.get(id);
-   return (
-      !sameZone(zones.read, built) || zones.set.some((z) => !sameZone(z, built))
-   );
-}
-
-/**
- * One query's answer in progress in one compiled copy, as each of
- * {@link ServedCopyServe}'s answer checks reads it.
- */
-interface AnswerAttempt {
-   compiled: Compiled;
-   queryString: string;
-   givens: Record<string, unknown> | undefined;
-   runnable: QueryMaterializer;
-   virtualMap: VirtualMap;
-   /** Decline the query, remembered on the compile; never returns. */
-   decline(
-      reason: string,
-      code: ServedCopyDeclineCode,
-      callerDetail?: string,
-   ): never;
-   /** Run `work`, declining a query that reads a join left out across connections. */
-   compiling<T>(work: () => Promise<T>): Promise<T>;
-   /** The prepared query, read once. */
-   prepared(): ReturnType<typeof readPreparedQuery>;
-}
-
-/**
- * `#@ -persist` means recompute rather than read the pre-built table. In
- * the served copy every name reads its re-rooted base, so a query whose
- * source is an opted-out reader, or derives from one, is declined here
- * and answered by the next candidate (which never carries one).
- * A source whose served surface the load-time classification checks
- * flag is declined the same way: answered live, or refused there.
- */
-async function checkOptOut(attempt: AnswerAttempt): Promise<void> {
-   const { compiled, decline, compiling, prepared } = attempt;
-   if (
-      (compiled.optOutIDs && compiled.optOutIDs.size > 0) ||
-      (compiled.unsafeIDs && compiled.unsafeIDs.size > 0)
-   ) {
-      const { structRef } = await compiling(prepared);
-      const struct = resolveStructRefSource<unknown>(
-         structRef,
-         compiled.modelDef as never,
-      );
-      const chain = SourceMap.of(compiled.modelDef).chainOf(struct);
-      if (chain.some((id) => compiled.unsafeIDs?.has(id))) {
-         decline(
-            "the query reads a source whose served copy exposes a field the compile of record does not classify or carry",
-            "served_copy_not_served",
-         );
-      }
-      if (chain.some((id) => compiled.optOutIDs?.has(id))) {
-         decline(
-            "the query reads a source that opts out of persist",
-            "served_copy_opt_out",
-         );
-      }
-   }
-}
-
-/**
  * A table of several inlined paths is read one block at a time: the
  * block of the one path the query reads, from that block's copy. A
  * query that reads two paths is answered live: live aggregates each of
@@ -3616,7 +3071,7 @@ async function queriedChain(attempt: AnswerAttempt): Promise<{
 
 /**
  * The pair tables a query reads, one entry per table. Sources whose build SQL
- * is identical (differing only in gates or `name=`) share one colocated table
+ * is identical (differing only in gates or `name=`) share one database table
  * at their one content address, so each is a pair at that one path. Read
  * once, that table is read as the queried source's own when the queried
  * source is one of them, as on `storage=`, where each source has a table of
@@ -3697,66 +3152,6 @@ async function checkPairTables(
                `The table stores an inlined join_many flat, which cannot answer this query exactly (${verdict.reason}), so it is answered without this table.`,
             );
          }
-      }
-   }
-}
-
-/**
- * The checks for a join the copy answers from a record of stored columns (an
- * inlined join_one, or a pair table's join_many read flat), on one query
- * compiled over the copy: an aggregate at such a join's grain is declined
- * (`count_semantics`), and so is a query that returns one of its annotated
- * fields as a column (`joined_annotations`). `inlined` are the inlined
- * join_ones the query's tables answer from records, `annotated` each record
- * join's annotated fields; `modelDef` resolves the query's source.
- */
-async function checkRecordJoins(args: {
-   inlined: ReadonlySet<string>;
-   annotated: ReadonlyMap<string, ReadonlySet<string>>;
-   prepared: () => ReturnType<typeof readPreparedQuery>;
-   modelDef: unknown;
-   queryString: string;
-   decline: (
-      reason: string,
-      code: ServedCopyDeclineCode,
-      callerDetail?: string,
-   ) => never;
-}): Promise<void> {
-   const { inlined, annotated, prepared, decline } = args;
-   if (inlined.size > 0) {
-      const grain = joinGrainAggregatePaths(await prepared());
-      if (
-         grain.unreadable ||
-         grain.paths.some((p) => p.some((name) => inlined.has(name))) ||
-         readsJoinStar(args.queryString, inlined)
-      ) {
-         decline(
-            "the query aggregates at the grain of a join the served copy answers from stored columns",
-            "served_copy_count_semantics",
-            JOIN_GRAIN_DETAIL,
-         );
-      }
-   }
-   // A record literal's field carries no annotation onto a result, so a
-   // query that returns an annotated joined field as a column (its
-   // `#(doc)`, `#(classification)`, render tags) is answered live, and
-   // every other query keeps the table: one check for both legs, before
-   // the pair table's own.
-   if ([...annotated.values()].some((f) => f.size > 0)) {
-      const { structRef, pipeline } = await prepared();
-      const struct = resolveStructRefSource<{ fields?: unknown }>(
-         structRef,
-         args.modelDef as never,
-      );
-      const out = annotatedJoinedOutput(pipeline, struct?.fields, annotated);
-      if (out.unreadable || out.output) {
-         decline(
-            out.output
-               ? `the query returns ${out.output.path.join(".")}, whose annotations the served copy's record of stored columns cannot carry`
-               : "the query's output columns cannot be read",
-            "served_copy_joined_annotations",
-            JOINED_ANNOTATIONS_DETAIL,
-         );
       }
    }
 }
@@ -3872,7 +3267,7 @@ function blockPaths(
 }
 
 /**
- * How the served copy reads one pair table (P5), from its plan, the stored
+ * How the served copy reads one pair table, from its plan, the stored
  * schema, the author's compiled source (`sourceFields`) and the joined
  * sources': each stored child column renamed internally under a name no
  * field of the model has (`taken`), and each measure over one level above the
@@ -4066,7 +3461,7 @@ function pairRecordsOf(
          }
          const field = fieldsOf.get(c.dimension);
          // A big-integer child field is read through its native type in the
-         // record (known limitation 12); one no cast reads exactly leaves
+         // record; one no cast reads exactly leaves
          // the table to its fallback.
          const big = bigRead(field, { name: c.column, type });
          // So does one live types as a warehouse-native type, which no
@@ -4376,7 +3771,7 @@ function joinedFieldsAt(
 }
 
 /**
- * The big-integer columns among `columns` (known limitation 12), by name, to
+ * The big-integer columns among `columns`, by name, to
  * the native type each is read through, or to undefined when no cast reads it
  * exactly ({@link bigIntegerReads}). Decided by the author's source's dialect
  * (the one live answers on) and where the binding's table is.
@@ -4402,7 +3797,7 @@ function bigIntegerReadsOf(
 
 /**
  * What decides a big-integer column's read for a binding: the author's
- * source's dialect, where the table is, and, for a colocated table, the
+ * source's dialect, where the table is, and, for a database table, the
  * warehouse types its build captured (`nativeSchema`).
  */
 function bigIntegerOptionsOf(
@@ -4411,8 +3806,8 @@ function bigIntegerOptionsOf(
 ): BigIntegerReadOptions {
    return {
       dialect: (def as { dialect?: unknown }).dialect,
-      colocated: isColocated(binding),
-      ...(isColocated(binding)
+      database: isDatabase(binding),
+      ...(isDatabase(binding)
          ? { nativeTypeOf: nativeTypeLookup(binding.nativeSchema) }
          : {}),
    };
@@ -4499,25 +3894,6 @@ function inlinedJoinsOf(
 }
 
 /**
- * Whether a query reads `<join>.*` through any of `joins`: a star expands to
- * the joined source's fields, which a record of its stored fields may not all
- * be. Unlexable text counts.
- */
-function readsJoinStar(
-   queryString: string,
-   joins: ReadonlySet<string>,
-): boolean {
-   const tokens = lexAll(queryString);
-   if (!tokens) return true;
-   return tokens.some(
-      (t, i) =>
-         joins.has(t.text.startsWith("`") ? t.text.slice(1, -1) : t.text) &&
-         tokens[i + 1]?.text === "." &&
-         tokens[i + 2]?.text === "*",
-   );
-}
-
-/**
  * A v1 table's columns as its source's fields: every stored
  * column matched to the author's field of its name (exactly, else one field
  * whose name folds to it, a warehouse folding the case DESCRIBE reports), with the
@@ -4580,7 +3956,7 @@ export function v1StoredColumns(
 /**
  * Whether a compiled source declares (or inherits) a measure, a view or a
  * join: what a re-root that replaces it as a base would lose unless it keeps
- * its blocks (G8).
+ * its blocks.
  */
 function declaresBlocks(def: unknown): boolean {
    const fields = (def as { fields?: unknown[] } | undefined)?.fields ?? [];
@@ -4677,8 +4053,10 @@ function liveTypesAsNative(field: unknown): boolean {
  * field in (`storedMalloyTypeFor`), or undefined when none reads it back as
  * live does: a field live types as `sql native` (a Postgres composite type,
  * stored by DuckDB as a STRUCT), or one holding such a leaf or a `bigint`
- * number live keeps every digit of. Any other column, or one whose field is
- * not known here, keeps the stored type's own declaration.
+ * number live keeps every digit of. A list or record live answers, stored as
+ * a scalar (its text, say), is fitted the same way, so it is left out rather
+ * than declared as that scalar. Any other column, or one whose field is not
+ * known here, keeps the stored type's own declaration.
  */
 function nestedDeclarationOf(
    storedType: string,
@@ -4687,7 +4065,12 @@ function nestedDeclarationOf(
 ): string | undefined {
    const declared = storedMalloyType(storedType);
    if (declared === undefined) return undefined;
-   const nested = declared.startsWith("{") || declared.endsWith("[]");
+   const liveType = (field as { type?: unknown } | undefined)?.type;
+   const nested =
+      declared.startsWith("{") ||
+      declared.endsWith("[]") ||
+      liveType === "array" ||
+      liveType === "record";
    if (!nested || field === undefined) return declared;
    return storedMalloyTypeFor(storedType, field, keepsBigIntegers);
 }
@@ -4730,7 +4113,7 @@ export function chainBuildText(
    for (const upstream of request.upstreams) {
       // An upstream table holding a 128-bit integer (a list's or struct's
       // leaf included) holds its digits rounded
-      // (DuckLake stores it as a DOUBLE, P4-01): never stacked on, so the
+      // (DuckLake stores it as a DOUBLE): never stacked on, so the
       // downstream recomputes from its raw source rather than storing those
       // rounded values as exact. Its text then reads the upstream as written.
       if (
@@ -4850,114 +4233,4 @@ function zonedTruncations(
       leftOut: truncated,
       restated: [],
    };
-}
-
-/**
- * A query that reads a table's zone-dependent column (a stored computed
- * dimension, a restated timestamp truncation) in another zone than the table
- * was built in ({@link readsInAnotherZone}) is answered live. Decided per
- * column: a query that reads none of them stays on the table, whatever zone it
- * reads in. A column of the table the query runs on is read by a field path of
- * one name; a joined table's, by a longer path ending in its name (an
- * unrelated field of the same name is declined too, never served wrong).
- * Fails closed on a query whose field reads cannot be listed.
- */
-async function checkZonedColumns(
-   attempt: AnswerAttempt,
-   tablesRead: readonly Binding[],
-): Promise<void> {
-   const { compiled, decline, prepared } = attempt;
-   const zonedOf = (b: Binding) =>
-      compiled.zonedColumns?.get(b.sourceIDs?.[0] ?? "");
-   const zoned = tablesRead.filter((b) => zonedOf(b) !== undefined);
-   if (zoned.length === 0) return;
-   const view = await prepared();
-   const zones = readZonesOf(compiled, view);
-   const elsewhere = zoned.filter((b) =>
-      readsInAnotherZone(compiled, zones, b),
-   );
-   if (elsewhere.length === 0) return;
-   const usage = queryFieldUsagePaths(view);
-   if (usage === undefined) {
-      decline(ZONED_COLUMN_REASON, "served_copy_time_zone");
-   }
-   // A table reached only through one of the query's source's joins is read
-   // by a path through that join, never by a field path of one name. Any
-   // other table may be the query's own (an extension of a table-backed or
-   // query-shaped source names no base to tell), so any path may read it.
-   const joinedOnly = joinedOnlyIDs(compiled, view, zones);
-   for (const b of elsewhere) {
-      const names = zonedOf(b) ?? new Set<string>();
-      const joined = joinedOnly.has(b.sourceIDs?.[0] ?? "");
-      if (
-         usage!.some(
-            (p) =>
-               (p.length > 1 || !joined) && readsColumn(names, p[p.length - 1]),
-         )
-      ) {
-         decline(ZONED_COLUMN_REASON, "served_copy_time_zone");
-      }
-   }
-}
-
-/**
- * The `sourceID`s the query's source reaches only through one of its own
- * joins: on a joined source's chain, and not on its own.
- */
-function joinedOnlyIDs(
-   compiled: Compiled,
-   view: Pick<PreparedQueryView, "structRef">,
-   zones: ReadZones | undefined,
-): Set<string> {
-   const out = new Set<string>();
-   if (zones === undefined) return out;
-   try {
-      const struct = resolveStructRefSource<{ fields?: unknown[] }>(
-         view.structRef as never,
-         compiled.modelDef as never,
-      );
-      const map = SourceMap.of(compiled.modelDef);
-      for (const f of struct?.fields ?? []) {
-         if ((f as { join?: unknown }).join === undefined) continue;
-         for (const id of map.chainOf(f)) {
-            if (!zones.chain.has(id)) out.add(id);
-         }
-      }
-   } catch {
-      out.clear();
-   }
-   return out;
-}
-
-/**
- * Whether a field path's last name reads one of `names`: the column itself,
- * or a restated truncation's stored column under the internal name the
- * served copy renames it to (`<name>__stored`, `__stored_2`, …), which a
- * wildcard reads.
- */
-function readsColumn(
-   names: ReadonlySet<string>,
-   field: string | undefined,
-): boolean {
-   if (field === undefined) return false;
-   return [...names].some((n) => {
-      const internal = `${n}__stored`;
-      return (
-         field === n ||
-         field === internal ||
-         (field.startsWith(`${internal}_`) &&
-            /^\d+$/.test(field.slice(internal.length + 1)))
-      );
-   });
-}
-
-/**
- * Whether two query time zones are one: unset is `'UTC'`, Malloy's default,
- * which compiles to the same SQL. Only that spelling: an alias such as
- * `'Etc/UTC'` is another zone, since a dialect may not know it (MySQL without
- * its time zone tables converts it to NULL).
- */
-function sameZone(a: string | undefined, b: string | undefined): boolean {
-   const utc = (z: string | undefined) => (z === "UTC" ? undefined : z);
-   return utc(a) === utc(b);
 }

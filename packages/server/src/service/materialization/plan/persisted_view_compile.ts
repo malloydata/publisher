@@ -6,13 +6,13 @@
  * judges each declaration against the author's compiled model, on the load
  * worker, compiling and never running:
  *
- * - **Caller-dependent (P14).** A view whose result reads the current time,
+ * - **Caller-dependent.** A view whose result reads the current time,
  *   through its own stages, its source's `where:` or a field it reads, differs
  *   per read: not built. (A view that reads a given is refused by the build
  *   plan, from Malloy's own `readsGivens` on its build target.)
  * - **Nested results on `storage=`.** A destination's `type:` declaration
- *   cannot declare a nested result, so such a view is stored only colocated.
- * - **Access filters (question 3).** A row-level gate on the view's source is
+ *   cannot declare a nested result, so such a view is stored only database.
+ * - **Access filters.** A row-level gate on the view's source is
  *   re-applied to the stored rows at read (route, then govern), which is exact
  *   only when every field the gate reads is one the view groups by, under its
  *   own name, in a single grouping stage with no `limit:`, no ungrouped
@@ -33,7 +33,6 @@ import type {
 } from "@malloydata/malloy";
 import * as path from "path";
 import { pathToFileURL } from "url";
-import { logger } from "../../../logger";
 import {
    ownLevelNotes,
    type AnnotationNote,
@@ -65,7 +64,9 @@ import {
    type PersistedViewPlan,
 } from "../domain/table_plans";
 import {
+   companionFailure,
    companionOmissions,
+   type CompanionFailure,
    declaredInModel,
    GeneratedFiles,
    type SynthesizedRuntimeFactory,
@@ -173,12 +174,9 @@ async function persistedViewRefusalReason(
          reason: "the view has no stage to store",
          refusal: "no_stored_columns",
       };
-   if (pipelineReadsCurrentTime(def, stages)) {
-      return {
-         reason: "its result reads the current time, so it differs per read",
-         refusal: "current_time",
-      };
-   }
+   // A result that reads the current time is stored as of its build and
+   // rebuilt on every run, unless its source is gated (below).
+   const readsNow = pipelineReadsCurrentTime(def, stages);
    const last = stages[stages.length - 1];
    // On either tier: the view leg never answers from a nested result (it
    // cannot rebuild a nest's rows exactly), so a table built for one would
@@ -192,6 +190,15 @@ async function persistedViewRefusalReason(
    }
    const gates = collectEntryPointGates(node.def as never, modelDef as never);
    if (gates.length === 0) return undefined;
+   if (readsNow) {
+      return {
+         reason:
+            "its result reads the current time and its source carries a " +
+            "row-level gate, whose decision a result stored as of its build " +
+            "would freeze",
+         refusal: "current_time",
+      };
+   }
    // Named by the gates' kind, as on every mechanism.
    const gateRefusal = gateRefusalReason(gates.map((g) => g.route));
    if (gates.some((g) => !g.struct)) {
@@ -385,12 +392,8 @@ async function persistedQueryRefusalReason(
          reason: "its source cannot be read",
          refusal: "run_target_unsupported",
       };
-   if (pipelineReadsCurrentTime(def, stages)) {
-      return {
-         reason: "its result reads the current time, so it differs per read",
-         refusal: "current_time",
-      };
-   }
+   // A result that reads the current time is stored as of its build and
+   // rebuilt on every run; a gate anywhere refuses the query below.
    const last = stages[stages.length - 1];
    if ((last.outputStruct?.fields ?? []).some(isNested)) {
       return {
@@ -460,6 +463,8 @@ export async function tryCompilePersistedViewCompanion(args: {
    refusedQueries: PersistedQueryRefusal[];
    /** The views and queries a failure left out of the plan (see omitted_sources). */
    omitted?: Omission[];
+   /** Why the companion failed, for the caller to report. */
+   failure?: CompanionFailure;
 }> {
    const modelFile = path.resolve(args.packagePath, args.modelPath);
    const companionHref = persistedViewCompanionHref(
@@ -547,16 +552,10 @@ export async function tryCompilePersistedViewCompanion(args: {
          refusedQueries,
       };
    } catch (error) {
-      logger.error(
-         "Failed to plan or compile the generated persisted-view companion",
-         {
-            modelPath: args.modelPath,
-            error: error instanceof Error ? error.message : String(error),
-         },
-      );
       return {
          refused,
          refusedQueries,
+         failure: companionFailure("persisted_view", error),
          omitted: companionOmissions("persisted_view", {
             file: companionHref,
             names: plannedNames,

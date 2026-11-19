@@ -40,6 +40,7 @@ import { dirname, join } from "path";
 import { fileURLToPath, pathToFileURL } from "url";
 
 import { logger } from "../logger";
+import { recordUnhandledRejection } from "../process_safety";
 import { ImportOutsidePackageError } from "../utils";
 import { Settings, settings } from "../settings";
 import type {
@@ -56,6 +57,7 @@ import type {
    LoadPackageError,
    LoadPackageRequest,
    LoadPackageResult,
+   ForgetSchemasMessage,
    MainToWorkerMessage,
    ReadUrlRequest,
    ReadUrlResponse,
@@ -73,6 +75,8 @@ import {
    checkLoadPackageResult,
 } from "./protocol_decode";
 import { connectionTypeOf } from "../service/connection_type";
+import { SchemaRefetches } from "./schema_refetch";
+import { sqlKey } from "@malloydata/malloy";
 
 // ──────────────────────────────────────────────────────────────────────
 // Configuration
@@ -132,6 +136,11 @@ interface JobContext {
    resolve: (result: LoadPackageResult | CompileServedCopyResult) => void;
    reject: (err: Error) => void;
    timeout: ReturnType<typeof setTimeout>;
+   /**
+    * When a refreshing load was requested, on `performance.now()`: a refetch
+    * begun since answers it (see SchemaRefetches).
+    */
+   refreshRequestedAt?: number;
 }
 
 /**
@@ -169,6 +178,8 @@ type QueuedJob =
    | {
         kind: "load";
         request: LoadPackageJob;
+        /** See JobContext.refreshRequestedAt. */
+        refreshRequestedAt?: number;
         /** When it was queued, for {@link nextQueuedJobIndex}'s aging. */
         enqueuedAt?: number;
         resolve: (result: LoadPackageOutcome) => void;
@@ -229,8 +240,6 @@ export interface LoadPackageJob {
    collectProblems?: boolean;
    /** See {@link LoadPackageRequest.computeBuildPlan}. */
    computeBuildPlan?: boolean;
-   /** See {@link LoadPackageRequest.withPreaggregateCompanions}. */
-   withPreaggregateCompanions?: boolean;
    /** See {@link LoadPackageRequest.publishedVersion}. */
    publishedVersion?: boolean;
    /** See {@link LoadPackageRequest.withEntities}. */
@@ -241,6 +250,12 @@ export interface LoadPackageJob {
     * waits for at most the background job already running, never a backlog.
     */
    background?: boolean;
+   /**
+    * An explicit refresh (a reload, a publish): refetch every schema the load
+    * reads, here and in every worker's cache (see
+    * {@link LoadPackageRequest.refreshTimestamp}).
+    */
+   refreshSchemas?: boolean;
 }
 
 /** One pass of a model's served copy to compile (see CompileServedCopyRequest). */
@@ -337,6 +352,15 @@ export class PackageLoadPool {
    private readonly jobTimeoutMs: number;
    /** How long a job may run before it is terminated (see JOB_LIMIT_FACTOR). */
    private readonly jobLimitMs: number;
+   /** Refreshing loads' refetches, shared while they overlap. */
+   private readonly tableRefetches: SchemaRefetches<{
+      schema?: TableSourceDef;
+      error?: string;
+   }>;
+   private readonly sqlRefetches: SchemaRefetches<{
+      structDef?: SQLSourceDef;
+      error?: string;
+   }>;
 
    constructor(
       maxWorkers: number,
@@ -363,6 +387,10 @@ export class PackageLoadPool {
       this.jobTimeoutMs =
          options.jobTimeoutMs ?? settings.get("packageLoad.jobTimeoutMs");
       this.jobLimitMs = JOB_LIMIT_FACTOR * this.jobTimeoutMs;
+      // A refreshing load can wait in the queue before its job runs.
+      const refetchWindowMs = this.jobLimitMs + this.jobTimeoutMs;
+      this.tableRefetches = new SchemaRefetches(refetchWindowMs);
+      this.sqlRefetches = new SchemaRefetches(refetchWindowMs);
       this.mainThreadWorkBudgetMs =
          options.mainThreadWorkBudgetMs ??
          MAIN_THREAD_WORK_BUDGET_SHARE * this.jobTimeoutMs;
@@ -393,6 +421,11 @@ export class PackageLoadPool {
             resolve,
             reject,
             enqueuedAt: Date.now(),
+            // When it is asked for, not when a worker takes it, so loads
+            // queued behind one worker share each other's refetches.
+            ...(request.refreshSchemas
+               ? { refreshRequestedAt: performance.now() }
+               : {}),
          });
          this.tryDispatch();
       });
@@ -547,13 +580,18 @@ export class PackageLoadPool {
          urlReader: qj.request.urlReader ?? defaultUrlReader,
          resolve: (result) => {
             clearTimeout(timeout);
-            qj.resolve(adaptResult(checkLoadPackageResult(result)));
+            const checked = checkLoadPackageResult(result);
+            this.forgetElsewhere(pw, checked.refreshedSchemaKeys);
+            qj.resolve(adaptResult(checked));
          },
          reject: (err) => {
             clearTimeout(timeout);
             qj.reject(err);
          },
          timeout,
+         ...(qj.refreshRequestedAt !== undefined
+            ? { refreshRequestedAt: qj.refreshRequestedAt }
+            : {}),
       });
 
       const message: LoadPackageRequest = {
@@ -568,12 +606,32 @@ export class PackageLoadPool {
          overlay: qj.request.overlay,
          collectProblems: qj.request.collectProblems,
          computeBuildPlan: qj.request.computeBuildPlan,
-         withPreaggregateCompanions: qj.request.withPreaggregateCompanions,
          ...(qj.request.publishedVersion ? { publishedVersion: true } : {}),
          withEntities: qj.request.withEntities,
          mainThreadWorkBudgetMs: this.mainThreadWorkBudgetMs,
+         ...(qj.request.refreshSchemas
+            ? { refreshTimestamp: nextRefreshTimestamp() }
+            : {}),
       };
       pw.worker.postMessage(message);
+   }
+
+   /**
+    * Tell every worker but `refreshed`, the one that ran a refreshing load,
+    * to drop its entries for the schemas that load refetched, so none of them
+    * compiles the package (or another reading the same table) against the
+    * columns from before. A load under way in another worker may still use
+    * what it already read.
+    */
+   private forgetElsewhere(
+      refreshed: PoolWorker,
+      keys: string[] | undefined,
+   ): void {
+      if (!keys || keys.length === 0) return;
+      const message: ForgetSchemasMessage = { type: "forget-schemas", keys };
+      for (const pw of this.workers) {
+         if (pw !== refreshed) this.postToWorker(pw, message);
+      }
    }
 
    /**
@@ -743,6 +801,12 @@ export class PackageLoadPool {
          case "log":
             handleWorkerLog(msg);
             return;
+         case "unhandled-rejection":
+            recordUnhandledRejection(
+               { message: msg.message, stack: msg.stack },
+               { workerId: pw.id },
+            );
+            return;
          default: {
             const exhaustive: never = msg;
             void exhaustive;
@@ -906,10 +970,17 @@ export class PackageLoadPool {
          const conn = await ctx.connections.lookupConnection(
             msg.connectionName,
          );
-         const result = await conn.fetchSchemaForTables(
-            msg.tables,
-            buildFetchOptions(msg.options),
-         );
+         const options = buildFetchOptions(msg.options);
+         const result =
+            options.refreshTimestamp !== undefined &&
+            ctx.refreshRequestedAt !== undefined
+               ? await this.refetchTables(
+                    conn,
+                    msg.tables,
+                    options,
+                    ctx.refreshRequestedAt,
+                 )
+               : await conn.fetchSchemaForTables(msg.tables, options);
          reply({
             type: "schema-for-tables-response",
             requestId: msg.requestId,
@@ -925,6 +996,57 @@ export class PackageLoadPool {
             error: serializeError(error),
          });
       }
+   }
+
+   /**
+    * A refreshing load's table fetch: each table refetched once across the
+    * refreshing loads that overlap (see SchemaRefetches). Keyed by table
+    * path, as the connection caches it.
+    */
+   private async refetchTables(
+      conn: InfoConnection,
+      tables: Record<string, string>,
+      options: FetchSchemaOptions,
+      requestedAt: number,
+   ): Promise<{
+      schemas: Record<string, unknown>;
+      errors: Record<string, string>;
+   }> {
+      const answers = await this.tableRefetches.fetch(
+         conn,
+         Object.values(tables),
+         requestedAt,
+         async (paths) => {
+            const wanted = new Set(paths);
+            const asked = Object.entries(tables).filter(([, p]) =>
+               wanted.has(p),
+            );
+            const read = await conn.fetchSchemaForTables(
+               Object.fromEntries(asked),
+               options,
+            );
+            const byPath = new Map<
+               string,
+               { schema?: TableSourceDef; error?: string }
+            >();
+            for (const [key, p] of asked) {
+               if (byPath.has(p)) continue;
+               byPath.set(p, {
+                  schema: read.schemas[key] as TableSourceDef | undefined,
+                  error: read.errors[key],
+               });
+            }
+            return byPath;
+         },
+      );
+      const schemas: Record<string, unknown> = {};
+      const errors: Record<string, string> = {};
+      for (const [key, p] of Object.entries(tables)) {
+         const answer = answers.get(p);
+         if (answer?.schema) schemas[key] = answer.schema;
+         else errors[key] = answer?.error ?? "No schema returned for the table";
+      }
+      return { schemas, errors };
    }
 
    private async handleSchemaForSql(
@@ -950,12 +1072,41 @@ export class PackageLoadPool {
          const conn = await ctx.connections.lookupConnection(
             msg.connectionName,
          );
-         const result = await conn.fetchSchemaForSQLStruct(
-            msg.sentence as Parameters<
-               InfoConnection["fetchSchemaForSQLStruct"]
-            >[0],
-            buildFetchOptions(msg.options),
-         );
+         const sentence = msg.sentence as Parameters<
+            InfoConnection["fetchSchemaForSQLStruct"]
+         >[0];
+         const options = buildFetchOptions(msg.options);
+         const requestedAt = ctx.refreshRequestedAt;
+         let result: { structDef?: unknown; error?: string };
+         if (
+            options.refreshTimestamp !== undefined &&
+            requestedAt !== undefined
+         ) {
+            const key = sqlKey(sentence.connection, sentence.selectStr);
+            const answers = await this.sqlRefetches.fetch(
+               conn,
+               [key],
+               requestedAt,
+               async () =>
+                  new Map([
+                     [
+                        key,
+                        (await conn.fetchSchemaForSQLStruct(
+                           sentence,
+                           options,
+                        )) as {
+                           structDef?: SQLSourceDef;
+                           error?: string;
+                        },
+                     ],
+                  ]),
+            );
+            result = answers.get(key) ?? {
+               error: "No schema returned for the SQL",
+            };
+         } else {
+            result = await conn.fetchSchemaForSQLStruct(sentence, options);
+         }
          if (result.error !== undefined) {
             reply({
                type: "schema-for-sql-response",
@@ -1016,6 +1167,20 @@ export class PackageLoadPool {
          });
       }
    }
+}
+
+let lastRefreshTimestamp = 0;
+
+/**
+ * A refreshing load's stamp, strictly increasing: a connection refetches an
+ * entry only when the stamp is greater than the entry's own. It is not what
+ * forces the refetch, since SchemaRefetches drops the entry first; it decides
+ * only for a connection with no cache to drop from, where an entry stored
+ * under a clock later stepped back could still be judged current.
+ */
+function nextRefreshTimestamp(): number {
+   lastRefreshTimestamp = Math.max(Date.now() + 1, lastRefreshTimestamp + 1);
+   return lastRefreshTimestamp;
 }
 
 function buildFetchOptions(options: {

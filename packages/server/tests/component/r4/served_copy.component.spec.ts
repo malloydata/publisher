@@ -140,9 +140,11 @@ describe("R4: the served copy answers equal to live", () => {
          await servedCopy.compiledModelDef();
          const materializer = (
             servedCopy as unknown as {
-               compiledLanes: Map<number, { materializer: ModelMaterializer }>;
+               lanes: {
+                  kept(lane: number): { materializer: ModelMaterializer };
+               };
             }
-         ).compiledLanes.get(0)!.materializer;
+         ).lanes.kept(0).materializer;
          const compiles = spyOn(materializer, "loadRestrictedQuery");
          const miss = "run: ev -> { group_by: region }";
          for (let i = 0; i < 3; i++) {
@@ -188,9 +190,11 @@ describe("R4: the served copy answers equal to live", () => {
          await servedCopy.compiledModelDef();
          const materializer = (
             servedCopy as unknown as {
-               compiledLanes: Map<number, { materializer: ModelMaterializer }>;
+               lanes: {
+                  kept(lane: number): { materializer: ModelMaterializer };
+               };
             }
-         ).compiledLanes.get(0)!.materializer;
+         ).lanes.kept(0).materializer;
          const compiles = spyOn(materializer, "loadRestrictedQuery");
          await expect(
             servedCopy.loadQuery("run: ev -> { group_by: region }"),

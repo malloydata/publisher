@@ -9,6 +9,7 @@
  * hashed with. The one place an address is computed.
  */
 
+import { storageWritable } from "../domain/placement";
 import type {
    BuildManifest,
    BuildTarget,
@@ -61,7 +62,7 @@ function sourceBuildOf(
  * The upstream sources `source` reads, of those its target depends on. Malloy
  * groups same-SQL sources into one target and gives each target the union of
  * its sources' upstream targets, so a target's dependency holds every source
- * of the upstream target: a colocated twin and its `storage=` twin alike. Each
+ * of the upstream target: a database twin and its `storage=` twin alike. Each
  * upstream target is narrowed to the sources `source`'s own definition reaches
  * ({@link reachableSourceIDs}); an upstream target none of whose sources it is
  * seen to reach keeps every source, so an edge is never lost to a walk that
@@ -362,28 +363,28 @@ export function compilerBuildId(
  * destination it declares with `storage=`, when
  * `PUBLISHER_PERSIST_ADDRESS_INCLUDES_DESTINATION` is on and
  * `PERSIST_STORAGE_MODE` is not `off` (off, `storage=` is inert and the source
- * builds colocated). Undefined for every colocated source, so turning the
- * switch on moves no colocated address (P12).
+ * builds in the database tier). Undefined for every database source, so turning the
+ * switch on moves no database address.
  */
 export function addressDestination(source: PersistSource): string | undefined {
    if (!getPersistAddressIncludesDestination()) return undefined;
-   if (getPersistStorageMode() === "off") return undefined;
+   if (!storageWritable(getPersistStorageMode())) return undefined;
    try {
       return declaredStorage(source);
    } catch {
-      // An unreadable annotation addresses as colocated.
+      // An unreadable annotation addresses as database.
       return undefined;
    }
 }
 
 /**
  * Fold what the target's `sql` cannot carry into the text a source's address
- * is computed from: (P12, behind a switch) the storage destination it builds
+ * is computed from: (behind a switch) the storage destination it builds
  * into, and the author's `name=` (or stored projection) where another source
  * of the same build names (or stores) another table
  * ({@link foldDistinctTableNames}). The target's `sql` carries no annotation
  * bytes, so without this a source moved to `storage=` would keep its
- * colocated address, and two `name=`s on one build would get one
+ * database address, and two `name=`s on one build would get one
  * table.
  *
  * The destination is derived here rather than passed in so every caller
@@ -442,7 +443,7 @@ export function declaresOwnPersist(source: PersistSource): boolean {
 
 /**
  * The columns a `storage=` build of `source` stores (as
- * projectToStoredColumns writes them), sorted; "" for a colocated source,
+ * projectToStoredColumns writes them), sorted; "" for a database source,
  * whose build writes its whole query, or one whose columns cannot be read
  * (its storage build refuses on its own).
  */
@@ -542,8 +543,8 @@ export function planAddressOf(
  * Likewise twins: two sources of one build in two places, one in its own
  * warehouse and one with `storage=` (or two destinations), are two tables.
  * Each `storage=` twin is addressed with its destination folded in and the
- * colocated one keeps the plain address, so a run's manifest holds both and
- * the colocated chain over the colocated twin is never handed the stored
+ * database one keeps the plain address, so a run's manifest holds both and
+ * the database chain over the database twin is never handed the stored
  * one. `PUBLISHER_PERSIST_ADDRESS_INCLUDES_DESTINATION` folds every
  * `storage=` destination in already, so there no twin shares an address.
  *
@@ -647,7 +648,7 @@ export function foldDistinctTableNames(
       );
       const nameOf = (m: (typeof group)[number]) =>
          m.defaulted ? "" : tables.get(m.name)!;
-      // A colocated build stores its whole query, so only `storage=`
+      // A database build stores its whole query, so only `storage=`
       // sources are told apart by what they store, and only one declaration
       // from another: an extension that inherits its base's `#@ persist` is
       // its base's table, whatever it renames or adds.
@@ -670,9 +671,9 @@ export function foldDistinctTableNames(
       const storesOf = (m: (typeof group)[number]) =>
          m.stores === "" ? "" : declared.get(m.declaration)!.stores;
       const projections = new Set(group.map(storesOf).filter((p) => p !== ""));
-      // Twins: one SQL built in two places (colocated and `storage=`, or two
+      // Twins: one SQL built in two places (database and `storage=`, or two
       // destinations) are two tables, so each `storage=` member folds in its
-      // destination and the colocated one keeps the plain address. An address
+      // destination and the database one keeps the plain address. An address
       // whose sources all build in one place never moves.
       const tiers = new Set(group.map((m) => m.tier));
       const tableOf = (m: (typeof group)[number]) =>
@@ -685,7 +686,7 @@ export function foldDistinctTableNames(
             : tableOf(m);
       if (new Set(group.map(keyOf)).size < 2) continue;
       // When only where they build tells them apart (twins under one name,
-      // or none), only the stored twins move: the colocated twin keeps its
+      // or none), only the stored twins move: the database twin keeps its
       // plain address, whatever `name=` both declare.
       const byTierOnly = new Set(group.map(tableOf)).size < 2;
       for (const member of group) {
@@ -701,10 +702,10 @@ export function foldDistinctTableNames(
  * The storage destination a source builds into, "" for its own warehouse:
  * its `storage=`, unless `PERSIST_STORAGE_MODE` is `off`, where a `storage=`
  * source is not built at all (it is skipped and served live), so it is no
- * twin of anything. An unreadable annotation reads as colocated.
+ * twin of anything. An unreadable annotation reads as database.
  */
 function storedTierOf(source: PersistSource): string {
-   if (getPersistStorageMode() === "off") return "";
+   if (!storageWritable(getPersistStorageMode())) return "";
    try {
       return declaredStorage(source)?.trim() ?? "";
    } catch {

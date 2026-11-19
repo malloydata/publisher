@@ -38,7 +38,7 @@ function legacy(
       if (!stored || casts.some((c) => c.column === d.name)) continue;
       const big = bigIntegerReadOf(d.field, stored, {
          dialect: options.dialect,
-         ...(options.colocated ? { colocated: true } : {}),
+         ...(options.database ? { database: true } : {}),
          ...(options.nativeTypeOf
             ? { nativeTypeOf: options.nativeTypeOf }
             : {}),
@@ -87,10 +87,10 @@ const OPTIONS: ({ queryTimezone?: string } & Partial<BigIntegerReadOptions>)[] =
       { dialect: "postgres" },
       { dialect: "bigquery" },
       { dialect: "duckdb", queryTimezone: "Asia/Tokyo" },
-      { dialect: "bigquery", colocated: true },
+      { dialect: "bigquery", database: true },
       {
          dialect: "postgres",
-         colocated: true,
+         database: true,
          nativeTypeOf: (c: string) => (c === "a" ? "bigint" : undefined),
       },
       {},

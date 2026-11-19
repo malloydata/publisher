@@ -5,7 +5,7 @@
  * Materialization characterization goldens over the repo's persist corpus
  * (phase 5, step 1): every hammer scenario model that materializes, through
  * v1 `#@ persist` / `#@ preaggregate` or v2 `#(materialize)` /
- * `#(preaggregate)` (`test_helpers/persist_corpus.ts`), compiled against its
+ * `#(rollup)` (`test_helpers/persist_corpus.ts`), compiled against its
  * DuckDB stand-in and planned through `collectModelBuildPlan` with the
  * materialize switch on, as a package load plans each model. The persist fixtures are packages,
  * and run through the package goldens instead.
@@ -38,7 +38,7 @@ import * as path from "path";
 import { pathToFileURL } from "url";
 import {
    collectModelBuildPlan,
-   deriveBuildPlanOutcome,
+   derivePackagePlan,
    finishBuildPlan,
    emptyBuildPlanParts,
    type FinishedBuildPlan,
@@ -161,7 +161,7 @@ async function planModel(model: CorpusModel, root: string): Promise<Planned> {
    const addresses = addressesOf(compiled);
    learnAddresses(normalizer, addresses);
    const { connections: _connections, ...collected } = compiled;
-   const outcome = deriveBuildPlanOutcome(collected, null);
+   const outcome = derivePackagePlan(collected, null);
    const wirePlan = outcome.plan && {
       ...outcome.plan,
       sources: Object.fromEntries(

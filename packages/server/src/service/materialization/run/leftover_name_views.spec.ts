@@ -27,12 +27,12 @@ import {
    provenOwnView,
    replaceOwnViewStatements,
 } from "./leftover_name_views";
-import { swapIntoPlace } from "./colocated_build_strategy";
+import { swapIntoPlace } from "./database_build_strategy";
 import { createTableAndDescribe } from "./materialization_build_session";
 import { formatPublishRejections } from "../../publish_checks";
 import { packageOwner } from "./table_mark_sql";
 import {
-   colocatedTableSite,
+   databaseTableSite,
    storageTableSite,
    type TableSiteContext,
 } from "./table_site";
@@ -501,7 +501,7 @@ describe("leftover name= views, at a site", () => {
       ).rows.map((r) => String(r.view_name));
 
    it("reads only this package's own mark, on a view", async () => {
-      const site = colocatedTableSite(connection);
+      const site = databaseTableSite(connection);
       await view("mine", "g1", OWNER);
       await view("theirs", "g1", OTHER);
       await view("plain", "g1");
@@ -603,7 +603,7 @@ describe("leftover name= views, at a site", () => {
    });
 
    it("never proves a view that reads another relation beside its marked table, or the same name in another schema", async () => {
-      const site = colocatedTableSite(connection);
+      const site = databaseTableSite(connection);
       await run("CREATE TABLE other AS SELECT 1 AS x, 9 AS y");
       await run("CREATE SCHEMA s2");
       await run("CREATE TABLE s2.g1 AS SELECT 3 AS x");
@@ -631,7 +631,7 @@ describe("leftover name= views, at a site", () => {
    });
 
    it("drops its own view in the swap's transaction, and leaves it when it was repointed after the proof", async () => {
-      const site = colocatedTableSite(connection);
+      const site = databaseTableSite(connection);
       const swap = (statements: string[] | undefined) =>
          swapIntoPlace({
             connection,

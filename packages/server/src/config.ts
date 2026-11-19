@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import type { StorageMode } from "./service/materialization/domain/switches";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -889,7 +890,7 @@ export const getS3CredentialChainPolicy = (): S3CredentialChainPolicy =>
  *
  * No mode hard-fails a package on `storage=`; a stricter policy is the caller's.
  */
-export type PersistStorageMode = "off" | "write-only" | "on";
+export type PersistStorageMode = StorageMode;
 
 /**
  * The `storage=` deployment mode from `PERSIST_STORAGE_MODE` (default `off`).
@@ -908,7 +909,7 @@ export const getPersistAddressIncludesDestination = (): boolean =>
    settings.get("persist.addressIncludesDestination");
 
 /**
- * Whether materialization v2 is on: `#(materialize)` and `#(preaggregate)` read,
+ * Whether materialization v2 is on: `#(materialize)` and `#(rollup)` read,
  * built and served, from `PUBLISHER_MATERIALIZE` (default `true`). `false`
  * opts out, and the build plan is exactly what it was without it. The setting
  * is removed one release after this default ships.
@@ -926,33 +927,12 @@ export const getMaterializeGatedSources = (): boolean =>
    settings.get("materialize.gatedSources");
 
 /**
- * Whether a `storage=` rollup over a gated base may be read past its gate.
- * No setting turns it on until the managed-tier review; only a test does
- * ({@link allowGatedStorageRollupsForTests}).
- */
-let gatedStorageRollupsReviewed = false;
-
-/**
- * For tests only: let `storage=` rollups over gated bases be built and read
- * (behind `materialize.gatedSources`), as they will be once the managed-tier
- * review passes. Returns the restore.
- */
-export function allowGatedStorageRollupsForTests(on = true): () => void {
-   const before = gatedStorageRollupsReviewed;
-   gatedStorageRollupsReviewed = on;
-   return () => {
-      gatedStorageRollupsReviewed = before;
-   };
-}
-
-/**
  * The switches gate keeping reads, read once at a shell and passed to the
  * policy (`materialization/domain/gate_policy.ts`).
  */
 export const gateSwitches = (): GateSwitches => ({
    materialize: getMaterializeEnabled(),
    gatedSources: getMaterializeGatedSources(),
-   gatedStorageRollupsReviewed,
 });
 
 /**

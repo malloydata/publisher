@@ -1,6 +1,6 @@
 // feature: persisted views: files generated while serving
 
-// ==== <pkg>/m.malloy (text 1 of 3)
+// ==== <pkg>/m.malloy (text 1 of 4)
 ##! experimental { access_modifiers givens persistence virtual_source }
 import { north_orders } from "m.malloy.view-author.malloy"
 
@@ -22,7 +22,7 @@ source: orders is orders__by_region__view__stored extend {
 }
 export { orders, north_orders }
 
-// ==== <pkg>/m.malloy (text 2 of 3)
+// ==== <pkg>/m.malloy (text 2 of 4)
 ##! experimental { access_modifiers givens persistence virtual_source }
 import { north_orders } from "m.malloy.view-author.malloy"
 
@@ -37,7 +37,7 @@ source: orders is orders__by_status__view__built extend {
 }
 export { orders, north_orders }
 
-// ==== <pkg>/m.malloy (text 3 of 3)
+// ==== <pkg>/m.malloy (text 3 of 4)
 ##! experimental { access_modifiers givens persistence virtual_source }
 import { north_orders } from "m.malloy.view-author.malloy"
 
@@ -48,6 +48,25 @@ type: orders__two_stage__view__type is {
 source: orders__two_stage__view__stored is __served_copy_alias_of_lake.virtual('b3fc9bd92fd43c859fd061bf8bd1333035de41bb7a77730d0fc9aa70cba70d88')::orders__two_stage__view__type
 source: orders is orders__two_stage__view__stored extend {
   view: two_stage is { select: region, n }
+}
+export { orders, north_orders }
+
+// ==== <pkg>/m.malloy (text 4 of 4)
+##! experimental { access_modifiers givens persistence virtual_source }
+import { north_orders } from "m.malloy.view-author.malloy"
+
+type: orders__recent__view__type is {
+   region::string,
+   n::number
+}
+source: orders__recent__view__stored is __served_copy_alias_of_lake.virtual('00eaeafe019005432a365f1f947144998fe8a0f11656a6fd56c848514a06b7c1')::orders__recent__view__type
+source: orders is orders__recent__view__stored extend {
+  view: recent is {
+    group_by: region
+    aggregate:
+      n is n.max()
+    order_by: n desc
+  }
 }
 export { orders, north_orders }
 

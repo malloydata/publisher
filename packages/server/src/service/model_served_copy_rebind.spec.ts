@@ -38,10 +38,8 @@ import {
 } from "../package_load/package_load_pool";
 import { SourceMap } from "./materialization/text/source_map";
 import { answerKeepsGates } from "./materialization/domain/gate_policy";
-import {
-   compileInputOf,
-   type ServedCopyServe,
-} from "./materialization/serve/served_copy_serve";
+import { compileInputOf } from "./materialization/serve/served_copy_lanes";
+import type { ServedCopyServe } from "./materialization/serve/served_copy_serve";
 import { unrecordedAudit } from "./access_record";
 import { Model } from "./model";
 import { QueryPrivileges } from "./model_query_request";
@@ -263,16 +261,19 @@ describe("a served copy compiles once per thing it is compiled from", () => {
       const switches = {
          materialize: true,
          gatedSources: false,
-         gatedStorageRollupsReviewed: false,
       };
-      const g3 = { colocatedReadsKeepGates: true };
+      const g3 = { databaseReadsKeepGates: true };
+      // As the router judges them: each storage table with its gate columns'
+      // stored types listed (this source's gate reads none).
+      const listed = (tables: readonly Binding[]) =>
+         tables.map((t) => ({ ...t, gateColumnTypes: [] }));
       const kept: Binding = { ...BINDING, ownGateKept: true };
       model.setServeBindings([kept]);
       await model.prepareServedCopy();
       const first = await copy.loadQuery(query);
       expect(first.gateTablesRead[0]).toBe(kept);
       expect(
-         answerKeepsGates("served", first.gateTablesRead, switches, g3),
+         answerKeepsGates("served", listed(first.gateTablesRead), switches, g3),
       ).toBe(true);
       const seen = compileCount();
 
@@ -286,7 +287,12 @@ describe("a served copy compiles once per thing it is compiled from", () => {
       expect(second.gateTablesRead[0]).toBe(notKept);
       expect(second.tablesRead[0]).toBe(notKept);
       expect(
-         answerKeepsGates("served", second.gateTablesRead, switches, g3),
+         answerKeepsGates(
+            "served",
+            listed(second.gateTablesRead),
+            switches,
+            g3,
+         ),
       ).toBe(false);
    });
 
@@ -318,7 +324,7 @@ describe("a served copy compiles once per thing it is compiled from", () => {
                ).sourceIDOf("X")!,
             ],
          },
-         { tier: "colocated" },
+         { tier: "database" },
          { kind: "materialize" },
       ];
       for (const change of changes) {

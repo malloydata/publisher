@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * `#@ persist` on a view (P14): reading the
+ * `#@ persist` on a view: reading the
  * declarations and writing their build file.
  *
  *     source: ops is duckdb.table('flights') extend {
@@ -27,7 +27,7 @@
  * The companion reads the author's files with every source-level `#@` line
  * blanked (positions kept), so a persisted view never chains onto its source's
  * own table: it reads the rows the live query reads (the same reason the
- * `#(preaggregate)` companion blanks them).
+ * `#(rollup)` companion blanks them).
  *
  * Keying: a declaration by its source's `sourceID` and the view's name; the
  * stored table by the generated source's `sourceEntityId` and destination,
@@ -47,7 +47,7 @@
  * compiled them (`build_plan.ts`): a view that reads a given or the current
  * time (its result differs per caller or per read), a nested result on
  * either tier (the view leg cannot rebuild a nest's rows exactly), and a
- * gated source whose gate the view's result cannot keep (question 3).
+ * gated source whose gate the view's result cannot keep.
  *
  * Behind `PUBLISHER_MATERIALIZE`. Every name in the generated text goes
  * through `malloy_text`; the author's own `#@` line is copied verbatim.
@@ -61,10 +61,12 @@
  *     #@ persist                               // the author's line, verbatim
  *     source: top_carriers__query is top_carriers
  *
- * The `__query` segment is the query marker in the build source's name, and
- * so in its default table name
- * (`<package>__<file>__<query>_query__p<8 hex>`), so no existing
- * table name moves and a source of the query's name never shares its table.
+ * The `__query` segment is the query marker in the build source's name, so a
+ * source of the query's name never shares its table: the table name's hash is
+ * over the full name. Its readable part drops the marker, as a view's drops
+ * `__view` (`<package>__<file>__<query>__p<8 hex>`, `sourceLabel`); a table
+ * built under the earlier `…__<query>_query__p<8 hex>` is renamed and rebuilt
+ * once (`keepsReadableName`).
  *
  * Invalid, failing the publish and the load (`persist-query-invalid`, or
  * `persist-query-unparseable` for a line that does not parse): an `@env.`
@@ -369,6 +371,44 @@ export function persistedViewRefusalFinding(
          outcome.refused,
          refusal.storage,
       ),
+   };
+}
+
+/** Why a persisted view or query whose result reads a given is not built. */
+const READS_A_GIVEN =
+   "its result reads a given, so it differs per caller and a table holds one caller's result";
+
+/** The refusal of a planned persisted view whose result reads a given. */
+export function persistedViewReadsGivenRefusal(
+   plan: Pick<
+      PersistedViewPlan,
+      "sourceID" | "sourceName" | "viewName" | "storage"
+   >,
+): PersistedViewRefusal {
+   return {
+      sourceID: plan.sourceID,
+      sourceName: plan.sourceName,
+      viewName: plan.viewName,
+      reason: READS_A_GIVEN,
+      outcome: { refused: "reads_given" },
+      ...(plan.storage !== undefined ? { storage: plan.storage } : {}),
+   };
+}
+
+/**
+ * The refusal of a planned persisted query whose result reads a given: the
+ * query's own stages, its source's own given-reading `where:`, or one it
+ * inherits.
+ */
+export function persistedQueryReadsGivenRefusal(
+   plan: Pick<PersistedQueryPlan, "queryName" | "declaringURL" | "storage">,
+): PersistedQueryRefusal {
+   return {
+      queryName: plan.queryName,
+      reason: READS_A_GIVEN,
+      refusal: "reads_given",
+      declaringURL: plan.declaringURL,
+      ...(plan.storage !== undefined ? { storage: plan.storage } : {}),
    };
 }
 

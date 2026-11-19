@@ -26,7 +26,7 @@
  * the serve connection is reopened after each run and every look opens a
  * fresh instance.
  *
- * The colocated tier and a `scope: package` version are
+ * The database tier and a `scope: package` version are
  * src/service/materialization/run/shared_address_ownership.spec.ts.
  */
 
@@ -620,7 +620,7 @@ describe.skipIf(process.platform === "win32")(
          expect([m.status, m.error]).toEqual(["MANIFEST_FILE_READY", null]);
          expect(outcome(m).failures).toEqual([]);
          const shared = (await catalog()).shared_t;
-         expect(shared.comment).toBe(OWN_MARK);
+         expect(shared.comment).toBe(`${OWN_MARK} table=${LAKE}.main.shared_t`);
          expect(shared.rows).toEqual([
             ["a", 1],
             ["a", 2],

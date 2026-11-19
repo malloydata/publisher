@@ -10,7 +10,7 @@
  * only where that record passed. Through real builds run after run, as the
  * rollup key check's spec drives them: the record describes the table the
  * checking run wrote, is carried while that table stands, and reaches the
- * colocated table's serve binding.
+ * database table's serve binding.
  */
 
 import {
@@ -40,9 +40,9 @@ import {
    UniquenessLedger,
 } from "./inline_uniqueness";
 import { InstructedBuild } from "./instructed_build";
-import type { BuildEnvironment } from "./materialization_run_support";
+import { type BuildEnvironment } from "./build_upstreams";
 import { buildSource } from "./source_build";
-import { deriveColocatedServeBindings } from "../serve/bind";
+import { deriveDatabaseServeBindings } from "../serve/bind";
 
 const packages = tempBuildPlanPackages();
 let restore: () => void;
@@ -201,7 +201,7 @@ describe("a pair table's leaf key check, on a build", () => {
    );
 
    it(
-      "reaches the colocated table's serve binding",
+      "reaches the database table's serve binding",
       async () => {
          const s = await scenario();
          const result = await s.run(true);
@@ -212,7 +212,7 @@ describe("a pair table's leaf key check, on a build", () => {
             entry,
          );
          expect(keyUniqueness?.parentKeys).toEqual({ [s.leaf.sourceID]: true });
-         const bindings = deriveColocatedServeBindings({
+         const bindings = deriveDatabaseServeBindings({
             entries: {
                [s.address]: {
                   tableName: entry.physicalTableName ?? "",
@@ -263,16 +263,17 @@ describe("a pair table's leaf key check, on a build", () => {
       { timeout: 60000 },
    );
 
-   // A run about to rewrite a colocated pair table forgets its leaf record on
+   // A run about to rewrite a database pair table forgets its leaf record on
    // the bindings the models serve from, before any table is written: a run
    // that fails part-way, or a rewrite that brings a NULL or repeated leaf
    // key, never leaves a pass bound over rows it did not check.
-   it("is forgotten on the models' colocated bindings when a run is about to write the table", () => {
+   it("is forgotten on the models' database bindings when a run is about to write the table", () => {
       const model = {
          setServedCopyContext: () => {},
          prepareServedCopy: async () => {},
          persistedViewBuilds: () => [],
          servedCopyProblems: () => [],
+         gateLoadWarnings: () => [],
          storedColumnTypeMismatches: () => [],
       };
       const materialization = new PackageMaterialization({
@@ -297,7 +298,7 @@ describe("a pair table's leaf key check, on a build", () => {
             storedColumns: [{ name: "id", type: "number" }],
          } as unknown as MaterializePlan,
       };
-      materialization.plan.colocatedSourceEligibility = {
+      materialization.plan.databaseSourceEligibility = {
          eligibleEntityIds: new Set(["a"]),
       } as never;
       const bound = (): Binding | undefined =>
@@ -305,8 +306,8 @@ describe("a pair table's leaf key check, on a build", () => {
             .snapshot()
             .bindings.find((b) => b.virtualHandle === "a");
       materialization.bind({
-         colocatedAsGiven: true,
-         colocated: {
+         databaseAsGiven: true,
+         database: {
             a: {
                tableName: "flights_pairs",
                connectionName: "duckdb",
@@ -320,8 +321,8 @@ describe("a pair table's leaf key check, on a build", () => {
       expect(bound()?.primaryKeys).toBeUndefined();
       // A later bind that holds the record again pushes it.
       materialization.bind({
-         colocatedAsGiven: true,
-         colocated: {
+         databaseAsGiven: true,
+         database: {
             a: {
                tableName: "flights_pairs",
                connectionName: "duckdb",

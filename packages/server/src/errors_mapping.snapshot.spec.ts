@@ -35,6 +35,9 @@ import {
    InvalidStateTransitionError,
    MaterializationConflictError,
    MaterializationEligibilityError,
+   MaterializedTableDropRefusedError,
+   TableOwnershipError,
+   BuildInstructionsInvalidError,
    MaterializationNotFoundError,
    ModelCompilationError,
    ModelNotFoundError,
@@ -375,6 +378,33 @@ const CASES: Array<[string, () => unknown]> = [
    ["FrozenConfigError", () => new FrozenConfigError()],
    ["AccessDeniedError", () => new AccessDeniedError("access refused")],
    [
+      "AccessDeniedError row filter",
+      () => AccessDeniedError.forSource("orders", "row_filter"),
+   ],
+   [
+      "BuildInstructionsInvalidError",
+      () =>
+         new BuildInstructionsInvalidError(
+            "Instruction references unknown sourceEntityId 'e9'",
+         ),
+   ],
+   [
+      "TableOwnershipError owned elsewhere",
+      () =>
+         new TableOwnershipError(
+            "table-owned-elsewhere",
+            "another package holds analytics.orders",
+         ),
+   ],
+   [
+      "TableOwnershipError unverified",
+      () =>
+         new TableOwnershipError(
+            "table-ownership-unverified",
+            "who holds analytics.orders could not be read",
+         ),
+   ],
+   [
       "AccessDeniedError authorize denial",
       () =>
          new AccessDeniedError(
@@ -418,6 +448,30 @@ const CASES: Array<[string, () => unknown]> = [
    [
       "MaterializationConflictError",
       () => new MaterializationConflictError("a build is running"),
+   ],
+   [
+      "MaterializedTableDropRefusedError in use",
+      () =>
+         new MaterializedTableDropRefusedError(
+            "TABLE_IN_USE",
+            "a committed run names analytics.orders",
+         ),
+   ],
+   [
+      "MaterializedTableDropRefusedError owned elsewhere",
+      () =>
+         new MaterializedTableDropRefusedError(
+            "TABLE_OWNED_ELSEWHERE",
+            "another package marked analytics.orders",
+         ),
+   ],
+   [
+      "MaterializedTableDropRefusedError unverified",
+      () =>
+         new MaterializedTableDropRefusedError(
+            "TABLE_OWNERSHIP_UNVERIFIED",
+            "nothing proves analytics.orders is this package's",
+         ),
    ],
    ["WriteConflictError", () => new WriteConflictError("file changed")],
    [

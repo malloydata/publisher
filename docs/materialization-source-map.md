@@ -39,13 +39,20 @@ reads it.
 
 ## The keying rule
 
-Three identities, each used for one thing:
+Four identities, each used for one thing:
 
 | Identity | Key | Used for |
 | --- | --- | --- |
 | A declaration | `sourceID` (`name@<model URL>`) | Every map, gate and lookup about a source |
-| A stored table | `(sourceEntityId, destination)`; destination is null for colocated | Bindings, the catalog, verdicts and the path report |
+| A stored table | its address: the content address (`sourceEntityId`, computed once per plan in `plan/addressing.ts` and held in `PackagePlan.addresses`), its tier, and its place: a binding's `destinationName` is the `storage=` destination for a storage table and the source's own connection for a database one. With `persist.addressIncludesDestination` on, the destination is folded into the content address itself; otherwise it is carried beside it. Where Malloy files the table under another key, the plan records that key in `PackagePlan.compilerKeys` | Bindings, the catalog, verdicts and the path report |
+| A physical table | a name in a place (a connection or a `storage=` destination), compared by the keys in `domain/physical_table.ts`, each named for what it is safe for; a run records one as a `TableRecord` | Builds, claims, uniqueness, the reclaim. Never a binding or a gate |
 | A name | the name in one model's namespace | Display and logs only |
+
+The address is not yet one named type: its parts travel together on the
+table plan, the manifest entry and the binding. The rules that judge a table
+by its address key by the content address alone: `ungatedTableAddresses` and
+`keptTableAddresses` (`serve/bind.ts`) are sets of `sourceEntityId`s, so every
+source sharing an address is judged together.
 
 A name is never a map key or a gate. Names are neither package-unique (two
 models may declare `orders`) nor stable across import (a re-export can rename),
@@ -221,7 +228,7 @@ verdict tests stay green.
 
 ## Open points
 
-1. **One listing per rollup.** Resolved for `#(preaggregate)` (phase 4 PR 1):
+1. **One listing per rollup.** Resolved for `#(rollup)` (phase 4 PR 1):
    a rollup is planned only in the model that declares its base, keyed by its
    own `sourceID` (`<rollup>@<declaring model>.preaggregate.malloy`), so the
    build plan lists it once. `#@ preaggregate` keeps its per-model companions,

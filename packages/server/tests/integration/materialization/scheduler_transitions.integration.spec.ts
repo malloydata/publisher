@@ -152,7 +152,7 @@ describe("MaterializationScheduler transitions (integration, real store)", () =>
 
    async function scheduledFireCount(env: string): Promise<number> {
       return (await envMaterializations(env)).filter(
-         (m) => triggerOf(m) === "SCHEDULER",
+         (m) => triggerOf(m) === "scheduler",
       ).length;
    }
 

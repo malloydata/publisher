@@ -12,7 +12,7 @@ import {
    withQueryMetadataOn,
 } from "../../../test_helpers/materialization_service_harness";
 import { MaterializationService } from "./materialization_service";
-import { isReclaimableStorageTable } from "./materialization_run_support";
+import { isReclaimableStorageTable } from "./reclaimer";
 import { Reclaimer } from "./reclaimer";
 import { logger } from "../../../logger";
 import { resetMaterializationTelemetryForTesting } from "../../../materialization_metrics";
@@ -46,8 +46,8 @@ describe("deleteMaterialization", () => {
             schema: [{ name: "a", type: "BIGINT" }],
          },
       };
-      // A colocated entry carries NO storageDestinationName.
-      const colocatedEntry = {
+      // A database entry carries NO storageDestinationName.
+      const databaseEntry = {
          ce1: {
             sourceEntityId: "ce1",
             sourceName: "daily",
@@ -58,10 +58,10 @@ describe("deleteMaterialization", () => {
 
       function setupEnv(): {
          storageSpy: sinon.SinonStub;
-         colocatedSpy: sinon.SinonStub;
+         databaseSpy: sinon.SinonStub;
       } {
          const storageSpy = sinon.stub().resolves();
-         const colocatedSpy = sinon.stub().resolves();
+         const databaseSpy = sinon.stub().resolves();
          (ctx.environmentStore.getEnvironment as sinon.SinonStub).resolves({
             ...UNVERSIONED_ENVIRONMENT,
             getPackage: sinon
@@ -70,17 +70,17 @@ describe("deleteMaterialization", () => {
             getApiConnection: () => ({ name: "lake", type: "duckdb" }),
             getEnvironmentName: () => "env",
             getEnvironmentPath: () => "/test",
-            // What the rebind read binds: colocated always, storage= when
+            // What the rebind read binds: database always, storage= when
             // the read returns it.
             rebindPackageFromStore: async (
                packageName: string,
                read: () => Promise<{
-                  colocated: unknown;
+                  database: unknown;
                   storage?: unknown;
                }>,
             ) => {
-               const { colocated, storage } = await read();
-               await colocatedSpy(packageName, colocated);
+               const { database, storage } = await read();
+               await databaseSpy(packageName, database);
                if (storage !== undefined)
                   await storageSpy(packageName, storage);
             },
@@ -92,7 +92,7 @@ describe("deleteMaterialization", () => {
                manifest: { entries: {} } as any,
             }),
          );
-         return { storageSpy, colocatedSpy };
+         return { storageSpy, databaseSpy };
       }
 
       it("re-derives storage bindings from the next-latest materialization (on)", async () => {
@@ -100,7 +100,7 @@ describe("deleteMaterialization", () => {
             env: { PERSIST_STORAGE_MODE: "on" },
          });
          try {
-            const { storageSpy, colocatedSpy } = setupEnv();
+            const { storageSpy, databaseSpy } = setupEnv();
             // The latest REMAINING successful run carries a storage entry.
             ctx.repository.listMaterializations.resolves([
                makeMaterialization({
@@ -115,31 +115,31 @@ describe("deleteMaterialization", () => {
 
             expect(storageSpy.calledOnce).toBe(true);
             expect(Object.keys(storageSpy.firstCall.args[1])).toContain("se1");
-            // Colocated is re-derived too (with no colocated entries ⇒ cleared).
-            expect(colocatedSpy.calledOnce).toBe(true);
-            expect(colocatedSpy.firstCall.args[1]).toEqual({});
+            // Database is re-derived too (with no database entries ⇒ cleared).
+            expect(databaseSpy.calledOnce).toBe(true);
+            expect(databaseSpy.firstCall.args[1]).toEqual({});
          } finally {
             restore();
          }
       });
 
-      it("re-derives colocated bindings regardless of tier mode (off)", async () => {
-         // PERSIST_STORAGE_MODE unset ⇒ off. Colocated is the v0 path, not gated
+      it("re-derives database bindings regardless of tier mode (off)", async () => {
+         // PERSIST_STORAGE_MODE unset ⇒ off. Database is the v0 path, not gated
          // by the storage kill switch, so it is still re-derived; storage is not.
-         const { storageSpy, colocatedSpy } = setupEnv();
+         const { storageSpy, databaseSpy } = setupEnv();
          ctx.repository.listMaterializations.resolves([
             makeMaterialization({
                id: "m-prev",
                status: "MANIFEST_FILE_READY",
                // eslint-disable-next-line @typescript-eslint/no-explicit-any
-               manifest: { entries: colocatedEntry } as any,
+               manifest: { entries: databaseEntry } as any,
             }),
          ]);
 
          await ctx.service.deleteMaterialization("my-env", "pkg", "mat-1");
 
-         expect(colocatedSpy.calledOnce).toBe(true);
-         expect(Object.keys(colocatedSpy.firstCall.args[1])).toContain("ce1");
+         expect(databaseSpy.calledOnce).toBe(true);
+         expect(Object.keys(databaseSpy.firstCall.args[1])).toContain("ce1");
          // Storage rebind is skipped when the tier is off.
          expect(storageSpy.called).toBe(false);
       });
@@ -149,28 +149,28 @@ describe("deleteMaterialization", () => {
             env: { PERSIST_STORAGE_MODE: "on" },
          });
          try {
-            const { storageSpy, colocatedSpy } = setupEnv();
+            const { storageSpy, databaseSpy } = setupEnv();
             ctx.repository.listMaterializations.resolves([]); // none remain
 
             await ctx.service.deleteMaterialization("my-env", "pkg", "mat-1");
 
             expect(storageSpy.calledOnce).toBe(true);
             expect(storageSpy.firstCall.args[1]).toEqual({}); // empty ⇒ serve live
-            expect(colocatedSpy.calledOnce).toBe(true);
-            expect(colocatedSpy.firstCall.args[1]).toEqual({});
+            expect(databaseSpy.calledOnce).toBe(true);
+            expect(databaseSpy.firstCall.args[1]).toEqual({});
          } finally {
             restore();
          }
       });
 
       it("skips only the storage rebind when the tier is off (dark-ship)", async () => {
-         const { storageSpy, colocatedSpy } = setupEnv(); // off
+         const { storageSpy, databaseSpy } = setupEnv(); // off
          ctx.repository.listMaterializations.resolves([]); // none remain
          await ctx.service.deleteMaterialization("my-env", "pkg", "mat-1");
-         // Storage is skipped when off; colocated still re-derives (to clear).
+         // Storage is skipped when off; database still re-derives (to clear).
          expect(storageSpy.called).toBe(false);
-         expect(colocatedSpy.calledOnce).toBe(true);
-         expect(colocatedSpy.firstCall.args[1]).toEqual({});
+         expect(databaseSpy.calledOnce).toBe(true);
+         expect(databaseSpy.firstCall.args[1]).toEqual({});
       });
    });
 
@@ -415,7 +415,7 @@ describe("table drop telemetry", () => {
       expect(
          await harness.collectCounter(DROP_COUNTER, {
             outcome: "success",
-            engine: "in_warehouse",
+            tier: "database",
             occasion: "reclaim",
          }),
       ).toBe(1);
@@ -487,7 +487,7 @@ describe("isReclaimableStorageTable", () => {
       }
    });
 
-   it("ignores a colocated entry, which this sweep does not own", () => {
+   it("ignores a database entry, which this sweep does not own", () => {
       expect(isReclaimableStorageTable(entry({}))).toBe(false);
       expect(isReclaimableStorageTable(entry({ refresh: "delta" }))).toBe(
          false,
@@ -561,6 +561,35 @@ describe("reclaimStorageTablesFromFailedRun", () => {
                      other: {
                         storageDestinationName: "lake",
                         physicalTableName: "daily_v1",
+                     },
+                  },
+               },
+            },
+         ],
+      );
+
+      expect(said(infoLog, /Keeping a table from a failed run/)).toBe(true);
+      expect(said(infoLog, /Dropped a materialized storage table/)).toBe(false);
+      expect(said(warnLog, /Failed to drop a materialized storage table/)).toBe(
+         false,
+      );
+   });
+
+   it("never drops a table whose name a live manifest names through another destination", async () => {
+      // A table's name does not say where it is: `lake_alias` may be another
+      // name for the very DuckLake `lake` names, so a committed run that names
+      // `daily_v1` through it may be serving this table. Judged by the name's
+      // last segment, whatever the destination or container.
+      await reclaim(
+         [entry("daily_v1")],
+         [
+            {
+               status: "MANIFEST_FILE_READY",
+               manifest: {
+                  entries: {
+                     other: {
+                        storageDestinationName: "lake_alias",
+                        physicalTableName: "main.daily_v1",
                      },
                   },
                },

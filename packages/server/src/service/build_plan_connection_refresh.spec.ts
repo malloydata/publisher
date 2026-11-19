@@ -290,8 +290,7 @@ describe("re-deriving after a connection edit", () => {
          ok: true,
          durationMs: 0,
          digestSkipped: [],
-         eligibilityRefused: {},
-         outcome: {
+         packagePlan: {
             annotationFindings: [
                {
                   route: "@",
@@ -429,8 +428,9 @@ describe("a failed re-derivation", () => {
    /** The facade's plan lifecycle, whose fields these specs read. */
    function internals(pkg: Package): {
       sourceEligibility: unknown;
-      colocatedSourceEligibility: unknown;
-      servingPlanWhileUnavailable: unknown;
+      databaseSourceEligibility: unknown;
+      buildPlan: unknown;
+      servingPlan(): unknown;
       buildConnectionNames: ReadonlySet<string>;
    } {
       return (
@@ -440,12 +440,12 @@ describe("a failed re-derivation", () => {
       ).plan;
    }
 
-   function colocated(pkg: Package): {
+   function database(pkg: Package): {
       eligibleEntityIds: Set<string>;
       refused: Record<string, string>;
    } {
       return (pkg.materialization() as PackageMaterialization).plan
-         .colocatedSourceEligibility as {
+         .databaseSourceEligibility as {
          eligibleEntityIds: Set<string>;
          refused: Record<string, string>;
       };
@@ -459,7 +459,7 @@ describe("a failed re-derivation", () => {
       const storageBefore = state.sourceEligibility;
       const [address] = planned(v1);
       expect(storageBefore).toBeDefined();
-      expect(colocated(v1).eligibleEntityIds.has(address)).toBe(true);
+      expect(database(v1).eligibleEntityIds.has(address)).toBe(true);
 
       failNextRefresh();
       await editConnection(env, "SELECT 9");
@@ -470,15 +470,15 @@ describe("a failed re-derivation", () => {
       expect(v1.getBuildPlan()).toBeNull();
       // ...but binding still matches entries as it did before the edit.
       expect(state.sourceEligibility).toBe(storageBefore);
-      expect(state.servingPlanWhileUnavailable).toBe(planBefore);
-      // Except a colocated table on the connection the edit changed: it was
+      expect(state.servingPlan()).toBe(planBefore);
+      // Except a database table on the connection the edit changed: it was
       // built through that connection as it was, and would be read through it
       // as it is now, so it serves live until the plan is re-derived.
-      expect(colocated(v1).eligibleEntityIds.has(address)).toBe(false);
-      expect(colocated(v1).refused[address]).toContain("connection changed");
+      expect(database(v1).eligibleEntityIds.has(address)).toBe(false);
+      expect(database(v1).refused[address]).toContain("connection changed");
    });
 
-   it("keeps colocated eligibility for sources on connections the edit did not change", async () => {
+   it("keeps database eligibility for sources on connections the edit did not change", async () => {
       const duck2 = {
          name: "duck2",
          type: "duckdb",
@@ -505,15 +505,15 @@ source: weekly is duck2.sql("SELECT 3 AS id, 4 AS amount") -> { select: id, amou
          )!.sourceEntityId;
       const daily = addressOf("daily");
       const weekly = addressOf("weekly");
-      expect(colocated(v1).eligibleEntityIds.has(weekly)).toBe(true);
+      expect(database(v1).eligibleEntityIds.has(weekly)).toBe(true);
 
       failNextRefresh();
       await editConnection(env, "SELECT 9", [duck2]);
       await v1.whenBuildPlanCurrent();
 
       expect(v1.isBuildPlanUnavailable()).toBe(true);
-      expect(colocated(v1).eligibleEntityIds.has(daily)).toBe(false);
-      expect(colocated(v1).eligibleEntityIds.has(weekly)).toBe(true);
+      expect(database(v1).eligibleEntityIds.has(daily)).toBe(false);
+      expect(database(v1).eligibleEntityIds.has(weekly)).toBe(true);
    });
 
    it("is not retried when the plan compute itself failed, only when the load pool did", async () => {
@@ -592,7 +592,8 @@ source: weekly is duck2.sql("SELECT 3 AS id, 4 AS amount") -> { select: id, amou
       }
       expect(v1.isBuildPlanUnavailable()).toBe(false);
       expect(planned(v1)).toEqual(await compiled(v1));
-      expect(internals(v1).servingPlanWhileUnavailable).toBeNull();
+      // Serving reads the derived plan again, not the kept one.
+      expect(internals(v1).servingPlan()).toBe(internals(v1).buildPlan);
    }, 30_000);
 
    it("re-derives when a connection a skipped source needed is created", async () => {

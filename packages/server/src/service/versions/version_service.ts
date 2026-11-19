@@ -35,6 +35,7 @@ export type VersionRegistry = Pick<
    | "setLatestVersion"
    | "setVersionArchiveStatus"
    | "setVersionManifestPath"
+   | "markVersionHostOwned"
    | "deleteVersion"
    | "deletePackageIfNoVersions"
 >;
@@ -47,12 +48,18 @@ export type VersionRegistry = Pick<
 export interface VersionHost<P> {
    /**
     * Compile the version whose files are at `versionPath`, bound to
-    * `manifestPath` when one is set. Throws when it does not load.
+    * `manifestPath` when one is set. A `hostOwned` version with no manifest
+    * serves live, never this server's own run store. Throws when it does not
+    * load. `refreshSchemas`: a publish refetches the schemas it reads.
     */
    loadVersion(
       packageName: string,
       versionPath: string,
-      version: Pick<Version, "versionId" | "manifestPath" | "sourceLocation">,
+      version: Pick<
+         Version,
+         "versionId" | "manifestPath" | "sourceLocation" | "hostOwned"
+      >,
+      options?: { refreshSchemas?: boolean },
    ): Promise<P>;
    /** Release a loaded version's connections; it is no longer served. */
    releaseVersion(packageName: string, versionId: string, loaded: P): void;
@@ -107,6 +114,11 @@ export interface VersionHost<P> {
    removePackageRecord(packageName: string): Promise<void>;
    /** The build manifest a loaded version is bound to now, or null. */
    boundManifestOf?(loaded: P): string | null;
+   /**
+    * Whether the loaded version carries the host-owned mark: a host manifest
+    * it names actually bound, or a host built it. Not merely naming one.
+    */
+   hostMarked?(loaded: P): boolean;
    /** A version became served; `isLatest` says whether it is `latest`. */
    onVersionLoaded?(packageName: string, loaded: P, isLatest: boolean): void;
    /**
@@ -155,6 +167,11 @@ export interface PublishOptions<P> {
    promotion: VersionPromotionMode;
    /** The publish checks; a message refuses the version with 400. */
    validate?: (loaded: P) => string | undefined;
+   /**
+    * A request's publish, as opposed to a configured package's at boot:
+    * the version's load refetches the schemas it reads.
+    */
+   refreshSchemas?: boolean;
 }
 
 export interface PublishResult<P> {
@@ -671,7 +688,9 @@ export class VersionService<P = unknown> {
                   versionId,
                   manifestPath: options.manifestLocation || null,
                   sourceLocation: options.sourceLocation,
+                  hostOwned: false,
                },
+               options.refreshSchemas ? { refreshSchemas: true } : undefined,
             );
             const refusal = options.validate?.(loaded);
             if (refusal) throw new BadRequestError(refusal);
@@ -685,6 +704,9 @@ export class VersionService<P = unknown> {
                   sourceLocation: options.sourceLocation,
                   manifestPath: options.manifestLocation || null,
                   description: staged.description,
+                  // Its load bound the host manifest it names (not one whose
+                  // fetch failed): the row is marked in the same insert.
+                  hostOwned: host.hostMarked?.(loaded) ?? false,
                },
                promoteOnPublish(versionId, options.promotion),
             );
@@ -1178,6 +1200,21 @@ export class VersionService<P = unknown> {
    >();
    /** Packages whose last version was deleted while a publish of them ran. */
    private readonly packagesToRemove = new Set<string>();
+
+   /**
+    * Record that a host owns the version: a manifest it named bound, or a
+    * run it instructed committed. Never cleared. Takes no lock (a bind
+    * calls it holding the version's); a version with no row yet (one being
+    * published) is marked by its publish's commit instead.
+    */
+   async markHostOwned(packageName: string, versionId: string): Promise<void> {
+      await this.registry.markVersionHostOwned(
+         this.environmentId,
+         packageName,
+         versionId,
+      );
+      await this.recordsWritten(packageName);
+   }
 
    /**
     * Bind a version to a build manifest, or to none (null: serves live). The

@@ -1,0 +1,38 @@
+// conformance: persist with a rolling window [database]: files generated while serving
+
+// ==== <pkg>/m.malloy
+##! experimental { persistence }
+##! experimental { virtual_source }
+type: recent_read__served is {
+   id::number,
+   region::string,
+   amount::number,
+   created_at::timestamp
+}
+type: recent_body__served is {
+   id::number,
+   region::string,
+   amount::number,
+   created_at::timestamp
+}
+
+import "raw.malloy"
+
+#@ persist name="recent_body"
+source: recent_body is duckdb.virtual('107d1dd8522aeeba7588cf8afc6b8843d802c6e5edde9a26b5176861e3394e7e')::recent_body__served extend {
+  private rename:
+    id__stored is id
+  dimension:
+    id is id__stored::"BIGINT"
+  measure: total is amount.sum()
+}
+
+#@ persist name="recent_read"
+source: recent_read is duckdb.virtual('b8e1660417d152c47e6402d43cac5b3445a682feaa4410edbedb9791919eaee3')::recent_read__served extend {
+  private rename:
+    id__stored is id
+  dimension:
+    id is id__stored::"BIGINT"
+  where: created_at >= now - 3650 days
+  measure: total is amount.sum()
+}

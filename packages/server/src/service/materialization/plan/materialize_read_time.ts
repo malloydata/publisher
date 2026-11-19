@@ -69,7 +69,7 @@ export function declarationOf(def: SourceDefLike): TermUse | undefined {
 /**
  * The given-reading `where:` terms of a materialized source (the `given` kind
  * of its classified terms, {@link classifyWhereTerms}), each one its own
- * declaration writes and over stored columns only, or why one is not (P2).
+ * declaration writes and over stored columns only, or why one is not.
  * See the module comment for why each refusal is one. A term that reads both
  * a given and the current time is not this function's: rolling_window.ts
  * refuses it.
@@ -91,7 +91,7 @@ export function readTimeTermsOf(
         reason: string;
         refusal:
            | "inherited_where_with_given"
-           | "given_in_persisted_query"
+           | "reads_given"
            | "given_where_over_unstored_field";
      } {
    const located = classified.flatMap(({ dependsOn }) =>
@@ -117,7 +117,7 @@ export function readTimeTermsOf(
          return {
             ok: false,
             reason: `${shown} reads a given that could not be read back, so it cannot be left out of the build`,
-            refusal: "given_in_persisted_query",
+            refusal: "reads_given",
          };
       }
       // Only its own declaration's: the served copy keeps no base's text, so
@@ -157,7 +157,7 @@ export function readTimeTermsOf(
          return {
             ok: false,
             reason: `${shown} reads a given whose declaration could not be read back, so the build cannot re-write the term`,
-            refusal: "given_in_persisted_query",
+            refusal: "reads_given",
          };
       }
       for (const d of declared as { name: string; url: string }[]) {

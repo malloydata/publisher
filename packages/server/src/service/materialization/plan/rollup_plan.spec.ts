@@ -1,7 +1,6 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { allowGatedStorageRollupsForTests } from "../../../config";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { installSettings } from "../../../test_helpers/settings_env";
 import { materializationFixture } from "../../../test_helpers/materialization_fixture";
@@ -12,7 +11,11 @@ import {
    rollupGateEnforcedAtRead,
    type RollupRefusal,
 } from "./rollup_plan";
-import { emitMeasureExpr, generateRollupBuildFile } from "../text/read_text";
+import {
+   emitMeasureExpr,
+   generateRollupBuildFile,
+   rollupBuildCopyText,
+} from "../text/read_text";
 import type { RollupVariantPlan } from "../domain/table_plans";
 import { SourceMap } from "../text/source_map";
 
@@ -49,15 +52,15 @@ function why(r: { code: string; refused?: { reason: string } }): string {
    return r.refused?.reason ?? r.code;
 }
 
-describe("#(preaggregate) declarations (A1)", () => {
+describe("#(rollup) declarations (A1)", () => {
    it("groups measures by grain, sorted coarsest first, with a model-scoped name", async () => {
       const { plans, refused } = await plan({
          "orders.malloy": `source: orders is ${ROWS} extend {
   dimension: order_day is order_time.day
-  #(preaggregate) grain=["category"]
-  #(preaggregate) grain=["category", "order_day"]
+  #(rollup) grain=["category"]
+  #(rollup) grain=["category", "order_day"]
   measure: total is amount.sum()
-  #(preaggregate) grain=["category"]
+  #(rollup) grain=["category"]
   measure: order_count is count()
 }`,
       });
@@ -80,7 +83,7 @@ describe("#(preaggregate) declarations (A1)", () => {
    it("attributes an inherited declaration to the source that wrote it", async () => {
       const { plans } = await plan({
          "orders.malloy": `source: orders is ${ROWS} extend {
-  #(preaggregate) grain=["category"]
+  #(rollup) grain=["category"]
   measure: total is amount.sum()
 }
 source: more_orders is orders extend { dimension: big is amount > 15 }
@@ -97,7 +100,7 @@ source: orders is ${ROWS} extend {
 }
 source: ops is orders include {
   public:
-    #(preaggregate) grain=["region"]
+    #(rollup) grain=["region"]
     total
   public: *
 }`,
@@ -111,7 +114,7 @@ source: ops is orders include {
       const files = {
          "index.malloy": `import "orders.malloy"\nsource: alias is orders`,
          "orders.malloy": `source: orders is ${ROWS} extend {
-  #(preaggregate) grain=["category"]
+  #(rollup) grain=["category"]
   measure: total is amount.sum()
 }`,
       };
@@ -126,33 +129,33 @@ source: ops is orders include {
    it("reports a malformed declaration, which fails the load", async () => {
       const { plans, refused } = await plan({
          "orders.malloy": `source: orders is ${ROWS} extend {
-  #(preaggregate) grain=["category"]
+  #(rollup) grain=["category"]
   dimension: big is amount > 15
-  #(preaggregate) grain="category"
+  #(rollup) grain="category"
   measure: a is amount.sum()
-  #(preaggregate) grain=["category"] grane=["x"]
+  #(rollup) grain=["category"] grane=["x"]
   measure: b is amount.sum()
-  #(preaggregate) grain=["nope"]
+  #(rollup) grain=["nope"]
   measure: c is amount.sum()
-  #(preaggregate) grain=["category"]
+  #(rollup) grain=["category"]
   measure: d is amount.avg()
-  #(preaggregate) grain=["category"] storage="lake" namespace="x"
+  #(rollup) grain=["category"] storage="lake" namespace="x"
   measure: e is amount.sum()
 }`,
       });
       expect(plans).toEqual([]);
       expect(refused.map((r) => [r.measure, r.tier, why(r)])).toEqual([
-         ["big", "malformed", "preaggregate-not-a-measure"],
-         ["a", "malformed", "preaggregate-invalid"],
-         ["b", "malformed", "preaggregate-unknown-key"],
-         ["e", "malformed", "preaggregate-invalid"],
-         ["c", "malformed", "preaggregate-unknown-grain"],
-         ["d", "malformed", "preaggregate-not-mergeable"],
+         ["big", "malformed", "rollup-not-a-measure"],
+         ["a", "malformed", "rollup-invalid"],
+         ["b", "malformed", "rollup-unknown-key"],
+         ["e", "malformed", "rollup-invalid"],
+         ["c", "malformed", "rollup-unknown-grain"],
+         ["d", "malformed", "rollup-not-mergeable"],
       ]);
    });
 });
 
-describe("#(preaggregate) joins (A2, A6)", () => {
+describe("#(rollup) joins (A2, A6)", () => {
    const MODEL = `source: carriers is ${CARRIERS} extend { primary_key: code }
 source: lines is duckdb.sql("SELECT 1 AS order_id, 'p' AS kind UNION ALL SELECT 1, 'q'")
 source: orders is ${ROWS} extend {
@@ -160,10 +163,10 @@ source: orders is ${ROWS} extend {
   join_one: carriers with carrier
   join_many: lines on lines.order_id = id
   dimension: line_kind is lines.kind
-  #(preaggregate) grain=["carrier"]
-  #(preaggregate) grain=["category"]
+  #(rollup) grain=["carrier"]
+  #(rollup) grain=["category"]
   measure: fleet is carriers.fleet.sum()
-  #(preaggregate) grain=["category", "line_kind"]
+  #(rollup) grain=["category", "line_kind"]
   measure: total is amount.sum()
 }`;
 
@@ -176,7 +179,7 @@ source: orders is ${ROWS} extend {
          [["category", "line_kind"], ["total"]],
       ]);
       expect(refused.map((r) => [r.measure, r.tier, why(r)])).toEqual([
-         ["fleet", "unservable", "join_level"],
+         ["fleet", "unservable", "join_not_in_grain"],
       ]);
    });
 
@@ -191,11 +194,11 @@ source: orders is ${ROWS} extend {
 source: orders is ${ROWS} extend {
   primary_key: id
   join_one: carriers with carrier
-  #(preaggregate) grain=["carrier", "category"]
+  #(rollup) grain=["carrier", "category"]
   measure: fleet is carriers.fleet.sum()
-  #(preaggregate) grain=["carrier", "category"]
+  #(rollup) grain=["carrier", "category"]
   measure: carrier_count is carriers.count()
-  #(preaggregate) grain=["carrier", "category"]
+  #(rollup) grain=["carrier", "category"]
   measure: total is amount.sum()
 }`,
       });
@@ -219,13 +222,13 @@ source: carriers is duckdb.sql("SELECT 'AA' AS code, 'h' AS hub UNION ALL SELECT
 source: orders is ${ROWS} extend {
   primary_key: id
   join_one: carriers with carrier
-  #(preaggregate) grain=["carrier"]
+  #(rollup) grain=["carrier"]
   measure: gates is carriers.hubs.gates.sum()
 }`,
       });
       expect(plans).toEqual([]);
       expect(refused.map((r) => [r.measure, why(r)])).toEqual([
-         ["gates", "join_level"],
+         ["gates", "join_not_in_grain"],
       ]);
    });
 });
@@ -235,13 +238,13 @@ const GATED = {
 given: REGION :: string is 'x'
 #(access_filter) region = $REGION
 source: orders is ${ROWS} extend {
-  #(preaggregate) grain=["category"]
-  #(preaggregate) grain=["category", "region"]
+  #(rollup) grain=["category"]
+  #(rollup) grain=["category", "region"]
   measure: total is amount.sum()
 }`,
 };
 
-describe("#(preaggregate) access filters (A4)", () => {
+describe("#(rollup) access filters (A4)", () => {
    it("warns and leaves out a rollup whose grain drops the gate's field", async () => {
       // As planned once a gated entry point can read a rollup (row 1).
       const { plans, refused } = await plan(GATED, undefined, true);
@@ -254,8 +257,8 @@ describe("#(preaggregate) access filters (A4)", () => {
    });
 });
 
-describe("#(preaggregate) over a gated source with gated sources off (G3 for rollups)", () => {
-   it("plans a colocated rollup over the base's own gate when its grain keeps the gate's field, and no other", async () => {
+describe("#(rollup) over a gated source with gated sources off (G3 for rollups)", () => {
+   it("plans a database rollup over the base's own gate when its grain keeps the gate's field, and no other", async () => {
       expect(rollupGateEnforcedAtRead({ variant: true, baseGated: true })).toBe(
          false,
       );
@@ -276,12 +279,56 @@ describe("#(preaggregate) over a gated source with gated sources off (G3 for rol
 given: ROLE :: string is 'viewer'
 #(authorize) 'admin' = $ROLE
 source: orders is ${ROWS} extend {
-  #(preaggregate) grain=["category"]
+  #(rollup) grain=["category"]
   measure: total is amount.sum()
 }`,
       });
       expect(plans.map((p) => p.baseGateOwn)).toEqual([true]);
       expect(refused).toEqual([]);
+   });
+
+   it("plans one over a lock it inherits that reads no row field, on either tier, and marks it lock-only (g-inh-lock)", async () => {
+      for (const storage of ["", ' storage="lake"']) {
+         const { plans, refused } = await plan({
+            "orders.malloy": `##! experimental.givens
+given: ROLE :: string is 'viewer'
+given: REGION :: string is 'x'
+#(authorize) 'admin' = $ROLE
+source: locked is ${ROWS}
+source: mid is locked extend { dimension: c2 is lower(category) }
+source: orders is mid extend {
+  #(rollup) grain=["category"]${storage}
+  measure: total is amount.sum()
+}
+#(access_filter) region = $REGION
+source: filtered is locked extend {
+  #(rollup) grain=["category", "region"]${storage}
+  measure: total is amount.sum()
+}
+#(authorize) false
+source: shut is ${ROWS}
+#(authorize) true
+source: reopened is shut extend {
+  #(rollup) grain=["category"]${storage}
+  measure: total is amount.sum()
+}`,
+         });
+         expect(
+            plans.map((p) => [
+               p.baseSourceName,
+               p.baseGateOwn,
+               p.baseGateLocksOnly,
+            ]),
+         ).toEqual([
+            ["orders", undefined, true],
+            ["reopened", true, true],
+         ]);
+         for (const p of plans) expect(rollupGateEnforcedAtRead(p)).toBe(true);
+         // An inherited lock beside a row filter is not lock-only.
+         expect(refused.map((r) => [r.sourceName, why(r)])).toEqual([
+            ["filtered", "access_filter"],
+         ]);
+      }
    });
 
    it("plans none over an extension that inherits the gate, and still plans the ungated", async () => {
@@ -291,11 +338,11 @@ given: REGION :: string is 'x'
 #(access_filter) region = $REGION
 source: gated is ${ROWS}
 source: orders is gated extend {
-  #(preaggregate) grain=["category", "region"]
+  #(rollup) grain=["category", "region"]
   measure: total is amount.sum()
 }
 source: open is ${ROWS} extend {
-  #(preaggregate) grain=["category"]
+  #(rollup) grain=["category"]
   measure: total is amount.sum()
 }`,
       });
@@ -318,7 +365,7 @@ given: CAT :: string is 'A'
 source: gated is ${ROWS}
 #(access_filter) category = $CAT
 source: orders is gated -> { select: * } extend {
-  #(preaggregate) grain=["category", "region"]
+  #(rollup) grain=["category", "region"]
   measure: total is amount.sum()
 }`,
       });
@@ -337,7 +384,7 @@ given: CAT :: string is 'A'
 source: gated is ${ROWS}
 #(access_filter) category = $CAT
 source: orders is gated -> { select: * } extend {
-  #(preaggregate) grain=["category", "region"]
+  #(rollup) grain=["category", "region"]
   measure: total is amount.sum()
 }`,
                },
@@ -348,18 +395,21 @@ source: orders is gated -> { select: * } extend {
       ).toEqual([undefined]);
    });
 
-   it("plans none in a storage destination, whose gate awaits its review", async () => {
+   it("plans one in a storage destination over the base's own gate (P3/P4)", async () => {
       const { plans, refused } = await plan({
          "orders.malloy": `##! experimental.givens
 given: REGION :: string is 'x'
 #(access_filter) region = $REGION
 source: orders is ${ROWS} extend {
-  #(preaggregate) grain=["category", "region"] storage="lake"
+  #(rollup) grain=["category", "region"] storage="lake"
   measure: total is amount.sum()
 }`,
       });
-      expect(plans).toEqual([]);
-      expect(refused.map((r) => why(r))).toEqual(["access_filter"]);
+      expect(refused).toEqual([]);
+      expect(plans.map((p) => [p.storage, p.baseGateOwn])).toEqual([
+         ["lake", true],
+      ]);
+      expect(rollupGateEnforcedAtRead(plans[0])).toBe(true);
    });
 });
 
@@ -370,7 +420,7 @@ describe("a storage= rollup whose grain no stored read declares", () => {
 """)`;
    const rollup = (grain: string, storage: string) => ({
       "orders.malloy": `source: orders is ${EXOTIC} extend {
-  #(preaggregate) grain=["${grain}"]${storage}
+  #(rollup) grain=["${grain}"]${storage}
   measure: total is amount.sum()
 }`,
    });
@@ -390,7 +440,7 @@ describe("a storage= rollup whose grain no stored read declares", () => {
       const { plans, refused } = await plan({
          "orders.malloy": `source: orders is ${EXOTIC} extend {
   dimension: bb is b
-  #(preaggregate) grain=["bb"] storage="lake"
+  #(rollup) grain=["bb"] storage="lake"
   measure: total is amount.sum()
 }`,
       });
@@ -398,7 +448,7 @@ describe("a storage= rollup whose grain no stored read declares", () => {
       expect(refused.map((r) => why(r))).toEqual(["unreadable_grain"]);
    });
 
-   it("plans a UUID grain in storage, and every one of them colocated", async () => {
+   it("plans a UUID grain in storage, and every one of them database", async () => {
       expect((await plan(rollup("u", ' storage="lake"'))).plans).toHaveLength(
          1,
       );
@@ -410,7 +460,7 @@ describe("a storage= rollup whose grain no stored read declares", () => {
    });
 });
 
-describe("#(preaggregate) access filters through a join (A4, fail closed)", () => {
+describe("#(rollup) access filters through a join (A4, fail closed)", () => {
    it("leaves out every rollup when the gate reads through a join, which no grain keeps", async () => {
       const { plans, refused } = await plan(
          {
@@ -420,7 +470,7 @@ source: carriers is ${CARRIERS} extend { primary_key: code }
 #(access_filter) carriers.fleet = $FLEET
 source: orders is ${ROWS} extend {
   join_one: carriers with carrier
-  #(preaggregate) grain=["category", "carrier"]
+  #(rollup) grain=["category", "carrier"]
   measure: total is amount.sum()
 }`,
          },
@@ -434,14 +484,14 @@ source: orders is ${ROWS} extend {
    });
 });
 
-describe("#(preaggregate) join-level min and max (row 23)", () => {
+describe("#(rollup) join-level min and max (row 23)", () => {
    const MODEL = (grain: string) => ({
       "orders.malloy": `source: carriers is ${CARRIERS} extend { primary_key: code }
 source: orders is ${ROWS} extend {
   join_one: carriers with carrier
-  #(preaggregate) grain=${grain}
+  #(rollup) grain=${grain}
   measure: top_fleet is carriers.fleet.max()
-  #(preaggregate) grain=${grain}
+  #(rollup) grain=${grain}
   measure: low_fleet is carriers.fleet.min()
 }`,
    });
@@ -475,18 +525,21 @@ source: orders is ${ROWS} extend {
    it("still serves live a join-level max whose join key the grain drops", async () => {
       const { plans, refused } = await plan(MODEL(`["category"]`));
       expect(plans).toEqual([]);
-      expect(refused.map((r) => why(r))).toEqual(["join_level", "join_level"]);
+      expect(refused.map((r) => why(r))).toEqual([
+         "join_not_in_grain",
+         "join_not_in_grain",
+      ]);
    });
 });
 
-describe("#(preaggregate) measures checked against the compiled expression", () => {
+describe("#(rollup) measures checked against the compiled expression", () => {
    it("stores a measure whose text and compiled form agree", async () => {
       const { plans, refused } = await plan({
          "orders.malloy": `source: carriers is ${CARRIERS} extend { primary_key: code }
 source: orders is ${ROWS} extend {
   join_one: carriers with carrier
   measure: order_count is count()
-  #(preaggregate) grain=["carrier"]
+  #(rollup) grain=["carrier"]
   measure: mixed is coalesce(amount.sum() / order_count, 0) + carriers.fleet.sum()
 }`,
       });
@@ -502,7 +555,7 @@ source: orders is ${ROWS} extend {
 }
 source: orders is ${ROWS} extend {
   join_one: carriers with carrier
-  #(preaggregate) grain=["carrier"]
+  #(rollup) grain=["carrier"]
   measure: joined is carriers.fleet_total
 }`,
       });
@@ -543,21 +596,21 @@ source: orders is ${ROWS} extend {
    });
 });
 
-describe("#(preaggregate) and the current time (S25b)", () => {
+describe("#(rollup) and the current time (S25b)", () => {
    it("leaves out a rollup whose rows, grain or measure read now", async () => {
       const { plans, refused } = await plan({
          "orders.malloy": `source: recent is ${ROWS} extend {
   where: order_time > now - 7 days
-  #(preaggregate) grain=["category"]
+  #(rollup) grain=["category"]
   measure: total is amount.sum()
 }
 source: orders is ${ROWS} extend {
   dimension: is_recent is order_time > now - 7 days
-  #(preaggregate) grain=["category", "is_recent"]
+  #(rollup) grain=["category", "is_recent"]
   measure: total is amount.sum()
-  #(preaggregate) grain=["category"]
+  #(rollup) grain=["category"]
   measure: recent_total is amount.sum() { where: order_time > now - 7 days }
-  #(preaggregate) grain=["category"]
+  #(rollup) grain=["category"]
   measure: all_total is amount.sum()
 }`,
       });
@@ -581,7 +634,7 @@ describe("a source that sets its own time zone (#1686)", () => {
   timezone: 'America/New_York'
   primary_key: id
   dimension: order_day is order_time.day
-  #(preaggregate) grain=["id", "order_day"]${storage}
+  #(rollup) grain=["id", "order_day"]${storage}
   measure: total is amount.sum()
 }`;
       const { plans, refused } = await plan({
@@ -594,11 +647,11 @@ ${zoned("joined_other_lake", ' storage="lake"')}
 ${zoned("joined_from_pond", ' storage="lake"')}
 ${zoned("joined_elsewhere")}
 source: inherits is lonely extend {
-  #(preaggregate) grain=["category"]
+  #(rollup) grain=["category"]
   measure: total2 is amount.sum()
 }
 source: plain is ${ROWS} extend {
-  #(preaggregate) grain=["category"]
+  #(rollup) grain=["category"]
   measure: total is amount.sum()
 }
 source: parent is ${ROWS} extend {
@@ -669,9 +722,9 @@ describe("the rollup build file", () => {
    it("declares one persisted rollup per grain over the imported base", async () => {
       const { plans } = await plan({
          "orders.malloy": `source: orders is ${ROWS} extend {
-  #(preaggregate) grain=["category"] storage="lake"
+  #(rollup) grain=["category"] storage="lake"
   measure: paid is amount.sum() { where: region = 'x' }
-  #(preaggregate) grain=["category"] storage="lake"
+  #(rollup) grain=["category"] storage="lake"
   measure: per_order is amount.sum() / count()
 }`,
       });
@@ -724,7 +777,7 @@ source: daily is ${ROWS} -> { group_by: category; aggregate: n is count() }
    });
 });
 
-describe("#(preaggregate) over a gated source with gated sources on (row 1)", () => {
+describe("#(rollup) over a gated source with gated sources on (row 1)", () => {
    let restore: () => void;
    beforeEach(() => {
       restore = installSettings({
@@ -741,12 +794,12 @@ describe("#(preaggregate) over a gated source with gated sources on (row 1)", ()
 given: REGION :: string is 'x'
 #(access_filter) region = $REGION
 source: orders is ${ROWS} extend {
-  #(preaggregate) grain=["category", "region"]${placement}
+  #(rollup) grain=["category", "region"]${placement}
   measure: total is amount.sum()
 }`,
    });
 
-   it("plans a colocated rollup whose grain keeps the gate's field, read at its gate", async () => {
+   it("plans a database rollup whose grain keeps the gate's field, read at its gate", async () => {
       const { plans, refused } = await plan(placed(""));
       expect(refused).toEqual([]);
       expect(plans).toHaveLength(1);
@@ -754,26 +807,18 @@ source: orders is ${ROWS} extend {
       expect(rollupGateEnforcedAtRead(plans[0])).toBe(true);
    });
 
-   it("leaves out a storage= rollup over a gated base until the managed-tier review (question 14)", async () => {
+   it("plans a storage= rollup over a gated base on the database terms (P3/P4)", async () => {
       const { plans, refused } = await plan(placed(' storage="lake"'));
-      expect(plans).toEqual([]);
-      expect(refused.map((r) => why(r))).toEqual(["access_filter"]);
-      expect(refused[0]?.message).toContain("storage destination");
-      const allow = allowGatedStorageRollupsForTests();
-      try {
-         const reviewed = await plan(placed(' storage="lake"'));
-         expect(reviewed.plans).toHaveLength(1);
-         expect(rollupGateEnforcedAtRead(reviewed.plans[0])).toBe(true);
-      } finally {
-         allow();
-      }
+      expect(refused).toEqual([]);
+      expect(plans).toHaveLength(1);
+      expect(rollupGateEnforcedAtRead(plans[0])).toBe(true);
    });
 
    it("never reads a v1 plan or an ungated rollup past a gate", async () => {
       expect(rollupGateEnforcedAtRead({ baseGated: true })).toBe(false);
       const { plans } = await plan({
          "orders.malloy": `source: orders is ${ROWS} extend {
-  #(preaggregate) grain=["category"]
+  #(rollup) grain=["category"]
   measure: total is amount.sum()
 }`,
       });
@@ -788,8 +833,8 @@ given: TENANT :: string is 'x'
 source: orders is ${ROWS} extend {
   internal dimension: tenant is region
   private dimension: secret is carrier
-  #(preaggregate) grain=["category", "tenant"]
-  #(preaggregate) grain=["category", "tenant", "secret"]
+  #(rollup) grain=["category", "tenant"]
+  #(rollup) grain=["category", "tenant", "secret"]
   measure: total is amount.sum()
 }`,
       });
@@ -806,6 +851,90 @@ source: orders is ${ROWS} extend {
       expect(text).toContain('from "orders.malloy.orders.rollup-build.malloy"');
    });
 
+   it("stores a private grain dimension a source it extends declares in its file, lifting each statement down to it (b-hidden)", async () => {
+      const files = {
+         "orders.malloy": `##! experimental { access_modifiers }
+source: base is ${ROWS} extend {
+  private dimension: hidden_cat is category
+}
+source: middle is base extend {
+  dimension: doubled is amount * 2
+}
+source: orders is middle extend {
+  #(rollup) grain=["hidden_cat", "region"]
+  measure: total is amount.sum()
+}`,
+      };
+      const { plans, refused } = await plan(files);
+      expect(refused).toEqual([]);
+      expect(plans.map((p) => p.privateGrain)).toEqual([["hidden_cat"]]);
+      // `middle` and `base`, in file order.
+      expect(plans[0]?.liftedAncestors?.map((a) => a.range.start.line)).toEqual(
+         [1, 10],
+      );
+      const copy = rollupBuildCopyText(
+         files["orders.malloy"],
+         plans[0] as RollupVariantPlan,
+         true,
+      );
+      expect("copy" in copy && copy.copy).toContain(
+         "  dimension: hidden_cat is category",
+      );
+      expect("copy" in copy && copy.copy).not.toContain("private dimension");
+      const text = generateRollupBuildFile(plans, "orders.malloy") ?? "";
+      expect(text).toContain('from "orders.malloy.orders.rollup-build.malloy"');
+   });
+
+   it("lifts only the base's own statement for a private dimension it declares itself", async () => {
+      const { plans } = await plan({
+         "orders.malloy": `##! experimental { access_modifiers }
+source: orders is ${ROWS} extend {
+  private dimension: secret is carrier
+  #(rollup) grain=["category", "secret"]
+  measure: total is amount.sum()
+}`,
+      });
+      expect(plans.map((p) => p.liftedAncestors)).toEqual([undefined]);
+   });
+
+   it("refuses a private grain dimension a source in another file declares: the build copy cannot lift it (b-hidden)", async () => {
+      const { plans, refused } = await plan(
+         {
+            "orders.malloy": `##! experimental { access_modifiers }
+import "base.malloy"
+source: orders is base extend {
+  #(rollup) grain=["hidden_cat", "region"]
+  measure: total is amount.sum()
+}`,
+            "base.malloy": `##! experimental { access_modifiers }
+source: base is ${ROWS} extend {
+  private dimension: hidden_cat is category
+}`,
+         },
+         "orders.malloy",
+      );
+      expect(plans).toEqual([]);
+      expect(refused.map((r) => why(r))).toEqual(["hidden_field"]);
+      expect(refused[0]?.message).toContain("another file");
+   });
+
+   it("never plans a rollup of a hidden measure, private or internal (b-hidden)", async () => {
+      const { plans, refused } = await plan({
+         "orders.malloy": `##! experimental { access_modifiers }
+source: orders is ${ROWS} extend {
+  #(rollup) grain=["category"]
+  private measure: secret_total is amount.sum()
+  #(rollup) grain=["category"]
+  internal measure: internal_total is amount.sum()
+}`,
+      });
+      expect(plans).toEqual([]);
+      expect(refused.map((r) => why(r))).toEqual([
+         "hidden_field",
+         "hidden_field",
+      ]);
+   });
+
    it("walks an inherited gate as the governor does, on an extension's own rollup", async () => {
       const { plans, refused } = await plan({
          "orders.malloy": `##! experimental.givens
@@ -813,8 +942,8 @@ given: REGION :: string is 'x'
 #(access_filter) region = $REGION
 source: gated is ${ROWS}
 source: orders is gated extend {
-  #(preaggregate) grain=["category", "region"]
-  #(preaggregate) grain=["category"]
+  #(rollup) grain=["category", "region"]
+  #(rollup) grain=["category"]
   measure: total is amount.sum()
 }`,
       });
@@ -833,7 +962,7 @@ source: carriers is ${CARRIERS} extend { primary_key: code }
 source: orders is ${ROWS} extend {
   join_one: carriers with carrier
   dimension: fleet is carriers.fleet
-  #(preaggregate) grain=["category", "fleet"]
+  #(rollup) grain=["category", "fleet"]
   measure: total is amount.sum()
 }`,
       });
@@ -851,7 +980,7 @@ source: carriers is ${CARRIERS} extend { primary_key: code }
 #(access_filter) region = $REGION
 source: orders is ${ROWS} extend {
   join_one: carriers with carrier
-  #(preaggregate) grain=["category", "region"]
+  #(rollup) grain=["category", "region"]
   measure: total is amount.sum()
 }`,
       });
@@ -865,7 +994,7 @@ source: orders is ${ROWS} extend {
 given: ROLE :: string is 'viewer'
 #(authorize) 'admin' = $ROLE
 source: orders is ${ROWS} extend {
-  #(preaggregate) grain=["category"]
+  #(rollup) grain=["category"]
   measure: total is amount.sum()
 }`,
       });
@@ -957,5 +1086,70 @@ source: orders is ${ROWS} -> {
          ["category,region", null, "lake"],
          ["region", "rollups", null],
       ]);
+   });
+});
+
+describe("#(preaggregate), #(rollup)'s deprecated spelling", () => {
+   const model = (route: string) => `source: orders is ${ROWS} extend {
+  ${route} grain=["category"] storage="lake"
+  measure: total is amount.sum()
+  ${route} grain=["category"]
+  measure: order_count is count()
+}`;
+
+   it("plans the same rollups as #(rollup), and warns once per measure naming the spelling it found", async () => {
+      const current = await plan({ "orders.malloy": model("#(rollup)") });
+      const alias = await plan({ "orders.malloy": model("#(preaggregate)") });
+      expect(current.refused).toEqual([]);
+      expect(alias.plans).toEqual(current.plans);
+      expect(alias.refused.map((r) => [r.tier, r.code, r.measure])).toEqual([
+         ["deprecated", "deprecated-preaggregate-annotation", "total"],
+         ["deprecated", "deprecated-preaggregate-annotation", "order_count"],
+      ]);
+      for (const r of alias.refused) {
+         expect(r.message).toContain("#(preaggregate)");
+         expect(r.message).toContain("Write #(rollup)");
+      }
+   });
+
+   it("refuses both spellings on one measure, failing the load (rollup-invalid)", async () => {
+      const { plans, refused } = await plan({
+         "orders.malloy": `source: orders is ${ROWS} extend {
+  #(rollup) grain=["category"]
+  #(preaggregate) grain=["region"]
+  measure: total is amount.sum()
+}`,
+      });
+      expect(plans).toEqual([]);
+      expect(refused.map((r) => [r.tier, r.code, r.measure])).toEqual([
+         ["malformed", "rollup-invalid", "total"],
+      ]);
+      expect(refused[0]?.message).toContain(
+         "both #(rollup) and #(preaggregate)",
+      );
+   });
+
+   it("refuses both spellings on one source, failing the load (rollup-invalid)", async () => {
+      const { refused } = await plan({
+         "orders.malloy": `#(rollup) grain=["category"]
+#(preaggregate) grain=["category"]
+source: orders is ${ROWS} extend {
+  measure: total is amount.sum()
+}`,
+      });
+      expect(refused.map((r) => [r.tier, r.code])).toContainEqual([
+         "malformed",
+         "rollup-invalid",
+      ]);
+   });
+
+   it("names its malformed lines with #(rollup)'s codes", async () => {
+      const { refused } = await plan({
+         "orders.malloy": `source: orders is ${ROWS} extend {
+  #(preaggregate) grian=["category"]
+  measure: total is amount.sum()
+}`,
+      });
+      expect(refused.map((r) => r.code)).toContain("rollup-unknown-key");
    });
 });

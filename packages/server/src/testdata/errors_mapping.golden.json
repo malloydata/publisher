@@ -1751,7 +1751,7 @@
       "json": {
         "code": 403,
         "message": "The storage at a path source \"trips\" reads refused access (HTTP 403).",
-        "reason": "STORAGE_ACCESS_DENIED"
+        "reason": "PATH_ACCESS_DENIED"
       },
       "logged": true,
       "logs": [
@@ -1929,7 +1929,9 @@
       "status": 422,
       "json": {
         "code": 422,
-        "message": "source reads a given"
+        "message": "source reads a given",
+        "reason": "MATERIALIZATION_REFUSED",
+        "refusalReason": "given"
       },
       "logged": false,
       "logs": []
@@ -2185,7 +2187,8 @@
       "status": 403,
       "json": {
         "code": 403,
-        "message": "access refused"
+        "message": "access refused",
+        "reason": "ACCESS_DENIED"
       },
       "logged": false,
       "logs": []
@@ -2216,13 +2219,147 @@
       ]
     }
   },
+  "AccessDeniedError row filter": {
+    "class": "AccessDeniedError",
+    "http": {
+      "status": 403,
+      "json": {
+        "code": 403,
+        "message": "Access denied for source \"orders\".",
+        "reason": "ACCESS_DENIED"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "Error during executeQuery for resource 'env/pkg/m.malloy': Access denied for source \"orders\".",
+      "suggestions": [
+        "Suggestion: Access to source 'orders' is restricted by a gate (#(authorize) or #(access_filter)). Supply the givens the gate reads (e.g. a role/region given; get_context lists them under the source's authorize and givens) and retry. This is an authorization denial, not a syntax error."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "Error during executeQuery (load model) for resource 'env/pkg/m.malloy': Access denied for source \"orders\".",
+      "suggestions": [
+        "Suggestion: Access to source 'orders' is restricted by a gate (#(authorize) or #(access_filter)). Supply the givens the gate reads (e.g. a role/region given; get_context lists them under the source's authorize and givens) and retry. This is an authorization denial, not a syntax error."
+      ],
+      "logs": [
+        [
+          "warn",
+          "[MCP Tool executeQuery] model setup refused"
+        ]
+      ]
+    }
+  },
+  "BuildInstructionsInvalidError": {
+    "class": "BuildInstructionsInvalidError",
+    "http": {
+      "status": 400,
+      "json": {
+        "code": 400,
+        "message": "Instruction references unknown sourceEntityId 'e9'",
+        "reason": "BUILD_INSTRUCTIONS_INVALID"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "Instruction references unknown sourceEntityId 'e9'",
+      "suggestions": [
+        "This is not transient. The request's build instructions or body fail the same way until they change; the message names what is wrong."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: Instruction references unknown sourceEntityId 'e9'",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
+  "TableOwnershipError owned elsewhere": {
+    "class": "TableOwnershipError",
+    "http": {
+      "status": 400,
+      "json": {
+        "code": 400,
+        "message": "another package holds analytics.orders",
+        "reason": "TABLE_OWNED_ELSEWHERE"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "another package holds analytics.orders",
+      "suggestions": [
+        "This is not transient. The table at this name= is not this package's, or who holds it could not be read, so the build fails the same way until that changes.",
+        "Choose a name= no other package or table uses, or have the table's holder release it."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: another package holds analytics.orders",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
+  "TableOwnershipError unverified": {
+    "class": "TableOwnershipError",
+    "http": {
+      "status": 400,
+      "json": {
+        "code": 400,
+        "message": "who holds analytics.orders could not be read",
+        "reason": "TABLE_OWNERSHIP_UNVERIFIED"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "who holds analytics.orders could not be read",
+      "suggestions": [
+        "This is not transient. The table at this name= is not this package's, or who holds it could not be read, so the build fails the same way until that changes.",
+        "Choose a name= no other package or table uses, or have the table's holder release it."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: who holds analytics.orders could not be read",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
   "AccessDeniedError authorize denial": {
     "class": "AccessDeniedError",
     "http": {
       "status": 403,
       "json": {
         "code": 403,
-        "message": "Access denied for source \"orders\": its authorize gate was not satisfied."
+        "message": "Access denied for source \"orders\": its authorize gate was not satisfied.",
+        "reason": "ACCESS_DENIED"
       },
       "logged": false,
       "logs": []
@@ -2230,14 +2367,14 @@
     "mcp": {
       "message": "Error during executeQuery for resource 'env/pkg/m.malloy': Access denied for source \"orders\": its authorize gate was not satisfied.",
       "suggestions": [
-        "Suggestion: Access to source 'orders' is restricted by an authorize gate. Supply the givens its authorize expression requires (e.g. a role/region given) and retry. This is an authorization denial, not a syntax error."
+        "Suggestion: Access to source 'orders' is restricted by a gate (#(authorize) or #(access_filter)). Supply the givens the gate reads (e.g. a role/region given; get_context lists them under the source's authorize and givens) and retry. This is an authorization denial, not a syntax error."
       ],
       "logs": []
     },
     "mcpSetup": {
       "message": "Error during executeQuery (load model) for resource 'env/pkg/m.malloy': Access denied for source \"orders\": its authorize gate was not satisfied.",
       "suggestions": [
-        "Suggestion: Access to source 'orders' is restricted by an authorize gate. Supply the givens its authorize expression requires (e.g. a role/region given) and retry. This is an authorization denial, not a syntax error."
+        "Suggestion: Access to source 'orders' is restricted by a gate (#(authorize) or #(access_filter)). Supply the givens the gate reads (e.g. a role/region given; get_context lists them under the source's authorize and givens) and retry. This is an authorization denial, not a syntax error."
       ],
       "logs": [
         [
@@ -2474,7 +2611,8 @@
       "status": 409,
       "json": {
         "code": 409,
-        "message": "a build is running"
+        "message": "a build is running",
+        "reason": "MATERIALIZATION_CONFLICT"
       },
       "logged": false,
       "logs": []
@@ -2489,6 +2627,108 @@
     },
     "mcpSetup": {
       "message": "An unexpected internal error occurred during executeQuery (Setup).: a build is running",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
+  "MaterializedTableDropRefusedError in use": {
+    "class": "MaterializedTableDropRefusedError",
+    "http": {
+      "status": 409,
+      "json": {
+        "code": 409,
+        "message": "a committed run names analytics.orders",
+        "reason": "TABLE_IN_USE"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "An unexpected internal error occurred during executeQuery.: a committed run names analytics.orders",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: a committed run names analytics.orders",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
+  "MaterializedTableDropRefusedError owned elsewhere": {
+    "class": "MaterializedTableDropRefusedError",
+    "http": {
+      "status": 409,
+      "json": {
+        "code": 409,
+        "message": "another package marked analytics.orders",
+        "reason": "TABLE_OWNED_ELSEWHERE"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "An unexpected internal error occurred during executeQuery.: another package marked analytics.orders",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: another package marked analytics.orders",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
+  "MaterializedTableDropRefusedError unverified": {
+    "class": "MaterializedTableDropRefusedError",
+    "http": {
+      "status": 409,
+      "json": {
+        "code": 409,
+        "message": "nothing proves analytics.orders is this package's",
+        "reason": "TABLE_OWNERSHIP_UNVERIFIED"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "An unexpected internal error occurred during executeQuery.: nothing proves analytics.orders is this package's",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: nothing proves analytics.orders is this package's",
       "suggestions": [
         "Try the request again later.",
         "If the problem persists, check server logs or contact support."

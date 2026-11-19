@@ -9,6 +9,7 @@
 
 import { sourcesIn } from "../../../test_helpers/materialization_test_fixtures";
 import { describe, expect, it } from "bun:test";
+import { derivePackagePlan } from "./build_plan";
 import { planPackages } from "../../../test_helpers/materialization_fixture";
 import {
    FixedConnectionMap,
@@ -163,7 +164,7 @@ source: ops is ${TABLE} extend {
       expect(viewFindings(c)).toEqual([]);
    });
 
-   it("warns about and leaves out a caller-dependent view", async () => {
+   it("warns about and leaves out a caller-dependent view, and plans one that reads now as of its build", async () => {
       const c = await compiled(`##! experimental { persistence givens }
 given: CARRIER :: string is "aa"
 source: ops is ${TABLE} extend {
@@ -174,13 +175,16 @@ source: ops is ${TABLE} extend {
   view: recent is { where: ts > now - 1 day; group_by: carrier; aggregate: n }
 }
 `);
-      expect(viewSources(c)).toEqual([]);
+      expect(viewSources(c)).toEqual(["ops__recent__view"]);
       const findings = viewFindings(c);
       expect(findings.some((m) => m.includes("reads a given"))).toBe(true);
-      expect(findings.some((m) => m.includes("current time"))).toBe(true);
+      expect(findings.some((m) => m.includes("current time"))).toBe(false);
+      expect(Object.keys(derivePackagePlan(c, null).asOfBuild ?? {})).toEqual([
+         expect.stringContaining("ops__recent__view"),
+      ]);
    });
 
-   it("leaves out a view whose select: * reads a current-time dimension, and keeps its twin", async () => {
+   it("plans a view whose select: * reads a current-time dimension as of its build, beside its twin", async () => {
       const c = await compiled(`##! experimental.persistence
 source: ops is ${TABLE} extend {
   dimension: past is ts < now
@@ -193,10 +197,14 @@ source: ops2 is ${TABLE} extend {
   view: star2 is { select: * }
 }
 `);
-      expect(viewSources(c)).toEqual(["ops2__star2__view"]);
-      expect(viewFindings(c).some((m) => m.includes("current time"))).toBe(
-         true,
-      );
+      expect(viewSources(c).sort()).toEqual([
+         "ops2__star2__view",
+         "ops__star__view",
+      ]);
+      expect(viewFindings(c)).toEqual([]);
+      expect(Object.keys(derivePackagePlan(c, null).asOfBuild ?? {})).toEqual([
+         expect.stringContaining("ops__star__view"),
+      ]);
    });
 
    it("plans a view whose later stage names a field like a current-time dimension", async () => {
@@ -211,13 +219,27 @@ source: ops is ${TABLE} extend {
       expect(viewFindings(c)).toEqual([]);
    });
 
-   it("leaves out a view on a query-shaped source whose query reads now", async () => {
+   it("plans a view on a query-shaped source whose query reads now, as of its build", async () => {
       const c = await compiled(`##! experimental.persistence
 source: qb is ${TABLE} -> { where: ts < now; select: * }
 source: ops is qb extend {
   measure: n is count()
   #@ persist name="by_carrier"
   view: by_carrier is { group_by: carrier; aggregate: n }
+}
+`);
+      expect(viewSources(c)).toEqual(["ops__by_carrier__view"]);
+      expect(viewFindings(c)).toEqual([]);
+   });
+
+   it("leaves out a view that reads now over a gated source, as current_time", async () => {
+      const c = await compiled(`##! experimental { persistence givens }
+given: CARRIER :: string is "aa"
+#(access_filter) carrier = $CARRIER
+source: ops is ${TABLE} extend {
+  measure: n is count()
+  #@ persist name="recent"
+  view: recent is { where: ts > now - 1 day; group_by: carrier; aggregate: n }
 }
 `);
       expect(viewSources(c)).toEqual([]);
@@ -290,8 +312,8 @@ source: ops is ${TABLE} extend {
   measure: n is count()
   #@ persist storage="lake"
   view: stored is { group_by: carrier; nest: t is { group_by: tenant; aggregate: n } }
-  #@ persist name="colocated_nest"
-  view: colocated is { group_by: carrier; nest: t is { group_by: tenant; aggregate: n } }
+  #@ persist name="database_nest"
+  view: database is { group_by: carrier; nest: t is { group_by: tenant; aggregate: n } }
 }
 `);
       expect(viewSources(c)).toEqual([]);
@@ -299,7 +321,7 @@ source: ops is ${TABLE} extend {
          (f) => f.code === PERSIST_VIEW_NOT_BUILT,
       );
       expect(nested.map((f) => f.subject).sort()).toEqual([
-         "ops -> colocated",
+         "ops -> database",
          "ops -> stored",
       ]);
       for (const f of nested) {

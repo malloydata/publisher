@@ -391,8 +391,14 @@ describe("a DuckDB schema with STRUCT columns", () => {
    });
 
    it("ranks the table by a member's name, which matched nothing before", async () => {
+      // Only this block's tables: ":memory:" is one database per process, so
+      // another spec run earlier in the same `bun test` can have left its own
+      // tables in it.
       const tables = (
-         await listTablesForSchema(conn, "memory.main", malloy)
+         await listTablesForSchema(conn, "memory.main", malloy, [
+            "orders",
+            "shipments",
+         ])
       ).map((t) => ({
          connectionName: "duckdb",
          schemaName: "memory.main",

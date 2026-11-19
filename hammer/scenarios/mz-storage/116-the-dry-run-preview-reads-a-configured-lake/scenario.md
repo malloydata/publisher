@@ -21,7 +21,7 @@ missing, and a destination that is genuinely unreachable still fails the preview
 
 The preview runs twice, before the first build and after it. A dry run loads a
 throwaway copy of the package that nothing is bound to, so the source itself reads
-`not_built` both times; the views are what the preview judges.
+`awaiting_build` both times; the views are what the preview judges.
 
 ## Publisher
 
@@ -53,7 +53,7 @@ source: daily is orders -> {
 
 ## Preview pv
 
-- daily: not_built
+- daily: awaiting_build
 - daily.totals: serves
 - daily.by_region: serves
 
@@ -63,6 +63,6 @@ expect binding: daily -> lake
 
 ## Preview pv
 
-- daily: not_built
+- daily: awaiting_build
 - daily.totals: serves
 - daily.by_region: serves

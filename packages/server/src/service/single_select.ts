@@ -3,6 +3,7 @@
 
 import { DuckDBInstance } from "@duckdb/node-api";
 import { BadRequestError } from "../errors";
+import { introspectionNameIn } from "./duckdb_introspection";
 
 /**
  * Raw SQL on a managed DuckLake connection (`Connection.managed`) runs only when
@@ -34,6 +35,58 @@ async function parserInstance(): Promise<DuckDBInstance> {
    return parser;
 }
 
+/**
+ * DuckDB's own parse of `sql`, by `json_serialize_sql`: the statements when
+ * all are SELECT, else the error and its type (`parser` for SQL that does not
+ * parse, `not implemented` for a statement kind it does not serialize).
+ */
+export async function serializeSQL(sql: string): Promise<{
+   error?: boolean;
+   errorType?: string;
+   errorMessage?: string;
+   statements?: unknown[];
+}> {
+   const connection = await (await parserInstance()).connect();
+   try {
+      const prepared = await connection.prepare(
+         "SELECT json_serialize_sql($1::VARCHAR) AS j",
+      );
+      prepared.bindVarchar(1, sql);
+      const rows = await (await prepared.run()).getRowObjectsJson();
+      const parsed = JSON.parse(String(rows[0]?.j)) as {
+         error?: boolean;
+         error_type?: string;
+         error_message?: string;
+         statements?: unknown[];
+      };
+      return {
+         error: parsed.error,
+         errorType: parsed.error_type,
+         errorMessage: parsed.error_message,
+         statements: parsed.statements,
+      };
+   } finally {
+      connection.closeSync();
+   }
+}
+
+/**
+ * How many statements DuckDB's own parser reads in `sql` (of any kind), or
+ * undefined when it does not parse.
+ */
+export async function countStatements(
+   sql: string,
+): Promise<number | undefined> {
+   const connection = await (await parserInstance()).connect();
+   try {
+      return (await connection.extractStatements(sql)).count;
+   } catch {
+      return undefined;
+   } finally {
+      connection.closeSync();
+   }
+}
+
 /** How many SELECT statements `sql` holds, or why it is not only SELECTs. */
 export async function classifySelect(
    sql: string,
@@ -59,13 +112,27 @@ export async function classifySelect(
    }
 }
 
-/** Throws a 400 unless `sql` is exactly one SELECT. */
+/**
+ * Throws a 400 unless `sql` is exactly one SELECT that names no introspection
+ * function or DuckLake metadata catalog (duckdb_introspection.ts).
+ */
 export async function assertSingleSelect(
    connectionName: string,
    sql: string,
+   kind:
+      | "managed database"
+      | "locked-down DuckDB connection" = "managed database",
 ): Promise<void> {
    const verdict = await classifySelect(sql);
-   if ("selects" in verdict && verdict.selects === 1) return;
+   if ("selects" in verdict && verdict.selects === 1) {
+      const name = introspectionNameIn(sql);
+      if (name === undefined) return;
+      throw new BadRequestError(
+         `'${connectionName}' is a ${kind}: raw SQL on it may not name '${name}', ` +
+            `because Publisher's DuckDB connections do not expose catalog and ` +
+            `settings introspection, or an attached database beyond its tables, to SQL.`,
+      );
+   }
    const why =
       "refused" in verdict
          ? "it is not a SELECT"
@@ -73,6 +140,6 @@ export async function assertSingleSelect(
            ? "it holds no statement"
            : `it holds ${verdict.selects} statements`;
    throw new BadRequestError(
-      `'${connectionName}' is a managed database: raw SQL on it runs only as a single SELECT, and ${why}.`,
+      `'${connectionName}' is a ${kind}: raw SQL on it runs only as a single SELECT, and ${why}.`,
    );
 }

@@ -156,7 +156,7 @@ const LIFTED_LABELS: ReadonlySet<string> = new Set(["private", "internal"]);
 
 /**
  * The edits that lift a source declaration's own access modifiers, so a query
- * over the source can select the fields they hide (P3: the build stores the
+ * over the source can select the fields they hide (the build stores the
  * source's private and internal fields). Offsets are into `declaration`.
  *
  * - A statement's label (`private dimension:`, `internal rename:`) is deleted.
@@ -813,4 +813,34 @@ export function importRewrites(
       });
    }
    return edits;
+}
+
+/**
+ * The files `text` (the file at `url`) imports whole (`import "<file>"`), as
+ * resolved URLs; a selective import (`import { a } from "<file>"`) is not one.
+ * Undefined when the text does not lex or an import's path cannot be read.
+ */
+export function wholeImportsOf(
+   text: string,
+   url: string,
+): string[] | undefined {
+   const tokens = lexAll(text);
+   if (!tokens) return undefined;
+   const out: string[] = [];
+   for (let k = 0; k < tokens.length; k++) {
+      const t = tokens[k];
+      if (t.kind !== "word" || t.text !== "import" || t.depth !== 0) continue;
+      const literal = tokens[k + 1];
+      // A selective import opens with `{`; only a path right after `import`
+      // is a whole one.
+      if (!literal || !/^["']/.test(literal.text)) continue;
+      const body = literal.text.slice(1, -1);
+      if (body.includes("\\")) return undefined;
+      try {
+         out.push(new URL(body, url).href);
+      } catch {
+         return undefined;
+      }
+   }
+   return out;
 }

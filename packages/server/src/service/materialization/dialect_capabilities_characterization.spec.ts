@@ -25,9 +25,9 @@ import {
 import type { IncrementalDeclaration } from "./domain/incremental";
 import { planModelMaterialize } from "./plan/materialize_plan";
 import {
-   capturedColocatedSchema,
+   capturedDatabaseSchema,
    swapIntoPlace,
-} from "./run/colocated_build_strategy";
+} from "./run/database_build_strategy";
 import {
    INCREMENTAL_SOURCE_RANGE_DIALECTS,
    INCREMENTAL_TARGET_DML_DIALECTS,
@@ -286,7 +286,7 @@ function v1KeepsNest(dialect: string): boolean {
 }
 
 async function capturedKeepsNest(dialect: string): Promise<boolean> {
-   const columns = await capturedColocatedSchema({
+   const columns = await capturedDatabaseSchema({
       connection: {
          fetchSchemaForTables: async () => ({
             schemas: { orders: { fields: NESTED_FIELDS } },
@@ -300,11 +300,11 @@ async function capturedKeepsNest(dialect: string): Promise<boolean> {
    return (columns ?? []).some((c) => c.name === "tags");
 }
 
-function colocatedCast(dialect: string, nativeType: string): string | null {
+function databaseCast(dialect: string, nativeType: string): string | null {
    const read = bigIntegerReadOf(
       { name: "n", type: "number", numberType: "bigint" },
       { name: "n", type: "BIGINT" },
-      { dialect, colocated: true, nativeTypeOf: () => nativeType },
+      { dialect, database: true, nativeTypeOf: () => nativeType },
    );
    return read?.castTo ?? null;
 }
@@ -366,8 +366,8 @@ async function observe(): Promise<Record<string, Record<Dialect, unknown>>> {
       v1KeepsNest: await per(v1KeepsNest),
       capturedKeepsNest: await per(capturedKeepsNest),
       liveKeepsBigIntegers: await per((d) => liveKeepsBigIntegers(d)),
-      colocatedCastBigint: await per((d) => colocatedCast(d, "bigint")),
-      colocatedCastDecimal: await per((d) => colocatedCast(d, "decimal(38,0)")),
+      databaseCastBigint: await per((d) => databaseCast(d, "bigint")),
+      databaseCastDecimal: await per((d) => databaseCast(d, "decimal(38,0)")),
       tableNamesFoldCase: await per((d) => tableNamesFoldCase(d, false)),
    };
 }
@@ -594,7 +594,7 @@ const DECIDED: Record<string, Record<Dialect, unknown>> = {
       sqlserver: false,
       unknown_dialect: true,
    },
-   colocatedCastBigint: {
+   databaseCastBigint: {
       duckdb: "bigint",
       postgres: "bigint",
       standardsql: null,
@@ -606,7 +606,7 @@ const DECIDED: Record<string, Record<Dialect, unknown>> = {
       sqlserver: "bigint",
       unknown_dialect: null,
    },
-   colocatedCastDecimal: {
+   databaseCastDecimal: {
       duckdb: null,
       postgres: null,
       standardsql: null,

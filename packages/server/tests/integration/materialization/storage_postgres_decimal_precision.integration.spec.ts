@@ -31,7 +31,7 @@ import { pollFor, TERMINAL_STATUSES } from "./polling";
  * build reads such a column as Postgres's text and stores the DECIMAL(38, s)
  * that holds every value it read; one no DECIMAL holds is stored as that text
  * and answered live. Through a real server, for a `#@ persist storage=` source
- * and a `#(preaggregate) storage=` rollup.
+ * and a `#(rollup) storage=` rollup.
  *
  * Opt-in: set PUBLISHER_TEST_POSTGRES_URL to a server the test may create
  * and drop databases on, e.g. `postgresql://postgres:pw@127.0.0.1:5432/postgres`.
@@ -50,7 +50,7 @@ const MODEL = [
    `source: persisted is t -> { select: ${COLUMNS}, huge }`,
    `source: live_huge is t -> { select: ${COLUMNS}, huge }`,
    "source: rolled is t extend {",
-   '  #(preaggregate) grain=[g] storage="lake"',
+   '  #(rollup) grain=[g] storage="lake"',
    "  measure: total is sum(u + m)",
    "}",
    '#@ persist name="t_incremental" storage="lake" refresh="incremental" watermark="id"',
@@ -159,7 +159,12 @@ describe.skipIf(!url)(
             name: "admin",
             connectionString: url!,
          });
-         await admin.runSQL(`CREATE DATABASE ${warehouse}`);
+         // A binary (`C`) warehouse: a `storage=` copy orders and ranges a
+         // string as live does only under a binary collation, so a string
+         // order here serves (the server default, often `en_US`, answers it live).
+         await admin.runSQL(
+            `CREATE DATABASE ${warehouse} LOCALE 'C' ENCODING 'UTF8' TEMPLATE template0`,
+         );
          await admin.runSQL(`CREATE DATABASE ${catalog}`);
          const parsed = new URL(url!);
          const pg = {

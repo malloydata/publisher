@@ -108,6 +108,21 @@ export interface Capabilities {
     */
    driverKeepsBigIntegers: boolean;
    /**
+    * Its live answer rounds a 64-bit integer past 2^53 through JSON in the
+    * way measured (to the nearest double, a BigInt below 1e21 and a number
+    * from it), so a `storage=` answer is read exactly and rounded the same
+    * way after it runs (`live_big_integers.ts`). Postgres alone: the other
+    * dialects whose live answer rounds are unmeasured.
+    */
+   liveRoundsBigIntegersMeasured: boolean;
+   /**
+    * Its live answer writes a float4 as the shortest text that reads back as
+    * it (Postgres's `float4out`, through its JSON stage), so a `storage=`
+    * answer's float4 values, which a DuckDB read widens to a double, are
+    * written the same way after it runs (`live_float4.ts`).
+    */
+   liveWritesFloat4Shortest: boolean;
+   /**
     * Its `CAST` takes an integer type by its catalog name. Not MySQL, whose
     * `CAST` names no integer type (`CAST(x AS bigint)` is a syntax error).
     */
@@ -156,6 +171,16 @@ export interface Capabilities {
     * dropped table from a hidden one.
     */
    catalogHidesTables: boolean;
+   /**
+    * How a string column's comparison is read, for a gate or a `where:` a
+    * `storage=` copy re-applies byte-exact (`serve/gate_collation.ts`):
+    * `binary` (always byte-exact), `instance` (byte-exact unless the DuckDB
+    * instance sets a `default_collation` or a `COLLATE` is written), `column`
+    * (the column's own collation, read with Postgres's `pg_collation_for`);
+    * absent when it
+    * cannot be read, which keeps no gate over a string column there.
+    */
+   stringCollation: "binary" | "instance" | "column" | undefined;
 }
 
 const NONE: Capabilities = Object.freeze({
@@ -171,6 +196,8 @@ const NONE: Capabilities = Object.freeze({
    needsQualifiedTable: false,
    nestedColumns: false,
    driverKeepsBigIntegers: false,
+   liveRoundsBigIntegersMeasured: false,
+   liveWritesFloat4Shortest: false,
    castsToIntegerType: false,
    onlyBigIntegerType: undefined,
    foldsTableNameCase: false,
@@ -178,6 +205,7 @@ const NONE: Capabilities = Object.freeze({
    leafBudget: 50,
    passthroughNumericAsDouble: false,
    catalogHidesTables: false,
+   stringCollation: undefined,
 });
 
 /** Each dialect's capabilities. */
@@ -196,9 +224,11 @@ export const CAPABILITIES: Record<DialectName, Capabilities> = {
       foldsTableNameCase: true,
       utcSessions: true,
       leafBudget: 120,
+      stringCollation: "instance",
    }),
    postgres: Object.freeze({
       ...NONE,
+      stringCollation: "column",
       passthroughNumericAsDouble: true,
       incrementalSourceRange: true,
       incrementalTargetDml: true,
@@ -209,6 +239,8 @@ export const CAPABILITIES: Record<DialectName, Capabilities> = {
       relationProbe: true,
       tableOwnership: true,
       castsToIntegerType: true,
+      liveRoundsBigIntegersMeasured: true,
+      liveWritesFloat4Shortest: true,
    }),
    standardsql: Object.freeze({
       ...NONE,
@@ -221,6 +253,7 @@ export const CAPABILITIES: Record<DialectName, Capabilities> = {
       castsToIntegerType: true,
       onlyBigIntegerType: "INT64",
       leafBudget: 120,
+      stringCollation: "binary",
    }),
    snowflake: Object.freeze({
       ...NONE,

@@ -1,6 +1,11 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import {
+   localLockedDuckDBOptions,
+   networkedDuckDBOptions,
+   setupIdentity,
+} from "./duckdb_lockdown";
 import { externalEnv, settings } from "../settings";
 import { boolean, Mismatch } from "../settings/types";
 import { createPrivateKey } from "crypto";
@@ -322,7 +327,7 @@ export function getStaticConnectionAttributes(
          };
       case "sqlserver":
          // The connector is read-only: it creates no tables and has no
-         // PersistSQLResults, so a colocated `#@ persist` on a SQL Server
+         // PersistSQLResults, so a database `#@ persist` on a SQL Server
          // source is refused at load (READ_ONLY_DIALECTS in
          // materialization_eligibility.ts) rather than failing mid-build.
          return {
@@ -1425,12 +1430,31 @@ function buildDuckDBEntry(
          `DuckDB attached database names cannot conflict with connection name ${connection.name}`,
       );
    }
-   return buildDuckdbEntry(
+   const entry = buildDuckdbEntry(
       connection.name,
       environmentPath,
       `${connection.name}.duckdb`,
       connection.duckdbConnection?.setupSQL,
    );
+   // duckdb_lockdown.ts. With no attached database the connection needs no
+   // network: confined to the environment directory, then locked, by Malloy,
+   // around its setupSQL. With one, Publisher attaches, then locks; the key
+   // digests what it attaches, so a locked instance is never reused for
+   // another setup.
+   return attachedDatabases.length === 0
+      ? {
+           ...entry,
+           ...localLockedDuckDBOptions(environmentPath),
+        }
+      : {
+           ...entry,
+           ...networkedDuckDBOptions(
+              "attached",
+              // Not setupSQL: each connection runs its own, on a locked
+              // instance too (duckdb_instance_sharing.ts).
+              setupIdentity({ attachedDatabases }),
+           ),
+        };
 }
 
 function buildMotherDuckEntry(
@@ -1446,6 +1470,8 @@ function buildMotherDuckEntry(
          ? `md:${connection.motherduckConnection.database}?attach_mode=single`
          : "md:",
       motherDuckToken: connection.motherduckConnection.accessToken,
+      // Locked after open like any networked reader (duckdb_lockdown.ts).
+      ...networkedDuckDBOptions("motherduck", ""),
    };
 }
 
@@ -1454,11 +1480,23 @@ function buildDuckLakeEntry(
    environmentPath: string,
 ): CoreConnectionEntry {
    // Shape is validated up front by validateConnectionShape.
-   return buildDuckdbEntry(
-      connection.name,
-      environmentPath,
-      `${connection.name}_ducklake.duckdb`,
-   );
+   return {
+      ...buildDuckdbEntry(
+         connection.name,
+         environmentPath,
+         `${connection.name}_ducklake.duckdb`,
+      ),
+      // Attached, then locked to its data path (duckdb_lockdown.ts). The key
+      // digests the catalog config, so an edit opens a fresh instance rather
+      // than re-attaching on a locked one.
+      ...networkedDuckDBOptions(
+         "ducklake",
+         setupIdentity({
+            ducklakeConnection: connection.ducklakeConnection ?? null,
+            managed: connection.managed === true,
+         }),
+      ),
+   };
 }
 
 function buildPublisherEntry(connection: NamedConnection): CoreConnectionEntry {

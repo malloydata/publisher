@@ -42,13 +42,14 @@ import {
 import {
    compilePackageBuildPlan,
    computePackageBuildPlan,
+   recordEligibilityRefusals,
 } from "./plan/build_plan_compile";
-import { deriveBuildPlanOutcome } from "./plan/build_plan";
+import { derivePackagePlan } from "./plan/build_plan";
 import {
    createTableWithDeclaredTypes,
    issuePassthroughRead,
 } from "./run/materialization_build_session";
-import { noteWrongTierRecompute } from "./run/materialization_run_support";
+import { noteWrongTierRecompute } from "./run/build_upstreams";
 import { MaterializationScheduler } from "./run/materialization_scheduler";
 import {
    MaterializationService,
@@ -83,14 +84,18 @@ afterAll(() => packages.cleanup());
 
 /**
  * How many times `publisher_materialization_eligibility_refused_total` counts
- * ONE refused source while a package's build plan is derived: once, at the
- * plan's one verdict for its table.
+ * ONE refused source for a package's build plan: once, at the plan's one
+ * verdict for its table, recorded where the plan is adopted.
  */
 const ELIGIBILITY_REFUSALS_PER_REFUSED_SOURCE = 1;
 
-const NOW_SOURCE = `##! experimental.persistence
+// Refused as current_time: its build reads the clock, and a given scopes it
+// (an access input), so a table as of its build would keep a grant past its
+// time.
+const NOW_SOURCE = `##! experimental { persistence givens }
+given: ORG :: number is 1
 #@ persist
-source: recent is duckdb.sql("select 1 as id, now() as at") -> { where: at > now() - 1 day; select: id }
+source: recent is duckdb.sql("select 1 as id, now() as at") -> { where: at > now() - 1 day; select: id } extend { where: id = $ORG }
 `;
 
 const BLANK_STORAGE_SOURCE = `##! experimental.persistence
@@ -114,6 +119,13 @@ describe("publisher_materialization_eligibility_refused_total", () => {
       expect(
          Object.keys(outcome.sourceEligibility?.refused ?? {}),
       ).toHaveLength(1);
+      // Deriving counts; it records nothing until the plan is adopted.
+      expect(
+         await harness.collectCounter(
+            "publisher_materialization_eligibility_refused_total",
+         ),
+      ).toBe(0);
+      recordEligibilityRefusals(outcome.eligibilityRefused);
       expect(
          await harness.collectAttributes(
             "publisher_materialization_eligibility_refused_total",
@@ -128,9 +140,10 @@ describe("publisher_materialization_eligibility_refused_total", () => {
 
    it("counts a source under its wire refusal, when the gates disagree", async () => {
       // A blank `storage=` is refused for its placement on the wire, and is
-      // colocated to every other gate.
+      // database to every other gate.
       const pkg = await packages.create(BLANK_STORAGE_SOURCE);
       const outcome = await computePackageBuildPlan(pkg);
+      recordEligibilityRefusals(outcome.eligibilityRefused);
       const refused = Object.values(outcome.plan?.refusedSources ?? {});
       expect(refused.map((r) => r.reason)).toEqual(["empty_storage"]);
       expect(
@@ -146,15 +159,16 @@ describe("publisher_materialization_eligibility_refused_total", () => {
    }, 30_000);
 
    it("counts no source the plan does not refuse", async () => {
-      // Colocated and buildable on the package's DuckDB sandbox, which a
+      // Database and buildable on the package's DuckDB sandbox, which a
       // `storage=` build cannot pass through: the storage gate's verdict
       // (only whether it may be served from a stored table) is not a refusal.
       const pkg = await packages.create(ONE_PERSIST_SOURCE);
       const compiled = await compilePackageBuildPlan(pkg);
-      const outcome = deriveBuildPlanOutcome(
+      const outcome = derivePackagePlan(
          { ...compiled, connectionTypes: { duckdb: "duckdb" } },
          null,
       );
+      recordEligibilityRefusals(outcome.eligibilityRefused);
       expect(outcome.plan?.refusedSources ?? {}).toEqual({});
       expect(Object.values(outcome.sourceEligibility.refused)).toEqual([
          expect.stringContaining("cannot be passed through"),
@@ -396,7 +410,7 @@ describe("the build loop's instruments", () => {
 
    it("publisher_materialization_stale_upstream_entry_total: once per run per upstream, by the recomputing build's tier", async () => {
       const planFacts = {};
-      const note = (upstream: string, build: "colocated" | "storage") =>
+      const note = (upstream: string, build: "database" | "storage") =>
          noteWrongTierRecompute({
             planFacts,
             build,
@@ -406,7 +420,7 @@ describe("the build loop's instruments", () => {
          });
       note("up_a", "storage");
       note("up_a", "storage");
-      note("up_b", "colocated");
+      note("up_b", "database");
       // Another run (its own plan facts) counts the same upstream again.
       noteWrongTierRecompute({
          planFacts: {},
@@ -418,13 +432,13 @@ describe("the build loop's instruments", () => {
       expect(
          await harness.collectCounter(
             "publisher_materialization_stale_upstream_entry_total",
-            { build: "storage" },
+            { tier: "storage" },
          ),
       ).toBe(2);
       expect(
          await harness.collectCounter(
             "publisher_materialization_stale_upstream_entry_total",
-            { build: "colocated" },
+            { tier: "database" },
          ),
       ).toBe(1);
    });
@@ -499,10 +513,9 @@ describe("a package load's build-plan instruments", () => {
       const outcome = await computePackageBuildPlan(pkg);
       await pm.applyLoadBuildPlan({
          ok: true,
-         outcome,
+         packagePlan: outcome,
          durationMs: 42,
          digestSkipped: [],
-         eligibilityRefused: {},
       });
       expect(
          (

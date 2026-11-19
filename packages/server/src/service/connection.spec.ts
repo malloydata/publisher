@@ -39,7 +39,8 @@ import {
    resolveCloudStorageCredentials,
 } from "./gcs_s3_utils";
 import { assembleEnvironmentConnections } from "./connection_config";
-import { listStorageTables } from "./materialization/run/materialization_build_session";
+import { runInternalSQL } from "./duckdb_lockdown";
+import { listStorageTables } from "./materialization/run/storage_admin";
 import {
    ConnectionPoolExhaustedError,
    internalErrorToHttpError,
@@ -1097,7 +1098,8 @@ describe("connection integration tests", () => {
                expect(connection).toBeDefined();
                createdConnections.push(connection);
 
-               const secrets = await connection.runSQL(
+               const secrets = await runInternalSQL(
+                  connection,
                   "SELECT name FROM duckdb_secrets()",
                );
                const secretNames = secrets.rows.map(
@@ -1190,7 +1192,8 @@ describe("connection integration tests", () => {
                expect(connection).toBeDefined();
                createdConnections.push(connection);
 
-               const secrets = await connection.runSQL(
+               const secrets = await runInternalSQL(
+                  connection,
                   "SELECT name FROM duckdb_secrets()",
                );
                const secretNames = secrets.rows.map(
@@ -2515,7 +2518,8 @@ describe("connection integration tests", () => {
                createdConnections.push(connection);
                // postgres_query runs on the attach's own Postgres session, so
                // this reads the setting the libpq `options` pair gave it.
-               const result = await connection.runSQL(
+               const result = await runInternalSQL(
+                  connection,
                   "SELECT * FROM postgres_query('pg_stmt_timeout', 'SELECT current_setting(''statement_timeout'') AS v')",
                );
                expect(Object.values(result.rows[0])[0]).toBe("750ms");
@@ -2566,7 +2570,8 @@ describe("connection integration tests", () => {
                // libpq's own parse of the merged string, read back from the
                // session it opened: the string's search_path survives and the
                // field's timeout replaces the string's.
-               const result = await connection.runSQL(
+               const result = await runInternalSQL(
+                  connection,
                   `SELECT * FROM postgres_query('${name}', 'SELECT current_setting(''search_path'') AS sp, current_setting(''statement_timeout'') AS st')`,
                );
                expect(result.rows[0]).toEqual({
@@ -2846,42 +2851,58 @@ describe("connection integration tests", () => {
             restoreSettings = installSettings({
                env: { PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: "true" },
             }).restore;
+
+            // An error only a statement that ran can raise.
+            const result = await testConnectionConfig({
+               name: "setup_sql_gate",
+               type: "duckdb",
+               duckdbConnection: {
+                  setupSQL: "SELECT error('setupSQL ran')",
+               },
+            });
+
+            expect(result.status).toBe("failed");
+            expect(result.errorMessage).toContain("setupSQL ran");
+         });
+
+         it("runs setupSQL confined to the environment directory", async () => {
+            restoreSettings = installSettings({
+               env: { PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: "true" },
+            }).restore;
             const marker = path.join(dir, "ran.csv");
 
             const result = await testConnectionConfig(markerConfig(marker));
 
-            expect(result.status).toBe("ok");
-            expect(await exists(marker)).toBe(true);
+            // A write outside it is refused (duckdb_lockdown.ts).
+            expect(result.status).toBe("failed");
+            expect(await exists(marker)).toBe(false);
          });
       });
 
       // These specs drive real attach failures offline: the closing listener
       // accepts the connection and drops it, so DuckDB's postgres extension
       // fails with "server closed the connection unexpectedly" and echoes the
-      // full connection string into the error message. The assertions prove
-      // that string reaches the caller redacted (`***`) and never in
-      // cleartext.
+      // attach path into the error message. The assertions prove that the
+      // message reaches the caller with no credential in it: the attach path
+      // carries none, and the redaction still covers anything that would.
       describe("errorMessage redaction", () => {
          const leakedPassword = "supersecretpw";
 
          // The security invariant is unconditional: the cleartext password
          // must never appear (this is also what fails if the fix regresses).
-         // The positive redaction marker is asserted only once the DSN has
-         // actually reached the message (the attach got as far as the connect
-         // refusal, so the host is present). On a runner where a DuckDB
-         // extension can't load, the attach fails earlier with a message that
-         // carries no DSN to redact, and the marker check would then be
-         // meaningless rather than a real failure.
-         const expectRedacted = (
-            errorMessage: string | undefined,
-            marker: string,
-         ) => {
+         // Once the attach path has reached the message (the attach got as
+         // far as the connect refusal, so the host is present), it carries
+         // neither a password keyword nor URI userinfo, redacted or not. On a
+         // runner where a DuckDB extension can't load, the attach fails
+         // earlier with a message that carries no attach path at all.
+         const expectRedacted = (errorMessage: string | undefined) => {
             expect(errorMessage).not.toContain(leakedPassword);
             if (
                typeof errorMessage === "string" &&
                errorMessage.includes("127.0.0.1")
             ) {
-               expect(errorMessage).toContain(marker);
+               expect(errorMessage).not.toContain("password=");
+               expect(errorMessage).not.toContain("alice");
             }
          };
 
@@ -2905,7 +2926,7 @@ describe("connection integration tests", () => {
                });
 
                expect(result.status).toBe("failed");
-               expectRedacted(result.errorMessage, ":***@");
+               expectRedacted(result.errorMessage);
             },
             { timeout: 30000 },
          );
@@ -2934,7 +2955,7 @@ describe("connection integration tests", () => {
                });
 
                expect(result.status).toBe("failed");
-               expectRedacted(result.errorMessage, "password=***");
+               expectRedacted(result.errorMessage);
             },
             { timeout: 30000 },
          );
@@ -2962,7 +2983,7 @@ describe("connection integration tests", () => {
                });
 
                expect(result.status).toBe("failed");
-               expectRedacted(result.errorMessage, ":***@");
+               expectRedacted(result.errorMessage);
             },
             { timeout: 30000 },
          );
@@ -3091,9 +3112,12 @@ describe("connection integration tests", () => {
                },
             });
 
-            const attach = sql.find((q) => q.includes("TYPE postgres"));
+            const attach = sql.find(
+               (q) => q.startsWith("ATTACH") && q.includes("TYPE postgres"),
+            );
             expect(attach).toBeDefined();
             expect(attach).toContain('AS "evil-db"');
+            expect(attach).not.toContain(leakedPassword);
          });
 
          it("hands libpq require, not no-verify, in an attached database's raw connectionString", async () => {
@@ -3122,7 +3146,9 @@ describe("connection integration tests", () => {
                },
             });
 
-            const attach = sql.find((q) => q.includes("TYPE postgres"));
+            const attach = sql.find(
+               (q) => q.startsWith("ATTACH") && q.includes("TYPE postgres"),
+            );
             expect(attach).toContain("sslmode=require");
             expect(attach).not.toContain("no-verify");
          });

@@ -2,8 +2,10 @@
 
 > What this is: how Malloy and dbt fit together today, where the gaps are, and the plan to close
 > them. Written for teams running — or considering — dbt below a Malloy semantic layer. The
-> [package format](packages.md), [materialization](materialization.md), and
-> [pre-aggregation](preaggregation.md) docs describe the shipped pieces this roadmap builds on.
+> [package format](packages.md), [materialization](materialization.md),
+> [pre-aggregation](preaggregation.md), and [classification](classification.md) docs describe the
+> shipped pieces this roadmap builds on; [materialization-migration.md](materialization-migration.md)
+> maps the v1 annotations onto materialization v2's `#(materialize)` and `#(rollup)`.
 
 We believe data should be modeled and transformed **top-down** — from what the business means, down
 to the details — in a language that the spreadsheet-capable part of the world, and the agents
@@ -48,6 +50,61 @@ how the loop earns trust, not a permanent limitation — as agents prove out, it
 optimization becomes automatic. Read the gap scoring below in that frame: each closed row is not
 parity with dbt; it is the runtime absorbing another thing humans used to hand-compile.
 
+### Stored answers you can trust
+
+A runtime that reroutes queries is worth having only if the rerouted answer is the answer. So the
+rule is strict: **a stored table answers only when Publisher can show it matches live, and
+otherwise the query answers live**; the known exceptions are listed below. Every result carries a
+[path report](materialization.md#which-table-answered-a-query-the-path-report) naming the table
+that answered and why every other candidate did not. What the check covers today:
+
+- **Row-level gates.** A gated source's table is admitted only when its gate is proven to be the
+  entry point's own row filter or `#(authorize)` lock, and the gate is grafted onto the stored
+  table and proven again on every read, exactly as on live
+  ([gated sources](materialization.md#access_filter-gated-sources-and-materialization)).
+- **Collation.** For a Postgres or DuckDB source, a string compares on the stored table as the
+  source compares it, or the query answers live (BigQuery compares bytes on both sides; a Snowflake
+  column's collation is not yet judged for ordering). A `storage=` copy in DuckLake compares bytes, so a query whose result depends on a
+  string's order (an `order_by:`, a top-N, a `min`/`max`, a range comparison) over a source whose
+  collation is not binary answers live, as does an equality under a nondeterministic collation. A
+  Postgres database-tier table read past a gate or under a scope is checked against its source's
+  collation on every answer, matched by identity (provider, locales, library version), not by name.
+  The ordering and grouping check on a `storage=` copy is on main and ships in the next release.
+- **Numbers and time.** A Postgres `numeric` is stored exactly or answered live; a big integer past
+  2^53 is served with live's JSON type; a `real` is written as live writes it (on main; ships in the
+next release); a `storage=` table is
+  never read past a gate over a column it holds as a float; and a value stored in the build's time
+  zone answers live under a query that sets its own `timezone:`
+  ([stored column types](materialization.md#stored-column-types-follow-the-model-not-the-warehouse)).
+- **Served equals live, checked.** A nightly scenario suite (the hammer) runs a real Publisher
+  against a throwaway Postgres and a local DuckLake under both settings of the materialization v2
+  switch, asserting each answer's rows and the tier that produced it.
+
+The honest costs. On a `storage=` copy of a Postgres source with a non-binary collation (the
+`en_US` default of most managed Postgres included), queries that order by a string or compare
+string ranges answer live; equality, joins, counts and grouping ordered by a measure still serve
+under a deterministic collation (the libc `en_US` default included), while under a nondeterministic
+ICU collation equality, joins and `count(x)` answer live too.
+Serving an ICU collation's order from the copy by emulating it may come later; a libc collation has
+no exact equivalent outside Postgres. On a database-tier table, a query's filters, scopes and
+gates are re-checked after someone alters a stored column's collation, but its string grouping and
+ordering are not yet. A DuckDB `default_collation` set on a storage destination out of band
+(Publisher never sets one) is not re-checked for a query's grouping and ordering. On Postgres, each
+gated or scoped answer from a database-tier table that compares a string costs a few catalog
+probes. Some answers are known to differ: on Snowflake, a `sum()` over a `NUMBER(38,0)` past 2^53
+is rounded live and exact served, and a `TIMESTAMP_TZ` renders in the account's format live and in
+UTC served (both need a fix in Malloy's Snowflake connector;
+[stored column types](materialization.md#stored-column-types-follow-the-model-not-the-warehouse));
+a `sum` of a Postgres `real` served from a `storage=` table can differ from live in its last digit;
+and `freshness.fallback="stale_ok"` serves a table past its window by design
+([freshness](materialization.md#freshness-a-window-and-a-fallback)). The executed
+served-against-live evidence is DuckDB, plus Postgres-to-DuckLake through the nightly hammer;
+BigQuery, Snowflake, Databricks and MotherDuck have none yet
+([the v2 plan](materialization-v2-plan.md)), and a nightly conformance workflow against real
+BigQuery and Snowflake is pending in #1872. And, as with every access control here, a gate holds
+only behind the gateway that authenticates the caller and sets the givens
+([operating model](security-posture.md#operating-model-a-microservice-behind-your-gateway)).
+
 One thing the framing should not imply: the sequencing below is governance and integration first.
 The runtime is why the plan coheres, not what ships next.
 
@@ -59,7 +116,26 @@ defines *what* the system can do (a declaration surface, a build mechanic, a che
 OSS; anything that makes that capability dependable at scale (scheduling against objectives,
 cross-version identity and reuse, garbage collection, retention, fleet operations) is the managed
 layer on top. The entire day-one loop below — bindings, lint, the compile gate, package variants,
-the semantic-layer converter — runs from the open-source Publisher alone, no account required.
+the semantic-layer converter — is planned to run from the open-source Publisher alone, no account
+required.
+
+**The single-node floor, as shipped.** A standalone Publisher already runs the whole
+materialization loop on one node: an opt-in cron scheduler
+([the standalone scheduler](materialization.md#the-standalone-scheduler)); a local run store and
+incremental ledger, with an API to hand the ledger back from outside
+([supplying the ledger yourself](materialization.md#supplying-the-ledger-yourself)); freshness
+windows and fallbacks that age a table at serve time
+([freshness](materialization.md#freshness-a-window-and-a-fallback)); an auto-run that reclaims a
+renamed table it can prove is its own and lists the ones it keeps
+([the rename rule](materialization.md#the-rename-rule)); a guarded drop route
+([the drop route](materialization.md#the-drop-route)); and the `malloy-pub` CLI for builds,
+schedules and run history ([manage it with the CLI](materialization.md#manage-it-with-the-cli)).
+What stays with a hosted control plane: the two-phase build that also builds indexes, scheduling
+refresh against freshness objectives rather than a cron (standalone, nothing rebuilds a table the
+moment its window passes), and distributing manifests across a fleet
+([standalone vs. hosted](materialization.md#standalone-vs-hosted-control-plane-deployments) covers
+the differences). The hooks for a host
+to do that are open: `buildInstructions` on a run, a bound `manifestLocation`, and the ledger echo.
 
 ## Where the seam sits — and where it moves
 
@@ -67,12 +143,21 @@ the semantic-layer converter — runs from the open-source Publisher alone, no a
 | ------------------------ | ----------------------------------- | ----------------------------------- |
 | EL and raw landing       | manifest → Malloy bindings          | Semantic layer — already won        |
 | Python/ML transforms     | Docs flow: schema.yml → `#(doc)`    | Materialization & rollups — shipped |
+|                          |                                     | Warehouse → lake copies (`storage=`) — shipped |
 | The messiest staging SQL | Drift + compile gates in CI         | Tests, contracts, seeds             |
 | Its package ecosystem    | Refresh signaling                   | SCD2 history                        |
 |                          | Semantic-layer takeout              | Staging, as language lands          |
 
 The seam moves right-to-left over time: every gap closed in the third column pulls work out of the
 first. The first column never empties — by design.
+
+A lake copy is the newest entry in that column: `#(materialize) storage="lake"` builds a source on
+Postgres, BigQuery or Snowflake into a DuckLake storage destination (the source warehouse runs the
+query, the table lands in the lake) and serves the source's queries from there, its extensions,
+views and joins included ([where a table is built](materialization.md#where-a-table-is-built-storage),
+[the served copy](materialization.md#the-served-copy-materialization-v2-publisher_materialize)).
+It is served only with `PERSIST_STORAGE_MODE=on`, and a destination is not a connection: models
+cannot name it, so only the build and serve paths reach it.
 
 ## The gaps, scored
 
@@ -81,13 +166,13 @@ deployments running the dbt → Malloy pattern today:
 
 | dbt capability | Where Malloy + the platform stand | Verdict |
 | --- | --- | --- |
-| DAG, `ref()`, build order, selective builds | Run + build-plan DAG, scoped reruns, content-addressed reuse, freshness-objective scheduling — all shipped | **Closed** |
-| Incremental models | `refresh="incremental"` with `watermark=`/`merge_key=`, on Postgres and BigQuery; late-arriving data is operator-repaired | **Closed, narrowly** |
-| Materialization configs | One annotation (`#@ persist` / `preaggregate` / `#(index)`); the platform absorbs identity, scheduling, and cleanup | **Closed — simpler than dbt** |
+| DAG, `ref()`, build order, selective builds | Run + build-plan DAG, scoped reruns (`sourceNames`), content-addressed reuse, freshness-objective scheduling — all shipped. Since then: chained builds (a stored table builds from the stored tables it reads, across files), cross-connection destinations (`storage=`), a guarded drop route (`DELETE …/connections/{connectionName}/materializedTables/{tableName}`), and an auto-run that reclaims a renamed table it can prove is its own | **Closed** |
+| Incremental models | `refresh="incremental"` with `watermark=`/`merge_key=` on Postgres, BigQuery and Snowflake sources, into the warehouse or a `storage=` destination. Late rows are handled (0.16.0): each delta starts at the newest stored watermark, `lookback=` re-reads a window, rows a delta never read are reported (`lateRows`, `persist-incremental-late-rows`), and without `merge_key=` a refresh replaces the whole range it re-reads, so deletions in it carry through. `lookback=` takes a `merge_key=` and a date or timestamp watermark. On other dialects the source is refused and answered live until it declares `refresh="full"` | **Closed** (Postgres, BigQuery, Snowflake) |
+| Materialization configs | Still one annotation: `#(materialize)` on a source (optionally `storage="…"`), `#(rollup) grain=[…]` on a measure, `#@ persist` on a view or a named query, `#(index)` on a dimension. `name=` is optional and only places the table; without it Publisher picks a readable name (`<package>__<file>__<source>__p<hash>`), and every database table a build writes carries its package's ownership mark. `#@ preaggregate` is deprecated for `#(rollup)`; v1 `#@ persist` keeps working. The platform absorbs identity, scheduling, and cleanup | **Closed — simpler than dbt** |
 | Test framework (severities, scoping) | Nothing today — the clearest place dbt leads. Data tests: design in progress. Unit tests (fixture → expected result): cheap once source rebinding lands | Open · design in progress |
-| Enforced contracts | Really two contracts, and neither exists yet. *Upstream* (warehouse → model): compile catches shape errors, but as an error deep in a model, not at a named, diagnosable boundary — and compile alone misses a class of errors that only a dry-run against the warehouse catches. *Downstream* (model → consumers): a view's fields are API surface for dashboards and agents; a removed field compiles clean and breaks them silently | Open · lands in `lint` |
-| Seeds | Package-local CSVs already work — the per-package duckdb reads `.csv`/`.xlsx` in place, versioned with the package. Missing: joinability — the CSV sits on the sandbox connection, marts on the warehouse connection, and Malloy can't join across them | **Mostly closed** |
-| SCD2 snapshots | The incremental machinery — watermark ledger, stable physical naming, transactional in-place advance, retry discipline — is most of the write path. But the shipped modes can't hold history (`merge` overwrites the prior value; the no-key range replace assumes append-only sources), and the cache lifecycle — re-address → clean rebuild → collection — discards accumulated observations | Open · a write path + lifecycle exemptions, not a new engine |
+| Enforced contracts | Really two contracts. *Downstream, in policy terms:* `#(carries)` on an entry point refuses the package load when any field reachable from it carries a [class](classification.md) the list omits, or none (a preview: a review aid until its known gaps close). *Pre-merge:* `compile_model` at `package` scope (and a `dryRun` publish) compiles every file as a reload would, importers and materialization annotations included, without serving the result; the [serve verdict](materialization.md#will-it-serve-the-serve-verdict) and path report say whether a stored table will answer. Still open: *upstream* (warehouse → model), where compile catches shape errors deep in a model rather than at a named boundary and misses what only a warehouse dry-run catches; and the output-space contract, where a removed view field compiles clean and breaks dashboards and agents silently | Partly closed · the rest lands in `lint` |
+| Seeds | Package-local CSVs already work — the per-package duckdb reads `.csv`/`.xlsx` in place, versioned with the package. Missing: joinability — the CSV sits on the sandbox connection, marts on the warehouse connection, and Malloy can't join across them. `storage=` does not close it: a `storage=` build refuses a sandbox source (`storage_source_unsupported`), and the join is refused at compile (`join-connection-mismatch`) before anything is stored | **Mostly closed** |
+| SCD2 snapshots | The incremental machinery — watermark ledger, stable physical naming, transactional in-place advance, retry discipline — is most of the write path. But the shipped modes can't hold history (`merge` overwrites the prior value; a no-key refresh replaces the range it re-reads), and the cache lifecycle — re-address → clean rebuild → collection — discards accumulated observations. The lifecycle pieces Stage 2 builds on now exist: stored tables keyed by content address (the destination folded in for a `storage=` twin, or always with `persist.addressIncludesDestination`), not by the table's name; an ownership mark on every database table a build writes; a reclaim that never drops a table at an author's `name=` (outside `scope: "version"`) and lists every table it keeps (`metadata.keptTables`, `table-kept`) | Open · a write path + lifecycle exemptions, not a new engine |
 | Staging query shapes (`UNION ALL`, correlated date explosion, non-linear pipelines) | `connection.sql()` sources are already persistable, so staging SQL can be lifted verbatim and gain the orchestrator immediately | Open · bridged; closed only by language work |
 | Feature-flag DAG pruning, dispatch hooks, templating | Givens cover value substitution; per-tenant variance requires an external build step today | Open · package variants |
 | Macros & packages (reuse across projects and tenants) | npm-style package dependencies for Malloy packages — versioned, declared, lockfile-resolved — are being scoped; override sources (a package declares a typed default, a consumer rebinds it) follow; expression-level macros are language work | Open · package dependencies + override sources |
@@ -122,10 +207,13 @@ Every team running dbt + Publisher today has had to build the same harness: a bi
 CI gates, a per-tenant package producer, refresh coordination. None of it is differentiated work a
 team should own. All of it becomes product:
 
-- **Honest CI signals.** Today the readiness endpoint returns 200 even when a package failed to
-  compile, so CI has to poll per-package model endpoints. Fix: `publisher --check` boots, compiles
-  every package, prints per-model errors, and exits non-zero; a strict health variant returns 503
-  while any package is failed or serving stale.
+- **Honest CI signals.** Part of this has shipped: `GET /api/v0/status` names every package that
+  failed to load under `loadErrors`, and marks one still serving its previous model after a failed
+  reload with `stale: true`; the startup line `PUBLISHER_READY … load_errors=<n>` counts them
+  ([startup signals](configuration.md#startup-signals)). Still to do: `/health/readiness` returns
+  200 even when a package failed, so CI has to read `/status`. Fix: `publisher --check` boots,
+  compiles every package, prints per-model errors, and exits non-zero; a strict health variant
+  returns 503 while any package is failed or serving stale.
 - **`malloy-pub dbt bind` / `dbt check`.** Generate the physical-binding layer from dbt's
   `manifest.json` — one binding source per selected model, with dbt column descriptions carried
   over as `#(doc)` annotations so documentation is authored once and flows to the agent — plus a
@@ -147,7 +235,12 @@ team should own. All of it becomes product:
 - **Refresh signaling.** A documented dbt `on-run-end` hook that calls the scoped-runs API for the
   sources whose upstream models just rebuilt: "dbt finished → re-materialize and re-index what
   changed," with data-freshness genuinely tracking the pipeline instead of a cron guessing.
-  Orchestrator-agnostic — the same endpoint serves Airflow, Dagster, and SQLMesh.
+  Orchestrator-agnostic — the same endpoint serves Airflow, Dagster, and SQLMesh. The endpoint
+  exists: `POST …/packages/{pkg}/materializations` takes `sourceNames` to build only the named
+  sources, and a host that decides what to build sends `buildInstructions` (with `reseed` per
+  source, and its own ledger) instead ([build a materialization](materialization.md#build-a-materialization),
+  [driving it from a control plane](materialization.md#driving-it-from-a-control-plane)). What is
+  missing is the hook and the mapping from dbt models to the sources that read them.
 - **Package variants.** One authored package, many compiled subsets. Capability flags declared per
   environment or tenant; the variant contains every model whose import closure is satisfied by the
   enabled bindings, and nothing else — the model set is *derived, not configured*, so the dbt
@@ -195,7 +288,28 @@ output spaces held stable for the dashboards and agents consuming them. Both sta
 and graduate to publish-time enforcement. Seeds need one mechanic: a package CSV is already a
 versioned, human-editable, servable table — it needs to be pushable into the warehouse connection
 as a managed, content-addressed table (rebuilt when the file changes) so it can join the marts it
-exists to enrich, which is what policy lookups are for.
+exists to enrich, which is what policy lookups are for. (`storage=` is not that mechanic: it copies a
+warehouse source into a lake, but refuses a source on the package sandbox, and the cross-connection
+join is refused at compile before any table exists.)
+
+Part of the contract and warn-stream surface has already shipped on the governance side, and data
+tests should land in the same shapes rather than beside them:
+
+- **Contracts in policy terms.** [`#(classification)`](classification.md) says what each field is
+  in the access policy's words, lineage carries a class to every field derived from it, and
+  [`#(carries)`](classification.md#carries-the-classes-an-entry-point-may-expose) on an entry point
+  refuses the package load when anything reachable from it carries a class it does not declare: a
+  downstream contract, enforced at load (a preview until its known gaps close).
+- **A policy check in CI.** The [compliance review](compliance-review.md) turns a written policy
+  into a control register and runs it against the served package on every change, failing the
+  change that breaks a control; the [access record](access-record.md) writes one record per query.
+- **The warn stream.** Package warnings carry a stable code, a severity and a subject (a build
+  Publisher refuses is `*-not-built` with its reason, a kept table `table-kept`, late incremental
+  rows `persist-incremental-late-rows`); the [serve verdict](materialization.md#will-it-serve-the-serve-verdict)
+  says per source whether its table will answer and what to change; and `get_context` marks a
+  stale package on what it returns, so an analyst agent sees the finding where it retrieves.
+- **The pre-merge gate.** `compile_model` at `package` scope dry-runs every file as a reload would,
+  including what a load would refuse in the materialization annotations, without serving it.
 
 Unit tests are a separate, cheaper thing. A Malloy model is pure declarations over sources, so a
 unit test is a fixture CSV per source plus an expected result, run on the per-package duckdb
@@ -218,7 +332,13 @@ instead of rebuilding from current state, collection must never reclaim the only
 retention becomes a stated posture. Both land in the open-source Publisher, which already owns the
 incremental ledger: the write path, and the invariants that make history safe — history artifacts
 are exempt from collection and re-addressing, and a definition change carries history forward or
-refuses rather than rebuilding from current state. As with every other mechanism here, the
+refuses rather than rebuilding from current state. Those invariants have a footing now: a reclaim
+already never drops a table at an author's `name=` (outside `scope: "version"`) and lists each
+table it keeps on the run record, every database table a build writes carries its package's
+ownership mark, and stored tables are keyed by content address (the destination folded in for a
+`storage=` twin, or always with `persist.addressIncludesDestination`), not by the table's name
+([whose table it is](materialization.md#whose-table-it-is),
+[the rename rule](materialization.md#the-rename-rule)). As with every other mechanism here, the
 Publisher ships a basic refresh schedule and exposes the run and lifecycle mechanics over the API
 for external orchestration; the managed platform layers retention policy, backups, and freshness
 objectives on top.
@@ -231,8 +351,14 @@ Two decoupled lanes, so conversion isn't gated on language design:
   already persistable, so a team lifts staging SQL *verbatim* out of dbt models and immediately
   gains content addressing, generations and rollback, freshness objectives, scoped reruns, and
   (Stage 1) tests gating cutover. This replaces dbt-the-runner without waiting for Malloy to grow
-  set operations. One spike first: confirming dependency edges arise between SQL sources, so a
-  pure-SQL staging DAG builds in order rather than flattening to unordered roots.
+  set operations. A staging layer on Postgres, BigQuery or Snowflake has a second option: build it
+  with `storage=` into a DuckLake destination and serve it from there, so the lifted SQL runs on
+  the warehouse once per refresh and its readers hit the lake (incremental refresh included); a
+  source on the package sandbox or on another dialect (a DuckLake source building into its own
+  catalog aside) cannot be built this way. One spike first:
+  confirming dependency edges arise between SQL sources, so a pure-SQL staging DAG builds in order
+  rather than flattening to unordered roots. Nothing on main yet shows a build-plan edge between
+  two SQL sources, so the spike stands.
 - **Lane B, language, long-term:** the Malloy language work, in measured-usage order — **set
   operations** first (the single disqualifier for staging: multi-source entities, taxonomy
   unpivots, past/future splits are all `UNION ALL`), then **correlated table functions** (per-row
@@ -267,7 +393,7 @@ driven by declarations, not a team-maintained build system.
 
 | Horizon | Items |
 | --- | --- |
-| Now | Honest CI signals · `dbt bind`/`check` · `lint` skeleton + contributed checks · refresh hook · the "Malloy for dbt users" guide · fold the severity/scoping/warn-stream requirements into the assertions design |
+| Now | Honest CI signals (partly shipped: `/status` `loadErrors` with `stale`, and `PUBLISHER_READY … load_errors=`; `publisher --check` and strict health not yet) · `dbt bind`/`check` · `lint` skeleton + contributed checks · refresh hook · the "Malloy for dbt users" guide · fold the severity/scoping/warn-stream requirements into the assertions design |
 | Next | Semantic-layer converter + reconciliation harness · `ci compile` + example package · package variants · npm-style package dependencies · override sources · unit tests in `lint` · warehouse-joinable seeds · SCD2 design doc · SQL-source dependency-edge spike |
 | Later | Language features in measured-usage order · full staging conversion (SQL sources → progressive Malloy-ification) · expression-level macros |
 
@@ -288,8 +414,10 @@ answers will shape the design.
   feel complete — derived metrics, cumulative metrics, saved queries — and where is the line beyond
   which the answer is "model it natively"?
 - **SQL-source dependency edges.** Confirm build-plan edges materialize when one SQL source
-  consumes another persist source; this decides how much of dbt's `ref()` Lane A replaces.
+  consumes another persist source; this decides how much of dbt's `ref()` Lane A replaces. Nothing on
+  main yet shows a build-plan edge between two SQL sources, so the spike stands.
 - **Where tests are declared** — annotations in the model, or a separate spec file.
-- **The OSS-local floor.** Which managed behaviors get a lightweight single-node analog in the
-  open-source Publisher — a local schedule, a local ledger, simple cutover — versus staying
-  platform-only?
+- **The OSS-local floor.** Largely answered: a local schedule, a local ledger and run store,
+  freshness windows, reclaim and a guarded drop all ship in the open-source Publisher
+  ([the single-node floor](#open-source-first)). Still open: whether scheduling refresh against
+  freshness objectives, rather than a cron, gets a single-node analog.

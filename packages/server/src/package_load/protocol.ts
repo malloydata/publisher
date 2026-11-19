@@ -36,8 +36,11 @@
  */
 
 import type { SerializedNotebookCell } from "./notebook_cell_wire";
-import type { EligibilityRefusalReason } from "../materialization_metrics";
-import type { BuildPlanOutcome } from "../service/materialization/plan/build_plan";
+import type { PackageAnnotationFinding } from "../service/annotation_reader";
+import type {
+   EligibilityRefusals,
+   PackagePlan,
+} from "../service/materialization/domain/package_plan";
 import type { SQLSourceDef, TableSourceDef } from "@malloydata/malloy";
 import type {
    PackageMaterializationConfig,
@@ -60,12 +63,19 @@ import type { ModelEntitiesPlan } from "../service/entities/plan";
  *
  * 3: `SerializedModel.governsAccess`.
  *
- * 4: every field of a build plan's outcome is sent (`BuildPlanOutcome`), so
+ * 4: every field of a build plan's outcome is sent, so
  * the pool reads none as missing.
  *
  * 5: the served-copy compile job ({@link CompileServedCopyRequest}).
+ *
+ * 6: the build plan is sent as its `PackagePlan` (its tables, builds and
+ * addresses as data), and the pre-aggregation companion fields are gone.
+ *
+ * 7: a refreshing load (`LoadPackageRequest.refreshTimestamp`), the schema
+ * keys it refetched (`LoadPackageResult.refreshedSchemaKeys`), and
+ * {@link ForgetSchemasMessage}.
  */
-export const PACKAGE_LOAD_PROTOCOL_VERSION = 5;
+export const PACKAGE_LOAD_PROTOCOL_VERSION = 7;
 
 // ──────────────────────────────────────────────────────────────────────
 // Direction: main ──▶ worker (load-package job)
@@ -132,18 +142,12 @@ export interface LoadPackageRequest {
    computeBuildPlan?: boolean;
    /**
     * How long into the job the worker keeps doing optional work for the main
-    * thread (render-tag results, pre-aggregation companions, build plan).
-    * Checked before each render-tag target and each companion; past it, the
+    * thread (render-tag results, entities, build plan). Checked before each
+    * render-tag target and each model's plan parts; past it, the
     * remaining work (and the plan, once any model's parts are missing) is left
     * to the main thread. The pool's jobLimitMs adds room for it.
     */
    mainThreadWorkBudgetMs: number;
-   /**
-    * Compile each model's pre-aggregation companion for the main thread to
-    * hydrate (see SerializedModel.preaggregateCompanion). Set by the loads
-    * that serve the package; a compile preview does not serve it.
-    */
-   withPreaggregateCompanions?: boolean;
    /**
     * The package is a published version (its version owns its runs' tables
     * when its scope is `"version"`), so its tables take readable names whose
@@ -157,6 +161,13 @@ export interface LoadPackageRequest {
     * entities: a load that serves it, and the package-scope compile.
     */
    withEntities?: boolean;
+   /**
+    * Set by an explicit refresh (a reload, a publish): every table and SQL
+    * schema the load reads is fetched again, once, with this stamp as its
+    * `refreshTimestamp`, replacing the worker's cached entry and the main
+    * thread connection's. Absent, the load reads cached schemas.
+    */
+   refreshTimestamp?: number;
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -198,12 +209,14 @@ export interface SerializedModel {
    /** Set when the model failed to compile. */
    compilationError?: SerializedError;
    /**
-    * Non-fatal `#(authorize)` load-time findings, logged by the main thread:
-    * a gate inherited (judged by shared note object, not by text) at an entry
-    * point where it cannot be expressed. The model still serves; that entry
-    * point denies every request (`Model.resolveGateShape`).
+    * Non-fatal gate findings at load (`GateLoadWarning`), logged by the main
+    * thread and carried on the package's warnings: a gate inherited (judged
+    * by shared note object, not by text) at an entry point where it cannot be
+    * expressed, so that entry point denies every request
+    * (`Model.resolveGateShape`), or a source-line gate that reads no given or
+    * negates a membership test. The model still serves.
     */
-   authorizeWarnings?: string[];
+   gateWarnings?: { sourceName: string; code: string; message: string }[];
    /**
     * Prepared `Malloy.Result`s for the model's render-tag targets, for the
     * main thread's tag validation (the renderer cannot load in the worker,
@@ -221,13 +234,6 @@ export interface SerializedModel {
     * under the same text prepares different results.
     */
    renderTagResultsDigest?: string;
-   /**
-    * The model's pre-aggregation companion, for the main thread to hydrate
-    * rather than compile (see Model.buildPreaggregateServeModel). `{}` when
-    * there is none or it failed; absent when not attempted, and the main
-    * thread compiles it.
-    */
-   preaggregateCompanion?: { modelDef?: unknown };
    /**
     * The model's entities, planned before its sources' queryability is known
     * (`service/entities/plan.ts`); the main thread resolves it against the
@@ -273,6 +279,11 @@ export interface LoadPackageResult {
    models: SerializedModel[];
    /** Whether the replacement path exactly matched an enumerated package file. */
    replacementMatchedExisting?: boolean;
+   /**
+    * A refreshing load's refetched schema-cache keys, which the pool tells
+    * the other workers to forget (see {@link ForgetSchemasMessage}).
+    */
+   refreshedSchemaKeys?: string[];
    /** Wall-clock ms inside the worker for the full package load. */
    loadDurationMs: number;
    /**
@@ -323,6 +334,19 @@ export interface WorkerLogMessage {
 }
 
 /**
+ * An unhandled promise rejection caught in the worker, reported so the main
+ * thread logs it and counts it in `publisher_unhandled_rejection_total`. The
+ * worker's own logger has no job context in a rejection listener (Bun's
+ * AsyncLocalStorage is empty there), so a log written in place would carry no
+ * job and reach only the worker's stdout.
+ */
+export interface WorkerUnhandledRejectionMessage {
+   type: "unhandled-rejection";
+   message: string;
+   stack?: string;
+}
+
+/**
  * The package build plan derived from this compile, so the main thread need
  * not compile again. `durationMs` is a ceiling (other compiles interleave). A
  * failure fails the plan, not the load.
@@ -330,12 +354,11 @@ export interface WorkerLogMessage {
 export type WorkerBuildPlan =
    | {
         ok: true;
-        outcome: BuildPlanOutcome;
+        /** Its eligibility refusals are counted on it (`eligibilityRefused`). */
+        packagePlan: PackagePlan<PackageAnnotationFinding>;
         durationMs: number;
         /** Connections whose digest could not be read (see resolveConnectionDigests). */
         digestSkipped: string[];
-        /** Eligibility refusals counted while deriving it, by reason. */
-        eligibilityRefused: Partial<Record<EligibilityRefusalReason, number>>;
      }
    | {
         ok: false;
@@ -344,7 +367,7 @@ export type WorkerBuildPlan =
         /** Connections whose digest could not be read before it failed. */
         digestSkipped: string[];
         /** Refusals counted before the derivation failed. */
-        eligibilityRefused: Partial<Record<EligibilityRefusalReason, number>>;
+        eligibilityRefused: EligibilityRefusals;
      };
 
 export interface LoadPackageError {
@@ -522,6 +545,15 @@ export interface ShutdownRequest {
    type: "shutdown";
 }
 
+/**
+ * Drop these schema-cache entries: another worker refetched them for a
+ * refreshing load, so this worker's copies may be stale.
+ */
+export interface ForgetSchemasMessage {
+   type: "forget-schemas";
+   keys: string[];
+}
+
 export interface ReadyMessage {
    type: "ready";
 }
@@ -538,7 +570,8 @@ export type MainToWorkerMessage =
    | SchemaForSqlResponse
    | ReadUrlResponse
    | RpcErrorResponse
-   | ShutdownRequest;
+   | ShutdownRequest
+   | ForgetSchemasMessage;
 
 export type WorkerToMainMessage =
    | LoadPackageResult
@@ -549,4 +582,5 @@ export type WorkerToMainMessage =
    | SchemaForSqlRequest
    | ReadUrlRequest
    | WorkerLogMessage
+   | WorkerUnhandledRejectionMessage
    | ReadyMessage;

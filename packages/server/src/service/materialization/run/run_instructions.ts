@@ -12,10 +12,17 @@
  * refuses. A source the eligibility gate refuses is returned as refused and serves live.
  */
 
+import { storageWritable } from "../domain/placement";
 import { freshnessOf } from "../domain/freshness";
 import type { PersistSource } from "@malloydata/malloy";
 import * as path from "path";
 import { fileURLToPath } from "url";
+import {
+   entryTable,
+   recordedTableKey,
+   mayBeSameTable,
+   placedLeafKey,
+} from "../domain/physical_table";
 import { tableNamesFoldCase } from "../domain/storage_table_path";
 import {
    authorModelPath,
@@ -25,39 +32,34 @@ import {
    sourceLabel,
    hasReservedTableSuffix,
    tableNameParts,
-   tableNamesMeet,
 } from "../domain/table_name";
+import { isPersistedQuerySourceID } from "../domain/table_plans";
 import { getPersistStorageMode } from "../../../config";
 import {
-   BadRequestError,
+   BuildInstructionsInvalidError,
    MaterializationEligibilityError,
 } from "../../../errors";
 import { logger } from "../../../logger";
 import { recordEligibilityRefused } from "../../../materialization_metrics";
-import { errMessage } from "../../../utils";
 import {
    packageTableSuffix,
-   tableIdentity,
    versionedTableName,
    versionTableSuffix,
    type WriteTarget,
 } from "../../versions/materialization_scope";
 import {
+   assertPlacementNamed,
+   assertTierEligible,
    computeSourceEntityId,
+   declaredStorage,
    foldDistinctTableNames,
    planAddresses,
+   type RunPlan,
    sharedTables,
    storedColumnNames,
    tierGateInputs,
-} from "../plan/build_plan";
-import {
-   type CompiledBuildPlan,
-   sourcesInBuildOrder,
-} from "../domain/compiled_build_plan";
-import {
-   assertPlacementNamed,
-   assertTierEligible,
-} from "../plan/materialization_eligibility";
+} from "./run_plan";
+import { sourcesInBuildOrder } from "../domain/compiled_build_plan";
 import {
    BuildInstruction,
    BuildPlan,
@@ -72,13 +74,10 @@ import {
 import type { EligibilityTier } from "./materialization_instructed_run";
 import {
    allSourcesRefusedError,
-   declaredStorage,
    refusalRecord,
-   resolveStorageDestination,
-   selfAssignTableName,
-   STAGING_ID_LEN,
-   tableKeyOf,
-} from "./materialization_run_support";
+} from "./materialization_instructed_run";
+import { resolveStorageDestination } from "./build_upstreams";
+import { selfAssignTableName, STAGING_ID_LEN } from "./build_table_names";
 import { hasAuthorTableName } from "./table_ownership";
 
 /**
@@ -124,42 +123,6 @@ export interface RenamedTable {
    previousPlace?: { storageDestinationName?: string };
 }
 
-/**
- * Whether two written names, in one place, may be one table: compared
- * unquoted and case-folded, with {@link tableNamesMeet}'s container rule. The
- * conservative answer, for deciding a table is NOT another: an over-wide
- * match only keeps a table.
- */
-export function mayBeOneTable(a: string, b: string): boolean {
-   const canon = (name: string) =>
-      name
-         .split(".")
-         .map((s) => s.replace(/["`[\]]/g, "").toLowerCase())
-         .join(".");
-   return tableNamesMeet(canon(a), canon(b));
-}
-
-/**
- * A written name's table segment, unquoted and case-folded: the key a
- * reclaim or a run's delete compares names by. Containers are left out, since
- * a container does not say which table a name reaches (on DuckDB a two-part
- * name may be a catalog's or a schema's: `memory.t` and `main.t` are one
- * table), and nor does a place (two names for one DuckLake).
- */
-export function tableLeafKey(name: string): string {
-   const parts = name.split(".");
-   return parts[parts.length - 1].replace(/["`[\]]/g, "").toLowerCase();
-}
-
-/**
- * Whether two written names may be one table wherever each is, compared by
- * table segment alone ({@link tableLeafKey}). The conservative answer for
- * deciding whether to drop a table: an over-wide match only keeps one.
- */
-export function mayBeOneTableAnywhere(a: string, b: string): boolean {
-   return tableLeafKey(a) === tableLeafKey(b);
-}
-
 /*
  * A run's build instructions: derived by auto-run from the compiled plan, or
  * checked when a caller supplies them, and where each instructed table lives.
@@ -178,7 +141,7 @@ interface ClearedSource {
  * targets a refused source.
  */
 function gateSources(
-   compiled: CompiledBuildPlan,
+   compiled: RunPlan,
    include: Set<string> | null,
 ): {
    sources: ClearedSource[];
@@ -208,13 +171,13 @@ function gateSources(
          if (include && !include.has(persistSource.name)) continue;
 
          // A source that DECLARES `storage=` must never silently downgrade
-         // to a colocated CTAS into its own warehouse when
+         // to a database CTAS into its own warehouse when
          // PERSIST_STORAGE_MODE=off: the author did not ask for that, and
          // production grants read-only warehouse access. It serves LIVE and
          // Package.storageWarnings reports it. A plain `#@ persist` is
-         // unaffected; colocated is its intent.
+         // unaffected; database is its intent.
          if (
-            getPersistStorageMode() === "off" &&
+            !storageWritable(getPersistStorageMode()) &&
             declaredStorage(persistSource)
          ) {
             continue;
@@ -229,7 +192,7 @@ function gateSources(
          // ineligible source does not stop the rest of the package refreshing.
          // The run throws only when nothing else is left to build, or when
          // `sourceNames` asked for exactly this source.
-         // A colocated `#@ persist` is just as frozen as a storage build, so
+         // A database `#@ persist` is just as frozen as a storage build, so
          // an authorize-gated source materialized there would be served to
          // every caller.
          try {
@@ -257,21 +220,20 @@ function gateSources(
                refused[persistSource.sourceID] = refusalRecord(
                   persistSource,
                   err,
-                  isRollup
-                     ? "preaggregate"
-                     : destination
-                       ? "storage"
-                       : "colocated",
+                  destination ? "storage" : "database",
                   compiled.tables[persistSource.sourceID]?.modelPath,
+                  compiled.tables[persistSource.sourceID]?.kind,
                );
                // A refused rollup never fails the run: the author asked for
                // nothing they can see.
                if (!isRollup) refusals.push(err);
-               logger.warn(
+               // Info, not warn: a refusal is a property of the model, the
+               // same on every run, and its package warning already says so.
+               logger.info(
                   "Skipping a persist source the eligibility gate refuses",
                   {
                      sourceName: persistSource.name,
-                     reason: errMessage(err),
+                     reason: err.reason,
                   },
                );
             }
@@ -279,7 +241,7 @@ function gateSources(
          }
          cleared.set(
             persistSource.sourceID,
-            destination ? "storage" : "colocated",
+            destination ? "storage" : "database",
          );
          sources.push({
             persistSource,
@@ -304,7 +266,7 @@ function gateSources(
  * the path the plan recorded, else the file's base name.
  */
 function modelPathOf(
-   compiled: CompiledBuildPlan,
+   compiled: RunPlan,
    persistSource: PersistSource,
    packagePath: string | undefined,
 ): string {
@@ -331,14 +293,12 @@ function modelPathOf(
 }
 
 /** The source a table's readable name reads (see sourceLabel). */
-function labelOf(
-   compiled: CompiledBuildPlan,
-   persistSource: PersistSource,
-): string {
+function labelOf(compiled: RunPlan, persistSource: PersistSource): string {
    const rollup = compiled.tables[persistSource.sourceID]?.rollup;
    return sourceLabel(
       persistSource.name,
       rollup?.baseSourceName && rollup.grainDimensions ? rollup : undefined,
+      { persistedQuery: isPersistedQuerySourceID(persistSource.sourceID) },
    );
 }
 
@@ -349,7 +309,7 @@ function labelOf(
  * way.
  */
 function namingSources(
-   compiled: CompiledBuildPlan,
+   compiled: RunPlan,
    sources: ClearedSource[],
    packagePath: string | undefined,
 ): Map<string, PersistSource> {
@@ -381,7 +341,7 @@ function namingSources(
  * also takes the place of `<pkg>__<file>__<source>` before the tail.
  */
 function selfTableName(
-   compiled: CompiledBuildPlan,
+   compiled: RunPlan,
    persistSource: PersistSource,
    namer: PersistSource,
    destination: string | undefined,
@@ -425,6 +385,12 @@ function selfTableName(
 const READABLE_TAIL = /__p[0-9a-f]{8}$/;
 
 /**
+ * How a persisted query's readable name ended before its label dropped the
+ * build source's `__query` (`<query>__query`, sanitized to `<query>_query`).
+ */
+const LEGACY_QUERY_LABEL_END = "_query";
+
+/**
  * Whether a table an earlier run of this package built for the same source,
  * in the same destination, at `recorded`, keeps that name rather than taking
  * `fresh`: when `recorded` is a readable name this scheme gave it (all
@@ -437,7 +403,7 @@ function keepsReadableName(
    recorded: string,
    fresh: string,
    naming: SelfTableNaming,
-   compiled: CompiledBuildPlan,
+   compiled: RunPlan,
    persistSource: PersistSource,
 ): boolean {
    if (recorded === fresh) return true;
@@ -452,6 +418,15 @@ function keepsReadableName(
       return false;
    }
    const head = (leaf: string) => leaf.replace(READABLE_TAIL, "");
+   // A persisted query's table named before its label dropped the build
+   // source's `__query` (`…__q_query__p…`): renamed, and rebuilt, once.
+   if (
+      isPersistedQuerySourceID(persistSource.sourceID) &&
+      head(was.leaf).endsWith(LEGACY_QUERY_LABEL_END) &&
+      !head(now.leaf).endsWith(LEGACY_QUERY_LABEL_END)
+   ) {
+      return false;
+   }
    // A `name=` that sets the prefix (under `scope: version`, or a rollup's
    // in any package) keeps the table's name only while the prefix is the
    // same; a readable name's own prefix (with `__`) stands for none.
@@ -486,7 +461,7 @@ function keepsReadableName(
  * proves the table was this package's default-named one.
  */
 function previousTableName(
-   compiled: CompiledBuildPlan,
+   compiled: RunPlan,
    persistSource: PersistSource,
    naming: SelfTableNaming,
 ): string | undefined {
@@ -517,7 +492,7 @@ function previousTableName(
  * answered live, so two sources never write one table.
  */
 function tableNameCollision(
-   compiled: CompiledBuildPlan,
+   compiled: RunPlan,
    persistSource: PersistSource,
    tableName: string,
    destination: string | undefined,
@@ -536,12 +511,9 @@ function tableNameCollision(
             `answered live.`,
          reason: "table_name_collision",
       }),
-      compiled.tables[persistSource.sourceID]?.rollup
-         ? "preaggregate"
-         : destination
-           ? "storage"
-           : "colocated",
+      destination ? "storage" : "database",
       compiled.tables[persistSource.sourceID]?.modelPath,
+      compiled.tables[persistSource.sourceID]?.kind,
    );
 }
 
@@ -552,7 +524,7 @@ function tableNameCollision(
  * its old name never locks the new one out of its table.
  */
 function freshTableNames(
-   compiled: CompiledBuildPlan,
+   compiled: RunPlan,
    sources: ClearedSource[],
    namers: Map<string, PersistSource>,
    naming: SelfTableNaming | undefined,
@@ -577,10 +549,12 @@ function freshTableNames(
          naming,
       );
       freshNames.set(sourceEntityId, fresh);
-      const key = tableKeyOf(
-         persistSource.connectionName,
-         destination,
-         tableIdentity(fresh),
+      const key = placedLeafKey(
+         entryTable({
+            connectionName: persistSource.connectionName,
+            storageDestinationName: destination,
+            physicalTableName: fresh,
+         }),
       );
       takenFresh.set(
          key,
@@ -592,10 +566,12 @@ function freshTableNames(
       takenByAnother: (persistSource, destination, name, sourceEntityId) =>
          [
             ...(takenFresh.get(
-               tableKeyOf(
-                  persistSource.connectionName,
-                  destination,
-                  tableIdentity(name),
+               placedLeafKey(
+                  entryTable({
+                     connectionName: persistSource.connectionName,
+                     storageDestinationName: destination,
+                     physicalTableName: name,
+                  }),
                ),
             ) ?? []),
          ].some((address) => address !== sourceEntityId),
@@ -609,7 +585,7 @@ function freshTableNames(
  * when the run moves it off that name.
  */
 function tableNameDecision(
-   compiled: CompiledBuildPlan,
+   compiled: RunPlan,
    persistSource: PersistSource,
    sourceEntityId: string,
    destination: string | undefined,
@@ -627,7 +603,7 @@ function tableNameDecision(
 } {
    // Orchestrated builds use the host-supplied `physicalTableName`. A
    // storage build replaces its table atomically (`CREATE OR REPLACE` in
-   // ONE transaction), and a colocated one swaps it in, so a rebuild
+   // ONE transaction), and a database one swaps it in, so a rebuild
    // never empties the table it serves and no generation is needed.
    const named =
       !!naming &&
@@ -702,7 +678,7 @@ function supersededTable(
    // name=, so neither reclaimed nor listed.
    if (
       !hasReservedTableSuffix(prior.physicalTableName) &&
-      mayBeOneTable(
+      mayBeSameTable(
          tableNameParts(prior.physicalTableName).leaf,
          persistSource.name,
       )
@@ -711,7 +687,7 @@ function supersededTable(
    }
    const before = prior.storageDestinationName ?? undefined;
    const moved = before !== destination;
-   if (!moved && mayBeOneTable(prior.physicalTableName, built)) {
+   if (!moved && mayBeSameTable(prior.physicalTableName, built)) {
       return undefined;
    }
    return {
@@ -761,7 +737,7 @@ function notWrittenThisRun(
          (w) =>
             w.connectionName === t.connectionName &&
             (w.storageDestinationName ?? undefined) === where &&
-            mayBeOneTable(w.physicalTableName, t.previousName),
+            mayBeSameTable(w.physicalTableName, t.previousName),
       );
    });
 }
@@ -773,6 +749,23 @@ export function previousDestinationOf(
    return t.previousPlace
       ? t.previousPlace.storageDestinationName
       : t.storageDestinationName;
+}
+
+/**
+ * Whether a run rebuilds a table even when it is unchanged: under
+ * `forceRefresh` (a scheduled fire, `forceRefresh`), and always for a table
+ * stored as of its build (its build reads the current time), since unchanged
+ * SQL does not mean unchanged rows.
+ */
+function rebuildsEveryRun(
+   compiled: RunPlan,
+   options: { forceRefresh?: boolean },
+   sourceID: string,
+): boolean {
+   return (
+      options.forceRefresh === true ||
+      Object.hasOwn(compiled.asOfBuild ?? {}, sourceID)
+   );
 }
 
 /**
@@ -801,7 +794,7 @@ export function previousDestinationOf(
  * never kept (see takenByAnother), so a sticky name does not cause one.
  */
 export function deriveSelfInstructions(
-   compiled: CompiledBuildPlan,
+   compiled: RunPlan,
    sourceNames: string[] | undefined,
    priorEntries: Record<string, ManifestEntry>,
    incremental?: IncrementalRunContext,
@@ -875,10 +868,12 @@ export function deriveSelfInstructions(
             naming,
          );
       if (naming && !named) {
-         const key = tableKeyOf(
-            persistSource.connectionName,
-            destination,
-            tableIdentity(tableName),
+         const key = placedLeafKey(
+            entryTable({
+               connectionName: persistSource.connectionName,
+               storageDestinationName: destination,
+               physicalTableName: tableName,
+            }),
          );
          const holder = derived.get(key);
          if (holder !== undefined && holder !== sourceEntityId) {
@@ -937,7 +932,7 @@ export function deriveSelfInstructions(
       // is its own.
       if (
          !deltaEligible &&
-         !options.forceRefresh &&
+         !rebuildsEveryRun(compiled, options, persistSource.sourceID) &&
          sameDestination &&
          !options.pastWindow?.(sourceEntityId, prior!) &&
          samePath(
@@ -1080,7 +1075,7 @@ export function validateInstructions(
    runReseed = false,
 ): void {
    if (!plan) {
-      throw new BadRequestError(
+      throw new BuildInstructionsInvalidError(
          "Package has no persist sources; buildInstructions cannot be applied",
       );
    }
@@ -1091,13 +1086,13 @@ export function validateInstructions(
 
    for (const instruction of instructions) {
       if (!plannedSourceEntityIds.has(instruction.sourceEntityId)) {
-         throw new BadRequestError(
+         throw new BuildInstructionsInvalidError(
             `Instruction references unknown sourceEntityId '${instruction.sourceEntityId}'`,
          );
       }
       // COPY-only for now; SNAPSHOT lands once clone semantics are defined.
       if (instruction.realization === "SNAPSHOT") {
-         throw new BadRequestError(
+         throw new BuildInstructionsInvalidError(
             "realization=SNAPSHOT is not supported (COPY only)",
          );
       }
@@ -1125,11 +1120,11 @@ export function validateInstructions(
             : undefined) ?? byAddress.get(instruction.sourceEntityId);
       if (!planSource) continue; // Unreachable: every instruction matched above.
       instructed.set(
-         tableKeyOf(
-            planSource.connectionName,
-            instruction.destination,
-            instruction.physicalTableName,
-         ),
+         recordedTableKey({
+            connectionName: planSource.connectionName,
+            storageDestinationName: instruction.destination,
+            physicalTableName: instruction.physicalTableName,
+         }),
          {
             sourceEntityId: planSource.sourceEntityId,
             refresh: planSource.refresh ?? null,
@@ -1138,29 +1133,24 @@ export function validateInstructions(
       );
       if (instruction.destination) {
          instructedIntoStorage.add(
-            tableKeyOf(
-               planSource.connectionName,
-               undefined,
-               instruction.physicalTableName,
-            ),
+            recordedTableKey({
+               connectionName: planSource.connectionName,
+               physicalTableName: instruction.physicalTableName,
+            }),
          );
       }
    }
 
    const seen = new Set<string>();
    for (const entry of ledger) {
-      const key = tableKeyOf(
-         entry.connectionName,
-         entry.storageDestinationName,
-         entry.physicalTableName,
-      );
+      const key = recordedTableKey(entry);
       const table =
          `'${entry.physicalTableName}' ` +
          (entry.storageDestinationName
             ? `in storage destination '${entry.storageDestinationName}'`
             : `on connection '${entry.connectionName}'`);
       if (seen.has(key)) {
-         throw new BadRequestError(
+         throw new BuildInstructionsInvalidError(
             `Ledger entry for table ${table} appears more than once`,
          );
       }
@@ -1172,29 +1162,28 @@ export function validateInstructions(
          // build's index keys on the destination, so it finds no boundary).
          // An entry naming a DIFFERENT destination is refused below.
          const storedHere = instructedIntoStorage.has(
-            tableKeyOf(
-               entry.connectionName,
-               undefined,
-               entry.physicalTableName,
-            ),
+            recordedTableKey({
+               connectionName: entry.connectionName,
+               physicalTableName: entry.physicalTableName,
+            }),
          );
          if (entry.storageDestinationName === undefined && storedHere) {
             continue;
          }
-         throw new BadRequestError(
+         throw new BuildInstructionsInvalidError(
             `Ledger entry names table ${table}, which this run's ` +
                `instructions do not build`,
          );
       }
       if (target.reseed) continue;
       if (target.refresh !== "incremental") {
-         throw new BadRequestError(
+         throw new BuildInstructionsInvalidError(
             `Ledger entry names table ${table}, whose source does not ` +
                `declare refresh="incremental"`,
          );
       }
       if (entry.sourceEntityId !== target.sourceEntityId) {
-         throw new BadRequestError(
+         throw new BuildInstructionsInvalidError(
             `Ledger entry for table ${table} was measured under a ` +
                `different definition of its source (its sourceEntityId does ` +
                `not match the plan's) — expected after a publish or ` +

@@ -97,9 +97,34 @@ import {
    resolveCloudStorageCredentials,
 } from "./gcs_s3_utils";
 import { recordConnectionType } from "./connection_type";
+import {
+   allowForLockdown,
+   azureAllowPrefix,
+   clearAmbientS3Settings,
+   cloudStorageAllowPrefixes,
+   duckDBInstanceHasOtherHolders,
+   duckDBInstanceId,
+   duckDBInstanceOf,
+   isConfigurationFrozen,
+   installDuckDBStatementLockdown,
+   isInstanceLocked,
+   isLockedByOptions,
+   lockDownDuckDBSession,
+   relativeReadEntries,
+   runAsInternalStatement,
+   runExclusiveOnDuckDBInstance,
+   runInternalSQL,
+} from "./duckdb_lockdown";
+import {
+   DUCKLAKE_ATTACH_FAILED,
+   DUCKLAKE_CATALOG_UNAVAILABLE,
+   DuckLakeCatalogUnavailableError,
+} from "./ducklake_catalog_unavailable";
 import { installDuckDBStatementGate } from "./duckdb_statement_gate";
 import {
+   disownDuckDBConnection,
    hardCloseOwnedDuckDBConnections,
+   hardCloseWhenIdle,
    installDuckDBHardClose,
    ownDuckDBConnection,
 } from "./duckdb_hard_close";
@@ -114,6 +139,9 @@ installDuckDBStatementGate();
 // Retired DuckDB connections free their native database at once
 // (duckdb_hard_close.ts).
 installDuckDBHardClose();
+// Statements a locked instance refuses, checked before any of the above
+// (duckdb_lockdown.ts).
+installDuckDBStatementLockdown();
 
 type AttachedDatabase = components["schemas"]["AttachedDatabase"];
 type ApiConnection = components["schemas"]["Connection"];
@@ -250,8 +278,18 @@ export async function applySessionResourceLimits(
    connection: DuckDBConnection,
    { tempDirectory }: { tempDirectory?: string } = {},
 ): Promise<void> {
+   // A locked instance (duckdb_lockdown.ts) takes no SET: Malloy's locked
+   // tiers carry the memory limit and temp directory as options, and a
+   // networked instance was bounded before its lock.
+   if (isConfigurationFrozen(connection)) return;
    const memoryLimit = getDuckDBMemoryLimit();
-   const temp = tempDirectory ?? getDuckDBTempDirectory();
+   // A networked instance's own private temp directory (its options, which
+   // key its instance) is where it spills, unless the session names one.
+   const ownTemp = (
+      connection as unknown as { normalized?: { tempDirectory?: string } }
+   ).normalized?.tempDirectory;
+   const temp =
+      tempDirectory ?? (ownTemp ? undefined : getDuckDBTempDirectory());
    if (sessionLimitsApplied.has(connection)) {
       const applied = sessionLimitsApplied.get(connection);
       // Only a session-owned directory revises an earlier decision; the memory
@@ -311,6 +349,11 @@ export async function applyExtensionSessionSettings(
    if (!disableAutoinstall || extensionSessionPinned.has(connection)) {
       return;
    }
+   // A locked instance has auto-install off already (duckdb_lockdown.ts).
+   if (isConfigurationFrozen(connection)) {
+      extensionSessionPinned.add(connection);
+      return;
+   }
    try {
       await connection.runSQL("SET autoinstall_known_extensions=false;");
       // DuckDB's default, set explicitly so a baked extension still loads.
@@ -361,6 +404,11 @@ export async function installAndLoadExtension(
    try {
       await connection.runSQL(`LOAD ${extensionName};`);
       logger.info(`${extensionName} extension loaded`);
+      if (extensionName === "httpfs") {
+         // httpfs seeds the S3 settings from the AWS_* environment; blank them
+         // so no SQL on this session reads them back (duckdb_lockdown.ts).
+         await clearAmbientS3Settings(connection, { httpfsLoaded: true });
+      }
    } catch (error) {
       if (policy === "local-only") {
          const detail = error instanceof Error ? error.message : String(error);
@@ -872,11 +920,11 @@ export function buildPgConnectionString(
    }
 
    const parts: string[] = [];
-   if (pg.host) parts.push(`host=${pg.host}`);
-   if (pg.port) parts.push(`port=${pg.port}`);
-   if (pg.databaseName) parts.push(`dbname=${pg.databaseName}`);
-   if (pg.userName) parts.push(`user=${pg.userName}`);
-   if (pg.password) parts.push(`password=${pg.password}`);
+   if (pg.host) parts.push(pgConninfoPair("host", pg.host));
+   if (pg.port) parts.push(pgConninfoPair("port", String(pg.port)));
+   if (pg.databaseName) parts.push(pgConninfoPair("dbname", pg.databaseName));
+   if (pg.userName) parts.push(pgConninfoPair("user", pg.userName));
+   if (pg.password) parts.push(pgConninfoPair("password", pg.password));
 
    if (applyConnectionOptions) {
       parts.push(...libpqStatementTimeoutParts(name, pg));
@@ -939,7 +987,12 @@ async function attachPostgres(
       applyConnectionOptions: true,
    });
 
-   const attachCommand = `ATTACH '${escapeSQL(attachString)}' AS ${quoteIdentifier(attachedDb.name, "duckdb")} (TYPE postgres, READ_ONLY);`;
+   const { path: attachPath, secret } = await createPgAttachSecret(
+      connection,
+      attachedDb.name,
+      attachString,
+   );
+   const attachCommand = `ATTACH '${escapeSQL(attachPath)}' AS ${quoteIdentifier(attachedDb.name, "duckdb")} (TYPE postgres, READ_ONLY${secret ? `, SECRET ${secret}` : ""});`;
    await connection.runSQL(attachCommand);
    logger.info(`Successfully attached PostgreSQL database: ${attachedDb.name}`);
 }
@@ -981,7 +1034,7 @@ let ducklakePreflightSeq = 0;
 async function preflightDuckLakeCatalogFormat(
    connection: DuckDBConnection,
    dbName: string,
-   pgConnString: string,
+   catalog: { path: string; secret?: string },
    metadataSchema?: string,
 ): Promise<DuckLakeCatalogPresence> {
    const tempDb = `${dbName}_fmt_preflight_${++ducklakePreflightSeq}`;
@@ -996,7 +1049,7 @@ async function preflightDuckLakeCatalogFormat(
    let catalogFormat: string | undefined;
    try {
       await connection.runSQL(
-         `ATTACH '${escapeSQL(pgConnString)}' AS ${tempDbRef} (TYPE postgres, READ_ONLY);`,
+         `ATTACH '${escapeSQL(catalog.path)}' AS ${tempDbRef} (TYPE postgres, READ_ONLY${catalog.secret ? `, SECRET ${catalog.secret}` : ""});`,
       );
       if (metadataSchema !== undefined) {
          const found = await connection.runSQL(
@@ -1122,13 +1175,35 @@ async function isAliasAttached(
 ): Promise<boolean> {
    try {
       const rows = runSQLRows(
-         await connection.runSQL(
+         await runInternalSQL(
+            connection,
             `SELECT 1 FROM duckdb_databases() WHERE lower(database_name) = lower('${escapeSQL(alias)}')`,
          ),
       );
       return rows.length > 0;
    } catch {
       return false;
+   }
+}
+
+/**
+ * Whether `alias` is attached on `connection`'s instance; undefined when the
+ * check itself failed, which says nothing about the catalog.
+ */
+async function aliasAttachedOnInstance(
+   connection: DuckDBConnection,
+   alias: string,
+): Promise<boolean | undefined> {
+   try {
+      const rows = runSQLRows(
+         await runInternalSQL(
+            connection,
+            `SELECT 1 FROM duckdb_databases() WHERE lower(database_name) = lower('${escapeSQL(alias)}')`,
+         ),
+      );
+      return rows.length > 0;
+   } catch {
+      return undefined;
    }
 }
 
@@ -1254,12 +1329,15 @@ async function attachDuckLakeWithMode(
       applyConnectionOptions: false,
    });
    const mode = options.readOnly ? "READ_ONLY" : "READ_WRITE";
+   // The catalog's user and password reach DuckDB as a secret, never in the
+   // attach path.
+   const catalog = await createPgAttachSecret(connection, dbName, pgConnString);
    // These three attach diagnostics stay at debug: `redactPgSecrets` removes the
    // password and URI userinfo but not the catalog host or the DATA_PATH, which
    // would disclose the bucket and prefix to every log reader at info. The mode
    // and outcome are logged at info below.
-   logger.debug(`pgConnString: ${redactPgSecrets(pgConnString)}`);
-   const escapedPgConnString = escapeSQL(pgConnString);
+   logger.debug(`pgConnString: ${redactPgSecrets(catalog.path)}`);
+   const escapedPgConnString = escapeSQL(catalog.path);
    logger.debug(
       `Final escaped connection string: ${redactPgSecrets(escapedPgConnString)}`,
    );
@@ -1274,7 +1352,7 @@ async function attachDuckLakeWithMode(
    const preflight = await preflightDuckLakeCatalogFormat(
       connection,
       dbName,
-      pgConnString,
+      catalog,
       metadataSchema,
    );
    if (preflight === "absent") {
@@ -1299,12 +1377,16 @@ async function attachDuckLakeWithMode(
    const metadataSchemaClause = metadataSchema
       ? `, METADATA_SCHEMA '${escapeSQL(metadataSchema)}'`
       : "";
+   const metadataSecretClause = catalog.secret
+      ? `, METADATA_PARAMETERS MAP {'SECRET': '${catalog.secret}'}`
+      : "";
    // Every clause but the data path's leads with ", ", and that one may be
    // empty, so a leading separator is dropped rather than emitted.
    const attachClauses = (
       dataPathClauses(dataPath, options.readOnly) +
       readOnlyClause +
       metadataSchemaClause +
+      metadataSecretClause +
       firstAttachClauses(options)
    ).replace(/^, /, "");
    const attachCommand = `ATTACH OR REPLACE 'ducklake:postgres:${escapedPgConnString}' AS ${quoteIdentifier(dbName, "duckdb")} (${attachClauses});`;
@@ -1326,8 +1408,15 @@ async function attachDuckLakeWithMode(
          attachCommand,
          creating ? 1 : DUCKLAKE_INIT_RACE_ATTEMPTS,
       );
+      // Origin and instance tell apart two attaches logged in one
+      // millisecond: a connection's and a destination's, or two on one
+      // instance (which single-flighting should make impossible).
       logger.info(
          `Successfully attached DuckLake database in ${mode} mode: ${dbName}`,
+         {
+            origin: options.origin ?? "connection",
+            instance: duckDBInstanceId(connection),
+         },
       );
       if (!options.readOnly) {
          await applyDuckLakeRowGroupBound(connection, dbName);
@@ -1351,6 +1440,15 @@ async function attachDuckLakeWithMode(
       } else {
          throw error;
       }
+   }
+   if (!storage) {
+      // No storage secret: the catalog's data path is what its lock allows.
+      const root =
+         dataPath ||
+         (await recordedCatalogSettings(connection, dbName, metadataSchema)
+            .then((settings) => settings.data_path)
+            .catch(() => undefined));
+      if (root) allowForLockdown(connection, root);
    }
    if (storage) {
       // The storage secret, scoped to the catalog's prefix. After the ATTACH,
@@ -1380,10 +1478,36 @@ async function attachDuckLakeWithMode(
             );
          }
          await attachCloudStorage(connection, storage, options.origin, scope);
+         // The lock allows exactly what the secret is scoped to.
+         allowForLockdown(connection, scope);
       } catch (error) {
-         await connection
-            .runSQL(`DETACH ${quoteIdentifier(dbName, "duckdb")};`)
-            .catch(() => {});
+         // Once the instance is locked the catalog is the locker's, attached
+         // and scoped, and nothing could ATTACH it again: detaching it would
+         // leave every later lookup on the instance without it.
+         if (isInstanceLocked(connection)) {
+            logger.error(
+               "DuckLake storage secret failed after its instance was locked; the catalog is left attached",
+               {
+                  code: DUCKLAKE_CATALOG_UNAVAILABLE,
+                  connection: dbName,
+                  error: redactPgSecrets(errMessage(error)),
+               },
+            );
+         } else {
+            logger.warn(
+               "DuckLake storage secret failed; detaching the catalog so the next lookup attaches it again",
+               {
+                  code: DUCKLAKE_ATTACH_FAILED,
+                  connection: dbName,
+                  origin: options.origin ?? "connection",
+                  instance: duckDBInstanceId(connection),
+                  error: redactPgSecrets(errMessage(error)),
+               },
+            );
+            await connection
+               .runSQL(`DETACH ${quoteIdentifier(dbName, "duckdb")};`)
+               .catch(() => {});
+         }
          throw error;
       }
    }
@@ -1465,7 +1589,8 @@ export async function recordedCatalogSettings(
    metadataSchema: string | undefined,
 ): Promise<Record<string, string>> {
    const rows = runSQLRows(
-      await connection.runSQL(
+      await runInternalSQL(
+         connection,
          `SELECT key, value FROM ${metadataCatalogRef(alias, metadataSchema)}.ducklake_metadata WHERE scope IS NULL`,
       ),
    );
@@ -1492,7 +1617,8 @@ export async function recordedSchemaPath(
    schemaName: string,
 ): Promise<{ path: string; relative: boolean } | undefined> {
    const row = runSQLRows(
-      await connection.runSQL(
+      await runInternalSQL(
+         connection,
          `SELECT path, path_is_relative FROM ${metadataCatalogRef(alias, metadataSchema)}.ducklake_schema ` +
             `WHERE schema_name = '${escapeSQL(schemaName)}' AND end_snapshot IS NULL LIMIT 1`,
       ),
@@ -1526,7 +1652,8 @@ export async function tablePartitionKeys(
 ): Promise<PartitionKey[]> {
    const meta = metadataCatalogRef(alias, metadataSchema);
    const rows = runSQLRows(
-      await connection.runSQL(
+      await runInternalSQL(
+         connection,
          `SELECT c.column_name, pc.transform
             FROM ${meta}.ducklake_table t
             JOIN ${meta}.ducklake_schema s
@@ -1991,8 +2118,13 @@ async function federatePostgres(
       // builds and tenants comes from each build's private DuckDB instance
       // (createIsolatedBuildSession), which also scopes the bigquery/snowflake
       // secrets.
+      const { path: attachPath, secret } = await createPgAttachSecret(
+         connection,
+         alias,
+         attachString,
+      );
       await connection.runSQL(
-         `ATTACH OR REPLACE '${escapeSQL(attachString)}' AS ${quoteIdentifier(alias, "duckdb")} (TYPE postgres, READ_ONLY);`,
+         `ATTACH OR REPLACE '${escapeSQL(attachPath)}' AS ${quoteIdentifier(alias, "duckdb")} (TYPE postgres, READ_ONLY${secret ? `, SECRET ${secret}` : ""});`,
       );
    } catch (e) {
       // The federation error propagates; a tunnel that fails to close outlives
@@ -2022,6 +2154,196 @@ async function federatePostgres(
 export function pgConninfoPair(key: string, value: string): string {
    if (value !== "" && !/[\s'\\]/.test(value)) return `${key}=${value}`;
    return `${key}='${value.replace(/([\\'])/g, "\\$1")}'`;
+}
+
+/** The keywords a Postgres attach carries in its secret rather than its path. */
+const PG_SECRET_KEYS = new Set(["user", "password"]);
+
+/**
+ * The keyword/value pairs of a libpq connection URI, as libpq reads one
+ * (`postgres[ql]://[user[:password]@][host[:port][,…]][/dbname][?k=v&…]`),
+ * percent-decoded. A `ssl=true` parameter becomes `sslmode=require`, as libpq
+ * translates it. Undefined when `uri` is not a URI.
+ */
+function pgUriPairs(uri: string): { key: string; value: string }[] | undefined {
+   const scheme = /^postgres(?:ql)?:\/\//i.exec(uri);
+   if (!scheme) return undefined;
+   const s = uri.slice(scheme[0].length);
+   const pairs: { key: string; value: string }[] = [];
+   let i = 0;
+   // libpq: the userinfo ends at the first `@` before any `/`.
+   let at = 0;
+   while (at < s.length && s[at] !== "@" && s[at] !== "/") at++;
+   if (s[at] === "@") {
+      const userinfo = s.slice(0, at);
+      const colon = userinfo.indexOf(":");
+      const user = colon === -1 ? userinfo : userinfo.slice(0, colon);
+      if (user !== "") {
+         pairs.push({ key: "user", value: decodeUriComponentOrRaw(user) });
+      }
+      if (colon !== -1) {
+         pairs.push({
+            key: "password",
+            value: decodeUriComponentOrRaw(userinfo.slice(colon + 1)),
+         });
+      }
+      i = at + 1;
+   }
+   const hosts: string[] = [];
+   const ports: string[] = [];
+   for (;;) {
+      let host = "";
+      if (s[i] === "[") {
+         const close = s.indexOf("]", i);
+         const end = close === -1 ? s.length : close;
+         host = s.slice(i + 1, end);
+         i = close === -1 ? s.length : close + 1;
+      } else {
+         const start = i;
+         while (i < s.length && !":/?,".includes(s[i])) i++;
+         host = s.slice(start, i);
+      }
+      let port = "";
+      if (s[i] === ":") {
+         const start = ++i;
+         while (i < s.length && !"/?,".includes(s[i])) i++;
+         port = s.slice(start, i);
+      }
+      hosts.push(decodeUriComponentOrRaw(host));
+      ports.push(decodeUriComponentOrRaw(port));
+      if (s[i] !== ",") break;
+      i++;
+   }
+   if (hosts.some((host) => host !== "")) {
+      pairs.push({ key: "host", value: hosts.join(",") });
+   }
+   if (ports.some((port) => port !== "")) {
+      pairs.push({ key: "port", value: ports.join(",") });
+   }
+   if (s[i] === "/") {
+      const start = ++i;
+      while (i < s.length && s[i] !== "?") i++;
+      const dbname = s.slice(start, i);
+      if (dbname !== "") {
+         pairs.push({ key: "dbname", value: decodeUriComponentOrRaw(dbname) });
+      }
+   }
+   if (s[i] === "?") {
+      for (const param of s.slice(i + 1).split("&")) {
+         if (param === "") continue;
+         const eq = param.indexOf("=");
+         const key = decodeUriComponentOrRaw(
+            eq === -1 ? param : param.slice(0, eq),
+         );
+         const value = decodeUriComponentOrRaw(
+            eq === -1 ? "" : param.slice(eq + 1),
+         );
+         if (key === "ssl" && value === "true") {
+            pairs.push({ key: "sslmode", value: "require" });
+         } else {
+            pairs.push({ key, value });
+         }
+      }
+   }
+   return pairs;
+}
+
+/**
+ * The keyword/value pairs of a libpq connection string in either form, a
+ * `dbname` that is itself a connection string expanded in place as libpq
+ * expands it. Throws, naming `subject` but not the string, when the string
+ * does not read as one.
+ */
+function pgConninfoKeyValues(
+   subject: string,
+   conninfo: string,
+   depth = 0,
+): { key: string; value: string }[] {
+   const fromUri = pgUriPairs(conninfo.trim());
+   const pairs =
+      fromUri ??
+      (() => {
+         const read = conninfoPairs(conninfo);
+         const consumed = read.length === 0 ? 0 : read[read.length - 1].end;
+         if (conninfo.slice(consumed).trim() !== "") {
+            throw new Error(
+               `${subject}: the Postgres connection string could not be read as libpq keyword/value pairs or a postgres:// URI.`,
+            );
+         }
+         return read.map(({ key, value }) => ({ key, value }));
+      })();
+   return pairs.flatMap((pair) =>
+      pair.key === "dbname" &&
+      depth < 2 &&
+      (pair.value.includes("=") || /^postgres(?:ql)?:\/\//i.test(pair.value))
+         ? pgConninfoKeyValues(subject, pair.value, depth + 1)
+         : [pair],
+   );
+}
+
+/**
+ * A Postgres connection string split for a DuckDB attach: `path` carries
+ * every keyword but the user and password, which go to a DuckDB secret
+ * instead ({@link createPgAttachSecret}), so an attach path carries no
+ * credential. libpq reads the last of a repeated keyword, and so does this.
+ * Exported for tests.
+ */
+export function splitPgAttachCredentials(
+   subject: string,
+   conninfo: string,
+): { path: string; user?: string; password?: string } {
+   let user: string | undefined;
+   let password: string | undefined;
+   const kept: string[] = [];
+   for (const { key, value } of pgConninfoKeyValues(subject, conninfo)) {
+      if (key === "user") user = value;
+      else if (key === "password") password = value;
+      else if (!PG_SECRET_KEYS.has(key)) kept.push(pgConninfoPair(key, value));
+   }
+   return { path: kept.join(" "), user, password };
+}
+
+/**
+ * The name of the DuckDB secret a Postgres attach under `handle` reads its
+ * credentials from: one per handle, unique however two handles sanitize.
+ */
+export function pgAttachSecretName(handle: string): string {
+   const digest = createHash("sha256")
+      .update(handle)
+      .digest("hex")
+      .slice(0, 12);
+   return `pg_attach_${handle.replace(/[^a-zA-Z0-9_]/g, "_")}_${digest}`.toLowerCase();
+}
+
+/**
+ * Prepare a DuckDB `TYPE postgres` attach of `conninfo` under `handle`: its
+ * user and password go into a temporary DuckDB secret, never persisted and
+ * redacted when listed, and the returned `path` is what the ATTACH names,
+ * with no credential in it. `secret` is the secret's name, for the ATTACH's
+ * `SECRET` option (or DuckLake's `METADATA_PARAMETERS`); undefined when the
+ * string carries neither a user nor a password. Runs before an instance's
+ * lock, as every attach does.
+ */
+export async function createPgAttachSecret(
+   connection: DuckDBConnection,
+   handle: string,
+   conninfo: string,
+): Promise<{ path: string; secret?: string }> {
+   const { path, user, password } = splitPgAttachCredentials(
+      `Connection '${handle}'`,
+      conninfo,
+   );
+   if (user === undefined && password === undefined) return { path };
+   const secret = pgAttachSecretName(handle);
+   const options = [
+      "TYPE postgres",
+      ...(user !== undefined ? [`USER '${escapeSQL(user)}'`] : []),
+      ...(password !== undefined ? [`PASSWORD '${escapeSQL(password)}'`] : []),
+   ];
+   await connection.runSQL(
+      `CREATE OR REPLACE TEMPORARY SECRET ${secret} (${options.join(", ")});`,
+   );
+   return { path, secret };
 }
 
 /**
@@ -2376,13 +2698,26 @@ async function attachCloudStorage(
       credentials.provider === "credential_chain" &&
       typeof renewable.setStorageSecretRenewer === "function"
    ) {
-      renewable.setStorageSecretRenewer(async () => {
+      const renewOn = async (target: DuckDBConnection) => {
          // Replaced in place on the live connection; no in-flight query is
-         // disturbed.
-         await connection.runSQL(
-            buildCloudStorageSecretSQL(secretName, credentials),
-         );
-      });
+         // disturbed. Admitted past a locked instance's secret gate for this
+         // one statement only (duckdb_lockdown.ts).
+         const sql = buildCloudStorageSecretSQL(secretName, credentials);
+         await runAsInternalStatement(sql, () => target.runSQL(sql));
+      };
+      renewable.setStorageSecretRenewer(() => renewOn(connection));
+      // The secret is the instance's: a later connection joining the locked
+      // instance, which runs no attach of its own, renews it the same way.
+      const instance = duckDBInstanceOf(connection);
+      if (instance) instanceSecretRenewers.set(instance, renewOn);
+   }
+
+   if (scope === undefined) {
+      // An attached database names no bucket: its reads are any URL of its
+      // scheme the secret reaches.
+      for (const prefix of cloudStorageAllowPrefixes(attachedDb.type ?? "")) {
+         allowForLockdown(connection, prefix);
+      }
    }
 
    logger.info(`Created ${storageType} secret: ${secretName}`);
@@ -2400,6 +2735,10 @@ async function attachAzureStorage(
    }
 
    const config = attachedDb.azureConnection;
+   const allowPrefix = azureAllowPrefix(
+      config.authType === "sas_token" ? config.sasUrl : config.fileUrl,
+   );
+   if (allowPrefix) allowForLockdown(connection, allowPrefix);
 
    // Extensions are loaded once in attachDatabasesToDuckDB.
    const secretName = sanitizeSecretName(`azure_${attachedDb.name}`);
@@ -2465,11 +2804,10 @@ async function doesSecretExistInDuckDB(
    secretName: string,
 ): Promise<boolean> {
    const escapedSecretName = escapeSQL(secretName);
-   const result = await connection.runSQL(`
-     SELECT COUNT(*) AS count
-     FROM duckdb_secrets()
-     WHERE name = '${escapedSecretName}';
-   `);
+   const result = await runInternalSQL(
+      connection,
+      `SELECT COUNT(*) AS count FROM duckdb_secrets() WHERE name = '${escapedSecretName}';`,
+   );
    const rows = result.rows;
    return Number(rows?.[0]?.count ?? 0) > 0;
 }
@@ -2782,7 +3120,7 @@ class DuckLakeConnection extends DuckDBConnection {
             }) ||
             !renew
          ) {
-            throw error;
+            throw await this.catalogUnavailableOr(error);
          }
          logger.info(
             "Object-storage credential expired; re-resolving and retrying once",
@@ -2798,6 +3136,31 @@ class DuckLakeConnection extends DuckDBConnection {
       }
    }
 
+   /**
+    * `error`, or a {@link DuckLakeCatalogUnavailableError} when DuckDB failed
+    * to resolve a name and the instance confirms this connection's catalog is
+    * gone. The error alone cannot say: a three-part path reports `Binder
+    * Error: Catalog "<catalog>" does not exist`, but a two-part one
+    * (`<catalog>.<table>`, a destination with no schema) reports `Catalog
+    * Error: Table with name … does not exist`, as a misbinding does. So any
+    * binder or catalog error is checked against the instance, and one whose
+    * catalog is attached (a misbinding) is returned as it is. A confirmed loss
+    * also drops the instance's cached check, so the next lookup checks again
+    * and reopens the connection.
+    */
+   private async catalogUnavailableOr(error: unknown): Promise<unknown> {
+      if (
+         !/\b(Binder|Catalog) Error\b/.test(errMessage(error)) ||
+         (await aliasAttachedOnInstance(this, this.connectionName)) !== false
+      ) {
+         return error;
+      }
+      forgetDuckLakeCatalogChecked(this, this.connectionName);
+      return new DuckLakeCatalogUnavailableError(this.connectionName, {
+         cause: error,
+      });
+   }
+
    constructor(options: PublisherDuckDBOptions) {
       super(options);
 
@@ -2811,7 +3174,36 @@ class DuckLakeConnection extends DuckDBConnection {
       this.connectionName = options.name;
    }
 
+   /**
+    * A compile's schema reads (`DESCRIBE`) run through `runRawSQL`, not
+    * {@link runSQL}, so they confirm a lost catalog here: without it a
+    * catalog lost after its check was cached fails every compile with an
+    * untyped binder error while the cached check keeps lookups from ever
+    * reopening the connection.
+    */
    async fetchTableSchema(
+      tableKey: string,
+      tablePath: string,
+   ): Promise<TableSourceDef> {
+      try {
+         return await this.fetchTableSchemaIn(tableKey, tablePath);
+      } catch (error) {
+         throw await this.catalogUnavailableOr(error);
+      }
+   }
+
+   /** @see fetchTableSchema */
+   async fetchSelectSchema(
+      sqlRef: Parameters<DuckDBConnection["fetchSelectSchema"]>[0],
+   ): Promise<Awaited<ReturnType<DuckDBConnection["fetchSelectSchema"]>>> {
+      try {
+         return await super.fetchSelectSchema(sqlRef);
+      } catch (error) {
+         throw await this.catalogUnavailableOr(error);
+      }
+   }
+
+   private async fetchTableSchemaIn(
       tableKey: string,
       tablePath: string,
    ): Promise<TableSourceDef> {
@@ -3292,6 +3684,80 @@ function isDuckDBConnection(
    return connection instanceof DuckDBConnection;
 }
 
+/**
+ * Per locked instance, the DuckLake catalogs checked attached on it. A lock
+ * never lifts and nothing can ATTACH or DETACH through Publisher after it, so
+ * a check holds until a read finds the catalog missing
+ * ({@link forgetDuckLakeCatalogChecked}); a lookup does not query the
+ * instance each time.
+ */
+const checkedDuckLakeCatalogs = new WeakMap<object, Set<string>>();
+
+/** Per instance, the catalogs found missing from it, logged once. */
+const missingDuckLakeCatalogs = new WeakMap<object, Set<string>>();
+
+/** The instances whose loss was reported to `onDuckLakeReopened`, once each. */
+const reportedDuckLakeInstances = new WeakSet<object>();
+
+function duckLakeInstanceKey(connection: DuckDBConnection): object {
+   return duckDBInstanceOf(connection) ?? connection;
+}
+
+function duckLakeCatalogChecked(
+   connection: DuckDBConnection,
+   name: string,
+): boolean {
+   return (
+      checkedDuckLakeCatalogs.get(duckLakeInstanceKey(connection))?.has(name) ??
+      false
+   );
+}
+
+function markDuckLakeCatalogChecked(
+   connection: DuckDBConnection,
+   name: string,
+): void {
+   const key = duckLakeInstanceKey(connection);
+   let names = checkedDuckLakeCatalogs.get(key);
+   if (!names) {
+      names = new Set();
+      checkedDuckLakeCatalogs.set(key, names);
+   }
+   names.add(name);
+}
+
+function forgetDuckLakeCatalogChecked(
+   connection: DuckDBConnection,
+   name: string,
+): void {
+   checkedDuckLakeCatalogs.get(duckLakeInstanceKey(connection))?.delete(name);
+}
+
+/** Record `name` missing on `connection`'s instance; true the first time. */
+function noteDuckLakeCatalogMissing(
+   connection: DuckDBConnection,
+   name: string,
+): boolean {
+   const key = duckLakeInstanceKey(connection);
+   let names = missingDuckLakeCatalogs.get(key);
+   if (!names) {
+      names = new Set();
+      missingDuckLakeCatalogs.set(key, names);
+   }
+   if (names.has(name)) return false;
+   names.add(name);
+   return true;
+}
+
+/** Managed DuckLake connections that set their search path on a locked instance. */
+const managedSearchPathSet = new WeakSet<Connection>();
+
+/** Each instance's storage-secret renewer, for connections that join it. */
+const instanceSecretRenewers = new WeakMap<
+   object,
+   (target: DuckDBConnection) => Promise<void>
+>();
+
 /** Environment config builds so far, numbering each one's generation. */
 let environmentConfigGenerations = 0;
 
@@ -3302,6 +3768,10 @@ let environmentConfigGenerations = 0;
  *   prior attach state. Only the DuckLake branch reads it.
  * @param options.origin "storage-destination" for the operator's own storage
  *   destinations, which the S3 credential-chain policy treats differently.
+ * @param options.onDuckLakeReopened Called when a DuckLake connection was
+ *   found without its catalog on its locked instance and closed so the next
+ *   lookup reopens it: anything memoized against the closed connection (a
+ *   compiled serve shape) must be dropped.
  */
 export function buildEnvironmentMalloyConfig(
    connections: ApiConnection[] = [],
@@ -3310,7 +3780,12 @@ export function buildEnvironmentMalloyConfig(
    {
       origin = "connection",
       openProxy: openTunnel = openProxy,
-   }: { origin?: ConnectionOrigin; openProxy?: typeof openProxy } = {},
+      onDuckLakeReopened,
+   }: {
+      origin?: ConnectionOrigin;
+      openProxy?: typeof openProxy;
+      onDuckLakeReopened?: (name: string) => void;
+   } = {},
 ): EnvironmentMalloyConfig {
    const assembled = assembleEnvironmentConnections(
       connections,
@@ -3335,6 +3810,18 @@ export function buildEnvironmentMalloyConfig(
    >();
    const proxyEndpoints = new Map<string, ProxyEndpoint>();
    const attachPromises = new WeakMap<Connection, Promise<void>>();
+   // One DuckLake ATTACH per connection object, shared by concurrent lookups.
+   const duckLakeAttaches = new WeakMap<Connection, Promise<void>>();
+   // DuckLake connections closed because their instance lost the catalog: a
+   // lookup holding one looks up again rather than return it.
+   const reopenedDuckLakes = new WeakSet<Connection>();
+   // Each reopened connection's close, which a lookup going on to the fresh
+   // instance waits for: opened sooner, the fresh connection would join the
+   // old instance while the closing connection still holds it.
+   const duckLakeClosing = new WeakMap<Connection, Promise<void>>();
+   // The connection each cached DuckLake promise resolves to, read
+   // synchronously so a reopen drops it before any other lookup runs.
+   const duckLakeCurrent = new Map<string, DuckLakeConnection>();
    const closePromises = new WeakMap<Connection, Promise<void>>();
    // An evicted tunnel has left the caches, so release finds its cleanup here.
    const evictions = new Set<Promise<void>>();
@@ -3370,6 +3857,10 @@ export function buildEnvironmentMalloyConfig(
          return;
       }
 
+      // A locked instance already holds this setup: its key digests the
+      // attached databases (duckdb_lockdown.ts), and no ATTACH could run on it.
+      if (isConfigurationFrozen(connection)) return;
+
       let attachPromise = attachPromises.get(connection);
       if (!attachPromise) {
          // One ATTACH run per connection object per config generation.
@@ -3392,6 +3883,235 @@ export function buildEnvironmentMalloyConfig(
       await attachPromise;
    }
 
+   /**
+    * Attach a DuckLake connection's catalog, once per connection object:
+    * concurrent first lookups share one attach. Two attaches of one catalog
+    * racing the lock lost it: the first lookup locked the instance between
+    * the second's ATTACH and its storage secret, the refused secret's cleanup
+    * detached the catalog, and the locked instance could never attach it
+    * again. The attach also runs exclusive of any lockdown of its instance
+    * (runExclusiveOnDuckDBInstance), so a lock never lands inside it.
+    */
+   function attachDuckLakeOnce(
+      connection: DuckLakeConnection,
+      name: string,
+      metadata: EnvironmentConnectionMetadata,
+   ): Promise<void> {
+      let attach = duckLakeAttaches.get(connection);
+      if (!attach) {
+         attach = (async () => {
+            // A locked instance holds this exact catalog setup (its key
+            // digests the DuckLake config, duckdb_lockdown.ts), and no ATTACH
+            // could run on it: an edit opens a fresh instance.
+            if (isConfigurationFrozen(connection)) return;
+            // Also opens the instance, so the exclusive step below is keyed
+            // on it rather than on this connection alone.
+            const attached = await isDatabaseAttached(connection, name);
+            if (attached && !isUpdateConnectionRequest) return;
+            await runExclusiveOnDuckDBInstance(connection, async () => {
+               if (isConfigurationFrozen(connection)) return;
+               if (
+                  !isUpdateConnectionRequest &&
+                  (await isDatabaseAttached(connection, name))
+               ) {
+                  return;
+               }
+               await attachDuckLake(
+                  connection,
+                  name,
+                  metadata.apiConnection.ducklakeConnection!,
+                  {
+                     origin,
+                     managed: metadata.apiConnection.managed === true,
+                  },
+               );
+               if (metadata.apiConnection.managed === true) {
+                  await setManagedSearchPath(connection, name);
+               }
+            });
+         })();
+         // Evicted on failure, so a transient one is retried by the next
+         // lookup. Every lookup that joined this attach fails with it (one
+         // transient failure fails each concurrent first lookup, once); that
+         // is the price of never running two attaches at once.
+         attach.catch((error: unknown) => {
+            if (duckLakeAttaches.get(connection) === attach) {
+               duckLakeAttaches.delete(connection);
+            }
+            logger.warn(
+               "DuckLake attach failed; the lookups sharing it fail, and the next lookup attaches again",
+               {
+                  code: DUCKLAKE_ATTACH_FAILED,
+                  connection: name,
+                  origin,
+                  instance: duckDBInstanceId(connection),
+                  error: redactPgSecrets(errMessage(error)),
+               },
+            );
+         });
+         duckLakeAttaches.set(connection, attach);
+      }
+      return attach;
+   }
+
+   /**
+    * A lookup of a DuckLake connection on a locked instance: check the catalog
+    * is still there (once per instance, see {@link checkedDuckLakeCatalogs}),
+    * and join the instance's setup on first use.
+    *
+    * A locked instance cannot ATTACH, so a catalog missing from it is never
+    * coming back on that instance. Once this connection is the instance's only
+    * holder, it is closed and dropped from the cache, so the next lookup opens
+    * a fresh instance and attaches. While another holder (a draining
+    * generation's connection) keeps the instance open, a reopen would only
+    * join it again, so the connection is kept and this lookup fails with
+    * {@link DuckLakeCatalogUnavailableError}, which a routed query answers
+    * live. A lookup that reopens looks up again onto the fresh instance
+    * ({@link resolveDuckLake}), so it succeeds. The loss is logged once per
+    * instance, and `onDuckLakeReopened` is called once per instance, when it
+    * is reopened.
+    */
+   async function verifyLockedDuckLake(
+      connection: DuckLakeConnection,
+      name: string,
+      metadata: EnvironmentConnectionMetadata,
+   ): Promise<void> {
+      if (!duckLakeCatalogChecked(connection, name)) {
+         const attached = await aliasAttachedOnInstance(connection, name);
+         if (attached === false) {
+            // Throws while another holder keeps the instance; otherwise the
+            // connection is reopened, and the caller looks up again.
+            catalogMissing(connection, name);
+            return;
+         }
+         // A check that failed says nothing, so it is not cached.
+         if (attached === true) markDuckLakeCatalogChecked(connection, name);
+      }
+      if (managedSearchPathSet.has(connection)) return;
+      managedSearchPathSet.add(connection);
+      // A connection joining the locked instance renews the instance's
+      // storage secret as the attaching one did.
+      const renew = instanceSecretRenewers.get(
+         duckDBInstanceOf(connection) ?? {},
+      );
+      if (renew) {
+         connection.setStorageSecretRenewer(() => renew(connection));
+      }
+      // The search path is per session, and allowed after the lock: a joining
+      // connection sets its own.
+      if (metadata.apiConnection.managed === true) {
+         await setManagedSearchPath(connection, name);
+      }
+   }
+
+   /**
+    * {@link verifyLockedDuckLake} found `name` missing: report it, then throw
+    * while another holder keeps the instance, or reopen the connection and
+    * return, so the caller looks up again ({@link resolveDuckLake}), as it
+    * does for a connection a concurrent lookup already reopened.
+    */
+   function catalogMissing(connection: DuckLakeConnection, name: string): void {
+      if (reopenedDuckLakes.has(connection)) return;
+      const instanceKey = duckLakeInstanceKey(connection);
+      const first = noteDuckLakeCatalogMissing(connection, name);
+      const context = {
+         code: DUCKLAKE_CATALOG_UNAVAILABLE,
+         connection: name,
+         origin,
+         instance: duckDBInstanceId(connection),
+      };
+      if (duckDBInstanceHasOtherHolders(connection)) {
+         if (first) {
+            logger.error(
+               "DuckLake catalog is missing from its locked DuckDB instance; the connection reopens once the instance's other holders are released",
+               context,
+            );
+         }
+         throw new DuckLakeCatalogUnavailableError(name);
+      }
+      if (first) {
+         logger.error(
+            "DuckLake catalog is missing from its locked DuckDB instance; reopening the connection",
+            context,
+         );
+      } else {
+         logger.info(
+            "Reopening a DuckLake connection whose instance lost its catalog, now that it is the instance's only holder",
+            context,
+         );
+      }
+      if (duckLakeCurrent.get(name) === connection) {
+         duckLakeCache.delete(name);
+         duckLakeCurrent.delete(name);
+      }
+      duckLakeAttaches.delete(connection);
+      reopenedDuckLakes.add(connection);
+      // Released here, so the generation's release has nothing left for it.
+      disownDuckDBConnection(malloyConfig, connection);
+      const eviction = closeOnce(connection)
+         .then(() => hardCloseWhenIdle(connection))
+         .catch((error) =>
+            logger.warn(
+               "Failed to close a DuckLake connection missing its catalog",
+               { connection: name, error: errMessage(error) },
+            ),
+         )
+         .then(() => {
+            evictions.delete(eviction);
+         });
+      evictions.add(eviction);
+      duckLakeClosing.set(connection, eviction);
+      if (!reportedDuckLakeInstances.has(instanceKey)) {
+         reportedDuckLakeInstances.add(instanceKey);
+         onDuckLakeReopened?.(name);
+      }
+   }
+
+   /**
+    * The DuckLake connection for `name`, attached, and checked when its
+    * instance is locked. A lookup whose connection was reopened, by its own
+    * check or a concurrent lookup's (its attach or check failing on the
+    * closed connection, or passing just before the close), looks up once
+    * more, onto the fresh instance, rather than fail or return a closed
+    * connection.
+    */
+   async function resolveDuckLake(
+      name: string,
+      metadata: EnvironmentConnectionMetadata,
+   ): Promise<DuckLakeConnection> {
+      for (let attempt = 0; ; attempt++) {
+         let connectionPromise = duckLakeCache.get(name);
+         if (!connectionPromise) {
+            const entry = assembled.pojo.connections[name];
+            const built = buildDuckLakeConnection(metadata, entry);
+            ownDuckDBConnection(malloyConfig, built);
+            connectionPromise = Promise.resolve(built);
+            duckLakeCache.set(name, connectionPromise);
+            duckLakeCurrent.set(name, built);
+         }
+         const connection = await connectionPromise;
+         try {
+            await attachDuckLakeOnce(connection, name, metadata);
+            if (isConfigurationFrozen(connection)) {
+               await verifyLockedDuckLake(connection, name, metadata);
+            }
+         } catch (error) {
+            if (
+               attempt === 0 &&
+               reopenedDuckLakes.has(connection) &&
+               !(error instanceof DuckLakeCatalogUnavailableError)
+            ) {
+               await duckLakeClosing.get(connection);
+               continue;
+            }
+            throw error;
+         }
+         if (!reopenedDuckLakes.has(connection)) return connection;
+         if (attempt > 0) throw new DuckLakeCatalogUnavailableError(name);
+         await duckLakeClosing.get(connection);
+      }
+   }
+
    malloyConfig.wrapConnections(
       (base: LookupConnection<Connection>): LookupConnection<Connection> => {
          const resolveConnection = async (
@@ -3399,33 +4119,7 @@ export function buildEnvironmentMalloyConfig(
             metadata: EnvironmentConnectionMetadata | undefined,
          ): Promise<Connection> => {
             if (metadata?.isDuckLake) {
-               let connectionPromise = duckLakeCache.get(name!);
-               if (!connectionPromise) {
-                  const entry = assembled.pojo.connections[name!];
-                  const built = buildDuckLakeConnection(metadata, entry);
-                  ownDuckDBConnection(malloyConfig, built);
-                  connectionPromise = Promise.resolve(built);
-                  duckLakeCache.set(name!, connectionPromise);
-               }
-               const connection = await connectionPromise;
-               if (
-                  isUpdateConnectionRequest ||
-                  !(await isDatabaseAttached(connection, name!))
-               ) {
-                  await attachDuckLake(
-                     connection,
-                     name!,
-                     metadata.apiConnection.ducklakeConnection!,
-                     {
-                        origin,
-                        managed: metadata.apiConnection.managed === true,
-                     },
-                  );
-                  if (metadata.apiConnection.managed === true) {
-                     await setManagedSearchPath(connection, name!);
-                  }
-               }
-               return connection;
+               return resolveDuckLake(name!, metadata);
             }
 
             if (metadata?.proxy) {
@@ -3593,6 +4287,41 @@ export function buildEnvironmentMalloyConfig(
                // per-package sandbox is pinned in package.ts.)
                if (isDuckDBConnection(connection)) {
                   await applyExtensionSessionSettings(connection);
+                  // A networked instance's setup is done: lock it before any
+                  // caller or model SQL reaches it. Malloy locks the sandboxed
+                  // and local tiers itself (duckdb_lockdown.ts).
+                  if (!isLockedByOptions(connection)) {
+                     // A `duckdb` connection with attached databases still
+                     // reads its environment's local files, relative ones
+                     // included; a DuckLake catalog reads only its data path.
+                     const localRoot =
+                        metadata &&
+                        !metadata.isDuckLake &&
+                        metadata.attachedDatabases.length > 0
+                           ? metadata.workingDirectory
+                           : undefined;
+                     const relative = localRoot
+                        ? relativeReadEntries(localRoot)
+                        : { directories: [], files: [] };
+                     await lockDownDuckDBSession(connection, {
+                        ...(metadata?.apiConnection.type === "motherduck"
+                           ? { motherDuck: name ?? "motherduck" }
+                           : {}),
+                        allow: localRoot
+                           ? [localRoot, ...relative.directories]
+                           : [],
+                        // Its own database file, which checkpoints write.
+                        paths: [
+                           ...(metadata?.databasePath
+                              ? [
+                                   metadata.databasePath,
+                                   `${metadata.databasePath}.wal`,
+                                ]
+                              : []),
+                           ...relative.files,
+                        ],
+                     });
+                  }
                }
                // Its configured type, which a `storage=` build's eligibility
                // reads (a dialect does not tell DuckDB from DuckLake).
@@ -3632,6 +4361,7 @@ export function buildEnvironmentMalloyConfig(
             [...proxyEndpoints.values()].map((ep) => ep.close()),
          );
          duckLakeCache.clear();
+         duckLakeCurrent.clear();
          snowflakeJwtCache.clear();
          azureDuckDBCache.clear();
          proxyConnectionCache.clear();
@@ -3754,7 +4484,8 @@ async function testDuckDBConnection(
                break;
             }
             case "bigquery": {
-               await duckdbConnection.runSQL(
+               await runInternalSQL(
+                  duckdbConnection,
                   `SELECT database_name FROM duckdb_databases() WHERE database_name = '${attachedDb.name}'`,
                );
                logger.info(
@@ -3763,7 +4494,8 @@ async function testDuckDBConnection(
                break;
             }
             case "snowflake": {
-               await duckdbConnection.runSQL(
+               await runInternalSQL(
+                  duckdbConnection,
                   `SELECT database_name FROM duckdb_databases() WHERE database_name = '${attachedDb.name}'`,
                );
                logger.info(
@@ -3772,7 +4504,8 @@ async function testDuckDBConnection(
                break;
             }
             case "gcs": {
-               await duckdbConnection.runSQL(
+               await runInternalSQL(
+                  duckdbConnection,
                   `SELECT name FROM duckdb_secrets() WHERE name LIKE '%${attachedDb.name}%' LIMIT 1`,
                );
                logger.info(
@@ -3781,7 +4514,8 @@ async function testDuckDBConnection(
                break;
             }
             case "s3": {
-               await duckdbConnection.runSQL(
+               await runInternalSQL(
+                  duckdbConnection,
                   `SELECT name FROM duckdb_secrets() WHERE name LIKE '%${attachedDb.name}%' LIMIT 1`,
                );
                logger.info(
@@ -3802,7 +4536,8 @@ async function testDuckDBConnection(
                      `Azure SAS token URL present for: ${attachedDb.name}`,
                   );
                } else {
-                  await duckdbConnection.runSQL(
+                  await runInternalSQL(
+                     duckdbConnection,
                      `SELECT name FROM duckdb_secrets() WHERE name LIKE '%${attachedDb.name}%' LIMIT 1`,
                   );
                   logger.info(

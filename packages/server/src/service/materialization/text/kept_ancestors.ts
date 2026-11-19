@@ -124,7 +124,7 @@ interface LocatedAncestor extends KeptAncestor {
  * The ancestors of `sourceID` whose blocks its re-root can keep, nearest
  * first, from the compiled model: up `extend` and rename hops, each in
  * whatever file declares it, so an extension declared in a file that imports
- * its base's file keeps that base's blocks too (P2-22). A query-shaped
+ * its base's file keeps that base's blocks too. A query-shaped
  * ancestor (`x is y -> { … } extend { … }`) is kept, and the walk stops
  * there: its trailing run is over its query's output, which is what its
  * extensions' tables store. Each ancestor's renames are the ones declared in
@@ -157,6 +157,106 @@ export function keptAncestorChain(
       childURL = parentURL;
    }
    return out;
+}
+
+/**
+ * {@link keptAncestorChain}, and for a source the compiled model records no
+ * base for, the base its declaration names in the text. Malloy records no
+ * edge for an extension of a table-backed source, and the source map infers
+ * one only when the extension holds every field of its base: an `except:`
+ * drops one, so `no_region is orders extend { except: region }` gets no
+ * edge, and a measure, view or join `orders` declares was lost from the
+ * re-root (`fields_not_carried`). Its base is the source of the name
+ * the declaration reads (`<name> is <base> extend …`), in its own file or
+ * one it imports, when that is a table-backed source on the same table and
+ * every field the source has that its own statement does not declare is
+ * one of the base's. {@link confirmedAncestors} confirms the step against
+ * the text as it does any other, and the chain continues from the base.
+ */
+export function keptAncestorChainOrDeclared(
+   map: SourceMap,
+   sourceID: string,
+   url: string,
+   fileText: (url: string) => string | undefined,
+): LocatedAncestor[] {
+   const chain = keptAncestorChain(map, sourceID, url);
+   const node = map.node(sourceID);
+   if (chain.length > 0 || !node || node.base !== undefined) return chain;
+   const base = declaredTableBase(node.def, url, map, fileText);
+   if (!base) return chain;
+   return [base, ...keptAncestorChain(map, base.sourceID, base.url)];
+}
+
+/** A table-backed source's compiled shape, as the declared-base check reads it. */
+interface TableDef {
+   type?: unknown;
+   connection?: unknown;
+   tablePath?: unknown;
+   fields?: unknown;
+}
+
+/** The declared base of a table-backed extension the model records none for. */
+function declaredTableBase(
+   def: unknown,
+   url: string,
+   map: SourceMap,
+   fileText: (url: string) => string | undefined,
+): LocatedAncestor | undefined {
+   const own = def as TableDef | undefined;
+   if (own?.type !== "table") return undefined;
+   const text = fileText(url);
+   const range = locatedIn(def, url);
+   if (text === undefined || !range) return undefined;
+   const name = declaredBaseName(text, range);
+   if (name === undefined) return undefined;
+   const parentID = [`${name}@${url}`, map.sourceIDOf(name)].find(
+      (id): id is string => id !== undefined && map.node(id) !== undefined,
+   );
+   const parent = parentID ? map.node(parentID) : undefined;
+   const base = parent?.def as TableDef | undefined;
+   if (
+      !parent ||
+      base?.type !== "table" ||
+      base.connection !== own.connection ||
+      base.tablePath !== own.tablePath
+   ) {
+      return undefined;
+   }
+   const parentURL = declaringURLOf(parent.def);
+   const parentRange = parentURL ? locatedIn(parent.def, parentURL) : undefined;
+   if (!parentURL || !parentRange) return undefined;
+   // What the source has and did not declare itself, the base has.
+   const baseNames = new Set(fieldNames(base));
+   const inherited = fieldList(own).filter((f) => !declaredIn(f, url, range));
+   if (!inherited.every((f) => baseNames.has(fieldName(f) ?? ""))) {
+      return undefined;
+   }
+   return { sourceID: parent.sourceID, url: parentURL, range: parentRange };
+}
+
+function fieldList(def: TableDef): unknown[] {
+   return Array.isArray(def.fields) ? def.fields : [];
+}
+
+function fieldName(field: unknown): string | undefined {
+   const f = field as { as?: unknown; name?: unknown } | undefined;
+   const name = f?.as ?? f?.name;
+   return typeof name === "string" ? name : undefined;
+}
+
+function fieldNames(def: TableDef): string[] {
+   return fieldList(def).flatMap((f) => fieldName(f) ?? []);
+}
+
+/** Whether a compiled field was declared inside the statement at `range` in `url`. */
+function declaredIn(field: unknown, url: string, range: KeptRange): boolean {
+   const at = locatedIn(field, url);
+   if (!at) return false;
+   const before = (
+      a: { line: number; character: number },
+      b: { line: number; character: number },
+   ) => a.line < b.line || (a.line === b.line && a.character <= b.character);
+   return before(range.start, at.start) && before(at.end, range.end);
 }
 
 /**
@@ -215,7 +315,7 @@ export function confirmedAncestors(
 
 /**
  * Whether `runText`, written in the file at `ancestorURL`, reads every name
- * the same way compiled in the file at `childURL` (P2-22, review).
+ * the same way compiled in the file at `childURL` (review).
  *
  * The guarantee is structural, from two conditions:
  *

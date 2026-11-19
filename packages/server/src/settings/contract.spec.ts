@@ -950,6 +950,40 @@ export const CONTRACT: Record<string, Case[]> = {
          expect: value("127.0.0.1"),
       },
    ],
+   "admin.requestTimeoutMs": [
+      { name: "unset is ten minutes (600000 ms)", expect: value(600_000) },
+      {
+         name: "PUBLISHER_ADMIN_REQUEST_TIMEOUT_MS",
+         env: { PUBLISHER_ADMIN_REQUEST_TIMEOUT_MS: "3600000" },
+         expect: value(3_600_000),
+      },
+      {
+         name: "--admin-request-timeout-ms",
+         argv: ["--admin-request-timeout-ms", "1800000"],
+         expect: value(1_800_000),
+      },
+      {
+         name: "the flag wins over the variable",
+         env: { PUBLISHER_ADMIN_REQUEST_TIMEOUT_MS: "3600000" },
+         argv: ["--admin-request-timeout-ms", "1800000"],
+         expect: value(1_800_000),
+      },
+      {
+         name: "blank",
+         env: { PUBLISHER_ADMIN_REQUEST_TIMEOUT_MS: "" },
+         expect: value(600_000),
+      },
+      {
+         name: "zero fails",
+         env: { PUBLISHER_ADMIN_REQUEST_TIMEOUT_MS: "0" },
+         expect: fails("PUBLISHER_ADMIN_REQUEST_TIMEOUT_MS"),
+      },
+      {
+         name: "not a number fails",
+         env: { PUBLISHER_ADMIN_REQUEST_TIMEOUT_MS: "abc" },
+         expect: fails("PUBLISHER_ADMIN_REQUEST_TIMEOUT_MS"),
+      },
+   ],
    "admin.catalogDatabase": [
       { name: "unset is off", expect: value(null) },
       {

@@ -22,6 +22,8 @@
  * ledger in the run store; logs and counts each step.
  */
 
+import { errorCodeOf } from "../../../error_code";
+import { recordedTableKey } from "../domain/physical_table";
 import { logger } from "../../../logger";
 import {
    persistSourceDeclaredColumns,
@@ -40,15 +42,16 @@ import type {
 import type {
    BuildInstruction,
    IncrementalStrategy,
+   LateRows,
    LedgerEntry,
    ManifestEntry,
 } from "../domain/types";
 import {
    collectIncrementalDeclarations,
    deriveColumns,
+   type RunPlan,
    storedColumnOf,
-} from "../plan/build_plan";
-import { type CompiledBuildPlan } from "../domain/compiled_build_plan";
+} from "./run_plan";
 import { capabilitiesOf, STORAGE_DIALECT } from "../domain/dialect";
 import { storageDeltaTarget } from "./incremental_storage";
 import { type StorageIncrementalRefresh } from "./materialization_build_session";
@@ -56,6 +59,7 @@ import type { QueryMetadata } from "../../query_metadata";
 import { errMessage } from "../../../utils";
 import {
    applyDeltaScript,
+   countLateRows,
    isPairGuardFailure,
    isRenderableWatermarkType,
    planIncrementalStep,
@@ -69,8 +73,11 @@ import {
    type WatermarkBound,
 } from "./incremental_apply";
 import { isDecimalDeltaGuardFailure } from "./postgres_numeric_precision";
-import { capturedNativeSchema } from "./colocated_native_types";
-import type { IncrementalDeclaration } from "../domain/incremental";
+import { capturedNativeSchema } from "./database_native_types";
+import {
+   INCREMENTAL_LATE_ROWS_CODE,
+   type IncrementalDeclaration,
+} from "../domain/incremental";
 
 /**
  * The ledger surface a build needs; a narrowing of ResourceRepository. Addressed
@@ -118,20 +125,14 @@ export interface IncrementalRunContext {
     * is one neither can be held to.
     */
    callerLedger?: ReadonlyMap<string, RecordedBoundary>;
-}
-
-/**
- * The caller-ledger index key: a boundary is a fact about a TABLE. Connection and
- * destination are separate NUL-delimited fields because they are separate
- * namespaces: a connection and a destination both called `lake` are different
- * warehouses.
- */
-function ledgerTableKey(table: LedgerTableIdentity): string {
-   return [
-      table.connectionName,
-      table.storageDestinationName ?? "",
-      table.physicalTableName,
-   ].join("\u0000");
+   /**
+    * The `lateRows` the package's bound manifest reports, by content address:
+    * what earlier deltas' late-row checks found and no rebuild has cleared.
+    * A delta or a skip carries it onto its entry, so the warning stays until
+    * the source is rebuilt in full. Read from the BOUND manifest, so a run a
+    * host instructs carries what the host bound, with no field of its own.
+    */
+   priorLateRows?: ReadonlyMap<string, LateRows>;
 }
 
 /**
@@ -145,7 +146,7 @@ export function indexCallerLedger(
    const index = new Map<string, RecordedBoundary>();
    for (const entry of entries) {
       index.set(
-         ledgerTableKey({
+         recordedTableKey({
             connectionName: entry.connectionName,
             storageDestinationName: entry.storageDestinationName,
             physicalTableName: entry.physicalTableName,
@@ -171,7 +172,7 @@ export function indexCallerLedger(
  * lineage the source's declaration implies, or undefined when the run declared
  * none, the source has no content address, or it is not a delta candidate
  * ({@link incrementalLineage}). A table in a storage destination is written in
- * DuckDB; a colocated one in the source's own dialect. The build dispatch and
+ * DuckDB; a database one in the source's own dialect. The build dispatch and
  * the skip-if-unchanged check share this one predicate so they never disagree.
  */
 export function sourceIncrementalRefresh(
@@ -214,14 +215,14 @@ export function incrementalLineage(params: {
    /** The SOURCE's dialect, which has to be able to express a bounded range. */
    dialect: string;
    /**
-    * The dialect the DML will be issued in — the source's own for a colocated
+    * The dialect the DML will be issued in — the source's own for a database
     * table, `duckdb` for one in a `storage=` destination.
     */
    targetDialect: string;
    physicalTableName: string;
    connectionName: string;
    /**
-    * The storage destination the table lives in, absent when colocated. Part of
+    * The storage destination the table lives in, absent when database. Part of
     * the boundary's table identity, so a source that moves between destinations
     * cannot read a boundary measured on the table it left behind.
     */
@@ -256,8 +257,8 @@ export function incrementalLineage(params: {
    // resolved must never be ISSUED. No lineage means a seed: slower, but correct.
    if (mergeKeys.length > 0 && d.scopeIncomplete) return undefined;
    // A pair table's delta replaces whole parents by its key, in DuckDB, the
-   // target of every `storage=` table and of a colocated table in a DuckDB
-   // warehouse (pairDeltaStatements). Anything else seeds: a colocated pair
+   // target of every `storage=` table and of a database table in a DuckDB
+   // warehouse (pairDeltaStatements). Anything else seeds: a database pair
    // table in another warehouse, which its plan already rebuilds in full with
    // a package warning (`materialize-pair-full-refresh`), so this is only a
    // backstop, or a pair whose merge key is not its parent key, which was
@@ -282,6 +283,7 @@ export function incrementalLineage(params: {
       strategy: d.strategy as IncrementalStrategy,
       ...(d.rollingWindow?.length ? { rollingWindow: d.rollingWindow } : {}),
       ...(d.pair ? { pair: d.pair } : {}),
+      ...(d.lookback?.seconds ? { lookbackSeconds: d.lookback.seconds } : {}),
    };
 }
 
@@ -303,7 +305,7 @@ export async function planSourceRefresh(params: {
    lineage: IncrementalLineage;
    /**
     * Where the DML lands and how its rows are produced:
-    * {@link warehouseDeltaTarget} for a colocated source, the storage target for
+    * {@link warehouseDeltaTarget} for a database source, the storage target for
     * a `storage=` one. Its build SQL must be the MANIFEST-RESOLVED form, so a
     * chained source reads its upstream's materialized table; the raw form would
     * silently recompute the upstream.
@@ -329,7 +331,7 @@ export async function planSourceRefresh(params: {
       // No fallback to the local store for a table the caller omitted: a
       // worker's own row may be a generation stale, which is why this mode
       // exists. No entry means the ordinary `no_boundary` seed.
-      ledgerEntry = context.callerLedger.get(ledgerTableKey(lineage)) ?? null;
+      ledgerEntry = context.callerLedger.get(recordedTableKey(lineage)) ?? null;
    } else {
       try {
          ledgerEntry = await context.ledger.getIncrementalLedgerEntry(
@@ -427,7 +429,7 @@ async function advanceLedger(params: {
          packageName: context.packageName,
          physicalTableName: lineage.physicalTableName,
          sourceEntityId: lineage.sourceEntityId,
-         error: errMessage(err),
+         code: errorCodeOf(err),
       });
    }
 }
@@ -456,7 +458,7 @@ export async function resetLedger(
       logger.warn("Failed to clear the covered_through boundary", {
          packageName: context.packageName,
          physicalTableName: lineage.physicalTableName,
-         error: errMessage(err),
+         code: errorCodeOf(err),
       });
    }
 }
@@ -511,7 +513,7 @@ export async function advanceLedgerAfterSeed(params: {
 }
 
 /**
- * Apply the step a plan decided on and report what happened, for both colocated
+ * Apply the step a plan decided on and report what happened, for both database
  * and `storage=` tables.
  *
  * Shared because the ORDER is load-bearing: the DML commits, and only then is the
@@ -535,8 +537,11 @@ export async function applyIncrementalStep(params: {
    durationMs?: number;
    coveredThrough?: WatermarkBound;
    refresh?: "delta" | "none";
+   /** What the late-row check found below the delta (see reportLateRows). */
+   lateRows?: LateRows;
 }> {
    const { context, lineage, step, target } = params;
+   const carried = context.priorLateRows?.get(lineage.sourceEntityId);
    if (step.mode !== "delta") {
       reportIncrementalStep({
          step,
@@ -553,6 +558,8 @@ export async function applyIncrementalStep(params: {
          applied: true,
          coveredThrough: step.coveredThrough,
          refresh: "none",
+         // Nothing was rebuilt, so what was missing still is.
+         ...(carried ? { lateRows: carried } : {}),
       };
    }
 
@@ -611,12 +618,86 @@ export async function applyIncrementalStep(params: {
       physicalTableName: lineage.physicalTableName,
       durationMs,
    });
+   // After the commit and the advance, and outside the apply's duration: the
+   // check reads, never writes, and its failure costs only the report.
+   const lateRows = target.abortSignal?.aborted
+      ? carried
+      : await reportLateRows({
+           target,
+           lineage,
+           step,
+           carried,
+           sourceName: params.sourceName,
+           packageName: context.packageName,
+        });
    return {
       applied: true,
       durationMs,
       coveredThrough: step.coveredThrough,
       refresh: "delta",
+      ...(lateRows ? { lateRows } : {}),
    };
+}
+
+/**
+ * Run the late-row check for a committed delta ({@link countLateRows}) and log
+ * what it found, under {@link INCREMENTAL_LATE_ROWS_CODE}: the rows the source
+ * holds just below the delta's lower bound that the stored table lacks, so the
+ * table undercounts until a rebuild. The window's bounds are watermark values
+ * from the data, so they ride the manifest entry, not the log.
+ */
+async function reportLateRows(params: {
+   target: DeltaTarget;
+   lineage: IncrementalLineage;
+   step: Extract<IncrementalStep, { mode: "delta" }>;
+   /** What earlier deltas found, carried until a rebuild. */
+   carried: LateRows | undefined;
+   sourceName: string;
+   packageName: string;
+}): Promise<LateRows | undefined> {
+   const { lineage, step } = params;
+   const found = await countLateRows({
+      target: params.target,
+      lineage,
+      start: step.start,
+      end: step.end,
+      carried: params.carried,
+   });
+   const at = {
+      packageName: params.packageName,
+      sourceName: params.sourceName,
+      physicalTableName: lineage.physicalTableName,
+   };
+   if (found.error !== undefined) {
+      logger.warn("Could not check an incremental delta for late rows", {
+         ...at,
+         // The code only: the error can quote a watermark value.
+         errorCode: found.errorCode,
+      });
+      return found.lateRows;
+   }
+   if (found.lateRows && found.lateRows !== params.carried) {
+      logger.warn(
+         "An incremental source's table is missing rows stamped below its " +
+            "delta's lower bound",
+         {
+            ...at,
+            code: INCREMENTAL_LATE_ROWS_CODE,
+            count: found.lateRows.count,
+         },
+      );
+   }
+   return found.lateRows;
+}
+
+/**
+ * The manifest entry's `lateRows` field: what the late-row check found below
+ * this run's delta, or nothing when it found nothing or did not run.
+ */
+export function lateRowsFields(
+   lateRows: LateRows | undefined,
+): { lateRows: LateRows } | Record<never, never> {
+   return lateRows ? { lateRows } : {};
 }
 
 /**
@@ -636,10 +717,16 @@ export function reportIncrementalStep(params: {
    const { step, sourceName, packageName, physicalTableName } = params;
    recordIncrementalStep(step.mode, step.reasonCode);
    // Warn: a seed's reason is the only signal that an incremental source is
-   // quietly being rebuilt in full every run. The code only: the free-text
-   // reason can quote a watermark boundary, which is a value from the data,
-   // or a driver's error. The boundary in force is on the manifest entry.
-   logger.warn(
+   // quietly being rebuilt in full every run. A skip because no new data
+   // arrived is the steady state of a schedule: info. The code only: the
+   // free-text reason can quote a watermark boundary, which is a value from
+   // the data, or a driver's error. The boundary in force is on the manifest
+   // entry.
+   const level =
+      step.mode === "skip" && step.reasonCode === "not_advanced"
+         ? "info"
+         : "warn";
+   logger[level](
       step.mode === "seed"
          ? "Rebuilding an incremental source in full"
          : "Skipping an incremental source's refresh",
@@ -665,7 +752,7 @@ function reportDeltaApplied(params: {
    durationMs: number;
 }): void {
    recordIncrementalStep("delta");
-   logger.info("Applied an incremental delta", params);
+   logger.debug("Applied an incremental delta", params);
 }
 
 /**
@@ -704,7 +791,7 @@ export function ledgerFields(
       ledger: {
          connectionName: lineage.connectionName,
          physicalTableName: lineage.physicalTableName,
-         // Absent (not undefined) for a colocated table: absence MEANS colocated
+         // Absent (not undefined) for a database table: absence MEANS database
          // on the wire.
          ...(lineage.storageDestinationName
             ? { storageDestinationName: lineage.storageDestinationName }
@@ -730,7 +817,7 @@ export function ledgerFields(
  * compiled source's schema and query, which the wire plan does not carry.
  */
 export function incrementalRunContext(
-   compiled: CompiledBuildPlan,
+   compiled: RunPlan,
    run: {
       environmentId: string;
       packageName: string;
@@ -818,8 +905,8 @@ export async function refreshOneSourceIncrementally(params: {
    params.manifest.update(sourceEntityId, {
       tableName: target.quotedTablePath,
    });
-   // A colocated table's warehouse column types, read again as a full build
-   // reads them (colocated_native_types.ts): the entry replaces the last
+   // A database table's warehouse column types, read again as a full build
+   // reads them (database_native_types.ts): the entry replaces the last
    // build's, and without them its big-integer columns would answer live.
    const nativeSchema =
       lineage.storageDestinationName === undefined
@@ -845,6 +932,7 @@ export async function refreshOneSourceIncrementally(params: {
       // A delta reports where it advanced to; a skip, the boundary in force.
       ...ledgerFields(lineage, outcome.coveredThrough),
       ...refreshFields(outcome.refresh),
+      ...lateRowsFields(outcome.lateRows),
       ...(nativeSchema?.length ? { nativeSchema } : {}),
    };
 }
@@ -972,6 +1060,7 @@ export function storageRefreshFor(params: {
             coveredThrough: outcome.coveredThrough,
             refresh: outcome.refresh ?? "none",
             readCost: readCost(),
+            ...(outcome.lateRows ? { lateRows: outcome.lateRows } : {}),
          };
       },
       afterSeed: ({ session, quotedTablePath }) =>

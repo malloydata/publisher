@@ -84,10 +84,9 @@ const OPTIONAL_MODEL_FIELDS: ReadonlyArray<[keyof SerializedModel, Expect]> = [
    ["compileDurationMs", "number"],
    ["problems", "array"],
    ["compilationError", "object"],
-   ["authorizeWarnings", "string[]"],
+   ["gateWarnings", "array"],
    ["renderTagResults", "array"],
    ["renderTagResultsDigest", "string"],
-   ["preaggregateCompanion", "object"],
    ["entities", "object"],
    ["governsAccess", "boolean"],
 ];
@@ -293,6 +292,17 @@ export function checkLoadPackageResult(raw: unknown): LoadPackageResult {
    if (typeof raw.loadDurationMs !== "number" || !isRecord(raw.timings)) {
       throw new PackageLoadProtocolError(
          `a load-package-result is missing loadDurationMs or timings`,
+      );
+   }
+   if (
+      raw.refreshedSchemaKeys !== undefined &&
+      !(
+         Array.isArray(raw.refreshedSchemaKeys) &&
+         raw.refreshedSchemaKeys.every((key) => typeof key === "string")
+      )
+   ) {
+      throw new PackageLoadProtocolError(
+         `a load-package-result has refreshedSchemaKeys that are not strings`,
       );
    }
    for (const model of raw.models) decodeSerializedModel(model);

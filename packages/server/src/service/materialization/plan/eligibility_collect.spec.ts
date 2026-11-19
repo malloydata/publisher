@@ -5,7 +5,7 @@ import { describe, expect, it } from "bun:test";
 import { planPackages } from "../../../test_helpers/materialization_fixture";
 import { BASE } from "../../../test_helpers/materialize_spec_models";
 import { computeSourceEntityId } from "./addressing";
-import { deriveBuildPlanOutcome } from "./build_plan";
+import { derivePackagePlan } from "./build_plan";
 
 /**
  * The plan-wide collision checks in `eligibility_collect.ts`: rollups that
@@ -20,7 +20,7 @@ const rollupModel = (
    category: string,
 ) => `##! experimental.persistence
 source: orders is duckdb.sql("SELECT ${id} AS id, ${id * 10} AS amount, '${category}' AS category") extend {
-  #(preaggregate) grain=["category"]
+  #(rollup) grain=["category"]
   measure: total is amount.sum()
 }`;
 
@@ -47,7 +47,7 @@ describe("rollups of same-named bases in two models", () => {
             ),
          );
          expect(new Set(addresses).size).toBe(2);
-         const outcome = deriveBuildPlanOutcome(c, null);
+         const outcome = derivePackagePlan(c, null);
          for (const [id] of rollups) {
             expect(outcome.plan?.refusedSources?.[id]).toBeUndefined();
             expect(outcome.plan?.sources[id]).toBeDefined();
@@ -90,7 +90,7 @@ source: orders is orders_raw extend { dimension: big is amount > 10 }
                refused: expect.objectContaining({
                   name: "orders",
                   reason: "table_name_collision",
-                  tier: "colocated",
+                  tier: "database",
                }),
             },
             {
@@ -104,7 +104,7 @@ source: orders is orders_raw extend { dimension: big is amount > 10 }
                refused: expect.objectContaining({
                   name: "placed",
                   reason: "table_name_collision",
-                  tier: "colocated",
+                  tier: "database",
                }),
             },
          ]);

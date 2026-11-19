@@ -86,7 +86,7 @@
   "loadWarnings": [
     {
       "code": "deprecated-preaggregate-annotation",
-      "message": "Measure total on source orders uses #@ preaggregate, which is deprecated: its v2 spelling is #(preaggregate) grain=[…] (see https://github.com/malloydata/publisher/blob/main/docs/materialization-migration.md). Until you switch, #@ preaggregate still builds and serves its rollups.",
+      "message": "Measure total on source orders uses #@ preaggregate, which is deprecated: its v2 spelling is #(rollup) grain=[…] (see https://github.com/malloydata/publisher/blob/main/docs/materialization-migration.md). Until you switch, #@ preaggregate still builds and serves its rollups.",
       "model": "m.malloy",
       "severity": "warn",
       "subject": "orders"
@@ -131,7 +131,7 @@
         "freshness": null,
         "modelPath": "m.malloy",
         "name": "orders__rollup__m_region__75e7c0f9",
-        "origin": "preaggregate",
+        "origin": "rollup",
         "preaggregate": {
           "baseSourceName": "orders",
           "grainDimensions": [

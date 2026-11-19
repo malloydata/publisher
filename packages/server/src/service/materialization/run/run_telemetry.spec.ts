@@ -20,8 +20,8 @@ import {
    type MetricsHarness,
 } from "../../../test_helpers/metrics_harness";
 import type { BuildInstruction, ManifestEntry } from "../domain/types";
-import { errorCodeOf } from "./error_code";
-import { BilledReadNotCapturedError } from "./materialization_build_session";
+import { errorCodeOf } from "../../../error_code";
+import { BilledReadNotCapturedError } from "./build_attribution";
 import {
    buildKindOf,
    buildKindsByAddress,
@@ -65,27 +65,27 @@ describe("run telemetry vocabulary", () => {
          "auto",
          "orchestrator",
       ]);
-      expect(runTriggerOf({ trigger: "SCHEDULER", orchestrated: true })).toBe(
+      expect(runTriggerOf({ trigger: "scheduler", orchestrated: true })).toBe(
          "schedule",
       );
       expect(
          runTriggerOf({
-            trigger: "ON_DEMAND",
+            trigger: "on_demand",
             runContextTrigger: "scheduler",
             orchestrated: true,
          }),
       ).toBe("schedule");
-      expect(runTriggerOf({ trigger: "ON_DEMAND", orchestrated: true })).toBe(
+      expect(runTriggerOf({ trigger: "on_demand", orchestrated: true })).toBe(
          "orchestrator",
       );
       expect(
          runTriggerOf({
-            trigger: "ON_DEMAND",
+            trigger: "on_demand",
             runContextTrigger: "publish",
             orchestrated: false,
          }),
       ).toBe("auto");
-      expect(runTriggerOf({ trigger: "ON_DEMAND", orchestrated: false })).toBe(
+      expect(runTriggerOf({ trigger: "on_demand", orchestrated: false })).toBe(
          "api",
       );
    });
@@ -147,10 +147,10 @@ describe("run telemetry vocabulary", () => {
          errorCodeOf(
             new MaterializationEligibilityError({
                message: "reads given ORG = 42",
-               reason: "given_in_persisted_query",
+               reason: "reads_given",
             }),
          ),
-      ).toBe("given_in_persisted_query");
+      ).toBe("reads_given");
       const driver = Object.assign(
          new Error(
             "relation \"secret\" does not exist: SELECT 'v' FROM secret",
@@ -192,7 +192,7 @@ describe("run telemetry through the build loop", () => {
    });
 
    /**
-    * Two colocated `#@ persist` sources, built by `buildOneSource`; the first
+    * Two database `#@ persist` sources, built by `buildOneSource`; the first
     * gated by `#(authorize)` when `gateFirst`, so the eligibility gate
     * refuses it.
     */
@@ -285,7 +285,7 @@ describe("run telemetry through the build loop", () => {
       expect(
          await harness.collectCounter("publisher_materialization_build_total", {
             kind: "persist",
-            tier: "colocated",
+            tier: "database",
             outcome: "built",
             failure_class: "none",
          }),
@@ -293,14 +293,14 @@ describe("run telemetry through the build loop", () => {
       expect(
          await harness.collectHistogram(
             "publisher_materialization_build_duration_ms",
-            { kind: "persist", tier: "colocated", method: "full" },
+            { kind: "persist", tier: "database", method: "full" },
          ),
       ).toMatchObject({ count: 2, sum: 500 });
       expect(
          (
             await harness.collectHistogram(
                "publisher_materialization_build_read_bytes",
-               { tier: "colocated" },
+               { tier: "database" },
             )
          ).count,
       ).toBe(2);
@@ -318,7 +318,7 @@ describe("run telemetry through the build loop", () => {
             sourceEntityId: "a1aaaaaaaaaaaaaa",
             sourceName: "s1",
             kind: "persist",
-            tier: "colocated",
+            tier: "database",
             method: "full",
             durationMs: 250,
             rows: 7,
@@ -440,7 +440,7 @@ describe("run telemetry through the build loop", () => {
       );
       expect(points).toContainEqual({
          kind: "persist",
-         tier: "colocated",
+         tier: "database",
          outcome: "failed",
          failure_class: "billed_read_lost",
       });
@@ -492,7 +492,7 @@ describe("run telemetry through the build loop", () => {
       ).toEqual([
          {
             kind: "persist",
-            tier: "colocated",
+            tier: "database",
             outcome: "cancelled",
             failure_class: "none",
          },
@@ -525,13 +525,13 @@ describe("run telemetry through the build loop", () => {
          expect.arrayContaining([
             {
                kind: "persist",
-               tier: "colocated",
+               tier: "database",
                outcome: "refused",
                failure_class: "none",
             },
             {
                kind: "persist",
-               tier: "colocated",
+               tier: "database",
                outcome: "built",
                failure_class: "none",
             },
@@ -585,18 +585,18 @@ describe("run events", () => {
    afterEach(() => captured.restore());
 
    it("logs run.started and run.finished with the spec's fields and levels", () => {
-      const run = new RunTelemetry("run-9", "orchestrated", "pkg");
+      const startedAt = Date.now() - 1200;
+      const run = new RunTelemetry("run-9", "orchestrated", "pkg", startedAt);
       run.started("orchestrator", 3);
       run.tally.built = 2;
       run.tally.failed = 1;
-      run.finished("partial", 1200);
-      run.finished("success", 10);
+      run.finished("partial");
+      run.finished("success");
       run.finished(
          "failed",
-         20,
          Object.assign(new Error("SELECT 'x' failed"), { code: "XX000" }),
       );
-      run.finished("cancelled", 30, new Error("Build cancelled"));
+      run.finished("cancelled", new Error("Build cancelled"));
 
       expect(captured.logs.map((l) => [l.message, l.level])).toEqual([
          ["materialization.run.started", "info"],
@@ -617,12 +617,14 @@ describe("run events", () => {
          packageName: "pkg",
          mode: "orchestrated",
          outcome: "partial",
-         durationMs: 1200,
+         durationMs: expect.any(Number),
          built: 2,
          reused: 0,
          refused: 0,
          failed: 1,
       });
+      // Measured from the run's start, which the telemetry holds.
+      expect(captured.logs[1].meta?.durationMs).toBeGreaterThanOrEqual(1200);
       expect(captured.logs[3].meta).toMatchObject({ code: "XX000" });
       expect(JSON.stringify(captured.logs)).not.toContain("SELECT");
       // A cancellation keeps the code of what ended it: an abort can race a

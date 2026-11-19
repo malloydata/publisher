@@ -188,11 +188,11 @@ with the line and the spelling it meant:
   `#(secure)`, `#(index)`, `#(dbmeta)`) but does not reach it.
 - `materialization-near-miss` (a load failure): a near miss of a materialization route or directive,
   `#@ persist`, `#@ preaggregate`, and, with `PUBLISHER_MATERIALIZE` on, `#(materialize)` and
-  `#(preaggregate)`, so `#(materialise)`, `#(Materialize)` and `#(preaggregates)` are caught. A
+  `#(rollup)`, so `#(materialise)`, `#(Materialize)` and `#(preaggregates)` are caught. A
   declaration that silently builds nothing is a mistake in the model, so it fails the publish and
   the load ([materialization.md](materialization.md#fails-the-load-or-refused-alone)). With
-  `PUBLISHER_MATERIALIZE` off, `#(materialize)` and `#(preaggregate)` spelled exactly are not read,
-  which is the deployment's choice rather than a mistake: `#(preaggregate)` is then an
+  `PUBLISHER_MATERIALIZE` off, `#(materialize)` and `#(rollup)` spelled exactly are not read,
+  which is the deployment's choice rather than a mistake: `#(rollup)` is then an
   `annotation-near-miss` warning reaching for `#@ preaggregate`.
 - `annotation-malformed-route`: a prefix Malloy cannot route at all, such as `#percent` (write
   `# percent` for a tag, or `#(name)` for an app route). Malloy warns about these when it compiles,
@@ -230,6 +230,11 @@ compiles it, and serves it. A package that declares no `version` fails to load. 
   `GET /api/v0/environments/{env}/packages/{pkg}?reload=true` over REST or the `reload_package`
   MCP tool. A reload that fails to compile leaves the files alone and keeps serving the previous
   model.
+- An unversioned (for example watch-mode) package's reload, and a publish, read the columns of
+  each table the package reads from the warehouse again, so a column added, dropped or retyped
+  there shows up. The recompile watch mode runs on a save, and a boot, reuse the columns already
+  fetched: reload the package to see a warehouse change. With versioning on (the default) a
+  version's reload changes nothing, so a column change is picked up by publishing a new version.
 - `--init` deletes `publisher_data/` and publishes everything again from the configured
   locations. Keep your source of truth outside `publisher_data/`.
 

@@ -10,47 +10,30 @@
 
 /** Import-direction pairs (R5 to R10, H5), "<importer> -> <module>": step. */
 export const MATERIALIZATION_IMPORT_ALLOWLIST = {
-   // R8: plan/, run/ and serve/ never import one another.
-   "service/materialization/run/incremental_build.ts -> service/materialization/plan/build_plan":
+   // R8: plan/, run/ and serve/ never import one another. run/ enters plan/
+   // through run_plan.ts alone.
+   "service/materialization/run/run_plan.ts -> service/materialization/plan/addressing":
       "2m",
-   "service/materialization/run/incremental_storage.ts -> service/materialization/plan/build_plan":
+   "service/materialization/run/run_plan.ts -> service/materialization/plan/build_file_generator":
       "2m",
-   "service/materialization/run/instructed_build.ts -> service/materialization/plan/addressing":
+   "service/materialization/run/run_plan.ts -> service/materialization/plan/build_plan":
       "2m",
-   "service/materialization/run/instructed_build.ts -> service/materialization/plan/build_plan":
+   "service/materialization/run/run_plan.ts -> service/materialization/plan/build_plan_compile":
       "2m",
-   "service/materialization/run/instructed_build.ts -> service/materialization/plan/materialization_eligibility":
+   "service/materialization/run/run_plan.ts -> service/materialization/plan/materialization_eligibility":
       "2m",
-   "service/materialization/run/materialization_build_session.ts -> service/materialization/plan/build_plan":
+   "service/materialization/run/run_plan.ts -> service/materialization/plan/materialize_stored_chain":
       "2m",
-   "service/materialization/run/materialization_instructed_run.ts -> service/materialization/plan/build_plan":
-      "2m",
-   "service/materialization/run/materialization_run_support.ts -> service/materialization/plan/build_file_generator":
-      "2m",
-   "service/materialization/run/materialization_run_support.ts -> service/materialization/plan/build_plan":
-      "2m",
-   "service/materialization/run/materialization_run_support.ts -> service/materialization/plan/persist_source_fields":
-      "2m",
-   "service/materialization/run/materialization_service.ts -> service/materialization/plan/build_plan_compile":
-      "2m",
-   "service/materialization/run/run_instructions.ts -> service/materialization/plan/build_plan":
-      "2m",
-   "service/materialization/run/run_instructions.ts -> service/materialization/plan/materialization_eligibility":
-      "2m",
-   "service/materialization/run/source_build.ts -> service/materialization/plan/build_plan":
-      "2m",
-   "service/materialization/run/storage_build_strategy.ts -> service/materialization/plan/materialize_stored_chain":
-      "2m",
-   "service/materialization/run/table_ownership.ts -> service/materialization/plan/persist_source_fields":
+   "service/materialization/run/run_plan.ts -> service/materialization/plan/persist_source_fields":
       "2m",
    "service/materialization/serve/served_copy_serve.ts -> service/materialization/plan/persist_dynamic_terms":
       "2m",
    // R10: outside the module, only index.ts and domain/.
-   "controller/materialization.controller.ts -> service/materialization/run/materialization_run_support":
+   "controller/materialization.controller.ts -> service/materialization/run/build_upstreams":
       "2n",
    "controller/materialization.controller.ts -> service/materialization/run/materialization_service":
       "2n",
-   "controller/storage_destination.controller.ts -> service/materialization/run/materialization_build_session":
+   "controller/storage_destination.controller.ts -> service/materialization/run/storage_admin":
       "2n",
    "main_server.ts -> service/materialization/run/materialization_scheduler":
       "2n",
@@ -58,8 +41,9 @@ export const MATERIALIZATION_IMPORT_ALLOWLIST = {
       "2n",
    "package_load/package_load_worker.ts -> service/materialization/plan/build_plan":
       "2n",
-   "package_load/protocol.ts -> service/materialization/plan/build_plan": "2n",
    "service/catalog_admin.ts -> service/materialization/run/materialization_build_session":
+      "2n",
+   "service/catalog_admin.ts -> service/materialization/run/storage_admin":
       "2n",
    "service/catalog_admin.ts -> service/materialization/run/storage_table_load":
       "2n",
@@ -81,7 +65,6 @@ export const MATERIALIZATION_IMPORT_ALLOWLIST = {
    "service/model_policy.ts -> service/materialization/serve/query_path": "2n",
    "service/package.ts -> service/materialization/package_materialization":
       "2n",
-   "service/package.ts -> service/materialization/plan/build_plan": "2n",
    "service/package.ts -> service/materialization/plan/incremental_policy":
       "2n",
    "service/package.ts -> service/materialization/plan/materialization_config_validation":
@@ -93,6 +76,8 @@ export const MATERIALIZATION_IMPORT_ALLOWLIST = {
    "service/model_serving.ts -> service/materialization/serve/served_copy_serve":
       "2n",
    "service/model.ts -> service/materialization/serve/leg": "2n",
+   "service/query_serving.ts -> service/materialization/serve/read_admission":
+      "2n",
    "service/query_serving.ts -> service/materialization/serve/leg": "2n",
    "service/query_serving.ts -> service/materialization/serve/query_path": "2n",
    "service/query_serving.ts -> service/materialization/serve/rollup_variants":
@@ -112,9 +97,17 @@ export const MATERIALIZATION_IMPORT_ALLOWLIST = {
    "service/materialization/plan/build_plan_compile.ts -> materialization_metrics":
       "2o",
    "service/materialization/plan/eligibility_collect.ts -> logger": "2o",
+   // H6: plan/, serve/, domain/ and text/ read no setting; the shell reads
+   // the switches once and passes them down (2q, the domain model's switches).
+   "service/materialization/plan/addressing.ts -> config": "2q",
+   "service/materialization/plan/build_plan.ts -> config": "2q",
+   "service/materialization/plan/materialization_eligibility.ts -> config":
+      "2q",
+   "service/materialization/plan/rollup_compile.ts -> config": "2q",
+   "service/materialization/plan/rollup_plan.ts -> config": "2q",
+   "service/materialization/serve/rollup_variants.ts -> config": "2q",
    "service/materialization/plan/materialize_compile.ts -> logger": "2o",
    "service/materialization/plan/persist_source_fields.ts -> logger": "2o",
-   "service/materialization/plan/persisted_view_compile.ts -> logger": "2o",
    "service/materialization/plan/rollup_compile.ts -> logger": "2o",
    "service/materialization/serve/rollup_variants.ts -> logger": "2o",
    "service/materialization/serve/served_copy_serve.ts -> logger": "2o",
@@ -160,7 +153,13 @@ export const RATCHET_DIALECT_LITERALS = {
    // Connection types (FederatedSourceType, the storage destination types),
    // whose `postgres`, `snowflake` and `duckdb` share a dialect's spelling.
    "service/materialization/run/materialization_build_session.ts": {
-      count: 7,
+      count: 4,
+      step: "table",
+   },
+   // FederatedSourceType's `snowflake`, the one engine whose session the
+   // build tags, aligns and reads its cost back from.
+   "service/materialization/run/build_attribution.ts": {
+      count: 3,
       step: "table",
    },
    // PASSTHROUGH_SOURCE_TYPES, connection types a `storage=` build reads,
@@ -185,3 +184,133 @@ export const RATCHET_DIALECT_LITERALS = {
 };
 /** Functions over 200 lines, "<file>#<function>": step. */
 export const RATCHET_LONG_FUNCTIONS = {};
+/** Switch reads outside config.ts, the facade and the query pipeline, per file. */
+export const RATCHET_SWITCH_READS = {
+   "service/environment.ts": { count: 2, step: "2q" },
+   "service/materialization/plan/addressing.ts": { count: 3, step: "2q" },
+   "service/materialization/plan/build_plan.ts": { count: 3, step: "2q" },
+   "service/materialization/plan/materialization_eligibility.ts": {
+      count: 4,
+      step: "2q",
+   },
+   "service/materialization/plan/rollup_compile.ts": { count: 1, step: "2q" },
+   "service/materialization/plan/rollup_plan.ts": { count: 2, step: "2q" },
+   "service/materialization/run/build_upstreams.ts": { count: 2, step: "2q" },
+   "service/materialization/run/instructed_build.ts": { count: 1, step: "2q" },
+   "service/materialization/run/manifest_committer.ts": {
+      count: 1,
+      step: "2q",
+   },
+   "service/materialization/run/materialization_instructed_run.ts": {
+      count: 1,
+      step: "2q",
+   },
+   "service/materialization/run/run_instructions.ts": { count: 1, step: "2q" },
+   "service/materialization/run/run_telemetry.ts": { count: 1, step: "2q" },
+   "service/materialization/run/source_build.ts": { count: 1, step: "2q" },
+   "service/materialization/serve/rollup_variants.ts": { count: 2, step: "2q" },
+   "service/materialization/serve_verdicts.ts": { count: 3, step: "2q" },
+};
+/**
+ * Tier decisions outside domain/placement.ts, per file: a tier read off a
+ * record that carries it should read the record's `tier`.
+ */
+export const RATCHET_TIER_DECISIONS = {
+   "service/materialization/plan/materialization_eligibility.ts": {
+      count: 1,
+      step: "2q",
+   },
+   "service/materialization/plan/eligibility_collect.ts": {
+      count: 2,
+      step: "2q",
+   },
+   "service/materialization/plan/refusal_key.ts": { count: 1, step: "2q" },
+   "service/materialization/plan/rollup_plan.ts": { count: 2, step: "2q" },
+   "service/materialization/run/instructed_build.ts": { count: 2, step: "2q" },
+   "service/materialization/run/materialization_service.ts": {
+      count: 2,
+      step: "2q",
+   },
+   "service/materialization/run/run_instructions.ts": { count: 3, step: "2q" },
+   "service/materialization/run/source_build.ts": { count: 1, step: "2q" },
+   "service/materialization/serve/leg.ts": { count: 4, step: "2q" },
+   "service/materialization/serve/query_path.ts": { count: 3, step: "2q" },
+   "service/materialization/serve/serve_verdict.ts": { count: 1, step: "2q" },
+   "service/model.ts": { count: 1, step: "2q" },
+};
+/** Table-name comparisons outside domain/physical_table.ts, per file. */
+export const RATCHET_TABLE_IDENTITY = {
+   "service/materialization/plan/eligibility_collect.ts": {
+      count: 1,
+      step: "2q",
+   },
+   "service/materialization/run/materialization_instructed_run.ts": {
+      count: 1,
+      step: "2q",
+   },
+   "service/materialization/run/reclaimer.ts": { count: 1, step: "2q" },
+   "service/materialization/run/warehouse_sql.ts": { count: 1, step: "2q" },
+   "service/materialization/serve/query_path.ts": { count: 1, step: "2q" },
+};
+/** Stored-type regexes outside stored_column_types.ts, per file. */
+export const RATCHET_STORED_TYPE_PATTERNS = {
+   "service/materialization/domain/admission.ts": { count: 1, step: "2r" },
+   "service/materialization/domain/gate_policy.ts": { count: 1, step: "2r" },
+   "service/materialization/serve/bind.ts": { count: 4, step: "2r" },
+   "service/materialization/serve/leg.ts": { count: 1, step: "2r" },
+   "service/materialization/serve/rollup_variants.ts": { count: 1, step: "2r" },
+   "service/materialization/serve/served_copy_serve.ts": {
+      count: 2,
+      step: "2r",
+   },
+};
+/**
+ * SQL and connection reads in serve/, per file: the collation probe (behind
+ * its port, a file move away from the shell) and the served copy's runtime.
+ */
+export const RATCHET_SERVE_IO = {
+   "service/materialization/serve/gate_collation.ts": { count: 10, step: "2r" },
+   "service/materialization/serve/served_copy_config.ts": {
+      count: 2,
+      step: "2r",
+   },
+};
+/** Gate-policy and admitRead imports outside their owner, "<file>#<name>": step. */
+export const RATCHET_ADMISSION_IMPORTS = {
+   // The plan's build-time gate rule reads the table rule directly.
+   "service/materialization/plan/materialization_eligibility.ts#tableKeepsGates":
+      "2r",
+   "service/materialization/plan/rollup_plan.ts#tableKeepsGates": "2r",
+};
+/**
+ * Unions and `as const` lists of kind, tier or leg words written out outside
+ * domain/vocabulary.ts, per file: each derives from the vocabulary instead.
+ */
+export const RATCHET_VOCABULARY_UNIONS = {
+   "materialization_metrics.ts": { count: 2, step: "2q" },
+   "service/materialization/domain/gate_policy.ts": { count: 2, step: "2q" },
+   "service/materialization/domain/table_plans.ts": { count: 3, step: "2q" },
+   "service/materialization/plan/materialization_eligibility.ts": {
+      count: 3,
+      step: "2q",
+   },
+   "service/materialization/plan/materialize_plan.ts": { count: 2, step: "2q" },
+   "service/materialization/plan/refusal_key.ts": { count: 1, step: "2q" },
+   "service/materialization/run/build_upstreams.ts": { count: 2, step: "2q" },
+   "service/materialization/run/materialization_instructed_run.ts": {
+      count: 1,
+      step: "2q",
+   },
+   "service/materialization/serve/gate_collation.ts": { count: 1, step: "2q" },
+   "service/materialization/serve/leg.ts": { count: 1, step: "2q" },
+   "service/materialization/serve/query_path.ts": { count: 3, step: "2q" },
+   "service/materialization/serve/serve_verdict.ts": { count: 4, step: "2q" },
+   "service/materialization/serve/view_variants.ts": { count: 2, step: "2q" },
+   "service/materialization/serve_verdicts.ts": { count: 1, step: "2q" },
+};
+/**
+ * Names docs/materialization-v2-plan.md says were deleted outright that the
+ * tree still holds, name: the planned step that deletes them. A name kept for
+ * good is not a deleted name and is not listed.
+ */
+export const DELETED_NAMES_PENDING = {};

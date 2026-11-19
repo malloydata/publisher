@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * Compiles the generated `#(preaggregate)` build companion (see rollup_plan.ts),
+ * Compiles the generated `#(rollup)` build companion (see rollup_plan.ts),
  * as materialize_compile.ts compiles the `#(materialize)` one: the text is
  * served from an overlay at a URL beside the declaring model, so its `import`
  * resolves while it never shows up in `getModelPaths()`, the API or the
@@ -17,19 +17,19 @@
  * rollup has none). The content address is unchanged by the blanking: Malloy
  * keys a target on its fully inlined SQL.
  *
- * **Built over a colocated base's stored table when a run holds it.** A
- * colocated rollup over a colocated `#@ persist` base has a second compile,
+ * **Built over a database base's stored table when a run holds it.** A
+ * database rollup over a database `#@ persist` base has a second compile,
  * made only when a run asks ({@link GeneratedRollups.overStoredBases}), with
  * the base's own `#@ persist` kept: the run builds the rollup from that
  * source, at the same address, only when its build manifest holds the base's
  * table (instructed_build.ts), so the build reads the table, not the
  * warehouse. The rows are the base's rows either way.
  *
- * A colocated rollup over a colocated `#(materialize)` base is offered the
+ * A database rollup over a database `#(materialize)` base is offered the
  * same, in the same second compile: Malloy sees no `#@ persist` on the base,
  * so the companion imports the base from a copy of its file that re-roots it
  * on its generated build source (as an extension's build copy re-roots its
- * parent, P10), beside the `#(materialize)` companion's own files. The
+ * parent), beside the `#(materialize)` companion's own files. The
  * build source is persisted, so the build reads the base's table through the
  * run's build manifest. The re-root moves the rollup's SQL, so the run checks
  * the build source, not the rollup, against the plan's addresses.
@@ -40,13 +40,16 @@ import type {
    ModelMaterializer,
    Runtime,
 } from "@malloydata/malloy";
+import { errorCodeOf } from "../../../error_code";
 import * as path from "path";
 import { getMaterializeEnabled } from "../../../config";
 import { pathToFileURL } from "url";
 import { logger } from "../../../logger";
 import { queryGivenUsageIds } from "../../governance/ir/prepared_query";
 import {
+   companionFailure,
    companionOmissions,
+   type CompanionFailure,
    declaredInModel,
    GeneratedFiles,
    type SynthesizedRuntimeFactory,
@@ -70,7 +73,7 @@ import {
    rollupBuildCopyText,
 } from "../text/read_text";
 import { overlayKey } from "../../overlay_key";
-import { PREAGGREGATE_NOT_BUILT_CODE } from "../../annotation_reader";
+import { ROLLUP_NOT_BUILT_CODE } from "../../annotation_reader";
 import type { PersistSource } from "@malloydata/malloy";
 import {
    ownLevelNotes,
@@ -163,10 +166,13 @@ interface StoredBaseBuild {
 
 /**
  * The `storage=` rollups that may build over their base's stored table: a
- * rollup over a base whose own notes declare `#@ persist` in the same
- * destination, read from the base itself (no build copy, so no given-reading
- * term is left out of the base's rows). Each with the one-rollup build file
- * that a run compiles in the destination over the base re-rooted on its
+ * rollup over a base stored in the same destination, read from the base
+ * itself (no build copy, so no given-reading term is left out of the base's
+ * rows), and with no gate. The base's own notes declare `#@ persist` there, or a
+ * `#(materialize)` there that `materialized` planned as a plain table (not a
+ * pair table, which holds a row per pair, and with no read-time term, whose
+ * rows its source filters again at read). Each with the one-rollup build
+ * file that a run compiles in the destination over the base re-rooted on its
  * table, which reads nothing but that table (storage_build_strategy.ts).
  */
 function storedBaseBuildsOf(
@@ -174,27 +180,23 @@ function storedBaseBuildsOf(
    plans: readonly RollupVariantPlan[],
    companionHref: string,
    modelFileName: string,
+   materialized: MaterializedBases | undefined,
 ): Map<string, StoredBaseBuild> {
    const out = new Map<string, StoredBaseBuild>();
    for (const plan of plans) {
       if (plan.storage === undefined || readsBuildCopy(plan)) continue;
+      // A gated base's table holds every caller's rows: a rollup grouped
+      // from it is never offered, whatever the gate policy plans.
+      if (plan.baseGated) continue;
       const def = map.node(plan.baseSourceID)?.def as
          | { annotations?: AnnotationsDef }
          | undefined;
-      const own = ownLevelNotes(def?.annotations).filter(
-         (n) => routeOfNote(n.text) === "@",
-      );
-      if (!notesDeclarePersist(own)) continue;
-      const tag = readNotesIfAny(own, "@");
-      const placed = tag ? placementOf(tag, "persist") : undefined;
-      if (
-         !placed ||
-         !("placement" in placed) ||
-         placed.placement.tier !== "storage" ||
-         placed.placement.destination !== plan.storage
-      ) {
-         continue;
-      }
+      const notes = ownLevelNotes(def?.annotations);
+      const own = notes.filter((n) => routeOfNote(n.text) === "@");
+      const stored = notesDeclarePersist(own)
+         ? persistStoredIn(own)
+         : materializeStoredIn(notes, plan.baseSourceID, materialized);
+      if (stored === undefined || stored !== plan.storage) continue;
       const text = generateRollupBuildFile([plan], modelFileName);
       if (text === undefined) continue;
       out.set(`${plan.rollupSourceName}@${companionHref}`, {
@@ -205,10 +207,48 @@ function storedBaseBuildsOf(
    return out;
 }
 
+/** The destination a base's own `#@ persist` notes store it in, if any. */
+function persistStoredIn(own: readonly { text: string }[]): string | undefined {
+   const tag = readNotesIfAny(own, "@");
+   const placed = tag ? placementOf(tag, "persist") : undefined;
+   return placed && "placement" in placed && placed.placement.tier === "storage"
+      ? placed.placement.destination
+      : undefined;
+}
+
+/**
+ * The destination a base's own `#(materialize)` notes store it in, when the
+ * companion planned it there as a plain table: no pair table, no table of
+ * several inlined paths, no read-time term. Undefined otherwise.
+ */
+function materializeStoredIn(
+   notes: readonly { text: string }[],
+   baseSourceID: string,
+   materialized: MaterializedBases | undefined,
+): string | undefined {
+   const own = notes.filter((n) => routeOfNote(n.text) === "materialize");
+   if (own.length === 0 || !materialized) return undefined;
+   const tag = readNotesIfAny(own, "materialize");
+   const placed = tag ? placementOf(tag) : undefined;
+   if (!placed || !("placement" in placed)) return undefined;
+   if (placed.placement.tier !== "storage") return undefined;
+   const plan = materialized.plans.find((p) => p.sourceID === baseSourceID);
+   if (
+      !plan ||
+      plan.pair ||
+      plan.pairBlocks ||
+      plan.persist.storage !== placed.placement.destination ||
+      (plan.readTimeTerms ?? []).length > 0
+   ) {
+      return undefined;
+   }
+   return plan.persist.storage;
+}
+
 /**
  * The rollups that may read their base's stored table, and what their second
- * compile needs: a colocated rollup over a base whose own notes declare a
- * colocated `#@ persist` (its notes kept, `keep`), or a colocated
+ * compile needs: a database rollup over a base whose own notes declare a
+ * database `#@ persist` (its notes kept, `keep`), or a database
  * `#(materialize)` that `materialized` planned as a plain table (its copy,
  * `stored`, by the base's declared name). A rollup in a `storage=`
  * destination, or over a base built into one, reads the author's rows as
@@ -252,7 +292,7 @@ function overStoredBaseNotes(
       const tag = readNotesIfAny(own, "@");
       const placed = tag ? placementOf(tag, "persist") : undefined;
       if (!placed || !("placement" in placed)) continue;
-      if (placed.placement.tier !== "colocated") continue;
+      if (placed.placement.tier !== "database") continue;
       const spans = own.flatMap((n) => {
          const at = (n as { at?: NotePosition }).at;
          return at ? [noteSpanKey(at.url, at.range)] : [];
@@ -266,7 +306,7 @@ function overStoredBaseNotes(
 
 /**
  * The base `baseSourceID` as a `#(materialize)` base whose stored table a
- * rollup may build from, or undefined: its own notes declare a colocated
+ * rollup may build from, or undefined: its own notes declare a database
  * `#(materialize)` (read by declaration.ts), and the companion planned it as
  * a plain table in its own warehouse, declared in this model. A pair table
  * holds a row per pair, not the base's rows, and a table with read-time
@@ -285,7 +325,7 @@ function storedMaterializeBase(
    const tag = readNotesIfAny(own, "materialize");
    const placed = tag ? placementOf(tag) : undefined;
    if (!placed || !("placement" in placed)) return undefined;
-   if (placed.placement.tier !== "colocated") return undefined;
+   if (placed.placement.tier !== "database") return undefined;
    const plan = materialized.plans.find((p) => p.sourceID === baseSourceID);
    if (
       !plan ||
@@ -304,7 +344,7 @@ function storedMaterializeBase(
       return undefined;
    }
    // Where the build source is declared: the companion, or, with a chain
-   // (P10), its level's file (build_file_generator.ts).
+   //, its level's file (build_file_generator.ts).
    const levels = chainLevels(materialized.plans);
    const modelName = path.basename(modelFile);
    const importFrom = [...levels.values()].some((level) => level > 0)
@@ -398,8 +438,8 @@ function rollupBuildCopies(
          refused.push({
             plan,
             tier: "unservable",
-            code: PREAGGREGATE_NOT_BUILT_CODE,
-            message: `#(preaggregate) rollup of source "${plan.baseSourceName}" at (${plan.grainDimensions.join(", ")}) is not built, so its measures are served live: ${made.reason}.`,
+            code: ROLLUP_NOT_BUILT_CODE,
+            message: `#(rollup) rollup of source "${plan.baseSourceName}" at (${plan.grainDimensions.join(", ")}) is not built, so its measures are served live: ${made.reason}.`,
             sourceName: plan.baseSourceName,
             refused: measureRefusalKey(
                plan.baseSourceID,
@@ -407,9 +447,8 @@ function rollupBuildCopies(
                undefined,
                // A given-reading `where:` the build copy could not leave
                // out, as `#(materialize)` names it.
-               plan.readTimeTerms?.length
-                  ? "given_in_persisted_query"
-                  : "hidden_field",
+               plan.readTimeTerms?.length ? "reads_given" : "hidden_field",
+               { grain: plan.grainDimensions, storage: plan.storage },
             ),
          });
       }
@@ -443,6 +482,8 @@ export async function tryCompileRollupCompanion(args: {
    refused: RollupRefusal[];
    /** The rollups a failure left out of the plan (see omitted_sources). */
    omitted?: Omission[];
+   /** Why the companion failed, for the caller to report. */
+   failure?: CompanionFailure;
 }> {
    const modelFile = path.resolve(args.packagePath, args.modelPath);
    const companionHref = rollupCompanionURL(
@@ -458,8 +499,8 @@ export async function tryCompileRollupCompanion(args: {
          {
             packageRelativeSourceID: (id) =>
                packageRelativeSourceID(args.packagePath, id),
-            // v1 lines are always planned; `#(preaggregate)` only with its switch.
-            readsPreaggregateDeclarations: getMaterializeEnabled(),
+            // v1 lines are always planned; `#(rollup)` only with its switch.
+            readsRollupDeclarations: getMaterializeEnabled(),
          },
          declaredInModel(modelFile, true),
       );
@@ -494,12 +535,12 @@ export async function tryCompileRollupCompanion(args: {
       if (!overlay) {
          // Building over the author's files as they are would chain a rollup
          // onto its base's table; build nothing instead.
-         logger.error(
-            "A #(preaggregate) companion was not built: a `#@` line of the author's files could not be left out of it",
-            { modelPath: args.modelPath },
-         );
          return {
             refused,
+            failure: {
+               kind: "rollup_blanking",
+               error: "a `#@` line of the author's files could not be set aside",
+            },
             omitted: companionOmissions("rollup_blanking", {
                file: companionHref,
                names: plannedNames,
@@ -549,20 +590,15 @@ export async function tryCompileRollupCompanion(args: {
                planned.plans,
                url.href,
                path.basename(args.modelPath),
+               args.materialized,
             ),
          },
          refused,
       };
    } catch (error) {
-      logger.error(
-         "Failed to plan or compile the generated #(preaggregate) companion",
-         {
-            modelPath: args.modelPath,
-            error: error instanceof Error ? error.message : String(error),
-         },
-      );
       return {
          refused,
+         failure: companionFailure("rollup", error),
          omitted: companionOmissions("rollup", {
             file: companionHref,
             names: plannedNames,
@@ -635,7 +671,7 @@ async function compileOverStoredBases(args: {
             {
                modelPath: args.modelPath,
                base: name,
-               error: error instanceof Error ? error.message : String(error),
+               code: errorCodeOf(error),
             },
          );
          stored.delete(name);
@@ -654,7 +690,7 @@ async function compileOverStoredBases(args: {
          "The rollups over #(materialize) bases build from the warehouse: their companion over the bases' stored tables did not compile",
          {
             modelPath: args.modelPath,
-            error: error instanceof Error ? error.message : String(error),
+            code: errorCodeOf(error),
          },
       );
       out.clear();
@@ -733,7 +769,7 @@ function warnWarehouse(modelPath: string, error: unknown): void {
       "The rollups of a model build from the warehouse: their companion over the bases' stored tables did not compile",
       {
          modelPath,
-         error: error instanceof Error ? error.message : String(error),
+         code: errorCodeOf(error),
       },
    );
 }
@@ -768,10 +804,10 @@ export function parentKeyCheckCompiler(materializer: {
 }
 
 /**
- * Attach to each colocated rollup in `plans` the primary key checks of the
+ * Attach to each database rollup in `plans` the primary key checks of the
  * query sources that read it through a join read as a join_many
  * (`readsAsJoinMany`), each compiled once by its `compile` (the author's
- * model that names the source). To each rollup, colocated or in a storage
+ * model that names the source). To each rollup, database or in a storage
  * destination, also attach the check of its base's own primary key when a
  * join reaches the base on another column (`joinedKeys`, see
  * {@link JoinedKeyNeed}): the join-to-rollup branch serves a count, sum or
@@ -801,11 +837,11 @@ export async function compileParentKeyChecks(
       if (sql === undefined) {
          sql = compile(parentKeyCheckQuery(name, keyColumn)).catch((error) => {
             logger.warn(
-               "A source's primary key check did not compile; queries it answers through a #(preaggregate) rollup read through a join are answered live",
+               "A source's primary key check did not compile; queries it answers through a #(rollup) rollup read through a join are answered live",
                {
                   source: name,
                   keyColumn,
-                  error: error instanceof Error ? error.message : String(error),
+                  code: errorCodeOf(error),
                },
             );
             return undefined;
@@ -820,7 +856,7 @@ export async function compileParentKeyChecks(
       const checks: ParentKeyCheck[] = [];
       const seen = new Set<string>();
       // A query source's key is checked over its rows where the rollup is
-      // colocated; in a destination, over its stored table there
+      // database; in a destination, over its stored table there
       // (`storedKeyChecksOf`).
       for (const { need, compile } of plan.storage === undefined ? needs : []) {
          if (seen.has(need.sourceID) || !readsAsJoinMany(plan, need)) continue;
@@ -864,7 +900,7 @@ export async function compileParentKeyChecks(
 }
 
 /**
- * Compile each rollup's key check (known limitation 29, see
+ * Compile each rollup's key check (see
  * `rollupKeyCheckQuery`) against the companion, onto its plan. A check that
  * does not compile is left off, logged: its rollup's join_one is then never
  * known unique, and the join-to-rollup branch declines it.
@@ -882,10 +918,10 @@ async function compileRollupKeyChecks(
          const sql = await materializer.loadQuery(text).getSQL();
          plan.keyCheck = { keyColumn, sql };
       } catch (error) {
-         logger.warn("A #(preaggregate) rollup's key check did not compile", {
+         logger.warn("A #(rollup) rollup's key check did not compile", {
             modelPath,
             rollup: plan.rollupSourceName,
-            error: error instanceof Error ? error.message : String(error),
+            code: errorCodeOf(error),
          });
       }
    }

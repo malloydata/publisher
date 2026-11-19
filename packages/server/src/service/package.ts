@@ -4,7 +4,7 @@
 import { quotedIdentifier, quotedPath, stringLiteral } from "./malloy_text";
 import { INCREMENTAL_NO_MERGE_KEY_CODE } from "./materialization/plan/incremental_policy";
 import { recordConnectionType } from "./connection_type";
-import { nearMissGateLines } from "./materialization";
+import { withNameProblems, withRetainedAliases } from "./materialization";
 import * as fs from "fs/promises";
 import * as path from "path";
 import { pathToFileURL } from "url";
@@ -62,6 +62,7 @@ import {
    ServiceUnavailableError,
 } from "../errors";
 import { applyExtensionSessionSettings } from "./connection";
+import { authorSqlRefusals, sandboxedDuckDBOptions } from "./duckdb_lockdown";
 import { closeMalloyConfig, ownDuckDBConnection } from "./duckdb_hard_close";
 import { formatDuration, logger } from "../logger";
 import {
@@ -104,7 +105,7 @@ import type {
    ChainBuildRequest,
    ChainBuildText,
 } from "./materialization/domain/chain_build";
-import type { KeptTable } from "./materialization/domain/types";
+import type { KeptTable, LateRows } from "./materialization/domain/types";
 import {
    confinedPackagePath,
    errMessage,
@@ -114,9 +115,10 @@ import {
 import { packageResource } from "../api_resource";
 import { isPackageInlineFieldsEnabled } from "../config";
 import type {
-   ColocatedSourceEligibility,
+   DatabaseSourceEligibility,
+   PersistNameProblem,
    SourceEligibility,
-} from "./materialization/plan/build_plan";
+} from "./materialization/domain/package_plan";
 import {
    PackageMaterialization,
    type PackageMaterializationView,
@@ -208,10 +210,7 @@ import {
    type ApiSecureGivenSummary,
    summarizeSecureGivens,
 } from "./secure_givens";
-import {
-   persistNameProblems,
-   type PersistNameProblem,
-} from "./materialization/plan/persist_annotation_validation";
+import { persistNameProblems } from "./materialization/plan/persist_annotation_validation";
 import {
    applyLoadGates,
    assertOutcomeStagesAvailable,
@@ -435,10 +434,10 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    protected set sourceEligibility(eligibility: SourceEligibility | undefined) {
       this.mz.plan.sourceEligibility = eligibility;
    }
-   protected set colocatedSourceEligibility(
-      eligibility: ColocatedSourceEligibility | undefined,
+   protected set databaseSourceEligibility(
+      eligibility: DatabaseSourceEligibility | undefined,
    ) {
-      this.mz.plan.colocatedSourceEligibility = eligibility;
+      this.mz.plan.databaseSourceEligibility = eligibility;
    }
    // Non-fatal render-tag findings across the models; a bad tag does not fail
    // the load, so this is its signal.
@@ -450,7 +449,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
     * ({@link compileKeyOf}); `bound` the whole entries last bound (freshness
     * and schemas too), undefined while none has been; `quoted` the entries
     * the compile quoted, from `quotedFrom`. Every other part is compared by
-    * identity: any other reload, colocated bind or plan change since makes
+    * identity: any other reload, database bind or plan change since makes
     * the next rebind recompile.
     */
    private reloadedFor:
@@ -460,7 +459,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
            quotedFrom: string;
            quoted: FreshnessManifest;
            models: Map<string, Model>;
-           colocated: unknown;
+           database: unknown;
            buildPlan: unknown;
            connectionEdits: number;
         }
@@ -947,14 +946,20 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
           */
          versionId?: string;
          /**
-          * The colocated entries of the manifest the package is about to be
+          * The database entries of the manifest the package is about to be
           * bound to, read while it compiles: its models are hydrated over
           * them, so the bind that follows (`reloadAllModels` with
           * `ifChanged`) binds without compiling the package a second time.
           * Undefined, or a read that fails, loads it as with none; nothing is
           * bound until that bind.
           */
-         colocated?: Promise<FreshnessManifest | undefined>;
+         database?: Promise<FreshnessManifest | undefined>;
+         /**
+          * An explicit refresh (a reload, a publish): every table and SQL
+          * schema the package reads is fetched again rather than read from
+          * the schema caches, which keep it after.
+          */
+         refreshSchemas?: boolean;
       } = {},
    ): Promise<Package> {
       return withSpan(
@@ -976,7 +981,8 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
                   cleanupDirectoryOnFailure,
                   options.dryRun === true,
                   options.versionId,
-                  options.colocated,
+                  options.database,
+                  options.refreshSchemas === true,
                ),
             ),
       );
@@ -990,7 +996,8 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       cleanupDirectoryOnFailure: boolean,
       dryRun: boolean,
       versionId?: string,
-      colocated?: Promise<FreshnessManifest | undefined>,
+      database?: Promise<FreshnessManifest | undefined>,
+      refreshSchemas: boolean = false,
    ): Promise<Package> {
       assertSafeEnvironmentPath(packagePath);
       const startTime = performance.now();
@@ -1023,7 +1030,8 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             manifestValidationTime,
             dryRun,
             versionId,
-            colocated,
+            database,
+            refreshSchemas,
          );
       } catch (error) {
          // No caller ever holds a package whose load failed, so its own
@@ -1423,7 +1431,8 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       manifestValidationTime: number,
       dryRun: boolean,
       versionId?: string,
-      colocated?: Promise<FreshnessManifest | undefined>,
+      database?: Promise<FreshnessManifest | undefined>,
+      refreshSchemas: boolean = false,
    ): Promise<Package> {
       const pool = getPackageLoadPool();
       const dispatchTime = performance.now();
@@ -1436,16 +1445,16 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             malloyConfig,
             defaultConnectionName: "duckdb",
             computeBuildPlan: true,
-            withPreaggregateCompanions: true,
             withEntities: true,
             ...(versionId !== undefined ? { publishedVersion: true } : {}),
+            ...(refreshSchemas ? { refreshSchemas: true } : {}),
          }),
       );
-      const [outcome, databases, colocatedEntries] = await Promise.all([
+      const [outcome, databases, databaseEntries] = await Promise.all([
          workerOutcome,
          Package.readDatabases(packagePath, malloyConfig),
          // The bind that follows reports a failed read; this load serves live.
-         colocated?.catch(() => undefined),
+         database?.catch(() => undefined),
       ]);
       assertOutcomeStagesAvailable(outcome);
       const workerDoneTime = performance.now();
@@ -1460,17 +1469,19 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
               quoted: FreshnessManifest;
            }
          | undefined;
-      if (colocatedEntries && Object.keys(colocatedEntries).length > 0) {
+      if (databaseEntries && Object.keys(databaseEntries).length > 0) {
          compiledFor = {
-            key: Package.compileKeyOf(colocatedEntries),
-            requested: JSON.stringify(colocatedEntries),
+            key: Package.compileKeyOf(databaseEntries),
+            requested: JSON.stringify(databaseEntries),
             quoted: await Package.quoteTableNames(
                packageName,
                (connectionName) =>
                   malloyConfig.connections.lookupConnection(connectionName),
-               colocatedEntries,
+               databaseEntries,
                Package.planConnectionsOf(
-                  outcome.buildPlan?.ok ? outcome.buildPlan.outcome.plan : null,
+                  outcome.buildPlan?.ok
+                     ? outcome.buildPlan.packagePlan.plan
+                     : null,
                ),
             ),
          };
@@ -1586,7 +1597,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          pkg.refreshServingIdentity();
 
          buildPlanMs = await pkg.mz.applyLoadBuildPlan(outcome.buildPlan);
-         // Before any bind, so a colocated rollup bound later is routed.
+         // Before any bind, so a database rollup bound later is routed.
          pkg.mz.pushServedCopyContextToModels();
 
          await applyLoadGates(pkg);
@@ -1594,7 +1605,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          await pkg.computeEntities(Package.entityPlansOf(outcome));
          entitiesMs = performance.now() - entitiesStarted;
          pkg.logEmptyDiscoveryWarnings();
-         // Compiled against them, bound to none yet (see `colocated`).
+         // Compiled against them, bound to none yet (see `database`).
          if (compiledFor) {
             pkg.reloadedFor = pkg.reloadKey(compiledFor.key, undefined, {
                from: compiledFor.requested,
@@ -1671,8 +1682,27 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
     * tables drops their bound key checks first (see
     * PackageMaterialization.forgetKeyUniqueness).
     */
+   /** The host port's `boundLateRows` (PackageMaterialization.boundLateRows). */
+   public boundLateRows(): ReadonlyMap<string, LateRows> {
+      return this.mz.boundLateRows();
+   }
+
    public forgetKeyUniqueness(sourceEntityIds: Iterable<string>): void {
       this.mz.forgetKeyUniqueness(sourceEntityIds);
+   }
+
+   /** The host port's `boundTableNames`: every database table bound now. */
+   public boundTableNames(): string[] {
+      const names = new Set<string>();
+      for (const entries of [
+         this.mz.getBuildManifestEntries(),
+         this.mz.boundDatabaseEntries(),
+      ]) {
+         for (const entry of Object.values(entries ?? {})) {
+            if (entry.tableName) names.add(entry.tableName);
+         }
+      }
+      return [...names];
    }
 
    /**
@@ -2126,10 +2156,12 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          ...this.mz.databaseTableUnreadWarnings(),
          ...this.mz.servedCopyWarnings(),
          ...this.mz.repeatedJoinOneKeyWarnings(),
+         ...this.mz.lateRowWarnings(),
          ...this.mz.keptTableWarnings(),
          ...this.mz.annotationFindingWarnings(),
          ...this.annotationNearMissWarnings(),
          ...this.mz.persistRefusalWarnings(),
+         ...this.mz.asOfBuildWarnings(),
          // One verdict pass: unreachable, and the deployment facts (P13).
          ...this.mz.verdictWarnings(),
          // Not in exploresWarnings: an import-only file must not block publish.
@@ -2137,6 +2169,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          ...deprecatedFormatWarnings(this.models),
          ...this.classificationWarningsMemoized(),
          ...this.joinBypassWarnings(),
+         ...this.gateLoadWarnings(),
          ...ambiguousDashboardNameWarnings(this),
          // The 404s a broken surface causes name models that are not broken.
          ...this.brokenSurfaceWarnings(),
@@ -2156,7 +2189,9 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          }),
       ];
       if (allWarnings.length > 0) {
-         metadata.warnings = allWarnings;
+         // A renamed code is repeated under the code 0.14.0 shipped, this
+         // release only.
+         metadata.warnings = withRetainedAliases(allWarnings);
       }
       return metadata;
    }
@@ -2351,6 +2386,20 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       return messages.join("\n");
    }
 
+   /**
+    * Author SQL in this package's models that would not run read-only on a
+    * DuckDB connection, one line per refusal (duckdb_lockdown.ts).
+    */
+   public async formatAuthorSqlRefusals(): Promise<string> {
+      const lines: string[] = [];
+      for (const [modelPath, model] of this.models) {
+         lines.push(
+            ...(await authorSqlRefusals(modelPath, model.getModelDef())),
+         );
+      }
+      return lines.join("\n");
+   }
+
    /** The async input of {@link formatCarriesCeilingLeaks}, prepared before a listing is judged. */
    public prepareCeilingQueries(): Promise<PreparedCeilingQueries> {
       return prepareCeilingQueries(this.models);
@@ -2415,53 +2464,48 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
     * and the load.
     */
    public formatInvalidAnnotations(): string {
-      return this.withNameProblems([
+      return withNameProblems(this.persistNameProblems, [
          this.mz.formatInvalidAnnotations(),
-         ...this.materializationNearMissLines(),
+         ...this.mz.nearMissLines(),
       ]);
-   }
-
-   /** A misspelled materialization route or directive, one line each. */
-   private materializationNearMissLines(): string[] {
-      return [...this.models].flatMap(([modelPath, model]) =>
-         nearMissGateLines(modelPath, model.annotationNearMisses?.() ?? []),
-      );
    }
 
    /**
     * The load gate's text: every invalid materialization annotation in the
     * package, one line each with its code, or "" when it is valid. The load
-    * fails with it; a run over the package's files and a re-derivation read
-    * the same text off the plan they derive (plan/load_gate_text.ts).
+    * fails with it; a run over the package's files, a re-derivation and a
+    * package compile read the same text off the plan they derive
+    * (plan/load_gate_text.ts).
     */
    public formatLoadGateText(): string {
-      return this.withNameProblems([
-         this.mz.formatLoadGateText(),
-         ...this.materializationNearMissLines(),
-      ]);
+      return this.mz.loadGateText(this.persistNameProblems);
    }
 
    /**
-    * `text`'s lines with the raw-text `name=` problems first, less the plan's
-    * own line for a name the raw text already reports unsafe: one line per
-    * mistake.
+    * One warning per non-fatal gate finding a model's load made: a gate an
+    * entry point cannot express (it denies every request), or one that reads
+    * no given or negates a membership test. Logged at load as well.
     */
-   private withNameProblems(text: string[]): string {
-      const unsafe = this.persistNameProblems.flatMap((p) =>
-         p.unsafeValue !== undefined
-            ? [`its name= "${p.unsafeValue}" is not a plain identifier path`]
-            : [],
-      );
-      return [
-         ...this.persistNameProblems.map((p) => p.line),
-         ...text
-            .filter(Boolean)
-            .join("\n")
-            .split("\n")
-            .filter((line) => !unsafe.some((u) => line.includes(u))),
-      ]
-         .filter(Boolean)
-         .join("\n");
+   private gateLoadWarnings(): ApiPackageWarning[] {
+      // A source several models import is checked in each; it is reported
+      // once, on the first model that found it.
+      const seen = new Set<string>();
+      const warnings: ApiPackageWarning[] = [];
+      for (const [modelPath, model] of this.models) {
+         for (const w of model.gateLoadWarnings()) {
+            const key = `${w.code}\u0000${w.sourceName}\u0000${w.message}`;
+            if (seen.has(key)) continue;
+            seen.add(key);
+            warnings.push({
+               model: modelPath,
+               subject: w.sourceName,
+               code: w.code,
+               severity: "warn",
+               message: w.message,
+            });
+         }
+      }
+      return warnings;
    }
 
    /**
@@ -2832,8 +2876,8 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
                ? last.quoted
                : await this.quoteBoundTableNames(entries);
          this.mz.bind({
-            colocated: quoted,
-            colocatedAsGiven: true,
+            database: quoted,
+            databaseAsGiven: true,
             // Each table's columns as its warehouse holds them now.
             observed: await this.mz.readDatabaseColumns(quoted),
             // The first bind over a load's models publishes to them, as the
@@ -2870,7 +2914,6 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             malloyConfig: this.malloyConfig,
             defaultConnectionName: "duckdb",
             buildManifest,
-            withPreaggregateCompanions: true,
          }),
       );
 
@@ -2925,8 +2968,8 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       this.mz.wireServingResolvers();
       this.mz.pushServeDestinationConfigToModels();
       this.mz.bind({
-         colocated: entries,
-         colocatedAsGiven: true,
+         database: entries,
+         databaseAsGiven: true,
          observed,
          models: "installed",
       });
@@ -2951,7 +2994,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    }
 
    /**
-    * The part of colocated entries a compile reads: each table's name and
+    * The part of database entries a compile reads: each table's name and
     * the connection it is quoted for (the models' build manifest is
     * `toTableNameManifest` of the quoted entries). Freshness, schemas and key
     * checks are read per query and by the bind, never by a compile.
@@ -2985,7 +3028,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          quotedFrom: quoting.from,
          quoted: quoting.quoted,
          models: this.models,
-         colocated: this.mz.boundColocatedEntries(),
+         database: this.mz.boundDatabaseEntries(),
          buildPlan: this.mz.getBuildPlan(),
          connectionEdits: this.connectionEdits,
       };
@@ -3008,7 +3051,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       return (
          last.compiledFor === compiledFor &&
          last.models === this.models &&
-         last.colocated === this.mz.boundColocatedEntries() &&
+         last.database === this.mz.boundDatabaseEntries() &&
          last.buildPlan === this.mz.getBuildPlan() &&
          last.connectionEdits === this.connectionEdits
       );
@@ -3862,9 +3905,13 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       const malloyConfig = new MalloyConfig(
          {
             connections: {
+               // Caller SQL and model text reach the sandbox, so it runs
+               // under Malloy's sandboxed policy: no network, its filesystem
+               // confined to the package directory (duckdb_lockdown.ts).
                duckdb: {
                   is: "duckdb",
                   databasePath: ":memory:",
+                  ...sandboxedDuckDBOptions(packagePath),
                },
             },
          },

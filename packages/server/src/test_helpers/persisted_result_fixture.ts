@@ -10,6 +10,7 @@
  * by the SQL it compiles.
  */
 
+import { originOf } from "../service/materialization/domain/table_plans";
 import { isPersistedQuerySourceID } from "../service/materialization/domain/table_plans";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {
@@ -91,8 +92,7 @@ export async function persistedResultFixture(
             name: source.name,
             sourceEntityId: source.sourceEntityId,
             ...(compilerKey ? { compilerKey } : {}),
-            origin:
-               source.origin === "preaggregate" ? "preaggregate" : "persist",
+            origin: originOf(source.origin),
          });
       }
    }
@@ -165,7 +165,7 @@ export async function persistedResultFixture(
    };
 }
 
-/** A pin of `bindings` and colocated `entries`, now. */
+/** A pin of `bindings` and database `entries`, now. */
 export function pinnedOf(
    bindings: Binding[] = [],
    entries: FreshnessManifest = {},

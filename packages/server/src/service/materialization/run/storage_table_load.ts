@@ -31,6 +31,8 @@ import {
    type PartitionKey,
 } from "../../connection";
 import {
+   createLocalDataPaths,
+   lockDownDestinationSession,
    withIsolatedSession,
    writePartitionedTable,
 } from "./materialization_build_session";
@@ -198,6 +200,12 @@ export async function loadStorageTable(params: {
       if (params.format === "xlsx") {
          await installAndLoadExtension(session, "excel");
       }
+      // The reader takes caller options: confine it to the catalog's data path
+      // (recorded by the attach) before it runs (duckdb_lockdown.ts).
+      const allow = configuredPath ? [configuredPath] : [];
+      // The load writes the destination's table files.
+      createLocalDataPaths(session, allow);
+      await lockDownDestinationSession(session, allow);
       return await writeTableAs(session, params, reader, (error) =>
          readerRefusal(error, params.uri),
       );
@@ -313,6 +321,11 @@ export async function copyStorageTable(params: {
          destinationName,
          destinationConnection.ducklakeConnection!,
       );
+      // The destination's own data path, before the read-only source is
+      // attached: only the catalog written into is created.
+      const destinationPath =
+         destinationConnection.ducklakeConnection?.storage?.bucketUrl;
+      createLocalDataPaths(session, destinationPath ? [destinationPath] : []);
       if (!sameCatalog) {
          await attachDuckLakeReadOnly(
             session,
@@ -320,6 +333,15 @@ export async function copyStorageTable(params: {
             source.connection.ducklakeConnection!,
          );
       }
+      // Confined to the two catalogs' data paths (configured, or recorded by
+      // the attaches) before it reads or writes (duckdb_lockdown.ts).
+      await lockDownDestinationSession(
+         session,
+         [destinationConnection, source.connection].flatMap((conn) => {
+            const dataPath = conn.ducklakeConnection?.storage?.bucketUrl;
+            return dataPath ? [dataPath] : [];
+         }),
+      );
       const from = [sourceAlias, source.schemaName, source.tableName]
          .map((part) => quoteIdentifier(part, STORAGE_DIALECT))
          .join(".");

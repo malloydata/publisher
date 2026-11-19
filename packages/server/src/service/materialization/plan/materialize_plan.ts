@@ -182,7 +182,7 @@ export interface MaterializeRefusal {
 /** A refusal's reason, and the tier the table would have been built in. */
 interface TierRefusal {
    reason: RefusedReason;
-   tier: "colocated" | "storage";
+   tier: "database" | "storage";
 }
 
 /** The Malloy atomic types a stored column can hold. */
@@ -437,7 +437,7 @@ function storableArray(field: FieldLike): string | undefined {
  * from the source map.
  *
  * A private or internal dimension is a candidate too, marked with its
- * `access` (P3): whether the build can select it is settled on the build
+ * `access`: whether the build can select it is settled on the build
  * copy (`materialize_compile.ts`), which drops the ones it cannot, such as a
  * field private on a source this one extends. One with a timeframe is stored
  * too: the served copy restores its timeframe with the same `__stored`
@@ -450,15 +450,15 @@ export function materializeColumns(
       joinReads?: ReadonlyMap<string, FieldJoinReads | undefined>;
       inline?: ReadonlySet<string>;
       hasJoins?: boolean;
-      /** Dimensions the build leaves out because each depends on the caller (P9). */
+      /** Dimensions the build leaves out because each depends on the caller. */
       leftOut?: ReadonlySet<string>;
-      /** Stored computed dimensions the probe cleared of the time zone (P9). */
+      /** Stored computed dimensions the probe cleared of the time zone. */
       zoneFree?: ReadonlySet<string>;
    } = {},
 ): MaterializeColumn[] {
    const out: MaterializeColumn[] = [];
    const perRead = currentTimeFields(def.fields);
-   // A dimension that reads a given is never stored, whoever asks (P9).
+   // A dimension that reads a given is never stored, whoever asks.
    const perCaller = givenReadingFields(def.fields);
    for (const raw of def.fields ?? []) {
       const field = raw as FieldLike;
@@ -500,7 +500,7 @@ export function materializeColumns(
 
 /**
  * Which of a materialized source's computed dimensions depend on the caller
- * (P9), from the probe compiler's answers (`probed`, by dimension; absent
+ *, from the probe compiler's answers (`probed`, by dimension; absent
  * when no probe ran) and the IR walks, and which stored ones the probe
  * cleared of the time zone. A caller-dependent dimension is left out when
  * the served copy keeps its definition: one the source's own declaration
@@ -535,7 +535,7 @@ function callerDependentDimensions(
                `inline= names ${quotedName(j)}, through which a given is read, ` +
                "so its stored columns would hold one caller's values; " +
                "reference the join instead",
-            refusal: "given_in_persisted_query",
+            refusal: "reads_given",
          };
       }
    }
@@ -627,7 +627,7 @@ function columnType(def: SourceDefLike, dimension: string): string {
  * path of join_manys, as `<join>__<next join>__…__<field>` (`path` names the
  * joins from the source to this one). When the join itself is private or
  * internal on the source, `access` is its modifier and each column carries
- * it: the build copy lifts the join so its build can read it (P3), and the
+ * it: the build copy lifts the join so its build can read it, and the
  * served copy's record keeps the join's modifier, so a caller reads
  * `<join>.<field>` exactly where live lets it.
  */
@@ -1215,13 +1215,13 @@ export function planModelMaterialize(
    givens?: Record<string, unknown>,
    /**
     * The probe compiler's answers for each source's computed dimensions, by
-    * `sourceID` then dimension (P9). Absent: the IR walks alone decide, and
+    * `sourceID` then dimension. Absent: the IR walks alone decide, and
     * no stored dimension is cleared of the time zone.
     */
    probed?: ReadonlyMap<string, ReadonlyMap<string, FieldDependence>>,
    /**
     * The sources, by `sourceID`, whose rows the probe compiler found the same
-    * in every query time zone (P9). Absent, or a source not in it: a
+    * in every query time zone. Absent, or a source not in it: a
     * `timezone:` query over its table is answered live.
     */
    zoneFreeRows?: ReadonlySet<string>,
@@ -1295,7 +1295,7 @@ class Declined {
 function declaredTier(
    def: SourceDefLike,
    contents: Record<string, unknown>,
-): "colocated" | "storage" {
+): "database" | "storage" {
    try {
       const declaration = readMaterializeDeclaration(def, contents);
       const placed = declaration ? placementOf(declaration.tag) : undefined;
@@ -1305,7 +1305,7 @@ function declaredTier(
             : undefined,
       );
    } catch {
-      return "colocated";
+      return "database";
    }
 }
 
@@ -1574,7 +1574,7 @@ function inlinedJoinsOf(
       );
    }
    // A private or internal join's access, by name. Its build reads the
-   // join through the build copy's lift (P3), and its joined columns carry
+   // join through the build copy's lift, and its joined columns carry
    // the modifier: the served copy declares an inlined join_one's record,
    // and a pair table's (an inlined join_many's), under it, and renames
    // the stored columns behind it `private` in the record's own block.
@@ -1591,7 +1591,7 @@ function inlinedJoinsOf(
    const ones = entries
       .filter((p) => p[0].relationship !== "many")
       .map((p) => p[0].name);
-   // An inlined join_many is a pair table (P5): one path of join_manys
+   // An inlined join_many is a pair table: one path of join_manys
    // below each one inlined. A path that is the start of a longer one is
    // stored by the longer one's (its level flag answers it).
    const byFirst = new Map<string, SourceJoin[][]>();
@@ -1627,7 +1627,7 @@ type Dependence = Exclude<
 
 /**
  * The source's stored columns, its own and its inlined joins', and the
- * computed dimensions left out because each depends on the caller (P9).
+ * computed dimensions left out because each depends on the caller.
  */
 function storedColumnsOf(
    def: PlannedDef,
@@ -1641,7 +1641,7 @@ function storedColumnsOf(
    const { map } = ctx;
    const { inline, joins, ones, paths, joinAccess } = inlined;
    // A dimension that depends on the caller is left out and computed at
-   // read (P9).
+   // read.
    const dependence = callerDependentDimensions(
       def,
       ctx.probed?.get(def.sourceID),
@@ -1820,7 +1820,7 @@ function placedPersistOf(
 }
 
 /**
- * A pair table's layout (P5): one block per inlined path, its key checks'
+ * A pair table's layout: one block per inlined path, its key checks'
  * inputs, and, for an incremental one, its per-parent watermark or the
  * reason it is rebuilt in full. Nothing for a source that inlines no
  * join_many. Sets the watermark and merge key on `persist`, or removes its
@@ -1900,7 +1900,7 @@ function pairLayoutOf(
       });
       // A pair table's delta replaces whole parents in DuckDB only
       // (pairDeltaStatements): the target of every `storage=` table, and of a
-      // colocated one in a DuckDB warehouse. A colocated one anywhere else is
+      // database one in a DuckDB warehouse. A database one anywhere else is
       // rebuilt in full every refresh, which the package says.
       if (
          "watermark" in incremental &&
@@ -1909,7 +1909,7 @@ function pairLayoutOf(
       ) {
          incremental = {
             fullRefresh:
-               `its table is colocated in its source's warehouse (dialect ` +
+               `its table is in its source's warehouse (dialect ` +
                `${String(def.dialect)}), and a pair table's delta is applied only in DuckDB ` +
                `(a \`storage=\` destination, or a DuckDB warehouse); declare ` +
                `storage= to refresh it incrementally`,
@@ -1940,17 +1940,17 @@ function pairLayoutOf(
  * reads its parent's table, whose rows an incremental refresh moves on its
  * own schedule, so neither side of a chain may carry one.
  */
-const INCREMENTAL_KEYS = ["refresh", "watermark", "merge_key"];
+const INCREMENTAL_KEYS = ["refresh", "watermark", "merge_key", "lookback"];
 
 /**
  * Give each plan that can build over its nearest materialized ancestor's build
- * source (P10) its `buildsOver`. The ancestor is the first planned source up
+ * source its `buildsOver`. The ancestor is the first planned source up
  * the chain, reached through `extend` and renames only (a query-shaped hop
  * starts a new segment, which the build cannot re-root on a table), declared
  * in the same file (the build copy re-roots it in that file's text; one in
  * another file is the companion compiler's, `crossFileEntries`), as is
  * every declaration between them (`path`). Both must be on one tier (both
- * colocated, or both `storage=` the same destination), carry no incremental
+ * database, or both `storage=` the same destination), carry no incremental
  * key, and the parent no given-reading `where:` (its build source's own
  * `extend` re-applies that term, which would scope the extension's build to
  * one caller) and no current-time `where:` its build leaves out (the
@@ -1996,8 +1996,8 @@ function chainExtensionTables(plans: MaterializePlan[], map: SourceMap): void {
 
 /**
  * Whether an extension's plan may build over its parent's build source
- * (P10), whichever file declares the parent: both on one tier (both
- * colocated, whose build reads the parent's build source in its own
+ *, whichever file declares the parent: both on one tier (both
+ * database, whose build reads the parent's build source in its own
  * warehouse, or one storage destination, whose build reads the parent's
  * table there, see `overStored`), neither incremental, neither a table of
  * several inlined paths, the parent no pair table, and the parent with no
@@ -2027,7 +2027,7 @@ export function chainsOver(
 
 /**
  * For each plan with no parent in its own file, where its chain enters
- * another file (P10 across files): the first source it is built on, through
+ * another file (across files): the first source it is built on, through
  * `extend` and renames only as {@link chainExtensionTables} walks a chain,
  * that is declared in another file, with the declarations from just below
  * it down to the plan's own, all in the plan's file. The walk stops at a
@@ -2049,15 +2049,8 @@ export function crossFileEntries(
       const def = map.node(sourceID)?.def as SourceDefLike | undefined;
       return def ? declarationOf(def) : undefined;
    };
-   const declares = (sourceID: string) => {
-      const def = map.node(sourceID)?.def as PlannedDef | undefined;
-      if (!def) return false;
-      try {
-         return readMaterializeDeclaration(def, contents) !== undefined;
-      } catch {
-         return true;
-      }
-   };
+   const declares = (sourceID: string) =>
+      declaresMaterialize(map, contents, sourceID);
    const out: ReturnType<typeof crossFileEntries> = [];
    for (const plan of plans) {
       if (plan.buildsOver) continue;
@@ -2092,8 +2085,27 @@ export function crossFileEntries(
 }
 
 /**
+ * Whether the source `sourceID` declares `#(materialize)` itself, planned or
+ * refused; an unreadable declaration counts as one. A chain walk stops at
+ * such a source: whether it is a parent is its own file's plan to say.
+ */
+function declaresMaterialize(
+   map: SourceMap,
+   contents: Record<string, unknown>,
+   sourceID: string,
+): boolean {
+   const def = map.node(sourceID)?.def as PlannedDef | undefined;
+   if (!def) return false;
+   try {
+      return readMaterializeDeclaration(def, contents) !== undefined;
+   } catch {
+      return true;
+   }
+}
+
+/**
  * The sources of one file a chain entering it at `entrySourceID` is built
- * on (P10 across files), nearest first, read in that file's own compile:
+ * on (across files), nearest first, read in that file's own compile:
  * the entry, then each source it is built on through `extend` and renames
  * only, declared in the same file. Each with its declaration and the
  * declarations from just below it down to the entry (root first), which
@@ -2123,6 +2135,46 @@ export function chainWithinFile(
       sourceID = base.sourceID;
    }
    return out;
+}
+
+/**
+ * A file a chain passes through on its way to a parent in a file beyond it
+ * (across files), read in that file's own compile from the source the
+ * chain enters it at: the declarations of the sources it walks there
+ * ({@link chainWithinFile}), root first; whether any of them declares
+ * `#(materialize)` itself (`declares`), planned or refused, so the file is no
+ * pass-through; and the source the walk leaves the file at, by `extend` or a
+ * rename, when it does (`next`). No `next` means the chain ends in the file,
+ * at a table or a query-shaped hop.
+ */
+export function chainThroughFile(
+   modelDef: { contents?: unknown; sourceRegistry?: unknown },
+   entrySourceID: string,
+): {
+   declarations: TermUse[];
+   declares: boolean;
+   next?: { sourceID: string; url: string };
+} {
+   const walked = chainWithinFile(modelDef, entrySourceID);
+   const map = SourceMap.of(modelDef);
+   const contents = (modelDef.contents ?? {}) as Record<string, unknown>;
+   const declarations = walked.map((w) => w.declaration).reverse();
+   const declares = walked.some((w) =>
+      declaresMaterialize(map, contents, w.sourceID),
+   );
+   const last = walked[walked.length - 1];
+   const base = last ? map.node(last.sourceID)?.base : undefined;
+   const url =
+      base && base.hop !== "query" && base.sourceID !== undefined
+         ? splitSourceID(base.sourceID)?.url
+         : undefined;
+   return {
+      declarations,
+      declares,
+      ...(url !== undefined && url !== last?.declaration.url
+         ? { next: { sourceID: base!.sourceID!, url } }
+         : {}),
+   };
 }
 
 /**

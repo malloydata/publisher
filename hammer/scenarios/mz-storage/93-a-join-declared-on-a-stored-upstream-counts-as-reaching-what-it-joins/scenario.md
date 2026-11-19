@@ -10,7 +10,7 @@ SPDX-License-Identifier: MIT
 
 # A join declared on a stored upstream counts as reaching what it joins
 
-`daily` is a colocated persist source that declares `join_one: c is
+`daily` is a database persist source that declares `join_one: c is
 daily_counts`, and `daily_counts` is stored in `lake`. `rollup` is a `storage=`
 source over `daily` reading `c.order_count`. Nothing between `rollup` and
 `daily` is an intermediate the build could carry, and `daily`'s table is a

@@ -25,6 +25,7 @@
  * and runs the cell's own compile with the model's pinned manifest.
  */
 
+import { DUCKLAKE_CATALOG_UNAVAILABLE } from "./ducklake_catalog_unavailable";
 import {
    EMPTY_BUILD_MANIFEST,
    Annotations,
@@ -73,6 +74,7 @@ import {
    answeredWith,
    type Answer,
    canDegradeToLive,
+   isDestinationCatalogUnavailableError,
    isStoredDecimalArithmeticError,
    liveFallbackAnswer,
    type Leg,
@@ -80,6 +82,24 @@ import {
    type ServedFrom,
    servedFromOf,
 } from "./materialization/serve/leg";
+import {
+   liveRoundsBigIntegersAsPostgres,
+   type ResultRows,
+   roundBigIntegersAsLive,
+} from "./materialization/domain/live_big_integers";
+import {
+   type Float4Shape,
+   float4ColumnsByHandle,
+   float4OutputShape,
+   liveWritesFloat4AsPostgres,
+   type ResultRows as Float4ResultRows,
+   roundFloat4AsLive,
+} from "./materialization/domain/live_float4";
+import type { Binding } from "./materialization/domain/binding";
+import {
+   readPreparedQuery,
+   resolveStructRef,
+} from "./governance/ir/prepared_query";
 import type { ServedCopyServe } from "./materialization/serve/served_copy_serve";
 import type { ApiQueryPath } from "./materialization/serve/query_path";
 import {
@@ -699,7 +719,7 @@ export class ModelServing {
                : {}),
          },
          // The served copy is the author's text, gates included, as are a
-         // persisted view's and a `#(preaggregate)` rollup's variants: a
+         // persisted view's and a `#(rollup)` rollup's variants: a
          // row-level gate is grafted and proven on its own compile, so the
          // routed answer keeps it (R3), and an answer let past an entry-point
          // gate is re-proven there. Any other routed shape carries no
@@ -760,7 +780,7 @@ export class ModelServing {
       // No post-hoc gate check is possible on a serve-shape or v1
       // `#@ preaggregate` runnable (it carries no annotations): their
       // correctness rests entirely on `queryEntryPointHasRowLevelGate`. The
-      // served copy, a persisted view and a `#(preaggregate)` rollup are the
+      // served copy, a persisted view and a `#(rollup)` rollup are the
       // exceptions (R3): each keeps the author's gates on the run target's
       // own `sourceID`, and `govern()` above grafted and proved them on its
       // own compile.
@@ -819,7 +839,7 @@ export class ModelServing {
    /**
     * Run the governed runnable with what the answer names: a run on a
     * virtual map (the served copy, a `storage=` view or rollup) takes no
-    * manifest; a colocated rollup reads the full pinned one, a colocated
+    * manifest; a database rollup reads the full pinned one, a database
     * persisted view the one without rollups, and the live compile an empty
     * one. Prepare runs INSIDE the run's try/catch, so a given-binding throw
     * at prepare gets the same error mapping as run instead of escaping as a
@@ -901,6 +921,8 @@ export class ModelServing {
          //    produced THIS shape (a sibling source must not decide);
          //  - or for DECIMAL arithmetic past 38 digits, whatever the policy
          //    (`isStoredDecimalArithmeticError`): the table is right;
+         //  - or for a destination catalog the worker lost, whatever the
+         //    policy (`isDestinationCatalogUnavailableError`);
          //  - never for a client error (bad given) or an abort;
          //  - the retry re-supplies the REAL givens, or the live source could
          //    serve unfiltered rows.
@@ -916,9 +938,14 @@ export class ModelServing {
          logger.warn(
             isStoredDecimalArithmeticError(error)
                ? "Storage-served query's DECIMAL arithmetic exceeded 38 digits; falling back to live"
-               : "Storage-served query failed at run time; falling back to live (freshnessFallback=live)",
+               : isDestinationCatalogUnavailableError(error)
+                 ? "Storage-served query found its destination catalog unavailable; falling back to live"
+                 : "Storage-served query failed at run time; falling back to live (freshnessFallback=live)",
             {
                modelPath: this.host.modelPath,
+               ...(isDestinationCatalogUnavailableError(error)
+                  ? { code: DUCKLAKE_CATALOG_UNAVAILABLE }
+                  : {}),
                error: error instanceof Error ? error.message : String(error),
             },
          );
@@ -939,6 +966,12 @@ export class ModelServing {
          // NOT a storage hit: servedFromOf reads `live_fallback`.
          answer = answeredWith(answer, retried.read);
          executionTime = performance.now() - ctx.startTime;
+      }
+      if (answer.leg !== "live" && !answer.runFailed) {
+         await roundStoredAnswerAsLive(run.result, prepared.liveRunnable, {
+            runnable: governed.runnable,
+            bindings: answer.answer.shapeBindings,
+         });
       }
       return { run, answer, executionTime, maxRows, maxBytes };
    }
@@ -1396,8 +1429,12 @@ export class ModelServing {
       // The freshness-filtered manifest minus rollups (a notebook has no
       // companion), and none for a cell whose model lacks the
       // persistence flag (see manifestIfPersistent).
+      const pinnedForCell = this.pin();
       const buildManifest = this.manifestIfPersistent(
-         this.host.withoutPreaggregateEntries(pinnedManifest(this.pin())),
+         withoutAsOfBuildEntries(
+            this.host.withoutPreaggregateEntries(pinnedManifest(pinnedForCell)),
+            pinnedForCell,
+         ),
          cell.modelDef ?? this.host.modelDef(),
       );
       // See filterGivensToModelSurface.
@@ -1673,7 +1710,30 @@ export class ModelServing {
    }
 }
 
-/** The pinned build manifest, or undefined when nothing colocated is bound. */
+/**
+ * `manifest` less every table stored as of its build (`Binding.asOfBuild`):
+ * a legacy notebook cell compiles with the manifest and passes no read
+ * admission, so a cell that is an access decision could otherwise read one.
+ * Such a table is answered live there, gated or not (fail closed).
+ */
+function withoutAsOfBuildEntries(
+   manifest: BuildManifest | undefined,
+   pinned: Pinned,
+): BuildManifest | undefined {
+   if (!manifest) return manifest;
+   const asOfBuild = new Set(
+      pinned.snapshot.bindings
+         .filter((b) => b.asOfBuild === true)
+         .map((b) => b.virtualHandle),
+   );
+   if (asOfBuild.size === 0) return manifest;
+   const entries = Object.fromEntries(
+      Object.entries(manifest.entries).filter(([id]) => !asOfBuild.has(id)),
+   );
+   return { ...manifest, entries } as BuildManifest;
+}
+
+/** The pinned build manifest, or undefined when nothing database is bound. */
 function pinnedManifest(pinned: Pinned): BuildManifest | undefined {
    return pinned.hasEntries ? pinned.compilerManifest : undefined;
 }
@@ -1715,6 +1775,7 @@ function statementUsage(
 ):
    | {
         metered: (connectionName: string) => boolean;
+        catalog?: (connectionName: string) => string | undefined;
         environment: string;
         package: string;
      }
@@ -1722,6 +1783,7 @@ function statementUsage(
    if (!input?.meteredConnection || !input.environment) return undefined;
    return {
       metered: input.meteredConnection,
+      catalog: input.meteredCatalog,
       environment: input.environment,
       package: packageName,
    };
@@ -1757,4 +1819,51 @@ function governRequestOf(r: {
       ...(r.graft ?? { bypassAuthorize: false }),
       ceiling: r.ceiling,
    };
+}
+
+/**
+ * A stored answer's values written as live writes them, when the query's
+ * live dialect is Postgres: its big integers rounded as live rounds them
+ * (`liveRoundsBigIntegersAsPostgres`), and the float4 values a `storage=`
+ * table holds written as live's JSON stage writes a float4
+ * (`liveWritesFloat4AsPostgres`). A live compile that cannot say its dialect
+ * leaves the answer as it ran, and so does a served compile whose IR cannot
+ * be read.
+ */
+async function roundStoredAnswerAsLive(
+   result: PreparedRun["result"],
+   liveRunnable: QueryMaterializer,
+   served: {
+      runnable: QueryMaterializer;
+      bindings: readonly Binding[];
+   },
+): Promise<void> {
+   let dialect: string;
+   try {
+      dialect = (await liveRunnable.getPreparedQuery()).dialect;
+   } catch {
+      return;
+   }
+   if (liveRoundsBigIntegersAsPostgres(dialect)) {
+      roundBigIntegersAsLive(result as unknown as ResultRows);
+   }
+   if (!liveWritesFloat4AsPostgres(dialect)) return;
+   const float4 = float4ColumnsByHandle(served.bindings);
+   if (float4.size === 0) return;
+   let shape: Float4Shape;
+   try {
+      const view = await readPreparedQuery(served.runnable);
+      const live = await readPreparedQuery(liveRunnable);
+      shape = float4OutputShape(
+         {
+            query: view.query,
+            root: resolveStructRef(view.structRef, view.modelDef),
+            liveQuery: live.query,
+         },
+         float4,
+      );
+   } catch {
+      return;
+   }
+   roundFloat4AsLive(result as unknown as Float4ResultRows, shape);
 }

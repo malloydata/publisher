@@ -7,7 +7,7 @@
 /**
  * With materialization v2 switched on (`PUBLISHER_MATERIALIZE`), a package
  * gets one coded warning per measure that declares `#@ preaggregate` (whose
- * v2 spelling, `#(preaggregate)`, is read there). Off, it gets none, but
+ * v2 spelling, `#(rollup)`, is read there). Off, it gets none, but
  * usage is still counted. `#@ -persist` is Malloy core's opt-out and is not
  * deprecated (plan, question 5, decided 2026-11-12): it gets no warning and
  * no count. Either way the package loads and builds as before. Drives
@@ -169,7 +169,7 @@ describe("deprecation warnings for #@ preaggregate, and none for #@ -persist", (
             ["models/v1.malloy", "orders"],
          ]);
          expect(preaggregate[0].severity).toBe("warn");
-         expect(preaggregate[0].message).toContain("#(preaggregate)");
+         expect(preaggregate[0].message).toContain("#(rollup)");
          // One per measure, however many grains it declares.
          expect(
             await harness.collectCounter("publisher_deprecated_usage_total", {
@@ -199,7 +199,7 @@ describe("deprecation warnings for #@ preaggregate, and none for #@ -persist", (
       const on = await planned(true);
 
       expect(off.length).toBeGreaterThan(0);
-      expect(off.some((s) => s.startsWith("preaggregate:"))).toBe(true);
+      expect(off.some((s) => s.startsWith("rollup:"))).toBe(true);
       expect(on).toEqual(off);
    });
 });

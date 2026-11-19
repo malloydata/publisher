@@ -3,9 +3,10 @@
 
 /**
  * Resolves a persist source's INCREMENTAL declaration — the `refresh=`,
- * `watermark=` and `merge_key=` keys of its `#@ persist` tag — into a structure
- * the publish gates and the build path both read: which names are real output
- * columns, the watermark's type, the implied strategy, and every malformation.
+ * `watermark=`, `merge_key=` and `lookback=` keys of its `#@ persist` tag —
+ * into a structure the publish gates and the build path both read: which
+ * names are real output columns, the watermark's type, the implied strategy,
+ * the lookback's duration, and every malformation.
  * The strategy it implies is the one the ledger records.
  *
  * Surface: `resolveIncrementalDeclaration`, read by the build plan's
@@ -36,6 +37,7 @@ import type {
    ResolvedName,
 } from "../domain/incremental";
 import type { IncrementalStrategy } from "../domain/types";
+import { durationSeconds } from "../domain/freshness";
 import { deriveColumns } from "./persist_source_fields";
 import { readTimeDynamicTerms } from "./persist_dynamic_terms";
 
@@ -136,7 +138,7 @@ function resolveName(
 /** Read one persist-tag key: its scalar text, or why there is none. */
 function readKey(
    tag: Tag | undefined,
-   key: "refresh" | "watermark" | "merge_key",
+   key: "refresh" | "watermark" | "merge_key" | "lookback",
 ): { declared: boolean; text?: string; malformed?: MalformedValue } {
    if (!tag || !tag.has(key)) return { declared: false };
    // The array form vanishes from the scalar read; name it or it looks absent.
@@ -236,6 +238,18 @@ export function resolveIncrementalDeclaration(
       }
    }
 
+   const rawLookback = readKey(tag, "lookback");
+   if (rawLookback.malformed) malformed.push(rawLookback.malformed);
+   const lookback =
+      rawLookback.text === undefined
+         ? undefined
+         : {
+              text: rawLookback.text,
+              ...(durationSeconds(rawLookback.text) !== undefined
+                 ? { seconds: durationSeconds(rawLookback.text) }
+                 : {}),
+           };
+
    const watermarkInMergeKeys =
       watermark !== undefined &&
       mergeKeys.some((k) => k.name === watermark.name);
@@ -265,6 +279,8 @@ export function resolveIncrementalDeclaration(
       invalidRefresh,
       declaredWatermark: rawWatermark.declared,
       declaredMergeKey: rawMergeKey.declared,
+      declaredLookback: rawLookback.declared,
+      ...(lookback ? { lookback } : {}),
       watermark,
       watermarkOrderable,
       mergeKeys,

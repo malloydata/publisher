@@ -31,7 +31,7 @@ import {
    WarehouseRecomputeRefusedError,
 } from "../../../errors";
 import { logger } from "../../../logger";
-import { errorCodeOf } from "./error_code";
+import { errorCodeOf } from "../../../error_code";
 import {
    recordStoredColumnTypeMismatch,
    recordChainedStorageBuild,
@@ -41,7 +41,7 @@ import {
 import { errMessage } from "../../../utils";
 import type { ApiConnection } from "../../model";
 import type { QueryMetadata } from "../../query_metadata";
-import { withStatementUsage } from "../../statement_usage";
+import { usageCatalog, withStatementUsage } from "../../statement_usage";
 import {
    bindingServesModelSource,
    deriveServeBindings,
@@ -55,7 +55,7 @@ import {
 } from "../stored_column_types";
 import { quoteManifestTablePath, quoteTablePath } from "../../quoting";
 import { reachPersisted } from "../text/source_map";
-import { extensionOverStoredModel } from "../plan/materialize_stored_chain";
+import { extensionOverStoredModel } from "./run_plan";
 import {
    type MaterializeParent,
    type MaterializePlan,
@@ -78,6 +78,7 @@ import { runRollupKeyCheck } from "./inline_uniqueness";
 import { storedKeyCheckSql } from "../text/key_check_text";
 import {
    ledgerFields,
+   lateRowsFields,
    refreshFields,
    reportIncrementalStep,
    resetLedger,
@@ -86,29 +87,29 @@ import {
    type IncrementalRunContext,
 } from "./incremental_build";
 import {
-   BilledReadNotCapturedError,
    buildDownstreamIntoStorage,
    buildSourceIntoStorage,
-   dropStorageTable,
    oneFileModel,
    withDestinationSession,
    type StorageBuildResult,
    type StorageIncrementalRefresh,
 } from "./materialization_build_session";
+import { BilledReadNotCapturedError } from "./build_attribution";
+import { dropStorageTable } from "./storage_admin";
+import { backupSuffix } from "./build_table_names";
 import {
-   backupSuffix,
    BuildEnvironment,
-   ChainedPlanFacts,
-   NO_PLAN_FACTS,
-   redactConnectionSecrets,
-   currentUpstreamEntries,
-   noteWrongTierRecompute,
    ChainedPackageStaleError,
+   ChainedPlanFacts,
+   currentUpstreamEntries,
    HostSuppliedWrongTierError,
+   NO_PLAN_FACTS,
+   noteWrongTierRecompute,
    upstreamEntryIsCurrent,
    WRONG_TIER_MARKER,
    wrongTierDetail,
-} from "./materialization_run_support";
+} from "./build_upstreams";
+import { redactConnectionSecrets } from "./connection_redaction";
 import { carriesAuthorSql, isSameCatalog } from "./same_catalog_build";
 import { compiledTextReader } from "../../../utils";
 import {
@@ -288,6 +289,7 @@ async function recomputeIntoStorage(
                  connection: destinationName,
                  surface: "build",
                  package: params.packageName ?? params.incremental?.packageName,
+                 catalog: usageCatalog(destinationConnection),
               },
               build,
            )
@@ -814,7 +816,7 @@ export class StorageBuildStrategy
          buildDurationMs: result.refresh
             ? (result.refresh.durationMs ?? null)
             : durationMs,
-         // Incremental coverage and what this run did, as for a colocated
+         // Incremental coverage and what this run did, as for a database
          // table. Absent for a non-incremental source.
          ...ledgerFields(
             incrementalRefresh?.lineage,
@@ -824,6 +826,7 @@ export class StorageBuildStrategy
             result.refresh?.refresh ??
                (incrementalRefresh ? "full" : undefined),
          ),
+         ...lateRowsFields(result.refresh?.lateRows),
          // How stored upstreams were read: a chained attempt answers for
          // itself; otherwise the manifest's answer for the passthrough SQL.
          ...(dependsOnStorageUpstream
@@ -840,7 +843,7 @@ export class StorageBuildStrategy
                 params.rollup
                 ? {}
                 : baseReuse),
-         // SCANNED, not billed, matching the colocated path's runStats
+         // SCANNED, not billed, matching the database path's runStats
          // (totalBytesProcessed), so the field sums consistently across sources.
          // Null when the read reported nothing: a build with an empty metadata
          // bag, since the label is what makes BigQuery's read report.
@@ -940,7 +943,7 @@ export class StorageBuildStrategy
          destinationConnection,
       } = ctx;
       const { persistSource, instruction, environment, builtEntries } = params;
-      // An extension table (P10) builds over its parent's stored table from
+      // An extension table builds over its parent's stored table from
       // the chain its plan carries, never by lifting author text by name.
       const extension = storedExtensionOf(
          planFacts.materializePlans?.[persistSource.sourceID],
@@ -954,6 +957,7 @@ export class StorageBuildStrategy
                connection: destinationName,
                surface: "build",
                package: params.packageName ?? params.incremental?.packageName,
+               catalog: usageCatalog(destinationConnection),
             },
             () =>
                extension
@@ -1018,15 +1022,16 @@ export class StorageBuildStrategy
          ...params,
          physicalTableName: ctx.physicalTableName,
       };
-      const declined = (detail: string) => {
+      // Logged by a code: a decline's text can name a host's table.
+      const declined = (code: string) => {
          logger.warn(
             "A storage= rollup did not build over its base's stored table; it builds from the warehouse",
-            { sourceName: persistSource.name, destinationName, detail },
+            { sourceName: persistSource.name, destinationName, code },
          );
          return { stacked: false };
       };
       if (!environment.chainBuildText) {
-         return declined("this package has no served copy to write it from");
+         return declined("no_served_copy");
       }
       const text = environment.chainBuildText({
          downstream: {
@@ -1045,7 +1050,7 @@ export class StorageBuildStrategy
          ],
          rollup: { baseSourceID: base.baseSourceID, companion: base.companion },
       });
-      if ("declined" in text) return declined(text.declined);
+      if ("declined" in text) return declined("chain_text_declined");
       try {
          const result = await withStatementUsage(
             {
@@ -1053,6 +1058,7 @@ export class StorageBuildStrategy
                connection: destinationName,
                surface: "build",
                package: params.packageName ?? params.incremental?.packageName,
+               catalog: usageCatalog(destinationConnection),
             },
             () =>
                buildDownstreamIntoStorage({
@@ -1080,7 +1086,7 @@ export class StorageBuildStrategy
          return { result, stacked: true };
       } catch (err) {
          if (!(err instanceof MaterializationEligibilityError)) throw err;
-         return declined(errMessage(err));
+         return declined(errorCodeOf(err));
       }
    }
 
@@ -1217,7 +1223,7 @@ export class StorageBuildStrategy
 
    /**
     * Build a `storage=` extension table over its parent's stored table in the
-    * same destination (P10): the parent's build source declared as the
+    * same destination: the parent's build source declared as the
     * virtual source of that table, the extension's chain over it
     * ({@link extensionOverStoredModel}), compiled and run on the destination
     * alone, so nothing reads the warehouse. A parent with no current table in
@@ -1324,7 +1330,7 @@ export class StorageBuildStrategy
          // Its text names the generated sources; logged, never returned.
          logger.warn(
             "A storage= extension table did not build over its parent's stored table",
-            { sourceName: persistSource.name, error: errMessage(err) },
+            { sourceName: persistSource.name, code: errorCodeOf(err) },
          );
          throw new ChainedShapeNotCarriedError(
             `'${persistSource.name}' could not be built over the stored table ` +
@@ -1334,7 +1340,7 @@ export class StorageBuildStrategy
    }
 }
 
-/** A `storage=` extension table (P10) and the parent it builds over. */
+/** A `storage=` extension table and the parent it builds over. */
 interface StoredExtension {
    plan: MaterializePlan;
    parent: MaterializeParent;

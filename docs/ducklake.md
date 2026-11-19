@@ -137,6 +137,11 @@ with no re-attach and no package reload — the catalog is consulted per transac
 at attach time. Note that this is a property of a **Postgres-backed** catalog, which is the supported
 configuration; a DuckDB-file catalog attached read-only does not behave this way.
 
+**The catalog's credentials live in a DuckDB secret.** Publisher puts the catalog role's user and
+password in a temporary DuckDB secret (never persisted, redacted when listed) and attaches with a
+path that carries only the host, port, database and connection options. A `connectionString` in
+either libpq form (keyword/value or a `postgres://` URI) is read and split the same way.
+
 **Lazy, and never on the startup path.** The catalog is attached on the _first query_ that uses the
 connection — not when the server boots and not when the environment config is built. This is a
 deliberate isolation boundary: **a slow or unreachable catalog degrades only that connection's
@@ -281,12 +286,28 @@ downstream stacked on its stored parents in the destination) runs on the same ki
 the same rule: a downstream carrying author SQL is recomputed from raw instead of stacked on its parents.
 
 **Meter it.** Each statement on a storage destination or a `managed` connection, and each admin-API load
-or copy, emits one log record, `statement_usage`, with the environment (empty for an admin load or copy),
-connection or catalog, surface (`serve`, `load`, `copy`, `build`), package, duration, rows and status, and increments
-`publisher_statement_usage_total`. The record names no sink; a log collector maps it. A same-catalog
-build and a chained build are recorded; a passthrough build is not, since its time is mostly the source
-warehouse's. A statement that fails is recorded too, with `status: "error"`, since it spent the time; a
-collector that bills only completed work counts `status: "ok"`.
+or copy, emits one log record, `statement_usage`, and increments `publisher_statement_usage_total`. The
+record names no sink; a log collector maps it. Its fields, each left out when the statement has none:
+
+| Field | What it holds |
+|---|---|
+| `statement_id` | A UUID of the record's own, so a collector that delivers a record twice can count it once. |
+| `environment` | The environment the statement ran in; empty for an admin load or copy. |
+| `connection` | The connection or storage destination, by the name the environment gives it; the catalog's name for an admin load or copy. |
+| `catalog` | The DuckLake catalog the statement ran on: the connection's `catalog.metadataSchema`, which is also the catalog's name on the admin API. It names the same catalog whatever a connection is called. |
+| `surface` | `serve` (a model query), `sql` (raw SQL on a `managed` connection), `build`, `load` or `copy`. |
+| `package` | The package served or built. |
+| `duration_ms` | Wall-clock milliseconds the statement ran. |
+| `rows` | Rows returned or written, when the result reports a count. |
+| `status` | `ok` or `error`. |
+| `threads` | The `duckdb.threads` setting: the thread count a DuckDB instance of the process opens with. Left out under `off`, and when the cap could not be applied (a `@malloydata/db-duckdb` release that changed the internals Publisher patches, which Publisher logs at startup); a connection that sets its own `threads` is not reflected. |
+| `worker` | The host name of the process that ran it: the pod's name in Kubernetes. |
+
+A same-catalog build and a chained build are recorded; a passthrough build is not, since its time is
+mostly the source warehouse's. Raw SQL on a `managed` connection is recorded when it runs; one refused
+because it is not a single SELECT never ran and is not. A statement that fails is recorded too, with
+`status: "error"`, since it spent the time; a collector that bills only completed work counts
+`status: "ok"`.
 
 The main API's storage-destination routes (`GET …/storageDestinations/{dest}/schemas/{schema}/tables`,
 `DELETE …/tables/{table}` and `POST …/fileCleanups`) are deprecated: the admin API's catalog, table and
@@ -364,7 +385,7 @@ exactly the extensions the server installs at runtime:
 
 | Extension   | Kind      | Provides                                                                              |
 | ----------- | --------- | ------------------------------------------------------------------------------------- |
-| `httpfs`    | core      | HTTP(S) and S3/GCS/Azure object-storage access (also used by the per-package sandbox) |
+| `httpfs`    | core      | HTTP(S) and S3/GCS/Azure object-storage access                                        |
 | `aws`       | core      | AWS credential-chain resolution for S3                                                |
 | `azure`     | core      | Azure Blob Storage access                                                             |
 | `postgres`  | core      | Postgres connections, and the DuckLake Postgres catalog                               |

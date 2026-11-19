@@ -19,29 +19,14 @@ import type {
 } from "@malloydata/malloy";
 import type { KeyCheckCompiler } from "./key_check";
 import type { Omission } from "./omitted_sources";
+import type {
+   ModelGateLines,
+   PersistedViewName,
+   SourceBuild,
+} from "./package_plan";
 import type { MaterializePlan, TablePlan } from "./table_plans";
 
-/**
- * One connection's persist sources in the order they build, from Malloy's
- * `Runtime.getBuildTargets`: every source on every table, the tables a source
- * reads before it. Sources whose SQL does not compile on their own come last;
- * they have no table, and are refused per source like any other.
- *
- * Holds sourceIDs, resolved against a plan's `sources` when walked, so a
- * pre-aggregation companion that reaches an author's persisted source walks
- * the author's own `PersistSource` for it.
- */
-export interface SourceBuild {
-   connectionName: string;
-   /** sourceIDs, dependencies first; the sources of one table are adjacent */
-   order: string[];
-   /**
-    * sourceID -> the sourceIDs on the tables it reads. Sources on one table
-    * read none of each other: an extension is its base's table, not a reader
-    * of it. An unbuildable source lists none.
-    */
-   dependsOn: Record<string, string[]>;
-}
+export type { SourceBuild } from "./package_plan";
 
 /**
  * Result of compiling a package's persist sources. The wire `BuildPlan` is a
@@ -99,11 +84,12 @@ export interface CompiledBuildPlan<Finding = unknown> {
    /** Findings on the authored `#@` annotations (see annotation_reader). */
    annotationFindings?: Finding[];
    /**
-    * Each model's invalid `#@ preaggregate` declarations and misspelled
-    * materialization routes, as load-failure lines (`load_gate_text.ts` in
-    * `plan/`), so a run over the files reads them as the load does.
+    * Each model's own load-failure lines (`load_gate_text.ts` in `plan/`), so
+    * a run over the files reads them as the load does.
     */
-   modelGateLines?: { preaggregate: string[]; nearMiss: string[] };
+   modelGateLines?: ModelGateLines;
+   /** Each persisted view's build source, named as its author wrote it. */
+   persistedViews?: Record<string, PersistedViewName>;
    /**
     * Each `#(materialize)` uniqueness check's compiler over a run's compiler
     * manifest, by `keyCheckCompilerKey`; set only on a plan compiled on the thread
@@ -115,7 +101,20 @@ export interface CompiledBuildPlan<Finding = unknown> {
     * compile), for the wire plan's `omittedSources`. Absent: none.
     */
    omittedSources?: Omission[];
+   /**
+    * Every sourceID an access decision of the package reads: a dependency,
+    * at any depth, of a definition that carries a gate or reads a given
+    * (`collectAccessReads` in `plan/`). A relation that reads the current
+    * time is refused when it is one. `"*"` when a walk could not finish.
+    */
+   accessReads?: readonly string[];
 }
+
+/**
+ * The name `accessReads` holds when a walk could not finish: every stored
+ * relation counts as one an access decision reads (fail closed).
+ */
+export const EVERY_SOURCE = "*";
 
 /** The planned sources of `build` in build order, skipping any not in `tables`. */
 export function* sourcesInBuildOrder(
