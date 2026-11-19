@@ -590,7 +590,7 @@ async function postgresColumnIdentities(
  * the name of the source it extends when the extension adds no `where:` and
  * no gate of its own; else undefined.
  */
-function namedEntryOf(
+export function namedEntryOf(
    structRef: unknown,
    struct: unknown,
    modelDef: ModelDef,

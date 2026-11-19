@@ -9,7 +9,14 @@
 
 import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import * as gateClassification from "../../gate_classification";
+import { isDeclineOf } from "../domain/leg_decline";
+import { namedEntryOf } from "./gate_collation";
 import { entryGates, entryPointGateExprs } from "./gate_reads";
+import {
+   liveEntryPointGates,
+   proveGates,
+   writtenGatesOf,
+} from "./rollup_variants";
 
 const struct = { type: "table", name: "t", fields: [] };
 const modelDef = { contents: {}, exports: [] };
@@ -83,5 +90,81 @@ describe("entryGates", () => {
 
    it("is an empty list for an ungated source", () => {
       expect(entryGates(struct, modelDef)).toEqual([]);
+   });
+});
+
+/** The walk cannot be read: it throws. */
+function walkThrows(): void {
+   spyOn(gateClassification, "collectEntryPointGates").mockImplementation(
+      () => {
+         throw new Error("unreadable base");
+      },
+   );
+}
+
+/** What a call throws, or undefined. */
+function thrown(fn: () => unknown): unknown {
+   try {
+      fn();
+      return undefined;
+   } catch (error) {
+      return error;
+   }
+}
+
+describe("each reader maps an unreadable walk to a deny", () => {
+   it("the rollup leg's live gates: a gate no rollup proves", () => {
+      walkThrows();
+      expect(liveEntryPointGates(struct, modelDef)).toEqual({
+         authorize: ["false"],
+         accessFilter: [],
+      });
+      expect(liveEntryPointGates(struct, undefined)).toEqual({
+         authorize: ["false"],
+         accessFilter: [],
+      });
+   });
+
+   it("the rollup leg's written gates (its proof and the join branch's graft): ROW_LEVEL_GATE", () => {
+      walkThrows();
+      const error = thrown(() => writtenGatesOf(struct, modelDef));
+      expect(isDeclineOf(error, "rollup")).toBe(true);
+      expect((error as { code?: string }).code).toBe("rollup_row_level_gate");
+   });
+
+   it("the rollup leg's gate proof: ROW_LEVEL_GATE", () => {
+      const source = { ...struct, sourceID: "s@m.malloy" };
+      const model = { contents: { s: source }, exports: [] };
+      walkThrows();
+      const error = thrown(() =>
+         proveGates(
+            { grainDimensions: [] } as never,
+            {
+               gates: { authorize: ["'a' = $ROLE"], accessFilter: [] },
+               sourceID: "s@m.malloy",
+               struct: source,
+            } as never,
+            { structRef: "s", modelDef: model } as never,
+            undefined,
+         ),
+      );
+      expect((error as { code?: string }).code).toBe("rollup_row_level_gate");
+   });
+
+   it("the collation rule's named entry: no named entry, so the probe refuses", () => {
+      const base = {
+         type: "table",
+         name: "t",
+         connection: "duckdb",
+         fields: [],
+      };
+      const model = { contents: { base }, exports: [] } as never;
+      const extension = { ...base, as: "base" };
+      // A readable walk names the source the inline extend extends...
+      spyOn(gateClassification, "collectEntryPointGates").mockReturnValue([]);
+      expect(namedEntryOf({}, extension, model)).toBe("base");
+      // ...an unreadable one names none.
+      walkThrows();
+      expect(namedEntryOf({}, extension, model)).toBeUndefined();
    });
 });

@@ -1113,10 +1113,9 @@ export class RollupVariantServe {
       // The author's source, redeclared in its declaring file: where the
       // governor finds the gate's graft target.
       if (!struct || struct.sourceID !== q.sourceID) throw contractSkip();
-      const writtenEntries = entryGates(struct, model);
-      if (writtenEntries === "unreadable") throw contractSkip();
-      const written = enforcedGatesOf(writtenEntries);
-      if (!sameGateSet(q.gates, written)) throw contractSkip();
+      if (!sameGateSet(q.gates, writtenGatesOf(struct, model))) {
+         throw contractSkip();
+      }
       return {
          graftScope: {
             modelDef: variant.modelDef,
@@ -3209,6 +3208,17 @@ function flagLine(modelDef: unknown): string {
  * the gate's field or text: a caller may not learn a gate's shape from why
  * its query was answered live.
  */
+/**
+ * The gates written on a variant's run target ({@link entryGates}), for the
+ * proof that they are exactly the live entry point's; a walk that cannot be
+ * read is a gate the rollup cannot prove (`ROW_LEVEL_GATE`).
+ */
+export function writtenGatesOf(struct: unknown, model: unknown): EnforcedGates {
+   const entries = entryGates(struct, model);
+   if (entries === "unreadable") throw contractSkip();
+   return enforcedGatesOf(entries);
+}
+
 function contractSkip(): LegDecline {
    return new LegDecline(
       "rollup_row_level_gate",
@@ -3269,7 +3279,7 @@ function joinGateDecline(
  * when it has none. A walk that cannot be read counts as a gate no rollup
  * proves.
  */
-function liveEntryPointGates(
+export function liveEntryPointGates(
    struct: unknown,
    modelDef: unknown,
 ): EnforcedGates | undefined {
@@ -3291,7 +3301,7 @@ function liveEntryPointGates(
  * dimensions, so filtering its groups equals filtering the base's rows
  * (table 1).
  */
-function proveGates(
+export function proveGates(
    plan: RollupVariantPlan,
    query: Pick<RollupQuery, "gates" | "sourceID" | "struct">,
    routed: Awaited<ReturnType<typeof readPreparedQuery>>,
@@ -3304,9 +3314,7 @@ function proveGates(
       ? resolveStructRefSource<{ sourceID?: unknown }>(routed.structRef, model)
       : undefined;
    if (!struct || struct.sourceID !== query.sourceID) throw contractSkip();
-   const writtenEntries = entryGates(struct, model);
-   if (writtenEntries === "unreadable") throw contractSkip();
-   const written = enforcedGatesOf(writtenEntries);
+   const written = writtenGatesOf(struct, model);
    if (!sameGateSet(live, written)) throw contractSkip();
    const fields = new Map(
       (

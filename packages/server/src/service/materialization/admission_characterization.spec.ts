@@ -84,7 +84,14 @@ source: zoned_gate is base
 source: composite_gate is compose(base, base)
 `;
 
-/** The gate shapes, by the author source that has each. */
+/**
+ * The gate shapes, by the author source that has each. `str_order_gate`
+ * (`region > $S`) and `zoned_gate` (`at > @2020-01-01`) cannot exist in a
+ * real package: the access-filter grammar admits only `field = $GIVEN` and
+ * `field in $GIVEN`, and refuses an ordering at load. They are kept here, as
+ * this compile reads them without that check, to pin how admission judges an
+ * ordering and a zoned column past a gate.
+ */
 const SHAPES = {
    "no gate": "open",
    "no gate, a where: on a float column": "scoped",
