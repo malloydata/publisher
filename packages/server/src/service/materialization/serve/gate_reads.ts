@@ -5,7 +5,7 @@
  * What an entry point's row-level gates read from a stored table, for the
  * checks that decide whether a routed answer filters the stored rows as live
  * filters the source's: a query's own time zone (a gate over a stored
- * truncation, `serve/served_copy_serve.ts`, `serve/rollup_variants.ts`) and a
+ * truncation, `serve/served_copy_checks.ts`, `serve/rollup_variants.ts`) and a
  * gate column's stored type (`domain/gate_policy.ts`).
  *
  * The gate is grafted on the routed compile after the leg answers, so a check
