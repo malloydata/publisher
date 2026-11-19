@@ -34,8 +34,10 @@ export class DuckLakeCatalogUnavailableError extends Error {
 }
 
 /** The typed error's message, as a compile's problem quotes it. */
+// Anchored: a problem quoting some other error that happens to contain this
+// text (a table named after it) must not match.
 const UNAVAILABLE_MESSAGE =
-   /DuckLake catalog "[^"]+" is not attached on its DuckDB instance/;
+   /^DuckLake catalog "[^"]+" is not attached on its DuckDB instance/;
 
 /** The problem code Malloy gives a table whose schema read failed. */
 const SCHEMA_FETCH_FAILED = "failed-to-fetch-table-schema";

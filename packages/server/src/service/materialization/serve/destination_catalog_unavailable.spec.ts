@@ -71,6 +71,11 @@ describe("isDestinationCatalogUnavailableError", () => {
             message: 'Binder Error: Catalog "credible" does not exist!',
          },
          { code: "some-other-problem", message: typed.message },
+         // Another error quoting the text (a table named after it).
+         {
+            code: "failed-to-fetch-table-schema",
+            message: `Catalog Error: Table with name "${typed.message}" does not exist!`,
+         },
       ]) {
          expect(
             isDestinationCatalogUnavailableError(

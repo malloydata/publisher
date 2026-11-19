@@ -2925,20 +2925,20 @@ class DuckLakeConnection extends DuckDBConnection {
    }
 
    /**
-    * `error`, or a {@link DuckLakeCatalogUnavailableError} when it is DuckDB
-    * failing to bind this connection's own catalog and the instance confirms
-    * the catalog is gone. A binder error naming another catalog, or this one
-    * while it is attached (a misbinding), is returned as it is. A confirmed
-    * loss also drops the instance's cached check, so the next lookup checks
-    * again and reopens the connection.
+    * `error`, or a {@link DuckLakeCatalogUnavailableError} when DuckDB failed
+    * to resolve a name and the instance confirms this connection's catalog is
+    * gone. The error alone cannot say: a three-part path reports `Binder
+    * Error: Catalog "<catalog>" does not exist`, but a two-part one
+    * (`<catalog>.<table>`, a destination with no schema) reports `Catalog
+    * Error: Table with name … does not exist`, as a misbinding does. So any
+    * binder or catalog error is checked against the instance, and one whose
+    * catalog is attached (a misbinding) is returned as it is. A confirmed loss
+    * also drops the instance's cached check, so the next lookup checks again
+    * and reopens the connection.
     */
    private async catalogUnavailableOr(error: unknown): Promise<unknown> {
-      const missing = /Catalog "([^"]+)" does not exist/.exec(
-         errMessage(error),
-      );
       if (
-         !missing ||
-         missing[1].toLowerCase() !== this.connectionName.toLowerCase() ||
+         !/\b(Binder|Catalog) Error\b/.test(errMessage(error)) ||
          (await aliasAttachedOnInstance(this, this.connectionName)) !== false
       ) {
          return error;

@@ -189,6 +189,21 @@ describe.skipIf(!PG_URL)(
                "credible",
             )) as DuckDBConnection;
             expect(isInstanceLocked(first)).toBe(true);
+            // While the catalog is there, a misbinding (another catalog, or a
+            // table it does not hold) keeps its own error.
+            for (const sql of [
+               "SELECT count(*) FROM nope.main.t",
+               "SELECT count(*) FROM credible.no_such_table",
+            ]) {
+               const misbound = await first.runSQL(sql).then(
+                  () => undefined,
+                  (error: unknown) => error,
+               );
+               expect(misbound).toBeDefined();
+               expect(misbound).not.toBeInstanceOf(
+                  DuckLakeCatalogUnavailableError,
+               );
+            }
             // The state the race used to leave: locked, catalog detached.
             await first.runSQL(`DETACH "credible"`);
             // The read's binder error, confirmed against the instance, is
@@ -200,19 +215,6 @@ describe.skipIf(!PG_URL)(
             expect(read).toBeInstanceOf(DuckLakeCatalogUnavailableError);
             expect(String((read as Error).cause)).toContain(
                'Catalog "credible" does not exist',
-            );
-            // A misbinding on the same connection keeps its own error.
-            await first
-               .runSQL(`DETACH IF EXISTS "nope"`)
-               .catch(() => undefined);
-            const misbound = await first
-               .runSQL("SELECT count(*) FROM nope.main.t")
-               .then(
-                  () => undefined,
-                  (error: unknown) => error,
-               );
-            expect(misbound).not.toBeInstanceOf(
-               DuckLakeCatalogUnavailableError,
             );
 
             // No restart: the next lookup reopens onto a fresh instance and
