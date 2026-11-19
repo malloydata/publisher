@@ -85,6 +85,19 @@ import {
    type ResultRows,
    roundBigIntegersAsLive,
 } from "./materialization/domain/live_big_integers";
+import {
+   type Float4Shape,
+   float4ColumnsByHandle,
+   float4OutputShape,
+   liveWritesFloat4AsPostgres,
+   type ResultRows as Float4ResultRows,
+   roundFloat4AsLive,
+} from "./materialization/domain/live_float4";
+import type { Binding } from "./materialization/domain/binding";
+import {
+   readPreparedQuery,
+   resolveStructRef,
+} from "./governance/ir/prepared_query";
 import type { ServedCopyServe } from "./materialization/serve/served_copy_serve";
 import type { ApiQueryPath } from "./materialization/serve/query_path";
 import {
@@ -946,7 +959,10 @@ export class ModelServing {
          executionTime = performance.now() - ctx.startTime;
       }
       if (answer.leg !== "live" && !answer.runFailed) {
-         await roundStoredAnswerAsLive(run.result, prepared.liveRunnable);
+         await roundStoredAnswerAsLive(run.result, prepared.liveRunnable, {
+            runnable: governed.runnable,
+            bindings: answer.answer.shapeBindings,
+         });
       }
       return { run, answer, executionTime, maxRows, maxBytes };
    }
@@ -1770,14 +1786,21 @@ function governRequestOf(r: {
 }
 
 /**
- * A stored answer's big integers rounded as live rounds them, when the
- * query's live dialect is Postgres, the one whose rounding is measured
- * (`liveRoundsBigIntegersAsPostgres`). A live compile that cannot say its
- * dialect leaves the answer as it ran.
+ * A stored answer's values written as live writes them, when the query's
+ * live dialect is Postgres: its big integers rounded as live rounds them
+ * (`liveRoundsBigIntegersAsPostgres`), and the float4 values a `storage=`
+ * table holds written as live's JSON stage writes a float4
+ * (`liveWritesFloat4AsPostgres`). A live compile that cannot say its dialect
+ * leaves the answer as it ran, and so does a served compile whose IR cannot
+ * be read.
  */
 async function roundStoredAnswerAsLive(
    result: PreparedRun["result"],
    liveRunnable: QueryMaterializer,
+   served: {
+      runnable: QueryMaterializer;
+      bindings: readonly Binding[];
+   },
 ): Promise<void> {
    let dialect: string;
    try {
@@ -1785,6 +1808,26 @@ async function roundStoredAnswerAsLive(
    } catch {
       return;
    }
-   if (!liveRoundsBigIntegersAsPostgres(dialect)) return;
-   roundBigIntegersAsLive(result as unknown as ResultRows);
+   if (liveRoundsBigIntegersAsPostgres(dialect)) {
+      roundBigIntegersAsLive(result as unknown as ResultRows);
+   }
+   if (!liveWritesFloat4AsPostgres(dialect)) return;
+   const float4 = float4ColumnsByHandle(served.bindings);
+   if (float4.size === 0) return;
+   let shape: Float4Shape;
+   try {
+      const view = await readPreparedQuery(served.runnable);
+      const live = await readPreparedQuery(liveRunnable);
+      shape = float4OutputShape(
+         {
+            query: view.query,
+            root: resolveStructRef(view.structRef, view.modelDef),
+            liveQuery: live.query,
+         },
+         float4,
+      );
+   } catch {
+      return;
+   }
+   roundFloat4AsLive(result as unknown as Float4ResultRows, shape);
 }
