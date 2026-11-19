@@ -32,6 +32,7 @@
  * {@link makeLegs}, and its rows in `domain/leg_decline.ts`.
  */
 
+import { isDuckLakeCatalogUnavailable } from "../../ducklake_catalog_unavailable";
 import type { Leg as LegName } from "../domain/vocabulary";
 import type {
    GivenValue,
@@ -390,9 +391,11 @@ function bindingsAllowDegradeToLive(bindings: readonly Binding[]): boolean {
  * `freshnessFallback=live` marks the tier as an optimisation, not a
  * dependency. Deliberately narrow: only an answer read through a virtual map,
  * only per {@link bindingsAllowDegradeToLive} over the bindings that produced
- * THIS shape (a sibling source must not decide), or for DECIMAL arithmetic the
- * destination cannot hold ({@link isStoredDecimalArithmeticError}), never for
- * a client error (a bad given) or an abort.
+ * THIS shape (a sibling source must not decide), for DECIMAL arithmetic the
+ * destination cannot hold ({@link isStoredDecimalArithmeticError}), or for a
+ * destination whose catalog is unavailable
+ * ({@link isDestinationCatalogUnavailableError}), never for a client error (a
+ * bad given) or an abort.
  */
 export function canDegradeToLive(
    answer: Answer,
@@ -408,8 +411,23 @@ export function canDegradeToLive(
          "runtime-given-",
       ) &&
       (bindingsAllowDegradeToLive(answer.answer.shapeBindings) ||
-         isStoredDecimalArithmeticError(error))
+         isStoredDecimalArithmeticError(error) ||
+         isDestinationCatalogUnavailableError(error))
    );
+}
+
+/**
+ * Whether `error` is a stored read finding its destination's catalog missing
+ * from the worker's instance: the lookup's own check, or a read whose binder
+ * error the connection confirmed by checking the instance
+ * (DuckLakeCatalogUnavailableError, connection.ts). A binder error naming a
+ * catalog that is there, a misbinding, is not one. The stored table is an
+ * optimisation and the fault is the worker's, so such an answer degrades to
+ * live whatever the bindings' `freshnessFallback` says; the path report names
+ * it `READ_FAILED`.
+ */
+export function isDestinationCatalogUnavailableError(error: unknown): boolean {
+   return isDuckLakeCatalogUnavailable(error);
 }
 
 /**

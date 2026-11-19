@@ -21,6 +21,7 @@
  * reported as a coded package warning.
  */
 
+import { isDuckLakeCatalogUnavailable } from "../../ducklake_catalog_unavailable";
 import { CompiledCopyLanes } from "./served_copy_lanes";
 import { createHash } from "crypto";
 import { requireUnique, verdictOf } from "../domain/key_check";
@@ -2092,6 +2093,17 @@ export class ServedCopyServe {
             runtime: servedRuntime,
          } = await load(overlay));
       } catch (err) {
+         // A destination catalog the worker lost (connection.ts reopens it)
+         // is not the copy's text: neither contained to a source nor
+         // remembered, or a failure recorded while the destination reopens
+         // would outlive the invalidation that reopen triggers.
+         if (isDuckLakeCatalogUnavailable(err)) {
+            problems.push({
+               reason: "compile_failed",
+               detail: err instanceof Error ? err.message : String(err),
+            });
+            return "failed";
+         }
          if (withoutLeftOutColumn(state, copy, err)) return "retry";
          if (this.contain(state, copy, err, copy.files, "precise", !!known)) {
             if (!known) this.rememberFailure(failureKey, err, state.asOf);

@@ -410,6 +410,36 @@ export function duckDBInstanceOf(connection: unknown): object | undefined {
       | undefined;
 }
 
+/** A number per native instance, for logs: two lines naming one are one instance. */
+const instanceIds = new WeakMap<object, number>();
+let lastInstanceId = 0;
+
+/** {@link duckDBInstanceOf}'s number for logs; undefined before it opens. */
+export function duckDBInstanceId(connection: unknown): number | undefined {
+   const instance = duckDBInstanceOf(connection);
+   if (!instance) return undefined;
+   let id = instanceIds.get(instance);
+   if (id === undefined) {
+      id = ++lastInstanceId;
+      instanceIds.set(instance, id);
+   }
+   return id;
+}
+
+/**
+ * Whether anything besides `connection` holds its native instance: another
+ * connection object (a draining generation's), or an open still joining it.
+ */
+export function duckDBInstanceHasOtherHolders(connection: unknown): boolean {
+   const shareKey = (connection as { shareKey?: string }).shareKey;
+   if (!shareKey) return false;
+   const own = (connection as { connection?: unknown }).connection;
+   const holders = DuckDBConnectionClass.activeDBs[shareKey]?.connections as
+      | unknown[]
+      | undefined;
+   return (holders ?? []).some((holder) => holder !== own);
+}
+
 /** Record that `connection`'s instance is locked. */
 export function markInstanceLocked(connection: unknown): void {
    const instance = duckDBInstanceOf(connection);
@@ -539,20 +569,42 @@ export async function lockDownDuckDBSession(
    connection: DuckDBConnection,
    options: Parameters<typeof lockDownOnce>[1] = {},
 ): Promise<void> {
+   await runExclusiveOnDuckDBInstance(connection, () =>
+      lockDownOnce(connection, options),
+   );
+}
+
+/**
+ * Run `step` with no other exclusive step (a lockdown, a DuckLake attach) on
+ * `connection`'s instance. A setup that must not straddle the lock (an ATTACH
+ * and the storage secret that follows it) runs here, so the lock lands before
+ * or after it, never between its statements. Keyed on the instance once the
+ * connection is open; on the connection itself before.
+ */
+export async function runExclusiveOnDuckDBInstance<T>(
+   connection: DuckDBConnection,
+   step: () => Promise<T>,
+): Promise<T> {
    const key = duckDBInstanceOf(connection) ?? connection;
-   const run = (lockdownsInFlight.get(key) ?? Promise.resolve())
+   const run = (exclusiveStepsInFlight.get(key) ?? Promise.resolve())
       .catch(() => {})
-      .then(() => lockDownOnce(connection, options));
-   lockdownsInFlight.set(key, run);
+      .then(step);
+   const settled = run.then(
+      () => {},
+      () => {},
+   );
+   exclusiveStepsInFlight.set(key, settled);
    try {
-      await run;
+      return await run;
    } finally {
-      if (lockdownsInFlight.get(key) === run) lockdownsInFlight.delete(key);
+      if (exclusiveStepsInFlight.get(key) === settled) {
+         exclusiveStepsInFlight.delete(key);
+      }
    }
 }
 
-/** The lockdown running on each instance, which the next one waits for. */
-const lockdownsInFlight = new WeakMap<object, Promise<void>>();
+/** The exclusive step running on each instance, which the next one waits for. */
+const exclusiveStepsInFlight = new WeakMap<object, Promise<void>>();
 
 /** One {@link lockDownDuckDBSession}, with no other on its instance. */
 async function lockDownOnce(

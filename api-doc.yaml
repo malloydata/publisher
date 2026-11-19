@@ -9302,8 +9302,10 @@ components:
         needs a join the table's connection cannot reach; `COUNT_SEMANTICS`,
         an aggregate the table cannot reproduce as the live query computes
         it; `STALE`, it is past its freshness window; `READ_FAILED`, it was
-        chosen but reading it failed at run time, and its freshness fallback
-        allowed live.
+        chosen but reading it failed at run time and the query was answered
+        live: its freshness fallback allowed live, or the failure answers live
+        whatever the fallback says (DECIMAL arithmetic past what the
+        destination holds, or a destination catalog missing on the worker).
 
 
         Retained, no longer produced (shipped in 0.14.0): `WARNED`, now
