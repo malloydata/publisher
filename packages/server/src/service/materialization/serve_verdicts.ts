@@ -19,6 +19,7 @@ import type { Model } from "../model";
 import { collectEntryPointGates } from "../gate_classification";
 import { structsReachedFrom } from "../governance/ir/source_graph";
 import { keepsGatesWhenReadExact, mayAttempt } from "./domain/admission";
+import type { GateSwitches, TableRead } from "./domain/gate_policy";
 import { type Binding, pin, type Snapshot } from "./domain/binding";
 import { storageTablePath } from "./domain/storage_table_path";
 import type { FreshnessManifest } from "./domain/types";
@@ -397,29 +398,29 @@ export class ServeVerdicts {
          // The router's own question, asked of the source's own table: a
          // rollup's leg past a gate, with its variant proven at plan; the
          // served copy over a table it keeps the gate on.
-         keepsGate: (sourceID, tier) => {
-            if (isRollupOrigin(buildPlan?.sources?.[sourceID]?.origin)) {
-               return (
-                  mayAttempt("rollup", switches) &&
-                  plan.rollupsKeepingGates.has(sourceID)
-               );
-            }
-            return keepsGatesWhenReadExact(
-               "served",
-               [
-                  {
-                     tier,
-                     ownGateKept: tier === "storage" && ownGateKept(sourceID),
-                     holdsOnlyUngatedRows:
-                        tier === "storage" && holdsOnlyUngatedRows(sourceID),
-                     ...(tier === "storage"
-                        ? { gateColumnTypes: ownGateColumnTypes(sourceID) }
-                        : {}),
-                  },
-               ],
+         keepsGate: (sourceID, tier) =>
+            verdictKeepsGate(
+               isRollupOrigin(buildPlan?.sources?.[sourceID]?.origin)
+                  ? {
+                       rollup: true,
+                       keptAtPlan: plan.rollupsKeepingGates.has(sourceID),
+                    }
+                  : {
+                       rollup: false,
+                       table: {
+                          tier,
+                          ownGateKept:
+                             tier === "storage" && ownGateKept(sourceID),
+                          holdsOnlyUngatedRows:
+                             tier === "storage" &&
+                             holdsOnlyUngatedRows(sourceID),
+                          ...(tier === "storage"
+                             ? { gateColumnTypes: ownGateColumnTypes(sourceID) }
+                             : {}),
+                       },
+                    },
                switches,
-            );
-         },
+            ),
          refusedAtBind: (sourceID, source, tier) =>
             this.refusedAtBind(sourceID, source, tier),
          boundEntityIds: new Set(Object.keys(host.databaseEntries() ?? {})),
@@ -882,4 +883,23 @@ function servePathOf(
       path: "live",
       reason: preview.problems.get(v.sourceID) ?? v.reason ?? "not_rerooted",
    };
+}
+
+/**
+ * Whether a source's own table keeps its entry point's gates, as the serve
+ * verdict reports it: the router's own question, asked before any query. A
+ * rollup is asked of its leg past a gate, with its variant proven at plan
+ * (`keptAtPlan`); any other table of the served copy's leg over that table,
+ * read exactly.
+ */
+export function verdictKeepsGate(
+   source:
+      | { rollup: true; keptAtPlan: boolean }
+      | { rollup: false; table: TableRead },
+   switches: GateSwitches,
+): boolean {
+   if (source.rollup) {
+      return mayAttempt("rollup", switches) && source.keptAtPlan;
+   }
+   return keepsGatesWhenReadExact("served", [source.table], switches);
 }
