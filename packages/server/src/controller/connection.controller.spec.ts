@@ -2260,6 +2260,33 @@ describe("ConnectionController.getConnectionQueryData statement usage", () => {
          rows: 2,
          status: "ok",
       });
+      // The bytes of the response body the route answers with, exactly.
+      const { data } = outcome as { data: string };
+      expect(records[0].bytes_out).toBe(Buffer.byteLength(data, "utf8"));
+   });
+
+   it("records a statement whose result the row cap refuses, once, without bytes_out", async () => {
+      // More rows than the cap: the route answers 413 after the statement ran,
+      // so no response is serialized, and the statement still has its record.
+      const runSQL = sinon.stub().resolves({
+         rows: Array.from({ length: 5 }, (_, a) => ({ a })),
+         totalRows: 5,
+      });
+      const controller = controllerOver(buffered(runSQL), managedConnection);
+      setEnv({ PUBLISHER_MAX_QUERY_ROWS: "3" });
+
+      const { records, outcome } = await usageRecords(
+         query(controller, "SELECT a FROM t"),
+      );
+
+      expect(outcome).toBeInstanceOf(Error);
+      expect(records).toHaveLength(1);
+      expect(records[0]).toMatchObject({
+         surface: "sql",
+         rows: 5,
+         status: "ok",
+      });
+      expect(records[0]).not.toHaveProperty("bytes_out");
    });
 
    it("records a streamed statement the same way", async () => {
@@ -2286,6 +2313,8 @@ describe("ConnectionController.getConnectionQueryData statement usage", () => {
          rows: 3,
          status: "ok",
       });
+      const { data } = outcome as { data: string };
+      expect(records[0].bytes_out).toBe(Buffer.byteLength(data, "utf8"));
    });
 
    it("records nothing on a connection that is not managed", async () => {

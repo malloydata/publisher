@@ -33,7 +33,29 @@ export interface StatementUsage {
    catalog?: string;
    durationMs: number;
    rows?: number;
+   /**
+    * UTF-8 bytes of the response Publisher returned for the statement: the
+    * serialized result of a model query, a notebook cell or raw SQL. Absent on
+    * a build, a load or a copy (they return no rows), on a failed statement,
+    * and when the result was never serialized (a cap refused it).
+    */
+   bytesOut?: number;
    status: "ok" | "error";
+}
+
+/** The UTF-8 size of a serialized response, as `bytes_out` counts it. */
+export function responseBytes(serialized: string): number {
+   return Buffer.byteLength(serialized, "utf8");
+}
+
+/**
+ * A statement that has run and whose record waits for the size of the response
+ * it is answered with. {@link emit} sends the record once; a later call does
+ * nothing, so a caller emits with the size where it serializes and again,
+ * without one, in a `finally` that covers every path that does not get there.
+ */
+export interface PendingStatementUsage {
+   emit(bytesOut?: number): void;
 }
 
 const usageCounter = lazyCounter(
@@ -108,6 +130,9 @@ export function emitStatementUsage(usage: StatementUsage): void {
          ...(usage.package ? { package: usage.package } : {}),
          duration_ms: Math.max(0, Math.round(usage.durationMs)),
          ...(usage.rows !== undefined ? { rows: usage.rows } : {}),
+         ...(usage.bytesOut !== undefined
+            ? { bytes_out: Math.max(0, Math.round(usage.bytesOut)) }
+            : {}),
          status: usage.status,
          ...(threads !== undefined ? { threads } : {}),
          ...(worker ? { worker } : {}),
@@ -118,15 +143,23 @@ export function emitStatementUsage(usage: StatementUsage): void {
    }
 }
 
+type UsageBase = Omit<
+   StatementUsage,
+   "durationMs" | "status" | "rows" | "bytesOut"
+>;
+
 /**
- * Times `body` and emits one record for it, success or failure, then returns or
- * rethrows its outcome unchanged.
+ * Times `body`. A failure emits its record at once and rethrows unchanged. A
+ * success returns the result and the record, pending: the caller emits it once
+ * it knows the size of the response, and must emit it on every other path too.
+ * The duration is the statement's own, taken when `body` settles, so the time
+ * spent serializing the answer is not counted.
  */
-export async function withStatementUsage<T>(
-   base: Omit<StatementUsage, "durationMs" | "status" | "rows">,
+export async function meterStatement<T>(
+   base: UsageBase,
    body: () => Promise<T>,
    rowsOf?: (result: T) => number | undefined,
-): Promise<T> {
+): Promise<{ result: T; usage: PendingStatementUsage }> {
    const start = performance.now();
    let result: T;
    try {
@@ -139,6 +172,7 @@ export async function withStatementUsage<T>(
       });
       throw error;
    }
+   const durationMs = performance.now() - start;
    // Outside the body's try: reading the row count is metering's own work, so
    // a failure there is a record without rows, never a failed statement.
    let rows: number | undefined;
@@ -147,11 +181,34 @@ export async function withStatementUsage<T>(
    } catch {
       rows = undefined;
    }
-   emitStatementUsage({
-      ...base,
-      durationMs: performance.now() - start,
-      rows,
-      status: "ok",
-   });
+   let emitted = false;
+   const usage: PendingStatementUsage = {
+      emit(bytesOut?: number) {
+         if (emitted) return;
+         emitted = true;
+         emitStatementUsage({
+            ...base,
+            durationMs,
+            rows,
+            bytesOut,
+            status: "ok",
+         });
+      },
+   };
+   return { result, usage };
+}
+
+/**
+ * Times `body` and emits one record for it, success or failure, then returns or
+ * rethrows its outcome unchanged. For a statement that answers with no rows (a
+ * build, a load, a copy), so its record carries no `bytes_out`.
+ */
+export async function withStatementUsage<T>(
+   base: UsageBase,
+   body: () => Promise<T>,
+   rowsOf?: (result: T) => number | undefined,
+): Promise<T> {
+   const { result, usage } = await meterStatement(base, body, rowsOf);
+   usage.emit();
    return result;
 }
