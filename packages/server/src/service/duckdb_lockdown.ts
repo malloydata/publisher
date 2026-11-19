@@ -488,8 +488,11 @@ export function isLockedByOptions(connection: unknown): boolean {
 async function loadedExtensions(
    connection: DuckDBConnection,
 ): Promise<Set<string>> {
+   // duckdb_extensions() lists install paths, so caller and author SQL may
+   // not read it: Publisher's own read runs as an internal statement.
    const rows = rowsOf(
-      await connection.runSQL(
+      await runInternalSQL(
+         connection,
          "SELECT extension_name FROM duckdb_extensions() WHERE loaded",
       ),
    );

@@ -43,6 +43,11 @@ export const INTROSPECTION_NAMES: ReadonlySet<string> = new Set([
    "pg_database",
    "pg_prepared_statements",
    "duckdb_prepared_statements",
+   // Listings of the instance's own files: the remote files its file cache
+   // holds, its spill files, and its extensions with their install paths.
+   "duckdb_external_file_cache",
+   "duckdb_temporary_files",
+   "duckdb_extensions",
    // DuckLake's own functions, as DuckDB 1.5.5 registers them: refused as
    // words anywhere, and every other `ducklake_` name as a call
    // ({@link DUCKLAKE_FUNCTION_PREFIX}).

@@ -417,7 +417,8 @@ secret, and no `SET`/`RESET` once locked. On a locked instance, Publisher also r
 DuckDB sees it, any statement that creates or drops a secret, that reaches DuckDB's logging or
 profiling (which DuckDB's configuration lock does not cover), that runs SQL taken from text
 (`query()`, a serialized plan, `IMPORT DATABASE`), or that introspects the instance's catalog,
-settings, secrets, variables or pragmas, calls DuckLake's own functions, or reaches an attached
+settings, secrets, variables, pragmas or its own files (its file cache, spill files and
+extensions), calls DuckLake's own functions, or reaches an attached
 database other than through its tables (an attached database's Postgres system schemas,
 `pg_catalog`, `information_schema`, `pg_toast` and `pg_temp_N`, included; DuckDB's own
 `information_schema` and `pg_catalog` still read, except the `pg_settings`, `pg_database` and

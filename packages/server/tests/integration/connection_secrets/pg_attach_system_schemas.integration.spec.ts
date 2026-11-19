@@ -227,6 +227,9 @@ describe.skipIf(!PG_URL)(
                   "SELECT name, setting FROM pg_settings",
                   "SELECT * FROM system.pg_catalog.pg_database",
                   "SELECT * FROM query_table('lake.main.' || 'sales')",
+                  "SELECT * FROM duckdb_external_file_cache()",
+                  "SELECT path FROM duckdb_temporary_files()",
+                  "SELECT install_path FROM duckdb_extensions()",
                ],
             ],
          ];

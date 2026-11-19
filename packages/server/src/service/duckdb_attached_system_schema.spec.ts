@@ -313,6 +313,17 @@ const REFUSED_VIEWS: [string, string][] = [
          "SELECT * FROM duckdb_prepared_statements()",
          "duckdb_prepared_statements",
       ],
+      // Listings of the instance's own files.
+      [
+         "SELECT * FROM duckdb_external_file_cache()",
+         "duckdb_external_file_cache",
+      ],
+      ["SELECT path FROM duckdb_temporary_files()", "duckdb_temporary_files"],
+      ['SELECT * FROM "DuckDB_Extensions"()', "duckdb_extensions"],
+      [
+         "SELECT install_path FROM duckdb_extensions() WHERE loaded",
+         "duckdb_extensions",
+      ],
    ]);
 
 /** Names the lockdown gate refuses, assembled at run time from text. */
@@ -322,7 +333,7 @@ const DYNAMIC: string[] = [
    "SELECT * FROM json_execute_serialized_sql(json_serialize_sql('SELECT 1'))",
 ];
 
-describe("DuckDB's own catalog views over refused functions", () => {
+describe("DuckDB's own catalog views over refused functions, and listings of its own files", () => {
    it.each(REFUSED_VIEWS)("refuses %p in raw SQL", async (sql, name) => {
       const refused = assertSingleSelect(
          "duck",
@@ -399,5 +410,20 @@ describe("names the gate refuses are refused at load too", () => {
             ],
          }),
       ).toEqual([]);
+   });
+});
+
+describe("names refused by spelling alone, whatever they stand for", () => {
+   it.each([
+      // A struct field or a user table named like a system schema, under a
+      // catalog or table alias: refused, as the lexical read cannot tell.
+      "SELECT t.pg_catalog.x FROM (SELECT {'x': 1} AS pg_catalog) AS t",
+      // A view name used as an alias or a user table's name.
+      "SELECT 1 AS pg_settings",
+      "SELECT * FROM app.public.pg_database",
+   ])("refuses %p: rename or alias it", async (sql) => {
+      await expect(
+         assertSingleSelect("duck", sql, "locked-down DuckDB connection"),
+      ).rejects.toBeInstanceOf(BadRequestError);
    });
 });
