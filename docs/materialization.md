@@ -803,7 +803,9 @@ again with backoff (after 1 second, doubling to at most a
 minute, ten times), and by any later poll of an unchanged manifest, until a read succeeds, when the
 warning clears. A change made after a bind is read at the next one.
 
-**Columns with no Malloy basic type.** A stored list or struct column is declared as Malloy's array
+**Columns with no Malloy basic type.** A `storage=` build stores an array column, public or hidden
+(a BigQuery `ARRAY`, a DuckDB or Postgres list, a persisted query's `nest:`), as a DuckDB list of its element type
+(`VARCHAR[]`, `BIGINT[]`, `STRUCT(…)[]`). A stored list or struct column is declared as Malloy's array
 or record type, so it reads back as it does live, when the source's field is one; a column Malloy has
 no faithful declaration for (a MAP, UNION, ENUM, BLOB, INTERVAL or JSON column, a list or struct
 holding one, a list or struct whose field live types as a warehouse-native type or that holds one, or
@@ -823,9 +825,11 @@ no type declares is counted in `publisher_storage_serve_shape_type_fallback_tota
 
 **A column the served copy cannot carry sends a `#(materialize)` source live as a whole.** A
 `#(materialize)` source leaves a column out per query, as above, only when the column is stored: a
-list (a DuckDB `BIGINT[]`, a BigQuery `ARRAY<INT64>`), a MAP, a UUID and the like. Three kinds of
-column are never on its table, and each one sends **every** query over the source live, whatever
-the query reads, in a `storage=` table and a database one (a database origin) alike:
+list (a DuckDB `BIGINT[]`, a BigQuery `ARRAY<INT64>`), a MAP, a UUID and the like. A list column its
+table lacks is left out per query too: a `storage=` build by an earlier release left every array
+column out of its table, so such a table serves every query that does not read the list until its
+next full build. Three kinds of column are never on its table, and each one sends **every** query
+over the source live, whatever the query reads, in a `storage=` table and a database one (a database origin) alike:
 
 - a struct (record) column of the source's own, such as a DuckDB `STRUCT(a BIGINT)` or a BigQuery
   `STRUCT<…>`: Malloy types it as a join, so the plan stores no column for it and the served copy
@@ -836,8 +840,10 @@ the query reads, in a `storage=` table and a database one (a database origin) al
 
 The answers are live's, so nothing is wrong, only slower. Each query's path report says
 `servedBy: live` and skips the table as `NOT_SERVED` with code `served_copy`; the package's
-`served-copy-not-served` warning names why, in its message and its `reason` field; the path report
-itself does not. A v1 `#@ persist`
+`served-copy-not-served` warning names why, in its message and its `reason` field. For
+`column_types`, the warning's message and the path report's `detail` also name each column, with
+its declared type and its stored type (or that the table does not hold it); a hidden column is
+named only as "a hidden column". A v1 `#@ persist`
 `storage=` source stores a struct column of its own and serves it from the table.
 
 **Integers past 2^53.** A stored table's columns are declared to Malloy as plain numbers, which it
