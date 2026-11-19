@@ -33,14 +33,38 @@ export class DuckLakeCatalogUnavailableError extends Error {
    }
 }
 
+/** The typed error's message, as a compile's problem quotes it. */
+const UNAVAILABLE_MESSAGE =
+   /DuckLake catalog "[^"]+" is not attached on its DuckDB instance/;
+
+/** The problem code Malloy gives a table whose schema read failed. */
+const SCHEMA_FETCH_FAILED = "failed-to-fetch-table-schema";
+
 /**
  * Whether `error`, or an error it was caused by, is a
  * {@link DuckLakeCatalogUnavailableError}. By code, since a runtime may wrap
- * or copy the error it is handed.
+ * or copy the error it is handed; and, for a compile, by its problems: Malloy
+ * catches a schema read's error and reports it as a
+ * `failed-to-fetch-table-schema` problem quoting the error's message, with
+ * neither its type nor its code. The message is only ever raised once the
+ * instance confirmed the catalog gone (connection.ts), so quoting it is as
+ * good as the type.
  */
 export function isDuckLakeCatalogUnavailable(error: unknown): boolean {
    for (let e = error, depth = 0; e && depth < 5; depth++) {
       if ((e as { code?: unknown }).code === DUCKLAKE_CATALOG_UNAVAILABLE) {
+         return true;
+      }
+      const problems = (e as { problems?: unknown }).problems;
+      if (
+         Array.isArray(problems) &&
+         problems.some(
+            (p: { code?: unknown; message?: unknown }) =>
+               p?.code === SCHEMA_FETCH_FAILED &&
+               typeof p.message === "string" &&
+               UNAVAILABLE_MESSAGE.test(p.message),
+         )
+      ) {
          return true;
       }
       e = (e as { cause?: unknown }).cause;

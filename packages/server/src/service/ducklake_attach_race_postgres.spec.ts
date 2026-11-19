@@ -215,17 +215,22 @@ describe.skipIf(!PG_URL)(
                DuckLakeCatalogUnavailableError,
             );
 
-            const lost = await env.malloyConfig.connections
-               .lookupConnection("credible")
-               .then(
-                  () => undefined,
-                  (error: unknown) => error,
-               );
-            expect(lost).toBeInstanceOf(DuckLakeCatalogUnavailableError);
+            // No restart: the next lookup reopens onto a fresh instance and
+            // reads.
+            expect(await readCount(env)).toBe(0);
             expect(reopened).toEqual(["credible"]);
 
-            // No restart: the next lookup opens a fresh instance and reads.
+            // Lost again after its check was cached, seen first by a
+            // compile's schema read: typed, and the next lookup heals.
+            const healed = (await env.malloyConfig.connections.lookupConnection(
+               "credible",
+            )) as DuckDBConnection;
+            await healed.runSQL(`DETACH "credible"`);
+            await expect(
+               healed.fetchTableSchema("k", "credible.main.t"),
+            ).rejects.toBeInstanceOf(DuckLakeCatalogUnavailableError);
             expect(await readCount(env)).toBe(0);
+            expect(reopened).toEqual(["credible", "credible"]);
          } finally {
             await dispose();
          }

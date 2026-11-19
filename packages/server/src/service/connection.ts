@@ -2962,7 +2962,36 @@ class DuckLakeConnection extends DuckDBConnection {
       this.connectionName = options.name;
    }
 
+   /**
+    * A compile's schema reads (`DESCRIBE`) run through `runRawSQL`, not
+    * {@link runSQL}, so they confirm a lost catalog here: without it a
+    * catalog lost after its check was cached fails every compile with an
+    * untyped binder error while the cached check keeps lookups from ever
+    * reopening the connection.
+    */
    async fetchTableSchema(
+      tableKey: string,
+      tablePath: string,
+   ): Promise<TableSourceDef> {
+      try {
+         return await this.fetchTableSchemaIn(tableKey, tablePath);
+      } catch (error) {
+         throw await this.catalogUnavailableOr(error);
+      }
+   }
+
+   /** @see fetchTableSchema */
+   async fetchSelectSchema(
+      sqlRef: Parameters<DuckDBConnection["fetchSelectSchema"]>[0],
+   ): Promise<Awaited<ReturnType<DuckDBConnection["fetchSelectSchema"]>>> {
+      try {
+         return await super.fetchSelectSchema(sqlRef);
+      } catch (error) {
+         throw await this.catalogUnavailableOr(error);
+      }
+   }
+
+   private async fetchTableSchemaIn(
       tableKey: string,
       tablePath: string,
    ): Promise<TableSourceDef> {
@@ -3574,6 +3603,10 @@ export function buildEnvironmentMalloyConfig(
    // DuckLake connections closed because their instance lost the catalog: a
    // lookup holding one looks up again rather than return it.
    const reopenedDuckLakes = new WeakSet<Connection>();
+   // Each reopened connection's close, which a lookup going on to the fresh
+   // instance waits for: opened sooner, the fresh connection would join the
+   // old instance while the closing connection still holds it.
+   const duckLakeClosing = new WeakMap<Connection, Promise<void>>();
    // The connection each cached DuckLake promise resolves to, read
    // synchronously so a reopen drops it before any other lookup runs.
    const duckLakeCurrent = new Map<string, DuckLakeConnection>();
@@ -3719,10 +3752,12 @@ export function buildEnvironmentMalloyConfig(
     * holder, it is closed and dropped from the cache, so the next lookup opens
     * a fresh instance and attaches. While another holder (a draining
     * generation's connection) keeps the instance open, a reopen would only
-    * join it again, so the connection is kept until that holder is released.
-    * Either way this lookup fails with {@link DuckLakeCatalogUnavailableError},
-    * which a routed query answers live. The loss is logged once per instance,
-    * and `onDuckLakeReopened` is called once per instance, when it is reopened.
+    * join it again, so the connection is kept and this lookup fails with
+    * {@link DuckLakeCatalogUnavailableError}, which a routed query answers
+    * live. A lookup that reopens looks up again onto the fresh instance
+    * ({@link resolveDuckLake}), so it succeeds. The loss is logged once per
+    * instance, and `onDuckLakeReopened` is called once per instance, when it
+    * is reopened.
     */
    async function verifyLockedDuckLake(
       connection: DuckLakeConnection,
@@ -3732,7 +3767,10 @@ export function buildEnvironmentMalloyConfig(
       if (!duckLakeCatalogChecked(connection, name)) {
          const attached = await aliasAttachedOnInstance(connection, name);
          if (attached === false) {
+            // Throws while another holder keeps the instance; otherwise the
+            // connection is reopened, and the caller looks up again.
             catalogMissing(connection, name);
+            return;
          }
          // A check that failed says nothing, so it is not cached.
          if (attached === true) markDuckLakeCatalogChecked(connection, name);
@@ -3755,9 +3793,10 @@ export function buildEnvironmentMalloyConfig(
    }
 
    /**
-    * {@link verifyLockedDuckLake} found `name` missing: report, reopen, throw.
-    * Returns only for a connection a concurrent lookup already reopened, which
-    * the caller then looks up again ({@link resolveDuckLake}).
+    * {@link verifyLockedDuckLake} found `name` missing: report it, then throw
+    * while another holder keeps the instance, or reopen the connection and
+    * return, so the caller looks up again ({@link resolveDuckLake}), as it
+    * does for a connection a concurrent lookup already reopened.
     */
    function catalogMissing(connection: DuckLakeConnection, name: string): void {
       if (reopenedDuckLakes.has(connection)) return;
@@ -3809,19 +3848,20 @@ export function buildEnvironmentMalloyConfig(
             evictions.delete(eviction);
          });
       evictions.add(eviction);
+      duckLakeClosing.set(connection, eviction);
       if (!reportedDuckLakeInstances.has(instanceKey)) {
          reportedDuckLakeInstances.add(instanceKey);
          onDuckLakeReopened?.(name);
       }
-      throw new DuckLakeCatalogUnavailableError(name);
    }
 
    /**
     * The DuckLake connection for `name`, attached, and checked when its
-    * instance is locked. A lookup that finds its connection was just closed by
-    * a concurrent lookup's reopen (its attach or check failing on the closed
-    * connection, or passing just before the close) looks up once more, rather
-    * than fail with the close or return a closed connection.
+    * instance is locked. A lookup whose connection was reopened, by its own
+    * check or a concurrent lookup's (its attach or check failing on the
+    * closed connection, or passing just before the close), looks up once
+    * more, onto the fresh instance, rather than fail or return a closed
+    * connection.
     */
    async function resolveDuckLake(
       name: string,
@@ -3849,12 +3889,14 @@ export function buildEnvironmentMalloyConfig(
                reopenedDuckLakes.has(connection) &&
                !(error instanceof DuckLakeCatalogUnavailableError)
             ) {
+               await duckLakeClosing.get(connection);
                continue;
             }
             throw error;
          }
          if (!reopenedDuckLakes.has(connection)) return connection;
          if (attempt > 0) throw new DuckLakeCatalogUnavailableError(name);
+         await duckLakeClosing.get(connection);
       }
    }
 

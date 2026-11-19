@@ -54,4 +54,31 @@ describe("isDestinationCatalogUnavailableError", () => {
          );
       }
    });
+
+   it("reads a compile's wrapped schema-read problem quoting the typed error", () => {
+      const typed = new DuckLakeCatalogUnavailableError("credible");
+      // As Malloy reports a schema read that threw: a problem quoting the
+      // message, with neither type nor code.
+      const wrapped = Object.assign(new Error("import reference failure"), {
+         problems: [
+            { code: "failed-to-fetch-table-schema", message: typed.message },
+         ],
+      });
+      expect(isDestinationCatalogUnavailableError(wrapped)).toBe(true);
+      for (const problem of [
+         {
+            code: "failed-to-fetch-table-schema",
+            message: 'Binder Error: Catalog "credible" does not exist!',
+         },
+         { code: "some-other-problem", message: typed.message },
+      ]) {
+         expect(
+            isDestinationCatalogUnavailableError(
+               Object.assign(new Error("import reference failure"), {
+                  problems: [problem],
+               }),
+            ),
+         ).toBe(false);
+      }
+   });
 });
