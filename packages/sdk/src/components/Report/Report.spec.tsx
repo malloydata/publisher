@@ -5,8 +5,8 @@
  * `Report` renders a report of either layout from `GET …/reports/{path}`: a
  * grid as a dashboard of carded tiles, a linear report as bare tiles top to
  * bottom, and a report written as `run:` cells cell by cell, through the
- * governed query endpoint. It runs nothing through the deprecated notebooks
- * routes: a `.malloynb`'s code cells run through the query endpoint too.
+ * governed query endpoint. A `.malloynb`'s code cells run through the query
+ * endpoint too.
  */
 import { beforeEach, describe, expect, it, mock, spyOn } from "bun:test";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -30,20 +30,6 @@ const getReport = mock(
       _options?: unknown,
    ) => Promise.resolve({ data: manifest }),
 );
-const executeNotebookCell = mock(
-   (
-      _environmentName: string,
-      _packageName: string,
-      _path: string,
-      _cellIndex: number,
-      _versionId?: string,
-      _filterParams?: string,
-      _bypassFilters?: boolean,
-      _givens?: string,
-      _options?: unknown,
-   ): Promise<never> => pending(),
-);
-const getNotebook = mock((): Promise<never> => pending());
 const executeQueryModel = mock(
    (
       _environmentName: string,
@@ -55,7 +41,6 @@ const executeQueryModel = mock(
 
 mockServerProvider({
    reports: { getReport },
-   notebooks: { getNotebook, executeNotebookCell },
    models: { executeQueryModel, getModel: () => pending() },
 });
 
@@ -73,13 +58,7 @@ const TILES = {
 
 beforeEach(() => {
    clearCache();
-   for (const fn of [
-      getReport,
-      executeNotebookCell,
-      getNotebook,
-      executeQueryModel,
-   ])
-      fn.mockClear();
+   for (const fn of [getReport, executeQueryModel]) fn.mockClear();
 });
 
 describe("the manifest fetch", () => {
@@ -412,9 +391,6 @@ describe("rendering by layout", () => {
                   screen.getAllByRole("button", { name: "Malloy code" }),
                ).toHaveLength(2),
             );
-            expect(screen.queryByText(/render it with Notebook/)).toBeNull();
-            expect(executeNotebookCell).not.toHaveBeenCalled();
-            expect(getNotebook).not.toHaveBeenCalled();
          } finally {
             executeQueryModel.mockImplementation(() => pending());
          }

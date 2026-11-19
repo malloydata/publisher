@@ -185,11 +185,6 @@ const UNESCAPED_MALLOY_IMPORTS_BUT_STYLESHEET = {
       UNESCAPED_MALLOY_IMPORTS[1],
    ],
 };
-const LEGACY_MALLOYNB_IMPORT = {
-   group: ["**/legacy/malloynb", "**/legacy/malloynb/**"],
-   message:
-      "legacy/malloynb is the deprecated Notebook, which reads a .malloynb through the deprecated notebooks routes: only legacy/ may import it. Report renders a .malloynb, and a .malloy report is tiles, drawn by DashboardView.",
-};
 
 // ---------------------------------------------------------------------------
 // Import direction (docs: the architecture refactor's dependency rule).
@@ -647,32 +642,11 @@ export default [
       },
    },
    {
-      // The deprecated `Notebook`, which reads a `.malloynb` through the
-      // deprecated notebooks routes, is fenced off: it lives in
-      // `legacy/malloynb/` and nothing outside `legacy/` may import it, so it
-      // is deleted by deleting that folder and the legacy exports.
-      // Restates the unescaped-Malloy imports: a later block's rule replaces an
-      // earlier one's for the files both match, rather than adding to it.
-      files: ["packages/sdk/src/**/*.{ts,tsx}"],
-      ignores: ["packages/sdk/src/components/legacy/**"],
-      rules: {
-         "no-restricted-imports": [
-            "error",
-            {
-               patterns: [LEGACY_MALLOYNB_IMPORT, ...UNESCAPED_MALLOY_IMPORTS],
-            },
-         ],
-      },
-   },
-   {
       // The Explorer's own files (see EXPLORER_FILES). Last, so it replaces the
-      // blocks above for them; the legacy fence still holds.
+      // blocks above for them.
       files: EXPLORER_FILES,
       rules: {
-         "no-restricted-imports": [
-            "error",
-            { patterns: [LEGACY_MALLOYNB_IMPORT] },
-         ],
+         "no-restricted-imports": "off",
          "@typescript-eslint/no-restricted-imports": "off",
          "no-restricted-syntax": "off",
       },
@@ -687,10 +661,7 @@ export default [
             "error",
             {
                paths: UNESCAPED_MALLOY_IMPORTS_BUT_STYLESHEET.paths,
-               patterns: [
-                  LEGACY_MALLOYNB_IMPORT,
-                  ...UNESCAPED_MALLOY_IMPORTS_BUT_STYLESHEET.patterns,
-               ],
+               patterns: UNESCAPED_MALLOY_IMPORTS_BUT_STYLESHEET.patterns,
             },
          ],
       },

@@ -78,12 +78,6 @@ describe("CLI integration (real server)", () => {
     expect(r.output).toContain("persist_test.malloy");
   });
 
-  it("reports no notebooks for a package without any", async () => {
-    const r = await runCli(["list", "notebook", ...SCOPE], baseUrl);
-    expect(r.code).toBe(0);
-    expect(r.output).toContain("No notebooks");
-  });
-
   it("lists databases", async () => {
     const r = await runCli(["list", "database", ...SCOPE], baseUrl);
     expect(r.code).toBe(0);

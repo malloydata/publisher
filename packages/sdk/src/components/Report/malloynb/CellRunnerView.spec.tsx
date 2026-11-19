@@ -16,7 +16,7 @@ import {
    mockServerProvider,
    serverWrapper,
 } from "../../../../test/serverProvider";
-import type { RawNotebook } from "../../../client";
+import type { ReportCells } from "../../../client";
 import type { CellRunner } from "./CellRunnerView";
 
 // Cells run through the runner each test hands in, never the server.
@@ -27,7 +27,7 @@ const { CellRunnerView } = await import("./CellRunnerView");
 
 const URI = "publisher://environments/env/packages/pkg/models/review.malloynb";
 
-const cells = (...queries: string[]): RawNotebook => ({
+const cells = (...queries: string[]): ReportCells => ({
    format: "malloynb",
    notebookCells: [
       { type: "markdown", text: "Intro prose" },

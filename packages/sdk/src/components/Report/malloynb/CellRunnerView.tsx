@@ -5,8 +5,8 @@
  * @deprecated `.malloynb` only, and deleted with the format. Draws a
  * `.malloynb` notebook's cells on the shared report page and runs each code
  * cell through the runner its caller passes: `Report` runs them through the
- * governed query endpoint, the deprecated `Notebook` through the deprecated
- * cell route. A `.malloy` report is always tiles, drawn by `DashboardView`.
+ * governed query endpoint. A `.malloy` report is always tiles, drawn by
+ * `DashboardView`.
  */
 
 import "@malloydata/malloy-explorer/styles.css";
@@ -180,7 +180,7 @@ export function CellRunnerView({
    // produces. Batching matters more here than on a grid: one control change
    // re-runs every cell in the document.
    const autorun = notebook?.autorun !== false;
-   // Set by `Report`; silent under the deprecated `Notebook`, which shares this view.
+   // Set by `Report`.
    const events = useReportEvents();
    const controls = useDocumentControls({
       specs: declaredGivens,
