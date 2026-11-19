@@ -4659,9 +4659,11 @@ components:
           format: date-time
         expiredSnapshots:
           type: integer
+          format: int64
           description: Snapshots this cleanup expired
         deletedFiles:
           type: integer
+          format: int64
           description: Data and delete files this cleanup removed from storage
 
     VersionIdPattern:
@@ -6681,6 +6683,7 @@ components:
           minimum: 1
         llm_tokens:
           type: integer
+          format: int64
           minimum: 1
         job_minutes:
           type: integer
@@ -10507,6 +10510,7 @@ components:
           description: Name of the table
         rowCount:
           type: integer
+          format: int64
           description: Number of rows in the table
         columns:
           type: array
@@ -12636,6 +12640,7 @@ components:
           properties:
             count:
               type: integer
+              format: int64
               description: Source rows in the window the stored table lacks.
             from:
               type: string
