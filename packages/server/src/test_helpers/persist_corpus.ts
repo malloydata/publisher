@@ -72,10 +72,14 @@ export interface CorpusModel {
 }
 
 function connection(name: string, workingDirectory?: string): DuckDBConnection {
-   const dbPath = path.join(
+   // Named for its connection, so its catalog is too: a model that qualifies
+   // a table with the connection's name (`lake_probe.main.t`) resolves.
+   const dir = path.join(
       scratchDir(),
-      `${name}-${opened.length}-${Math.random().toString(36).slice(2)}.db`,
+      `${opened.length}-${Math.random().toString(36).slice(2)}`,
    );
+   fs.mkdirSync(dir, { recursive: true });
+   const dbPath = path.join(dir, `${name}.db`);
    const c = workingDirectory
       ? new DuckDBConnection(name, dbPath, workingDirectory)
       : new DuckDBConnection(name, dbPath);
@@ -123,11 +127,15 @@ export function fixtureModels(): CorpusModel[] {
    return out;
 }
 
-/** A hammer scenario's `## Data conn.table` tables and `## Model` files. */
+/**
+ * A hammer scenario's `## Data conn.table` tables, `## Model` files and the
+ * SQL of its `## Operator lake` steps.
+ */
 interface Scenario {
    id: string;
    pkg: string;
    models: Map<string, string>;
+   lakeSql: string[];
    data: {
       conn: string;
       table: string;
@@ -146,6 +154,7 @@ function parseScenario(dir: string): Scenario {
    const pkg = /^package:\s*(\S+)/m.exec(text)?.[1] ?? path.basename(dir);
    const models = new Map<string, string>();
    const data: Scenario["data"] = [];
+   const lakeSql: string[] = [];
    const sections = text.split(/^## /m).slice(1);
    for (const section of sections) {
       const [header, ...rest] = section.split("\n");
@@ -155,6 +164,11 @@ function parseScenario(dir: string): Scenario {
          const code = /```malloy\n([\s\S]*?)```/.exec(body)?.[1];
          const rel = model[1].includes("/") ? model[1] : `${pkg}/${model[1]}`;
          if (code !== undefined && !models.has(rel)) models.set(rel, code);
+         continue;
+      }
+      if (/^Operator\s+lake\s*$/.test(header)) {
+         const sql = /```sql\n([\s\S]*?)```/.exec(body)?.[1];
+         if (sql !== undefined) lakeSql.push(sql);
          continue;
       }
       const seed = /^Data\s+(?:\([^)]*\)\s*)?([\w-]+)\.([\w.]+)/.exec(header);
@@ -178,7 +192,7 @@ function parseScenario(dir: string): Scenario {
          data.push({ conn: seed[1], table: seed[2], cols, rows });
       }
    }
-   return { id: path.basename(dir), pkg, models, data };
+   return { id: path.basename(dir), pkg, models, data, lakeSql };
 }
 
 const DUCK_TYPES: Record<string, string> = {
@@ -261,6 +275,13 @@ export async function hammerModels(
             )) {
                conn(m[1]);
             }
+         }
+         // `lake_probe` reaches the destination's own catalog, so what the
+         // operator writes there is a table it reads. A statement the
+         // stand-in cannot run (DuckLake's own, say) is skipped.
+         const probe = connections.get("lake_probe");
+         for (const sql of scenario.lakeSql) {
+            await probe?.runSQL(sql).catch(() => undefined);
          }
          const files = new Map<string, string>();
          for (const [rel, text] of scenario.models) {
