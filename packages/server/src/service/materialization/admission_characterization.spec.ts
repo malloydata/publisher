@@ -126,10 +126,9 @@ afterAll(async () => {
 const authorOf = (
    source: string,
    collation: "binary" | "nocase" = "binary",
+   query = "{ select: id }",
 ): QueryMaterializer =>
-   authors[collation]
-      .loadModel(MODEL)
-      .loadQuery(`run: ${source} -> { select: id }`);
+   authors[collation].loadModel(MODEL).loadQuery(`run: ${source} -> ${query}`);
 
 // ---------------------------------------------------------------------------
 // The tables an answer read, and the stored side's collation.
@@ -248,9 +247,17 @@ async function routed(args: {
    storedCollation?: "binary" | "nocase";
    /** The router cannot read what the gates and row scope read. */
    unreadable?: boolean;
+   /** The caller's query after its source; `{ select: id }` when absent. */
+   query?: string;
+   /** Add a declined candidate's internal detail to the outcome. */
+   withDetail?: boolean;
 }): Promise<string> {
    const pinned = pin(EMPTY_SNAPSHOT, new Date(0));
-   const authorRunnable = authorOf(SHAPES[args.shape], args.authorCollation);
+   const authorRunnable = authorOf(
+      SHAPES[args.shape],
+      args.authorCollation,
+      args.query,
+   );
    // The routed compile: the author's own query (so a composite resolves to
    // the same member), read through a runtime whose stored tables compare
    // as `storedCollation`.
@@ -261,7 +268,9 @@ async function routed(args: {
    const candidates = variantsOf(
       makeLegs(pinned, legHost(args.leg, args.tables, runnable)),
       {
-         queryString: `run: ${SHAPES[args.shape]} -> v`,
+         queryString: args.query
+            ? `run: ${SHAPES[args.shape]} -> ${args.query}`
+            : `run: ${SHAPES[args.shape]} -> v`,
          givens: undefined,
          authorRunnable,
       },
@@ -282,7 +291,9 @@ async function routed(args: {
          ? "used, past the gate"
          : "used";
    }
-   return `skipped ${c.reason}${c.code ? ` (${c.code})` : ""}`;
+   return `skipped ${c.reason}${c.code ? ` (${c.code})` : ""}${
+      args.withDetail && c.detail ? `: ${c.detail}` : ""
+   }`;
 }
 
 /** Run `fn` with the switches set, restoring them after. */
@@ -994,6 +1005,276 @@ describe("read admission over moved columns and unreadable reads, gated sources 
          }
       });
    }
+});
+
+/**
+ * The caller's own query filters (`where:` in the query, not the source),
+ * judged against each table an answer read: what the router decides per leg,
+ * table read and collation, with the internal detail the decline carries.
+ * Source `open` (no gate, no scope), gated sources off.
+ */
+const QUERY_FILTERS: Record<string, Record<string, string>> = {
+   "a number filter": {
+      "binary, served, database": "used",
+      "binary, served, storage": "used",
+      "binary, rollup, database": "used",
+      "binary, rollup, storage": "used",
+      "binary, view, database": "used",
+      "binary, view, storage": "used",
+      "binary, query, database": "used",
+      "binary, query, storage": "used",
+      "author instance nocase, served, database": "used",
+      "author instance nocase, served, storage": "used",
+      "author instance nocase, rollup, database": "used",
+      "author instance nocase, rollup, storage": "used",
+      "author instance nocase, view, database": "used",
+      "author instance nocase, view, storage": "used",
+      "author instance nocase, query, database": "used",
+      "author instance nocase, query, storage": "used",
+      "stored table nocase, served, database": "used",
+      "stored table nocase, served, storage": "used",
+      "stored table nocase, rollup, database": "used",
+      "stored table nocase, rollup, storage": "used",
+      "stored table nocase, view, database": "used",
+      "stored table nocase, view, storage": "used",
+      "stored table nocase, query, database": "used",
+      "stored table nocase, query, storage": "used",
+   },
+   "a string equality filter": {
+      "binary, served, database": "used",
+      "binary, served, storage": "used",
+      "binary, rollup, database": "used",
+      "binary, rollup, storage": "used",
+      "binary, view, database": "used",
+      "binary, view, storage": "used",
+      "binary, query, database": "used",
+      "binary, query, storage": "used",
+      "author instance nocase, served, database": "used",
+      "author instance nocase, served, storage":
+         "skipped does_not_answer (served_copy_not_served): the query filters on a column a stored table does not compare as its source does: an instance that compares strings under a collation",
+      "author instance nocase, rollup, database": "used",
+      "author instance nocase, rollup, storage":
+         "skipped does_not_answer (rollup_row_level_gate): the query filters on a column a stored table does not compare as its source does: an instance that compares strings under a collation",
+      "author instance nocase, view, database": "used",
+      "author instance nocase, view, storage":
+         "skipped does_not_answer (view_missing_field): the query filters on a column a stored table does not compare as its source does: an instance that compares strings under a collation",
+      "author instance nocase, query, database": "used",
+      "author instance nocase, query, storage":
+         "skipped does_not_answer (query_missing_field): the query filters on a column a stored table does not compare as its source does: an instance that compares strings under a collation",
+      "stored table nocase, served, database":
+         "skipped does_not_answer (served_copy_not_served): the query filters on a column a stored table does not compare as its source does: a stored table compares strings under a unknown collation",
+      "stored table nocase, served, storage":
+         "skipped does_not_answer (served_copy_not_served): the query filters on a column a stored table does not compare as its source does: a stored table compares strings under a unknown collation",
+      "stored table nocase, rollup, database":
+         "skipped does_not_answer (rollup_row_level_gate): the query filters on a column a stored table does not compare as its source does: a stored table compares strings under a unknown collation",
+      "stored table nocase, rollup, storage":
+         "skipped does_not_answer (rollup_row_level_gate): the query filters on a column a stored table does not compare as its source does: a stored table compares strings under a unknown collation",
+      "stored table nocase, view, database":
+         "skipped does_not_answer (view_missing_field): the query filters on a column a stored table does not compare as its source does: a stored table compares strings under a unknown collation",
+      "stored table nocase, view, storage":
+         "skipped does_not_answer (view_missing_field): the query filters on a column a stored table does not compare as its source does: a stored table compares strings under a unknown collation",
+      "stored table nocase, query, database":
+         "skipped does_not_answer (query_missing_field): the query filters on a column a stored table does not compare as its source does: a stored table compares strings under a unknown collation",
+      "stored table nocase, query, storage":
+         "skipped does_not_answer (query_missing_field): the query filters on a column a stored table does not compare as its source does: a stored table compares strings under a unknown collation",
+   },
+   "a string ordering filter": {
+      "binary, served, database": "used",
+      "binary, served, storage": "used",
+      "binary, rollup, database": "used",
+      "binary, rollup, storage": "used",
+      "binary, view, database": "used",
+      "binary, view, storage": "used",
+      "binary, query, database": "used",
+      "binary, query, storage": "used",
+      "author instance nocase, served, database": "used",
+      "author instance nocase, served, storage":
+         "skipped does_not_answer (served_copy_not_served): the query filters on a column a stored table does not compare as its source does: an instance that compares strings under a collation",
+      "author instance nocase, rollup, database": "used",
+      "author instance nocase, rollup, storage":
+         "skipped does_not_answer (rollup_row_level_gate): the query filters on a column a stored table does not compare as its source does: an instance that compares strings under a collation",
+      "author instance nocase, view, database": "used",
+      "author instance nocase, view, storage":
+         "skipped does_not_answer (view_missing_field): the query filters on a column a stored table does not compare as its source does: an instance that compares strings under a collation",
+      "author instance nocase, query, database": "used",
+      "author instance nocase, query, storage":
+         "skipped does_not_answer (query_missing_field): the query filters on a column a stored table does not compare as its source does: an instance that compares strings under a collation",
+      "stored table nocase, served, database":
+         "skipped does_not_answer (served_copy_not_served): the query filters on a column a stored table does not compare as its source does: a stored table compares strings under a unknown collation",
+      "stored table nocase, served, storage":
+         "skipped does_not_answer (served_copy_not_served): the query filters on a column a stored table does not compare as its source does: a stored table compares strings under a unknown collation",
+      "stored table nocase, rollup, database":
+         "skipped does_not_answer (rollup_row_level_gate): the query filters on a column a stored table does not compare as its source does: a stored table compares strings under a unknown collation",
+      "stored table nocase, rollup, storage":
+         "skipped does_not_answer (rollup_row_level_gate): the query filters on a column a stored table does not compare as its source does: a stored table compares strings under a unknown collation",
+      "stored table nocase, view, database":
+         "skipped does_not_answer (view_missing_field): the query filters on a column a stored table does not compare as its source does: a stored table compares strings under a unknown collation",
+      "stored table nocase, view, storage":
+         "skipped does_not_answer (view_missing_field): the query filters on a column a stored table does not compare as its source does: a stored table compares strings under a unknown collation",
+      "stored table nocase, query, database":
+         "skipped does_not_answer (query_missing_field): the query filters on a column a stored table does not compare as its source does: a stored table compares strings under a unknown collation",
+      "stored table nocase, query, storage":
+         "skipped does_not_answer (query_missing_field): the query filters on a column a stored table does not compare as its source does: a stored table compares strings under a unknown collation",
+   },
+};
+
+const FILTERS = {
+   "a number filter": "{ where: id = 1; select: id }",
+   "a string equality filter": "{ where: region = 'east'; select: id }",
+   "a string ordering filter": "{ where: region > 'M'; select: id }",
+} as const;
+
+describe("the caller's query filters, per leg, table read and collation", () => {
+   for (const [filter, query] of Object.entries(FILTERS)) {
+      it(filter, async () => {
+         const rows: Record<string, string> = {};
+         await withSwitches(false, async () => {
+            for (const [where, collations] of [
+               ["binary", {}],
+               ["author instance nocase", { authorCollation: "nocase" }],
+               ["stored table nocase", { storedCollation: "nocase" }],
+            ] as const) {
+               for (const leg of LEGS) {
+                  for (const read of ["database", "storage"]) {
+                     rows[`${where}, ${leg}, ${read}`] = await routed({
+                        leg,
+                        shape: "no gate",
+                        tables: READS[read],
+                        query,
+                        withDetail: true,
+                        ...collations,
+                     });
+                  }
+               }
+            }
+         });
+         if (DUMP) {
+            ((dumped.queryFilters ??= {}) as Record<string, unknown>)[filter] =
+               rows;
+         } else {
+            expect(rows).toEqual(QUERY_FILTERS[filter] ?? {});
+         }
+      });
+   }
+});
+
+/**
+ * What the router reads of each gate shape's author compile today: the
+ * gates' and row scope's reads (`gateReadsOfQuery`), as admission uses them.
+ */
+const SHAPE_READS: Record<string, unknown> = {
+   "no gate": {
+      scoped: false,
+      gated: false,
+      unresolved: false,
+      comparesNoString: true,
+      equalityOnly: true,
+      columns: [],
+   },
+   "no gate, a where: on a float column": {
+      scoped: true,
+      gated: false,
+      unresolved: false,
+      comparesNoString: true,
+      equalityOnly: true,
+      columns: [["amount"]],
+   },
+   "no gate, a where: ordering a string": {
+      scoped: true,
+      gated: false,
+      unresolved: false,
+      comparesNoString: false,
+      equalityOnly: false,
+      columns: [["region"]],
+   },
+   "row filter, number": {
+      scoped: false,
+      gated: true,
+      unresolved: false,
+      comparesNoString: true,
+      equalityOnly: true,
+      columns: [["id"]],
+   },
+   "row filter, string equality": {
+      scoped: false,
+      gated: true,
+      unresolved: false,
+      comparesNoString: false,
+      equalityOnly: true,
+      columns: [["region"]],
+   },
+   "row filter, string ordering": {
+      scoped: false,
+      gated: true,
+      unresolved: false,
+      comparesNoString: false,
+      equalityOnly: true,
+      columns: [["region"]],
+   },
+   "row filter, boolean over a string": {
+      scoped: false,
+      gated: true,
+      unresolved: false,
+      comparesNoString: false,
+      equalityOnly: false,
+      columns: [["late", "region"]],
+   },
+   "lock only": {
+      scoped: false,
+      gated: true,
+      unresolved: false,
+      comparesNoString: true,
+      equalityOnly: true,
+      columns: [],
+   },
+   "row filter, float column": {
+      scoped: false,
+      gated: true,
+      unresolved: false,
+      comparesNoString: true,
+      equalityOnly: true,
+      columns: [["amount"]],
+   },
+   "row filter, zoned timestamp column": {
+      scoped: false,
+      gated: true,
+      unresolved: false,
+      comparesNoString: true,
+      equalityOnly: true,
+      columns: [["at"]],
+   },
+   "row filter on a composite": {
+      scoped: false,
+      gated: true,
+      unresolved: false,
+      comparesNoString: false,
+      equalityOnly: false,
+      columns: [],
+   },
+};
+
+describe("what the router reads of each gate shape", () => {
+   it("per shape", async () => {
+      const rows: Record<string, unknown> = {};
+      for (const shape of Object.keys(SHAPES) as Shape[]) {
+         const reads = await gateReads.gateReadsOfQuery(
+            authorOf(SHAPES[shape]),
+         );
+         rows[shape] =
+            reads === undefined
+               ? "unread"
+               : {
+                    scoped: reads.scoped,
+                    gated: reads.gated,
+                    unresolved: reads.unresolved,
+                    comparesNoString: reads.comparesNoString,
+                    equalityOnly: reads.equalityOnly,
+                    columns: reads.columns.map((c) => [...c]),
+                 };
+      }
+      if (DUMP) dumped.shapeReads = rows;
+      else expect(rows).toEqual(SHAPE_READS);
+   });
 });
 
 describe("the bind's admission marks", () => {
