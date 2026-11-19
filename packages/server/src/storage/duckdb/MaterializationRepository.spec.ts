@@ -344,7 +344,7 @@ describe("MaterializationRepository edges (real DuckDB)", () => {
       ).rejects.toThrow("not found");
    });
 
-   it("an active row with no slot key takes the package's slot on its next active move", async () => {
+   it("leaves an active row's slot key as it was created on an active move", async () => {
       const { db, repo } = await freshDb();
       await db.run(
          `INSERT INTO materializations (id, environment_id, package_name, status, active_key, created_at, updated_at)
@@ -352,7 +352,8 @@ describe("MaterializationRepository edges (real DuckDB)", () => {
          [ENV_ID, PKG],
       );
       await repo.update("keyless", { status: "MANIFEST_ROWS_READY" });
-      expect((await repo.getActive(ENV_ID, PKG))?.id).toBe("keyless");
+      // Every active row is created with its key; none is invented later.
+      expect(await repo.getActive(ENV_ID, PKG)).toBeNull();
    });
 
    it("refuses a metadata or manifest that is not JSON at the write: the columns are JSON-typed", async () => {
@@ -365,6 +366,25 @@ describe("MaterializationRepository edges (real DuckDB)", () => {
          ),
       ).rejects.toThrow();
       expect((await repo.getById(run.id))?.metadata).toBeNull();
+   });
+
+   it("rethrows a collision that is not on the active slot", async () => {
+      const { db } = await freshDb();
+      await db.run(
+         `INSERT INTO materializations (id, environment_id, package_name, status, created_at, updated_at)
+          VALUES ('dup', ?, ?, 'FAILED', now(), now())`,
+         [ENV_ID, PKG],
+      );
+      const repo = new MaterializationRepository({
+         all: async () => {
+            throw new Error(
+               'Constraint Error: Duplicate key "id: dup" violates primary key constraint.',
+            );
+         },
+      } as unknown as DuckDBConnection);
+      const err = await repo.create(ENV_ID, PKG, "PENDING").catch((e) => e);
+      expect(err).not.toBeInstanceOf(DuplicateActiveMaterializationError);
+      expect(String(err)).toContain("primary key");
    });
 
    it("raises the active-slot conflict for a second active run of one package", async () => {
