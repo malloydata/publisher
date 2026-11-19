@@ -17,6 +17,15 @@ export function storageWritable(mode: StorageMode): boolean {
 }
 
 /**
+ * Whether a query may read a `storage=` table under `mode`: only `on`.
+ * `write-only` writes the destination but serves live (or from the
+ * database tier), as `off` does.
+ */
+export function storageServes(mode: StorageMode): boolean {
+   return mode === "on";
+}
+
+/**
  * The tier an instruction builds into: its destination's, while a
  * destination may be written; else the source's own database. An
  * instruction naming a destination under `off` is refused before it builds
@@ -37,6 +46,31 @@ export function instructsUnwritableDestination(
    mode: StorageMode,
 ): boolean {
    return !!instruction.destination && !storageWritable(mode);
+}
+
+/**
+ * The tier a query reads a planned source's table in, as the serve verdict
+ * judges it: a storage binding storing the source decides it
+ * (`storageLookupOf`), since a host may place a source with no `storage=` in
+ * a storage destination; with none, a declared `storage=` does. The served
+ * copy (every source but a rollup, persisted view or persisted query, which
+ * read their storage binding through their own leg) reads a fresh table over
+ * a stale one, so a source whose storage table is stale while its database
+ * table is fresh is read from the database.
+ */
+export function readTier(facts: {
+   storageBound: boolean;
+   storageFresh: boolean;
+   databaseFresh: boolean;
+   servedCopy: boolean;
+   declaredStorage: boolean;
+}): Tier {
+   if (!facts.storageBound) {
+      return facts.declaredStorage ? "storage" : "database";
+   }
+   return facts.servedCopy && !facts.storageFresh && facts.databaseFresh
+      ? "database"
+      : "storage";
 }
 
 /**

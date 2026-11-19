@@ -22,6 +22,7 @@
  * (`ducklakeStoresAsDouble`), so the bind never reads it as exact.
  */
 
+import { runAsInternalStatement } from "../../duckdb_lockdown";
 import { getDialect, type Connection } from "@malloydata/malloy";
 import { errMessage } from "../../../utils";
 import { tablePathParts } from "../../quoting";
@@ -144,10 +145,14 @@ async function ducklakeTablesOf(
    if (!probe) return new Set();
    let rows: Record<string, unknown>[];
    try {
+      // Publisher's own read of the session's catalogs, admitted past a
+      // locked instance's gate, which refuses it to caller and author SQL.
       rows = (
-         await connection.runSQL(probe.sql, {
-            rowLimit: NATIVE_SCHEMA_ROW_LIMIT,
-         })
+         await runAsInternalStatement(probe.sql, () =>
+            connection.runSQL(probe.sql, {
+               rowLimit: NATIVE_SCHEMA_ROW_LIMIT,
+            }),
+         )
       ).rows as Record<string, unknown>[];
    } catch {
       return all;
