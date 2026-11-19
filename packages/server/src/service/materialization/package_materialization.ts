@@ -4,8 +4,8 @@
 /**
  * The package facade: one package version's materialization, composing
  * plan/, run/ and serve/ for `Package` and `Environment`, and the module's
- * one door for them. It holds the version's bindings and snapshot itself, and
- * delegates the rest to three collaborators:
+ * one door for them. It holds the version's bindings, its snapshot and
+ * whether a host owns it, and delegates the rest to three collaborators:
  *
  * | Concern | Held by |
  * | --- | --- |
@@ -13,6 +13,15 @@
  * | Serve verdicts, the preview, the path report's catalog | {@link ServeVerdicts} (`serve_verdicts.ts`) |
  * | Package warnings and publish rejections | `package_warnings.ts` |
  * | Bind a manifest, swap the snapshot, push it to the models | this facade |
+ *
+ * Its public surface is wide, not narrow: sixty-two members, most of
+ * them one accessor or one warning list each, in these groups: the package's
+ * identity and files; the plan's lifecycle; the binding (bind, mark bound,
+ * live, failed or host-owned, the manifest it holds); what it pushes to the
+ * models (serving context, destinations, deployment facts); the serve
+ * verdicts; and one method per package-warning family plus the load gate's
+ * text, which `Package` composes in its own order. `facade_surface.spec.ts`
+ * lists every public name, so the surface only shrinks.
  *
  * Effects: logs, and the bind metrics.
  */
@@ -214,6 +223,12 @@ export class PackageMaterialization {
       "unbound";
    private manifestEntryCount = 0;
    private boundManifestUri: string | null = null;
+   /**
+    * A host owns this version's binding: a manifest it named bound, or its
+    * instructed run committed (see Environment.isHostOwned). Never cleared:
+    * a later clear leaves the version live, not back on this server's store.
+    */
+   private hostOwned = false;
    /**
     * The type findings of the bound `storage=` tables a model's own
     * `#@ persist` check does not make ({@link boundTableTypeFindings}), as of
@@ -476,6 +491,16 @@ export class PackageMaterialization {
    markServingLive(): void {
       this.boundManifestUri = null;
       this.manifestBindingStatus = "unbound";
+   }
+
+   /** Record that a host owns this version's binding ({@link hostOwned}). */
+   markHostOwned(): void {
+      this.hostOwned = true;
+   }
+
+   /** Whether a host owns this version's binding ({@link hostOwned}). */
+   isHostOwned(): boolean {
+      return this.hostOwned;
    }
 
    /**

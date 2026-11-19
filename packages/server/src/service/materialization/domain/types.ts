@@ -14,6 +14,7 @@
  */
 
 import { components } from "../../../api";
+import type { TableRecord } from "./physical_table";
 
 // Wire types for the build protocol.
 export type MaterializationStatus =
@@ -277,11 +278,9 @@ export type KeptTableReason =
  * source is served under now, left in its old place by a `storage=` or tier
  * move (`may_be_served`), which may be the very table served.
  */
-export interface KeptTable {
+export interface KeptTable extends TableRecord {
    sourceEntityId: string;
    sourceName?: string;
-   /** The kept table. */
-   physicalTableName: string;
    connectionName: string;
    storageDestinationName?: string;
    reason: KeptTableReason;

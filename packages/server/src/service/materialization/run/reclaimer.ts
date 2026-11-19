@@ -100,6 +100,7 @@ import {
    leafKey,
    mayBeSameTable,
    recordedTableKey,
+   type TableRecord,
    tableKey,
 } from "../domain/physical_table";
 import { previousDestinationOf, type RenamedTable } from "./run_instructions";
@@ -449,11 +450,7 @@ function recordedNameViews(
  * connection, whose dialect is not known here. A case variant on a folding
  * warehouse is still kept, by its table segment ({@link leafReferenceKey}).
  */
-function referenceKey(entry: {
-   connectionName?: string | null;
-   storageDestinationName?: string | null;
-   physicalTableName: string;
-}): string {
+function referenceKey(entry: TableRecord): string {
    return tableKey(entryTable(entry), !!entry.storageDestinationName);
 }
 
