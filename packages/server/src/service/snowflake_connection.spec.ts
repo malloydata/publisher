@@ -3,24 +3,20 @@
 
 /**
  * F-16: every Snowflake connection Publisher builds reads integers and
- * timestamps the way every other connection does, so a live answer equals
- * the served one.
- *
- * The driver values here are snowflake-sdk's own: its `Column` converts a raw
- * wire value exactly as a statement's result does, under the statement
- * parameters a session carries (the connector pins the NTZ and LTZ formats;
- * TIMESTAMP_TZ falls back to the account's `TIMESTAMP_OUTPUT_FORMAT`).
+ * timestamps as a stored (DuckDB) copy answers them, so a live answer equals
+ * the served one. The driver values are snowflake-sdk's own
+ * (test_helpers/fake_snowflake.ts).
  */
 
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { SingleConnectionRuntime } from "@malloydata/malloy";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import fs from "fs/promises";
-import { createRequire } from "node:module";
 import os from "os";
 import path from "path";
 import type { components } from "../api";
 import { bigIntReplacer } from "../json_utils";
+import { driverValue, fakeSnowflake } from "../test_helpers/fake_snowflake";
 import {
    createEnvironmentConnections,
    buildEnvironmentMalloyConfig,
@@ -40,40 +36,6 @@ const BASE = {
    username: "test-user",
    warehouse: "test-warehouse",
 };
-
-// snowflake-sdk is the connector's dependency, not ours: resolve it from there.
-const sdkRequire = createRequire(
-   createRequire(require.resolve("@malloydata/db-snowflake")).resolve(
-      "snowflake-sdk",
-   ),
-);
-const SdkColumn = sdkRequire("./lib/connection/result/column") as new (
-   options: Record<string, unknown>,
-   index: number,
-   statementParameters: Record<string, unknown>,
-   resultVersion: string,
-) => { getRowValue(row: unknown): unknown };
-
-/** A session as the connector leaves it: UTC, NTZ and LTZ pinned, TZ not. */
-const SESSION = {
-   JS_TREAT_INTEGER_AS_BIGINT: true,
-   TIMEZONE: "UTC",
-   TIMESTAMP_OUTPUT_FORMAT: "YYYY-MM-DD HH24:MI:SS.FF3 TZHTZM",
-   TIMESTAMP_NTZ_OUTPUT_FORMAT: "YYYY-MM-DDTHH24:MI:SS.FF3TZH:TZM",
-   TIMESTAMP_LTZ_OUTPUT_FORMAT: "YYYY-MM-DDTHH24:MI:SS.FF3TZH:TZM",
-   DATE_OUTPUT_FORMAT: "YYYY-MM-DD",
-};
-
-/** The value snowflake-sdk hands back for one raw wire value of a column. */
-function driverValue(type: string, raw: string, scale = 0): unknown {
-   const column = new SdkColumn(
-      { name: "c", type, scale, precision: 38, nullable: true },
-      0,
-      SESSION,
-      "1",
-   );
-   return column.getRowValue({ values: [raw], _arrayProcessedColumns: [] });
-}
 
 // 2026-01-15T18:00:00Z; a TIMESTAMP_TZ's wire value carries its offset as
 // an index, 1440 + minutes (-08:00 is 960).
@@ -271,7 +233,7 @@ describe("normalizeSnowflakeValue, over snowflake-sdk's own values", () => {
       expect(JSON.stringify(normalized)).toBe('"2026-01-15T18:00:00.000Z"');
    });
 
-   it("renders TIMESTAMP_NTZ, TIMESTAMP_LTZ and DATE as every dialect does", () => {
+   it("renders TIMESTAMP_NTZ, TIMESTAMP_LTZ and DATE as DuckDB does", () => {
       for (const type of ["timestamp_ntz", "timestamp_ltz"]) {
          const value = driverValue(type, EPOCH, 3);
          expect(JSON.stringify(value)).toBe('"2026-01-15T18:00:00.000+00:00"');
@@ -306,42 +268,24 @@ describe("normalizeSnowflakeValue, over snowflake-sdk's own values", () => {
    });
 });
 
-/**
- * A Publisher Snowflake connection whose executor answers from the driver's
- * own conversions instead of a warehouse: DESCRIBE gives the columns, the
- * query gives one row.
- */
+/** A live Snowflake connection whose one row holds each kind of value. */
 function fakeLiveSnowflake(): PublisherSnowflakeConnection {
-   const connection = new PublisherSnowflakeConnection("snowflake", {
-      connOptions: { ...BASE, password: "pw", jsTreatIntegerAsBigInt: true },
-      // No eager pool connection: nothing here reaches a network.
-      poolOptions: { min: 0, max: 1 },
-   });
-   const batch = async (sql: string) => {
-      if (/^\s*DESCRIBE/i.test(sql)) {
-         return [
-            { name: "total", type: "NUMBER(38,0)" },
-            { name: "n", type: "NUMBER(38,0)" },
-            { name: "at", type: "TIMESTAMP_TZ(9)" },
-            { name: "day", type: "DATE" },
-         ];
-      }
-      if (/^\s*CREATE/i.test(sql)) return [];
-      return [
+   return fakeSnowflake(
+      () => [
          {
             total: driverValue("fixed", BIG),
             n: driverValue("fixed", "5"),
             at: driverValue("timestamp_tz", TZ_MINUS_8, 3),
             day: driverValue("date", "20468"),
          },
-      ];
-   };
-   (connection as unknown as { executor: unknown }).executor = {
-      batch,
-      tryBatch: batch,
-      done: async () => {},
-   };
-   return connection;
+      ],
+      [
+         { name: "total", type: "NUMBER(38,0)" },
+         { name: "n", type: "NUMBER(38,0)" },
+         { name: "at", type: "TIMESTAMP_TZ(9)" },
+         { name: "day", type: "DATE" },
+      ],
+   );
 }
 
 describe("a live Snowflake answer equals the served one", () => {
@@ -393,15 +337,9 @@ describe("a live Snowflake answer equals the served one", () => {
    });
 
    it("normalizes a streamed row as it does a batch", async () => {
-      const connection = fakeLiveSnowflake();
-      (
-         connection as unknown as {
-            executor: { stream: () => Promise<AsyncIterableIterator<unknown>> };
-         }
-      ).executor.stream = async () =>
-         (async function* () {
-            yield { total: driverValue("fixed", BIG) };
-         })();
+      const connection = fakeSnowflake(() => [
+         { total: driverValue("fixed", BIG) },
+      ]);
       try {
          const rows = [];
          for await (const row of connection.runSQLStream("SELECT 1")) {

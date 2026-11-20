@@ -28,6 +28,7 @@ import {
    TableNotFoundError,
    UnconfiguredConnectionError,
 } from "../errors";
+import { bigIntReplacer } from "../json_utils";
 import { recordQueryCapExceeded } from "../query_cap_metrics";
 import { logger } from "../logger";
 import { assertSafePackageName } from "../path_safety";
@@ -1099,7 +1100,10 @@ export class ConnectionController {
                );
             }
          }, getQueryTimeoutMs());
-         return { data: JSON.stringify(streamed), queryCorrelationId };
+         return {
+            data: JSON.stringify(streamed, bigIntReplacer),
+            queryCorrelationId,
+         };
       }
 
       const result = await runWithQueryTimeout(async (signal) => {
@@ -1125,7 +1129,10 @@ export class ConnectionController {
          );
       }
 
-      return { data: JSON.stringify(result), queryCorrelationId };
+      return {
+         data: JSON.stringify(result, bigIntReplacer),
+         queryCorrelationId,
+      };
    }
 
    /** Raw SQL like {@link getConnectionQueryData}, so it is recorded as ungated too. */
