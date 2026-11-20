@@ -23,6 +23,7 @@ import {
    PackageLoadPool,
    __setPackageLoadPoolForTests,
 } from "../package_load/package_load_pool";
+import { attachedCells } from "../test_helpers/attached_cells";
 import { Package } from "./package";
 
 /** The grid reports a package lists. */
@@ -138,10 +139,8 @@ describe("notebooks written as tiles (worker path)", () => {
    it("synthesizes cells from the tiles, in tile order, after the file's definitions", async () => {
       write("notebooks/tour.malloy", LAYOUT);
       await withPackage(async (pkg) => {
-         const raw = await pkg.getModel("notebooks/tour.malloy")!.getNotebook();
-         expect(
-            raw.notebookCells?.map((cell) => [cell.kind, cell.text]),
-         ).toEqual([
+         const cells = attachedCells(pkg.getModel("notebooks/tour.malloy"));
+         expect(cells.map((cell) => [cell.kind, cell.text])).toEqual([
             ["definition", SOURCE.trimEnd()],
             ["markdown", "# Welcome\n\nRead **this** first."],
             ["query", "run: base -> by_label"],
@@ -153,7 +152,7 @@ describe("notebooks written as tiles (worker path)", () => {
       write("notebooks/tour.malloy", LAYOUT);
       await withPackage(async (pkg) => {
          const model = pkg.getModel("notebooks/tour.malloy")!;
-         const cell = (await model.getNotebook()).notebookCells?.[2];
+         const cell = attachedCells(model)[2];
          expect(cell?.kind).toBe("query");
          const result = await model.runQuery(unrecordedAudit(), {
             query: cell?.text ?? "",

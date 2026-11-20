@@ -125,10 +125,7 @@ import {
    type AuthorizeGateSite,
 } from "../../authorize_metrics";
 import { decideLock } from "../authorize_lock";
-import {
-   type HydrationMaterializer,
-   type HydrationRuntime,
-} from "../model_runtime";
+import { type HydrationRuntime } from "../model_runtime";
 
 /** One caller join the live query reaches, and what it resolves to. */
 type ResolvedCallerJoin = {
@@ -285,8 +282,6 @@ export interface GovernRequest {
          condition: FilterCondition;
       }>,
    ) => QueryMaterializer;
-   /** See `authorizeAndBindRunnable`'s options. */
-   proveGraft?: (recompiled: QueryMaterializer) => Promise<void>;
    /** See `authorizeAndBindRunnable`'s options. */
    graftScope?: GraftScope;
    /**
@@ -612,8 +607,6 @@ export class QueryGovernor {
                givens,
                bypassAuthorize,
             ),
-         probeEntryPointGates: (runnable, givens, graftScope) =>
-            this.probeEntryPointGates(runnable, givens, graftScope),
          sources: () => this.sources,
          queries: () => this.queries,
       });
@@ -719,7 +712,6 @@ export class QueryGovernor {
          request.givens ?? {},
          {
             recompile: request.recompile,
-            proveGraft: request.proveGraft,
             bypassAuthorize: request.bypassAuthorize,
             graftScope: request.graftScope,
             routedVariant:
@@ -2608,13 +2600,6 @@ export class QueryGovernor {
                condition: FilterCondition;
             }>,
          ) => QueryMaterializer;
-         /**
-          * Replaces {@link assertGateLanded} where the IR proof would be
-          * vacuous: the notebook own-scope queryDef graft mutates the object
-          * the prover would read. Supplied with `recompile` by
-          * {@link ownScopeQueryDefBinder} so the two cannot drift.
-          */
-         proveGraft?: (recompiled: QueryMaterializer) => Promise<void>;
          bypassAuthorize?: boolean;
          /** The scope a row-level gate grafts against; defaults to
           *  {@link defaultGraftScope}. */
@@ -2798,15 +2783,7 @@ export class QueryGovernor {
          );
          await this.ensureSharedQueryModel(graftedMaterializer);
          const recompiled = options.recompile(graftedMaterializer, grafts);
-         if (options.proveGraft) {
-            // The own-scope binder proves the run target only.
-            if (callerJoinRowLevel.length > 0) {
-               throw new Error("a caller-join graft has no prover here");
-            }
-            await options.proveGraft(recompiled);
-         } else {
-            await this.assertGateLanded(recompiled, rowLevel);
-         }
+         await this.assertGateLanded(recompiled, rowLevel);
          // `assertGateLanded` proves only that the condition is present; a
          // `rename:`/`except:` misbind still satisfies that, because Malloy
          // resolves field references late. This proves it reads the field it
@@ -3404,130 +3381,6 @@ export class QueryGovernor {
             );
          }
       }
-   }
-
-   /**
-    * The bind pair for a notebook cell that must graft against its OWN scope:
-    * a `recompile` that grafts the cell's compiled queryDef, and the `prove`
-    * that checks it. Returned together because one without the other is a
-    * silent fail-OPEN.
-    *
-    * The queryDef is grafted rather than the text recompiled because the
-    * grafted clone, loaded from a ModelDef, has no base URL, so a relative
-    * `import` in the cell would fail to resolve. When the queryDef holds an
-    * inlined run-target struct the condition is appended to it, on a deep
-    * clone: `cell.runnable` is memoized, and mutating it would leak one
-    * caller's filter into the next caller's query.
-    */
-   public ownScopeQueryDefBinder(
-      queryDef: unknown,
-      scope: GraftScope,
-   ): {
-      recompile: (
-         materializer: ModelMaterializer,
-         grafts: ReadonlyArray<{
-            graftTarget: string;
-            landing?: DerivationLanding;
-            condition: FilterCondition;
-         }>,
-      ) => QueryMaterializer;
-      prove: (recompiled: QueryMaterializer) => Promise<void>;
-   } {
-      let graftedStruct: SourceDef | undefined;
-      let expected: { site: SourceDef; code: string }[] = [];
-      let appliedGrafts: ReadonlyArray<{
-         condition: FilterCondition;
-         landing?: DerivationLanding;
-      }> = [];
-      return {
-         recompile: (materializer, grafts) => {
-            const clone = structuredClone(queryDef) as { structRef?: unknown };
-            expected = [];
-            appliedGrafts = grafts;
-            graftedStruct = undefined;
-            const snapshot = clone.structRef;
-            if (typeof snapshot === "string") {
-               // A NAME resolves against the grafted clone, which already
-               // carries the condition; `assertGateLanded` stays honest.
-               return (
-                  materializer as HydrationMaterializer
-               )._loadQueryFromQueryDef(clone);
-            }
-            if (!snapshot || typeof snapshot !== "object") {
-               // Unprovable shape: deny rather than run ungated.
-               throw new Error(
-                  "own-scope run target is neither a named source nor an inlined struct",
-               );
-            }
-            const struct = snapshot as SourceDef;
-            for (const { graftTarget, landing, condition } of grafts) {
-               const target = scope.modelDef.contents[graftTarget];
-               // `sourceID` identity, never name: two structs in one
-               // inheritance chain share a name, and appending a condition
-               // lifted in `graftTarget`'s field space to a renamed or
-               // projected relative binds it to the wrong column.
-               if (
-                  !target ||
-                  !isSourceDef(target) ||
-                  !target.sourceID ||
-                  struct.sourceID !== target.sourceID
-               ) {
-                  throw new Error(
-                     `own-scope run target does not match graft target "${graftTarget}"`,
-                  );
-               }
-               // A gate read on a derivation's base lands on that base's copy.
-               const site =
-                  landing === undefined
-                     ? struct
-                     : // No `contents`: a named base would resolve into the
-                       // shared scope, and grafting it would leak this
-                       // caller's filter into the next caller's query.
-                       derivationLevel(struct, landing, undefined);
-               if (!site) {
-                  throw new Error(
-                     `own-scope run target does not derive from the gated base of "${graftTarget}"`,
-                  );
-               }
-               if (!site.filterList?.some((f) => f.code === condition.code)) {
-                  site.filterList = [...(site.filterList ?? []), condition];
-               }
-               expected.push({ site, code: condition.code ?? "" });
-            }
-            graftedStruct = struct;
-            return (
-               materializer as HydrationMaterializer
-            )._loadQueryFromQueryDef(clone);
-         },
-         /**
-          * Re-reading the condition off `graftedStruct` is VACUOUS (this binder
-          * just wrote it); the load-bearing check is object IDENTITY: the
-          * struct the materializer executes must be the one grafted, so a
-          * `_loadQueryFromQueryDef` that copies its argument denies. A NAME
-          * run target defers to {@link assertGateLanded}. SQL-level honoring
-          * is pinned by `tests/component/authorize/import_hop.spec.ts`.
-          */
-         prove: async (recompiled) => {
-            if (!graftedStruct) {
-               await this.assertGateLanded(recompiled, appliedGrafts);
-               return;
-            }
-            if (
-               (await readPreparedQuery(recompiled)).structRef !== graftedStruct
-            ) {
-               throw new Error(
-                  "the grafted run target is not the one the query will execute",
-               );
-            }
-            for (const { site, code } of expected) {
-               if (!site.filterList?.some((f) => f.code === code)) {
-                  throw new Error(
-                     "a row-level gate condition did not land on the recompiled query",
-                  );
-               }
-            }
-         },
-      };
    }
 
    /** Depth bound for {@link assertGateLanded}'s query-source base recursion. */

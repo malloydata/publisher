@@ -1407,16 +1407,13 @@ function statementUsage(
 
 /**
  * The one request `govern()` judges: the caller's givens, the ceiling over the audit, and how a graft
- * recompiles on the scope it lands on. A subject with nothing to recompile
- * gives up the bypass, so a row-level gate denies; a query adds its boundary,
+ * recompiles on the scope it lands on; a query adds its boundary,
  * its caller's text and region, and whether it was routed past a gate.
  */
 function governRequestOf(r: {
    givens: GovernRequest["givens"];
    ceiling: NonNullable<GovernRequest["ceiling"]>;
-   graft:
-      | Pick<GovernRequest, "recompile" | "proveGraft" | "graftScope">
-      | undefined;
+   graft: Pick<GovernRequest, "recompile" | "graftScope">;
    query?: Pick<
       GovernRequest,
       | "bypassAuthorize"
@@ -1430,8 +1427,8 @@ function governRequestOf(r: {
    return {
       givens: r.givens,
       ...r.query,
-      // Last, so nothing a query passes can lift the fail-closed default.
-      ...(r.graft ?? { bypassAuthorize: false }),
+      // Last, so nothing a query passes can replace how the graft recompiles.
+      ...r.graft,
       ceiling: r.ceiling,
    };
 }

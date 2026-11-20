@@ -14,7 +14,7 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { ModelCompilationError } from "../errors";
+import { ModelCompilationError, ModelNotFoundError } from "../errors";
 import { resetReportMetricsForTest } from "../report_metrics";
 import {
    PackageLoadPool,
@@ -26,6 +26,7 @@ import {
 } from "../test_helpers/metrics_harness";
 import { Model, ModelPolicy } from "./model";
 import { Package } from "./package";
+import { attachedCells } from "../test_helpers/attached_cells";
 
 const FIXTURE_DIR = path.resolve(
    __dirname,
@@ -98,30 +99,29 @@ describe("served linear report cells", () => {
       return found;
    };
 
-   it("serves a report's definitions as cells, then its tiles in tile order", async () => {
-      const raw = await model(LAYOUT).getNotebook();
-      expect(raw.format).toBe("malloy");
-      expect(raw.notebookCells?.map((cell) => [cell.type, cell.kind])).toEqual([
+   it("refuses to read a linear .malloy report as cells", async () => {
+      await expect(model(LAYOUT).getNotebook()).rejects.toThrow(
+         ModelNotFoundError,
+      );
+   });
+
+   it("attaches a report's definitions as cells, then its tiles in tile order", async () => {
+      const cells = attachedCells(model(LAYOUT));
+      expect(cells.map((cell) => [cell.type, cell.kind])).toEqual([
          ["code", "definition"],
          ["code", "definition"],
          ["markdown", "markdown"],
          ["code", "query"],
          ["code", "query"],
       ]);
-      expect(raw.notebookCells?.[2].text).toContain("## How to read this page");
-      expect(raw.notebookCells?.[3].text).toBe("run: orders_tiles -> headline");
+      expect(cells[2].text).toContain("## How to read this page");
+      expect(cells[3].text).toBe("run: orders_tiles -> headline");
       expect(pkg.getReportLayout(LAYOUT)).toBe("linear");
-   });
-
-   it("reads autorun and starting givens off the artifact tag", async () => {
-      const raw = await model(SETTINGS).getNotebook();
-      expect(raw.autorun).toBe(false);
-      expect(raw.startingGivens).toEqual({ REGION: "EU" });
    });
 
    it("runs a tile cell's query on the report's path", async () => {
       const nb = model(LAYOUT);
-      const text = (await nb.getNotebook()).notebookCells?.[4].text ?? "";
+      const text = attachedCells(nb)[4].text;
       const ran = await nb.runQuery(unrecordedAudit(), { query: text });
       expect(rowsOf(ran.compactResult).length).toBeGreaterThan(0);
    });
@@ -158,23 +158,22 @@ describe("served linear report cells", () => {
                   inProcess.getCompiledSourceText()!,
                ),
             ).toBe("ok");
-            const fromWorker = await model(modelPath).getNotebook();
-            const local = await inProcess.getNotebook();
-            // Each compile mints fresh drill reference ids; nothing else may differ.
-            const stable = (cells: unknown) =>
-               JSON.stringify(cells).replace(
-                  /reference_id = \\\\\\"[0-9a-f-]+\\\\\\"/g,
-                  "reference_id",
-               );
-            expect(stable(local.notebookCells)).toContain("reference_id");
-            expect(stable(local.notebookCells)).toEqual(
-               stable(fromWorker.notebookCells),
-            );
-            expect(local.annotations).toEqual(fromWorker.annotations);
+            // The reader's fields; the live runnable and modelDef differ by compile.
+            const read = (m: Model) =>
+               attachedCells(m).map((cell) => ({
+                  type: cell.type,
+                  kind: cell.kind,
+                  text: cell.text,
+                  markdown: cell.markdown,
+                  proseLines: cell.proseLines,
+                  codeLine: cell.codeLine,
+                  caption: cell.caption,
+               }));
+            const fromWorker = read(model(modelPath));
+            expect(fromWorker.length).toBeGreaterThan(0);
+            expect(read(inProcess)).toEqual(fromWorker);
             const query =
-               (fromWorker.notebookCells ?? []).find(
-                  (cell) => cell.kind === "query",
-               )?.text ?? "";
+               fromWorker.find((cell) => cell.kind === "query")?.text ?? "";
             const givens =
                modelPath === SETTINGS ? { REGION: "EU" } : undefined;
             const a = await inProcess.runQuery(unrecordedAudit(), {
@@ -254,11 +253,10 @@ describe("served linear report cells", () => {
          expect(listed?.error).toContain("Line 5:");
       });
 
-      it("fails the notebook GET the way a notebook that did not compile does", async () => {
+      it("carries the reader's refusal as its error, the way a notebook that did not compile does, and no cells", async () => {
          const nb = model(REFUSED);
-         await expect(nb.getNotebook()).rejects.toBeInstanceOf(
-            ModelCompilationError,
-         );
+         expect(nb.getNotebookError()).toBeInstanceOf(ModelCompilationError);
+         expect(attachedCells(nb)).toEqual([]);
       });
 
       it("is a package finding of severity error, counted at discovery", async () => {

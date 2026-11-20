@@ -18,7 +18,7 @@
  * `QueryGovernor`, which hands them in as {@link OracleChecks}.
  */
 
-import type { GivenValue, QueryMaterializer } from "@malloydata/malloy";
+import type { GivenValue } from "@malloydata/malloy";
 import { hasCallerAuthorizeAnnotation } from "../authorize";
 import type { CallerRegion } from "../caller_joins";
 import type { GraftScope } from "../gate_classification";
@@ -53,11 +53,6 @@ export interface OracleChecks {
       givens: Record<string, GivenValue>,
       bypassAuthorize?: boolean,
    ): Promise<void>;
-   probeEntryPointGates(
-      runnable: QueryMaterializer,
-      givens: Record<string, GivenValue>,
-      graftScope: GraftScope | undefined,
-   ): Promise<unknown>;
    /** The model's declared sources and queries, by name. */
    sources(): ReadonlyArray<{ name?: string }> | undefined;
    queries(): ReadonlyArray<{ name?: string; sourceName?: string }> | undefined;

@@ -15,6 +15,7 @@ import type { DuckDBConnection } from "@malloydata/db-duckdb";
 import type { Connection } from "@malloydata/malloy";
 import { Model, ModelPolicy } from "./model";
 import { seededDuckdb, writeTempPackage } from "../test_helpers/temp_package";
+import { attachedCells } from "../test_helpers/attached_cells";
 
 const SEED_SQL = `
 CREATE OR REPLACE TABLE orgtable (id INTEGER, org_id INTEGER, val VARCHAR);
@@ -108,8 +109,8 @@ describe("a linear report's query cells under the model's gates", () => {
       expect(
          model.attachServedNotebookCells(model.getCompiledSourceText()!),
       ).toBe("ok");
-      const listed = (await model.getNotebook()).notebookCells ?? [];
-      cellTexts = listed.map((cell) => cell.text ?? "");
+      const listed = attachedCells(model);
+      cellTexts = listed.map((cell) => cell.text);
       for (const name of Object.keys(cells) as (keyof typeof cells)[]) {
          cells[name] = listed.findIndex(
             (cell) =>

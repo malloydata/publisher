@@ -12,6 +12,7 @@ import * as os from "os";
 import * as path from "path";
 import { Model, ModelPolicy } from "../../src/service/model";
 import { Package } from "../../src/service/package";
+import { attachedCells } from "../../src/test_helpers/attached_cells";
 import {
    artifactNoteLine,
    docNotesAboveArtifact,
@@ -348,21 +349,18 @@ describe("served notebooks (worker path)", () => {
       });
    });
 
-   it("answers the notebook GET for a served notebook whose only statement is a definition", async () => {
+   it("attaches one definition cell to a linear report whose only statement is a definition", async () => {
       manifest();
       write(
          "notebooks/nb.malloy",
          `## artifact { layout=linear tiles=[] }\n${BASE}`,
       );
       await withPackage(async (pkg) => {
-         const raw = await pkg.getModel("notebooks/nb.malloy")!.getNotebook();
-         expect(raw).toMatchObject({
-            type: "notebook",
-            format: "malloy",
-            notebookCells: [
-               { type: "code", kind: "definition", text: BASE.trimEnd() },
-            ],
-         });
+         expect(
+            attachedCells(pkg.getModel("notebooks/nb.malloy")),
+         ).toMatchObject([
+            { type: "code", kind: "definition", text: BASE.trimEnd() },
+         ]);
       });
    });
 
@@ -573,10 +571,7 @@ describe("served notebooks (worker path)", () => {
             },
          );
          expect(model.getCompiledSourceText()).toBe(text);
-         expect(await model.getNotebook()).toMatchObject({
-            format: "malloy",
-            notebookCells: [],
-         });
+         expect(attachedCells(model)).toEqual([]);
       } finally {
          await duckdb.close();
       }

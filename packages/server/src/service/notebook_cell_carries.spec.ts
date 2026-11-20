@@ -24,6 +24,7 @@ import { logger } from "../logger";
 import { withAccessRecord, type AccessRecord } from "./access_record";
 import { Model, ModelPolicy } from "./model";
 import { seededDuckdb, writeTempPackage } from "../test_helpers/temp_package";
+import { attachedCells } from "../test_helpers/attached_cells";
 
 const SEED_SQL = `
 CREATE OR REPLACE TABLE people (id INTEGER, ssn VARCHAR);
@@ -90,8 +91,8 @@ describe("a linear report's query cell under a #(carries) ceiling", () => {
       expect(
          model.attachServedNotebookCells(model.getCompiledSourceText()!),
       ).toBe("ok");
-      const listed = (await model.getNotebook()).notebookCells ?? [];
-      cellTexts = listed.map((c) => c.text ?? "");
+      const listed = attachedCells(model);
+      cellTexts = listed.map((c) => c.text);
       past = listed.findIndex((c) => c.text === `run: ${PAST}`);
       within = listed.findIndex((c) => c.text === `run: ${WITHIN}`);
       expect(past).toBeGreaterThanOrEqual(0);
