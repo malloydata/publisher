@@ -17,6 +17,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { resetReportMetricsForTest } from "../../src/report_metrics";
+import { unrecordedAudit } from "../../src/service/access_record";
 import { setEventLoopYieldBudgetMsForTesting } from "../../src/service/event_loop_yield";
 import { Model } from "../../src/service/model";
 import { startMetricsHarness } from "../../src/test_helpers/metrics_harness";
@@ -342,6 +343,38 @@ describe("the .malloynb cell check, as a neighbor of the other lints", () => {
          ]);
       } finally {
          Model.prototype.malloynbCellRefusals = original;
+         await loaded.cleanup();
+      }
+   });
+
+   it("keeps no query model it built for the check: the query route builds its own on first use", async () => {
+      const loaded = await loadTempPackage({
+         "orders.malloy": ORDERS,
+         "notebooks/n.malloynb":
+            '>>>malloy\nimport "../orders.malloy"\n>>>malloy\nrun: orders -> { aggregate: order_count }\n>>>malloy\nrun: orders -> { group_by: r }',
+      });
+      try {
+         const model = loaded.pkg.getModel("notebooks/n.malloynb")!;
+         const sharedQueryModel = async () =>
+            (
+               await (
+                  model as unknown as {
+                     modelMaterializer: {
+                        getModel(): Promise<{
+                           getExistingQueryModel(): unknown;
+                        }>;
+                     };
+                  }
+               ).modelMaterializer.getModel()
+            ).getExistingQueryModel();
+         await loaded.pkg.relintReports();
+         expect(await model.malloynbCellRefusals()).toEqual([]);
+         expect(await sharedQueryModel()).toBeUndefined();
+         await model.runQuery(unrecordedAudit(), {
+            query: "run: orders -> { aggregate: order_count }",
+         });
+         expect(await sharedQueryModel()).toBeDefined();
+      } finally {
          await loaded.cleanup();
       }
    });

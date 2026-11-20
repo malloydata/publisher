@@ -2047,12 +2047,17 @@ export class Model {
     * boundary refusal comes back as its error, with the compiled run target
     * when that check refused it. Shared by the reports read
     * ({@link assertMalloynbRunOnSurface}) and the load-time cell check
-    * ({@link consoleCellRefusal}), so the two ask in one order.
+    * ({@link consoleCellRefusal}), so the two ask in one order. With
+    * `shareQueryModel`, the compile builds the materializer's shared
+    * QueryModel first ({@link ensureSharedQueryModel}), which the model then
+    * keeps; the load-time check passes false, so a notebook nobody opens
+    * keeps none. A compile without it still reuses one already built.
     */
    private async malloynbRunStages<T>(
       materializer: ModelMaterializer,
       query: string,
       beforeCompile?: () => T | undefined,
+      shareQueryModel = true,
    ): Promise<
       | { stage: "boundary"; error: NotQueryableError; compiledSource?: string }
       | { stage: "prepare"; value: T }
@@ -2082,7 +2087,7 @@ export class Model {
       }
       const prepared = beforeCompile?.();
       if (prepared !== undefined) return { stage: "prepare", value: prepared };
-      await this.ensureSharedQueryModel(materializer);
+      if (shareQueryModel) await this.ensureSharedQueryModel(materializer);
       const runnable = materializer.loadRestrictedQuery("\n" + query);
       try {
          await runnable.getPreparedQuery();
@@ -2234,8 +2239,11 @@ export class Model {
       if (this.compilationError || !materializer || !this.modelDef) {
          return undefined;
       }
-      const outcome = await this.malloynbRunStages(materializer, query, () =>
-         this.preparedRefusal(query),
+      const outcome = await this.malloynbRunStages(
+         materializer,
+         query,
+         () => this.preparedRefusal(query),
+         false,
       );
       if (outcome.stage === "boundary") {
          return this.offSurfaceRefusal(
