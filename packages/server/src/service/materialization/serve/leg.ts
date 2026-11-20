@@ -46,6 +46,7 @@ import {
    isDatabase,
    type KeyedTable,
    type Pinned,
+   underCompilerKeys,
 } from "../domain/binding";
 import type { BuildManifest } from "../domain/types";
 import type { TableRead } from "../domain/gate_policy";
@@ -224,7 +225,11 @@ function persistedResultLeg(
             givens: q.givens,
             authorRunnable: q.authorRunnable,
             pinned: p,
-            buildManifest: pinnedManifest(p),
+            // As Malloy reads it (underCompilerKeys).
+            buildManifest: underCompilerKeys(
+               pinnedManifest(p),
+               p.snapshot.compilerKeys,
+            ),
          });
          return {
             runnable: answer.runnable,

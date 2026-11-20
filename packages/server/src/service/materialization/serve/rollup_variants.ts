@@ -196,6 +196,7 @@ import {
    manifestUnderCompilerKey,
    type Pinned,
    storageLookupOf,
+   underCompilerKeys,
 } from "../domain/binding";
 import type { ServedCopyJoinBasis } from "./served_copy_serve";
 import {
@@ -1073,7 +1074,10 @@ export class RollupVariantServe {
          result = await runnable.getPreparedResult({
             ...(q.args.givens ? { givens: q.args.givens as never } : {}),
             buildManifest: manifestUnderCompilerKey(
-               q.args.pinned.compilerManifest,
+               underCompilerKeys(
+                  q.args.pinned.compilerManifest,
+                  q.args.pinned.snapshot.compilerKeys,
+               ),
                table.keyedTable,
             ),
          } as never);
@@ -1462,7 +1466,10 @@ export class RollupVariantServe {
             buildManifest: table.virtualMap
                ? EMPTY_BUILD_MANIFEST
                : manifestUnderCompilerKey(
-                    args.pinned.compilerManifest,
+                    underCompilerKeys(
+                       args.pinned.compilerManifest,
+                       args.pinned.snapshot.compilerKeys,
+                    ),
                     table.keyedTable,
                  ),
          } as never);

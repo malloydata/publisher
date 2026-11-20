@@ -212,6 +212,12 @@ export interface Snapshot {
     * their queries answer live.
     */
    readonly withdrawn?: ReadonlySet<string>;
+   /**
+    * The key Malloy files each address's table under, where it is not the
+    * address (`PackagePlan.compilerKeys`): what {@link underCompilerKeys}
+    * files a manifest handed to Malloy under.
+    */
+   readonly compilerKeys?: Readonly<Record<string, string>>;
 }
 
 /**
@@ -222,11 +228,15 @@ export function makeSnapshot(
    bindings: readonly Binding[],
    entries: Readonly<FreshnessManifest> = {},
    withdrawn?: ReadonlySet<string>,
+   compilerKeys?: Readonly<Record<string, string>>,
 ): Snapshot {
    return Object.freeze({
       bindings,
       entries,
       ...(withdrawn && withdrawn.size > 0 ? { withdrawn } : {}),
+      ...(compilerKeys && Object.keys(compilerKeys).length > 0
+         ? { compilerKeys }
+         : {}),
    });
 }
 
@@ -364,6 +374,87 @@ export function pin(snapshot: Snapshot, asOf: Date): Pinned {
          return { state: "stale", binding: stored[0] };
       },
    });
+}
+
+/**
+ * Each content address paired with the key Malloy files its table under
+ * (`PackagePlan.compilerKeys`, where the two differ), in plan order.
+ */
+type CompilerKeys =
+   | Readonly<Record<string, string>>
+   | Iterable<readonly [address: string, key: string]>;
+
+function pairsOf(keys: CompilerKeys): Iterable<readonly [string, string]> {
+   return Symbol.iterator in keys
+      ? (keys as Iterable<readonly [string, string]>)
+      : Object.entries(keys as Readonly<Record<string, string>>);
+}
+
+/**
+ * Which address fills each compiler key {@link underCompilerKeys} files:
+ * the first address, in plan order, with an entry, whose key is neither
+ * its own address, `claimed`, nor already a key of `entries`.
+ */
+function filings(
+   entries: Readonly<Record<string, unknown>>,
+   keys: CompilerKeys,
+   claimed: ReadonlySet<string>,
+): Map<string, string> {
+   const filed = new Map<string, string>();
+   for (const [address, key] of pairsOf(keys)) {
+      if (
+         key === address ||
+         claimed.has(key) ||
+         !(address in entries) ||
+         key in entries ||
+         filed.has(key)
+      ) {
+         continue;
+      }
+      filed.set(key, address);
+   }
+   return filed;
+}
+
+/**
+ * `manifest`, keyed by Publisher's content addresses, as Malloy must see
+ * it: each entry also under the key Malloy files its table under, so
+ * Malloy's own lookup finds it (an address folds in more than Malloy's key
+ * does: a destination, a `name=`, the upstream column types). Sources
+ * folded apart share one key; the first in plan order with an entry fills
+ * it, unless the key is an entry's own address or `claimed` (a key the
+ * caller decided itself). Every manifest handed to a Malloy runtime, a
+ * compile or a package load passes through here; Publisher's own reads of
+ * a manifest (freshness, the path report, verdicts) stay on addresses.
+ * Unchanged when nothing is filed.
+ */
+export function underCompilerKeys<M extends BuildManifest | undefined>(
+   manifest: M,
+   keys: CompilerKeys | undefined,
+   claimed: ReadonlySet<string> = new Set(),
+): M {
+   if (!manifest || !keys) return manifest;
+   const filed = filings(manifest.entries, keys, claimed);
+   if (filed.size === 0) return manifest;
+   const entries = { ...manifest.entries };
+   for (const [key, address] of filed) entries[key] = entries[address];
+   return { ...manifest, entries };
+}
+
+/**
+ * The manifest entries a run over {@link underCompilerKeys}`(manifest, keys)`
+ * read, by address: a read of a key it filed is a read of the address that
+ * filled it.
+ */
+export function readsUnderCompilerKeys(
+   read: ReadonlySet<string>,
+   manifest: BuildManifest | undefined,
+   keys: CompilerKeys | undefined,
+): ReadonlySet<string> {
+   if (!manifest || !keys || read.size === 0) return read;
+   const filed = filings(manifest.entries, keys, new Set());
+   if (![...read].some((k) => filed.has(k))) return read;
+   return new Set([...read].map((k) => filed.get(k) ?? k));
 }
 
 /**

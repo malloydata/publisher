@@ -112,6 +112,7 @@ import type {
    ChainBuildText,
 } from "./materialization/domain/chain_build";
 import type { KeptTable, LateRows } from "./materialization/domain/types";
+import { underCompilerKeys } from "./materialization/domain/binding";
 import {
    confinedPackagePath,
    errMessage,
@@ -1499,8 +1500,14 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             ),
          };
       }
+      // As Malloy reads it: each entry also under its compiler key.
       const buildManifest = compiledFor
-         ? toTableNameManifest(compiledFor.quoted)
+         ? underCompilerKeys(
+              { entries: toTableNameManifest(compiledFor.quoted) },
+              outcome.buildPlan?.ok
+                 ? outcome.buildPlan.packagePlan.compilerKeys
+                 : undefined,
+           ).entries
          : undefined;
       logger.info("Package load via worker pool completed", {
          packageName,
@@ -2993,7 +3000,11 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       // Each table's columns as its warehouse holds them now, read once for
       // this bind (one schema read per table), before the models move.
       const observed = await this.mz.readDatabaseColumns(entries);
-      const buildManifest = toTableNameManifest(entries);
+      // As Malloy reads it: each entry also under its compiler key.
+      const buildManifest = underCompilerKeys(
+         { entries: toTableNameManifest(entries) },
+         this.mz.plan.compilerKeys,
+      ).entries;
       const modelPaths = Array.from(this.models.keys());
       logger.info("Reloading all models with build manifest", {
          packageName: this.packageName,

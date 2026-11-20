@@ -16,6 +16,7 @@
  */
 
 import { declaredDestination, storageWritable } from "../domain/placement";
+import { underCompilerKeys } from "../domain/binding";
 import {
    buildSQLOf,
    compilerBuildId,
@@ -175,24 +176,21 @@ export function manifestForCompiler(
          }
       }
    }
-   for (const [sourceID, address] of Object.entries(
-      planFacts.addressBySourceId,
-   )) {
-      const key = planFacts.compilerKeyBySourceId[sourceID];
-      if (
-         address === undefined ||
-         key === undefined ||
-         key === address ||
-         claimed.has(key) ||
-         !(address in entries) ||
-         key in entries
-      ) {
-         continue;
-      }
-      entries[key] = entries[address];
-      changed = true;
-   }
-   return changed ? { ...full, entries } : full;
+   const keyed = changed ? { ...full, entries } : full;
+   // Every other key: the first source with an entry fills it, as every
+   // manifest handed to Malloy is filed (underCompilerKeys).
+   return underCompilerKeys(
+      keyed,
+      Object.entries(planFacts.addressBySourceId).flatMap(
+         ([sourceID, address]) => {
+            const key = planFacts.compilerKeyBySourceId[sourceID];
+            return address === undefined || key === undefined
+               ? []
+               : [[address, key] as const];
+         },
+      ),
+      claimed,
+   );
 }
 
 /**

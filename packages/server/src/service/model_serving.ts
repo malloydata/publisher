@@ -65,6 +65,8 @@ import {
 } from "./access_record";
 import {
    manifestUnderCompilerKey,
+   readsUnderCompilerKeys,
+   underCompilerKeys,
    pin,
    type Pinned,
    readsByAddress,
@@ -879,8 +881,11 @@ export class ModelServing {
             : undefined;
       const keyedTable =
          keyed && runManifest?.entries[keyed.tableId] ? keyed : undefined;
+      // As Malloy reads it: each entry also under its compiler key, and the
+      // answer's own table under its key over any sibling's.
+      const compilerKeys = args.pinned.snapshot.compilerKeys;
       const effectiveBuildManifest = manifestUnderCompilerKey(
-         runManifest,
+         underCompilerKeys(runManifest, compilerKeys),
          keyedTable,
       );
       const maxRows = getMaxQueryRows();
@@ -925,7 +930,14 @@ export class ModelServing {
          );
          // AFTER run(), so it includes the warehouse round trip.
          executionTime = performance.now() - ctx.startTime;
-         answer = answeredWith(answer, readsByAddress(runRead, keyedTable));
+         answer = answeredWith(
+            answer,
+            readsUnderCompilerKeys(
+               readsByAddress(runRead, keyedTable),
+               runManifest,
+               compilerKeys,
+            ),
+         );
       } catch (error) {
          // `freshnessFallback=live` marks the tier as an optimisation, not a
          // dependency, so a store failing UNDER a routed query degrades to
@@ -1452,12 +1464,17 @@ export class ModelServing {
       // companion), and none for a cell whose model lacks the
       // persistence flag (see manifestIfPersistent).
       const pinnedForCell = this.pin();
-      const buildManifest = this.manifestIfPersistent(
-         withoutAsOfBuildEntries(
-            this.host.withoutPreaggregateEntries(pinnedManifest(pinnedForCell)),
-            pinnedForCell,
+      const buildManifest = underCompilerKeys(
+         this.manifestIfPersistent(
+            withoutAsOfBuildEntries(
+               this.host.withoutPreaggregateEntries(
+                  pinnedManifest(pinnedForCell),
+               ),
+               pinnedForCell,
+            ),
+            cell.modelDef ?? this.host.modelDef(),
          ),
-         cell.modelDef ?? this.host.modelDef(),
+         pinnedForCell.snapshot.compilerKeys,
       );
       // See filterGivensToModelSurface.
       const cellSurfaceGivens = governor.filterGivensToModelSurface(
