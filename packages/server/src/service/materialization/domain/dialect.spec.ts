@@ -70,8 +70,9 @@ const DECIDED: Record<Flag, DialectName[]> = {
    // A string column's comparison is read only where it can be: BigQuery is
    // byte-exact, DuckDB and Postgres are probed (`serve/gate_collation.ts`).
    stringCollation: ["duckdb", "postgres", "standardsql"],
-   // BigQuery refuses GROUP BY on these (F-45); a pair table's build groups.
-   ungroupableTypes: ["standardsql"],
+   // BigQuery and Postgres refuse GROUP BY on some types (F-45); a pair
+   // table's build groups.
+   ungroupableTypes: ["postgres", "standardsql"],
    // A stored DOUBLE compares as live only where live's double orders NaN
    // as DuckDB does (not BigQuery's FLOAT64).
    binary64Types: ["duckdb", "postgres", "snowflake"],
@@ -118,12 +119,19 @@ describe("the dialect table", () => {
    });
 
    it("names the types BigQuery's GROUP BY refuses", () => {
-      expect(capabilitiesOf("standardsql").ungroupableTypes).toEqual([
-         "geography",
-         "json",
-         "array",
-         "record",
-      ]);
+      expect(capabilitiesOf("standardsql").ungroupableTypes).toEqual({
+         malloy: ["json", "array", "record"],
+         native: ["geography"],
+      });
+   });
+
+   it("names the native types Postgres's GROUP BY refuses, and not jsonb", () => {
+      const refused = capabilitiesOf("postgres").ungroupableTypes;
+      expect(refused?.malloy).toEqual([]);
+      expect(refused?.native).toContain("json");
+      expect(refused?.native).toContain("xml");
+      expect(refused?.native).toContain("point");
+      expect(refused?.native).not.toContain("jsonb");
    });
 
    it("gives an unknown dialect no capability, and the least leaf budget", () => {

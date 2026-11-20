@@ -15,9 +15,12 @@
  */
 
 import { BigQueryConnection } from "@malloydata/db-bigquery";
+import { PostgresConnection } from "@malloydata/db-postgres";
 import {
    FixedConnectionMap,
+   getDialect,
    MalloyConfig,
+   mkArrayDef,
    type Connection,
 } from "@malloydata/malloy";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
@@ -96,12 +99,13 @@ afterAll(() => {
 });
 afterEach(() => packages.cleanup());
 
-/** The compiled build plan of `model`, over `bq` and `duckdb`. */
+/** The compiled build plan of `model`, over `bq`, `pg` and `duckdb`. */
 async function compiled(model: string) {
    const { duckdb } = duckdbTestConnections();
    const connections = new FixedConnectionMap(
       new Map<string, Connection>([
          ["bq", new BigQueryConnection("bq")],
+         ["pg", new PostgresConnection("pg")],
          ["duckdb", duckdb],
       ]),
       "duckdb",
@@ -113,12 +117,12 @@ async function compiled(model: string) {
 }
 
 /** A station source over `parent` with a join_many to trips over `child`, inlined. */
-function pairModel(parent: string, child: string): string {
-   return `source: trips is bq.sql("select * from ${child}") extend {
+function pairModel(parent: string, child: string, connection = "bq"): string {
+   return `source: trips is ${connection}.sql("select * from ${child}") extend {
   primary_key: trip_id
 }
 #(materialize) storage="lake" inline=["trips"]
-source: s is bq.sql("select * from ${parent}") extend {
+source: s is ${connection}.sql("select * from ${parent}") extend {
   primary_key: station_id
   join_many: trips on trips.start_station_id = station_id
   measure: n is count()
@@ -191,4 +195,96 @@ source: s is bq.sql("select * from stations_geo") extend {
       );
       expect(await build?.getSQL()).not.toContain("GROUP BY");
    });
+});
+
+/**
+ * Postgres has no equality operator for `json`, `xml`, the geometric types or
+ * a snapshot ("could not identify an equality operator for type json"), so
+ * its `GROUP BY` refuses them and arrays of them; `jsonb` groups. Malloy reads
+ * each as a `sql native` field, and an array of one as an array of it; the
+ * schema below is what Malloy's Postgres connector answers for the columns.
+ */
+describe("a Postgres pair table", () => {
+   const pg = getDialect("postgres");
+   const native = (name: string, type: string) => ({
+      ...pg.sqlTypeToMalloyType(type),
+      name,
+   });
+   const PG_SCHEMAS: Record<string, unknown[]> = {
+      stations: [native("station_id", "integer"), native("name", "text")],
+      stations_json: [native("station_id", "integer"), native("attrs", "json")],
+      stations_jsonb: [
+         native("station_id", "integer"),
+         native("attrs", "jsonb"),
+      ],
+      stations_xml: [native("station_id", "integer"), native("doc", "xml")],
+      stations_point: [native("station_id", "integer"), native("loc", "point")],
+      stations_json_array: [
+         native("station_id", "integer"),
+         mkArrayDef(pg.sqlTypeToMalloyType("json"), "attrs"),
+      ],
+      stations_int_array: [
+         native("station_id", "integer"),
+         mkArrayDef(pg.sqlTypeToMalloyType("integer"), "codes"),
+      ],
+      trips: [
+         native("trip_id", "integer"),
+         native("start_station_id", "integer"),
+         native("duration", "integer"),
+      ],
+   };
+   let pgSpy: { mockRestore(): void };
+   beforeAll(() => {
+      pgSpy = spyOn(
+         PostgresConnection.prototype as unknown as {
+            fetchSelectSchema(ref: {
+               selectStr: string;
+               connection: string;
+            }): Promise<unknown>;
+         },
+         "fetchSelectSchema",
+      ).mockImplementation(
+         async (ref: { selectStr: string; connection: string }) => {
+            const table = /from (\w+)/.exec(ref.selectStr)?.[1] ?? "";
+            return {
+               type: "sql_select",
+               ...ref,
+               dialect: "postgres",
+               name: `pg:${ref.selectStr}`,
+               fields: PG_SCHEMAS[table],
+            };
+         },
+      );
+   });
+   afterAll(() => pgSpy.mockRestore());
+
+   for (const [name, parent] of [
+      ["a jsonb column", "stations_jsonb"],
+      ["an integer array", "stations_int_array"],
+      ["only scalar columns", "stations"],
+   ] as const) {
+      it(`groups by its stored columns over ${name}`, async () => {
+         const c = await compiled(pairModel(parent, "trips", "pg"));
+         expect(generatedPlans(c)[0]?.pair?.join).toBe("trips");
+      });
+   }
+
+   for (const [name, parent, column, type] of [
+      ["a json column", "stations_json", "attrs", "JSON"],
+      ["an xml column", "stations_xml", "doc", "XML"],
+      ["a point column", "stations_point", "loc", "POINT"],
+      ["a json array", "stations_json_array", "attrs", "JSON[]"],
+   ] as const) {
+      it(`is refused at plan over ${name}, which Postgres cannot group by`, async () => {
+         const c = await compiled(pairModel(parent, "trips", "pg"));
+         expect(generatedPlans(c)).toEqual([]);
+         const findings = (c.annotationFindings ?? []).filter(
+            (f) => f.code === "materialize-not-built",
+         );
+         expect(findings.map((f) => f.subject)).toEqual(["s"]);
+         expect(findings[0].message).toContain(
+            `\`${column}\` is a ${type} column, which postgres`,
+         );
+      });
+   }
 });

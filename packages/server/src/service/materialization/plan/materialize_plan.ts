@@ -1951,7 +1951,8 @@ function pairLayoutOf(
  * Why a pair table cannot be built in its source's dialect: its build groups
  * by every stored column (build_file_generator.ts, `pairBody`), and one of
  * them has a type that dialect's `GROUP BY` refuses (BigQuery: GEOGRAPHY,
- * JSON, ARRAY, STRUCT). Undefined when every column can be grouped.
+ * JSON, ARRAY, STRUCT; Postgres: json, xml, the geometric types, and arrays
+ * of them). Undefined when every column can be grouped.
  */
 function ungroupablePairColumn(
    def: PlannedDef,
@@ -1961,8 +1962,8 @@ function ungroupablePairColumn(
    const refused = capabilitiesOf(def.dialect).ungroupableTypes;
    if (!refused) return undefined;
    for (const c of columns) {
-      const type = groupedTypeOf(storedFieldOf(def, map, c));
-      if (type === undefined || !refused.includes(type)) continue;
+      const type = ungroupedTypeOf(storedFieldOf(def, map, c), refused);
+      if (type === undefined) continue;
       return (
          `inline= names a join_many, whose pair table's build groups by every ` +
          `stored column, and \`${c.column}\` is a ${type.toUpperCase()} column, ` +
@@ -1975,14 +1976,30 @@ function ungroupablePairColumn(
 }
 
 /**
- * A field's type as a dialect's `GROUP BY` judges it: a `sql native` field's
- * raw type in lower case, any other its Malloy type.
+ * The type of `field` a dialect's `GROUP BY` refuses (`refused`), as named
+ * in the refusal, or undefined when it groups: a `sql native` field by its
+ * raw type in lower case, an array by the Malloy type `array` or by its
+ * element (`json[]`), any other by its Malloy type.
  */
-function groupedTypeOf(field: FieldLike | undefined): string | undefined {
-   if (field?.type === "sql native" && typeof field.rawType === "string") {
-      return field.rawType.toLowerCase();
+function ungroupedTypeOf(
+   field: FieldLike | undefined,
+   refused: { malloy: readonly string[]; native: readonly string[] },
+): string | undefined {
+   if (field?.type === "sql native") {
+      const raw =
+         typeof field.rawType === "string" ? field.rawType.toLowerCase() : "";
+      return refused.native.includes(raw) ? raw : undefined;
    }
-   return typeof field?.type === "string" ? field.type : undefined;
+   if (typeof field?.type !== "string") return undefined;
+   if (refused.malloy.includes(field.type)) return field.type;
+   if (field.type === "array") {
+      const element = ungroupedTypeOf(
+         field.elementTypeDef as FieldLike | undefined,
+         refused,
+      );
+      return element === undefined ? undefined : `${element}[]`;
+   }
+   return undefined;
 }
 
 /**

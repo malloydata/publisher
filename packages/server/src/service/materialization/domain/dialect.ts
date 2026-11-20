@@ -182,13 +182,16 @@ export interface Capabilities {
     */
    stringCollation: "binary" | "instance" | "column" | undefined;
    /**
-    * The column types its `GROUP BY` refuses, as Malloy types a field: a
-    * Malloy type (`json`, `array`, `record`), or a `sql native` field's raw
-    * type in lower case (BigQuery's `geography`). A pair table's build groups
-    * by every stored column, so a pair table holding one is refused at plan.
-    * Undefined: none is known.
+    * The column types its `GROUP BY` refuses. `malloy`: Malloy types
+    * (`json`, `array`, `record`). `native`: a `sql native` field's raw type
+    * in lower case (BigQuery's `geography`, Postgres's `json`, which Malloy
+    * reads as native beside `jsonb`, which groups), and an array of one. A
+    * pair table's build groups by every stored column, so a pair table
+    * holding one is refused at plan. Undefined: none is known.
     */
-   ungroupableTypes: readonly string[] | undefined;
+   ungroupableTypes:
+      | { malloy: readonly string[]; native: readonly string[] }
+      | undefined;
    /**
     * Its native type names (as its catalog spells them, compared whole,
     * trimmed and case-blind) that are an IEEE 754 binary64 whose comparisons are
@@ -266,6 +269,24 @@ export const CAPABILITIES: Record<DialectName, Capabilities> = {
       liveWritesFloat4Shortest: true,
       // `format_type` spells float8 and float(25..53) so.
       binary64Types: ["DOUBLE PRECISION"],
+      // No equality operator: "could not identify an equality operator for
+      // type json" (and its arrays). `jsonb` groups.
+      ungroupableTypes: {
+         malloy: [],
+         native: [
+            "json",
+            "xml",
+            "point",
+            "line",
+            "lseg",
+            "box",
+            "path",
+            "polygon",
+            "circle",
+            "txid_snapshot",
+            "pg_snapshot",
+         ],
+      },
    }),
    standardsql: Object.freeze({
       ...NONE,
@@ -279,7 +300,10 @@ export const CAPABILITIES: Record<DialectName, Capabilities> = {
       onlyBigIntegerType: "INT64",
       leafBudget: 120,
       stringCollation: "binary",
-      ungroupableTypes: ["geography", "json", "array", "record"],
+      ungroupableTypes: {
+         malloy: ["json", "array", "record"],
+         native: ["geography"],
+      },
    }),
    snowflake: Object.freeze({
       ...NONE,
