@@ -12,21 +12,34 @@ import {
    InMemoryURLReader,
    Runtime,
 } from "@malloydata/malloy";
-import { beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
 import { plannedSources } from "../../materialization/plan/build_plan";
 import { sourceReads } from "./source_reads";
 
 const ROOT = "file:///reads/";
 let connections: FixedConnectionMap;
+let lake: DuckDBConnection;
+let dir: string;
 
 beforeAll(async () => {
-   const lake = new DuckDBConnection("lake", ":memory:");
+   // A database of its own: DuckDB connections share an instance per path,
+   // so another spec's `:memory:` tables would collide with these.
+   dir = fs.mkdtempSync(path.join(os.tmpdir(), "source-reads-"));
+   lake = new DuckDBConnection("lake", path.join(dir, "lake.duckdb"));
    await lake.runSQL(
       "CREATE TABLE orders AS SELECT 1 AS id, 10 AS amount, 1 AS cid",
    );
    await lake.runSQL("CREATE TABLE customers AS SELECT 1 AS id, 'a' AS name");
    await lake.runSQL("CREATE TABLE regions AS SELECT 1 AS id, 'w' AS label");
    connections = new FixedConnectionMap(new Map([["lake", lake]]), "lake");
+});
+
+afterAll(async () => {
+   await lake.close();
+   fs.rmSync(dir, { recursive: true, force: true });
 });
 
 const BASE = `##! experimental.persistence

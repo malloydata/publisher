@@ -25,6 +25,11 @@
  *   ready and idle now, with nothing queued, and never queues or spawns: a
  *   query may be waiting on it, and its caller compiles inline instead.
  */
+import {
+   upstreamTableKey,
+   type UpstreamSchemaReader,
+   type UpstreamSchemaReading,
+} from "../service/materialization/domain/upstream_schemas";
 import type {
    Connection,
    FetchSchemaOptions,
@@ -82,7 +87,6 @@ import {
    isManagedConnection,
 } from "../service/connection_type";
 import { SchemaRefetches } from "./schema_refetch";
-import { readUpstreamSchemas } from "../service/materialization";
 import { sqlKey } from "@malloydata/malloy";
 
 // ──────────────────────────────────────────────────────────────────────
@@ -148,6 +152,8 @@ interface JobContext {
     * begun since answers it (see SchemaRefetches).
     */
    refreshRequestedAt?: number;
+   /** See {@link LoadPackageJob.upstreamSchemas}. */
+   upstreamSchemas?: UpstreamSchemaReader;
 }
 
 /**
@@ -237,6 +243,13 @@ export interface LoadPackageJob {
    defaultConnectionName: string | null;
    /** Custom URLReader for non-file:// imports; falls back to fs in the worker. */
    urlReader?: PackageLoadUrlReader;
+   /**
+    * Reads the catalog types of the tables a build reads, for the address
+    * fingerprint (materialization's `readUpstreamSchemas`). Absent, every
+    * table reads as `unread: "no_catalog"`: a caller that compiles no
+    * materialization (a dry run, a test) need not pass it.
+    */
+   upstreamSchemas?: UpstreamSchemaReader;
    /** Optional buildManifest passed through to Malloy Runtime. */
    buildManifest?: unknown;
    /** Optional in-memory model replacement for a package compile dry-run. */
@@ -585,6 +598,9 @@ export class PackageLoadPool {
          pw,
          connections: qj.request.malloyConfig.connections,
          urlReader: qj.request.urlReader ?? defaultUrlReader,
+         ...(qj.request.upstreamSchemas
+            ? { upstreamSchemas: qj.request.upstreamSchemas }
+            : {}),
          resolve: (result) => {
             clearTimeout(timeout);
             const checked = checkLoadPackageResult(result);
@@ -982,7 +998,16 @@ export class PackageLoadPool {
          return;
       }
       try {
-         const readings = await readUpstreamSchemas({
+         const read: UpstreamSchemaReader =
+            ctx.upstreamSchemas ??
+            (async ({ tables }) =>
+               Object.fromEntries(
+                  tables.map((t) => [
+                     upstreamTableKey(t),
+                     { unread: "no_catalog" } as UpstreamSchemaReading,
+                  ]),
+               ));
+         const readings = await read({
             tables: msg.tables,
             // The job's own connections, on this thread: real ones, which
             // run SQL (the lookup's type is the compile's narrower view).

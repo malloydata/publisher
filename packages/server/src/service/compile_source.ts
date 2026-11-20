@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { readUpstreamSchemas } from "./materialization";
 import type {
    GivenValue,
    LogMessage,
@@ -1395,6 +1396,7 @@ async function loadPackageInWorker(ctx: CompileContext) {
    const { source, modelName } = ctx;
    try {
       return await getPackageLoadPool().loadPackage({
+         upstreamSchemas: readUpstreamSchemas,
          packagePath: ctx.packagePath,
          packageName: ctx.packageName,
          environmentName: ctx.environmentName,

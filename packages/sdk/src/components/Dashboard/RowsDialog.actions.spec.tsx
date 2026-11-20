@@ -243,7 +243,7 @@ it("cancels a download in flight when the dialog closes", async () => {
    await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: /Download CSV/ }));
    });
-   const options = executeQueryModel.mock.calls.at(-1)![5];
+   const options = executeQueryModel.mock.calls.at(-1)![6];
    expect(options?.signal?.aborted).toBe(false);
    unmount();
    expect(options?.signal?.aborted).toBe(true);

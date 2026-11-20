@@ -1455,6 +1455,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       // Wrapped on its own so the 503 mapping never touches readDatabases' errors.
       const workerOutcome = loadOutcomeOrThrow(
          pool.loadPackage({
+            upstreamSchemas: readUpstreamSchemas,
             packagePath,
             packageName,
             environmentName,
@@ -2262,6 +2263,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       return this.mz.refreshBuildPlan(async () => {
          const outcome = await loadOutcomeOrThrow(
             getPackageLoadPool().loadPackage({
+               upstreamSchemas: readUpstreamSchemas,
                packagePath: this.packagePath,
                packageName: this.packageName,
                environmentName: this.environmentName,
@@ -3007,6 +3009,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
 
       const outcome = await loadOutcomeOrThrow(
          getPackageLoadPool().loadPackage({
+            upstreamSchemas: readUpstreamSchemas,
             packagePath: this.packagePath,
             packageName: this.packageName,
             environmentName: this.environmentName,

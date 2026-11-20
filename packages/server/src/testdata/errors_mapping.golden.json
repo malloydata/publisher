@@ -1640,6 +1640,45 @@
       ]
     }
   },
+  "ResultShapeError": {
+    "class": "ResultShapeError",
+    "http": {
+      "status": 502,
+      "json": {
+        "code": 502,
+        "message": "The database returned a row that does not fit the result's schema, so the result could not be built.",
+        "reason": "RESULT_SHAPE_MISMATCH"
+      },
+      "logged": true,
+      "logs": [
+        [
+          "error",
+          "Database result does not fit its schema"
+        ]
+      ]
+    },
+    "mcp": {
+      "message": "An unexpected internal error occurred during executeQuery.: The database returned a row that does not fit the result's schema, so the result could not be built.",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: The database returned a row that does not fit the result's schema, so the result could not be built.",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
   "DestinationNotFoundError": {
     "class": "DestinationNotFoundError",
     "http": {

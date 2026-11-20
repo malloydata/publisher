@@ -4605,7 +4605,10 @@ components:
         With `reason: RESULT_TRUNCATED` the database answered, but with fewer
         rows than it reported and no row limit cut them (a BigQuery answer past
         one results page of about 10 MB); the query is refused rather than
-        answered short, and a retry fails the same way.
+        answered short, and a retry fails the same way. With
+        `reason: RESULT_SHAPE_MISMATCH` the database answered, but a row does
+        not fit the schema Malloy declared for the result, so the result could
+        not be built; the message is fixed and the cause is logged.
       content:
         application/json:
           schema:
@@ -10389,6 +10392,12 @@ components:
             Retrying returns the same page; select fewer columns, aggregate,
             or return fewer rows.
 
+            RESULT_SHAPE_MISMATCH, on a 502, means the database answered but a
+            row does not fit the schema Malloy declared for the result (a value
+            of another type than its column's), so the result could not be
+            built. The query is not the caller's to fix; the server logs the
+            cause.
+
             CONNECTION_AUTH_FAILED, on a 424, means the database rejected the
             connection's credentials (a wrong password, an invalid key, an
             expired token), so the query never ran. Whoever configures the
@@ -10499,7 +10508,7 @@ components:
 
             Known values: TABLE_NOT_FOUND, CONNECTION_FAILED,
             CONNECTION_AUTH_FAILED, CONNECTION_NOT_FOUND, RESULT_TRUNCATED,
-            STORAGE_ACCESS_DENIED, PATH_ACCESS_DENIED, ACCESS_DENIED,
+            RESULT_SHAPE_MISMATCH, STORAGE_ACCESS_DENIED, PATH_ACCESS_DENIED, ACCESS_DENIED,
             MATERIALIZATION_REFUSED, TABLE_OWNED_ELSEWHERE,
             TABLE_OWNERSHIP_UNVERIFIED, TABLE_IN_USE, BUILD_INSTRUCTIONS_INVALID,
             MATERIALIZATION_CONFLICT, MANIFEST_VERSION_MISSING, MANIFEST_VERSION_INVALID,

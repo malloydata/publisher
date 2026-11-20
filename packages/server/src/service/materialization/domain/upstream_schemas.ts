@@ -22,6 +22,7 @@
  * Pure, and plain data, so it crosses the package-load worker.
  */
 
+import type { Connection } from "@malloydata/malloy";
 import type { components } from "../../../api";
 
 /** One table's columns as its warehouse's catalog names their types. */
@@ -140,3 +141,22 @@ export function upstreamSchemasOf(
    }
    return out.length === 0 ? undefined : out;
 }
+
+/** What a reading needs of a connection. */
+export type UpstreamReadConnection = Pick<
+   Connection,
+   "runSQL" | "dialectName"
+> & {
+   getDigest?(): string | Promise<string>;
+};
+
+/**
+ * Reads upstream tables' catalog types on the main thread
+ * (run/upstream_schema_read.ts). The package-load pool answers a worker's
+ * request with the one its job was handed, so it imports no run/ code.
+ */
+export type UpstreamSchemaReader = (args: {
+   tables: readonly UpstreamTable[];
+   connection: (connectionName: string) => Promise<UpstreamReadConnection>;
+   refresh: boolean;
+}) => Promise<Record<string, UpstreamSchemaReading>>;

@@ -161,6 +161,7 @@ export type ErrorReason =
    // 502: the database answered with fewer rows than it reported, and no row
    // limit cut them (a BigQuery results page cut at its byte size).
    | "RESULT_TRUNCATED"
+   | "RESULT_SHAPE_MISMATCH"
    // Package versions; each is raised only as a PackageVersionError, whose
    // reason fixes its status (see PACKAGE_VERSION_ERROR_STATUS).
    | PackageVersionErrorReason;
@@ -884,6 +885,10 @@ export class ConnectionPoolExhaustedError extends ConnectionError {
  * (a JavaScript TypeError) is logged where this is raised.
  */
 export class ResultShapeError extends ConnectionError {
+   override get kind(): "result_shape" {
+      return "result_shape";
+   }
+
    constructor(options?: { cause?: unknown }) {
       super(
          "The database returned a row that does not fit the result's schema, " +
@@ -1633,7 +1638,8 @@ type ConnectionKind =
    | "connection"
    | "connection_failed"
    | "connection_pool_exhausted"
-   | "result_truncated";
+   | "result_truncated"
+   | "result_shape";
 type NotQueryableKind = "not_queryable" | "off_surface";
 type PackageAdmissionKind = "package_admission_refused" | "dry_run_capacity";
 type ServiceUnavailableKind = "service_unavailable" | PackageAdmissionKind;
@@ -1668,6 +1674,7 @@ interface ErrorByKind {
    unconfigured_connection: UnconfiguredConnectionError;
    connection_pool_exhausted: ConnectionPoolExhaustedError;
    result_truncated: ResultTruncatedError;
+   result_shape: ResultShapeError;
    destination_not_found: DestinationNotFoundError;
    storage_destination_not_found: StorageDestinationNotFoundError;
    storage_catalog_not_found: StorageCatalogNotFoundError;
@@ -1756,6 +1763,7 @@ const ERROR_CLASSES: {
    unconfigured_connection: UnconfiguredConnectionError,
    connection_pool_exhausted: ConnectionPoolExhaustedError,
    result_truncated: ResultTruncatedError,
+   result_shape: ResultShapeError,
    destination_not_found: DestinationNotFoundError,
    storage_destination_not_found: StorageDestinationNotFoundError,
    storage_catalog_not_found: StorageCatalogNotFoundError,
@@ -2219,6 +2227,15 @@ export const ERROR_TABLE: { [K in ErrorKind]: ErrorMapping<ErrorByKind[K]> } = {
             "Shrink the answer so it fits in one results page of about 10 MB: select fewer columns, aggregate, or add a LIMIT.",
          ],
       },
+   },
+   result_shape: {
+      ...CONNECTION,
+      reason: "RESULT_SHAPE_MISMATCH",
+      log: {
+         summary: "Database result does not fit its schema",
+         level: "error",
+      },
+      mcp: { advice: "internal" },
    },
    materialization_not_found: { status: 404, mcp: { advice: "internal" } },
    materialization_conflict: {

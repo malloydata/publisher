@@ -23,23 +23,17 @@
  * throws.
  */
 
-import type { Connection } from "@malloydata/malloy";
+import { errorCodeOf } from "../../../error_code";
 import { logger } from "../../../logger";
-import { errMessage } from "../../../utils";
 import {
    type UpstreamSchemaReading,
    type UpstreamTable,
    upstreamTableKey,
+   type UpstreamReadConnection,
 } from "../domain/upstream_schemas";
-import { redactConnectionSecrets } from "./connection_redaction";
 import { readTableColumns } from "./database_column_read";
 import { NATIVE_SCHEMA_ROW_LIMIT } from "./database_native_types";
 import { relationDescribeSQL } from "./warehouse_sql";
-
-/** What a reading needs of a connection. */
-type UpstreamReadConnection = Pick<Connection, "runSQL" | "dialectName"> & {
-   getDigest?(): string | Promise<string>;
-};
 
 /** How long a `DESCRIBE` may take before it reads as failed. */
 const DESCRIBE_TIMEOUT_MS = 15_000;
@@ -210,7 +204,7 @@ async function describeRelation(
       return columns.length > 0 ? { columns } : { unread: "read_failed" };
    } catch (err) {
       logger.warn("Upstream relation could not be described", {
-         error: redactConnectionSecrets(errMessage(err)),
+         code: errorCodeOf(err),
       });
       return { unread: "read_failed" };
    } finally {

@@ -23,7 +23,7 @@
  * `dialect_statements.golden.json`.
  */
 
-import { sqlLiteral } from "../../db_utils";
+import { sqlLiteral } from "../../introspection_sql";
 import { quoteIdentifier, quotePathParts, quoteTablePath } from "../../quoting";
 import {
    capabilitiesOf,
