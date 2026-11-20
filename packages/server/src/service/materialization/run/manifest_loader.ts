@@ -15,11 +15,8 @@
 
 import { boundNativeSchemaOf, boundSchemaOf } from "../stored_column_types";
 import { isUsableTableName as quotingIsUsableTableName } from "../../quoting";
-import { GetObjectCommand, S3 } from "@aws-sdk/client-s3";
-import { Storage } from "@google-cloud/storage";
-import * as fs from "fs/promises";
-import { fileURLToPath } from "url";
 import { components } from "../../../api";
+import { readLocationBytes } from "../../gcs_s3_utils";
 import { logger } from "../../../logger";
 import {
    FreshnessManifest,
@@ -44,57 +41,9 @@ export interface FetchedManifest {
    storageEntries: Record<string, ManifestEntry>;
 }
 
-// Lazily created; both use the ambient credential chain, as the package
-// downloader does.
-let gcsClient: Storage | undefined;
-let s3Client: S3 | undefined;
-
-function parseBucketUri(
-   uri: string,
-   scheme: "gs://" | "s3://",
-): { bucket: string; key: string } {
-   const rest = uri.slice(scheme.length);
-   const slash = rest.indexOf("/");
-   if (slash <= 0 || slash === rest.length - 1) {
-      throw new Error(`Malformed manifest URI: ${uri}`);
-   }
-   return { bucket: rest.slice(0, slash), key: rest.slice(slash + 1) };
-}
-
-/**
- * Read the raw bytes at a location URI (gs://, s3://, file://, or an absolute
- * local path): what a manifest and a compiled bundle have in common.
- */
-export async function readLocationBytes(uri: string): Promise<Buffer> {
-   if (uri.startsWith("gs://")) {
-      const { bucket, key } = parseBucketUri(uri, "gs://");
-      gcsClient ??= new Storage();
-      const [contents] = await gcsClient.bucket(bucket).file(key).download();
-      return contents;
-   }
-   if (uri.startsWith("s3://")) {
-      const { bucket, key } = parseBucketUri(uri, "s3://");
-      s3Client ??= new S3({ followRegionRedirects: true });
-      const res = await s3Client.send(
-         new GetObjectCommand({ Bucket: bucket, Key: key }),
-      );
-      if (!res.Body) {
-         throw new Error(`Empty S3 response for URI: ${uri}`);
-      }
-      return Buffer.from(await res.Body.transformToByteArray());
-   }
-   if (uri.startsWith("file://")) {
-      return fs.readFile(fileURLToPath(uri));
-   }
-   // Bare local path. The URI is operator config, not end-user input, and only
-   // physicalTableName strings are extracted from the file, so CodeQL's
-   // js/path-injection alert here is a false positive.
-   return fs.readFile(uri);
-}
-
 /** Read the raw bytes of a manifest URI (gs://, s3://, file://, or local path). */
 async function readManifestBytes(uri: string): Promise<string> {
-   return (await readLocationBytes(uri)).toString("utf8");
+   return (await readLocationBytes(uri, "manifest")).toString("utf8");
 }
 
 /**
