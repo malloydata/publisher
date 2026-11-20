@@ -1146,13 +1146,22 @@ export class ModelServing {
       // 413), not OOM prevention; the row cap is. Known gap: MCP's own
       // envelope (mcp/query_envelope.ts) re-stringifies the compact rows
       // unguarded.
-      const { wrapped: wrappedResult, serialized: serializedResult } =
-         serializeWithinCaps(queryResults, {
+      // A wrap failure is mapped as a run failure is (error metric, status);
+      // a cap's 413 keeps its own answer.
+      let serializedWithinCaps: ReturnType<typeof serializeWithinCaps>;
+      try {
+         serializedWithinCaps = serializeWithinCaps(queryResults, {
             maxRows: ran.maxRows,
             maxBytes: ran.maxBytes,
             source: "model_query",
             compact: (request.responseShape ?? "full") === "compact",
          });
+      } catch (err) {
+         if (err instanceof PayloadTooLargeError) throw err;
+         return this.failQuery(ctx, governed, answer, err);
+      }
+      const { wrapped: wrappedResult, serialized: serializedResult } =
+         serializedWithinCaps;
       const metricAttributes = this.queryMetricAttributes({
          environment: queryMetadataInput?.environment,
          queryName,

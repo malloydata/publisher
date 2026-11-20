@@ -22,6 +22,7 @@ import { getDefaultQueryRowLimit } from "../config";
 import {
    BadRequestError,
    databaseAccessFailure,
+   ResultShapeError,
    storageAccessFailure,
 } from "../errors";
 import { redactStorageUrls } from "../pg_helpers";
@@ -29,6 +30,7 @@ import { logger } from "../logger";
 import { type QueryCapSource } from "../query_cap_metrics";
 import { bigIntReplacer } from "../json_utils";
 import { wrapWithCorrectDrillMetadata } from "./drill_metadata";
+import { fillDeclaredRecordKeys } from "./result_records";
 import {
    assertWithinModelByteLimit,
    assertWithinModelRowLimit,
@@ -161,7 +163,8 @@ export function serializeWithinCaps(
    },
 ): { wrapped: Malloy.Result; serialized: string } {
    assertWithinModelRowLimit(result.totalRows, caps.maxRows, caps.source);
-   const wrapped = wrapWithCorrectDrillMetadata(result);
+   fillDeclaredRecordKeys(result);
+   const wrapped = wrapResultShape(result);
    const serialized = stringifyQueryResponse(
       caps.compact ? result.data.value : wrapped,
       result.totalRows,
@@ -171,6 +174,23 @@ export function serializeWithinCaps(
    );
    assertWithinModelByteLimit(serialized, caps.maxBytes, caps.source);
    return { wrapped, serialized };
+}
+
+/**
+ * Wrap the result, reading a throw as a row the database returned that does
+ * not fit the result's schema ({@link ResultShapeError}, a 502), not as a
+ * server crash or the caller's bad query.
+ */
+function wrapResultShape(result: Result): Malloy.Result {
+   try {
+      return wrapWithCorrectDrillMetadata(result);
+   } catch (err) {
+      logger.error("Query result does not fit its schema", {
+         error: err instanceof Error ? err.message : String(err),
+         connection: result.connectionName,
+      });
+      throw new ResultShapeError({ cause: err });
+   }
 }
 
 type ErrorClass = abstract new (...args: never[]) => Error;
@@ -199,9 +219,10 @@ interface RunErrorContext {
 /**
  * Map a failure from preparing or running a query onto the error the caller
  * sees. Bad client-supplied givens surface as a Malloy `runtime-given-*` error
- * and become a 400 carrying Malloy's message; a `MalloyError` (and any
- * `passThrough` class) keeps its own mapping; a database that could not be
- * reached or refused the credentials is a 502/424; anything else is a 400.
+ * and become a 400 carrying Malloy's message; a `MalloyError`, a
+ * {@link ResultShapeError} (and any `passThrough` class) keeps its own
+ * mapping; a database that could not be reached or refused the credentials is
+ * a 502/424; anything else is a 400.
  */
 export function mapRunError(
    err: unknown,
@@ -229,6 +250,8 @@ export function mapRunError(err: unknown, ctx: RunErrorContext): void {
    }
 
    if (err instanceof MalloyError) throw err;
+   // A database row that does not fit the result's schema keeps its 502.
+   if (err instanceof ResultShapeError) throw err;
    for (const passThrough of ctx.passThrough) {
       if (err instanceof passThrough) throw err;
    }

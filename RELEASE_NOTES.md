@@ -29,6 +29,14 @@ Two consequences worth knowing. A section merged to `main` ships in the **next**
 
 **Who is affected:** a package with two rollups, persisted views or persisted queries whose builds compile to the same SQL and are placed in different tables. **What to do:** nothing; such a rollup now reports `used` in the path report, with `servedBy.kind` `rollup`, where it reported `NOT_BUILT`.
 
+## [Unreleased] — a record whose row omits a key answers it as null, and a row that does not fit its schema is a 502
+
+**Fixed: selecting a Snowflake `OBJECT` column (or a `VARIANT` holding objects) failed with HTTP 500 when a row's object omitted a key.** Malloy infers such a column's keys by sampling it, and Snowflake's `OBJECT_CONSTRUCT` drops a key whose value is NULL, so a row's object can lack a key its type declares. Malloy's result wrapper read the missing key as `undefined` and threw `Cannot convert undefined to number`, live and from a stored copy alike. Every record in a result, nested records and records inside arrays included, now carries each key its type declares, as null where the row omits it. A compact answer carries the key too, as `null`, where it was absent. This applies to every connection.
+
+**Fixed: a row the database returns that does not fit the result's schema answers 502, not an unclassified 500.** When Malloy's result wrapper throws on a value (a number where the schema says string, say), a model query now answers 502 with the message "The database returned a row that does not fit the result's schema, so the result could not be built." and counts as a failed query in `malloy_model_query_duration` (`status="error"`); the wrapper's own text is logged. A report or notebook cell answers the same 502, where it answered 400 `Cell execution failed: <the wrapper's text>`. The query and the model are not the caller's to fix, so this is not a 400.
+
+**Who is affected:** anyone querying a Snowflake `OBJECT` or `VARIANT` column. **What to do:** nothing.
+
 ## [Unreleased] — under `PERSIST_STORAGE_MODE=write-only`, a rollup, persisted view or persisted query with a database table answers from it, and its storage table is reported `storage_mode`
 
 Follows 0.16.1, where `write-only` and `off` stopped reading storage tables on every leg.

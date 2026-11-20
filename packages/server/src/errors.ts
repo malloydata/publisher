@@ -851,6 +851,26 @@ export class ConnectionPoolExhaustedError extends ConnectionError {
 }
 
 /**
+ * The database answered, but a row does not fit the schema Malloy declared for
+ * the result, so the result could not be built (Malloy's wrapper threw on a
+ * value of the wrong type). A 502 like any other database-side failure: the
+ * query and the model are not the caller's to fix, and the server is not
+ * failing on its own. The message is server-authored; the wrapper's own text
+ * (a JavaScript TypeError) is logged where this is raised.
+ */
+export class ResultShapeError extends ConnectionError {
+   constructor(options?: { cause?: unknown }) {
+      super(
+         "The database returned a row that does not fit the result's schema, " +
+            "so the result could not be built.",
+         { callerSafe: true },
+      );
+      if (options?.cause !== undefined) this.cause = options.cause;
+      this.name = "ResultShapeError";
+   }
+}
+
+/**
  * A build or serve path named a storage destination the environment does not
  * configure. 422 rather than 404 because the destination is not the resource
  * being addressed; see {@link StorageDestinationNotFoundError} for that case.
