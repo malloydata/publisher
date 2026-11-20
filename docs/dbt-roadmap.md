@@ -91,11 +91,7 @@ gates are re-checked after someone alters a stored column's collation, but its s
 ordering are not yet. A DuckDB `default_collation` set on a storage destination out of band
 (Publisher never sets one) is not re-checked for a query's grouping and ordering. On Postgres, each
 gated or scoped answer from a database-tier table that compares a string costs a few catalog
-probes. Some answers are known to differ: on Snowflake, a `sum()` over a `NUMBER(38,0)` past 2^53
-is rounded live and exact served, and a `TIMESTAMP_TZ` renders in the account's format live and in
-UTC served (both need a fix in Malloy's Snowflake connector;
-[stored column types](materialization.md#stored-column-types-follow-the-model-not-the-warehouse));
-a `sum` of a Postgres `real` served from a `storage=` table can differ from live in its last digit;
+probes. Some answers are known to differ: a `sum` of a Postgres `real` served from a `storage=` table can differ from live in its last digit;
 and `freshness.fallback="stale_ok"` serves a table past its window by design
 ([freshness](materialization.md#freshness-a-window-and-a-fallback)). The executed
 served-against-live evidence is DuckDB, plus Postgres-to-DuckLake through the nightly hammer;

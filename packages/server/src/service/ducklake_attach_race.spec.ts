@@ -9,17 +9,17 @@
 // not exist` until the process restarted. These specs force that interleaving
 // on a stubbed session.
 import { DuckDBConnection } from "@malloydata/db-duckdb";
-import {
-   MalloyConfig,
-   Runtime,
-   type MalloyQueryData,
-} from "@malloydata/malloy";
+import { MalloyConfig, Runtime } from "@malloydata/malloy";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import sinon from "sinon";
-import type { components } from "../api";
+import {
+   DESTINATION,
+   loseCatalog,
+   stubDuckLake,
+} from "../test_helpers/ducklake_fake";
 import { buildEnvironmentMalloyConfig } from "./connection";
 import { DuckLakeCatalogUnavailableError } from "./ducklake_catalog_unavailable";
 import { isInstanceLocked } from "./duckdb_lockdown";
@@ -28,190 +28,6 @@ import { isDestinationCatalogUnavailableError } from "./materialization/serve/le
 
 /** The schema reads a DuckLake connection overrides. */
 type DuckLakeLike = DuckDBConnection;
-
-type ApiConnection = components["schemas"]["Connection"];
-
-const DESTINATION = {
-   name: "credible",
-   type: "ducklake",
-   ducklakeConnection: {
-      catalog: {
-         postgresConnection: {
-            host: "catalog.invalid",
-            port: 5432,
-            databaseName: "lake",
-            userName: "u",
-            password: "p",
-         },
-         metadataSchema: "lake_meta",
-      },
-      storage: {
-         bucketUrl: "s3://race-bucket/lake/",
-         s3Connection: {
-            accessKeyId: "AKIARACEFAKE",
-            secretAccessKey: "fake",
-            region: "us-east-1",
-         },
-      },
-   },
-} as ApiConnection;
-
-/** What a stubbed instance holds. */
-interface FakeInstance {
-   attached: Set<string>;
-   attaches: number;
-   /** Every alias detached, the preflight's own included. */
-   detached: string[];
-   locked: boolean;
-   externalAccess: boolean;
-   /** How many times a lookup asked whether the catalog is attached. */
-   catalogChecks: number;
-}
-
-/**
- * Stub every statement a DuckLake lookup issues, keeping per-instance state:
- * what is attached, and whether the instance is locked. On a locked instance
- * a `CREATE SECRET` is refused, as the statement gate refuses it.
- * `beforeSecret` runs before each `CREATE SECRET`, numbered from 1, so a
- * spec can hold one until something else has happened.
- */
-function stubDuckLake(hooks: {
-   beforeSecret?: (n: number) => Promise<void>;
-   onAttach?: (n: number) => void;
-   onLock?: () => void;
-   beforeCatalogCheck?: (n: number) => Promise<void>;
-}): { stateOf: (c: DuckDBConnection) => FakeInstance } {
-   const states = new WeakMap<object, FakeInstance>();
-   // The connection's native instance, opened for real (only its statements
-   // are stubbed): the lockdown keys its lock on it, and the last close
-   // releases it, so a later connection opens a fresh one.
-   const instanceOf = (c: DuckDBConnection): object =>
-      (
-         DuckDBConnection.activeDBs as Record<
-            string,
-            { instance: object } | undefined
-         >
-      )[(c as unknown as { shareKey: string }).shareKey]?.instance ?? c;
-   const stateOf = (c: DuckDBConnection): FakeInstance => {
-      const key = instanceOf(c);
-      let state = states.get(key);
-      if (!state) {
-         state = {
-            attached: new Set(),
-            attaches: 0,
-            detached: [],
-            locked: false,
-            externalAccess: true,
-            catalogChecks: 0,
-         };
-         states.set(key, state);
-      }
-      return state;
-   };
-   let secrets = 0;
-   let attachCount = 0;
-   let catalogCheckCount = 0;
-   // Typed as the stubbed method returns, from rows the stub makes up.
-   const rows = (r: Record<string, unknown>[]) =>
-      ({ rows: r, totalRows: r.length }) as unknown as MalloyQueryData;
-   sinon.stub(DuckDBConnection.prototype, "runSQL").callsFake(async function (
-      this: DuckDBConnection,
-      sql: string,
-   ) {
-      // As a real statement does, wait for the instance to open.
-      await (this as unknown as { connecting?: Promise<void> }).connecting;
-      const state = stateOf(this);
-      const q = sql.trim();
-      const attach = /^ATTACH OR REPLACE 'ducklake:[^']*' AS "([^"]+)"/.exec(q);
-      if (attach) {
-         state.attaches++;
-         state.attached.add(attach[1]);
-         // A real stand-in catalog on the instance, so a compile's schema
-         // read (`runRawSQL`, not stubbed) finds its table.
-         await rawSQL(this, `ATTACH OR REPLACE ':memory:' AS "${attach[1]}"`);
-         await rawSQL(
-            this,
-            `CREATE TABLE IF NOT EXISTS "${attach[1]}".main.t (x INTEGER)`,
-         );
-         hooks.onAttach?.(++attachCount);
-         return rows([]);
-      }
-      const detach = /^DETACH "?([^";]+)"?;?$/.exec(q);
-      if (detach) {
-         state.detached.push(detach[1]);
-         state.attached.delete(detach[1]);
-         return rows([]);
-      }
-      if (/^CREATE OR REPLACE SECRET/i.test(q)) {
-         await hooks.beforeSecret?.(++secrets);
-         if (state.locked) {
-            throw new Error(
-               "This DuckDB connection is locked down and refuses CREATE SECRET",
-            );
-         }
-         return rows([]);
-      }
-      if (q === "SHOW DATABASES") {
-         return rows([...state.attached].map((name) => ({ name })));
-      }
-      const alias =
-         /FROM duckdb_databases\(\) WHERE lower\(database_name\) = lower\('([^']*)'\)/.exec(
-            q,
-         );
-      if (alias) {
-         await hooks.beforeCatalogCheck?.(++catalogCheckCount);
-         if ((this as unknown as { closed?: boolean }).closed) {
-            throw new Error(`DuckDB connection "${this.name}" is closed`);
-         }
-         state.catalogChecks++;
-         return rows(
-            [...state.attached]
-               .filter((n) => n.toLowerCase() === alias[1].toLowerCase())
-               .map(() => ({ "1": 1 })),
-         );
-      }
-      const setting = /^SELECT current_setting\('([^']+)'\) AS v$/.exec(q);
-      if (setting) {
-         if (setting[1] === "lock_configuration") {
-            return rows([{ v: state.locked }]);
-         }
-         if (setting[1] === "enable_external_access") {
-            return rows([{ v: state.externalAccess }]);
-         }
-         return rows([{ v: "" }]);
-      }
-      // A read of a catalog's table binds only when the catalog is attached.
-      const read = /FROM "?([A-Za-z_]+)"?\.main\./.exec(q);
-      if (read && !state.attached.has(read[1])) {
-         throw new Error(`Binder Error: Catalog "${read[1]}" does not exist!`);
-      }
-      if (q === "SET enable_external_access=false") {
-         state.externalAccess = false;
-      }
-      if (q === "SET lock_configuration=true") {
-         state.locked = true;
-         hooks.onLock?.();
-      }
-      return rows([]);
-   });
-   return { stateOf };
-}
-
-/** Run `sql` on the connection's real instance, past the stub. */
-function rawSQL(c: DuckDBConnection, sql: string): Promise<unknown> {
-   return (
-      c as unknown as { runRawSQL(sql: string): Promise<unknown> }
-   ).runRawSQL(sql);
-}
-
-/** Lose the catalog from the instance, as the race used to. */
-async function loseCatalog(
-   c: DuckDBConnection,
-   state: FakeInstance,
-): Promise<void> {
-   state.attached.delete("credible");
-   await rawSQL(c, `DETACH "credible"`);
-}
 
 /** A promise and its resolver. */
 function signal(): { promise: Promise<void>; fire: () => void } {
@@ -564,6 +380,475 @@ describe("concurrent first lookups of a DuckLake destination", () => {
             );
          expect(other).toBeDefined();
          expect(isDestinationCatalogUnavailableError(other)).toBe(false);
+      } finally {
+         await env.releaseConnections().catch(() => {});
+      }
+   });
+});
+
+/** Drain a stream, keeping the rows it yielded before any error. */
+async function drain(
+   stream: AsyncIterableIterator<unknown>,
+): Promise<{ rows: unknown[]; error?: unknown }> {
+   const rows: unknown[] = [];
+   try {
+      for await (const row of stream) rows.push(row);
+      return { rows };
+   } catch (error) {
+      return { rows, error };
+   }
+}
+
+/**
+ * Fail the native DuckDB stream beneath `connection` with the error `fail`
+ * returns for that call (numbered from 1), and otherwise run it: the statement
+ * gate, the lockdown and the hard close still run around it, as in production.
+ */
+function failNativeStreams(
+   connection: DuckDBConnection,
+   fail: (call: number) => Promise<Error | undefined>,
+): sinon.SinonStub {
+   const native = (
+      connection as unknown as {
+         connection: { stream(sql: string): Promise<unknown> };
+      }
+   ).connection;
+   const original = native.stream.bind(native);
+   let call = 0;
+   return sinon.stub(native, "stream").callsFake(async (sql: string) => {
+      const error = await fail(++call);
+      if (error) throw error;
+      return original(sql);
+   });
+}
+
+const expiredToken = () =>
+   new Error("HTTP Error: ExpiredToken: The provided token has expired.");
+
+/** A connection that can be handed a storage-secret renewer, as a chain secret's is. */
+type Renewable = DuckDBConnection & {
+   setStorageSecretRenewer(renew: () => Promise<void>): void;
+};
+
+// The raw SQL route streams, so a stream on a DuckLake destination needs
+// runSQL's recovery: renewing an expired credential, and confirming a lost
+// catalog so the next lookup reopens it.
+describe("a stream on a DuckLake destination", () => {
+   let root: string;
+
+   beforeEach(() => {
+      root = mkdtempSync(join(tmpdir(), "ducklake-stream-"));
+   });
+
+   afterEach(() => {
+      sinon.restore();
+      rmSync(root, { recursive: true, force: true });
+   });
+
+   async function lookUp(
+      env: ReturnType<typeof buildEnvironmentMalloyConfig>,
+   ): Promise<Renewable> {
+      return (await env.malloyConfig.connections.lookupConnection(
+         "credible",
+      )) as Renewable;
+   }
+
+   /**
+    * Replace the driver's stream with one per call from `streams`, each
+    * yielding its rows and then throwing its error, if any.
+    */
+   function stubStreams(
+      streams: { rows: unknown[]; error?: Error }[],
+   ): sinon.SinonStub {
+      let call = 0;
+      return sinon
+         .stub(DuckDBConnection.prototype, "runSQLStream")
+         .callsFake(async function* () {
+            const next = streams[call++];
+            if (!next) throw new Error("unexpected extra stream");
+            for (const row of next.rows) yield row as never;
+            if (next.error) throw next.error;
+         });
+   }
+
+   it("confirms a lost catalog before the first row, and the next lookup heals it", async () => {
+      const { stateOf } = stubDuckLake({});
+      const env = buildEnvironmentMalloyConfig([DESTINATION], root, false, {
+         origin: "storage-destination",
+      });
+      try {
+         await lookUp(env);
+         const connection = await lookUp(env);
+         const state = stateOf(connection);
+
+         // A misbinding keeps its own error.
+         const misbound = await drain(
+            connection.runSQLStream("SELECT * FROM wrong_catalog.main.t"),
+         );
+         expect(misbound.error).toBeDefined();
+         expect(misbound.error).not.toBeInstanceOf(
+            DuckLakeCatalogUnavailableError,
+         );
+
+         await loseCatalog(connection, state);
+         const lost = await drain(
+            connection.runSQLStream("SELECT * FROM credible.main.t"),
+         );
+         expect(lost.rows).toEqual([]);
+         expect(lost.error).toBeInstanceOf(DuckLakeCatalogUnavailableError);
+         expect(isDestinationCatalogUnavailableError(lost.error)).toBe(true);
+
+         // The cached check was dropped: the next lookup checks again,
+         // reopens, and streams from the fresh instance.
+         const checksBefore = state.catalogChecks;
+         const healed = await lookUp(env);
+         expect(state.catalogChecks).toBe(checksBefore + 1);
+         expect(healed).not.toBe(connection);
+         const read = await drain(
+            healed.runSQLStream(
+               "SELECT x FROM credible.main.t UNION ALL SELECT 7 AS x",
+            ),
+         );
+         expect(read.error).toBeUndefined();
+         expect(read.rows).toEqual([{ x: 7 }]);
+      } finally {
+         await env.releaseConnections().catch(() => {});
+      }
+   });
+
+   it("renews an expired credential refused before the first row, and streams again once", async () => {
+      stubDuckLake({});
+      const env = buildEnvironmentMalloyConfig([DESTINATION], root, false, {
+         origin: "storage-destination",
+      });
+      try {
+         const connection = await lookUp(env);
+         const renew = sinon.fake.resolves(undefined);
+         connection.setStorageSecretRenewer(renew);
+         const stream = stubStreams([
+            {
+               rows: [],
+               error: new Error("HTTP Error: ExpiredToken: token expired"),
+            },
+            { rows: [{ x: 1 }, { x: 2 }] },
+         ]);
+
+         const read = await drain(
+            connection.runSQLStream("SELECT x FROM credible.main.t"),
+         );
+         expect(read.error).toBeUndefined();
+         expect(read.rows).toEqual([{ x: 1 }, { x: 2 }]);
+         expect(renew.callCount).toBe(1);
+         expect(stream.callCount).toBe(2);
+      } finally {
+         await env.releaseConnections().catch(() => {});
+      }
+   });
+
+   it("renews only once: a second expiry is thrown", async () => {
+      stubDuckLake({});
+      const env = buildEnvironmentMalloyConfig([DESTINATION], root, false, {
+         origin: "storage-destination",
+      });
+      try {
+         const connection = await lookUp(env);
+         const renew = sinon.fake.resolves(undefined);
+         connection.setStorageSecretRenewer(renew);
+         const second = new Error("HTTP Error: ExpiredToken: still expired");
+         stubStreams([
+            { rows: [], error: new Error("HTTP Error: ExpiredToken: expired") },
+            { rows: [], error: second },
+         ]);
+
+         const read = await drain(
+            connection.runSQLStream("SELECT x FROM credible.main.t"),
+         );
+         expect(read.error).toBe(second);
+         expect(renew.callCount).toBe(1);
+      } finally {
+         await env.releaseConnections().catch(() => {});
+      }
+   });
+
+   it("shares one renewal between two streams that both meet the expired credential", async () => {
+      stubDuckLake({});
+      const env = buildEnvironmentMalloyConfig([DESTINATION], root, false, {
+         origin: "storage-destination",
+      });
+      try {
+         const connection = await lookUp(env);
+         // The gate hands the connection to the second stream as soon as the
+         // first fails, so the second fails while the first's renewal runs.
+         const renewing = signal();
+         const secondFailed = signal();
+         let renewed = false;
+         const renew = sinon.fake(async () => {
+            renewing.fire();
+            await within(secondFailed.promise, 2000);
+            renewed = true;
+         });
+         connection.setStorageSecretRenewer(renew);
+         failNativeStreams(connection, async (call) => {
+            if (renewed) return undefined;
+            if (call === 2) {
+               await within(renewing.promise, 2000);
+               secondFailed.fire();
+            }
+            return expiredToken();
+         });
+
+         const [a, b] = await Promise.all([
+            drain(connection.runSQLStream("SELECT 1 AS x")),
+            drain(connection.runSQLStream("SELECT 1 AS x")),
+         ]);
+         expect(a).toEqual({ rows: [{ x: 1 }] });
+         expect(b).toEqual({ rows: [{ x: 1 }] });
+         expect(renew.callCount).toBe(1);
+      } finally {
+         await env.releaseConnections().catch(() => {});
+      }
+   });
+
+   it("shares one renewal between two statements that both meet the expired credential", async () => {
+      const renewing = signal();
+      const secondFailed = signal();
+      let renewed = false;
+      let reads = 0;
+      stubDuckLake({
+         beforeRead: async (sql) => {
+            if (!sql.includes("expiring") || renewed) return;
+            if (++reads === 2) {
+               await within(renewing.promise, 2000);
+               secondFailed.fire();
+            }
+            throw expiredToken();
+         },
+      });
+      const env = buildEnvironmentMalloyConfig([DESTINATION], root, false, {
+         origin: "storage-destination",
+      });
+      try {
+         const connection = await lookUp(env);
+         const renew = sinon.fake(async () => {
+            renewing.fire();
+            await within(secondFailed.promise, 2000);
+            renewed = true;
+         });
+         connection.setStorageSecretRenewer(renew);
+
+         const results = await Promise.allSettled([
+            connection.runSQL("SELECT 1 AS expiring"),
+            connection.runSQL("SELECT 1 AS expiring"),
+         ]);
+         expect(results.map((r) => r.status)).toEqual([
+            "fulfilled",
+            "fulfilled",
+         ]);
+         expect(renew.callCount).toBe(1);
+      } finally {
+         await env.releaseConnections().catch(() => {});
+      }
+   });
+
+   it("throws each statement its own expired credential when the renewal they share fails", async () => {
+      const renewing = signal();
+      const secondFailed = signal();
+      let reads = 0;
+      stubDuckLake({
+         beforeRead: async (sql) => {
+            if (!sql.includes("expiring")) return;
+            if (++reads === 2) {
+               await within(renewing.promise, 2000);
+               secondFailed.fire();
+            }
+            throw expiredToken();
+         },
+      });
+      const env = buildEnvironmentMalloyConfig([DESTINATION], root, false, {
+         origin: "storage-destination",
+      });
+      try {
+         const connection = await lookUp(env);
+         const renew = sinon.fake(async () => {
+            renewing.fire();
+            await within(secondFailed.promise, 2000);
+            await new Promise((r) => setTimeout(r, 20));
+            throw new Error("STS: Could not connect to sts.amazonaws.com");
+         });
+         connection.setStorageSecretRenewer(renew);
+
+         const results = await Promise.allSettled([
+            connection.runSQL("SELECT 1 AS expiring"),
+            connection.runSQL("SELECT 1 AS expiring"),
+         ]);
+         for (const result of results) {
+            expect(result.status).toBe("rejected");
+            const reason = (result as PromiseRejectedResult).reason;
+            expect(String(reason)).toContain("ExpiredToken");
+            expect(String(reason)).not.toContain("STS");
+         }
+         expect(renew.callCount).toBe(1);
+      } finally {
+         await env.releaseConnections().catch(() => {});
+      }
+   });
+
+   it("throws a renewal whose own statement meets the expired credential, rather than wait on itself", async () => {
+      stubDuckLake({
+         beforeRead: async (sql) => {
+            if (sql.includes("expiring")) throw expiredToken();
+         },
+      });
+      const env = buildEnvironmentMalloyConfig([DESTINATION], root, false, {
+         origin: "storage-destination",
+      });
+      try {
+         const connection = await lookUp(env);
+         const renew = sinon.fake(async () => {
+            await connection.runSQL("SELECT 'secret' AS expiring");
+         });
+         connection.setStorageSecretRenewer(renew);
+         const failure = await connection.runSQL("SELECT 1 AS expiring").then(
+            () => undefined,
+            (error: unknown) => error,
+         );
+         expect(String(failure)).toContain("ExpiredToken");
+         expect(renew.callCount).toBe(1);
+      } finally {
+         await env.releaseConnections().catch(() => {});
+      }
+   });
+
+   it("confirms a catalog lost while the credential renewed, on a statement's run after the renewal", async () => {
+      let renewed = false;
+      const { stateOf } = stubDuckLake({
+         beforeRead: async (sql) => {
+            if (sql.includes("credible.main.t") && !renewed) {
+               throw expiredToken();
+            }
+         },
+      });
+      const env = buildEnvironmentMalloyConfig([DESTINATION], root, false, {
+         origin: "storage-destination",
+      });
+      try {
+         const connection = await lookUp(env);
+         const state = stateOf(connection);
+         connection.setStorageSecretRenewer(async () => {
+            state.attached.delete("credible");
+            renewed = true;
+         });
+         const failure = await connection
+            .runSQL("SELECT count(*) FROM credible.main.t")
+            .then(
+               () => undefined,
+               (error: unknown) => error,
+            );
+         expect(failure).toBeInstanceOf(DuckLakeCatalogUnavailableError);
+         // The cached check was dropped: the next lookup checks again.
+         const checksBefore = state.catalogChecks;
+         expect(await lookUp(env)).not.toBe(connection);
+         expect(state.catalogChecks).toBe(checksBefore + 1);
+      } finally {
+         await env.releaseConnections().catch(() => {});
+      }
+   });
+
+   it("confirms a catalog lost while the credential renewed, on a stream's run after the renewal", async () => {
+      const { stateOf } = stubDuckLake({});
+      const env = buildEnvironmentMalloyConfig([DESTINATION], root, false, {
+         origin: "storage-destination",
+      });
+      try {
+         await lookUp(env);
+         const connection = await lookUp(env);
+         const state = stateOf(connection);
+         let renewed = false;
+         connection.setStorageSecretRenewer(async () => {
+            await loseCatalog(connection, state);
+            renewed = true;
+         });
+         failNativeStreams(connection, async () =>
+            renewed ? undefined : expiredToken(),
+         );
+         const read = await drain(
+            connection.runSQLStream("SELECT * FROM credible.main.t"),
+         );
+         expect(read.error).toBeInstanceOf(DuckLakeCatalogUnavailableError);
+         const checksBefore = state.catalogChecks;
+         expect(await lookUp(env)).not.toBe(connection);
+         expect(state.catalogChecks).toBe(checksBefore + 1);
+      } finally {
+         await env.releaseConnections().catch(() => {});
+      }
+   });
+
+   it("releases the driver's stream when the consumer stops at the first row", async () => {
+      stubDuckLake({});
+      const env = buildEnvironmentMalloyConfig([DESTINATION], root, false, {
+         origin: "storage-destination",
+      });
+      try {
+         const connection = await lookUp(env);
+         let released = false;
+         sinon
+            .stub(DuckDBConnection.prototype, "runSQLStream")
+            .callsFake(async function* () {
+               try {
+                  yield { x: 1 } as never;
+                  yield { x: 2 } as never;
+               } finally {
+                  released = true;
+               }
+            });
+         // As the raw SQL route's byte cap does on a first row too wide.
+         for await (const row of connection.runSQLStream("SELECT 1")) {
+            expect(row).toEqual({ x: 1 });
+            break;
+         }
+         expect(released).toBe(true);
+      } finally {
+         await env.releaseConnections().catch(() => {});
+      }
+   });
+
+   it("throws an error after rows were yielded as it is, without renewing or running again", async () => {
+      const { stateOf } = stubDuckLake({});
+      const env = buildEnvironmentMalloyConfig([DESTINATION], root, false, {
+         origin: "storage-destination",
+      });
+      try {
+         const connection = await lookUp(env);
+         const renew = sinon.fake.resolves(undefined);
+         connection.setStorageSecretRenewer(renew);
+         const expired = new Error("HTTP Error: ExpiredToken: mid-stream");
+         const stream = stubStreams([
+            { rows: [{ x: 1 }, { x: 2 }], error: expired },
+         ]);
+
+         const read = await drain(
+            connection.runSQLStream("SELECT x FROM credible.main.t"),
+         );
+         expect(read.rows).toEqual([{ x: 1 }, { x: 2 }]);
+         expect(read.error).toBe(expired);
+         expect(renew.callCount).toBe(0);
+         expect(stream.callCount).toBe(1);
+
+         // A binder error after rows is not checked against the instance
+         // either: the rows already sent are the caller's answer to judge.
+         stream.restore();
+         stateOf(connection).attached.delete("credible");
+         const binder = new Error(
+            'Binder Error: Catalog "credible" does not exist!',
+         );
+         stubStreams([{ rows: [{ x: 1 }], error: binder }]);
+         const checksBefore = stateOf(connection).catalogChecks;
+         const late = await drain(
+            connection.runSQLStream("SELECT x FROM credible.main.t"),
+         );
+         expect(late.rows).toEqual([{ x: 1 }]);
+         expect(late.error).toBe(binder);
+         expect(stateOf(connection).catalogChecks).toBe(checksBefore);
       } finally {
          await env.releaseConnections().catch(() => {});
       }

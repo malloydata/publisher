@@ -68,6 +68,11 @@ import {
 } from "./golden_files";
 import { Normalizer } from "./normalize";
 
+/** A compile error's first diagnostic line (`line 3: …`), if it has one. */
+function firstDiagnostic(message: string): string | undefined {
+   return message.split("\n").find((l) => /^line \d+:/.test(l));
+}
+
 /** The prefix the corpus gives a hammer model's in-memory URL. */
 const HAMMER_URL = "file:///hammer/";
 
@@ -151,7 +156,17 @@ async function planModel(model: CorpusModel, root: string): Promise<Planned> {
       const message = error instanceof Error ? error.message : String(error);
       return {
          plan: JSON.stringify(
-            { compileError: normalizer.text(message.split("\n")[0]) },
+            {
+               compileError: normalizer.text(message.split("\n")[0]),
+               // The first diagnostic, so a change of cause is a golden diff.
+               ...(firstDiagnostic(message)
+                  ? {
+                       firstDiagnostic: normalizer.text(
+                          firstDiagnostic(message)!,
+                       ),
+                    }
+                  : {}),
+            },
             null,
             2,
          ),

@@ -144,6 +144,8 @@ export interface ViewAnswer {
       tier: "database";
       tablePath?: string;
       destinationName?: string;
+      /** Stored as of its build: see `Binding.asOfBuild`. */
+      asOfBuild?: true;
    };
    /** Where `govern()` grafts the source's gates on the variant. */
    graftScope: GraftScope;
@@ -186,6 +188,12 @@ export interface ResolvedTable extends ViewTable {
     * declines while one is.
     */
    leftOut?: readonly string[];
+   /**
+    * A database table stored as of its build: its manifest entry in the
+    * pinned snapshot says so (`FreshnessAwareManifestEntry.asOfBuild`), so
+    * read admission declines an access decision over it.
+    */
+   asOfBuild?: true;
 }
 
 export interface CompiledVariant {
@@ -278,6 +286,7 @@ export class PersistedViewServe {
          binding,
          databaseTable,
          leftOut,
+         asOfBuild,
          ...table
       } = this.tableOf(called.plan, pinned, pinned.compilerManifest);
       void virtualMap;
@@ -285,6 +294,7 @@ export class PersistedViewServe {
       void binding;
       void databaseTable;
       void leftOut;
+      void asOfBuild;
       return table;
    }
 
@@ -476,6 +486,7 @@ export class PersistedViewServe {
          return { ...databaseId, tier: "database", built: false, stale: false };
       }
       const dataAsOf = bound.dataAsOf ? { dataAsOf: bound.dataAsOf } : {};
+      const asOfBuild = bound.asOfBuild ? { asOfBuild: true as const } : {};
       const fresh = freshManifest?.entries[tableId]?.tableName;
       const leftOut = bound.leftOutColumns?.length
          ? { leftOut: bound.leftOutColumns }
@@ -505,6 +516,7 @@ export class PersistedViewServe {
                [held.destinationName, new Map([[tableId, held.tablePath]])],
             ]),
             ...leftOut,
+            ...asOfBuild,
          };
       }
       return fresh
@@ -516,6 +528,7 @@ export class PersistedViewServe {
               stale: false,
               databaseTable: fresh,
               ...leftOut,
+              ...asOfBuild,
            }
          : {
               ...databaseId,
@@ -837,10 +850,14 @@ export async function readStoredVariant(args: {
       binding,
       databaseTable,
       leftOut,
+      asOfBuild,
       ...reported
    } = table;
    void quotedPath;
    void leftOut;
+   // An access decision over a table stored as of its build is declined at
+   // read admission, which sees the table only through what is reported here.
+   const stamp = asOfBuild ? { asOfBuild } : {};
    return {
       runnable,
       table: reported,
@@ -855,6 +872,7 @@ export async function readStoredVariant(args: {
                  tier: "database" as const,
                  tablePath: binding.tablePath,
                  destinationName: binding.destinationName,
+                 ...stamp,
               },
            }
          : !virtualMap && databaseTable
@@ -862,6 +880,7 @@ export async function readStoredVariant(args: {
                 databaseTableRead: {
                    tier: "database" as const,
                    tablePath: databaseTable,
+                   ...stamp,
                 },
              }
            : {}),

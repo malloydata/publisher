@@ -227,6 +227,12 @@ export interface QueryPathInput {
    rollupTablesRead?: readonly StorageTable[];
    /** The tables only the served copy reads (`#(materialize)`): its decision is theirs. */
    servedCopyTables?: ReadonlySet<string>;
+   /**
+    * For a table only the served copy reads that it leaves as written for
+    * its columns (`column_types`): the columns, named, by table path. The
+    * table's `detail` when the served copy declined with none of its own.
+    */
+   servedCopyDetails?: ReadonlyMap<string, string>;
    /** For a storage answer: `served_copy` when the served copy on `virtual` answered. */
    via?: "served_copy";
    /**
@@ -588,14 +594,17 @@ function storageTableDecisions(
             // A table only the served copy reads skipped for the served
             // copy's reason, whichever candidate the tier reported.
             const served = decided.get("served");
-            const decision =
-               served && input.servedCopyTables?.has(t.binding?.tablePath ?? "")
-                  ? served
-                  : storageDecision;
+            const servedOnly = input.servedCopyTables?.has(
+               t.binding?.tablePath ?? "",
+            );
+            const decision = served && servedOnly ? served : storageDecision;
             skip(
                t,
                skipReasonOf(decision),
-               decision.callerDetail,
+               decision.callerDetail ??
+                  (servedOnly && decision.code === "served_copy_not_served"
+                     ? input.servedCopyDetails?.get(t.binding?.tablePath ?? "")
+                     : undefined),
                declineOfCode(decision.code)?.code,
             );
          }

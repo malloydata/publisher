@@ -2,20 +2,15 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * F-16 (campaign case P3-11): Snowflake big integers, pinned as they are.
+ * F-16 (campaign case P3-11): Snowflake big integers, served and live.
  *
  * A stored read of a Snowflake source's `bigint` field keeps every digit,
  * because Malloy says live does: the Snowflake dialect keeps
  * `supportsBigIntPrecision`, so {@link liveKeepsBigIntegers} is true and a
- * `storage=` table reads the column through `::"HUGEINT"`. Live falls short
- * of that on every connection Publisher configures: Malloy's connection
- * registry, and Publisher's own key-pair builder, hand snowflake-sdk the
- * configured options without the connector's own `jsTreatIntegerAsBigInt`
- * default, so the driver returns a NUMBER(38,0) as a JavaScript number and a
- * live sum past 2^53 comes back rounded while the served answer is exact. The fix belongs
- * upstream, in the Snowflake connector; Publisher does not round served
- * answers to match (served never less exact than it can be). The docs say
- * so ("Snowflake: live and served differences", docs/materialization.md).
+ * `storage=` table reads the column through `::"HUGEINT"`. Live keeps them
+ * too: every Snowflake connection Publisher builds reads integers with the
+ * connector's own `jsTreatIntegerAsBigInt` default (snowflake_connection.ts,
+ * whose spec pins the live half), so the two answers agree.
  */
 
 import { describe, expect, it } from "bun:test";

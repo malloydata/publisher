@@ -133,10 +133,9 @@ validate_content_paths "@malloy-publisher/create-malloy-package" "${SCAFFOLDER_C
 
 # How a manifest is read and how the registry is asked are the two
 # registry-specific steps, so they are the two functions parameterised on
-# a registry kind. npm is the only kind since the Python SDK moved to
-# release.yml's own build-python-sdk/publish-python-sdk jobs; the kind
-# stays a parameter so that a registry-specific step stays visibly one,
-# and an unrecognised kind still fails closed (see registry_has).
+# a registry kind. npm is the only kind; the kind stays a parameter so
+# that a registry-specific step stays visibly one, and an unrecognised
+# kind still fails closed (see registry_has).
 #
 # Prints "<name> <version> <slug>" on success, nothing on failure.
 # The slug is what goes in a URL; for npm it is unused and echoes the
@@ -940,9 +939,5 @@ publish_resolved() {
 # skills has to be decided and, if publishing, confirmed on npm before the
 # scaffolder is dispatched. Dispatching both at once races and fails the
 # scaffolder.
-#
-# The Python SDK is not dispatched from here: it is release.yml's
-# build-python-sdk and publish-python-sdk jobs, because PyPI's trusted
-# publisher has to name the file that defines the uploading job.
 publish_indep_pkg skills skills-npm.yml
 publish_indep_pkg create-malloy-package create-malloy-package-npm.yml

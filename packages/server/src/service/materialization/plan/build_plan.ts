@@ -351,13 +351,21 @@ export function storedColumnOf(
  * with `except:` is not one of its fields, so it is not stored. The strict
  * counterpart to {@link deriveColumns}: this list decides what gets WRITTEN,
  * so "unknown" must not read as "nothing to narrow". Empty throws too.
+ *
+ * An array column (a BigQuery `ARRAY`, a DuckDB or Postgres list, a
+ * persisted query's `nest:`) is stored too, as the destination's list of
+ * the element type, and so is a record column (a BigQuery `STRUCT`, a
+ * DuckDB `STRUCT`), as the destination's struct of the mapped field types:
+ * Malloy types either as a source of its own (an `ExploreField`), not an
+ * atomic field, and leaving it out of the table sent every query on a
+ * `#(materialize)` source over it live.
  */
 export function storedColumnNames(persistSource: PersistSource): string[] {
    let names: string[];
    try {
       const columnOf = storedColumnOf(persistSource);
       names = exploreOf(persistSource)
-         .intrinsicFields.filter((f) => f.isAtomicField())
+         .intrinsicFields.filter((f) => f.isAtomicField() || isNestedColumn(f))
          .map((f) => columnOf(f.name))
          .filter((n): n is string => typeof n === "string" && n.length > 0);
    } catch (err) {
@@ -369,6 +377,16 @@ export function storedColumnNames(persistSource: PersistSource): string[] {
       throw new Error("the compiled source declares no atomic columns");
    }
    return names;
+}
+
+/**
+ * Whether an intrinsic field is an array or record column the table reads
+ * (a list of scalars or of records, or a struct): intrinsic excludes joins
+ * and computed fields, so an intrinsic source-typed field is a column.
+ */
+function isNestedColumn(field: unknown): boolean {
+   const f = field as { isExploreField?: () => boolean };
+   return f.isExploreField?.() === true;
 }
 
 /**
