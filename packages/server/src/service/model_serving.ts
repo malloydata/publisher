@@ -131,6 +131,7 @@ import {
    serializeWithinCaps,
    type PreparedRun,
 } from "./query_execution";
+import { responseBytes } from "./statement_usage";
 import { extractRunTargetSourceName } from "./query_text";
 import { type CallerRegion } from "./caller_joins";
 import type { ModelQueryMetadataInput, QueryMetadata } from "./query_metadata";
@@ -393,7 +394,20 @@ export class ModelServing {
          answer,
          governed,
       });
-      return this.report(ctx, { pinned, prepared, governed, ran, servedCopy });
+      try {
+         return await this.report(ctx, {
+            pinned,
+            prepared,
+            governed,
+            ran,
+            servedCopy,
+         });
+      } finally {
+         // Emitted with the response's size in report(); here only when report
+         // threw first (a cap refused the result), so the statement still has
+         // its record.
+         ran.run.usage?.emit();
+      }
    }
 
    // ---- Stage 1: pin ----------------------------------------------------
@@ -995,10 +1009,16 @@ export class ModelServing {
          executionTime = performance.now() - ctx.startTime;
       }
       if (answer.leg !== "live" && !answer.runFailed) {
-         await roundStoredAnswerAsLive(run.result, prepared.liveRunnable, {
-            runnable: governed.runnable,
-            bindings: answer.answer.shapeBindings,
-         });
+         try {
+            await roundStoredAnswerAsLive(run.result, prepared.liveRunnable, {
+               runnable: governed.runnable,
+               bindings: answer.answer.shapeBindings,
+            });
+         } catch (error) {
+            // The statement ran: its record goes out, without a response.
+            run.usage?.emit();
+            throw error;
+         }
       }
       return { run, answer, executionTime, maxRows, maxBytes };
    }
@@ -1172,6 +1192,9 @@ export class ModelServing {
       }
       const { wrapped: wrappedResult, serialized: serializedResult } =
          serializedWithinCaps;
+      // Emitted with this size just before report() returns, once nothing left
+      // can fail the answer; runQuery's finally covers every earlier throw.
+      const servedBytes = responseBytes(serializedResult);
       const metricAttributes = this.queryMetricAttributes({
          environment: queryMetadataInput?.environment,
          queryName,
@@ -1240,6 +1263,7 @@ export class ModelServing {
       // No report at all (it could not be assembled), as against a report
       // that says live with nothing considered, which records no `path`.
       if (!path) audit.pathUnavailable = true;
+      ran.run.usage?.emit(servedBytes);
       return {
          result: wrappedResult,
          serializedResult,
@@ -1483,7 +1507,7 @@ export class ModelServing {
          this.host.notebookCellDeclaredGivens(cellIndex),
       );
       const cellRunnable = cellGoverned;
-      const { result } = await prepareAndRun(
+      const { result, usage } = await prepareAndRun(
          cellRunnable,
          { givens: cellSurfaceGivens, buildManifest },
          {
@@ -1520,61 +1544,70 @@ export class ModelServing {
             this.unboundGateGivenDenial(err, cellRunnable, givens, label) ?? err
          );
       });
-      const query = (await runnableToExecute.getPreparedQuery())._query;
-      const queryName = (query as NamedQueryDef).as || query.name;
+      // The record is emitted with the response's size where the cell's result
+      // is serialized below; the finally covers every path that does not get
+      // there (a cap refused the result, an audit that threw), so the
+      // statement still has its record.
       try {
-         audit.summary = await summarizeQueryAccess({
-            runnable: cellRunnable,
-            modelDef: this.host.modelDef(),
-            enforced: cellDecision.enforced,
-            apiSources: this.host.sources(),
-            modelGivens: this.host.givens(),
-            source:
-               (await governor.resolveAuthorizeSourceFromRunnable(
-                  cellRunnable,
-               )) ?? extractRunTargetSourceName(cell.text),
-            givens,
-            bypassAuthorize: false,
-            grafts: cellDecision.grafts,
-            rowCount: result?.totalRows ?? 0,
-         });
-      } catch (err) {
-         logger.debug("Access summary unavailable", {
-            modelPath: this.host.modelPath,
-            error: (err as Error).message,
-         });
-      }
-      // As in runQuery: only when reported, absent is not zero.
-      const cellScannedBytes = result?.runStats?.queryCostBytes;
-      if (cellScannedBytes !== undefined) {
-         audit.scannedBytes = cellScannedBytes;
-      }
-      // As in runQuery.
-      if (
-         result?._queryResult &&
-         result.totalRows === 0 &&
-         cellDecision.grafts.length > 0
-      ) {
-         recordRowLevelGateDecision("empty_after_filter");
-      }
-      // Same caps and ordering as runQuery.
-      let queryResult: string | undefined = undefined;
-      if (result?._queryResult) {
-         if (this.host.modelInfo()) {
-            queryResult = serializeWithinCaps(result, {
-               maxRows: cellMaxRows,
-               maxBytes: cellMaxBytes,
-               source: "notebook_cell",
-            }).serialized;
-         } else {
-            assertWithinModelRowLimit(
-               result.totalRows,
-               cellMaxRows,
-               "notebook_cell",
-            );
+         const query = (await runnableToExecute.getPreparedQuery())._query;
+         const queryName = (query as NamedQueryDef).as || query.name;
+         try {
+            audit.summary = await summarizeQueryAccess({
+               runnable: cellRunnable,
+               modelDef: this.host.modelDef(),
+               enforced: cellDecision.enforced,
+               apiSources: this.host.sources(),
+               modelGivens: this.host.givens(),
+               source:
+                  (await governor.resolveAuthorizeSourceFromRunnable(
+                     cellRunnable,
+                  )) ?? extractRunTargetSourceName(cell.text),
+               givens,
+               bypassAuthorize: false,
+               grafts: cellDecision.grafts,
+               rowCount: result?.totalRows ?? 0,
+            });
+         } catch (err) {
+            logger.debug("Access summary unavailable", {
+               modelPath: this.host.modelPath,
+               error: (err as Error).message,
+            });
          }
+         // As in runQuery: only when reported, absent is not zero.
+         const cellScannedBytes = result?.runStats?.queryCostBytes;
+         if (cellScannedBytes !== undefined) {
+            audit.scannedBytes = cellScannedBytes;
+         }
+         // As in runQuery.
+         if (
+            result?._queryResult &&
+            result.totalRows === 0 &&
+            cellDecision.grafts.length > 0
+         ) {
+            recordRowLevelGateDecision("empty_after_filter");
+         }
+         // Same caps and ordering as runQuery.
+         let queryResult: string | undefined = undefined;
+         if (result?._queryResult) {
+            if (this.host.modelInfo()) {
+               queryResult = serializeWithinCaps(result, {
+                  maxRows: cellMaxRows,
+                  maxBytes: cellMaxBytes,
+                  source: "notebook_cell",
+               }).serialized;
+               usage?.emit(responseBytes(queryResult));
+            } else {
+               assertWithinModelRowLimit(
+                  result.totalRows,
+                  cellMaxRows,
+                  "notebook_cell",
+               );
+            }
+         }
+         return { queryName, result: queryResult };
+      } finally {
+         usage?.emit();
       }
-      return { queryName, result: queryResult };
    }
 
    /**
