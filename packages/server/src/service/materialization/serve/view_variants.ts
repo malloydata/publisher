@@ -15,7 +15,7 @@
  * - `run: ops -> by_carrier -> { … }`: a query that starts from the view,
  *   which only its text shows; its later stages read the stored result;
  * - never `ops -> by_carrier + { … }` (a refinement changes the view's own
- *   query: skipped `MISSING_FIELD`), `ops -> { nest: by_carrier }` or a
+ *   query: skipped `SHAPE_MISMATCH`), `ops -> { nest: by_carrier }` or a
  *   hand-written look-alike (neither reads as a call, so the leg does not
  *   apply), nor a call on another source, an extension or a caller's own
  *   redefinition (the run target's `sourceID` must be the view's source's).

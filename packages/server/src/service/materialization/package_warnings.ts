@@ -127,49 +127,6 @@ export const DATABASE_COLUMN_TYPE_MISMATCH_CODE =
    "database-column-type-mismatch";
 
 /**
- * Warning codes renamed in 0.15.0, each with the code 0.14.0 shipped for it:
- * a warning under the new code is repeated under the old one, with the same
- * message, for this release only, so a client switching on the old code
- * keeps working. Removed in the next release.
- */
-export const RETAINED_WARNING_ALIASES: Readonly<Record<string, string>> = {
-   [ROLLUP_NOT_BUILT_CODE]: "preaggregate-not-built",
-   [ROLLUP_JOIN_ONE_KEY_REPEATED_CODE]: "preaggregate-join-one-key-repeated",
-   [NATIVE_SCHEMA_MISSING_CODE]: "stored-native-schema-missing",
-};
-
-/**
- * `warnings`, each one whose code was renamed followed by its repeat under
- * the code 0.14.0 shipped ({@link RETAINED_WARNING_ALIASES}).
- */
-export function withRetainedAliases<T extends object>(
-   warnings: readonly T[],
-): T[] {
-   return warnings.flatMap((w) => {
-      const code = (w as { code?: unknown }).code;
-      const alias =
-         typeof code === "string" ? RETAINED_WARNING_ALIASES[code] : undefined;
-      return alias ? [w, { ...w, code: alias }] : [w];
-   });
-}
-
-/** `warnings` less each retained-alias repeat of a warning beside it (for a reader that reads each once). */
-export function withoutRetainedAliases<
-   T extends { code?: string; message?: string; subject?: string },
->(warnings: readonly T[]): T[] {
-   const key = (code: string | undefined, w: T) =>
-      `${code}\u0000${w.subject ?? ""}\u0000${w.message ?? ""}`;
-   const present = new Set(warnings.map((w) => key(w.code, w)));
-   const aliasOf = new Map(
-      Object.entries(RETAINED_WARNING_ALIASES).map(([now, old]) => [old, now]),
-   );
-   return warnings.filter((w) => {
-      const now = w.code !== undefined ? aliasOf.get(w.code) : undefined;
-      return now === undefined || !present.has(key(now, w));
-   });
-}
-
-/**
  * The findings on authored annotations: an unservable one (a valid
  * annotation not built here) is `warn`. A malformed one fails the load, so a
  * serving package carries none; it would be `error`.
@@ -793,12 +750,14 @@ export function persistencePolicyWarnings(
 ): string[] {
    const warnings: string[] = [];
    const sources = plan?.sources ? Object.values(plan.sources) : [];
+   // Present, not truthy: an empty string is a schedule that never fires,
+   // so it must reach the cron rule rather than skip every rule.
    const packageSchedule = metadata.materialization?.schedule ?? null;
    const packageFreshness = metadata.materialization?.freshness ?? null;
    const scope = metadata.scope ?? "package";
 
    // A package-level cron is legal only with scope: version.
-   if (packageSchedule && scope !== "version") {
+   if (packageSchedule !== null && scope !== "version") {
       warnings.push(
          `materialization.schedule (cron) in ${PACKAGE_MANIFEST_NAME} requires ` +
             `"scope": "version": a package-scoped lineage is reused across ` +
@@ -808,7 +767,7 @@ export function persistencePolicyWarnings(
    }
 
    // Schedule and freshness are mutually exclusive.
-   if (packageSchedule) {
+   if (packageSchedule !== null) {
       const freshnessDeclared =
          !!(
             packageFreshness &&
@@ -830,7 +789,10 @@ export function persistencePolicyWarnings(
 
    // A valid 5-field cron, here so publish, PATCH, load and the scheduler all
    // apply one rule and a bad cron cannot silently never arm.
-   if (packageSchedule && !new CronEvaluator().isValid(packageSchedule)) {
+   if (
+      packageSchedule !== null &&
+      !new CronEvaluator().isValid(packageSchedule)
+   ) {
       warnings.push(
          `materialization.schedule in ${PACKAGE_MANIFEST_NAME} is not a valid ` +
             `5-field UNIX cron: ${JSON.stringify(packageSchedule)}. Use ` +

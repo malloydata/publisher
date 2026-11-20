@@ -931,7 +931,8 @@ export class ModelServing {
          // `freshnessFallback=live` marks the tier as an optimisation, not a
          // dependency, so a store failing UNDER a routed query degrades to
          // live. Deliberately narrow:
-         //  - only when the query actually routed to storage;
+         //  - only when the query read a stored table (a virtual map, or a
+         //    database rollup through the build manifest);
          //  - only per `bindingsAllowDegradeToLive` over the bindings that
          //    produced THIS shape (a sibling source must not decide);
          //  - or for DECIMAL arithmetic past 38 digits, whatever the policy

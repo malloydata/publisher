@@ -245,9 +245,10 @@ function persistedResultLeg(
 
 /**
  * Then `#(rollup)` rollups: the caller's text compiled where its
- * source's name means the coarsest rollup that reproduces it. A stored rollup
- * reads through `virtual()`, and a run failure on it may degrade to live,
- * since a rollup only accelerates (its binding never vetoes).
+ * source's name means the coarsest rollup that reproduces it. A `storage=`
+ * rollup reads through `virtual()`, a database one through the build manifest,
+ * and a run failure on either may degrade to live, since a rollup only
+ * accelerates (its binding never vetoes).
  */
 function rollupLeg(rollups: RollupVariantServe): Leg {
    return {
@@ -409,24 +410,31 @@ function bindingsAllowDegradeToLive(bindings: readonly Binding[]): boolean {
  * destination cannot hold ({@link isStoredDecimalArithmeticError}), or for a
  * destination whose catalog is unavailable
  * ({@link isDestinationCatalogUnavailableError}), never for a client error (a
- * bad given) or an abort.
+ * bad given) or an abort. A database rollup reads its table through the build
+ * manifest, not a virtual map, and carries no binding; it degrades whatever the
+ * failure, as a stored rollup's binding lets it, since a rollup only
+ * accelerates.
  */
 export function canDegradeToLive(
    answer: Answer,
    error: unknown,
    opts: { hasLiveRunnable: boolean; aborted: boolean },
 ): answer is RoutedAnswer {
-   return (
-      answer.leg !== "live" &&
-      !!answer.answer.virtualMap &&
-      opts.hasLiveRunnable &&
-      !opts.aborted &&
-      !String((error as { code?: string })?.code ?? "").startsWith(
+   if (
+      answer.leg === "live" ||
+      !opts.hasLiveRunnable ||
+      opts.aborted ||
+      String((error as { code?: string })?.code ?? "").startsWith(
          "runtime-given-",
-      ) &&
-      (bindingsAllowDegradeToLive(answer.answer.shapeBindings) ||
-         isStoredDecimalArithmeticError(error) ||
-         isDestinationCatalogUnavailableError(error))
+      )
+   ) {
+      return false;
+   }
+   if (!answer.answer.virtualMap) return answer.leg === "rollup";
+   return (
+      bindingsAllowDegradeToLive(answer.answer.shapeBindings) ||
+      isStoredDecimalArithmeticError(error) ||
+      isDestinationCatalogUnavailableError(error)
    );
 }
 

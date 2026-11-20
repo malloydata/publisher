@@ -998,6 +998,13 @@ export const DECLARABLE_STORAGE_DESTINATION_TYPES: ReadonlySet<string> =
  */
 export const STORAGE_DESTINATIONS_DIR = ".storage-destinations";
 
+/**
+ * The connection every package gets of its own: an in-memory DuckDB sandbox,
+ * so nothing built in it survives a restart. The name is reserved: a
+ * destination or environment connection may not take it.
+ */
+export const PACKAGE_SANDBOX_CONNECTION = "duckdb";
+
 /** Where {@link STORAGE_DESTINATIONS_DIR} sits for an environment. */
 export function storageDestinationRoot(environmentPath: string): string {
    return path.join(environmentPath, STORAGE_DESTINATIONS_DIR);

@@ -4,11 +4,7 @@
 import { quotedIdentifier, quotedPath, stringLiteral } from "./malloy_text";
 import { INCREMENTAL_NO_MERGE_KEY_CODE } from "./materialization/plan/incremental_policy";
 import { recordConnectionType } from "./connection_type";
-import {
-   readUpstreamSchemas,
-   withNameProblems,
-   withRetainedAliases,
-} from "./materialization";
+import { readUpstreamSchemas, withNameProblems } from "./materialization";
 import {
    type UpstreamSchemaReadings,
    type UpstreamTable,
@@ -2207,9 +2203,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          }),
       ];
       if (allWarnings.length > 0) {
-         // A renamed code is repeated under the code 0.14.0 shipped, this
-         // release only.
-         metadata.warnings = withRetainedAliases(allWarnings);
+         metadata.warnings = allWarnings;
       }
       return metadata;
    }

@@ -228,10 +228,23 @@ describe("canDegradeToLive", () => {
       ).toBe(true);
    });
 
-   it("never degrades a live or rollup answer (nothing stored was read)", () => {
+   it("never degrades a live answer (nothing stored was read)", () => {
       expect(canDegradeToLive(LIVE_ANSWER, new Error("x"), open)).toBe(false);
+   });
+
+   it("degrades a database rollup, read through the build manifest, on any store failure", () => {
       expect(
          canDegradeToLive(answerOf(rollupRoute), new Error("x"), open),
+      ).toBe(true);
+      const given = Object.assign(new Error("bad given"), {
+         code: "runtime-given-missing",
+      });
+      expect(canDegradeToLive(answerOf(rollupRoute), given, open)).toBe(false);
+      expect(
+         canDegradeToLive(answerOf(rollupRoute), new Error("x"), {
+            hasLiveRunnable: true,
+            aborted: true,
+         }),
       ).toBe(false);
    });
 

@@ -295,10 +295,9 @@ source, `materialize-not-built` for a `#(materialize)` source, `persist-view-not
 persisted view and `persist-query-not-built` for a persisted query (`subject` the view or query),
 and `rollup-not-built` for a rollup (`subject` its base, or `<base>.<measure>` for one
 measure). Each warning carries the record's bounded `reason` as a field, so a client never reads
-it from the message. A rollup's code was `preaggregate-not-built`: for this release each
-`rollup-not-built` warning is repeated with that old code and the same message, so a reader that
-matches it keeps working, and then the repeat is removed. `persist-source-refused`, which 0.14.0
-repeated beside `persist-not-built` for one release, is no longer produced.
+it from the message. A rollup's code was `preaggregate-not-built`, which 0.15.0 and 0.16 repeated
+beside each `rollup-not-built` warning; since 0.17.0 it is no longer produced. Nor is
+`persist-source-refused`, which 0.14.0 repeated beside `persist-not-built`.
 
 ### Sources that read the current time
 
@@ -901,8 +900,8 @@ the warehouse's `information_schema` finds in more than one schema, where the bu
 which table it wrote). A database column whose type its build did not record is the one exception
 on BigQuery: BigQuery has exactly one integer type, so the column is read as `INT64` and still
 serves. Either way the package reports the source as a warning with code
-`database-native-type-missing` (for this release also repeated under its former code,
-`stored-native-schema-missing`), naming its columns and whether each is read as `INT64` or answered
+`database-native-type-missing` (`stored-native-schema-missing` before 0.15, and repeated under
+that code through 0.16), naming its columns and whether each is read as `INT64` or answered
 live; the next full rebuild records the types and clears it. Served never exceeds live where Malloy's dialect says live rounds: on a source whose live answer
 itself rounds such values (Postgres returns its rows through JSON), a `storage=` table reads the
 column as a plain number, which rounds the same way, and a database one reads it through
@@ -1003,7 +1002,7 @@ Warnings about the deployment rather than one item carry codes of their own, suc
 Renamed and retired codes:
 
 - `persist-source-refused`, `persist-not-built`'s former name, is no longer produced (0.14.0 repeated it for one release, as announced).
-- `preaggregate-not-built`, `preaggregate-join-one-key-repeated` and `stored-native-schema-missing` are now `rollup-not-built`, `rollup-join-one-key-repeated` and `database-native-type-missing`. For this release each is repeated under its former code, with the same message, in the package's REST `warnings` (the Console and the MCP tools show it once); then the repeat is removed.
+- `preaggregate-not-built`, `preaggregate-join-one-key-repeated` and `stored-native-schema-missing` are now `rollup-not-built`, `rollup-join-one-key-repeated` and `database-native-type-missing`. 0.15.0 and 0.16 repeated each under its former code, with the same message, in the package's REST `warnings`; since 0.17.0 the former codes are no longer produced.
 - `preaggregate-not-a-measure`, `preaggregate-unknown-grain` and `preaggregate-not-mergeable` are now `rollup-not-a-measure`, `rollup-unknown-grain` and `rollup-not-mergeable` (load failures, so only the `[code]` in the failure's message and `loadErrors[].codes` change).
 - `table-kept-after-rename` is now `table-kept`: it also fires after a `storage=` or tier move and for a destination no longer configured, and its `reason` field says which.
 - The rollup refusals `preaggregate-hidden-field`, `preaggregate-access-filter`, `preaggregate-time-zone`, `preaggregate-current-time`, `preaggregate-reads-given`, `preaggregate-unreadable-measure`, `preaggregate-join-level` and `preaggregate-name-clash` are no longer produced: each is `rollup-not-built`, with the reason `hidden_field`, `access_filter` (or `authorize` for a lock), `time_zone`, `current_time`, `reads_given` or `inherited_where_with_given`, `unreadable_measure`, `join_not_in_grain` or `partial_name_collision` on its `refusedSources` record.
@@ -1102,6 +1101,11 @@ standalone run or a control plane built the table.
   names it `READ_FAILED`. The worker logs it at error level with code
   `ducklake_catalog_unavailable` and reopens the destination, so the next query reads the table
   again.
+- A stored read that fails at run time (a column renamed or dropped after the build, say) answers
+  live under `freshness.fallback="live"`, with `servedFrom: live_fallback` and the table named
+  `READ_FAILED`: a `storage=` table, a database table the served copy reads, and a rollup on
+  either tier, whose fallback never vetoes since a rollup only accelerates. Under any other
+  fallback the error is returned.
 
 Each key resolves on its own, most specific first: the source's own declaration, then the model
 file's (`## freshness.window="…"`, or inside `## materialization { … }`), then `materialization.freshness`
@@ -1184,7 +1188,7 @@ If the load does not take, the run still settles at `MANIFEST_FILE_READY`, since
 
 A build ignores the package's [published surface](discovery-and-access.md). It builds every `#@ persist` source in every model, including one `index.malloy` does not export, so a hidden intermediate can be persisted and an exported source that reads it reads the built table.
 
-Each run records a **trigger** in its metadata: `on_demand` (a manual/API build) or `scheduler` (a scheduled fire), the words `RunContext.trigger` uses. Runs recorded before 0.15 say `ON_DEMAND` and `SCHEDULER`, and every reader accepts both. Only one materialization can be active per (environment, package) at a time — a second concurrent build is rejected with HTTP 409, and the scheduler coalesces (skips) rather than stacking a second build. A package with published versions builds per version, under the rules in [package-versions.md](package-versions.md#materializations): a run under `scope: "version"`, or one with `buildInstructions`, holds its own version's slot instead.
+Each run records a **trigger** in its metadata: `on_demand` (a manual/API build) or `scheduler` (a scheduled fire), the words `RunContext.trigger` uses. Runs recorded before 0.15 say `ON_DEMAND` and `SCHEDULER`. The API and the CLI accept both; since 0.16.1 the scheduler reads only `scheduler`, so a scheduled fire a release before 0.15 recorded is not read when it anchors a schedule. Only one materialization can be active per (environment, package) at a time — a second concurrent build is rejected with HTTP 409, and the scheduler coalesces (skips) rather than stacking a second build. A package with published versions builds per version, under the rules in [package-versions.md](package-versions.md#materializations): a run under `scope: "version"`, or one with `buildInstructions`, holds its own version's slot instead.
 
 On demand, via the CLI:
 
