@@ -5,12 +5,11 @@
 // `.malloynb` notebooks (see RELEASE_NOTES deprecations).
 
 /**
- * What a `.malloynb` shows when something fails: a cell the server refuses
- * says why in that cell and leaves the others running, and cells that could
- * not be read at all say so in place of the cells.
+ * What a `.malloynb` shows when a cell fails: a cell the server refuses says
+ * why in that cell and leaves the others running.
  */
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import {
    clearCache,
    mockServerProvider,
@@ -41,11 +40,11 @@ const refused = (message: string) =>
       response: { data: { message } },
    });
 
-/** A runner that answers each cell's code with `answer`, and records the order it was asked in. */
+/** A runner that answers each cell's code with `answer`, and records the cells it was asked for. */
 function runner(answer: (code: string) => Promise<unknown>) {
-   const asked: number[] = [];
-   const runCell: CellRunner = ({ cell, index }) => {
-      asked.push(index);
+   const asked: string[] = [];
+   const runCell: CellRunner = ({ cell }) => {
+      asked.push(cell.text ?? "");
       return answer(cell.text ?? "") as ReturnType<CellRunner>;
    };
    return { asked, runCell };
@@ -110,42 +109,10 @@ describe("a cell that fails", () => {
       );
 
       expect(await screen.findByText("no such source")).toBeTruthy();
-      // The markdown cell is index 0 and never runs.
-      expect(asked).toEqual([1, 2]);
+      // The markdown cell never runs.
+      expect(asked).toEqual(["run: bad -> v", "run: good -> v"]);
       expect(screen.getAllByText("This cell could not be run.")).toHaveLength(
          1,
       );
-   });
-});
-
-describe("cells that could not be read", () => {
-   const view = (error: { status: number; message: string }) =>
-      render(
-         <CellRunnerView
-            resourceUri={URI}
-            notebook={undefined}
-            error={{
-               ...error,
-               name: "ApiError",
-               data: { code: error.status, message: error.message },
-            }}
-            runCell={() => Promise.resolve({})}
-         />,
-         { wrapper: serverWrapper },
-      );
-
-   it("names the notebook that does not exist", () => {
-      view({ status: 404, message: "Not found" });
-      expect(screen.getByText("env > pkg > review.malloynb")).toBeTruthy();
-      expect(screen.getByText(/not found\./)).toBeTruthy();
-   });
-
-   it("shows any other failure with the notebook it was reading", async () => {
-      view({ status: 500, message: "The package did not load" });
-      await waitFor(() =>
-         expect(screen.getByText("env > pkg > review.malloynb")).toBeTruthy(),
-      );
-      expect(screen.getByText("The package did not load")).toBeTruthy();
-      expect(screen.queryByText(/not found\./)).toBeNull();
    });
 });

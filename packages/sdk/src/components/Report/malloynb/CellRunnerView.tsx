@@ -10,7 +10,7 @@
  */
 
 import "@malloydata/malloy-explorer/styles.css";
-import { Stack, Typography } from "@mui/material";
+import { Stack } from "@mui/material";
 import {
    useCallback,
    useEffect,
@@ -25,24 +25,17 @@ import { useDocumentControls } from "../../../hooks/useDocumentControls";
 import { useModelGivens } from "../../../hooks/useModelGivens";
 import { GIVEN_SETTLE_MS } from "../../../hooks/useSettled";
 import { parseResourceUri } from "../../../utils/formatting";
-import { ApiErrorDisplay, type ApiError } from "../../ApiErrorDisplay";
+import { ApiErrorDisplay } from "../../ApiErrorDisplay";
 import type { NavigationClick } from "../../click_helper";
 import type { DrillNavigation } from "../../drill";
 import { GivensPanel } from "../../given";
 import { givensToParams, givensToRequest } from "../../given/paramCodec";
-import { Loading, LOADING_COPY } from "../../Loading";
 import { cellRuns } from "./cellKind";
 import { NotebookCell } from "./NotebookCell";
 import { planRun } from "./runPlan";
 import type { EnhancedNotebookCell } from "./types";
 import { failureCategory, useReportEvents } from "../../Report/telemetry";
-import { Prose } from "../../Prose";
-import {
-   ReportHeader,
-   ReportPage,
-   StickyControls,
-   TextTileFrame,
-} from "../../Report/ReportPage";
+import { ReportPage, StickyControls } from "../../Report/ReportPage";
 
 // Maximum number of concurrent cell executions to avoid overwhelming the server
 const MAX_CONCURRENT = 4;
@@ -64,26 +57,20 @@ function cellErrorMessage(error: unknown): string {
    return "The server did not say why.";
 }
 
-/** What one cell's run is handed: the cell, its index, the values to run it with, and the signal that cancels it. */
+/** What one cell's run is handed: the cell, the values to run it with, and the signal that cancels it. */
 interface CellRun {
    cell: RawCell;
-   index: number;
    givens: ReadonlyMap<string, GivenValue>;
    declaredTypes: ReadonlyMap<string, string | undefined>;
    signal: AbortSignal;
 }
 
 /** Runs one cell. Stable across renders: a new runner re-runs every cell. */
-export type CellRunner = (
-   run: CellRun,
-) => Promise<{ result?: string; newSources?: string[] }>;
+export type CellRunner = (run: CellRun) => Promise<{ result?: string }>;
 
 export interface CellReportProps {
    /** `publisher://…/models/<path>`: the report, and the model its cells run against. */
    resourceUri: string;
-   /** The report's title and description, drawn in the header every report has. */
-   title?: string;
-   description?: string;
    maxResultSize?: number;
    /**
     * Parameter values from the host, typically its URL query parameters: the
@@ -131,23 +118,19 @@ export interface CellReportProps {
     */
    onDrillNavigate?: (target: DrillNavigation, event?: MouseEvent) => void;
    /**
-    * The host's actions for the report, drawn on the title's line when there
-    * is a title, and otherwise on a row of their own above the cells, since a
-    * `.malloynb`'s title is its own first markdown cell.
+    * The host's actions for the report, drawn on a row of their own above the
+    * cells, since a `.malloynb`'s title is its own first markdown cell.
     */
    actions?: ReactNode;
 }
 
 /**
  * Cells run one by one, the engine behind a `.malloynb` notebook.
- * Takes the cells (undefined while they load, `error` when they could not be
- * read) and the runner that executes one; what reads the cells and what runs
- * them is the caller's.
+ * Takes the loaded cells and the runner that executes one; what reads the
+ * cells and what runs them is the caller's.
  */
 export function CellRunnerView({
    resourceUri,
-   title,
-   description,
    maxResultSize = 0,
    givens,
    onGivensChange,
@@ -155,12 +138,9 @@ export function CellRunnerView({
    onDrillNavigate,
    actions,
    notebook,
-   error,
    runCell,
 }: CellReportProps & {
-   notebook: ReportCells | undefined;
-   /** Why the cells could not be read; the view says so in place of them. */
-   error?: ApiError | null;
+   notebook: ReportCells;
    runCell: CellRunner;
 }) {
    const {
@@ -169,8 +149,6 @@ export function CellRunnerView({
       versionId,
       modelPath: notebookPath,
    } = parseResourceUri(resourceUri);
-   const isSuccess = notebook !== undefined;
-   const isError = !isSuccess && !!error;
 
    // State to store executed cells with results
    const [enhancedCells, setEnhancedCells] = useState<EnhancedNotebookCell[]>(
@@ -193,14 +171,14 @@ export function CellRunnerView({
    // field with the same default a grid's `## artifact { autorun=false }`
    // produces. Batching matters more here than on a grid: one control change
    // re-runs every cell in the document.
-   const autorun = notebook?.autorun !== false;
+   const autorun = notebook.autorun !== false;
    // Set by `Report`.
    const events = useReportEvents();
    const controls = useDocumentControls({
       specs: declaredGivens,
-      loaded: isSuccess,
+      loaded: true,
       // Where the controls start, from a file-level `## givens { … }`.
-      startingValues: notebook?.startingGivens,
+      startingValues: notebook.startingGivens,
       params: givens,
       onGivensChange,
       documentKey: resourceUri,
@@ -282,7 +260,7 @@ export function CellRunnerView({
    );
    const executeCells = useCallback(
       async (givensToApply: Map<string, GivenValue> = new Map()) => {
-         if (!isSuccess || !notebook?.notebookCells) return;
+         if (!notebook.notebookCells) return;
 
          const runId = ++runIdRef.current;
 
@@ -317,7 +295,6 @@ export function CellRunnerView({
                   try {
                      const executedCell = await runCell({
                         cell: rawCell,
-                        index: cellIndex,
                         givens: givensToApply,
                         declaredTypes,
                         signal: controller.signal,
@@ -326,10 +303,6 @@ export function CellRunnerView({
                      if (runIdRef.current !== runId) return;
 
                      const result = executedCell.result;
-                     // A `.malloy` report's cells carry their sources on the
-                     // manifest; a run adds none.
-                     const newSources =
-                        rawCell.newSources || executedCell.newSources;
 
                      setEnhancedCells((prev) => {
                         const next = [...prev];
@@ -339,7 +312,6 @@ export function CellRunnerView({
                         next[cellIndex] = {
                            ...next[cellIndex],
                            result,
-                           newSources,
                         };
                         return next;
                      });
@@ -412,7 +384,7 @@ export function CellRunnerView({
             }
          }
       },
-      [isSuccess, notebook, declaredTypes, runCell, events],
+      [notebook, declaredTypes, runCell, events],
    );
 
    // Run the cells on load, and again whenever the applied parameters change.
@@ -453,7 +425,7 @@ export function CellRunnerView({
       lastDocumentRef.current = documentKey;
 
       const plan = planRun({
-         ready: isSuccess && !!notebook?.notebookCells,
+         ready: !!notebook.notebookCells,
          lastRunKey: lastRunRef.current,
          pendingKey: pendingRunRef.current?.key,
          runKey,
@@ -486,7 +458,6 @@ export function CellRunnerView({
          timer: setTimeout(start, GIVEN_SETTLE_MS),
       };
    }, [
-      isSuccess,
       notebook,
       notebookGen,
       resourceUri,
@@ -496,7 +467,7 @@ export function CellRunnerView({
    ]);
 
    const shownCells =
-      enhancedCells.length > 0 ? enhancedCells : notebook?.notebookCells || [];
+      enhancedCells.length > 0 ? enhancedCells : notebook.notebookCells || [];
    // A .malloynb keeps the copy-link icon on its first cell.
    const copyLinkIndex = 0;
 
@@ -507,19 +478,7 @@ export function CellRunnerView({
          // Cells read top to bottom, so a report of cells is linear.
          layout="linear"
          header={
-            title || description ? (
-               <ReportHeader
-                  title={title ?? ""}
-                  actions={actions}
-                  description={
-                     description ? (
-                        <TextTileFrame>
-                           <Prose variant="document">{description}</Prose>
-                        </TextTileFrame>
-                     ) : undefined
-                  }
-               />
-            ) : actions ? (
+            actions ? (
                <Stack direction="row" sx={{ justifyContent: "flex-end" }}>
                   {actions}
                </Stack>
@@ -533,48 +492,27 @@ export function CellRunnerView({
             ) : undefined
          }
       >
-         {!isSuccess && !isError && (
-            <Loading text={LOADING_COPY.opening("report")} />
-         )}
-
-         {isSuccess &&
-            shownCells.map((cell, index) => (
-               <NotebookCell
-                  cell={cell as EnhancedNotebookCell}
-                  key={index}
-                  showCopyLink={index === copyLinkIndex}
-                  resourceUri={resourceUri}
-                  maxResultSize={maxResultSize}
-                  isExecuting={isExecuting}
-                  givens={cellStartingGivens}
-                  givenSpecs={declaredGivens}
-                  // Distinct from `isExecuting`: the cell's spinner is
-                  // gated on `!cell.result`, so feeding this through it
-                  // showed nothing on a re-run, which is the only case
-                  // the settle window has to signal.
-                  pendingRerun={runScheduled}
-                  onNavigate={onNavigate}
-                  onDrillNavigate={onDrillNavigate}
-                  onDrillSelf={
-                     declaredGivens.length > 0 ? onDrillSelf : undefined
-                  }
-                  canDrillSelf={canDrillSelf}
-               />
-            ))}
-
-         {isError && error?.status === 404 && (
-            <Typography variant="body2" sx={{ color: "text.secondary" }}>
-               <code>{`${environmentName} > ${packageName} > ${notebookPath}`}</code>{" "}
-               not found.
-            </Typography>
-         )}
-
-         {isError && error?.status !== 404 && (
-            <ApiErrorDisplay
-               error={error as ApiError}
-               context={`${environmentName} > ${packageName} > ${notebookPath}`}
+         {shownCells.map((cell, index) => (
+            <NotebookCell
+               cell={cell as EnhancedNotebookCell}
+               key={index}
+               showCopyLink={index === copyLinkIndex}
+               resourceUri={resourceUri}
+               maxResultSize={maxResultSize}
+               isExecuting={isExecuting}
+               givens={cellStartingGivens}
+               givenSpecs={declaredGivens}
+               // Distinct from `isExecuting`: the cell's spinner is
+               // gated on `!cell.result`, so feeding this through it
+               // showed nothing on a re-run, which is the only case
+               // the settle window has to signal.
+               pendingRerun={runScheduled}
+               onNavigate={onNavigate}
+               onDrillNavigate={onDrillNavigate}
+               onDrillSelf={declaredGivens.length > 0 ? onDrillSelf : undefined}
+               canDrillSelf={canDrillSelf}
             />
-         )}
+         ))}
 
          {executionError && (
             <ApiErrorDisplay
