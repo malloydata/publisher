@@ -25,7 +25,7 @@
 import { runAsInternalStatement } from "../../duckdb_lockdown";
 import { getDialect, type Connection } from "@malloydata/malloy";
 import { errMessage } from "../../../utils";
-import { tablePathParts } from "../../quoting";
+import { foldedTablePathParts, tablePathParts } from "../../quoting";
 import { connectionTypeOf } from "../../connection_type";
 import {
    ducklakeStoresAsDouble,
@@ -90,9 +90,18 @@ export async function readTableColumns(args: {
       tableName: string;
    }[];
    connection: (connectionName: string) => Promise<ReadConnection>;
+   /**
+    * The names are a model's (`connection.table('...')`), which the
+    * warehouse resolves as SQL: each unquoted part is folded as the dialect
+    * folds it ({@link foldedTablePathParts}; Postgres lower-cases, Snowflake
+    * upper-cases). Otherwise the names are ones Publisher wrote, each part
+    * created quoted, so read with its case kept.
+    */
+   foldUnquoted?: boolean;
    /** Overrides {@link BIND_READ_TIMEOUT_MS} (a test's). */
    timeoutMs?: number;
 }): Promise<Map<string, ObservedColumns>> {
+   const pathParts = args.foldUnquoted ? foldedTablePathParts : tablePathParts;
    const out = new Map<string, ObservedColumns>();
    const byConnection = new Map<string, string[]>();
    const tableNameOf = new Map(args.tables.map((t) => [t.key, t.tableName]));
@@ -121,7 +130,7 @@ export async function readTableColumns(args: {
       const dialect = connection.dialectName;
       const tables: CatalogTable[] = [];
       for (const id of ids) {
-         const parts = tablePathParts(tableNameOf.get(id)!, dialect);
+         const parts = pathParts(tableNameOf.get(id)!, dialect);
          if (parts) tables.push({ key: id, parts });
          else out.set(id, { unread: "unparseable" });
       }

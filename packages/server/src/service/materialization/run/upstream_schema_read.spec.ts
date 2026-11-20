@@ -141,3 +141,55 @@ describe("R-13: reading the upstream tables' column types", () => {
       ).toEqual({ unread: "read_failed" });
    });
 });
+
+describe("R-13: an upstream table's path, resolved as the warehouse resolves SQL", () => {
+   /** The catalog SQL a read of `table` on `dialect` sends. */
+   async function catalogSQL(dialect: string, table: string): Promise<string> {
+      const sent: string[] = [];
+      const connection = {
+         dialectName: dialect,
+         runSQL: async (sql: string) => {
+            sent.push(sql);
+            return { rows: [], totalRows: 0 };
+         },
+      } as unknown as Connection;
+      // Each call a new connection object, so no reading is kept.
+      await readUpstreamSchemas({
+         tables: [{ connectionName: "w", table }],
+         connection: async () => connection,
+         refresh: true,
+         timeoutMs: 5_000,
+      });
+      expect(sent.length).toBe(1);
+      return sent[0];
+   }
+
+   it("lower-cases an unquoted Postgres part and keeps a quoted one", async () => {
+      expect(await catalogSQL("postgres", "Public.Orders")).toContain(
+         `to_regclass('"public"."orders"')`,
+      );
+      expect(await catalogSQL("postgres", 'public."Orders"')).toContain(
+         `to_regclass('"public"."Orders"')`,
+      );
+   });
+
+   it("upper-cases an unquoted Snowflake part and keeps a quoted one", async () => {
+      const unquoted = await catalogSQL("snowflake", "analytics.Sales.orders");
+      expect(unquoted).toContain(`"ANALYTICS".information_schema.columns`);
+      expect(unquoted).toContain("'SALES'");
+      expect(unquoted).toContain("'ORDERS'");
+      const quoted = await catalogSQL(
+         "snowflake",
+         '"analytics"."Sales"."orders"',
+      );
+      expect(quoted).toContain(`"analytics".information_schema.columns`);
+      expect(quoted).toContain("'Sales'");
+      expect(quoted).toContain("'orders'");
+   });
+
+   it("reads a BigQuery path as written", async () => {
+      const sql = await catalogSQL("standardsql", "Proj.Sales.Orders");
+      expect(sql).toContain("`Proj`.`Sales`.INFORMATION_SCHEMA.COLUMNS");
+      expect(sql).toContain("'Orders'");
+   });
+});

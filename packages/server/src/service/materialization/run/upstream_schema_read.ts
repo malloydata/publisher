@@ -120,6 +120,8 @@ export async function readUpstreamSchemas(args: {
             tableName: table.table,
          })),
       connection: async (name) => connections.get(name)!,
+      // A model's `connection.table('...')` path, resolved as SQL resolves it.
+      foldUnquoted: true,
       ...(args.timeoutMs !== undefined ? { timeoutMs: args.timeoutMs } : {}),
    });
    for (const { key, table, cached } of toRead) {
