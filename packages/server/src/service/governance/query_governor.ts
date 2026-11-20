@@ -878,14 +878,6 @@ export class QueryGovernor {
    }
 
    /**
-    * The gates governing the LIVE compile would evaluate on its entry point:
-    * the walk ({@link entryPointGatesInForce}: own, inherited, a derivation's
-    * base, a composite's resolved branch) plus this model's on-disk gates for
-    * the run target's name, which {@link probeEntryPointGates} folds in the
-    * same way. `undefined` (deny) when the walk cannot read the run target or
-    * finds no gate, since a routed answer past a gate implies live has one.
-    */
-   /**
     * Whether the live entry point carries a row filter read on a `->`
     * derivation's base; undefined gates read as true (fail closed).
     */
@@ -897,6 +889,14 @@ export class QueryGovernor {
       return walked.some((g) => g.route !== AUTHORIZE_ROUTE && g.baseHops > 0);
    }
 
+   /**
+    * The gates governing the LIVE compile would evaluate on its entry point:
+    * the walk ({@link entryPointGatesInForce}: own, inherited, a derivation's
+    * base, a composite's resolved branch) plus this model's on-disk gates for
+    * the run target's name, which {@link probeEntryPointGates} folds in the
+    * same way. `undefined` (deny) when the walk cannot read the run target or
+    * finds no gate, since a routed answer past a gate implies live has one.
+    */
    private async liveEntryPointGateSet(
       live: QueryMaterializer,
    ): Promise<EnforcedGates | undefined> {
