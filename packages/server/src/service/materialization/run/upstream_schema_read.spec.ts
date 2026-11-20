@@ -280,3 +280,55 @@ describe("R-13: what the catalog holds, read as a stable reading", () => {
       expect(calls).toBeGreaterThan(1);
    });
 });
+
+describe("R-13: the read's one budget", () => {
+   it("reads a DuckDB relation that does not exist as not_found, without retrying", async () => {
+      let calls = 0;
+      const connection = new Proxy(duckdb, {
+         get(target, prop, receiver) {
+            if (prop === "runSQL") {
+               return (...args: Parameters<Connection["runSQL"]>) => {
+                  calls++;
+                  return target.runSQL(...args);
+               };
+            }
+            const value = Reflect.get(target, prop, receiver);
+            return typeof value === "function" ? value.bind(target) : value;
+         },
+      });
+      expect(
+         (await read(["no_such_relation"], connection, true))[
+            key("no_such_relation")
+         ],
+      ).toEqual({ unread: "not_found" });
+      expect(calls).toBe(1);
+   });
+
+   it("bounds the whole read, retries included, by one timeout", async () => {
+      let calls = 0;
+      const connection = {
+         dialectName: "standardsql",
+         runSQL: () => {
+            calls++;
+            // The first attempt fails slowly, the retry never answers.
+            return calls === 1
+               ? new Promise((_, reject) =>
+                    setTimeout(() => reject(new Error("unavailable")), 600),
+                 )
+               : new Promise(() => undefined);
+         },
+      } as unknown as Connection;
+      const started = Date.now();
+      const readings = await readUpstreamSchemas({
+         tables: [{ connectionName: "w", table: "p.ds.t" }],
+         connection: async () => connection,
+         refresh: true,
+         timeoutMs: 1_000,
+      });
+      expect(calls).toBe(2);
+      expect(
+         readings[upstreamTableKey({ connectionName: "w", table: "p.ds.t" })],
+      ).toEqual({ unread: "read_failed" });
+      expect(Date.now() - started).toBeLessThan(1_400);
+   });
+});

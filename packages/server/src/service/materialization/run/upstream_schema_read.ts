@@ -114,11 +114,17 @@ export async function readUpstreamSchemas(args: {
    const started = Date.now();
    let pending = toRead;
    for (let attempt = 0; ; attempt++) {
-      const read = await readOnce(pending, connections, timeoutMs);
+      // One budget for the whole read, retries included: each attempt gets
+      // what is left of it.
+      const read = await readOnce(
+         pending,
+         connections,
+         Math.max(1, timeoutMs - (Date.now() - started)),
+      );
       // A read that failed for a reason a retry may clear (the catalog query
       // or the connection failed, not a timeout, which spent the budget, nor
-      // a table not found) is read again, after a backoff, while the retries
-      // stay within one read's timeout.
+      // a table not found) is read again, after a backoff, while time is
+      // left in the budget.
       const delay = RETRY_DELAYS_MS[attempt];
       const retry = pending.filter(({ key }) => read.get(key)!.retryable);
       if (
@@ -213,7 +219,7 @@ async function readOnce(
          out.set(key, {
             reading,
             ...("unread" in reading ? { reason: "describe_failed" } : {}),
-            retryable: "unread" in reading,
+            retryable: "unread" in reading && reading.unread === "read_failed",
          });
          continue;
       }
@@ -282,6 +288,11 @@ async function describeRelation(
          .filter((c) => c.name !== "" && c.nativeType !== "");
       return columns.length > 0 ? { columns } : { unread: "read_failed" };
    } catch (err) {
+      // DuckDB's answer for a relation that does not exist ("Catalog Error:
+      // Table with name t does not exist!"): what it holds, not a failure.
+      if (/\bdoes not exist\b/i.test(err instanceof Error ? err.message : "")) {
+         return { unread: "not_found" };
+      }
       logger.warn("Upstream relation could not be described", {
          code: errorCodeOf(err),
       });
