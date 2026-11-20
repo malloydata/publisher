@@ -464,6 +464,8 @@ source: X is duckdb.table('parent') extend {
             exprs: ["org_id in $GROUPS"],
             selfContained: false,
             route: "access_filter",
+            // Read on X itself, not through a `->` derivation.
+            baseHops: 0,
             struct: modelDef.contents["X"] as unknown as SourceDef,
          };
 
@@ -539,6 +541,7 @@ source: X is duckdb.table('parent') extend {
             label: "X",
             exprs: ["false"],
             selfContained: true,
+            baseHops: 0,
             struct: modelDef.contents["X"] as unknown as SourceDef,
          };
 
