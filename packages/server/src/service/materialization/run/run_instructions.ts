@@ -12,6 +12,7 @@
  * refuses. A source the eligibility gate refuses is returned as refused and serves live.
  */
 
+import { PACKAGE_SANDBOX_CONNECTION } from "../../connection_config";
 import { storageWritable } from "../domain/placement";
 import { freshnessOf } from "../domain/freshness";
 import type { PersistSource } from "@malloydata/malloy";
@@ -79,13 +80,6 @@ import {
 import { resolveStorageDestination } from "./build_upstreams";
 import { selfAssignTableName, STAGING_ID_LEN } from "./build_table_names";
 import { hasAuthorTableName } from "./table_ownership";
-
-/**
- * The per-package connection Publisher creates for every package: an
- * in-memory DuckDB sandbox (connection_config.ts reserves the name), so
- * nothing built in it survives a restart.
- */
-const PACKAGE_SANDBOX = "duckdb";
 
 /**
  * Whose tables an auto-run names (see deriveSelfInstructions). Absent: the
@@ -775,6 +769,29 @@ function rebuildsEveryRun(
    );
 }
 
+/** What {@link deriveSelfInstructions} decides for an auto-run. */
+interface SelfInstructions {
+   instructions: BuildInstruction[];
+   carried: Record<string, ManifestEntry>;
+   refused: Record<string, RefusedSource>;
+   cleared: Map<string, EligibilityTier>;
+   /**
+    * Carried tables at a `name=` the author chose, by content address, with
+    * the instruction that rebuilds each: carried only while the table is
+    * still marked as this package's (see uncarryUnownedTables).
+    */
+   recheck: Record<string, BuildInstruction>;
+   /**
+    * Carried tables in the package's own `duckdb` sandbox, by content
+    * address, with the instruction that rebuilds each: the sandbox is in
+    * memory, so a restart empties it while the run record survives. Carried
+    * only while the table still exists (see uncarryLostTables).
+    */
+   confirmExists: Record<string, BuildInstruction>;
+   /** Tables this run builds under a new name in place of an earlier run's. */
+   renamed: RenamedTable[];
+}
+
 /**
  * Derive auto-run's own build instructions. Each persist source (respecting
  * `sourceNames`) gets a self-assigned physical name and COPY realization,
@@ -823,27 +840,7 @@ export function deriveSelfInstructions(
        */
       upstreams?: StaleUpstreamRule;
    } = {},
-): {
-   instructions: BuildInstruction[];
-   carried: Record<string, ManifestEntry>;
-   refused: Record<string, RefusedSource>;
-   cleared: Map<string, EligibilityTier>;
-   /**
-    * Carried tables at a `name=` the author chose, by content address, with
-    * the instruction that rebuilds each: carried only while the table is
-    * still marked as this package's (see uncarryUnownedTables).
-    */
-   recheck: Record<string, BuildInstruction>;
-   /**
-    * Carried tables in the package's own `duckdb` sandbox, by content
-    * address, with the instruction that rebuilds each: the sandbox is in
-    * memory, so a restart empties it while the run record survives. Carried
-    * only while the table still exists (see uncarryLostTables).
-    */
-   confirmExists: Record<string, BuildInstruction>;
-   /** Tables this run builds under a new name in place of an earlier run's. */
-   renamed: RenamedTable[];
-} {
+): SelfInstructions {
    const include = sourceNames ? new Set(sourceNames) : null;
    const instructions: BuildInstruction[] = [];
    const carried: Record<string, ManifestEntry> = {};
@@ -964,7 +961,10 @@ export function deriveSelfInstructions(
             recheck[sourceEntityId] = instruction;
          }
          // The package's in-memory sandbox loses every table on a restart.
-         if (!destination && prior!.connectionName === PACKAGE_SANDBOX) {
+         if (
+            !destination &&
+            prior!.connectionName === PACKAGE_SANDBOX_CONNECTION
+         ) {
             confirmExists[sourceEntityId] = instruction;
          }
          continue;

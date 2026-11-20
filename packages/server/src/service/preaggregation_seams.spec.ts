@@ -23,6 +23,7 @@ import {
 } from "../test_helpers/metrics_harness";
 import { AccessDeniedError } from "../errors";
 import { Environment } from "./environment";
+import type { Model } from "./model";
 import type { Package } from "./package";
 import { writePackageFiles } from "../test_helpers/temp_package";
 import { governorOf } from "../test_helpers/governor";
@@ -108,6 +109,28 @@ async function runGatedQuery(
          ]),
       ),
    );
+}
+
+/**
+ * Run `query` on `model` and say whether it routed to a rollup bound to a
+ * table that does not exist: such a read fails and, since a rollup only
+ * accelerates, is retried live (`live_fallback`, the rollup `READ_FAILED`);
+ * a query that never routed answers with `servedFrom` null.
+ */
+async function routedToMissingRollup(
+   model: { runQuery: Model["runQuery"] },
+   query: string,
+): Promise<boolean> {
+   const result = await model.runQuery(unrecordedAudit(), { query });
+   const failedRollup = (result.path?.considered ?? []).some(
+      (c) => c.kind === "rollup" && c.reason === "READ_FAILED",
+   );
+   if (result.servedFrom === "live_fallback") {
+      expect(failedRollup).toBe(true);
+      return true;
+   }
+   expect(result.servedFrom).toBeNull();
+   return false;
 }
 
 function planSources(pkg: Package) {
@@ -440,8 +463,8 @@ export { orders }
             ...pkg.materialization().getPreaggregateEntityIds(),
          ];
          expect(rollupIds).toHaveLength(1);
-         // Bound to a table that does not exist, so a routed query fails
-         // naming it, and a live one would quietly answer from the base.
+         // Bound to a table that does not exist, so a routed query's read
+         // fails and is retried live, and a live one never touches it.
          pkg.materialization().bind({
             database: Object.fromEntries(
                rollupIds.map((id) => [
@@ -458,9 +481,7 @@ export { orders }
          // With an index.malloy, only it is queryable: the curated surface.
          const model = pkg.getModel("index.malloy");
          expect(model).toBeDefined();
-         await expect(
-            model!.runQuery(unrecordedAudit(), { query }),
-         ).rejects.toThrow(/no_such_rollup_table/);
+         expect(await routedToMissingRollup(model!, query)).toBe(true);
       },
       { timeout: 60000 },
    );
@@ -502,11 +523,12 @@ export { notes }
                ]),
             ),
          });
-         await expect(
-            pkg.getModel("report.malloy")!.runQuery(unrecordedAudit(), {
-               query: "run: orders -> { group_by: category; aggregate: total; order_by: category }",
-            }),
-         ).rejects.toThrow(/no_such_rollup_table/);
+         expect(
+            await routedToMissingRollup(
+               pkg.getModel("report.malloy")!,
+               "run: orders -> { group_by: category; aggregate: total; order_by: category }",
+            ),
+         ).toBe(true);
       },
       { timeout: 60000 },
    );
@@ -701,12 +723,19 @@ source: orders is duckdb.sql("""
       "is served from the base even when the rollup is built",
       async () => {
          // Bound to a table that does not exist: a query that routed would
-         // fail loudly, so an answer proves it never touched the rollup.
+         // fail its read and say `live_fallback`, so `servedFrom` null proves
+         // it never touched the rollup.
          const pkg = await loadPackage(ROWS_MODEL);
          bindMissingRollupTables(pkg);
          expect(
             await rows(pkg, "run: orders -> { aggregate: n is count() }"),
          ).toEqual([{ n: 3 }]);
+         expect(
+            await routedToMissingRollup(
+               pkg.getModel("model.malloy")!,
+               "run: orders -> { aggregate: n is count() }",
+            ),
+         ).toBe(false);
       },
       { timeout: 60000 },
    );
@@ -718,18 +747,18 @@ source: orders is duckdb.sql("""
          // a rollup answers, or the fix is a silent loss of acceleration.
          const pkg = await loadPackage(ROWS_MODEL);
          bindMissingRollupTables(pkg);
-         await expect(
-            rows(
-               pkg,
+         expect(
+            await routedToMissingRollup(
+               pkg.getModel("model.malloy")!,
                "run: orders -> { group_by: category; aggregate: total, half is total / 2 }",
             ),
-         ).rejects.toThrow(/no_such_rollup_table/);
+         ).toBe(true);
       },
       { timeout: 60000 },
    );
 });
 
-/** Bind every rollup to a table that does not exist, so routing is observable. */
+/** Bind every rollup to a table that does not exist, so routing is observable ({@link routedToMissingRollup}). */
 function bindMissingRollupTables(pkg: Package) {
    const rollupIds = [...pkg.materialization().getPreaggregateEntityIds()];
    expect(rollupIds.length).toBeGreaterThan(0);

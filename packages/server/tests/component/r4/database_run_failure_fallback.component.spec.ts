@@ -10,7 +10,8 @@
  * through the build manifest, not a virtual map, and only an answer read
  * through a virtual map was retried live, though a rollup only accelerates.
  * A database `#@ persist` or `#(materialize)` table, which the served copy
- * reads through `virtual()`, already fell back.
+ * reads through `virtual()`, already fell back. And the path report names the
+ * failed table `READ_FAILED`, never as the table that answered.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -101,6 +102,8 @@ for (const [kind, c] of Object.entries(CASES)) {
          const after = await fixture.run({ name: "after", malloy: QUERY });
          expect(after.servedFrom).toBe("live_fallback");
          expect(byCat(after.served)).toEqual(LIVE_ROWS);
+         // The path report says no table answered: the one tried failed.
+         expect(after.servedBy?.kind).not.toBe(c.servedBy);
       });
    });
 }
