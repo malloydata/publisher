@@ -174,11 +174,12 @@ describe.skipIf(!url)("statement_usage bytes_out on a real server", () => {
       });
    }
 
-   it("a notebook cell records bytes_out as the bytes of the cell's result", async () => {
+   it("a notebook cell, run on the notebook's path, records bytes_out as the bytes of the cell's result", async () => {
       let result = "";
       const records = await recordsDuring(server, async () => {
-         const res = await fetch(
-            `${env(server)}/packages/pa/notebooks/nb.malloynb/cells/1`,
+         const res = await post(
+            `${env(server)}/packages/pa/models/nb.malloynb/query`,
+            { query: "run: nums -> { select: x, s }" },
          );
          expect(res.status).toBe(200);
          result = ((await res.json()) as { result: string }).result;
@@ -258,8 +259,9 @@ describe.skipIf(!url)("statement_usage bytes_out on a real server", () => {
 
    it("a notebook cell whose result the row cap refuses still records the statement once, without bytes_out", async () => {
       const records = await recordsDuring(capped, async () => {
-         const res = await fetch(
-            `${env(capped)}/packages/pa/notebooks/nb.malloynb/cells/1`,
+         const res = await post(
+            `${env(capped)}/packages/pa/models/nb.malloynb/query`,
+            { query: "run: nums -> { select: x, s }" },
          );
          expect(res.status).toBe(413);
       });

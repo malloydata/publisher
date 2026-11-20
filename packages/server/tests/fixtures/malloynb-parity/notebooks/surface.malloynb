@@ -1,0 +1,18 @@
+>>>markdown
+# Surface
+
+Cells over what the package publishes, and over what it hides.
+>>>malloy
+import "../models/orders.malloy"
+import "../models/hidden.malloy"
+>>>malloy
+run: orders -> { aggregate: order_count }
+>>>malloy
+run: hidden -> { aggregate: secret_total }
+>>>malloy
+source: mine is orders extend { where: id > 2 }
+>>>malloy
+run: mine -> { aggregate: order_count }
+>>>malloy
+source: from_hidden is hidden extend {}
+run: from_hidden -> { aggregate: secret_total }

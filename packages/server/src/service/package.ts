@@ -164,10 +164,7 @@ import {
    JOIN_BYPASS,
    joinBypasses,
 } from "./join_bypass";
-import {
-   ambiguousDashboardNameWarnings,
-   type ReportViewPackage,
-} from "./legacy_report_views";
+import { type ReportViewPackage } from "./legacy_report_views";
 import { recordDeprecatedManifestKeys } from "./deprecated/manifest_keys";
 import { isMalloynbPath } from "./deprecated/malloynb";
 import {
@@ -181,7 +178,6 @@ import {
    buildReportManifest,
    dropGridTileLayoutFindings,
    factsReportTag,
-   matchesDocumentedReportName,
    lintReport,
    lintDrillTargets,
    lintGivenTags,
@@ -230,7 +226,7 @@ type ApiDatabase = components["schemas"]["Database"];
 type ApiModel = components["schemas"]["Model"];
 type ApiReport = components["schemas"]["Report"];
 type ApiReportManifest = components["schemas"]["ReportManifest"];
-type ApiRawNotebook = components["schemas"]["RawNotebook"];
+type ApiReportCells = components["schemas"]["ReportCells"];
 
 /** One report discovery found and serves, keyed by its path. */
 interface ServedReport {
@@ -2191,7 +2187,6 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          ...this.classificationWarningsMemoized(),
          ...this.joinBypassWarnings(),
          ...this.gateLoadWarnings(),
-         ...ambiguousDashboardNameWarnings(this),
          // The 404s a broken surface causes name models that are not broken.
          ...this.brokenSurfaceWarnings(),
          ...(this.surfaceWidenedWarning !== undefined
@@ -3569,9 +3564,9 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    }
 
    /**
-    * Read each linear report's definition cells, for the deprecated notebook
-    * route. A reader refusal is returned as a finding, since the model still
-    * compiles and nothing else would say so.
+    * Read each linear report's definition cells. A reader refusal is returned
+    * as a finding, since the model still compiles and nothing else would say
+    * so.
     */
    private attachNotebookCells(
       models: ReadonlyMap<string, Model>,
@@ -3709,24 +3704,6 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
                   `that path. The cause is in the server log. Reload the ` +
                   `package to try again.`,
                severity: "error",
-            });
-         }
-         for (const [modelPath, { report, name }] of files) {
-            // Served and only noted: the by-name route still works, encoded.
-            if (report?.layout !== "grid" || matchesDocumentedReportName(name))
-               continue;
-            warnings.push({
-               model: modelPath,
-               subject: name,
-               message:
-                  `is served, but "${name}" is outside the conventional ` +
-                  `dashboard name shape (letters, digits, "-" and "_"). This ` +
-                  `server routes it and its published URL carries the name ` +
-                  `encoded, so the dashboard works. The convention is worth ` +
-                  `keeping anyway: a name outside it has to be percent-encoded ` +
-                  `by every caller that builds the URL by hand. Rename the ` +
-                  `file if that matters to yours.`,
-               severity: "warn",
             });
          }
          for (const finding of this.curationWarnings(discovery)) {
@@ -3980,7 +3957,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       if (!report) return undefined;
       const entry = this.reportEntry(report);
       const manifest = report.manifest;
-      let notebook: ApiRawNotebook | undefined;
+      let notebook: ApiReportCells | undefined;
       if (
          !manifest &&
          report.layout === "linear" &&

@@ -84,7 +84,7 @@ import {
    Environment,
    Package,
    Model,
-   Notebook,
+   Report,
    encodeResourceUri,
    useRouterClickHandler,
 } from "@malloy-publisher/sdk";
@@ -143,7 +143,11 @@ function ModelPage() {
       return <Model resourceUri={resourceUri} />;
    }
    if (modelPath?.endsWith(".malloynb")) {
-      return <Notebook resourceUri={resourceUri} />;
+      const packageUri = encodeResourceUri({
+         environmentName: params.environmentName,
+         packageName: params.packageName,
+      });
+      return <Report resourceUri={packageUri} path={modelPath} />;
    }
    return <div>Unknown file type</div>;
 }
@@ -179,7 +183,7 @@ ServerProvider (required wrapper)
 │   └── Environment (show packages in an environment)
 │       └── Package (show models, notebooks, connections)
 │           ├── Model (visual query builder + named queries)
-│           └── Notebook (read-only notebook viewer)
+│           └── Report (a dashboard or notebook, by its path)
 ```
 
 ### Navigation Pattern
@@ -502,47 +506,31 @@ const { data } = useModelData(resourceUri);
 
 ---
 
-### Notebook
+### Report
 
-Read-only notebook viewer that executes cells and displays results.
+Renders one report by its path: a grid report as a dashboard, a linear report
+top to bottom, and a legacy `.malloynb` cell by cell. Every query, a tile's or a
+cell's, runs through `POST …/models/{path}/query` with the report's givens.
 
 ```tsx
-import { Notebook, encodeResourceUri } from "@malloy-publisher/sdk";
+import { Report, encodeResourceUri } from "@malloy-publisher/sdk";
 
-interface NotebookProps {
-   resourceUri: string;
-   maxResultSize?: number; // Default: 0 (no limit)
-   // The notebook's `given:` parameters. Pass the ones you hold (from the URL,
-   // say) and the notebook runs every cell with them.
-   givens?: Record<string, string>;
-   // Called when a parameter changes, with the new values and the names the
-   // notebook manages, so a host can put them in the URL. `managed` is what to
-   // clear when a value goes away; anything else in your URL is left alone.
-   onGivensChange?: (
-      givens: Record<string, string>,
-      managed: readonly string[],
-   ) => void;
-   // Where a `# drill` click wants to go. Given no handler, a drill onto the
-   // notebook's own parameters still works; only navigation away is dropped.
-   onNavigate?: (to: string, event?: NavigationClick) => void;
-}
-
-// Usage
+// Usage: the package's URI, and the report's path as `GET …/reports` lists it.
 const resourceUri = encodeResourceUri({
    environmentName: "my-environment",
    packageName: "analytics",
-   modelPath: "notebooks/sales-dashboard.malloynb",
 });
 
-<Notebook resourceUri={resourceUri} maxResultSize={1024 * 1024} />;
+<Report
+   resourceUri={resourceUri}
+   path="notebooks/sales-dashboard.malloynb"
+   maxResultSize={1024 * 1024}
+/>;
 ```
 
-**Features:**
-
-- Sequential cell execution
-- Markdown rendering
-- Code cell execution with results
-- Error handling per cell
+Pass `givens` to set the report's `given:` parameters, typically from the URL,
+and `onGivensChange` to hear when a reader changes one. `onNavigate` receives a
+`# drill` click that goes to another report.
 
 ---
 
@@ -647,8 +635,8 @@ const embedded = createEmbeddedQueryResult({
 
 The SDK supports interactive dimensional filtering for hand-built data apps.
 You configure each filter in code, with a `dimensionSpecs` entry passed to the
-hooks below. The `Notebook` component does not use this mechanism; see
-[Notebooks use `given:`](#notebooks-use-given-not-these-annotations) below.
+hooks below. The `Report` component does not use this mechanism; see
+[Reports use `given:`](#reports-use-given-not-these-annotations) below.
 
 ### Filter Types
 
@@ -672,16 +660,14 @@ model that already has them, so existing apps keep working. To make a model
 filterable by its callers, declare a `given:` on the source instead; see
 [docs/givens.md](../../docs/givens.md).
 
-### Notebooks use `given:`, not these annotations
+### Reports use `given:`, not these annotations
 
-The `Notebook` component no longer renders a filter panel from a `##(filters)`
-annotation, and its `retrievalFn` prop is gone with it. A notebook's controls now
-come from the `given:` parameters its model declares, which is the mechanism
-described in [docs/givens.md](../../docs/givens.md). A `##(filters)` annotation in
-a notebook cell is inert.
+The `Report` component renders no filter panel from a `##(filters)` annotation.
+A report's controls come from the `given:` parameters its model declares, which
+is the mechanism described in [docs/givens.md](../../docs/givens.md). A
+`##(filters)` annotation in a notebook cell is inert.
 
-The hooks below still work. They are what a hand-built data app uses; only the
-notebook's own panel changed.
+The hooks below still work. They are what a hand-built data app uses.
 
 ### React Hooks for Programmatic Filtering
 
@@ -788,7 +774,7 @@ interface ApiClients {
    models: ModelsApi; // Get/execute models
    environments: EnvironmentsApi; // CRUD environments
    packages: PackagesApi; // CRUD packages
-   notebooks: NotebooksApi; // Get/execute notebooks
+   reports: ReportsApi; // List reports and read one
    connections: ConnectionsApi; // CRUD connections
    databases: DatabasesApi; // Access embedded databases
    watchMode: WatchModeApi; // File watching for dev
@@ -1223,7 +1209,7 @@ function MyComponent() {
 
 The report surfaces report what happens on them through an `onEvent` prop, for the host to log or count:
 `Report` (every layout), `ReportEditor` and `ReportBuilder` from `@malloy-publisher/sdk/builder`,
-`NewDocumentDialog`, `Package` (for its New report dialog), and the deprecated `Dashboard`. Every event is a
+`NewDocumentDialog`, and `Package` (for its New report dialog). Every event is a
 `ReportEvent`, named `report.*`, and carries the report's package `path` and its `layout`; the host knows the
 environment and package and adds them when it logs.
 
@@ -1576,7 +1562,7 @@ function EnvironmentList() {
 | `Model`                   | Full model explorer with visual query builder   |
 | `ModelExplorer`           | Lower-level query builder component             |
 | `ModelExplorerDialog`     | Model explorer in a modal dialog                |
-| `Notebook`                | Read-only notebook viewer                       |
+| `Report`                  | A dashboard or notebook, by its path            |
 | `DocumentStorageProvider` | Context for document storage                    |
 | `QueryResult`             | Execute and display query                       |
 | `RenderedResult`          | Render Malloy result JSON                       |

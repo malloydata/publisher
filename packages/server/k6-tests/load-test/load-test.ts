@@ -6,7 +6,6 @@ import {
    getConnectionsClient,
    getDatabasesClient,
    getModelsClient,
-   getNotebooksClient,
    getPackagesClient,
    getProjectsClient,
 } from "../utils/client_factory.ts";
@@ -26,7 +25,6 @@ import { logger } from "../utils/logger.ts";
 const projectsClient = getProjectsClient(BASE_URL, AUTH_TOKEN);
 const packagesClient = getPackagesClient(BASE_URL, AUTH_TOKEN);
 const modelsClient = getModelsClient(BASE_URL, AUTH_TOKEN);
-const notebooksClient = getNotebooksClient(BASE_URL, AUTH_TOKEN);
 const connectionsClient = getConnectionsClient(BASE_URL, AUTH_TOKEN);
 const databasesClient = getDatabasesClient(BASE_URL, AUTH_TOKEN);
 
@@ -156,12 +154,6 @@ export const loadTest: TestPreset = {
          "http_req_duration{name:get_package}": ["p(95)<450", "p(99)<700"],
          "http_req_duration{name:list_models}": ["p(95)<450", "p(99)<700"],
          "http_req_duration{name:get_model}": ["p(95)<450", "p(99)<700"],
-         "http_req_duration{name:list_notebooks}": ["p(95)<450", "p(99)<700"],
-         "http_req_duration{name:get_notebook}": ["p(95)<450", "p(99)<700"],
-         "http_req_duration{name:execute_notebook_cell}": [
-            "p(95)<450",
-            "p(99)<700",
-         ],
          "http_req_duration{name:list_connections}": ["p(95)<300", "p(99)<600"],
          "http_req_duration{name:get_connection}": ["p(95)<2000", "p(99)<3500"],
          "http_req_duration{name:list_databases}": ["p(95)<300", "p(99)<600"],
@@ -330,94 +322,7 @@ export const loadTest: TestPreset = {
       sleep(0.1);
 
       // ========================================================================
-      // 4. Notebook Operations
-      // ========================================================================
-      group("Notebook Operations", () => {
-         // List Notebooks
-         group("List Notebooks", () => {
-            const response = notebooksClient.listNotebooks(
-               projectName,
-               packageName,
-               {}, // params
-               {
-                  tags: { name: "list_notebooks" },
-               },
-            );
-            check(response.response, {
-               "list notebooks request successful": (r) => r.status === 200,
-            });
-
-            sleep(0.1);
-
-            // Get Notebook - dynamically fetch from list results
-            if (
-               response.response.status === 200 &&
-               Array.isArray(response.data) &&
-               response.data.length > 0
-            ) {
-               // Select first notebook
-               const notebook = response.data.find((n) => n.path);
-               if (notebook && notebook.path) {
-                  const notebookPath = notebook.path;
-                  group("Get Notebook", () => {
-                     try {
-                        const getNotebookResponse = notebooksClient.getNotebook(
-                           projectName,
-                           packageName,
-                           notebookPath,
-                           {},
-                           { tags: { name: "get_notebook" } },
-                        );
-                        check(getNotebookResponse.response, {
-                           "get notebook request successful": (r) =>
-                              r.status === 200 || r.status === 424, // 424 is compilation error, acceptable
-                        });
-
-                        sleep(0.1);
-
-                        // Execute Notebook Cell
-                        group("Execute Notebook Cell", () => {
-                           try {
-                              const executeResponse =
-                                 notebooksClient.executeNotebookCell(
-                                    projectName,
-                                    packageName,
-                                    notebookPath,
-                                    0, // First cell
-                                    {},
-                                    { tags: { name: "execute_notebook_cell" } },
-                                 );
-                              check(executeResponse.response, {
-                                 "execute notebook cell request successful": (
-                                    r,
-                                 ) => r.status === 200 || r.status === 424, // 424 is compilation error, acceptable
-                              });
-                              if (executeResponse.response.status != 200) {
-                                 logger.info(
-                                    `executeResponse: ${JSON.stringify(executeResponse)}`,
-                                 );
-                              }
-                           } catch (error) {
-                              logger.warn(
-                                 `Failed to execute notebook cell: ${error}`,
-                              );
-                           }
-                        });
-                     } catch (error) {
-                        logger.warn(
-                           `Failed to get notebook ${notebookPath}: ${error}`,
-                        );
-                     }
-                  });
-               }
-            }
-         });
-      });
-
-      sleep(0.1);
-
-      // ========================================================================
-      // 5. Connection Operations
+      // 4. Connection Operations
       // ========================================================================
       group("Connection Operations", () => {
          // List Connections
@@ -455,7 +360,7 @@ export const loadTest: TestPreset = {
       sleep(0.1);
 
       // ========================================================================
-      // 6. Database Operations
+      // 5. Database Operations
       // ========================================================================
       group("Database Operations", () => {
          // List Databases
@@ -477,7 +382,7 @@ export const loadTest: TestPreset = {
       sleep(0.1);
 
       // ========================================================================
-      // 7. Query Operations
+      // 6. Query Operations
       // ========================================================================
       group("Query Operations", () => {
          // First, list models to get a model for query execution
@@ -613,7 +518,7 @@ export const loadTest: TestPreset = {
       sleep(0.1);
 
       // ========================================================================
-      // 8. SQL Source Operations
+      // 7. SQL Source Operations
       // ========================================================================
       group("SQL Source Operations", () => {
          // doing to avoid being rate limited by bigquery

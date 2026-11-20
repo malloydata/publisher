@@ -1,0 +1,9 @@
+>>>malloy
+import "../models/secured.malloy"
+>>>malloy
+run: gated -> { aggregate: n }
+>>>malloy
+source: derived is gated extend { measure: m is count() }
+run: derived -> { aggregate: m }
+>>>malloy
+run: gated -> { group_by: id; order_by: id }

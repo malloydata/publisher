@@ -206,15 +206,10 @@ describe("a query that bakes a default-less given loads", () => {
          expect(notebook.notebookCells?.some((c) => c.type === "code")).toBe(
             true,
          );
-         const run = await model.executeNotebookCell(
-            unrecordedAudit(),
-            1,
-            undefined,
-            false,
-            {
-               ORG: 2,
-            },
-         );
+         const run = await model.runQuery(unrecordedAudit(), {
+            query: "run: orders -> { where: org_id = $ORG; aggregate: c }",
+            givens: { ORG: 2 },
+         });
          expect(count(run.result)).toBe(2);
       });
    });

@@ -160,16 +160,6 @@ The `/compile` endpoint (with `includeSql: true`) follows the same handling: a b
 
 A given the entry model does not surface, but that some gate reads, is withheld from the query so the gate can still see it. It is not withheld when the query itself also reads a given of that name, for example a `where:` on a source imported from another file that declares its own `HIDE` with a default. Withholding it there would run that `where:` at its default and ignore the value the caller sent, so the request returns a **400** (`unknown given`). To fix it, import the given at the entry model so the query can bind the caller's value.
 
-### A notebook cell binds only the givens its own scope declares
-
-A notebook cell run ignores a given that the notebook declares only in a later cell,
-so a code cell that runs before the notebook's `import` of a given does not 400 when
-the caller sends that given's value. A given the cell's own imports declare, at any
-depth, is still forwarded, but forwarding is not binding: one declared deep and not
-surfaced by the cell's imports still 400s. A name declared nowhere in the notebook
-still 400s.
-Model queries are unaffected.
-
 ### A gate's givens must be on the gating model's own surface
 
 There is no longer a separate "whole-source (given-only)" gate class — every `#(access_filter)` gate is a
@@ -233,13 +223,7 @@ Callers use this metadata to render input widgets without out-of-band knowledge 
 }
 ```
 
-**Execute a report cell** — a `.malloy` report's `run:` cell runs through the query endpoint above, its `text` as the `query` and the report's path as the model, with `givens` in the body. A legacy `.malloynb`'s cell runs at the deprecated `GET /api/v0/environments/:env/packages/:package/notebooks/:path/cells/:index`
-
-Query parameter `givens` accepts URL-encoded JSON:
-
-```
-?givens=%7B%22REGION%22%3A%22us-east%22%2C%22MIN_AMOUNT%22%3A500%7D
-```
+**Execute a report cell** — a report's tile, or a legacy `.malloynb`'s code cell, runs through the query endpoint above: its `run:` statement as the `query`, which for a `.malloynb` cell is the `runQuery` the reports read serves on it, and the report's path as the model, with `givens` in the body. Every cell of a `.malloynb` compiles into that one model, so every cell takes the notebook's givens. That is REST only: the MCP `execute_query` tool does not take a `.malloynb` path.
 
 ### MCP Tool
 

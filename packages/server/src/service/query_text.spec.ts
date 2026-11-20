@@ -14,6 +14,7 @@ import {
    definitionTextAt,
    extractRunTargetSourceName,
    extractRunTargetSourceNames,
+   lastRunStatementText,
    locateProblemsInCallerText,
    scanIdentifiers,
    stripMalloyCommentsAndLiterals,
@@ -21,6 +22,154 @@ import {
 } from "./query_text";
 
 describe("service/query_text", () => {
+   describe("lastRunStatementText", () => {
+      it("reads the last top-level run: up to the next statement", () => {
+         const cell = [
+            'import "../models/orders.malloy"',
+            "source: mine is orders extend { where: id > 2 }",
+            "# bar_chart",
+            "run: orders -> { join_one: h is hidden on h.id = id; aggregate: n is count() }",
+            "type: Foo is { a :: string }",
+         ].join("\n");
+         expect(lastRunStatementText(cell)).toBe(
+            "# bar_chart\nrun: orders -> { join_one: h is hidden on h.id = id; aggregate: n is count() }",
+         );
+      });
+
+      it("keeps a block annotation's chart config above the run:", () => {
+         const cell = "#| bar_chart {\n  size: lg\n|#\nrun: s -> v";
+         expect(lastRunStatementText(cell)).toBe(cell);
+      });
+
+      it("reads a run: under a markdown block annotation with an open bracket in it", () => {
+         const cell = "#|(markdown)\nRevenue (USD, by region\n|#\nrun: s -> v";
+         expect(lastRunStatementText(cell)).toBe(cell);
+      });
+
+      it("reads no run: inside a block annotation after the statement", () => {
+         expect(
+            lastRunStatementText(
+               "run: a -> v\n#|(markdown)\nthen run: b -> v\n|#",
+            ),
+         ).toBe("run: a -> v");
+      });
+
+      it("reads a multi-line triple-quoted filter string as one string", () => {
+         const cell = [
+            "run: s -> {",
+            "  where: label ~ f'''",
+            "    \\} source: x",
+            "  '''",
+            "  aggregate: n",
+            "}",
+         ].join("\n");
+         expect(lastRunStatementText(cell)).toBe(cell);
+      });
+
+      it("reads a name that starts with a keyword and goes on past ASCII as a name", () => {
+         expect(lastRunStatementText("run: importé -> by_region")).toBe(
+            "run: importé -> by_region",
+         );
+      });
+
+      it("keeps a comment among the tags, and stops at the notebook's own ## tags", () => {
+         expect(
+            lastRunStatementText(
+               '## title="T"\n# bar_chart\n-- why\n# size=lg\nrun: s -> v',
+            ),
+         ).toBe("# bar_chart\n-- why\n# size=lg\nrun: s -> v");
+         expect(lastRunStatementText("# a\n##| x\n|##\n# b\nrun: s -> v")).toBe(
+            "# b\nrun: s -> v",
+         );
+      });
+
+      it("leaves a tag on an earlier statement with that statement", () => {
+         expect(
+            lastRunStatementText("# bar_chart\nsource: x is s\nrun: x -> v"),
+         ).toBe("run: x -> v");
+      });
+
+      it("keeps the closing backtick of a quoted name at the end", () => {
+         expect(lastRunStatementText("run: s -> `by region`")).toBe(
+            "run: s -> `by region`",
+         );
+      });
+
+      it("reads every cell shape the SDK's own reader used to read", () => {
+         const cases: [string, string | undefined][] = [
+            [
+               "##! experimental.givens\nimport \"a.malloy\"\ngiven: R :: string is 'x'\nsource: s is t extend {}\nrun: s -> {\n  aggregate: n is count()\n}",
+               "run: s -> {\n  aggregate: n is count()\n}",
+            ],
+            [
+               '## title="T"\n# bar_chart\n# label="By month"\nrun: s -> v',
+               '# bar_chart\n# label="By month"\nrun: s -> v',
+            ],
+            ["run: a -> v\nrun: b -> v", "run: b -> v"],
+            ["# bar_chart\n\nrun: s -> v", "# bar_chart\n\nrun: s -> v"],
+            [
+               "# bar_chart\n// by month\nrun: s -> v",
+               "# bar_chart\n// by month\nrun: s -> v",
+            ],
+            [
+               "source: s is t extend {}\n\n# bar_chart\n\nrun: s -> v",
+               "# bar_chart\n\nrun: s -> v",
+            ],
+            ['## title="T"\n\nrun: s -> v', "run: s -> v"],
+            [
+               "run: orders -> by_region\nsource: later is orders extend {}",
+               "run: orders -> by_region",
+            ],
+            [
+               "run: s -> {\n  group_by: a\n}\n# doc\nquery: q is s -> v",
+               "run: s -> {\n  group_by: a\n}",
+            ],
+            ["run: s -> v; source: t is s extend {}", "run: s -> v"],
+            [
+               "run: orders -> by_region\ntype: Foo is { a :: string }",
+               "run: orders -> by_region",
+            ],
+            [
+               "source: s is orders extend {}; run: s -> { aggregate: n is count() }",
+               "run: s -> { aggregate: n is count() }",
+            ],
+            ["run: a -> v\n/*\nrun: b -> v\n*/", "run: a -> v"],
+            ["run: a -> v\n// run: b -> v\n-- run: c -> v", "run: a -> v"],
+            [
+               "run: a -> { where: note = 'run: b'; select: * }",
+               "run: a -> { where: note = 'run: b'; select: * }",
+            ],
+            ["/* run: a -> v */ source: s is t extend {}", undefined],
+            ['import "a.malloy"', undefined],
+            [
+               "source: s is t extend { view: run_me is { group_by: x } }",
+               undefined,
+            ],
+            ["", undefined],
+         ];
+         for (const [cell, query] of cases) {
+            expect(lastRunStatementText(cell)).toBe(query);
+         }
+      });
+
+      it("takes the last of two runs, and stops at a top-level ;", () => {
+         expect(
+            lastRunStatementText(
+               "run: a -> x\nrun: b -> { limit: 1 }; query: q is a -> x",
+            ),
+         ).toBe("run: b -> { limit: 1 }");
+      });
+
+      it("ignores a run: in a comment or a string, and a cell with none", () => {
+         expect(
+            lastRunStatementText("// run: hidden -> x\nsource: s is orders"),
+         ).toBe(undefined);
+         expect(
+            lastRunStatementText("run: orders -> { where: note = 'run: x' }"),
+         ).toBe("run: orders -> { where: note = 'run: x' }");
+      });
+   });
+
    describe("extractRunTargetSourceName", () => {
       it("returns undefined for empty/absent text", () => {
          expect(extractRunTargetSourceName(undefined)).toBeUndefined();

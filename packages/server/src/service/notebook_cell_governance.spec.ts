@@ -5,7 +5,8 @@
  * The gates a linear report's query cell runs under: a row filter grafted
  * onto the cell, a lock that admits or denies it, and a cell that reads no
  * gate. Pins each cell's rows, its denial, and the access summary the cell
- * run records, over a model compiled from files.
+ * run records, over a model compiled from files. A cell runs as its report's
+ * viewer runs it, through `runQuery` on the report's path.
  */
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { AccessDeniedError, BadRequestError } from "../errors";
@@ -62,21 +63,17 @@ import "m.malloy"
 `;
 
 /** The single count a cell's aggregate returned. */
-function countOf(cell: { result?: string }): number {
-   const parsed = JSON.parse(cell.result ?? "{}") as {
-      data?: {
-         array_value?: { record_value?: { number_value?: number }[] }[];
-      };
-   };
-   const rows = parsed.data?.array_value ?? [];
+function countOf(cell: { compactResult?: unknown }): number {
+   const rows = (cell.compactResult ?? []) as { c: number }[];
    expect(rows.length).toBe(1);
-   return rows[0].record_value?.[0]?.number_value as number;
+   return Number(rows[0].c);
 }
 
 describe("a linear report's query cells under the model's gates", () => {
    let model: Model;
    let duckdb: DuckDBConnection;
    let removeDir: () => void;
+   let cellTexts: string[] = [];
    const cells = {
       gated: -1,
       locked: -1,
@@ -112,6 +109,7 @@ describe("a linear report's query cells under the model's gates", () => {
          model.attachServedNotebookCells(model.getCompiledSourceText()!),
       ).toBe("ok");
       const listed = (await model.getNotebook()).notebookCells ?? [];
+      cellTexts = listed.map((cell) => cell.text ?? "");
       for (const name of Object.keys(cells) as (keyof typeof cells)[]) {
          cells[name] = listed.findIndex(
             (cell) =>
@@ -133,13 +131,11 @@ describe("a linear report's query cells under the model's gates", () => {
       audit = unrecordedAudit(),
       filterParams?: Record<string, unknown>,
    ) =>
-      model.executeNotebookCell(
-         audit,
-         index,
-         filterParams as never,
-         false,
-         givens as never,
-      );
+      model.runQuery(audit, {
+         query: cellTexts[index],
+         givens: givens as never,
+         filterParams: filterParams as never,
+      });
 
    describe("a row-filtered cell", () => {
       it("grafts the caller's groups onto the cell", async () => {

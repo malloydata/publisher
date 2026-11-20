@@ -3,9 +3,8 @@
 
 /**
  * The exact 400 bodies the routes answer for a malformed parameter, before any
- * controller runs. Most are `{ code, message }`; two deprecated or older
- * routes keep a shape of their own, pinned here so a shared parser cannot
- * quietly change them.
+ * controller runs. Most are `{ code, message }`; one older route keeps a
+ * shape of its own, pinned here so a shared parser cannot quietly change it.
  */
 
 import { describe, expect, it, spyOn } from "bun:test";
@@ -128,51 +127,6 @@ it("an agent's bad skills value answers { message } without a code", async () =>
    expect(res.body).toEqual({
       message: `'skills' must be 'full' or 'summary', got "some".`,
    });
-});
-
-describe("a notebook cell refusal answers { error }", () => {
-   const cell = (pkg: string, index: string, query = "") =>
-      `${pkg}/notebooks/n.malloynb/cells/${index}${query}`;
-
-   it.each([PKG, LEGACY_PKG])(
-      "%s: a cell index that is not a number",
-      async (pkg) => {
-         const res = await request(app).get(cell(pkg, "abc"));
-         expect(res.status).toBe(400);
-         expect(res.body).toEqual({ error: "Invalid cell index" });
-      },
-   );
-
-   it.each([PKG, LEGACY_PKG])(
-      "%s: filter_params that are not JSON",
-      async (pkg) => {
-         const res = await request(app).get(
-            cell(pkg, "0", "?filter_params=%7B"),
-         );
-         expect(res.status).toBe(400);
-         expect(res.body).toEqual({
-            error: "Invalid filter_params: must be valid JSON",
-         });
-      },
-   );
-
-   it("givens that are not JSON", async () => {
-      const res = await request(app).get(cell(PKG, "0", "?givens=%7B"));
-      expect(res.status).toBe(400);
-      expect(res.body).toEqual({ error: "Invalid givens: must be valid JSON" });
-   });
-
-   it.each([PKG, LEGACY_PKG])(
-      "%s: a bad bypass_filters keeps { code, message }",
-      async (pkg) => {
-         const path = cell(pkg, "0");
-         const res = await request(app).get(`${path}?bypass_filters=maybe`);
-         expect(res.status).toBe(400);
-         expect(res.body).toEqual(
-            invalidBoolean("bypass_filters", "maybe", "GET", path),
-         );
-      },
-   );
 });
 
 it("a malformed param is logged once as a refusal", async () => {

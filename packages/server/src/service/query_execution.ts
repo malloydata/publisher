@@ -2,11 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * The execution core a model query and a notebook cell share once each has
- * decided WHAT to run: prepare, cap rows, run, then serialize within the row
- * and byte caps — and the mapping of a run failure onto the status the caller
- * sees. Everything before that (boundary, authorize, routing) differs between
- * the two and stays with the caller.
+ * The execution core of a model query once it has decided WHAT to run:
+ * prepare, cap rows, run, then serialize within the row and byte caps — and
+ * the mapping of a run failure onto the status the caller sees. Everything
+ * before that, the boundary, authorize and routing, stays with the caller.
  */
 
 import { withSpan } from "../telemetry";
