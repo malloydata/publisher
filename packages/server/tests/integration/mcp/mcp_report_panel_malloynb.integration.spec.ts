@@ -16,7 +16,6 @@ import path from "path";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { malloynbCellQuery } from "../../../../sdk/src/components/Report/malloynb/cellKind";
 import { initializeMcpServer } from "../../../src/mcp/server";
 import { bootMainServer } from "../../harness/main_server";
 import {
@@ -34,6 +33,7 @@ const OPEN = "malloynb-open";
 interface Cell {
    type: "markdown" | "code";
    text: string;
+   runQuery?: string;
 }
 
 type Outcome = { rows: unknown[][] } | { refused: number; message?: string };
@@ -93,7 +93,7 @@ describe(".malloynb through the MCP report tools (E2E)", () => {
       await env?.stop();
    });
 
-   /** The `run:` the SDK's `Report` sends for cell `i` of `nb`. */
+   /** The `run:` the SDK's `Report` sends for cell `i` of `nb`: its served `runQuery`. */
    const cellQuery = async (
       nb: string,
       i: number,
@@ -102,9 +102,7 @@ describe(".malloynb through the MCP report tools (E2E)", () => {
       const report = await env.getJson<{
          notebook?: { notebookCells?: Cell[] };
       }>(env.api(`/reports/notebooks/${nb}`, pkg));
-      const query = malloynbCellQuery(
-         report.notebook?.notebookCells?.[i] ?? {},
-      );
+      const query = report.notebook?.notebookCells?.[i]?.runQuery;
       if (query === undefined) throw new Error(`${nb} cell ${i} has no run:`);
       return query;
    };
@@ -282,7 +280,7 @@ describe(".malloynb through the MCP report tools (E2E)", () => {
          }>(env.api(`/reports/${nbPath}`, OPEN));
          const cells = report.notebook?.notebookCells ?? [];
          for (let i = 0; i < cells.length; i++) {
-            if (cells[i].type !== "code" || !malloynbCellQuery(cells[i]))
+            if (cells[i].type !== "code" || cells[i].runQuery === undefined)
                continue;
             for (const givens of [
                {},

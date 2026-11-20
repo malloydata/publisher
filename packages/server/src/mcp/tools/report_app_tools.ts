@@ -21,6 +21,7 @@
 import type { GivenValue } from "@malloydata/malloy";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod/v3";
+import type { components } from "../../api";
 import type { McpServices } from "../../app_services";
 import {
    BadRequestError,
@@ -30,7 +31,6 @@ import {
 import { queryVersionRefOf } from "../../route_params";
 import { accessIdentityOf } from "../../service/access_record";
 import { VersionRef } from "../../service/identity";
-import { lastRunStatementText } from "../../service/query_text";
 import { settings } from "../../settings";
 import { SERVER_VERSION } from "../../version";
 import { buildMalloyUri, classifyToolError } from "../handler_utils";
@@ -116,37 +116,26 @@ export function reportPanelHtml(origin: string, version = SERVER_VERSION) {
 export const isLegacyNotebook = (reportPath: string) =>
    reportPath.endsWith(".malloynb");
 
-/** What a `.malloynb`'s manifest carries in place of tiles and givens: its cells, and its sources with their givens. */
-interface NotebookContent {
-   notebookCells?: { type?: string; text?: string }[];
-   sources?: { givens?: { name?: string; label?: string }[] }[];
-}
+type ReportManifest = components["schemas"]["ReportManifest"];
 
 /**
  * A report's query and text counts, and its filters by label, as the panel
  * draws it. A `.malloynb` has cells, not tiles: a query cell is a code cell
- * whose text has a top-level `run:` statement, by `lastRunStatementText`,
- * the rule the SDK's `malloynbCellQuery` follows to pick what it sends. Its
- * givens ride on every source of its model, so each name is counted once,
- * as the SDK does.
+ * the reports read serves a `runQuery` on, the text the SDK's `Report` sends
+ * to run it. Its givens ride on every source of its model, so each name is
+ * counted once, as the SDK does.
  * Undefined for a `.malloynb` that failed to load, whose cells are unread.
  */
 function reportContents(
-   report: {
-      tiles?: { kind?: string }[];
-      givens?: { name?: string; label?: string }[];
-      notebook?: NotebookContent;
-   },
+   report: ReportManifest,
    notebook: boolean,
 ): { queries: number; text: number; filters: string[] } | undefined {
-   const label = (g: { name?: string; label?: string }) => g.label ?? g.name;
+   const label = (g: components["schemas"]["Given"]) => g.label ?? g.name;
    if (notebook) {
       if (!report.notebook) return undefined;
       const cells = report.notebook.notebookCells ?? [];
       const queries = cells.filter(
-         (c) =>
-            c.type === "code" &&
-            lastRunStatementText(c.text ?? "") !== undefined,
+         (c) => c.type === "code" && c.runQuery !== undefined,
       ).length;
       const byName = new Map<string, string | undefined>();
       for (const source of report.notebook.sources ?? []) {

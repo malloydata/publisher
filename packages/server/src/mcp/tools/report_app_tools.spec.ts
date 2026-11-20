@@ -56,10 +56,15 @@ const NOTEBOOK = {
       notebookCells: [
          { type: "markdown", text: "# Old" },
          { type: "code", text: 'import "orders.malloy"' },
-         { type: "code", text: "run: orders -> by_month" },
+         {
+            type: "code",
+            text: "run: orders -> by_month",
+            runQuery: "run: orders -> by_month",
+         },
          {
             type: "code",
             text: "source: west is orders extend { where: region = 'West' }\n# bar_chart\nrun: west -> by_state",
+            runQuery: "# bar_chart\nrun: west -> by_state",
          },
       ],
       // Every source carries the model's givens; one control per name.

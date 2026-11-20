@@ -24,7 +24,11 @@ const NOTEBOOK_MANIFEST = {
       format: "malloynb",
       notebookCells: [
          { type: "markdown", text: "Legacy prose" },
-         { type: "code", text: "run: orders -> by_month" },
+         {
+            type: "code",
+            text: "run: orders -> by_month",
+            runQuery: "run: orders -> by_month",
+         },
       ],
       sources: [],
    },
