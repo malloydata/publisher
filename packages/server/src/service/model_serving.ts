@@ -53,7 +53,6 @@ import { getMaxQueryRows, getMaxResponseBytes } from "../config";
 import {
    AccessDeniedError,
    BadRequestError,
-   ConnectionError,
    InvalidQueryRequestError,
    ModelCompilationError,
    PayloadTooLargeError,
@@ -1087,9 +1086,7 @@ export class ModelServing {
          modelPath: this.host.modelPath,
          failurePrefix: "Query execution failed",
          subject: governed.compiledSource ?? sourceName ?? undefined,
-         // A connection-classified failure (exhausted pool) keeps its own
-         // status rather than reading as a bad query.
-         passThrough: [ConnectionError],
+         passThrough: [],
          logFailure: (errorMessage) =>
             logger.error("Query execution error", {
                error: err,

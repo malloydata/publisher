@@ -21,6 +21,7 @@ import * as Malloy from "@malloydata/malloy-interfaces";
 import { getDefaultQueryRowLimit } from "../config";
 import {
    BadRequestError,
+   ConnectionError,
    databaseAccessFailure,
    ResultShapeError,
    storageAccessFailure,
@@ -220,8 +221,8 @@ interface RunErrorContext {
  * Map a failure from preparing or running a query onto the error the caller
  * sees. Bad client-supplied givens surface as a Malloy `runtime-given-*` error
  * and become a 400 carrying Malloy's message; a `MalloyError`, a
- * {@link ResultShapeError} (and any `passThrough` class) keeps its own
- * mapping; a database that could not be reached or refused the credentials is
+ * {@link ConnectionError} (a truncated page, a misshapen row, an exhausted
+ * pool) and any `passThrough` class keeps its own mapping; a database that could not be reached or refused the credentials is
  * a 502/424; anything else is a 400.
  */
 export function mapRunError(
@@ -250,8 +251,9 @@ export function mapRunError(err: unknown, ctx: RunErrorContext): void {
    }
 
    if (err instanceof MalloyError) throw err;
-   // A database row that does not fit the result's schema keeps its 502.
-   if (err instanceof ResultShapeError) throw err;
+   // A classified database failure (truncated page, misshapen row, exhausted
+   // pool, unreachable database) keeps its own status on every run path.
+   if (err instanceof ConnectionError) throw err;
    for (const passThrough of ctx.passThrough) {
       if (err instanceof passThrough) throw err;
    }
