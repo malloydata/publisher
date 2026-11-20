@@ -125,8 +125,10 @@ interface NotebookContent {
 /**
  * A report's query and text counts, and its filters by label, as the panel
  * draws it. A `.malloynb` has cells, not tiles: a query cell is a code cell
- * with a `run:`, the cells the SDK's `Report` sends, and its givens ride on
- * every source of its model, so each name is counted once, as the SDK does.
+ * whose text has a top-level `run:` statement, by `lastRunStatementText`,
+ * the rule the SDK's `malloynbCellQuery` follows to pick what it sends. Its
+ * givens ride on every source of its model, so each name is counted once,
+ * as the SDK does.
  * Undefined for a `.malloynb` that failed to load, whose cells are unread.
  */
 function reportContents(
@@ -541,7 +543,7 @@ export function registerReportAppTools(
                     : "It has no filters.",
                report.error ? `It has a problem: ${report.error}` : undefined,
                notebook
-                  ? "A .malloynb is a deprecated format: execute_query does not take its path. To run a query yourself, use execute_query on the .malloy models it imports, and declare in your query text any source its cells derive from theirs."
+                  ? "A .malloynb is a deprecated format: execute_query does not take its path. To run a query yourself, use execute_query on the model_path get_context returns for the sources it reads, which is index.malloy when the package has one, and declare in your query text any source its cells derive from those."
                   : undefined,
                `Open it in Publisher: ${url}`,
             ].filter(Boolean);

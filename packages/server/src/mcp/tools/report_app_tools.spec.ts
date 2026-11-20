@@ -276,7 +276,7 @@ describe("report panel tools over the MCP protocol", () => {
       );
       expect(text).toContain("Its filters: Region.");
       expect(text).toContain(
-         "A .malloynb is a deprecated format: execute_query does not take its path. To run a query yourself, use execute_query on the .malloy models it imports, and declare in your query text any source its cells derive from theirs.",
+         "A .malloynb is a deprecated format: execute_query does not take its path. To run a query yourself, use execute_query on the model_path get_context returns for the sources it reads, which is index.malloy when the package has one, and declare in your query text any source its cells derive from those.",
       );
       const url = `${reportAppOrigin()}/examples/storefront/notebooks/old.malloynb?REGION=West`;
       expect(text).toContain(`Open it in Publisher: ${url}`);

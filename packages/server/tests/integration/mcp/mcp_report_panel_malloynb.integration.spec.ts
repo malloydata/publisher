@@ -94,10 +94,14 @@ describe(".malloynb through the MCP report tools (E2E)", () => {
    });
 
    /** The `run:` the SDK's `Report` sends for cell `i` of `nb`. */
-   const cellQuery = async (nb: string, i: number): Promise<string> => {
+   const cellQuery = async (
+      nb: string,
+      i: number,
+      pkg = PKG,
+   ): Promise<string> => {
       const report = await env.getJson<{
          notebook?: { notebookCells?: Cell[] };
-      }>(env.api(`/reports/notebooks/${nb}`));
+      }>(env.api(`/reports/notebooks/${nb}`, pkg));
       const query = malloynbCellQuery(
          report.notebook?.notebookCells?.[i] ?? {},
       );
@@ -106,16 +110,21 @@ describe(".malloynb through the MCP report tools (E2E)", () => {
    };
 
    /** Cell `i` of `nb` over REST and through `report_api`, as outcomes. */
-   const both = async (nb: string, i: number, givens: object = {}) => {
-      const query = await cellQuery(nb, i);
-      const res = await env.query(`notebooks/${nb}`, { query, givens });
+   const both = async (
+      nb: string,
+      i: number,
+      givens: object = {},
+      pkg = PKG,
+   ) => {
+      const query = await cellQuery(nb, i, pkg);
+      const res = await env.query(`notebooks/${nb}`, { query, givens }, pkg);
       const rest = outcomeOf(res.status, await res.json());
       const result = await client.callTool({
          name: "report_api",
          arguments: {
             operation: "query",
             environmentName: ENV,
-            packageName: PKG,
+            packageName: pkg,
             path: `notebooks/${nb}`,
             body: { query, givens },
          },
@@ -254,6 +263,97 @@ describe(".malloynb through the MCP report tools (E2E)", () => {
          "unknown given 'NOtaGiven'",
       );
       expect(typo.panel).toEqual(typo.rest);
+   });
+
+   it("report_api answers every query cell of every notebook as REST does on a package with no index.malloy", async () => {
+      const listing = await env.getJson<{ path: string }[]>(
+         env.api("/reports", OPEN),
+      );
+      const notebooks = listing
+         .map((r) => r.path)
+         .filter((p) => p.endsWith(".malloynb"));
+      expect(notebooks.length).toBeGreaterThan(0);
+      let compared = 0;
+      let answered = 0;
+      for (const nbPath of notebooks) {
+         const nb = nbPath.replace(/^notebooks\//, "");
+         const report = await env.getJson<{
+            notebook?: { notebookCells?: Cell[] };
+         }>(env.api(`/reports/${nbPath}`, OPEN));
+         const cells = report.notebook?.notebookCells ?? [];
+         for (let i = 0; i < cells.length; i++) {
+            if (cells[i].type !== "code" || !malloynbCellQuery(cells[i]))
+               continue;
+            for (const givens of [
+               {},
+               { ROLES: ["admin"], GROUPS: [1, 2], REGION: "EU" },
+            ]) {
+               const { rest, panel } = await both(nb, i, givens, OPEN);
+               expect([nbPath, i, givens, panel]).toEqual([
+                  nbPath,
+                  i,
+                  givens,
+                  rest,
+               ]);
+               compared++;
+               if ("rows" in rest) answered++;
+            }
+         }
+      }
+      // Rows as well as refusals, so the comparison is not only of errors.
+      expect(answered).toBeGreaterThan(0);
+      expect(answered).toBeLessThan(compared);
+   });
+
+   it("the advice show_report gives answers: execute_query on the model_path get_context returns, with a derived source in the query text", async () => {
+      for (const [pkg, expected] of [
+         [PKG, "index.malloy"],
+         [OPEN, "models/orders.malloy"],
+      ] as const) {
+         const context = await client.callTool({
+            name: "get_context",
+            arguments: {
+               search_targets: [{ target_type: "source" }],
+               scopes: [{ environment: ENV, package: pkg }],
+            },
+         });
+         const block = (
+            context.content as { resource?: { text: string }; text?: string }[]
+         )[0];
+         const payload = JSON.parse(
+            block.resource?.text ?? block.text ?? "{}",
+         ) as {
+            sources?: {
+               source_info: {
+                  resource_id: { source: string; model_path: string };
+               };
+            }[];
+         };
+         const orders = payload.sources?.find(
+            (s) => s.source_info.resource_id.source === "orders",
+         );
+         const modelPath = orders?.source_info.resource_id.model_path;
+         expect([pkg, modelPath]).toEqual([pkg, expected]);
+         const result = await client.callTool({
+            name: "execute_query",
+            arguments: {
+               environmentName: ENV,
+               packageName: pkg,
+               modelPath,
+               // surface.malloynb's cells 4 and 5: a source derived from a
+               // published one, then a run over it.
+               query: "source: mine is orders extend { where: id > 2 }\nrun: mine -> { aggregate: order_count }",
+            },
+         });
+         expect([pkg, result.isError]).toEqual([pkg, false]);
+         const rows = (
+            JSON.parse(
+               (result.content as { resource?: { text: string } }[])[0]
+                  .resource!.text,
+            ) as { rows: unknown[] }
+         ).rows;
+         expect(rows).toEqual([{ order_count: 4 }]);
+      }
    });
 
    it("execute_query still refuses a .malloynb's path, with a surface or without one", async () => {
