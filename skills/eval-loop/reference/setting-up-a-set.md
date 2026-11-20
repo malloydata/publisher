@@ -137,6 +137,25 @@ Where a person has checked a value by hand instead of deriving it a second way,
 `--promote --attest "<who checked, when, how>"` promotes it and writes that text
 on the golden, so a reader sees a person stood behind it rather than a query.
 
+**Keys you derive yourself.** A set with no keys yet gets them from you, by
+the rules in `skill:eval-import` ("Deriving a key yourself"). Two shapes that
+promote cleanly and hold up at scoring:
+
+- The second derivation does not have to be Malloy. SQL over the same raw
+  files, taking a different route (roll up per hotel then per destination,
+  rather than join and group), varies the engine as well as the shape. Write
+  it to `gold/<qid>.json` as `verifyQuery` and `verifyRows`, with column names
+  matching the canonical query's, and compare the two yourself before
+  promoting: `--promote` checks that `verifyRows` exists, not that it agrees.
+  Record the comparison as `agreement`.
+- Where a question has two defensible readings (revenue by booking date or by
+  departure date; bookings with or without cancellations), have the canonical
+  query return both as columns of one row, and write the rubric against the
+  column names: "within 0.5% of `revenue_booked_2025`; also correct if it
+  states departure date and is within 0.5% of `revenue_departing_2025`". Every
+  figure the rubric accepts is then in the golden rows, so a re-derivation
+  moves the rubric with it.
+
 ## 7. The first run
 
 ```bash
