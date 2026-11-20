@@ -529,6 +529,14 @@ and export it from `index.malloy`. A join written in a cell's `run:` is the call
 target is, as [authorize.md](authorize.md#the-entry-point-and-only-the-entry-point) describes. To keep a
 join the author's, declare it in a source in a model file.
 
+Each code cell the query route would refuse for every reader is a package warning when the package
+loads, code `malloynb-cell-refused`, so these show in the package warnings and the Console before a
+reader opens the notebook. The warning names the notebook, the cell by its position counting markdown
+cells, the rule as `reason` (`off_surface`, `restricted_mode`, or `compile_error` for any other compile
+failure of the `run:` statement on its own) and the fix. It runs the query route's own checks on the
+text the Console sends, so it agrees with what a reader gets. A cell that only a reader's givens refuse,
+by `#(authorize)` or a row-level gate, gets no warning.
+
 ## Filter controls
 
 Controls are the `given:` declarations the tiles reference. **Declare them in the report file**: it is the
