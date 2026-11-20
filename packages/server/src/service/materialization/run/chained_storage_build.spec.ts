@@ -138,6 +138,7 @@ async function planChain(
       parts.tables,
       { duckdb: "digest" },
       undefined,
+      undefined,
    );
    return {
       dir,

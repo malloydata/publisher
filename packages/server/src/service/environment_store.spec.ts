@@ -850,7 +850,7 @@ describe("EnvironmentStore Service", () => {
       expect(instances[1]).not.toBe(instances[0]);
    });
 
-   it("forwards the version hooks to every environment, naming it, and detaches them with null", async () => {
+   it("forwards the version and package-retiring hooks to every environment, naming it, and detaches them with null", async () => {
       const projectPath = path.join(serverRootPath, projectName);
       mkdirSync(projectPath, { recursive: true });
       writeFileSync(
@@ -884,21 +884,30 @@ describe("EnvironmentStore Service", () => {
       store.setVersionArchivedHook((...args) => void calls.push(args));
       store.setVersionDeletedHook((...args) => void calls.push(args));
       store.setOwedReclaimHook(async (...args) => void calls.push(args));
+      store.setPackageRetiringHook(async (...args) => void calls.push(args));
       forwarded("versionArchivedHook")?.("pkg", "1.0.0");
       forwarded("versionDeletedHook")?.("pkg", "1.0.1");
       await forwarded("owedReclaimHook")?.("pkg", "1.0.2");
+      await (
+         forwarded("packageRetiringHook") as
+            | ((packageName: string) => Promise<void>)
+            | null
+      )?.("pkg");
       expect(calls).toEqual([
          [projectName, "pkg", "1.0.0"],
          [projectName, "pkg", "1.0.1"],
          [environment, "pkg", "1.0.2"],
+         [projectName, "pkg"],
       ]);
 
       store.setVersionArchivedHook(null);
       store.setVersionDeletedHook(null);
       store.setOwedReclaimHook(null);
+      store.setPackageRetiringHook(null);
       expect(forwarded("versionArchivedHook")).toBeNull();
       expect(forwarded("versionDeletedHook")).toBeNull();
       expect(forwarded("owedReclaimHook")).toBeNull();
+      expect(forwarded("packageRetiringHook")).toBeNull();
    });
 
    it("keeps sibling packages serving when one sharing their location fails to extract", async () => {

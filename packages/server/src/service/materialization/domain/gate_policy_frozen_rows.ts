@@ -14,6 +14,7 @@ import {
    type GateSwitches,
    type TableRead,
 } from "./gate_policy";
+import { STORAGE_DIALECT } from "./dialect";
 
 /** Every setting of every switch, from the switch keys. */
 export function* switches(): Generator<GateSwitches> {
@@ -77,6 +78,49 @@ export const GATE_READS: Readonly<Record<string, readonly TableRead[]>> = {
       },
    ],
    own_unlisted: [{ tier: "storage" as const, ownGateKept: true }],
+   // A gate column stored as a DuckDB DOUBLE that copies a warehouse double
+   // compared as DuckDB compares it: exact, kept as `own` is. A copy of an
+   // exact number, of a 4-byte float, or of a column the build computed (no
+   // upstream type) is not. (Each dialect's doubles: dialect.spec.ts and
+   // gate_policy.spec.ts.)
+   own_binary64: [
+      {
+         tier: "storage" as const,
+         ownGateKept: true,
+         gateColumnTypes: ["DOUBLE"],
+         gateColumnUpstreamTypes: [
+            { dialect: STORAGE_DIALECT, nativeType: "DOUBLE" },
+         ],
+      },
+   ],
+   own_double_of_decimal: [
+      {
+         tier: "storage" as const,
+         ownGateKept: true,
+         gateColumnTypes: ["DOUBLE"],
+         gateColumnUpstreamTypes: [
+            { dialect: STORAGE_DIALECT, nativeType: "DECIMAL(38,2)" },
+         ],
+      },
+   ],
+   own_double_of_float4: [
+      {
+         tier: "storage" as const,
+         ownGateKept: true,
+         gateColumnTypes: ["DOUBLE"],
+         gateColumnUpstreamTypes: [
+            { dialect: STORAGE_DIALECT, nativeType: "FLOAT" },
+         ],
+      },
+   ],
+   own_double_computed: [
+      {
+         tier: "storage" as const,
+         ownGateKept: true,
+         gateColumnTypes: ["DOUBLE"],
+         gateColumnUpstreamTypes: [undefined],
+      },
+   ],
    database_inexact: [
       { tier: "database" as const, gateColumnTypes: ["DOUBLE"] },
    ],
@@ -376,4 +420,20 @@ export const FROZEN_LEG_ROWS: readonly string[] = [
    "keeps rollup read=ungated mz=1 gs=0 g3=1",
    "keeps rollup read=ungated_database mz=1 gs=0 g3=1",
    "keeps rollup read=ungated_own mz=1 gs=0 g3=1",
+   "keeps view read=own_binary64 mz=0 gs=1 g3=0",
+   "keeps view read=own_binary64 mz=0 gs=1 g3=1",
+   "keeps view read=own_binary64 mz=1 gs=1 g3=0",
+   "keeps view read=own_binary64 mz=1 gs=1 g3=1",
+   "keeps served read=own_binary64 mz=0 gs=0 g3=1",
+   "keeps served read=own_binary64 mz=1 gs=0 g3=1",
+   "keeps served read=own_binary64 mz=0 gs=1 g3=0",
+   "keeps served read=own_binary64 mz=0 gs=1 g3=1",
+   "keeps served read=own_binary64 mz=1 gs=1 g3=0",
+   "keeps served read=own_binary64 mz=1 gs=1 g3=1",
+   "keeps rollup read=own_binary64 mz=0 gs=0 g3=1",
+   "keeps rollup read=own_binary64 mz=1 gs=0 g3=1",
+   "keeps rollup read=own_binary64 mz=0 gs=1 g3=0",
+   "keeps rollup read=own_binary64 mz=0 gs=1 g3=1",
+   "keeps rollup read=own_binary64 mz=1 gs=1 g3=0",
+   "keeps rollup read=own_binary64 mz=1 gs=1 g3=1",
 ];

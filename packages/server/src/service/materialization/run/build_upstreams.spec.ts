@@ -656,6 +656,7 @@ describe("current tiers (implied destinations, the source's own connection)", ()
             persistTables({ tier_up: up, tier_stored: stored }),
             { duckdb: "dig" },
             undefined,
+            undefined,
             (sourceID) =>
                sourceID === "tier_up" ? { destination: "lake2" } : undefined,
          ),
@@ -672,6 +673,7 @@ describe("current tiers (implied destinations, the source's own connection)", ()
          chainedPlanFacts(
             persistTables({ tier_own: up }),
             { duckdb: "dig" },
+            undefined,
             undefined,
             () => ({
                destination: "duckdb",
@@ -692,6 +694,7 @@ describe("current tiers (implied destinations, the source's own connection)", ()
             persistTables({ tier_mode: stored }),
             { duckdb: "dig" },
             undefined,
+            undefined,
          ),
       );
       expect(off.declaredTiersByAddress?.tiermode).toEqual([null]);
@@ -699,6 +702,7 @@ describe("current tiers (implied destinations, the source's own connection)", ()
          chainedPlanFacts(
             persistTables({ tier_mode: stored }),
             { duckdb: "dig" },
+            undefined,
             undefined,
          ),
       );
@@ -719,6 +723,7 @@ describe("current tiers (implied destinations, the source's own connection)", ()
          chainedPlanFacts(
             persistTables({ split_base: base, split_ext: ext }),
             { duckdb: "dig" },
+            undefined,
             undefined,
          ),
       );

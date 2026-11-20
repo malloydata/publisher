@@ -87,6 +87,8 @@ import {
    type Binding,
    heldReadBinding,
    isDatabase,
+   type KeyedTable,
+   manifestUnderCompilerKey,
    type Pinned,
    storageLookupOf,
 } from "../domain/binding";
@@ -147,6 +149,11 @@ export interface ViewAnswer {
       /** Stored as of its build: see `Binding.asOfBuild`. */
       asOfBuild?: true;
    };
+   /**
+    * For a database view whose address is not Malloy's key for it: the run
+    * that answers reads its entry under that key too.
+    */
+   keyedTable?: KeyedTable;
    /** Where `govern()` grafts the source's gates on the variant. */
    graftScope: GraftScope;
 }
@@ -791,21 +798,15 @@ export async function readStoredVariant(args: {
 }): Promise<ViewAnswer> {
    const { variant, table } = args;
    // Sources folded apart on one build share Malloy's key: under it, this
-   // variant reads its own table.
-   const own =
-      args.compilerKey && table.tableId
-         ? args.buildManifest?.entries[table.tableId]
+   // variant reads its own table, and so does the run that answers.
+   const keyedTable =
+      args.compilerKey && table.tableId && !table.virtualMap
+         ? { tableId: table.tableId, compilerKey: args.compilerKey }
          : undefined;
-   const buildManifest =
-      own && args.buildManifest
-         ? {
-              ...args.buildManifest,
-              entries: {
-                 ...args.buildManifest.entries,
-                 [args.compilerKey!]: own,
-              },
-           }
-         : args.buildManifest;
+   const buildManifest = manifestUnderCompilerKey(
+      args.buildManifest,
+      keyedTable,
+   );
    if (!variant.materializer || !variant.modelDef) {
       // Warned once per compiled variant: the leg asks on every query.
       const fields = { modelPath: args.modelPath, view: args.subject };
@@ -861,6 +862,7 @@ export async function readStoredVariant(args: {
    return {
       runnable,
       table: reported,
+      ...(keyedTable ? { keyedTable } : {}),
       ...(virtualMap ? { virtualMap } : {}),
       // A database table read through its typed source is still a database
       // table to the path report and the gate policy, as through the

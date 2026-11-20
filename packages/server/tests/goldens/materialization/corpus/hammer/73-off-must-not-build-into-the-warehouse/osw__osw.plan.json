@@ -71,6 +71,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.osw_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "0509c30bc8e5f7b7a855418fa8316f09369a31e01f81197b5e1a425f9ff0b5fb",
         "sourceID": "daily@<hammer>/osw/osw.malloy",

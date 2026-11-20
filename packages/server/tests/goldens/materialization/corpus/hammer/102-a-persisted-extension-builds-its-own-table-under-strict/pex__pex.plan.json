@@ -87,6 +87,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.pex_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "ea3d999aa399c1f74cea22ac56a2d80a6cb73e11b188e6a63109f9e4dd41a97e",
         "sourceID": "daily@<hammer>/pex/pex.malloy",
@@ -119,6 +125,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.pex_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "ea3d999aa399c1f74cea22ac56a2d80a6cb73e11b188e6a63109f9e4dd41a97e",
         "sourceID": "daily_wide@<hammer>/pex/pex.malloy",

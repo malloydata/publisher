@@ -44,6 +44,10 @@ import {
    gateFilterText,
    liftProbeFilterCondition,
 } from "../../authorize";
+import {
+   AUTHORIZE_ROUTE,
+   canonicalAuthorizeRoute,
+} from "../../authorize_routes";
 import { collectEntryPointGates } from "../../gate_classification";
 import { readPreparedQuery } from "../../governance/ir/prepared_query";
 import { identifier } from "../../malloy_text";
@@ -205,6 +209,20 @@ async function persistedViewRefusalReason(
       return {
          reason: "the gates of its source cannot be read",
          refusal: gateRefusal,
+      };
+   }
+   // A row filter read through a `->` derivation filters the derivation's
+   // base before it runs; the view's stored rows are the derivation's
+   // output, which no filter at read can make equal to that.
+   const throughDerivation = gates.filter(
+      (g) =>
+         g.baseHops > 0 && canonicalAuthorizeRoute(g.route) !== AUTHORIZE_ROUTE,
+   );
+   if (throughDerivation.length > 0) {
+      return {
+         reason:
+            "its source inherits a row filter through `->`, which filters the derivation's base, not the rows a stored result holds",
+         refusal: gateRefusalReason(throughDerivation.map((g) => g.route)),
       };
    }
    const gatedWhy =

@@ -129,6 +129,12 @@
         "origin": "materialize",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.cmz_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "61bfdd2aa3526c6a1a6379b588dff6e28f0707b1802f70e133c77b4ad602a2d4",
         "sourceID": "big_orders@<hammer>/cmz/cmz.malloy",

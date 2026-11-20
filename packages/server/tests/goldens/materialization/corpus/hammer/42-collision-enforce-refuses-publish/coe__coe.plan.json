@@ -83,6 +83,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.coe_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "fc620d71b142acae673f709f11c58c4435e62b6bec1deef8c57d21d48491ed74",
         "sourceID": "alpha@<hammer>/coe/coe.malloy",
@@ -111,6 +117,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.coe_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "811aae00abcb99687d8bd1f64915a40f2a92349ebde02f851d48ba81058ede84",
         "sourceID": "beta@<hammer>/coe/coe.malloy",

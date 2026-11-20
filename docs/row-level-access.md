@@ -170,12 +170,12 @@ When the gate is an access boundary:
 - Or make sure the rows either side of the boundary, within that window, belong to the same tenant,
   so a shifted day admits nothing the caller could not already see.
 
-### An inherited gate filters a derivation's output, not its input
+### An inherited gate filters a derivation's input
 
-> **Know this.** A `->` derivation over a gated source carries the base's gate (see
-> [authorize.md § The entry point](authorize.md#the-entry-point-and-only-the-entry-point)), and that
-> gate filters the rows the derivation produces. What the derivation computes, it computes over
-> every row of the base first.
+A `->` derivation over a gated source carries the base's gate (see
+[authorize.md § The entry point](authorize.md#the-entry-point-and-only-the-entry-point)), and that
+gate filters the base's rows before the derivation runs. Everything the derivation computes, it
+computes over only the rows the gate admits for the caller.
 
 ```malloy
 ##! experimental.givens
@@ -196,21 +196,19 @@ source: shares is sales -> {
 }
 ```
 
-A caller of `shares` sees only their own region's rows, but `share` is each row's share of the grand
-total across every region. The same holds for `exclude()`, window functions, `calculate:` and `limit`:
-each is evaluated across every row before the gate applies, so a top-N ranks across every region and
-the caller then receives their region's entries from it, which may be fewer than N or none. The rows
-themselves stay scoped; global aggregates and ranks over rows the caller cannot see are visible.
+A caller of `shares` sees their own region's rows, and `share` is each row's share of their region's
+total. The same holds for `exclude()`, window functions, `calculate:` and `limit`: a top-N ranks the
+caller's rows. A derivation that renames a column to the gate's field name
+(`group_by: region is category`) does not change what the gate reads: it reads the base's `region`.
+A derivation need not keep the gate's column at all; the rows are filtered before it groups them.
+Chains are the same: in `y is shares -> { … }`, the gate filters `sales` inside `shares` inside `y`.
 
-When those figures are sensitive:
+A gate the derivation declares on itself (`#(access_filter) region = $REGION` above `source: shares
+is sales -> { … }`) filters the derivation's own output, after its query has run over every row of
+its base. Use it only when that is the intent: its `all()`, windows and `limit` see every row.
 
-- Filter the derivation's input: put a `where:` on the same given in the derivation's first stage
-  (`sales -> { where: region = $REGION; group_by: …; aggregate: share is total / all(total) }`), so
-  `all()`, `exclude()`, windows and `limit` see only the caller's rows. A gate declared on the derived
-  source itself does not do this: it too filters the derivation's output.
-- Do not use global-context functions (`all()`, `exclude()`, window functions, `calculate:`, a
-  ranking `limit`) in a derivation over a gated source.
-- Or compute the global context explicitly, from an ungated source you intend to expose.
+A derivation whose base hides the gate's column (`sales extend { except: region } -> { … }`) gives
+the gate nothing to filter, so every query against it is denied.
 
 ## Runnable example
 

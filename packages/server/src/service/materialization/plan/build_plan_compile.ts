@@ -32,6 +32,7 @@ import {
    type BuildPlanPackage,
    type BuildPlanParts,
    type FinishedBuildPlan,
+   type UpstreamSchemaReader,
 } from "./build_plan";
 import { loadGateText } from "./load_gate_text";
 import { newCrossFileCompanions } from "./materialize_compile";
@@ -209,6 +210,15 @@ async function collectPackageParts(
    return parts;
 }
 
+/** `pkg`'s reader of its upstream tables' types for `use`, when it has one. */
+function upstreamReaderOf(
+   pkg: BuildPlanPackage,
+   use: "load" | "run",
+): { readUpstreamSchemas?: UpstreamSchemaReader } {
+   const read = pkg.readUpstreamSchemas?.bind(pkg);
+   return read ? { readUpstreamSchemas: (tables) => read(tables, use) } : {};
+}
+
 /**
  * A run's build plan, compiled on this thread against the package's live
  * connections, its key checks included. A connection that did not resolve
@@ -240,6 +250,7 @@ export async function compilePackageBuildPlan(
       versionScoped: versionOwnsTables(pkg),
       keyCheckCompilers: keyChecks.keyCheckCompilers,
       keepIncrementalUnbuildable,
+      ...upstreamReaderOf(pkg, "run"),
    });
    reportDigestSkipped(digestSkipped);
    return compiled;
@@ -262,6 +273,7 @@ export async function computeLoadPlan(
    const { compiled, digestSkipped } = await finishPackagePlan(parts, {
       getMalloyConnection: (name) => pkg.getMalloyConnection(name),
       versionScoped: versionOwnsTables(pkg),
+      ...upstreamReaderOf(pkg, "load"),
    });
    return {
       packagePlan: derivePackagePlan(compiled, pkg.getMaterializationConfig()),

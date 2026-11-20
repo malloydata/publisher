@@ -144,6 +144,12 @@
         "origin": "materialize",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.mzn_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "62a03346515f7c1bd0c7749571ae4aac5e2144815737b41cac465a4459e428ec",
         "sourceID": "mzn_orders@<hammer>/mzn/mzn.malloy",

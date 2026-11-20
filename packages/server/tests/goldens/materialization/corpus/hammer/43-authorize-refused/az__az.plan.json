@@ -71,6 +71,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.az_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "9442be6ad28254a8935b20635504036a68343102de66f6114514f04a44f0d18d",
         "sourceID": "daily@<hammer>/az/az.malloy",

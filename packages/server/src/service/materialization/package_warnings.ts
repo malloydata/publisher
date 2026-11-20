@@ -766,18 +766,35 @@ export function persistencePolicyWarnings(
       );
    }
 
-   // Schedule and freshness are mutually exclusive.
+   // Schedule and freshness are mutually exclusive. The message names where
+   // the freshness is declared: the package's manifest, or a source in a
+   // model file (a refused source's window counts too, R-06).
    if (packageSchedule !== null) {
-      const freshnessDeclared =
-         !!(
-            packageFreshness &&
-            (packageFreshness.window || packageFreshness.fallback)
-         ) || sources.some((s) => s.freshness != null);
-      if (freshnessDeclared) {
+      const packageDeclares = !!(
+         packageFreshness &&
+         (packageFreshness.window || packageFreshness.fallback)
+      );
+      const sourceDeclaring = [
+         ...sources,
+         ...Object.values(plan?.refusedSources ?? {}),
+      ].find((s) => s.freshness != null);
+      if (packageDeclares) {
          warnings.push(
             `materialization.schedule and freshness are mutually exclusive in ` +
                `${PACKAGE_MANIFEST_NAME}: declare either a schedule (power tier) ` +
                `or freshness (objective tier), never both.`,
+         );
+      } else if (sourceDeclaring) {
+         const where = sourceDeclaring.modelPath
+            ? ` in ${sourceDeclaring.modelPath}`
+            : "";
+         warnings.push(
+            `materialization.schedule and freshness are mutually exclusive: ` +
+               `${PACKAGE_MANIFEST_NAME} sets materialization.schedule, and ` +
+               `source '${sourceDeclaring.name}'${where} declares freshness ` +
+               `(on the source or its model file). Declare either a schedule ` +
+               `(power tier) or freshness (objective tier), never both: remove ` +
+               `the schedule, or the source's freshness.`,
          );
       }
    }

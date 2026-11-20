@@ -119,6 +119,12 @@
         "origin": "materialize",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "lake_probe",
+            "table": "lake_probe.main.mzr_events"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "d2d17e0403609ed0a9f6e9a224e7e124c13f72cce10e825ee0f90d56bce3a52c",
         "sourceID": "events@<hammer>/mzr/mzr.malloy",

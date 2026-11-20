@@ -18,6 +18,7 @@ import type { components } from "../../../api";
 import type { IncrementalDeclaration } from "./incremental";
 import type { MaterializePlan, TablePlan } from "./table_plans";
 import type { BuildPlan } from "./types";
+import type { UpstreamSchemaReadings } from "./upstream_schemas";
 
 type RefusedReason = components["schemas"]["RefusedSource"]["reason"];
 
@@ -178,6 +179,8 @@ export interface PackagePlan<Finding = unknown> {
    connectionDigests: Record<string, string>;
    /** Each connection's configured type, by name (see `CompiledBuildPlan`). */
    connectionTypes: Record<string, string>;
+   /** The connections configured `managed` (see `CompiledBuildPlan`). */
+   managedConnections: string[];
    /**
     * Every connection a persist source builds on, including sources the plan
     * skipped (a connection that did not resolve) or refused, so a connection
@@ -188,6 +191,13 @@ export interface PackagePlan<Finding = unknown> {
    versionScoped: boolean;
    /** What each moved source's address folds in, by sourceID. */
    tableFolds: Record<string, string>;
+   /**
+    * Each table the plan's sources read with its columns' native types, as
+    * this plan's load read them (see `CompiledBuildPlan.upstreamSchemas`):
+    * every address folds them in, and a run reuses them so its addresses
+    * are its load's. Empty: none read.
+    */
+   upstreamSchemas: UpstreamSchemaReadings;
    /** Each planned source's content address, or why it has none, by sourceID. */
    addresses: Record<string, string | { unaddressable: string }>;
    /**

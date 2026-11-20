@@ -633,6 +633,8 @@ export function useDimensionalFilterRangeData(
                      bypassFilters: true,
                   },
                   undefined,
+                  // versionId: carried in the body.
+                  undefined,
                   { signal },
                );
                return {

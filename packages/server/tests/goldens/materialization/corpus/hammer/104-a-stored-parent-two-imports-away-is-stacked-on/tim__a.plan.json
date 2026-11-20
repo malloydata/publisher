@@ -71,6 +71,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.tim_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "77d1ee2d60220500033e17b15b7fe81dd68320356a8d460ec224f14100d5b3a6",
         "sourceID": "daily@<hammer>/tim/a.malloy",

@@ -421,17 +421,24 @@ for (const gated of [false, true]) {
       });
 
       if (gated) {
-         it("a rollup over a row-gated derivation is read, with the gate grafted on it", () => {
-            for (const name of [
-               "af_pre1_q",
-               "af_pre2_q",
-               "af_pre2_ext",
-               "xf_pre2_q",
-            ]) {
+         it("a rollup over an extension of a row-gated source is read, with the gate grafted on it", () => {
+            for (const i of CALLERS.keys()) {
+               const out = served.get(`af_pre2_ext#${i}`)!;
+               if ("error" in out) throw new Error(`af_pre2_ext: ${out.error}`);
+               expect(out.answer.servedBy).toBe("rollup");
+            }
+         });
+
+         it("a rollup over a `->` derivation of a row-gated source is refused and answers live: the gate filters the derivation's base, which the rollup's rows are not", () => {
+            for (const name of ["af_pre1_q", "af_pre2_q", "xf_pre2_q"]) {
+               expect([
+                  name,
+                  refused.includes(`${name}.total:database:access_filter`),
+               ]).toEqual([name, true]);
                for (const i of CALLERS.keys()) {
                   const out = served.get(`${name}#${i}`)!;
                   if ("error" in out) throw new Error(`${name}: ${out.error}`);
-                  expect([name, out.answer.servedBy]).toEqual([name, "rollup"]);
+                  expect([name, out.answer.servedBy]).toEqual([name, "live"]);
                }
             }
          });

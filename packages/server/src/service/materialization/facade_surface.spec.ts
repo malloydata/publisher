@@ -71,6 +71,7 @@ const FACADE_SURFACE = [
    "getBuildManifestEntries",
    "getBuildPlan",
    "getFreshBuildManifest",
+   "getFreshCompilerManifest",
    "getPreaggregateEntityIds",
    "hasBoundTableNameManifest",
    "hasStorageServeBindings",
