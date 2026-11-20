@@ -264,18 +264,74 @@ describe("R4: extension tables answer equal to live", () => {
             expect(rows[0]).not.toEqual(rows[1]);
          });
 
-         it("answers each extension from its own table", async () => {
+         it("answers each extension from its own table, equal to live", async () => {
             const f = fixture();
-            f.setBindings(f.bindings);
-            for (const name of ["east", "east_big", "mid_ext", "renamed"]) {
-               const { path } = await f.runAsIs(
-                  `run: ${name} -> { group_by: region }`,
+            const names = ["east", "east_big", "mid_ext", "renamed"];
+            // `d` is read by no `where:` on the chain, so moving it moves
+            // only the answer, never which rows a re-applied filter keeps.
+            const query = (name: string) =>
+               `run: ${name} -> { group_by: region; aggregate: n is count(), last_d is d.max(); order_by: region }`;
+            const exact = (rows: Record<string, unknown>[]) =>
+               rows.map((r) =>
+                  Object.fromEntries(
+                     Object.entries(r).map(([k, v]) => [
+                        k,
+                        v instanceof Date ? v.toISOString() : String(v),
+                     ]),
+                  ),
                );
-               expect(path?.servedBy).toMatchObject({
-                  kind: "materialized",
-                  tableId: f.tableIds[name],
-                  via: "served_copy",
-               });
+            f.setBindings([]);
+            const live: Record<string, Record<string, unknown>[]> = {};
+            for (const name of names) {
+               live[name] = (await f.runAsIs(query(name))).rows;
+               expect(live[name].length).toBeGreaterThan(0);
+            }
+            // Each table, the parent's too, moved by its own number of days,
+            // so an answer read from another table on the chain is told apart.
+            const days: Record<string, number> = {
+               stored: 1000,
+               east: 2000,
+               east_big: 3000,
+               mid_ext: 4000,
+               renamed: 5000,
+            };
+            const shift = async (sign: 1 | -1) => {
+               for (const [name, n] of Object.entries(days)) {
+                  await f.duckdb.runSQL(
+                     `UPDATE ${f.physicalTables[name]} SET d = d + ${sign * n}`,
+                  );
+               }
+            };
+            const shifted = (value: unknown, n: number) =>
+               new Date(
+                  Date.parse(
+                     value instanceof Date
+                        ? value.toISOString()
+                        : String(value),
+                  ) +
+                     n * 86_400_000,
+               );
+            await shift(1);
+            try {
+               f.setBindings(f.bindings);
+               for (const name of names) {
+                  const { path, rows } = await f.runAsIs(query(name));
+                  expect(path?.servedBy).toMatchObject({
+                     kind: "materialized",
+                     tableId: f.tableIds[name],
+                     via: "served_copy",
+                  });
+                  expect(exact(rows)).toEqual(
+                     exact(
+                        live[name].map((r) => ({
+                           ...r,
+                           last_d: shifted(r.last_d, days[name]),
+                        })),
+                     ),
+                  );
+               }
+            } finally {
+               await shift(-1);
             }
          });
 
