@@ -274,12 +274,12 @@ jobs:
 
           # A release whose version main already declares has nothing to bump.
           # It is reachable when neither `release/v<v>` nor `v<v>` exists: a
-          # hand-edit of those four files, or a release branch AND its tag both
+          # hand-edit of those three files, or a release branch AND its tag both
           # deleted. `version_taken` above catches every other route here. It
           # would fail closed regardless, so this buys a readable message.
           # shellcheck disable=SC2086
           if git diff --quiet -- $PKGS; then
-            echo "::error title=Version::main already declares ${NEW_VERSION}, so there is nothing to commit for this release. Either it has already shipped (check npm and the tags) or those four version files were edited by hand. Pick the next free version instead."
+            echo "::error title=Version::main already declares ${NEW_VERSION}, so there is nothing to commit for this release. Either it has already shipped (check npm and the tags) or those three version files were edited by hand. Pick the next free version instead."
             exit 1
           fi
 
