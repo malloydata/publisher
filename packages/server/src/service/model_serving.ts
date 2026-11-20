@@ -1427,6 +1427,7 @@ function governRequestOf(r: {
    return {
       givens: r.givens,
       ...r.query,
+      // Last, so nothing a query passes can replace how the graft recompiles.
       ...r.graft,
       ceiling: r.ceiling,
    };

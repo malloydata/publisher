@@ -165,7 +165,6 @@ import {
 } from "./model_runtime";
 import {
    tileQueryInfo,
-   type NotebookFormat,
    type RunnableNotebookCell,
 } from "./model_notebook_cell";
 import { quotedIdentifier } from "./malloy_text";
@@ -469,7 +468,7 @@ export class Model {
    private sourceInfos: Malloy.SourceInfo[] | undefined;
    private runnableNotebookCells: RunnableNotebookCell[] | undefined;
    private compilationError: MalloyError | Error | undefined;
-   /** Why the reader refused this served notebook's cells; the model itself still compiled and serves. */
+   /** Why the reader refused this linear report's cells; the model itself still compiled and serves. */
    private notebookReaderRefusal: NotebookReaderError | undefined;
    /** Parsed #(filter) definitions keyed by source name. */
    private filterMap: Map<string, FilterDefinition[]>;
@@ -2364,19 +2363,12 @@ export class Model {
       return current;
    }
 
-   /** A `.malloynb`, or a `.malloy` the package discovered as a served notebook. */
+   /** A `.malloynb`, or a linear `.malloy` report. */
    public isNotebook(): boolean {
       return (
          this.modelPath.endsWith(NOTEBOOK_FILE_SUFFIX) ||
          this.queryBoundary.layout === "linear"
       );
-   }
-
-   /** The file format this notebook is written in; `malloy` for a served notebook. */
-   private notebookFormat(): NotebookFormat {
-      return this.modelPath.endsWith(NOTEBOOK_FILE_SUFFIX)
-         ? "malloynb"
-         : "malloy";
    }
 
    /**
@@ -2726,7 +2718,7 @@ export class Model {
    }
 
    /**
-    * A served notebook's listing: `title` in the artifact tag, then the first
+    * A linear report's listing: `title` in the artifact tag, then the first
     * line of the `"` notes above the artifact line, then the first markdown
     * heading when no prose precedes it. Notes below the tag are cells, not
     * description.
@@ -2750,7 +2742,7 @@ export class Model {
    }
 
    /**
-    * Attach the cells of a served notebook, which is only known to be one after
+    * Attach the cells of a linear report, which is only known to be one after
     * discovery.
     */
    public setNotebookCells(cells: RunnableNotebookCell[]): void {
@@ -2758,7 +2750,7 @@ export class Model {
    }
 
    /**
-    * Read a served notebook's cells out of `text`, the text this model compiled,
+    * Read a linear report's cells out of `text`, the text this model compiled,
     * and attach them. A reader refusal becomes this notebook's error and leaves
     * it with no cells; the model itself keeps serving. `ok` when its cells were
     * read, `refused` when the reader refused them, `broken` when it did not
@@ -2838,7 +2830,7 @@ export class Model {
          : undefined;
    }
 
-   /** Why the reader refused this served notebook's cells, if it did. */
+   /** Why the reader refused this linear report's cells, if it did. */
    public getNotebookReaderRefusal(): NotebookReaderError | undefined {
       return this.notebookReaderRefusal;
    }
@@ -2871,19 +2863,20 @@ export class Model {
       return undefined;
    }
 
+   /**
+    * A `.malloynb` read as cells, for the reports read. Anything else is
+    * refused: a `.malloy` report's tiles are in its manifest.
+    */
    public async getNotebook(): Promise<ApiReportCells> {
+      if (!this.modelPath.endsWith(NOTEBOOK_FILE_SUFFIX)) {
+         throw new ModelNotFoundError(
+            `${this.modelPath} is not a .malloynb. Only a .malloynb is read as cells; a .malloy report's tiles are in its manifest.`,
+         );
+      }
       if (this.compilationError) {
          throw this.compilationError;
       }
-      if (this.isNotebook()) {
-         const readerError = this.notebookReaderError();
-         if (readerError) throw readerError;
-         return this.getNotebookModel();
-      } else {
-         throw new ModelNotFoundError(
-            `${this.modelPath} is not a valid notebook name.  Notebook files must end in .malloynb, or be a .malloy report with a model-level ## artifact { layout=linear tiles=[…] } tag.`,
-         );
-      }
+      return this.getNotebookModel();
    }
 
    /** The served copy reading this model's state. */
@@ -3700,7 +3693,7 @@ export class Model {
     *
     * For an ordinary file, its export closure, the same set
     * {@link curateForDiscovery} lists. For a dashboard, which admits nothing of
-    * its own (as does a served notebook), only the exported names that trace
+    * its own (as does a linear report), only the exported names that trace
     * to the package surface: a source it may read, or a query over one.
     */
    /** {@link publishedNames}, for a reader that applies the same rule to its own view of the file. */
@@ -3862,12 +3855,12 @@ export class Model {
    }
 
    /**
-    * Under an active surface, a predicate for the source names the notebook
-    * GET lists with their schema: the ones a query on this notebook's path
-    * may name. A `.malloynb` cell runs as its `run:` statement alone, which
-    * the query route admits only over what the surface publishes, so a source
-    * its cells declare is withheld, as a hidden one is. Undefined when nothing
-    * is curated.
+    * Under an active surface, a predicate for the source names the reports
+    * read lists with their schema for a `.malloynb`: the ones a query on its
+    * path may name. A cell runs as its `run:` statement alone, which the query
+    * route admits only over what the surface publishes, so a source its cells
+    * declare is withheld, as a hidden one is. Undefined when nothing is
+    * curated.
     */
    private notebookQueryable(
       cellIndex?: number,
@@ -3878,14 +3871,14 @@ export class Model {
    }
 
    /**
-    * Whether the notebook GET may show a cell's `queryInfo`. Its schema lists
-    * every column the cell's query returns, so a cell the query route would
-    * refuse (`run: secret -> { select: * }`) would otherwise describe the
-    * hidden source here. Asks {@link assertNotebookCellOnSurface}, which for a
-    * `.malloynb` runs the query route's own boundary checks on the cell's
-    * `run:`, its joins included. Decided once per cell for the boundary in
-    * force, since the cells and the model are fixed for this Model's life; a
-    * read that fails is not remembered.
+    * Whether the reports read may show a `.malloynb` cell's `queryInfo`. Its
+    * schema lists every column the cell's query returns, so a cell the query
+    * route would refuse (`run: secret -> { select: * }`) would otherwise
+    * describe the hidden source here. Asks {@link assertNotebookCellOnSurface},
+    * which runs the query route's own boundary checks on the cell's `run:`,
+    * its joins included. Decided once per cell for the boundary in force,
+    * since the cells and the model are fixed for this Model's life; a read
+    * that fails is not remembered.
     */
    private showsCellQueryInfo(
       cellIndex: number,
@@ -3968,10 +3961,9 @@ export class Model {
             caption: cell.caption,
             newSources: this.serializeNewSources(cell.newSources, index),
             queryInfo: queryInfo ? JSON.stringify(queryInfo) : undefined,
-            runQuery:
-               this.notebookFormat() === "malloynb"
-                  ? malloynbRunQuery(cell)
-                  : undefined,
+            runQuery: isMalloynbPath(this.modelPath)
+               ? malloynbRunQuery(cell)
+               : undefined,
          } as ApiNotebookCell);
       }
 
@@ -3992,7 +3984,7 @@ export class Model {
          : undefined;
       const notebook: ApiReportCells = {
          type: "notebook",
-         format: this.notebookFormat(),
+         format: "malloynb",
          packageName: this.packageName,
          modelPath: this.modelPath,
          malloyVersion: MALLOY_VERSION,

@@ -39,7 +39,7 @@ describe("a .malloynb cell with no hydrated query", () => {
          fs.rmSync(dir, { recursive: true, force: true });
    });
 
-   /** The notebook GET's last cell after dropping that cell's runnable. */
+   /** The reports read's last cell after dropping that cell's runnable. */
    const lastCellOf = async (withSurface: boolean, notebook = NOTEBOOK) => {
       const dir = fs.mkdtempSync(
          path.join(os.tmpdir(), "publisher-nb-unhydrated-"),

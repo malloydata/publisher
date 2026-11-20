@@ -17,9 +17,6 @@ import { type NotebookCellKind } from "./notebook";
 import { collectSourceInfos } from "./source_extraction";
 import { assertNoSqlEmbedsOfGatedSources } from "./sql_embed_gates";
 
-/** `malloynb` is the legacy cell format; `malloy` is a linear `.malloy` report read as cells. */
-export type NotebookFormat = "malloynb" | "malloy";
-
 /** The `queryInfo` a plain cell gets from `anonymous_queries`, for a run compiled on its own on top of the model. */
 export async function tileQueryInfo(
    materializer: ModelMaterializer,
@@ -45,10 +42,10 @@ export async function tileQueryInfo(
 
 export interface RunnableNotebookCell {
    type: "code" | "markdown";
-   /** Set on a served notebook's cells; a `.malloynb` cell has none. */
+   /** Set on a linear `.malloy` report's cells; a `.malloynb` cell has none. */
    kind?: NotebookCellKind;
    text: string;
-   /** A served code cell's own `#(markdown)` prose; author text, so it is served whatever the surface withholds of `queryInfo`. */
+   /** A linear report code cell's own `#(markdown)` prose. */
    markdown?: string;
    /** The 0-based inclusive lines of `text` that hold `markdown`, as the reader saw them. */
    proseLines?: [number, number][];

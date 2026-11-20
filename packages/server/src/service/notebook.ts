@@ -195,7 +195,7 @@ export function artifactNoteOfText(text: string): string | undefined {
 
 export type NotebookCellKind = "markdown" | "query" | "definition";
 
-/** One cell of a served notebook, as the reader sliced it from the file. */
+/** One cell of a linear `.malloy` report, as the reader sliced it from the file. */
 export interface NotebookCellSpan {
    kind: NotebookCellKind;
    type: "markdown" | "code";
@@ -425,7 +425,7 @@ function markdownLineBody(noteText: string): string {
 }
 
 /**
- * A served notebook's cells, read off Malloy's parse tree and token stream.
+ * A linear `.malloy` report's cells, read off Malloy's parse tree and token stream.
  * Pure over its inputs. `modelDef` is the compile of the same `text`, used only
  * to check that every `run:` the reader found is one Malloy compiled, so the
  * k-th query cell is `queryList[k]`.
