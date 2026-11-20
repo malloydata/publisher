@@ -338,7 +338,7 @@ body
 
 describe("fit", () => {
   // `gh-release` writes the page from this. GitHub refuses a body over 125,000
-  // characters, after npm, Docker and PyPI have published, which is what 0.13.0's
+  // characters, after npm and Docker have published, which is what 0.13.0's
   // 136k of narrative did.
 
   /** A header, a narrative of `count` sections of `size` characters each, and a generated list of `prs` entries. */

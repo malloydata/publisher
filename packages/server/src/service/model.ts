@@ -2762,7 +2762,8 @@ export class Model {
       // rebind): each source the copy does not serve whole, `declined`
       // beating `partial`, and `partial` only while it is still re-rooted.
       for (const { outcome, reason } of servedCopyOutcomes(
-         this.servedCopy.problems(),
+         // A storage table dropped for its database twin serves the source.
+         this.servedCopy.problems().filter((p) => !p.servedFromDatabase),
          this.servedCopy.rerootedSourceIDs() ?? new Set(),
       )) {
          recordServedCopyOutcome(outcome, reason);
@@ -2777,6 +2778,16 @@ export class Model {
    public servedCopySourceIDs(): ReadonlySet<string> | "pending" | undefined {
       if (!this.servedCopyEnabled()) return undefined;
       return this.servedCopy.rerootedSourceIDs() ?? "pending";
+   }
+
+   /**
+    * The sources this model's served copy re-rooted on a database table and
+    * on no storage table, by author `sourceID`: undefined when the served
+    * copy is off for this model or has yet to compile.
+    */
+   public servedCopyDatabaseOnlyIDs(): ReadonlySet<string> | undefined {
+      if (!this.servedCopyEnabled()) return undefined;
+      return this.servedCopy.rerootedOnDatabaseOnly();
    }
 
    /** Why this model's served copy leaves sources unserved (empty when off). */

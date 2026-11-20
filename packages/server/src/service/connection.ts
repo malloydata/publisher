@@ -27,10 +27,7 @@ import {
 // Registers the "publisher" connection type (proxies SQL to a remote Publisher);
 // lookupConnection resolves it through the registry like any other type.
 import "@malloydata/db-publisher";
-import {
-   buildPoolOptions,
-   SnowflakeConnection,
-} from "@malloydata/db-snowflake";
+import type { SnowflakeConnection } from "@malloydata/db-snowflake";
 import "@malloydata/db-sqlserver";
 import type { SQLServerConnection } from "@malloydata/db-sqlserver";
 import "@malloydata/db-trino";
@@ -39,10 +36,12 @@ import {
    Connection,
    contextOverlay,
    MalloyConfig,
+   type QueryRecord,
    TableSourceDef,
 } from "@malloydata/malloy";
 import type { LookupConnection } from "@malloydata/malloy/connection";
 import { AxiosError } from "axios";
+import { AsyncLocalStorage } from "async_hooks";
 import { createHash } from "crypto";
 import { mkdtempSync, readFileSync, writeFileSync } from "fs";
 import fs from "fs/promises";
@@ -85,9 +84,11 @@ import {
    EnvironmentConnectionMetadata,
    normalizeSnowflakePrivateKey,
    parseServiceAccountKey,
+   removeUndefined,
    postgresStatementTimeoutMs,
    PROXIED_SSLMODES,
 } from "./connection_config";
+import { buildSnowflakeConnection } from "./snowflake_connection";
 import { gcpImpersonationOverlay } from "./gcp_impersonation";
 import { assertGoogleCredentialsIsNotADirectory } from "./google_credentials";
 import {
@@ -2157,7 +2158,7 @@ export function pgConninfoPair(key: string, value: string): string {
 }
 
 /** The keywords a Postgres attach carries in its secret rather than its path. */
-const PG_SECRET_KEYS = new Set(["user", "password"]);
+const PG_SECRET_KEYS = new Set(["user", "password", "sslpassword"]);
 
 /**
  * The keyword/value pairs of a libpq connection URI, as libpq reads one
@@ -2283,7 +2284,8 @@ function pgConninfoKeyValues(
 
 /**
  * A Postgres connection string split for a DuckDB attach: `path` carries
- * every keyword but the user and password, which go to a DuckDB secret
+ * every keyword but the user, password and client-key password
+ * (`sslpassword`), which go to a DuckDB secret
  * instead ({@link createPgAttachSecret}), so an attach path carries no
  * credential. libpq reads the last of a repeated keyword, and so does this.
  * Exported for tests.
@@ -2291,16 +2293,18 @@ function pgConninfoKeyValues(
 export function splitPgAttachCredentials(
    subject: string,
    conninfo: string,
-): { path: string; user?: string; password?: string } {
+): { path: string; user?: string; password?: string; sslpassword?: string } {
    let user: string | undefined;
    let password: string | undefined;
+   let sslpassword: string | undefined;
    const kept: string[] = [];
    for (const { key, value } of pgConninfoKeyValues(subject, conninfo)) {
       if (key === "user") user = value;
       else if (key === "password") password = value;
+      else if (key === "sslpassword") sslpassword = value;
       else if (!PG_SECRET_KEYS.has(key)) kept.push(pgConninfoPair(key, value));
    }
-   return { path: kept.join(" "), user, password };
+   return { path: kept.join(" "), user, password, sslpassword };
 }
 
 /**
@@ -2317,11 +2321,11 @@ export function pgAttachSecretName(handle: string): string {
 
 /**
  * Prepare a DuckDB `TYPE postgres` attach of `conninfo` under `handle`: its
- * user and password go into a temporary DuckDB secret, never persisted and
+ * user, password and `sslpassword` go into a temporary DuckDB secret, never persisted and
  * redacted when listed, and the returned `path` is what the ATTACH names,
  * with no credential in it. `secret` is the secret's name, for the ATTACH's
  * `SECRET` option (or DuckLake's `METADATA_PARAMETERS`); undefined when the
- * string carries neither a user nor a password. Runs before an instance's
+ * string carries none of them. Runs before an instance's
  * lock, as every attach does.
  */
 export async function createPgAttachSecret(
@@ -2329,16 +2333,25 @@ export async function createPgAttachSecret(
    handle: string,
    conninfo: string,
 ): Promise<{ path: string; secret?: string }> {
-   const { path, user, password } = splitPgAttachCredentials(
+   const { path, user, password, sslpassword } = splitPgAttachCredentials(
       `Connection '${handle}'`,
       conninfo,
    );
-   if (user === undefined && password === undefined) return { path };
+   if (
+      user === undefined &&
+      password === undefined &&
+      sslpassword === undefined
+   ) {
+      return { path };
+   }
    const secret = pgAttachSecretName(handle);
    const options = [
       "TYPE postgres",
       ...(user !== undefined ? [`USER '${escapeSQL(user)}'`] : []),
       ...(password !== undefined ? [`PASSWORD '${escapeSQL(password)}'`] : []),
+      ...(sslpassword !== undefined
+         ? [`SSLPASSWORD '${escapeSQL(sslpassword)}'`]
+         : []),
    ];
    await connection.runSQL(
       `CREATE OR REPLACE TEMPORARY SECRET ${secret} (${options.join(", ")});`,
@@ -3080,10 +3093,29 @@ class AzureDuckDBConnection extends DuckDBConnection {
    }
 }
 
+/**
+ * The DuckLake connection whose storage-secret renewal the current async chain
+ * is running, so a statement the renewal itself issues does not renew again.
+ */
+const renewingStorageSecretOf = new AsyncLocalStorage<object>();
+
 class DuckLakeConnection extends DuckDBConnection {
    private connectionName: string;
    private storageSecretRenewer?: () => Promise<void>;
-   private renewingStorageSecret = false;
+   /**
+    * The renewal in flight, shared by every statement that failed on the
+    * expired credential meanwhile: the statement gate hands the connection to
+    * the next statement as soon as one fails, so a second can fail before the
+    * first's renewal has run, and it must wait for that renewal, not give up.
+    * Resolves to whether the renewal succeeded; it never rejects.
+    */
+   private storageSecretRenewal?: Promise<boolean>;
+   /**
+    * How many renewals have completed. A statement that started before the
+    * latest one completed ran on the old credential, so it runs again on the
+    * new one rather than renewing a credential that is already fresh.
+    */
+   private storageSecretRenewals = 0;
 
    /** @see RenewableStorageSecret */
    setStorageSecretRenewer(renew: () => Promise<void>): void {
@@ -3106,34 +3138,129 @@ class DuckLakeConnection extends DuckDBConnection {
       sql: string,
       options?: Parameters<DuckDBConnection["runSQL"]>[1],
    ): Promise<Awaited<ReturnType<DuckDBConnection["runSQL"]>>> {
+      const renewalsBefore = this.storageSecretRenewals;
       try {
          return await super.runSQL(sql, options);
       } catch (error) {
-         // The renewal's own statement runs through this method; the flag stops
-         // a failure there from recursing.
-         const renew = this.storageSecretRenewer;
-         if (
-            !shouldRenewStorageSecret({
-               error,
-               hasRenewer: !!renew,
-               alreadyRenewing: this.renewingStorageSecret,
-            }) ||
-            !renew
-         ) {
+         if (!(await this.renewedStorageSecretAfter(error, renewalsBefore))) {
             throw await this.catalogUnavailableOr(error);
          }
+         try {
+            return await super.runSQL(sql, options);
+         } catch (rerunError) {
+            throw await this.catalogUnavailableOr(rerunError);
+         }
+      }
+   }
+
+   /**
+    * Streams SQL (the raw `sqlQuery` route) with {@link runSQL}'s recovery:
+    * an expired credential is renewed and the statement run again once, and a
+    * lost catalog is confirmed and reported typed. Both errors arrive before
+    * the first row (DuckDB binds and opens the scan before it yields), so only
+    * the first pull is checked, and nothing is buffered. An error after a row
+    * has been yielded is thrown as it is: running again would repeat rows the
+    * caller already has.
+    */
+   async *runSQLStream(
+      sql: string,
+      options?: Parameters<DuckDBConnection["runSQLStream"]>[1],
+   ): AsyncIterableIterator<QueryRecord> {
+      const renewalsBefore = this.storageSecretRenewals;
+      let rows = super.runSQLStream(sql, options);
+      let first: IteratorResult<QueryRecord>;
+      try {
+         first = await rows.next();
+      } catch (error) {
+         if (!(await this.renewedStorageSecretAfter(error, renewalsBefore))) {
+            throw await this.catalogUnavailableOr(error);
+         }
+         rows = super.runSQLStream(sql, options);
+         try {
+            first = await rows.next();
+         } catch (rerunError) {
+            throw await this.catalogUnavailableOr(rerunError);
+         }
+      }
+      if (first.done) return;
+      // A consumer that stops early (a cap, an abort) returns this stream; the
+      // driver's must be returned too, or its statement is never released.
+      // `yield*` forwards that, but not while the first row is held here.
+      try {
+         yield first.value;
+         yield* rows;
+      } finally {
+         await rows.return?.(undefined);
+      }
+   }
+
+   /**
+    * Re-resolve the storage credential when `error` is an expired one, so
+    * the caller runs its statement again; false, renewing nothing, otherwise.
+    * A renewal already in flight is joined rather than started again, and
+    * one that completed since the statement started (`renewalsBefore`) is
+    * taken as done, so statements failing together share one renewal and each
+    * runs once more. A renewal that fails (an STS outage) is logged once and
+    * answers false to every statement sharing it, so each throws its own
+    * expired-credential error, the storage refusal the caller is told of,
+    * rather than the renewer's.
+    */
+   private async renewedStorageSecretAfter(
+      error: unknown,
+      renewalsBefore: number,
+   ): Promise<boolean> {
+      const renew = this.storageSecretRenewer;
+      if (
+         !renew ||
+         !shouldRenewStorageSecret({
+            error,
+            hasRenewer: !!renew,
+            // The renewal's own statement runs through runSQL: a failure there
+            // is the renewal's to throw, not one to wait on itself for.
+            alreadyRenewing: renewingStorageSecretOf.getStore() === this,
+         })
+      ) {
+         return false;
+      }
+      if (
+         !this.storageSecretRenewal &&
+         this.storageSecretRenewals === renewalsBefore
+      ) {
          logger.info(
             "Object-storage credential expired; re-resolving and retrying once",
             { connection: this.connectionName },
          );
-         this.renewingStorageSecret = true;
-         try {
-            await renew();
-         } finally {
-            this.renewingStorageSecret = false;
-         }
-         return await super.runSQL(sql, options);
+         const renewal = renewingStorageSecretOf
+            .run(this, renew)
+            .then(
+               () => {
+                  this.storageSecretRenewals++;
+                  return true;
+               },
+               (renewalError: unknown) => {
+                  logger.warn(
+                     "Object-storage credential renewal failed; answering the expired credential's refusal",
+                     {
+                        connection: this.connectionName,
+                        error:
+                           renewalError instanceof Error
+                              ? renewalError.message
+                              : String(renewalError),
+                     },
+                  );
+                  return false;
+               },
+            )
+            .finally(() => {
+               if (this.storageSecretRenewal === renewal) {
+                  this.storageSecretRenewal = undefined;
+               }
+            });
+         this.storageSecretRenewal = renewal;
       }
+      // None in flight: one completed since the statement started, so its
+      // credential is already fresh.
+      return (await this.storageSecretRenewal) ?? true;
    }
 
    /**
@@ -3364,71 +3491,6 @@ function entryToDuckDBOptions(
       rest.workingDirectory = workingDirectory;
    }
    return { ...removeUndefined(rest), name };
-}
-
-/**
- * Drop keys whose value is `undefined` or `null`.
- *
- * The null guard for connectors Publisher builds itself, outside Malloy's
- * registry (which strips nulls on its own path). A surviving `null` reaches
- * `makeDigest`, which reads `.length` off each part, and throws on the first
- * digest; the package-load worker takes that digest, so the whole package fails
- * to load ("import reference failure") while /compile still succeeds.
- *
- * Nulls come from an explicit `null` in publisher.config.json or a client
- * serializing unset optionals over POST /connections, and persist through the
- * repository's JSON round trip. An explicit null and an omitted field produce
- * the same digest.
- */
-function removeUndefined<T extends object>(
-   value: T,
-): { [K in keyof T]?: Exclude<T[K], null> } {
-   return Object.fromEntries(
-      Object.entries(value).filter(
-         ([, fieldValue]) => fieldValue !== undefined && fieldValue !== null,
-      ),
-   ) as { [K in keyof T]?: Exclude<T[K], null> };
-}
-
-function buildSnowflakePrivateKeyConnection(
-   metadata: EnvironmentConnectionMetadata,
-): SnowflakeConnection {
-   const name = metadata.apiConnection.name!;
-   const snowflake = metadata.apiConnection.snowflakeConnection;
-   if (!snowflake?.privateKey) {
-      throw new Error(
-         `Snowflake private key is required for connection ${name}`,
-      );
-   }
-   if (!snowflake.account) {
-      throw new Error(`Snowflake account is required for connection ${name}`);
-   }
-   if (!snowflake.username) {
-      throw new Error(`Snowflake username is required for connection ${name}`);
-   }
-   if (!snowflake.warehouse) {
-      throw new Error(`Snowflake warehouse is required for connection ${name}`);
-   }
-
-   return new SnowflakeConnection(name, {
-      connOptions: {
-         account: snowflake.account,
-         username: snowflake.username,
-         privateKey: normalizeSnowflakePrivateKey(snowflake.privateKey),
-         authenticator: "SNOWFLAKE_JWT",
-         warehouse: snowflake.warehouse,
-         ...removeUndefined({
-            password: snowflake.password,
-            privateKeyPass: snowflake.privateKeyPass,
-            database: snowflake.database,
-            schema: snowflake.schema,
-            role: snowflake.role,
-         }),
-      },
-      timeoutMs: snowflake.responseTimeoutMilliseconds,
-      // Same pool sizing as the registry path; server-owned, not in the API.
-      poolOptions: buildPoolOptions({ poolMin: 1, poolMax: 20 }),
-   });
 }
 
 // TLS mode for a proxied postgres connection, as pg connectionString query
@@ -3798,7 +3860,10 @@ export function buildEnvironmentMalloyConfig(
    // Promises are cached so concurrent lookups share one build and never leak a
    // losing instance's pool. One cache per branch keeps the concrete subtype.
    const duckLakeCache = new Map<string, Promise<DuckLakeConnection>>();
-   const snowflakeJwtCache = new Map<string, Promise<SnowflakeConnection>>();
+   const snowflakeConnectionCache = new Map<
+      string,
+      Promise<SnowflakeConnection>
+   >();
    const azureDuckDBCache = new Map<string, Promise<AzureDuckDBConnection>>();
    const proxyConnectionCache = new Map<
       string,
@@ -4202,13 +4267,18 @@ export function buildEnvironmentMalloyConfig(
                return connectionPromise;
             }
 
-            if (metadata?.hasSnowflakePrivateKey) {
-               let connectionPromise = snowflakeJwtCache.get(name!);
+            // Every Snowflake connection, password or key pair, so each reads
+            // its rows the same way (snowflake_connection.ts).
+            if (metadata?.apiConnection.type === "snowflake") {
+               let connectionPromise = snowflakeConnectionCache.get(name!);
                if (!connectionPromise) {
                   connectionPromise = Promise.resolve(
-                     buildSnowflakePrivateKeyConnection(metadata),
+                     buildSnowflakeConnection(
+                        name!,
+                        metadata.apiConnection.snowflakeConnection,
+                     ),
                   );
-                  snowflakeJwtCache.set(name!, connectionPromise);
+                  snowflakeConnectionCache.set(name!, connectionPromise);
                }
                return connectionPromise;
             }
@@ -4338,7 +4408,7 @@ export function buildEnvironmentMalloyConfig(
       releaseConnections: async () => {
          const wrapperPromises: Promise<Connection>[] = [
             ...duckLakeCache.values(),
-            ...snowflakeJwtCache.values(),
+            ...snowflakeConnectionCache.values(),
             ...azureDuckDBCache.values(),
             ...proxyConnectionCache.values(),
             ...postgresConnectionCache.values(),
@@ -4362,7 +4432,7 @@ export function buildEnvironmentMalloyConfig(
          );
          duckLakeCache.clear();
          duckLakeCurrent.clear();
-         snowflakeJwtCache.clear();
+         snowflakeConnectionCache.clear();
          azureDuckDBCache.clear();
          proxyConnectionCache.clear();
          postgresConnectionCache.clear();

@@ -227,6 +227,12 @@ export interface QueryPathInput {
    rollupTablesRead?: readonly StorageTable[];
    /** The tables only the served copy reads (`#(materialize)`): its decision is theirs. */
    servedCopyTables?: ReadonlySet<string>;
+   /**
+    * For a table only the served copy reads that it leaves as written for
+    * its columns (`column_types`): the columns, named, by table path. The
+    * table's `detail` when the served copy declined with none of its own.
+    */
+   servedCopyDetails?: ReadonlyMap<string, string>;
    /** For a storage answer: `served_copy` when the served copy on `virtual` answered. */
    via?: "served_copy";
    /**
@@ -255,6 +261,10 @@ export interface QueryPathInput {
       tier: "storage" | "database";
       built: boolean;
       stale: boolean;
+      /** A storage table the storage mode does not read (`storage_mode`). */
+      storageNotServed?: true;
+      /** A database table read in place of a storage one the mode does not read. */
+      storageTwinNotServed?: true;
       dataAsOf?: string;
    };
    /** The `sourceID` chain of every source in the model, for `notConsidered`. */
@@ -503,6 +513,16 @@ function viewTableDecision(
          unbuilt: !input.view.built,
          ...(input.view.dataAsOf ? { dataAsOf: input.view.dataAsOf } : {}),
       };
+      if (input.view.storageTwinNotServed) {
+         // Its storage twin, which the storage mode does not read: named as
+         // a rollup's is, before the database table that answered.
+         skip(
+            { ...t, key: `${t.key}/storage`, tier: "storage", stale: false },
+            "NOT_SERVED",
+            undefined,
+            "storage_mode",
+         );
+      }
       if (viewDecision?.outcome === "used") {
          if (input.runFailed) {
             skip(t, "READ_FAILED");
@@ -522,6 +542,9 @@ function viewTableDecision(
          }
       } else if (!input.view.built) {
          skip(t, "NOT_BUILT");
+      } else if (input.view.storageNotServed) {
+         // The storage mode reads no destination; the serve verdict names it.
+         skip(t, "NOT_SERVED", undefined, "storage_mode");
       } else if (input.view.stale) {
          skip(t, "STALE");
       } else if (viewDecision?.reason === "row_level_gate") {
@@ -571,14 +594,17 @@ function storageTableDecisions(
             // A table only the served copy reads skipped for the served
             // copy's reason, whichever candidate the tier reported.
             const served = decided.get("served");
-            const decision =
-               served && input.servedCopyTables?.has(t.binding?.tablePath ?? "")
-                  ? served
-                  : storageDecision;
+            const servedOnly = input.servedCopyTables?.has(
+               t.binding?.tablePath ?? "",
+            );
+            const decision = served && servedOnly ? served : storageDecision;
             skip(
                t,
                skipReasonOf(decision),
-               decision.callerDetail,
+               decision.callerDetail ??
+                  (servedOnly && decision.code === "served_copy_not_served"
+                     ? input.servedCopyDetails?.get(t.binding?.tablePath ?? "")
+                     : undefined),
                declineOfCode(decision.code)?.code,
             );
          }
@@ -611,7 +637,10 @@ function storageTableDecisions(
    } else {
       // Not routed at all (the tier is off or write-only): every storage table
       // carries the package's warning, and the query reads its own warehouse.
-      for (const t of storageTables) if (t.warned) skip(t, "NOT_SERVED");
+      // The storage mode is the reason, whichever tier the verdict judged.
+      for (const t of storageTables) {
+         if (t.warned) skip(t, "NOT_SERVED", undefined, "storage_mode");
+      }
    }
    return storageAnswered;
 }
@@ -906,6 +935,22 @@ function tablesFor(
       };
       // A `#(rollup)` table is the rollup leg's on either tier.
       if (variant && binding) {
+         const database =
+            plan && input.storageWarned && !binding.database
+               ? { ...databaseState(plan, kind, input), ...named }
+               : undefined;
+         if (database && !database.unbuilt) {
+            // The storage mode reads no destination, so the leg reads the
+            // database table bound beside it: the storage one is the tier's,
+            // never the leg's, and is reported as not served.
+            add({
+               ...storageState(binding, plan, kind, fresh),
+               ...(rollupName ? { rollupName } : {}),
+               warned: true,
+            });
+            add(database);
+            return;
+         }
          add({ ...storageState(binding, plan, kind, fresh), ...named });
          return;
       }

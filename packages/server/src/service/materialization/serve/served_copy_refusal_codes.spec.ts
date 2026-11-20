@@ -237,6 +237,22 @@ describe("the served copy's refusal codes", () => {
       }
    });
 
+   it("names the columns a column_types problem carries, with their types", () => {
+      // F-07: the warning said only that some column differed.
+      expect(
+         warningsFor([
+            {
+               reason: "column_types",
+               sourceName: "s",
+               detail:
+                  "column `v` (declared `string[]`) is not in the stored table",
+            },
+         ]).map((w) => w.message),
+      ).toEqual([
+         "This source's stored column types differ from the types the model declares, or one cannot be declared on its table, so the served copy leaves it as written and it answers live: column `v` (declared `string[]`) is not in the stored table.",
+      ]);
+   });
+
    it("words a compile failure that names a source as that source's kept blocks", () => {
       // An extension table that does not compile over its kept blocks: the
       // copy is compiled again with its own blocks only.

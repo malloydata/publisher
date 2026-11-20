@@ -532,11 +532,15 @@ export function asOfBuildWarnings(
 /**
  * Warnings for `storage=` sources the serve path is not honoring, per
  * PERSIST_STORAGE_MODE: `off` ignores the annotation, `write-only` builds but
- * does not route. `on` warns nothing.
+ * does not route. `on` warns nothing. A source whose table is also bound,
+ * and fresh, in its own database is answered from that table, and the
+ * warning says so.
  */
 export function storageWarnings(
    plan: BuildPlan | null,
    mode: string,
+   /** Whether a table of this content address is bound and fresh in its own database. */
+   databaseFresh: (sourceEntityId: string) => boolean = () => false,
 ): ApiPackageWarning[] {
    if (mode === "on" || !plan?.sources) return [];
    const warnings: ApiPackageWarning[] = [];
@@ -551,23 +555,30 @@ export function storageWarnings(
          ? `Measures of \`${rollup.baseSourceName}\` pre-aggregated at grain ` +
            `(${rollup.grainDimensions.join(", ")}) declare `
          : "";
-      const message = rollup
-         ? mode === "off"
-            ? `${at}storage="${storage}", but PERSIST_STORAGE_MODE is off, so ` +
-              `the rollup is not built. Queries that would have used it are ` +
-              `answered from \`${rollup.baseSourceName}\` instead — correct, ` +
-              `but unaccelerated.`
-            : `${at}storage="${storage}", and the rollup is built, but ` +
-              `PERSIST_STORAGE_MODE is write-only, so the serve path does not ` +
-              `route to it. Queries are answered from ` +
-              `\`${rollup.baseSourceName}\` — correct, but unaccelerated.`
-         : mode === "off"
-           ? `declares storage="${storage}" but PERSIST_STORAGE_MODE is off; ` +
-             `the annotation is ignored and the source is served live from ` +
-             `its own warehouse.`
-           : `is materialized into storage "${storage}" but ` +
-             `PERSIST_STORAGE_MODE is write-only; the serve path is not ` +
-             `routed to the materialized table (served live).`;
+      const fromDatabase =
+         !!source.sourceEntityId && databaseFresh(source.sourceEntityId);
+      const message = fromDatabase
+         ? `${rollup ? at : "declares "}storage="${storage}", but ` +
+           `PERSIST_STORAGE_MODE is ${mode}, so no query reads the storage ` +
+           `table. Queries are answered from its table in the source's own ` +
+           `database, which is bound and fresh.`
+         : rollup
+           ? mode === "off"
+              ? `${at}storage="${storage}", but PERSIST_STORAGE_MODE is off, so ` +
+                `the rollup is not built. Queries that would have used it are ` +
+                `answered from \`${rollup.baseSourceName}\` instead — correct, ` +
+                `but unaccelerated.`
+              : `${at}storage="${storage}", and the rollup is built, but ` +
+                `PERSIST_STORAGE_MODE is write-only, so the serve path does not ` +
+                `route to it. Queries are answered from ` +
+                `\`${rollup.baseSourceName}\` — correct, but unaccelerated.`
+           : mode === "off"
+             ? `declares storage="${storage}" but PERSIST_STORAGE_MODE is off; ` +
+               `the annotation is ignored and the source is served live from ` +
+               `its own warehouse.`
+             : `is materialized into storage "${storage}" but ` +
+               `PERSIST_STORAGE_MODE is write-only; the serve path is not ` +
+               `routed to the materialized table (served live).`;
       warnings.push({
          model: source.modelPath ?? "",
          subject: rollup ? rollup.baseSourceName : source.name,
@@ -890,7 +901,38 @@ function nativeSchemaMissingMessage(n: NativeSchemaNotice): string {
  * A caller-safe sentence for why a served copy leaves a source unserved. The
  * compiler's own message stays in the logs: it can name the destination alias.
  */
+/**
+ * A dropped storage table's problem, said of the source the database table
+ * now serves: the reason, then that the served copy reads its database table
+ * instead of leaving the source as written.
+ */
+function fellBackMessage(message: string): string {
+   const instead = "the served copy reads its database table instead.";
+   const at = message.search(/[Tt]he served copy leaves /);
+   if (at < 0)
+      return `${message} ${instead[0].toUpperCase()}${instead.slice(1)}`;
+   const head = message.slice(0, at);
+   return head.endsWith(". ") || head === ""
+      ? `${head}${instead[0].toUpperCase()}${instead.slice(1)}`
+      : `${head}${instead}`;
+}
+
 function servedCopyProblemMessage(
+   problem: ServedCopyProblem,
+   inlinedButKept = false,
+   takesInline = true,
+): string {
+   const message = servedCopyProblemReasonMessage(
+      problem,
+      inlinedButKept,
+      takesInline,
+   );
+   // A storage table the served copy dropped for a source it then
+   // re-rooted on its database table: the reason, said of that table.
+   return problem.servedFromDatabase ? fellBackMessage(message) : message;
+}
+
+function servedCopyProblemReasonMessage(
    problem: ServedCopyProblem,
    inlinedButKept = false,
    /** Whether the source's declaration takes `inline=` (a `#(materialize)` one). */
@@ -907,7 +949,11 @@ function servedCopyProblemMessage(
       case "cross_connection_unbuilt":
          return "This model's served copy re-roots a source onto its storage destination, which moves a join of it across connections, and the join cannot be left out; the copy compiles once both sides are built into one destination, and serves live until then.";
       case "column_types":
-         return "This source's stored column types differ from the types the model declares, or one cannot be declared on its table, so the served copy leaves it as written and it answers live.";
+         return (
+            "This source's stored column types differ from the types the model declares, or one cannot be declared on its table, so the served copy leaves it as written and it answers live" +
+            // The columns, named with their declared and stored types.
+            (problem.detail ? `: ${problem.detail}.` : ".")
+         );
       case "no_declaration":
          return "This source's declaration was not found in the compiled model, so the served copy leaves it as written and it answers live.";
       case "definition_not_parsed":

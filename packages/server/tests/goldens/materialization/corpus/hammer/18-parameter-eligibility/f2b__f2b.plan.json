@@ -1,3 +1,81 @@
 {
-  "compileError": "Error(s) compiling model:"
+  "droppedPersistSources": [],
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "orders_pg",
+        "dependsOn": {
+          "high_value_daily@<hammer>/f2b/f2b.malloy": []
+        },
+        "order": [
+          "high_value_daily@<hammer>/f2b/f2b.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "kinds": {
+      "high_value_daily@<hammer>/f2b/f2b.malloy": "persist"
+    },
+    "materializePlans": {},
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "high_value_daily@<hammer>/f2b/f2b.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "high_value_daily@<hammer>/f2b/f2b.malloy": "f2b.malloy"
+    }
+  },
+  "rollupsKeepingGates": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "orders_pg",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "high_value_daily@<hammer>/f2b/f2b.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "high_value_daily@<hammer>/f2b/f2b.malloy": {
+        "annotationFields": {
+          "name": "f2b_high_value_daily",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "order_date",
+            "type": "date"
+          },
+          {
+            "name": "total",
+            "type": "number"
+          }
+        ],
+        "connectionName": "orders_pg",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "f2b.malloy",
+        "name": "high_value_daily",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "2366a624d0cf11ca69e0a782e347b8963aacba4a638baa46c8260dc49a8beb02",
+        "sourceID": "high_value_daily@<hammer>/f2b/f2b.malloy",
+        "sql": "sha256:d72611ee459e56a7"
+      }
+    }
+  }
 }

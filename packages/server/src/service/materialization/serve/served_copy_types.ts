@@ -47,13 +47,24 @@ export interface ServedCopyProblem {
     */
    leaks?: string[];
    coverage?: string[];
-   /** The compiler's message, for logs and the package warning only. */
+   /**
+    * The compiler's message, for logs and the package warning only. For
+    * `column_types`: the columns the table cannot carry, each named (unless
+    * hidden) with its declared and stored types, caller-safe, so the package
+    * warning and the path report's `detail` say which.
+    */
    detail?: string;
    /**
     * For `definition_not_parsed`: the columns the source's kept
     * `include { … }` hides that its stored table does not hold.
     */
    hiddenUnstored?: string[];
+   /**
+    * The problem is a storage table's, of a source bound in both tiers: the
+    * served copy dropped that table and serves the source from its database
+    * table instead.
+    */
+   servedFromDatabase?: true;
 }
 
 export interface Compiled {
@@ -149,6 +160,12 @@ export interface Compiled {
    leftOutTables?: ReadonlySet<string>;
    /** The columns each re-root leaves out, by its `sourceID`. */
    leftOutColumns?: ReadonlyMap<string, readonly string[]>;
+   /**
+    * Why each re-root leaves each column out, by its `sourceID`, then
+    * column: a caller-safe phrase naming the column (unless it is hidden)
+    * with its declared and stored types, for a decline's caller detail.
+    */
+   leftOutWhy?: ReadonlyMap<string, ReadonlyMap<string, string>>;
    aliased: Binding[];
    problems: ServedCopyProblem[];
    /**

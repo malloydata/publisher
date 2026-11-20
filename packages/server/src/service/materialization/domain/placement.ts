@@ -49,26 +49,56 @@ export function instructsUnwritableDestination(
 }
 
 /**
+ * The served copy re-roots a source on one table: of the bindings it may read
+ * for that source (fresh, and a storage one only under `on`), the storage
+ * table over the database one, as the rollup, persisted view and persisted
+ * query legs read a storage binding first (`storageLookupOf`). Whether a
+ * `tier` candidate stands beside the others that re-root the same source.
+ */
+export function servedCopyReadsTier(tier: Tier, others: readonly Tier[]) {
+   return tier === "storage" || !others.includes("storage");
+}
+
+/**
  * The tier a query reads a planned source's table in, as the serve verdict
  * judges it: a storage binding storing the source decides it
  * (`storageLookupOf`), since a host may place a source with no `storage=` in
- * a storage destination; with none, a declared `storage=` does. The served
- * copy (every source but a rollup, persisted view or persisted query, which
- * read their storage binding through their own leg) reads a fresh table over
- * a stale one, so a source whose storage table is stale while its database
- * table is fresh is read from the database.
+ * a storage destination; with none, a declared `storage=` does. Where the
+ * mode lets no query read the storage table (`write-only`, `off`), a
+ * database table bound beside it, whatever its freshness (which the verdict
+ * then judges): every leg falls back to it, the served copy by re-rooting
+ * the source on it and the rollup, persisted view and persisted query legs
+ * through their own lookups. Under
+ * `on`, the served copy (every source but a rollup, persisted view or
+ * persisted query, which read their storage binding through their own leg)
+ * reads the storage table while it is fresh ({@link servedCopyReadsTier}),
+ * else a fresh database table beside it; and that database table too where
+ * its compile dropped the storage one (`servedCopyOnDatabase`).
  */
 export function readTier(facts: {
    storageBound: boolean;
    storageFresh: boolean;
+   /** PERSIST_STORAGE_MODE lets a query read a storage table ({@link storageServes}). */
+   storageServed: boolean;
+   databaseBound: boolean;
    databaseFresh: boolean;
    servedCopy: boolean;
+   /**
+    * The compiled served copy re-rooted the source on its database table
+    * alone: it dropped the storage table, and fell back.
+    */
+   servedCopyOnDatabase?: boolean;
    declaredStorage: boolean;
 }): Tier {
    if (!facts.storageBound) {
       return facts.declaredStorage ? "storage" : "database";
    }
-   return facts.servedCopy && !facts.storageFresh && facts.databaseFresh
+   if (!facts.storageServed) {
+      return facts.databaseBound ? "database" : "storage";
+   }
+   if (!facts.servedCopy) return "storage";
+   return (!facts.storageFresh || facts.servedCopyOnDatabase) &&
+      facts.databaseFresh
       ? "database"
       : "storage";
 }

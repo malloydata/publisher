@@ -23,6 +23,7 @@ import {
    getSchemasForConnection,
    listTablesForSchema,
 } from "../../../src/service/db_utils";
+import { runInternalSQL } from "../../../src/service/duckdb_lockdown";
 import {
    startClosingListener,
    type ClosingListener,
@@ -295,7 +296,10 @@ describe("DuckLake Connection Tests", () => {
             createdConnections.push(connection);
 
             // Verify required extensions are loaded
-            const extensions = await connection.runSQL(
+            // duckdb_extensions() is refused to caller SQL on a locked
+            // instance; read it as Publisher's own statement.
+            const extensions = await runInternalSQL(
+               connection,
                "SELECT extension_name FROM duckdb_extensions() WHERE loaded = true",
             );
             const extensionNames = extensions.rows.map(

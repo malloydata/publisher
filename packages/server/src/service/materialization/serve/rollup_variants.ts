@@ -1637,12 +1637,7 @@ export class RollupVariantServe {
       plan: RollupVariantPlan,
       pinned: Pinned,
    ): string | undefined {
-      const lookup = storageLookupOf(
-         pinned,
-         rollupSourceID(plan),
-         "rollup",
-         plan.storage !== undefined,
-      );
+      const lookup = this.storageLookup(plan, pinned);
       if (!lookup) return undefined;
       return (
          this.tableOf(plan, pinned)?.binding?.destinationName ??
@@ -1650,6 +1645,35 @@ export class RollupVariantServe {
             ? lookup.binding.destinationName
             : plan.storage)
       );
+   }
+
+   /**
+    * The rollup's storage table at the pin, or undefined when it is read in
+    * the source's own database. Keyed by the rollup's own `sourceID`, never
+    * by its name; the binding decides the tier (storageLookupOf). While no
+    * storage destination is read (`PERSIST_STORAGE_MODE` write-only or off),
+    * a database table bound beside a storage one answers, as `on`'s rules
+    * would with the storage tier removed.
+    */
+   private storageLookup(
+      plan: RollupVariantPlan,
+      pinned: Pinned,
+   ): ReturnType<typeof storageLookupOf> {
+      const sourceID = rollupSourceID(plan);
+      const lookup = storageLookupOf(
+         pinned,
+         sourceID,
+         "rollup",
+         plan.storage !== undefined,
+      );
+      if (!lookup || this.host.serveDestinationConfig()) return lookup;
+      const planned = sourceID
+         ? this.host.catalog()?.planned.get(sourceID)
+         : undefined;
+      return planned &&
+         Object.hasOwn(pinned.snapshot.entries, planned.sourceEntityId)
+         ? undefined
+         : lookup;
    }
 
    /** The rollup's table at the pin: a fresh storage binding, or a planned database one. */
@@ -1667,14 +1691,7 @@ export class RollupVariantServe {
         }
       | undefined {
       const sourceID = rollupSourceID(plan);
-      // Keyed by the rollup's own `sourceID`, never by its name; the
-      // binding decides the tier (storageLookupOf).
-      const lookup = storageLookupOf(
-         pinned,
-         sourceID,
-         "rollup",
-         plan.storage !== undefined,
-      );
+      const lookup = this.storageLookup(plan, pinned);
       if (lookup) {
          const binding =
             lookup?.state === "fresh" || lookup?.state === "stale_ok"

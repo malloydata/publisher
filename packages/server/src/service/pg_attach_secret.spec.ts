@@ -26,6 +26,7 @@ describe("splitPgAttachCredentials", () => {
          path: "host=db.internal port=5432 dbname=cat sslmode=require",
          user: "reader",
          password: "s3cr3t",
+         sslpassword: undefined,
       });
    });
 
@@ -38,6 +39,7 @@ describe("splitPgAttachCredentials", () => {
          path: "host=h options='-c statement_timeout=5'",
          user: "a b",
          password: "it's 'q' sp ace",
+         sslpassword: undefined,
       });
    });
 
@@ -50,6 +52,7 @@ describe("splitPgAttachCredentials", () => {
          path: "host=db.internal port=6543 dbname='my db' sslmode=verify-full application_name=pub",
          user: "re@der",
          password: "p@ss:w/d",
+         sslpassword: undefined,
       });
    });
 
@@ -58,6 +61,7 @@ describe("splitPgAttachCredentials", () => {
          path: "host=h dbname=db",
          user: "u",
          password: "pw",
+         sslpassword: undefined,
       });
    });
 
@@ -80,6 +84,28 @@ describe("splitPgAttachCredentials", () => {
          path: "host=h dbname=real application_name=x",
          user: "u",
          password: "p",
+         sslpassword: undefined,
+      });
+   });
+
+   it("moves a client-key password out of both forms", () => {
+      expect(
+         split(
+            "host=h sslmode=verify-full sslkey=/k.pem sslpassword='key pass' passfile=/pgpass",
+         ),
+      ).toEqual({
+         path: "host=h sslmode=verify-full sslkey=/k.pem passfile=/pgpass",
+         user: undefined,
+         password: undefined,
+         sslpassword: "key pass",
+      });
+      expect(
+         split("postgresql://u@h/d?sslkey=%2Fk.pem&sslpassword=key%20pass"),
+      ).toEqual({
+         path: "host=h dbname=d sslkey=/k.pem",
+         user: "u",
+         password: undefined,
+         sslpassword: "key pass",
       });
    });
 
@@ -88,6 +114,7 @@ describe("splitPgAttachCredentials", () => {
          path: "service=catalog",
          user: undefined,
          password: undefined,
+         sslpassword: undefined,
       });
    });
 
@@ -162,7 +189,7 @@ describe.skipIf(!(await postgresExtensionLoads()))(
             const { path, secret } = await createPgAttachSecret(
                connection,
                "lake",
-               "host=h dbname=d user=reader password=never-shown",
+               "host=h dbname=d user=reader password=never-shown sslpassword=key-never-shown",
             );
             expect(path).toBe("host=h dbname=d");
             expect(secret).toBe(pgAttachSecretName("lake"));
@@ -174,6 +201,9 @@ describe.skipIf(!(await postgresExtensionLoads()))(
             expect(rows).toHaveLength(1);
             expect(rows[0].persistent).toBe(false);
             expect(String(rows[0].secret_string)).not.toContain("never-shown");
+            expect(String(rows[0].secret_string)).toContain(
+               "sslpassword=redacted",
+            );
          } finally {
             await connection.close();
          }
