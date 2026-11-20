@@ -235,6 +235,13 @@ export function formatReadinessLine(counts: {
  */
 interface EnvironmentHooks {
    packageLoaded: ((environmentName: string, pkg: Package) => void) | null;
+   /**
+    * A package is about to be deleted or unloaded: its running builds are
+    * aborted before this returns, and it resolves once they have settled.
+    */
+   packageRetiring:
+      | ((environmentName: string, packageName: string) => Promise<void>)
+      | null;
    versionArchived:
       | ((
            environmentName: string,
@@ -288,6 +295,10 @@ const ATTACH_HOOK: {
       env.setPackageLoadedHook(
          hook && ((pkg) => hook(env.getEnvironmentName(), pkg)),
       ),
+   packageRetiring: (env, hook) =>
+      env.setPackageRetiringHook(
+         hook && ((pkg) => hook(env.getEnvironmentName(), pkg)),
+      ),
    versionArchived: (env, hook) =>
       env.setVersionArchivedHook(
          hook &&
@@ -306,6 +317,9 @@ const ATTACH_HOOK: {
             ((packageName, versionId) => hook(env, packageName, versionId)),
       ),
 };
+
+/** Handed to every Environment when it is created. */
+const PACKAGE_HOOKS = ["packageLoaded", "packageRetiring"] as const;
 
 /** Picked up when an Environment's version registry is bound. */
 const VERSION_HOOKS = [
@@ -376,6 +390,7 @@ export class EnvironmentStore
    private memoryGovernor: PackageMemoryGovernor | null = null;
    private hooks: EnvironmentHooks = {
       packageLoaded: null,
+      packageRetiring: null,
       versionArchived: null,
       versionDeleted: null,
       owedReclaim: null,
@@ -477,6 +492,17 @@ export class EnvironmentStore
     */
    public setPackageLoadedHook(hook: EnvironmentHooks["packageLoaded"]): void {
       this.setHook("packageLoaded", hook);
+   }
+
+   /**
+    * Attach (or detach with `null`) the callback run before a package is
+    * deleted or unloaded, which aborts its running builds before it returns
+    * and resolves once they have settled.
+    */
+   public setPackageRetiringHook(
+      hook: EnvironmentHooks["packageRetiring"],
+   ): void {
+      this.setHook("packageRetiring", hook);
    }
 
    /**
@@ -860,7 +886,7 @@ export class EnvironmentStore
             environmentInstance.markStorageDestinationsUnknown();
          }
          environmentInstance.setMemoryGovernor(this.memoryGovernor);
-         this.attachHooks(environmentInstance, ["packageLoaded"]);
+         this.attachHooks(environmentInstance, PACKAGE_HOOKS);
          // Its version rules, with the storage-binding resolver every package
          // here restores its serve bindings through.
          await this.bindVersionRegistry(environmentInstance, dbEnvironment.id);
@@ -2136,7 +2162,7 @@ export class EnvironmentStore
          environment.storageDestinations || [],
       );
       newEnvironment.setMemoryGovernor(this.memoryGovernor);
-      this.attachHooks(newEnvironment, ["packageLoaded"]);
+      this.attachHooks(newEnvironment, PACKAGE_HOOKS);
 
       if (!newEnvironment.metadata) newEnvironment.metadata = {};
       newEnvironment.metadata.location = absoluteEnvironmentPath;

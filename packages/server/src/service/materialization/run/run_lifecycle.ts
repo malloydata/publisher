@@ -44,6 +44,11 @@ import { runFailureReported } from "./run_telemetry";
 export class RunLifecycle {
    /** In-flight runs, so they can be cancelled. In-process only. */
    readonly runningAbortControllers = new Map<string, AbortController>();
+   /** Each in-flight run's package, and its settle. */
+   private readonly runningPackages = new Map<
+      string,
+      { environmentName: string; packageName: string; settled: Promise<void> }
+   >();
 
    constructor(private readonly repository: () => ResourceRepository) {}
 
@@ -112,6 +117,42 @@ export class RunLifecycle {
       });
    }
 
+   /**
+    * Abort every run of `packageName` in `environmentName` running in this
+    * process, before this returns, so a package about to be unloaded starts
+    * no further build. Resolves once each has settled (CANCELLED, or what it
+    * reached first), or after `settleWithinMs`, whichever is sooner: a
+    * statement already sent finishes on a database that ignores the abort,
+    * and the run stops at its next check.
+    */
+   abortPackageRuns(
+      environmentName: string,
+      packageName: string,
+      settleWithinMs: number,
+   ): Promise<void> {
+      const settles: Promise<void>[] = [];
+      for (const [id, run] of this.runningPackages) {
+         if (
+            run.environmentName !== environmentName ||
+            run.packageName !== packageName
+         ) {
+            continue;
+         }
+         this.runningAbortControllers.get(id)?.abort();
+         settles.push(run.settled);
+      }
+      if (settles.length === 0) return Promise.resolve();
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const bound = new Promise<void>((resolve) => {
+         timer = setTimeout(resolve, settleWithinMs);
+         timer.unref?.();
+      });
+      return Promise.race([
+         Promise.all(settles).then(() => undefined),
+         bound,
+      ]).finally(() => clearTimeout(timer));
+   }
+
    /** The single-active conflict error, with the winning run's id when known. */
    activeConflict(
       packageName: string,
@@ -133,11 +174,13 @@ export class RunLifecycle {
       run: (signal: AbortSignal) => Promise<void>,
       // Called once the run has settled and its final status is recorded.
       onSettled?: () => void,
+      // The run's package, so unloading it aborts the run.
+      owner?: { environmentName: string; packageName: string },
    ): void {
       const abortController = new AbortController();
       this.runningAbortControllers.set(id, abortController);
 
-      run(abortController.signal)
+      const settled = run(abortController.signal)
          .catch(async (err) => {
             // Per-source failures arrive already redacted. A whole-run throw has
             // no connection to redact against but can still echo a DSN, so
@@ -262,8 +305,10 @@ export class RunLifecycle {
          })
          .finally(() => {
             this.runningAbortControllers.delete(id);
+            this.runningPackages.delete(id);
             onSettled?.();
          });
+      if (owner) this.runningPackages.set(id, { ...owner, settled });
    }
 }
 

@@ -37,6 +37,12 @@ Two consequences worth knowing. A section merged to `main` ships in the **next**
 
 **Who is affected:** anyone querying a Snowflake `OBJECT` or `VARIANT` column. **What to do:** nothing.
 
+## [Unreleased] — deleting or unloading a package stops its running builds first
+
+**Fixed: a package deleted while a materialization run was building it kept building.** The `DELETE` answered, and the run went on through the package's remaining sources for minutes. Deleting a package, or unloading it, now aborts every run of that package in this process before anything of the package goes, and waits up to 30 seconds for those runs to settle, so the run records `CANCELLED` before the delete answers. A run stops at its next check: a statement already sent to a database that ignores the abort (DuckDB) runs to its end first, and if that takes longer than 30 seconds the delete proceeds with the run aborted and settling behind it.
+
+**Who is affected:** anyone who deletes a package while a run of it is active, and a host that unloads packages from a worker. **What to do:** nothing. A delete issued during a run can now take up to 30 seconds longer to answer, and that run's record reads `CANCELLED` rather than finishing, failing, or building into a package that is gone.
+
 ## [Unreleased] — the build plan names the warehouse tables each source's build reads
 
 **Added: `reads` on each build-plan source (`PersistSourcePlan.reads`).** Each entry lists the warehouse tables its build reads, as `{ connectionName, table }`, so a host whose warehouse table was replaced can rebuild only the sources that read it. The list is taken from the compiled source: every `connection.table('...')` in its lineage, a persisted upstream's tables included (the entry's `sql` inlines them), and a join only when the build uses it. It is absent when the tables cannot be known: the lineage holds an `.sql()` source, whose SQL text Malloy does not parse, or a raw SQL expression such as `sql_number()`. An empty list means the build reads no table.

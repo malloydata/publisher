@@ -298,6 +298,13 @@ interface CommittedRun {
 }
 
 /**
+ * How long deleting or unloading a package waits for its aborted runs to
+ * settle. A run stops at its next check; a statement already sent to a
+ * database that ignores the abort runs to its end first.
+ */
+const PACKAGE_RUNS_SETTLE_MS = 30_000;
+
+/**
  * Orchestrates single-call materialization builds: the facade the controller,
  * the scheduler and main_server.ts call.
  *
@@ -453,8 +460,9 @@ export class MaterializationService {
       run: (signal: AbortSignal) => Promise<void>,
       // Called once the run has settled and its final status is recorded.
       onSettled?: () => void,
+      owner?: { environmentName: string; packageName: string },
    ): void {
-      this.lifecycle.runInBackground(id, run, onSettled);
+      this.lifecycle.runInBackground(id, run, onSettled, owner);
    }
 
    // ==================== QUERIES ====================
@@ -955,6 +963,7 @@ export class MaterializationService {
                   ),
             ),
          release,
+         { environmentName, packageName },
       );
       return created;
    }
@@ -1783,6 +1792,24 @@ export class MaterializationService {
    }
 
    // ==================== CANCELLATION ====================
+
+   /**
+    * Abort every run of a package running in this process, for a package
+    * being deleted or unloaded: the abort lands before this returns, so call
+    * it before the package goes. Resolves once those runs have settled
+    * (CANCELLED unless one finished first), or after `settleWithinMs`.
+    */
+   abortPackageRuns(
+      environmentName: string,
+      packageName: string,
+      settleWithinMs = PACKAGE_RUNS_SETTLE_MS,
+   ): Promise<void> {
+      return this.lifecycle.abortPackageRuns(
+         environmentName,
+         packageName,
+         settleWithinMs,
+      );
+   }
 
    /** Cancel a non-terminal materialization. */
    async stopMaterialization(
