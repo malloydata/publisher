@@ -263,11 +263,6 @@ interface RunErrorContext {
    passThrough: readonly ErrorClass[];
    /** Logs an unclassified failure just before it becomes the generic 400. */
    logFailure: (errorMessage: string, err: unknown) => void;
-   /**
-    * A message that is not a failure at all: when the error's trimmed message
-    * equals it, this returns instead of throwing.
-    */
-   benignMessage?: string;
 }
 
 /**
@@ -278,12 +273,7 @@ interface RunErrorContext {
  * pool) and any `passThrough` class keeps its own mapping; a database that could not be reached or refused the credentials is
  * a 502/424; anything else is a 400.
  */
-export function mapRunError(
-   err: unknown,
-   ctx: RunErrorContext & { benignMessage?: undefined },
-): never;
-export function mapRunError(err: unknown, ctx: RunErrorContext): void;
-export function mapRunError(err: unknown, ctx: RunErrorContext): void {
+export function mapRunError(err: unknown, ctx: RunErrorContext): never {
    // Duck-type on `.code`: MalloyCompileError is not a MalloyError and is not
    // root-exported. `runtime-given-` is pinned to Malloy's error codes
    // (given_binding.ts / runtime.ts); keep it in step with environment.ts, or
@@ -321,12 +311,6 @@ export function mapRunError(err: unknown, ctx: RunErrorContext): void {
    const storageFailure = storageAccessFailure(err, ctx.subject);
    if (storageFailure) throw storageFailure;
 
-   if (
-      ctx.benignMessage !== undefined &&
-      errorMessage.trim() === ctx.benignMessage
-   ) {
-      return;
-   }
    ctx.logFailure(errorMessage, err);
    // Driver text in a 4xx body names no storage path.
    throw new BadRequestError(

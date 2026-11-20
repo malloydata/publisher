@@ -58,12 +58,10 @@ export interface RunnableNotebookCell {
    /** A served query cell's index into `modelInfo.anonymous_queries`. */
    queryIndex?: number;
    runnable?: QueryMaterializer;
-   /** The materializer hydrated from {@link modelDef}. */
-   modelMaterializer?: ModelMaterializer;
    /**
-    * This cell's compiled modelDef: the model state AFTER its own declarations
-    * (what `modelMaterializer` was hydrated from). Its `.givens` (transitive
-    * through imports) is every given the cell can reference.
+    * This cell's compiled modelDef: the model state AFTER its own declarations.
+    * Its `.givens` (transitive through imports) is every given the cell can
+    * reference.
     */
    modelDef?: ModelDef;
    newSources?: Malloy.SourceInfo[];
@@ -78,7 +76,6 @@ export type CompiledNotebookCell =
    | {
         type: "code";
         text: string;
-        materializer: ModelMaterializer;
         /** The model state after this cell's own declarations. */
         modelDef: ModelDef;
         /** The sources this cell adds to the namespace, imports included. */
@@ -153,7 +150,6 @@ export async function compileNotebookCells(
       cells.push({
          type: "code",
          text: statement.text,
-         materializer,
          modelDef,
          newSources,
          query,

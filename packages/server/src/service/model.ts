@@ -2852,7 +2852,6 @@ export class Model {
                text,
                proseLines: [],
                runnable: materializer.loadQuery(text),
-               modelMaterializer: materializer,
                modelDef,
                deriveQueryInfo: () =>
                   (queryInfo ??= tileQueryInfo(materializer, text)),
