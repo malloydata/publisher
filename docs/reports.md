@@ -529,13 +529,16 @@ and export it from `index.malloy`. A join written in a cell's `run:` is the call
 target is, as [authorize.md](authorize.md#the-entry-point-and-only-the-entry-point) describes. To keep a
 join the author's, declare it in a source in a model file.
 
-Each code cell the query route would refuse for every reader is a package warning when the package
-loads, code `malloynb-cell-refused`, so these show in the package warnings and the Console before a
-reader opens the notebook. The warning names the notebook, the cell by its position counting markdown
-cells, the rule as `reason` (`off_surface`, `restricted_mode`, or `compile_error` for any other compile
-failure of the `run:` statement on its own) and the fix. It runs the query route's own checks on the
-text the Console sends, so it agrees with what a reader gets. A cell that only a reader's givens refuse,
-by `#(authorize)` or a row-level gate, gets no warning.
+Each code cell the query route would refuse for every reader in the Console is a package warning when
+the package loads, code `malloynb-cell-refused`, so these show in the package warnings and the Console
+before a reader opens the notebook. The warning names the notebook, the cell by its position counting
+markdown cells, the rule as `reason` and the fix. The rules are `off_surface`, `caller_annotation` for
+an annotation only the model author may write, such as `#(authorize)` in a comment beside the `run:`,
+`required_filter` for a required `#(filter)`, which the Console never fills, `restricted_mode`, and
+`compile_error` for any other compile failure of the `run:` statement on its own. It runs the query
+route's checks on the text the Console sends, and a test holds the two together for every cell of a
+fixture package. A cell that only a reader's givens refuse, by `#(authorize)` or a row-level gate, gets no
+warning, and a caller sending `includeHiddenFilesAndSources` still runs an `off_surface` cell.
 
 ## Filter controls
 
