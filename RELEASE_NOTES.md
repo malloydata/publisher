@@ -21,6 +21,12 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — a zero or negative `freshness.window=` is refused as not positive
+
+**Fixed: `freshness.window="0h"` was refused as "not a whole number and a unit", which it is.** The rule it breaks is that a window must be a positive duration. A `freshness.window=` that is zero, negative or fractional (`0h`, `0s`, `-1h`, `1.5h`) is now refused with "has a freshness.window= that is not a positive duration: write a whole number greater than zero and one unit (s, m, h, d or w)", on `#@ persist`, `#(materialize)`, `#(rollup)` and `#@ preaggregate` alike. What is refused is unchanged, and so is the code: the declaration still fails the publish and the load.
+
+**Who is affected:** anyone reading the message, or a client that matches its text. **What to do:** nothing; write a window greater than zero.
+
 ## [Unreleased] — a BigQuery pair table over a GEOGRAPHY, JSON, ARRAY or STRUCT column is refused at load, not failed at every build
 
 **Fixed: a pair table (`inline=` on a join_many) on BigQuery failed every build when the source or the joined source had a GEOGRAPHY column.** A pair table's build groups by every stored column, and BigQuery refuses `GROUP BY` on a GEOGRAPHY, JSON, ARRAY or STRUCT column ("Grouping by expressions of type GEOGRAPHY is not allowed"), so the build failed on each run, colocated or `storage=`, and the source answered live. Such a source is now refused when the package loads: it is not built, the package loads with a `materialize-not-built` warning (reason `inline_unsupported`) naming the column, and the source answers live as before. The same source without `inline=` of a join_many builds as it did, since its build selects rather than groups.

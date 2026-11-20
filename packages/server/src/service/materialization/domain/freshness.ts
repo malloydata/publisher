@@ -91,6 +91,16 @@ export function freshnessWindowSeconds(window: string): number | undefined {
 }
 
 /**
+ * Why a `freshness.window=` value is refused, as a declaration's message
+ * says it after the route's name: the window must be a positive duration,
+ * a whole number greater than zero and one unit, so `0h`, `-1h` and `1.5h`
+ * are each refused with the same rule.
+ */
+export const FRESHNESS_WINDOW_PROBLEM =
+   "has a freshness.window= that is not a positive duration: write a whole " +
+   'number greater than zero and one unit (s, m, h, d or w), such as freshness.window="24h"';
+
+/**
  * Seconds per unit of a duration a `#@ persist` key takes (`lookback=`): the
  * window's letters, and each unit's word, singular or plural. No month or
  * year, whose length varies.
