@@ -2192,6 +2192,8 @@ export class Model {
    ): Promise<({ cell: number } & QueryTextRefusal)[]> {
       if (!isMalloynbPath(this.modelPath)) return [];
       const refusals: ({ cell: number } & QueryTextRefusal)[] = [];
+      let declared: ReadonlySet<string> | undefined;
+      const declaredNames = () => (declared ??= this.notebookDeclaredNames());
       for (const [index, cell] of (
          this.runnableNotebookCells ?? []
       ).entries()) {
@@ -2200,7 +2202,7 @@ export class Model {
          const query = malloynbRunQuery(cell);
          if (query === undefined) continue;
          await yielder.maybeYield();
-         const refusal = await this.consoleCellRefusal(query);
+         const refusal = await this.consoleCellRefusal(query, declaredNames);
          if (refusal) refusals.push({ cell: index + 1, ...refusal });
       }
       return refusals;
@@ -2220,10 +2222,13 @@ export class Model {
     * boundary on the compiled run target and its joins (404). The checks that
     * read a caller's givens (`#(authorize)`, row-level gates) are left out:
     * their answer is the caller's. Undefined, too, for a file with no
-    * compiled model.
+    * compiled model. `declaredNames` gives the sources the notebook's cells
+    * declare, which a caller checking every cell builds once.
     */
    public async consoleCellRefusal(
       query: string,
+      declaredNames: () => ReadonlySet<string> = () =>
+         this.notebookDeclaredNames(),
    ): Promise<QueryTextRefusal | undefined> {
       const materializer = this.modelMaterializer;
       if (this.compilationError || !materializer || !this.modelDef) {
@@ -2236,6 +2241,7 @@ export class Model {
          return this.offSurfaceRefusal(
             outcome.error,
             query,
+            declaredNames,
             outcome.compiledSource,
          );
       }
@@ -2260,7 +2266,7 @@ export class Model {
       const restricted = restrictedRejections(errors);
       if (settled.offSurface) {
          return {
-            ...this.offSurfaceRefusal(settled.refusal, query),
+            ...this.offSurfaceRefusal(settled.refusal, query, declaredNames),
             ...(restricted.length > 0
                ? { problem: restricted[0].message }
                : {}),
@@ -2307,6 +2313,18 @@ export class Model {
       return undefined;
    }
 
+   /** Every source a `source:` statement in one of the notebook's code cells declares. */
+   private notebookDeclaredNames(): ReadonlySet<string> {
+      const names = new Set<string>();
+      for (const cell of this.runnableNotebookCells ?? []) {
+         if (cell.type !== "code") continue;
+         for (const name of buildDerivationBaseMap(cell.text).keys()) {
+            names.add(name);
+         }
+      }
+      return names;
+   }
+
    /**
     * A boundary refusal as a {@link QueryTextRefusal}, naming the source only
     * where the query route's own refusal does (an {@link OffSurfaceError}),
@@ -2318,6 +2336,7 @@ export class Model {
    private offSurfaceRefusal(
       error: unknown,
       query: string,
+      declaredNames: () => ReadonlySet<string>,
       compiledSource?: string,
    ): QueryTextRefusal {
       if (!(error instanceof NotQueryableError)) throw error;
@@ -2331,11 +2350,7 @@ export class Model {
       );
       const source = compiledSource ?? named;
       if (source === undefined) return { status: 404, reason: "off_surface" };
-      const declared = (this.runnableNotebookCells ?? []).some(
-         (cell) =>
-            cell.type === "code" &&
-            buildDerivationBaseMap(cell.text).has(source),
-      );
+      const declared = declaredNames().has(source);
       const target = extractRunTargetSourceNames(query)[0];
       const via =
          compiledSource !== undefined &&
