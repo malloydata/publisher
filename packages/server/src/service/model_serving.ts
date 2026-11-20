@@ -115,6 +115,7 @@ import {
    serializeWithinCaps,
    type PreparedRun,
 } from "./query_execution";
+import { responseBytes } from "./statement_usage";
 import { type CallerRegion } from "./caller_joins";
 import type { ModelQueryMetadataInput, QueryMetadata } from "./query_metadata";
 import type { GovernRequest, QueryGovernor } from "./governance/query_governor";
@@ -354,7 +355,20 @@ export class ModelServing {
          answer,
          governed,
       });
-      return this.report(ctx, { pinned, prepared, governed, ran, servedCopy });
+      try {
+         return await this.report(ctx, {
+            pinned,
+            prepared,
+            governed,
+            ran,
+            servedCopy,
+         });
+      } finally {
+         // Emitted with the response's size in report(); here only when report
+         // threw first (a cap refused the result), so the statement still has
+         // its record.
+         ran.run.usage?.emit();
+      }
    }
 
    // ---- Stage 1: pin ----------------------------------------------------
@@ -880,7 +894,8 @@ export class ModelServing {
          // `freshnessFallback=live` marks the tier as an optimisation, not a
          // dependency, so a store failing UNDER a routed query degrades to
          // live. Deliberately narrow:
-         //  - only when the query actually routed to storage;
+         //  - only when the query read a stored table (a virtual map, or a
+         //    database rollup through the build manifest);
          //  - only per `bindingsAllowDegradeToLive` over the bindings that
          //    produced THIS shape (a sibling source must not decide);
          //  - or for DECIMAL arithmetic past 38 digits, whatever the policy
@@ -932,10 +947,16 @@ export class ModelServing {
          executionTime = performance.now() - ctx.startTime;
       }
       if (answer.leg !== "live" && !answer.runFailed) {
-         await roundStoredAnswerAsLive(run.result, prepared.liveRunnable, {
-            runnable: governed.runnable,
-            bindings: answer.answer.shapeBindings,
-         });
+         try {
+            await roundStoredAnswerAsLive(run.result, prepared.liveRunnable, {
+               runnable: governed.runnable,
+               bindings: answer.answer.shapeBindings,
+            });
+         } catch (error) {
+            // The statement ran: its record goes out, without a response.
+            run.usage?.emit();
+            throw error;
+         }
       }
       return { run, answer, executionTime, maxRows, maxBytes };
    }
@@ -1102,6 +1123,9 @@ export class ModelServing {
             source: "model_query",
             compact: (request.responseShape ?? "full") === "compact",
          });
+      // Emitted with this size just before report() returns, once nothing left
+      // can fail the answer; runQuery's finally covers every earlier throw.
+      const servedBytes = responseBytes(serializedResult);
       const metricAttributes = this.queryMetricAttributes({
          environment: queryMetadataInput?.environment,
          queryName,
@@ -1170,6 +1194,7 @@ export class ModelServing {
       // No report at all (it could not be assembled), as against a report
       // that says live with nothing considered, which records no `path`.
       if (!path) audit.pathUnavailable = true;
+      ran.run.usage?.emit(servedBytes);
       return {
          result: wrappedResult,
          serializedResult,

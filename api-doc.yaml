@@ -5796,9 +5796,9 @@ components:
                   the base, or `<base>.<measure>` for one measure). The
                   message says why, and `reason` is the refusal record's
                   bounded reason. `preaggregate-not-built` is
-                  `rollup-not-built`'s former name: each `rollup-not-built`
-                  warning is repeated under it, with the same message, for
-                  this release only. `persist-source-refused`, the former name
+                  `rollup-not-built`'s former name, retained, no longer
+                  produced: 0.15.0 and 0.16 repeated each `rollup-not-built`
+                  warning under it. `persist-source-refused`, the former name
                   of `persist-not-built` repeated beside it in 0.14.0, is no
                   longer produced.
                   Retained, no longer produced: the rollup sub-family
@@ -5830,9 +5830,9 @@ components:
                   `rollup-join-one-key-repeated`: a rollup's last build found
                   a `join_one` key repeated in the data, so queries that read
                   that join beside other aggregates are answered live
-                  (`subject` the rollup's base; `warn`). Repeated under its
-                  former name `preaggregate-join-one-key-repeated` for this
-                  release only.
+                  (`subject` the rollup's base; `warn`). Its former name,
+                  `preaggregate-join-one-key-repeated`, is retained, no longer
+                  produced.
                   `served-copy-not-served`: the served copy (the author's own
                   files, each stored source re-rooted on its table) leaves a
                   source as written, so it answers live, or serves it with a
@@ -5957,8 +5957,9 @@ components:
                   full rebuild captures the types (one per source, `model` the
                   first model binding it, `subject` the source, the message
                   naming the columns and which applies; `warn`; see
-                  docs/materialization.md). Repeated under its former name
-                  `stored-native-schema-missing` for this release only.
+                  docs/materialization.md). Its former name,
+                  `stored-native-schema-missing`, is retained, no longer
+                  produced.
                   `entities-…` (`entities-not-a-dimension`,
                   `entities-parameterized-source`,
                   `entities-multiple-required-filters`,
@@ -8373,9 +8374,11 @@ components:
             database `#(materialize)` table the served copy read, or a
             database rollup or persisted view.
 
-            `live_fallback` — the query DID route to storage and the store then
-            failed underneath it, and the source's freshness fallback allowed it
-            to degrade to the live warehouse. **The rows are correct and the
+            `live_fallback` — the query DID route to a stored table (a
+            `storage=` table, a database table the served copy reads, or a
+            rollup on either tier) and that read then failed underneath it, and
+            the source's freshness fallback allowed it to degrade to the live
+            warehouse (a rollup's always does). **The rows are correct and the
             request succeeded**, which is why this needs its own value: it is
             indistinguishable from a storage hit at the call site, and treating it
             as one would report a healthy hit rate for a broken store. On

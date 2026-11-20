@@ -602,3 +602,42 @@ export async function uncarryUnownedTables(
       );
    }
 }
+
+/**
+ * Before an auto-run builds: take back out of `carried` each table in
+ * `confirmExists` (from deriveSelfInstructions) that no longer exists, and
+ * rebuild it instead (its instruction joins `instructions`). Skip-if-
+ * unchanged trusts the run record, which outlives a table in the package's
+ * in-memory sandbox: without this, a restart left the table gone and every
+ * later run carried it, so its queries answered live and it was never
+ * rebuilt. A table whose existence cannot be read is kept carried.
+ */
+export async function uncarryLostTables(
+   confirmExists: Record<string, BuildInstruction>,
+   carried: Record<string, ManifestEntry>,
+   instructions: BuildInstruction[],
+   context: TableSiteContext,
+): Promise<void> {
+   for (const [address, instruction] of Object.entries(confirmExists)) {
+      const entry = carried[address];
+      if (!entry?.connectionName) continue;
+      let exists: boolean | undefined;
+      try {
+         exists = await atTableSite(
+            { connectionName: entry.connectionName },
+            context,
+            (site) => tableExistsAt(site, entry.physicalTableName),
+         );
+      } catch {
+         exists = undefined;
+      }
+      if (exists !== false) continue;
+      delete carried[address];
+      instructions.push(instruction);
+      logger.info("Rebuilding a carried table that no longer exists", {
+         physicalTableName: entry.physicalTableName,
+         sourceName: entry.sourceName,
+         connectionName: entry.connectionName,
+      });
+   }
+}

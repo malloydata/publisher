@@ -26,6 +26,8 @@ import {
    type MetricsHarness,
 } from "../test_helpers/metrics_harness";
 import { Model, ModelType } from "./model";
+import { ModelServing } from "./model_serving";
+import { logger } from "../logger";
 import { ServedCopyServe } from "./materialization/serve/served_copy_serve";
 import { installSettings } from "../test_helpers/settings_env";
 
@@ -1150,6 +1152,88 @@ describe("service/model", () => {
          expect(attached.tenant).toBe("acme");
          expect(attached.query_id).toBe("corr-1");
          expect(result.queryCorrelationId).toBe("corr-1");
+      });
+
+      it("meters the statement that answered with the bytes of the response it was served, and the failed one once", async () => {
+         // The stored run fails and the live retry answers: two statements on
+         // metered connections, so two records. The failure's goes out at once,
+         // with no bytes; the retry's waits for the response, and carries its
+         // exact size.
+         const { model } = routedModel({
+            shapeBindings: [binding("daily", "live")],
+            storageFailsAt: "run",
+         });
+         const info = sinon.stub(logger, "info");
+
+         const result = await model.runQuery(unrecordedAudit(), {
+            query: "run: daily -> x",
+            queryMetadataInput: {
+               environment: "acme___prod",
+               meteredConnection: () => true,
+            },
+         });
+
+         const records = info
+            .getCalls()
+            .map((c) => c.args as unknown as [unknown, Record<string, unknown>])
+            .filter(([message]) => message === "statement_usage")
+            .map(([, record]) => record);
+         info.restore();
+         expect(records).toHaveLength(2);
+         expect(records[0]).toMatchObject({
+            connection: "lake",
+            surface: "serve",
+            status: "error",
+         });
+         expect(records[0]).not.toHaveProperty("bytes_out");
+         expect(records[1]).toMatchObject({
+            connection: "live_pg",
+            surface: "serve",
+            status: "ok",
+            bytes_out: Buffer.byteLength(result.serializedResult, "utf8"),
+         });
+      });
+
+      it("meters a statement whose result a cap refuses, once, without bytes_out", async () => {
+         // The answer is refused after the statement ran (report() throws, as a
+         // row or byte cap does), so no response is serialized, and the
+         // statement still has its record.
+         const { model } = routedModel({
+            shapeBindings: [binding("daily", "live")],
+            storageFailsAt: "prepare",
+         });
+         const report = sinon
+            .stub(
+               ModelServing.prototype as unknown as { report: () => never },
+               "report",
+            )
+            .rejects(new Error("refused by a cap"));
+         const info = sinon.stub(logger, "info");
+
+         const outcome = await model
+            .runQuery(unrecordedAudit(), {
+               query: "run: daily -> x",
+               queryMetadataInput: {
+                  environment: "acme___prod",
+                  meteredConnection: () => true,
+               },
+            })
+            .catch((e: unknown) => e);
+
+         const records = info
+            .getCalls()
+            .map((c) => c.args as unknown as [unknown, Record<string, unknown>])
+            .filter(([message]) => message === "statement_usage")
+            .map(([, record]) => record);
+         info.restore();
+         report.restore();
+         expect(outcome).toBeInstanceOf(Error);
+         expect(records).toHaveLength(1);
+         expect(records[0]).toMatchObject({
+            connection: "live_pg",
+            status: "ok",
+         });
+         expect(records[0]).not.toHaveProperty("bytes_out");
       });
 
       it("tags the source the query RUNS, not the first one its text names", async () => {
