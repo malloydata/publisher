@@ -96,6 +96,8 @@ interface PlanRecord {
    asOfBuild: Readonly<Record<string, AsOfBuildSource>>;
    /** See PackagePlan.upstreamSchemas. */
    upstreamSchemas: UpstreamSchemaReadings;
+   /** Addresses not served while this record serves (see withdraw). */
+   withdrawn: ReadonlySet<string>;
 }
 
 /** A record holding nothing: no plan, both eligibilities unknown. */
@@ -115,6 +117,7 @@ const EMPTY_RECORD: PlanRecord = {
    buildConnectionNames: new Set(),
    asOfBuild: {},
    upstreamSchemas: {},
+   withdrawn: new Set(),
 };
 
 /**
@@ -280,6 +283,40 @@ export class PlanLifecycle {
       this.patch({ databaseSourceEligibility });
    }
 
+   /**
+    * Stop serving the stored tables of `sourceIDs` (the addresses they are
+    * at) while this record keeps serving, so their queries answer live. For
+    * a failed reload whose refetch found these sources' upstream columns
+    * changed (`Package.withdrawChangedUpstreams`); the next derivation
+    * replaces the record. The bindings stay as they are, so the served copy
+    * is not recompiled (its files no longer compile against the refetched
+    * schemas): each query's pin leaves the withdrawn tables out
+    * (`domain/binding.ts`, `Snapshot.withdrawn`).
+    */
+   withdraw(sourceIDs: readonly string[]): void {
+      const record = this.state.serving;
+      if (!record || sourceIDs.length === 0) return;
+      const withdrawn = new Set([
+         ...record.withdrawn,
+         ...sourceIDs.flatMap((id) => {
+            const address = record.plan?.sources[id]?.sourceEntityId;
+            return address ? [address] : [];
+         }),
+      ]);
+      const serving: PlanRecord = { ...record, withdrawn };
+      this.state = {
+         ...this.state,
+         serving,
+         ...(this.state.current === record ? { current: serving } : {}),
+         ...(this.state.lastGood === record ? { lastGood: serving } : {}),
+      };
+   }
+
+   /** The addresses {@link withdraw} took out of serving. */
+   get withdrawn(): ReadonlySet<string> {
+      return this.serving().withdrawn;
+   }
+
    /** The plan bindings are matched against: the current one, else the last good one. */
    servingPlan(): BuildPlan | null {
       return this.state.serving?.plan ?? null;
@@ -377,6 +414,7 @@ export class PlanLifecycle {
          buildConnectionNames: new Set(outcome.buildConnectionNames),
          asOfBuild: outcome.asOfBuild ?? {},
          upstreamSchemas: outcome.upstreamSchemas ?? {},
+         withdrawn: new Set(),
       };
    }
 

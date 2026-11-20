@@ -69,15 +69,30 @@ function canonicalType(nativeType: string): string {
 }
 
 /**
- * What the content address of a source reading `reads` folds in: one line
- * naming each table it reads with its reading, columns sorted by name.
- * Undefined, so the address is its SQL's alone, when the tables cannot be
- * known (`reads` undefined) or none of them has a reading (a plan derived
- * without reading any, which only a spec does).
+ * Whether `sql` names the column `name`: as a word, case-blind, quoted or
+ * not. Over-inclusive on purpose (a string literal or an alias of that name
+ * counts too): a column it misses would leave a retype of it unseen.
+ */
+function namesColumn(sql: string, name: string): boolean {
+   const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+   return new RegExp(`(^|[^A-Za-z0-9_])${escaped}($|[^A-Za-z0-9_])`, "i").test(
+      sql,
+   );
+}
+
+/**
+ * What the content address of a source reading `reads` with build SQL `sql`
+ * folds in: each table it reads with its reading, keeping only the columns
+ * the SQL names (sorted by name), so a column it does not read (one added,
+ * dropped or retyped beside it) leaves its address alone. Undefined, so the
+ * address is its SQL's alone, when the tables cannot be known (`reads`
+ * undefined) or none of them has a reading (a plan derived without reading
+ * any, which only a spec does).
  */
 export function upstreamSchemaFold(
    reads: readonly UpstreamTable[] | undefined,
    readings: UpstreamSchemaReadings | undefined,
+   sql: string,
 ): string | undefined {
    if (!reads || !readings) return undefined;
    const parts: unknown[] = [];
@@ -90,6 +105,7 @@ export function upstreamSchemaFold(
          "unread" in reading
             ? reading.unread
             : reading.columns
+                 .filter((c) => namesColumn(sql, c.name))
                  .map((c) => [c.name, canonicalType(c.nativeType)])
                  .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
       ]);

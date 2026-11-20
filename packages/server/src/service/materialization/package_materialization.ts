@@ -400,6 +400,7 @@ export class PackageMaterialization {
          plan.materializePlans,
          plan.databaseSourceEligibility,
          plan.asOfBuild,
+         plan.withdrawn,
          this.owner.models(),
          getMaterializeEnabled(),
       ];
@@ -443,6 +444,7 @@ export class PackageMaterialization {
                     addresses.has(id) ? { ...e, asOfBuild: true } : e,
                  ]),
               ),
+         plan.withdrawn,
       );
       this.snapshotMemo = { key, snapshot, signature };
       return snapshot;

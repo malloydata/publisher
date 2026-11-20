@@ -124,6 +124,33 @@ describe("R-13: the upstream column types in the content address", () => {
       );
    });
 
+   it("keeps it when a column its SQL does not name is added, dropped or retyped", () => {
+      const base = readingsWith("INTEGER");
+      const withExtra: UpstreamSchemaReadings = {
+         [T]: {
+            columns: [
+               ...("columns" in base[T] ? base[T].columns : []),
+               { name: "note", nativeType: "VARCHAR" },
+            ],
+         },
+      };
+      const retypedExtra: UpstreamSchemaReadings = {
+         [T]: {
+            columns: [
+               ...("columns" in base[T] ? base[T].columns : []),
+               { name: "note", nativeType: "INTEGER" },
+            ],
+         },
+      };
+      expect(address("by_cat", withExtra)).toBe(address("by_cat", base));
+      expect(address("by_cat", retypedExtra)).toBe(address("by_cat", base));
+      // Dropping a column it names moves it.
+      const dropped: UpstreamSchemaReadings = {
+         [T]: { columns: [{ name: "cat", nativeType: "VARCHAR" }] },
+      };
+      expect(address("by_cat", dropped)).not.toBe(address("by_cat", base));
+   });
+
    it("folds a table that could not be read as a stable value, apart from any read", () => {
       const failed: UpstreamSchemaReadings = { [T]: { unread: "read_failed" } };
       expect(address("by_cat", failed)).toBe(address("by_cat", failed));

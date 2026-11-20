@@ -96,6 +96,14 @@ const SKIP_MESSAGE: Record<LegKind, string> = {
    served: "served copy cannot answer this query",
 };
 
+/** Each leg's `STALE` decline. */
+const STALE_DECLINE = {
+   served: "served_copy_stale",
+   rollup: "rollup_stale",
+   view: "view_stale",
+   query: "query_stale",
+} as const satisfies Record<LegKind, LegDecline["code"]>;
+
 /**
  * A leg's skip, at debug: it repeats on every query of a dashboard, and the
  * path report and `publisher_query_route_total` already say why.
@@ -137,6 +145,20 @@ export function variantsOf(
          (await admission.admit(leg.kind, answer, true)).used,
       attempt: async () => {
          const answer = await leg.attempt(facts, pinned);
+         // A table a failed reload found built from a changed upstream
+         // (Snapshot.withdrawn) is not read: the query answers as live does.
+         const withdrawn = pinned.snapshot.withdrawn;
+         if (
+            withdrawn &&
+            (answer.tablesRead ?? []).some((b) =>
+               withdrawn.has(b.virtualHandle),
+            )
+         ) {
+            throw new LegDecline(
+               STALE_DECLINE[leg.kind],
+               "a table this answer reads was built from an upstream table that changed since its build",
+            );
+         }
          const outcome = await admission.admit(leg.kind, answer, false);
          if (!outcome.used && "decline" in outcome) throw outcome.decline;
          if (leg.kind === "served") {

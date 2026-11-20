@@ -12,6 +12,7 @@ import {
 import {
    type UpstreamSchemaReadings,
    type UpstreamTable,
+   upstreamSchemaFold,
    upstreamTableKey,
 } from "./materialization/domain/upstream_schemas";
 import * as fs from "fs/promises";
@@ -2722,6 +2723,56 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       connectionName: string,
    ): Promise<Connection> {
       return this.malloyConfig.connections.lookupConnection(connectionName);
+   }
+
+   /**
+    * After a reload or publish of this package failed to compile, so this
+    * copy keeps serving: read again the tables its plan's sources read, and
+    * stop serving the stored tables of every source a column of whose
+    * tables that its build SQL names changed or is gone (its address would
+    * move), so they answer live as the warehouse now stands. A source whose tables did not change, or whose
+    * tables cannot be known (no `reads`), keeps serving. A read that fails
+    * keeps the table's last reading, so it changes nothing. Returns the
+    * names of the sources it stopped serving, with the tables that changed.
+    */
+   public async withdrawChangedUpstreams(): Promise<{
+      sources: string[];
+      tables: string[];
+   }> {
+      const known = this.mz.plan.upstreamSchemas;
+      const tables = Object.keys(known).map((key) => {
+         const [connectionName, table] = JSON.parse(key) as [string, string];
+         return { connectionName, table };
+      });
+      if (tables.length === 0) return { sources: [], tables: [] };
+      const now = await readUpstreamSchemas({
+         tables,
+         connection: (name) => this.getMalloyConnection(name),
+         refresh: true,
+      });
+      // A source moves when a column its build SQL names changed or is
+      // gone, as its address would (upstreamSchemaFold).
+      const moved = (reads: UpstreamTable[], sql: string) =>
+         upstreamSchemaFold(reads, known, sql) !==
+         upstreamSchemaFold(reads, now, sql);
+      const withdrawn = Object.entries(
+         this.mz.plan.servingPlan()?.sources ?? {},
+      ).filter(
+         ([, source]) =>
+            source.reads !== undefined && moved(source.reads, source.sql),
+      );
+      const names = [...new Set(withdrawn.map(([, s]) => s.name))].sort();
+      const tableNames = [
+         ...new Set(
+            withdrawn.flatMap(([, source]) =>
+               (source.reads ?? [])
+                  .filter((r) => moved([r], source.sql))
+                  .map((r) => r.table),
+            ),
+         ),
+      ].sort();
+      this.mz.plan.withdraw(withdrawn.map(([sourceID]) => sourceID));
+      return { sources: names, tables: tableNames };
    }
 
    /** See {@link BuildPlanPackage.readUpstreamSchemas}. */

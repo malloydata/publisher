@@ -202,6 +202,16 @@ export function heldReadBinding(
 export interface Snapshot {
    readonly bindings: readonly Binding[];
    readonly entries: Readonly<FreshnessManifest>;
+   /**
+    * Content addresses whose tables are bound but not served: a failed
+    * reload found what they were built from changed upstream. A pin leaves
+    * their entries out of the compiler's manifest and their bindings out of
+    * {@link Pinned.tableFor}; the served copy keeps them (its files no longer
+    * compile against the refetched schemas, so it must not recompile) and
+    * the router declines an answer that reads one (`query_serving.ts`), so
+    * their queries answer live.
+    */
+   readonly withdrawn?: ReadonlySet<string>;
 }
 
 /**
@@ -211,8 +221,13 @@ export interface Snapshot {
 export function makeSnapshot(
    bindings: readonly Binding[],
    entries: Readonly<FreshnessManifest> = {},
+   withdrawn?: ReadonlySet<string>,
 ): Snapshot {
-   return Object.freeze({ bindings, entries });
+   return Object.freeze({
+      bindings,
+      entries,
+      ...(withdrawn && withdrawn.size > 0 ? { withdrawn } : {}),
+   });
 }
 
 /** Nothing bound: every query is answered live. */
@@ -296,6 +311,8 @@ function readable(state: Freshness): boolean {
  */
 export function pin(snapshot: Snapshot, asOf: Date): Pinned {
    const states = new Map<Binding, Freshness>();
+   const withdrawn = snapshot.withdrawn;
+   const servable = (b: Binding): boolean => !withdrawn?.has(b.virtualHandle);
    const stateOf = (b: Binding): Freshness => {
       let state = states.get(b);
       if (state === undefined) {
@@ -319,7 +336,7 @@ export function pin(snapshot: Snapshot, asOf: Date): Pinned {
          if (!compilerManifest) {
             const entries: BuildManifest["entries"] = {};
             for (const [id, entry] of Object.entries(snapshot.entries)) {
-               if (readable(freshnessOf(entry, asOf))) {
+               if (!withdrawn?.has(id) && readable(freshnessOf(entry, asOf))) {
                   entries[id] = { tableName: entry.tableName };
                }
             }
@@ -334,7 +351,10 @@ export function pin(snapshot: Snapshot, asOf: Date): Pinned {
       serves: (b: Binding) => readable(stateOf(b)),
       tableFor(sourceID: string, kind: BindingKind): TableLookup {
          const stored = snapshot.bindings.filter(
-            (b) => b.kind === kind && (b.sourceIDs ?? []).includes(sourceID),
+            (b) =>
+               servable(b) &&
+               b.kind === kind &&
+               (b.sourceIDs ?? []).includes(sourceID),
          );
          if (stored.length === 0) return { state: "not_built" };
          for (const binding of stored) {

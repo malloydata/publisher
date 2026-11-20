@@ -5,7 +5,7 @@
 -- ==== source orders
 -- sourceID: orders@<pkg>/m.malloy
 -- connection: duckdb
--- sourceEntityId: 6be85f7d514ffc4f5a414247bb5bf431858df7313b2e2c41d711997beaccfaac
+-- sourceEntityId: e3123e46ca09ab86ce28636d7ffe05042025dc5cda562c3786bcf0b9c4ad9ca6
 -- compiler key: c215bd26b05cb26ff0cc5d7d83a4ed555895a01a0516d9ce4abfe890ba3be71c
 -- build SQL:
 SELECT 

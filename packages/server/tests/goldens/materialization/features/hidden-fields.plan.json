@@ -368,7 +368,7 @@
           }
         ],
         "refresh": null,
-        "sourceEntityId": "6be85f7d514ffc4f5a414247bb5bf431858df7313b2e2c41d711997beaccfaac",
+        "sourceEntityId": "e3123e46ca09ab86ce28636d7ffe05042025dc5cda562c3786bcf0b9c4ad9ca6",
         "sourceID": "orders@<pkg>/m.malloy",
         "sql": "sha256:cc419a75aa319b9e",
         "upstreamSchemas": [

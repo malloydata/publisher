@@ -35,7 +35,7 @@ source: base is duckdb.table('data/orders.csv') include { private: id; internal:
 
 #(access_filter) region in $GROUPS
 #(materialize) storage="lake"
-source: orders is __served_copy_alias_of_lake.virtual('6be85f7d514ffc4f5a414247bb5bf431858df7313b2e2c41d711997beaccfaac')::orders__served extend {
+source: orders is __served_copy_alias_of_lake.virtual('e3123e46ca09ab86ce28636d7ffe05042025dc5cda562c3786bcf0b9c4ad9ca6')::orders__served extend {
   rename:
     customer_id__stored is customer_id
     order__stored is order

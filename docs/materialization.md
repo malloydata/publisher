@@ -793,8 +793,9 @@ clears it.
 **A column retyped upstream re-addresses the sources that read it.** A source's content address
 folds in the native column types of every table its build reads (its plan entry's `reads`, each
 with its `upstreamSchemas`: `NUMERIC(12,4)`, `FLOAT64`, `DOUBLE`, read from the warehouse's catalog,
-DuckDB's `DESCRIBE`), so a column retyped, added or dropped upstream moves the address even
-though the build's SQL is unchanged: the table built from the old column is no longer the
+DuckDB's `DESCRIBE`), keeping only the columns the build's SQL names, so such a column retyped
+or dropped upstream moves the address even though the build's SQL is unchanged (one added,
+dropped or retyped beside it does not): the table built from the old column is no longer the
 source's, the source answers live, and the next run builds a new table rather than carrying or
 reusing the old one. The types are read when a package is first loaded in a process and again on
 every explicit reload or publish, as Malloy's own schemas are; a read that fails keeps the
@@ -804,6 +805,13 @@ dialect gives no catalog to read folds `no_catalog`. A source whose tables canno
 `.sql()` source or a raw SQL expression in its lineage, so no `reads`) folds nothing: a column
 retyped under it is not seen, and is handled at the bind as below. Each build records what it
 read on its manifest entry (`upstreamSchemas`).
+
+A reload or publish that refetches the schemas and then fails to compile (a column a source
+reads was dropped, say) keeps the previous model serving, reported `stale`. It still reads the
+upstream tables again, and each source whose build names a column that changed or is gone stops
+serving its stored tables: its queries answer as live does, which for a dropped column is
+live's error. Sources whose columns did not change keep serving. The stale message names the
+changed tables and the sources that answer live.
 
 The same holds when the table did not move but its source did, and the address did not move with
 it (the type was read before the retype, with no reload since, or the source has no `reads`): a

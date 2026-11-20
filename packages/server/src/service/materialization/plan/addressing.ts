@@ -344,7 +344,7 @@ export function computeSourceEntityId(
    // which leaves the SQL as it was, still re-addresses the table.
    const resolved = buildTargetOf(source, target);
    const fold = tableFolds?.[source.sourceID];
-   const upstream = upstreamFoldOf(source, upstreamSchemas);
+   const upstream = upstreamFoldOf(source, upstreamSchemas, resolved.sql);
    const chosen = testAddresses.get(resolved);
    if (chosen !== undefined) {
       const layout = addressText(source, "", fold, upstream);
@@ -364,9 +364,11 @@ export function computeSourceEntityId(
 function upstreamFoldOf(
    source: PersistSource,
    readings: UpstreamSchemaReadings | undefined,
+   /** The target's SQL: the columns it names are the ones folded. */
+   sql: string,
 ): string | undefined {
    if (!readings) return undefined;
-   return upstreamSchemaFold(upstreamTablesOf(source), readings);
+   return upstreamSchemaFold(upstreamTablesOf(source), readings, sql);
 }
 
 /** Each source's `reads`, walked once: a compiled source never changes. */

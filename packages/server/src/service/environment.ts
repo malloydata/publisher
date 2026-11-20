@@ -3688,12 +3688,24 @@ export class Environment {
                // only on success) rather than evicting the package. Recorded
                // here so every reload caller (watcher, MCP, REST) reports the
                // staleness to /status; cleared on the next successful load.
+               // An explicit refresh that found an upstream table changed
+               // stops serving the stored tables built from it: the kept
+               // model would answer from them as if nothing moved.
+               const withdrawn = refreshSchemas
+                  ? await existingPackage
+                       .withdrawChangedUpstreams()
+                       .catch(() => ({ sources: [], tables: [] }))
+                  : { sources: [], tables: [] };
+               const message = redactPgSecrets(
+                  error instanceof Error ? error.message : String(error),
+               );
                this.transition(packageName, {
                   type: "reloadFailed",
                   stale: {
-                     message: redactPgSecrets(
-                        error instanceof Error ? error.message : String(error),
-                     ),
+                     message:
+                        withdrawn.sources.length > 0
+                           ? `${message} Upstream table ${withdrawn.tables.join(", ")} changed since the last build, so ${withdrawn.sources.join(", ")} answer live until a reload compiles and a run rebuilds them.`
+                           : message,
                      failedAt: new Date().toISOString(),
                   },
                });
@@ -4163,6 +4175,27 @@ export class Environment {
                stagingPath,
                oldPackage,
             });
+            // The package it would have replaced keeps serving: like a failed
+            // reload, it stops serving the stored tables built from an
+            // upstream table that changed (the publish refetched them).
+            if (
+               oldPackage !== undefined &&
+               this.packages.get(packageName) === oldPackage
+            ) {
+               const withdrawn = await oldPackage
+                  .withdrawChangedUpstreams()
+                  .catch(() => ({ sources: [], tables: [] }));
+               if (withdrawn.sources.length > 0) {
+                  logger.warn(
+                     "A failed publish found upstream tables changed; their stored tables answer live",
+                     {
+                        environmentName: this.environmentName,
+                        packageName,
+                        sources: withdrawn.sources,
+                     },
+                  );
+               }
+            }
             throw err;
          }
 
