@@ -43,7 +43,7 @@ source: m is ev extend { measure: total is amt.sum() }
 #@ persist name="runfail_m" freshness.window="24h" freshness.fallback="live"
 source: m is duckdb.sql("SELECT * FROM ev") extend { measure: total is amt.sum() }
 `,
-      scenario: { database: ["m"] },
+      scenario: { database: ["m"] as string[] },
       servedBy: "materialized",
       renamed: "amt",
    },
