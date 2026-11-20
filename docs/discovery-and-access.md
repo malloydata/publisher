@@ -57,10 +57,10 @@ before this convention existed.
   Listed is not a way around the surface. A report's queries may read only sources on the surface.
   A query over a hidden source answers 404, and 404 rather than 403 even when the source is also
   gated. In a `.malloy` report, a source the file declares on top of a published one
-  (`source: mine is customers extend { … }`) still works. A `.malloynb` cell runs as a query on the
-  notebook's path, so a source its cells declare is not on the surface: on a curated package it
-  answers 404, even over a published source, while a named `query:` a cell declares over a
-  published source still runs. To keep such a source, declare it in a model file and export it from
+  (`source: mine is customers extend { … }`) still works. A `.malloynb` cell runs as a REST query on
+  the notebook's path, which MCP `execute_query` does not take, so a source its cells declare is not
+  on the surface: on a curated package it answers 404, even over a published source, while a named
+  `query:` a cell declares over a published source still runs. To keep such a source, declare it in a model file and export it from
   `index.malloy`. A report's own source over a raw table (`duckdb.table(…)` or `.sql(…)`) has no published
   source under it, so on a curated package it is refused. The report GET shows only the sources the
   report may read. A query a caller sends to the report's path is held to the surface the same way.

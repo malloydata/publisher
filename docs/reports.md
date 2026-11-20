@@ -952,7 +952,8 @@ everywhere else. A tile's `query` is an expression, so send it as `{"query": "ru
 opens: a file that is there opens at its path, and otherwise a unique basename redirects to the report's
 path. It is removed in a later release. The `…/dashboards` and `…/notebooks` API routes are removed: list
 with `GET …/reports`, read one by its path with `GET …/reports/{path}`, and run a `.malloynb`'s code cell
-as a tile is run, its `run:` statement as `query` and the `.malloynb`'s path as the model.
+as a tile is run, its `run:` statement as `query` and the `.malloynb`'s path as the model. That is REST only: MCP
+`execute_query` does not take a `.malloynb` path.
 
 After editing a report file in a watched environment (`--watch-env`), `GET …/packages/<pkg>?reload=true`
 recompiles the package in place, and a reload that fails to compile leaves the previously compiled model
