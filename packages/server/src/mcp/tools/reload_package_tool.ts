@@ -8,7 +8,6 @@ import type { PackageController } from "../../controller/package.controller";
 import { buildMalloyUri } from "../handler_utils";
 import { registerGuardedTool } from "../register_tool";
 import { jsonResource } from "../tool_response";
-import { withoutRetainedAliases } from "../../service/materialization";
 
 const reloadShape = {
    environmentName: z
@@ -121,11 +120,9 @@ export function registerReloadPackageTool(
             ...(pkg.description !== undefined && {
                description: pkg.description,
             }),
-            // A renamed code's retained alias repeats its warning, same
-            // message, for REST clients; an agent reads it once.
             ...(pkg.warnings !== undefined &&
                pkg.warnings.length > 0 && {
-                  warnings: withoutRetainedAliases(pkg.warnings),
+                  warnings: pkg.warnings,
                }),
             // An explores entry that did not resolve to a model, so a
             // mistyped explores edit is not silently swallowed.

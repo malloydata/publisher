@@ -33,7 +33,6 @@ const EXCLUDE = [
   /(^|\/)build\//,
   /(^|\/)tests?\/fixtures\//,
   /(^|\/)__fixtures__\//,
-  /^packages\/python-client\/openapi-client\.json$/,
   /^packages\/server\/src\/api\.ts$/, // header added by generate-api-types
 ];
 

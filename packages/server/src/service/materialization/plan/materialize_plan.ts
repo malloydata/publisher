@@ -411,14 +411,16 @@ function storableDimension(field: FieldLike): string | undefined {
 }
 
 /**
- * Whether a compiled field is a public array its table can hold as it is: a
- * persisted query's `nest:` (a repeated record) or an array column the source
- * reads, neither computed. A declared `join_many:` is the joined source's
- * type, never `array`, so it is not one. A hidden array is not stored.
+ * Whether a compiled field is an array or record its table can hold as it
+ * is: a persisted query's `nest:` (a repeated record), or an array or record
+ * (struct) column the source reads, none computed. A declared `join_one:` or
+ * `join_many:` is the joined source's type, never `array` or `record`, so it
+ * is not one. A hidden one is a candidate, as a hidden dimension is, marked
+ * with its `access` by {@link materializeColumns}.
  */
-function storableArray(field: FieldLike): string | undefined {
-   if (field.type !== "array" || field.e !== undefined) return undefined;
-   if (hiddenAccess(field)) return undefined;
+function storableNested(field: FieldLike): string | undefined {
+   if (field.type !== "array" && field.type !== "record") return undefined;
+   if (field.e !== undefined) return undefined;
    const dimension =
       typeof field.as === "string"
          ? field.as
@@ -429,8 +431,8 @@ function storableArray(field: FieldLike): string | undefined {
 }
 
 /**
- * The stored columns of a source: its atomic dimensions and public arrays
- * ({@link storableArray}), less any whose value reads through a join that is
+ * The stored columns of a source: its atomic dimensions, arrays and records
+ * ({@link storableNested}), less any whose value reads through a join that is
  * not inlined (a reference join is read at query time, so what reads through
  * it is computed at read). A field whose join usage is unknown is stored only
  * when the source has no join. `inline` names the inlined joins; `joins` comes
@@ -462,9 +464,15 @@ export function materializeColumns(
    const perCaller = givenReadingFields(def.fields);
    for (const raw of def.fields ?? []) {
       const field = raw as FieldLike;
-      const nested = storableArray(field);
+      const nested = storableNested(field);
       if (nested !== undefined) {
-         out.push({ dimension: nested, column: nested, computed: false });
+         const access = hiddenAccess(field);
+         out.push({
+            dimension: nested,
+            column: nested,
+            computed: false,
+            ...(access ? { access } : {}),
+         });
          continue;
       }
       const dimension = storableDimension(field);

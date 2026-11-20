@@ -127,49 +127,6 @@ export const DATABASE_COLUMN_TYPE_MISMATCH_CODE =
    "database-column-type-mismatch";
 
 /**
- * Warning codes renamed in 0.15.0, each with the code 0.14.0 shipped for it:
- * a warning under the new code is repeated under the old one, with the same
- * message, for this release only, so a client switching on the old code
- * keeps working. Removed in the next release.
- */
-export const RETAINED_WARNING_ALIASES: Readonly<Record<string, string>> = {
-   [ROLLUP_NOT_BUILT_CODE]: "preaggregate-not-built",
-   [ROLLUP_JOIN_ONE_KEY_REPEATED_CODE]: "preaggregate-join-one-key-repeated",
-   [NATIVE_SCHEMA_MISSING_CODE]: "stored-native-schema-missing",
-};
-
-/**
- * `warnings`, each one whose code was renamed followed by its repeat under
- * the code 0.14.0 shipped ({@link RETAINED_WARNING_ALIASES}).
- */
-export function withRetainedAliases<T extends object>(
-   warnings: readonly T[],
-): T[] {
-   return warnings.flatMap((w) => {
-      const code = (w as { code?: unknown }).code;
-      const alias =
-         typeof code === "string" ? RETAINED_WARNING_ALIASES[code] : undefined;
-      return alias ? [w, { ...w, code: alias }] : [w];
-   });
-}
-
-/** `warnings` less each retained-alias repeat of a warning beside it (for a reader that reads each once). */
-export function withoutRetainedAliases<
-   T extends { code?: string; message?: string; subject?: string },
->(warnings: readonly T[]): T[] {
-   const key = (code: string | undefined, w: T) =>
-      `${code}\u0000${w.subject ?? ""}\u0000${w.message ?? ""}`;
-   const present = new Set(warnings.map((w) => key(w.code, w)));
-   const aliasOf = new Map(
-      Object.entries(RETAINED_WARNING_ALIASES).map(([now, old]) => [old, now]),
-   );
-   return warnings.filter((w) => {
-      const now = w.code !== undefined ? aliasOf.get(w.code) : undefined;
-      return now === undefined || !present.has(key(now, w));
-   });
-}
-
-/**
  * The findings on authored annotations: an unservable one (a valid
  * annotation not built here) is `warn`. A malformed one fails the load, so a
  * serving package carries none; it would be `error`.
@@ -532,11 +489,15 @@ export function asOfBuildWarnings(
 /**
  * Warnings for `storage=` sources the serve path is not honoring, per
  * PERSIST_STORAGE_MODE: `off` ignores the annotation, `write-only` builds but
- * does not route. `on` warns nothing.
+ * does not route. `on` warns nothing. A source whose table is also bound,
+ * and fresh, in its own database is answered from that table, and the
+ * warning says so.
  */
 export function storageWarnings(
    plan: BuildPlan | null,
    mode: string,
+   /** Whether a table of this content address is bound and fresh in its own database. */
+   databaseFresh: (sourceEntityId: string) => boolean = () => false,
 ): ApiPackageWarning[] {
    if (mode === "on" || !plan?.sources) return [];
    const warnings: ApiPackageWarning[] = [];
@@ -551,23 +512,30 @@ export function storageWarnings(
          ? `Measures of \`${rollup.baseSourceName}\` pre-aggregated at grain ` +
            `(${rollup.grainDimensions.join(", ")}) declare `
          : "";
-      const message = rollup
-         ? mode === "off"
-            ? `${at}storage="${storage}", but PERSIST_STORAGE_MODE is off, so ` +
-              `the rollup is not built. Queries that would have used it are ` +
-              `answered from \`${rollup.baseSourceName}\` instead — correct, ` +
-              `but unaccelerated.`
-            : `${at}storage="${storage}", and the rollup is built, but ` +
-              `PERSIST_STORAGE_MODE is write-only, so the serve path does not ` +
-              `route to it. Queries are answered from ` +
-              `\`${rollup.baseSourceName}\` — correct, but unaccelerated.`
-         : mode === "off"
-           ? `declares storage="${storage}" but PERSIST_STORAGE_MODE is off; ` +
-             `the annotation is ignored and the source is served live from ` +
-             `its own warehouse.`
-           : `is materialized into storage "${storage}" but ` +
-             `PERSIST_STORAGE_MODE is write-only; the serve path is not ` +
-             `routed to the materialized table (served live).`;
+      const fromDatabase =
+         !!source.sourceEntityId && databaseFresh(source.sourceEntityId);
+      const message = fromDatabase
+         ? `${rollup ? at : "declares "}storage="${storage}", but ` +
+           `PERSIST_STORAGE_MODE is ${mode}, so no query reads the storage ` +
+           `table. Queries are answered from its table in the source's own ` +
+           `database, which is bound and fresh.`
+         : rollup
+           ? mode === "off"
+              ? `${at}storage="${storage}", but PERSIST_STORAGE_MODE is off, so ` +
+                `the rollup is not built. Queries that would have used it are ` +
+                `answered from \`${rollup.baseSourceName}\` instead — correct, ` +
+                `but unaccelerated.`
+              : `${at}storage="${storage}", and the rollup is built, but ` +
+                `PERSIST_STORAGE_MODE is write-only, so the serve path does not ` +
+                `route to it. Queries are answered from ` +
+                `\`${rollup.baseSourceName}\` — correct, but unaccelerated.`
+           : mode === "off"
+             ? `declares storage="${storage}" but PERSIST_STORAGE_MODE is off; ` +
+               `the annotation is ignored and the source is served live from ` +
+               `its own warehouse.`
+             : `is materialized into storage "${storage}" but ` +
+               `PERSIST_STORAGE_MODE is write-only; the serve path is not ` +
+               `routed to the materialized table (served live).`;
       warnings.push({
          model: source.modelPath ?? "",
          subject: rollup ? rollup.baseSourceName : source.name,
@@ -782,12 +750,14 @@ export function persistencePolicyWarnings(
 ): string[] {
    const warnings: string[] = [];
    const sources = plan?.sources ? Object.values(plan.sources) : [];
+   // Present, not truthy: an empty string is a schedule that never fires,
+   // so it must reach the cron rule rather than skip every rule.
    const packageSchedule = metadata.materialization?.schedule ?? null;
    const packageFreshness = metadata.materialization?.freshness ?? null;
    const scope = metadata.scope ?? "package";
 
    // A package-level cron is legal only with scope: version.
-   if (packageSchedule && scope !== "version") {
+   if (packageSchedule !== null && scope !== "version") {
       warnings.push(
          `materialization.schedule (cron) in ${PACKAGE_MANIFEST_NAME} requires ` +
             `"scope": "version": a package-scoped lineage is reused across ` +
@@ -797,7 +767,7 @@ export function persistencePolicyWarnings(
    }
 
    // Schedule and freshness are mutually exclusive.
-   if (packageSchedule) {
+   if (packageSchedule !== null) {
       const freshnessDeclared =
          !!(
             packageFreshness &&
@@ -814,7 +784,10 @@ export function persistencePolicyWarnings(
 
    // A valid 5-field cron, here so publish, PATCH, load and the scheduler all
    // apply one rule and a bad cron cannot silently never arm.
-   if (packageSchedule && !new CronEvaluator().isValid(packageSchedule)) {
+   if (
+      packageSchedule !== null &&
+      !new CronEvaluator().isValid(packageSchedule)
+   ) {
       warnings.push(
          `materialization.schedule in ${PACKAGE_MANIFEST_NAME} is not a valid ` +
             `5-field UNIX cron: ${JSON.stringify(packageSchedule)}. Use ` +
@@ -890,7 +863,38 @@ function nativeSchemaMissingMessage(n: NativeSchemaNotice): string {
  * A caller-safe sentence for why a served copy leaves a source unserved. The
  * compiler's own message stays in the logs: it can name the destination alias.
  */
+/**
+ * A dropped storage table's problem, said of the source the database table
+ * now serves: the reason, then that the served copy reads its database table
+ * instead of leaving the source as written.
+ */
+function fellBackMessage(message: string): string {
+   const instead = "the served copy reads its database table instead.";
+   const at = message.search(/[Tt]he served copy leaves /);
+   if (at < 0)
+      return `${message} ${instead[0].toUpperCase()}${instead.slice(1)}`;
+   const head = message.slice(0, at);
+   return head.endsWith(". ") || head === ""
+      ? `${head}${instead[0].toUpperCase()}${instead.slice(1)}`
+      : `${head}${instead}`;
+}
+
 function servedCopyProblemMessage(
+   problem: ServedCopyProblem,
+   inlinedButKept = false,
+   takesInline = true,
+): string {
+   const message = servedCopyProblemReasonMessage(
+      problem,
+      inlinedButKept,
+      takesInline,
+   );
+   // A storage table the served copy dropped for a source it then
+   // re-rooted on its database table: the reason, said of that table.
+   return problem.servedFromDatabase ? fellBackMessage(message) : message;
+}
+
+function servedCopyProblemReasonMessage(
    problem: ServedCopyProblem,
    inlinedButKept = false,
    /** Whether the source's declaration takes `inline=` (a `#(materialize)` one). */
@@ -907,7 +911,11 @@ function servedCopyProblemMessage(
       case "cross_connection_unbuilt":
          return "This model's served copy re-roots a source onto its storage destination, which moves a join of it across connections, and the join cannot be left out; the copy compiles once both sides are built into one destination, and serves live until then.";
       case "column_types":
-         return "This source's stored column types differ from the types the model declares, or one cannot be declared on its table, so the served copy leaves it as written and it answers live.";
+         return (
+            "This source's stored column types differ from the types the model declares, or one cannot be declared on its table, so the served copy leaves it as written and it answers live" +
+            // The columns, named with their declared and stored types.
+            (problem.detail ? `: ${problem.detail}.` : ".")
+         );
       case "no_declaration":
          return "This source's declaration was not found in the compiled model, so the served copy leaves it as written and it answers live.";
       case "definition_not_parsed":

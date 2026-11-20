@@ -381,6 +381,10 @@ export async function queryPathFor(
                .materializeBindings(pinned, "bound")
                .map((b) => b.tablePath),
          ),
+         servedCopyDetails: servedCopyDetailsOf(
+            host.servedCopy.materializeBindings(pinned, "bound"),
+            host.servedCopy.problems(),
+         ),
          runFailed: answer.leg !== "live" && answer.runFailed,
          databaseRead: answer.databaseRead,
          ...(viewTable ? { view: viewTable } : {}),
@@ -411,6 +415,24 @@ export async function queryPathFor(
       });
       return undefined;
    }
+}
+
+/**
+ * Each served-copy table's `column_types` detail, by table path: the columns
+ * its source's problem names, for the path report's `detail`.
+ */
+function servedCopyDetailsOf(
+   bindings: readonly Binding[],
+   problems: ReturnType<ServedCopyServe["problems"]>,
+): ReadonlyMap<string, string> {
+   const out = new Map<string, string>();
+   for (const p of problems) {
+      if (p.reason !== "column_types" || !p.detail || !p.sourceID) continue;
+      for (const b of bindings) {
+         if (b.sourceIDs?.includes(p.sourceID)) out.set(b.tablePath, p.detail);
+      }
+   }
+   return out;
 }
 
 /**

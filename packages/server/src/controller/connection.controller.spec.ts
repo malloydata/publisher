@@ -32,6 +32,7 @@ import {
 } from "./connection.controller";
 import { installSettings } from "../test_helpers/settings_env";
 import { fakeOf } from "../test_helpers/store_fakes";
+import { driverValue, fakeSnowflake } from "../test_helpers/fake_snowflake";
 import type { ConnectionAdmin } from "../service/environment_ports";
 
 /**
@@ -2375,4 +2376,67 @@ describe("ConnectionController.getConnectionQueryData statement usage", () => {
       expect(records[0]).toMatchObject({ surface: "sql", status: "error" });
       expect(records[0].rows).toBeUndefined();
    });
+});
+
+/**
+ * F-16: a Snowflake integer past 2^53 reaches raw SQL as a BigInt (every
+ * Snowflake connection reads integers exactly), so the answer must serialize
+ * it, on the buffered and the streamed path, and in the byte count too.
+ */
+describe("ConnectionController.getConnectionQueryData Snowflake big integers", () => {
+   afterEach(() => sinon.restore());
+
+   const BIG = "4530000000000225187";
+
+   function snowflakeController(streaming: boolean): ConnectionController {
+      const connection = fakeSnowflake(() => [
+         { ID: driverValue("fixed", BIG), N: driverValue("fixed", "5") },
+      ]);
+      if (!streaming) {
+         sinon.stub(connection, "canStream").returns(false as never);
+      }
+      const fakeStore = fakeOf<ConnectionAdmin>({
+         getEnvironment: sinon.stub().resolves({
+            assertCanAdmitQuery: sinon.stub().returns(undefined),
+            getApiConnection: () => ({ name: "sf", type: "snowflake" }),
+         }),
+      });
+      const controller = new ConnectionController(fakeStore);
+      sinon
+         .stub(
+            controller as unknown as {
+               getMalloyConnection: (...args: unknown[]) => Promise<Connection>;
+            },
+            "getMalloyConnection",
+         )
+         .resolves(connection as unknown as Connection);
+      return controller;
+   }
+
+   for (const [label, streaming] of [
+      ["buffered", false],
+      ["streamed", true],
+   ] as const) {
+      it(`answers every digit as a JSON string (${label})`, async () => {
+         // A byte cap, so the streamed path counts each row's bytes.
+         setEnv({ PUBLISHER_MAX_RESPONSE_BYTES: "1000000" });
+         const result = await snowflakeController(
+            streaming,
+         ).getConnectionQueryData(
+            "env",
+            "sf",
+            "SELECT id, n FROM t",
+            "",
+            undefined,
+            undefined,
+            undefined,
+            {},
+         );
+         expect(result.data).toContain(`"ID":"${BIG}"`);
+         const parsed = JSON.parse(result.data ?? "") as {
+            rows: Record<string, unknown>[];
+         };
+         expect(parsed.rows).toEqual([{ ID: BIG, N: 5 }]);
+      });
+   }
 });

@@ -12,6 +12,18 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import type { ModelMaterializer } from "@malloydata/malloy";
+import { gateSwitches } from "../../../src/config";
+import type { Pinned } from "../../../src/service/materialization/domain/binding";
+import {
+   makeLegs,
+   type PersistedQueryServe,
+} from "../../../src/service/materialization/serve/leg";
+import {
+   collationProbe,
+   ReadAdmission,
+} from "../../../src/service/materialization/serve/read_admission";
+import type { PersistedViewServe } from "../../../src/service/materialization/serve/view_variants";
 import { useMaterializationOn } from "../../../src/test_helpers/settings_env";
 import {
    freshLoadPool,
@@ -164,6 +176,52 @@ describe("stored relations that read the current time, by route", () => {
       );
       expect(warning?.message).toContain("reads the current time");
       expect(asOfBuild("gated_views -> last7")).toBeUndefined();
+   });
+
+   // A database persisted view's or query's table has no serve binding, only
+   // its manifest entry, so the flag must reach the leg through the entry:
+   // the backstop then declines an access decision over it on its own, with
+   // the plan-time refusals and the given-reading decline out of the way.
+   it("marks a persisted view's and query's table as of its build, and declines an access decision over it", async () => {
+      const model = fixture.pkg.getModel("m.malloy")! as unknown as {
+         pinNow(): Pinned;
+         persistedViews: PersistedViewServe;
+         persistedQueries: PersistedQueryServe;
+         modelMaterializer: ModelMaterializer;
+      };
+      const pinned = model.pinNow();
+      const legs = makeLegs(pinned, {
+         persistedViews: model.persistedViews,
+         persistedQueries: model.persistedQueries,
+      });
+      for (const [kind, queryString] of [
+         ["view", "run: ev_views -> last7"],
+         ["query", "run: recent_q"],
+      ] as const) {
+         const query = {
+            queryString,
+            givens: undefined,
+            authorRunnable: model.modelMaterializer.loadQuery(queryString),
+         };
+         const leg = legs.find((l) => l.kind === kind)!;
+         const answer = await leg.attempt(query, pinned);
+         expect({ kind, read: answer.resultTableRead }).toMatchObject({
+            kind,
+            read: { tier: "database", asOfBuild: true },
+         });
+         const admission = new ReadAdmission(
+            query,
+            gateSwitches(),
+            collationProbe,
+         );
+         expect({
+            kind,
+            verdict: (await admission.decide(kind, answer, true)).verdict,
+         }).toMatchObject({
+            kind,
+            verdict: { admit: false, reason: "as_of_build_access" },
+         });
+      }
    });
 
    it("refuses a grant table a gated source joins as current_time", () => {

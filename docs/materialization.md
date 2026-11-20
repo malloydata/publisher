@@ -289,10 +289,9 @@ source, `materialize-not-built` for a `#(materialize)` source, `persist-view-not
 persisted view and `persist-query-not-built` for a persisted query (`subject` the view or query),
 and `rollup-not-built` for a rollup (`subject` its base, or `<base>.<measure>` for one
 measure). Each warning carries the record's bounded `reason` as a field, so a client never reads
-it from the message. A rollup's code was `preaggregate-not-built`: for this release each
-`rollup-not-built` warning is repeated with that old code and the same message, so a reader that
-matches it keeps working, and then the repeat is removed. `persist-source-refused`, which 0.14.0
-repeated beside `persist-not-built` for one release, is no longer produced.
+it from the message. A rollup's code was `preaggregate-not-built`, which 0.15.0 and 0.16 repeated
+beside each `rollup-not-built` warning; since 0.17.0 it is no longer produced. Nor is
+`persist-source-refused`, which 0.14.0 repeated beside `persist-not-built`.
 
 ### Sources that read the current time
 
@@ -803,12 +802,17 @@ again with backoff (after 1 second, doubling to at most a
 minute, ten times), and by any later poll of an unchanged manifest, until a read succeeds, when the
 warning clears. A change made after a bind is read at the next one.
 
-**Columns with no Malloy basic type.** A stored list or struct column is declared as Malloy's array
+**Columns with no Malloy basic type.** A `storage=` build stores an array column, public or hidden
+(a BigQuery `ARRAY`, a DuckDB or Postgres list, a persisted query's `nest:`), as a DuckDB list of its element type
+(`VARCHAR[]`, `BIGINT[]`, `STRUCT(…)[]`), and a struct (record) column, public or hidden (a BigQuery
+`STRUCT`, a DuckDB `STRUCT`), as a DuckDB `STRUCT(…)` of its mapped field types, a struct inside it or a
+list it holds included. A stored list or struct column is declared as Malloy's array
 or record type, so it reads back as it does live, when the source's field is one; a column Malloy has
 no faithful declaration for (a MAP, UNION, ENUM, BLOB, INTERVAL or JSON column, a list or struct
 holding one, a list or struct whose field live types as a warehouse-native type or that holds one, or
-a list or struct holding an integer live keeps exact past 2^53, such as a DuckDB `BIGINT[]`) is left out
-of its source, so a query reading it is answered live and every other query reads the table. A list or
+a list or struct holding an integer live keeps exact past 2^53, such as a DuckDB `BIGINT[]` or a
+BigQuery `STRUCT` with an `INT64` field) is left out of its source as a whole column, so a query
+reading it, or any field of it, is answered live and every other query reads the table. A list or
 struct of zoned timestamps is declared `timestamptz`, as live types it. A stored scalar whose field live
 types as a warehouse-native type (`sql native`: a `uuid`, or a Postgres `json`, `jsonb` or composite
 type, which the destination stores as text) is left out the same way, and a Postgres `bytea` or
@@ -823,22 +827,23 @@ no type declares is counted in `publisher_storage_serve_shape_type_fallback_tota
 
 **A column the served copy cannot carry sends a `#(materialize)` source live as a whole.** A
 `#(materialize)` source leaves a column out per query, as above, only when the column is stored: a
-list (a DuckDB `BIGINT[]`, a BigQuery `ARRAY<INT64>`), a MAP, a UUID and the like. Three kinds of
-column are never on its table, and each one sends **every** query over the source live, whatever
-the query reads, in a `storage=` table and a database one (a database origin) alike:
+list (a DuckDB `BIGINT[]`, a BigQuery `ARRAY<INT64>`), a struct holding such an integer, a MAP, a
+UUID and the like. A list or struct column its table lacks is left out per query too: a `storage=`
+build by an earlier release left every array and struct column out of its table, so such a table
+serves every query that does not read the column until its next full build. Two kinds of column
+are never on its table, and each one sends **every** query over the source live, whatever the query
+reads, in a `storage=` table and a database one (a database origin) alike:
 
-- a struct (record) column of the source's own, such as a DuckDB `STRUCT(a BIGINT)` or a BigQuery
-  `STRUCT<…>`: Malloy types it as a join, so the plan stores no column for it and the served copy
-  cannot carry the field (`served-copy-not-served`, reason `fields_not_carried`);
 - a column of an `inline=` join that no `type:` declares, such as a BigQuery `GEOGRAPHY` or a
   DuckDB `MAP` on the joined source (`served-copy-not-served`, reason `column_types`);
 - a nest of a database table outside DuckDB, which its warehouse stores as JSON (`column_types`).
 
 The answers are live's, so nothing is wrong, only slower. Each query's path report says
 `servedBy: live` and skips the table as `NOT_SERVED` with code `served_copy`; the package's
-`served-copy-not-served` warning names why, in its message and its `reason` field; the path report
-itself does not. A v1 `#@ persist`
-`storage=` source stores a struct column of its own and serves it from the table.
+`served-copy-not-served` warning names why, in its message and its `reason` field. For
+`column_types`, the warning's message and the path report's `detail` also name each column, with
+its declared type and its stored type (or that the table does not hold it); a hidden column is
+named only as "a hidden column", with no types.
 
 **Integers past 2^53.** A stored table's columns are declared to Malloy as plain numbers, which it
 reads through a JavaScript number, so 9007199254740993 would come back as 9007199254740992. A
@@ -864,15 +869,14 @@ the warehouse's `information_schema` finds in more than one schema, where the bu
 which table it wrote). A database column whose type its build did not record is the one exception
 on BigQuery: BigQuery has exactly one integer type, so the column is read as `INT64` and still
 serves. Either way the package reports the source as a warning with code
-`database-native-type-missing` (for this release also repeated under its former code,
-`stored-native-schema-missing`), naming its columns and whether each is read as `INT64` or answered
+`database-native-type-missing` (`stored-native-schema-missing` before 0.15, and repeated under
+that code through 0.16), naming its columns and whether each is read as `INT64` or answered
 live; the next full rebuild records the types and clears it. Served never exceeds live where Malloy's dialect says live rounds: on a source whose live answer
 itself rounds such values (Postgres returns its rows through JSON), a `storage=` table reads the
 column as a plain number, which rounds the same way, and a database one reads it through
 Postgres's own `bigint` type, on live's own path ([known limitation
-12](materialization-v2-plan.md#known-limitations-to-revisit)). Where the dialect says live keeps
-every digit but the connector does not, served is the exact answer and live rounds: Snowflake's
-`NUMBER(p,0)` today (see "Snowflake: live and served differences" below).
+12](materialization-v2-plan.md#known-limitations-to-revisit)). Snowflake's `NUMBER(p,0)` keeps every
+digit live as well as served (see "Snowflake: how live reads integers and timestamps" below).
 
 **A 128-bit integer in DuckLake.** DuckLake (DuckDB 1.5) writes a `HUGEINT` or `UHUGEINT` column to
 its Parquet files as a `DOUBLE`, while its catalog still reports the 128-bit type, so a value past
@@ -904,20 +908,27 @@ cannot tell which it has. A plain DuckDB table keeps every digit. So:
 - A database build on a `ducklake` connection still stores the 128-bit type, which is answered
   live as above.
 
-**Snowflake: live and served differences.** Two Snowflake answers differ between live and served
-today, and in both the served answer is the right one; each needs a fix in Malloy's Snowflake
-connector, not in Publisher.
+**Snowflake: how live reads integers and timestamps.** Every Snowflake connection Publisher
+builds, password or key pair, reads its rows so that a live answer equals the served one:
 
-- *Integers past 2^53.* Malloy's Snowflake dialect says live keeps every digit of a `NUMBER(p,0)`, so
-  a stored read keeps them too (above). Live does not, on any connection Publisher configures: the
-  connector gives snowflake-sdk the configured options without its own `jsTreatIntegerAsBigInt`
-  default, so the driver returns the integer as a JavaScript number. A `sum()` over a
-  `NUMBER(38,0)` past 2^53, such as 4530000000000225187, comes back rounded live
-  (4530000000000225300) and exact served. Publisher does not round the served answer to match.
-- *`TIMESTAMP_TZ`.* The connector pins the session's text format for `TIMESTAMP_NTZ` and
-  `TIMESTAMP_LTZ`, not for `TIMESTAMP_TZ`, so live renders a zoned value in the account's own format
-  and offset (`2026-01-15 10:00:00.000 -0800`), and served renders the same instant in UTC ISO form
-  (`2026-01-15T18:00:00.000Z`). The instant is the same; only the text differs.
+- *Integers.* An integer column (a `NUMBER(p,0)`, or a `sum()` over one) is read with every digit,
+  as Malloy's Snowflake connector does by default (`jsTreatIntegerAsBigInt`); the connector applies
+  that default only to options it reads from the environment or a TOML file, so Publisher sets it
+  itself. A value within ±2^53 is a number, as before; past it, a `bigint` field's value keeps every
+  digit and a compact answer gives it as a JSON string, as for a DuckDB `BIGINT`. A `sum()` over a
+  `NUMBER(38,0)` of 4530000000000225187 answers `"4530000000000225187"` live and served. Until 0.17
+  live answered the rounded number 4530000000000225300.
+- *Dates and timestamps.* A `DATE`, `TIMESTAMP_NTZ`, `TIMESTAMP_LTZ` or `TIMESTAMP_TZ` value is
+  answered as its instant in UTC ISO form, as a stored copy (DuckDB) answers it: a
+  `TIMESTAMP_TZ` of `2026-01-15 10:00:00 -08:00` answers `2026-01-15T18:00:00.000Z`, and a `DATE`
+  `2026-01-15T00:00:00.000Z`. A `TIMESTAMP_TZ`'s own offset is not kept, live or served: a stored copy
+  holds only the instant, so keeping it live would make the two differ. Until 0.17 a compact live
+  answer rendered each in the session's text format (`2026-01-15 10:00:00.000 -0800`,
+  `2026-01-15T18:00:00.000+00:00`, `2026-01-15`). The full result's `timestamp_value` and
+  `date_value` were already UTC ISO and are unchanged.
+
+An integer inside a nested (array or record) column is not covered: a Snowflake nest arrives as
+JSON, which the driver parses into JavaScript numbers, so a value in it past 2^53 is rounded live.
 
 A run's record (`GET …/packages/{packageName}/materializations/{materializationId}`, and the
 listing) returns its build manifest. Each entry names the physical table it built, and a database
@@ -960,7 +971,7 @@ Warnings about the deployment rather than one item carry codes of their own, suc
 Renamed and retired codes:
 
 - `persist-source-refused`, `persist-not-built`'s former name, is no longer produced (0.14.0 repeated it for one release, as announced).
-- `preaggregate-not-built`, `preaggregate-join-one-key-repeated` and `stored-native-schema-missing` are now `rollup-not-built`, `rollup-join-one-key-repeated` and `database-native-type-missing`. For this release each is repeated under its former code, with the same message, in the package's REST `warnings` (the Console and the MCP tools show it once); then the repeat is removed.
+- `preaggregate-not-built`, `preaggregate-join-one-key-repeated` and `stored-native-schema-missing` are now `rollup-not-built`, `rollup-join-one-key-repeated` and `database-native-type-missing`. 0.15.0 and 0.16 repeated each under its former code, with the same message, in the package's REST `warnings`; since 0.17.0 the former codes are no longer produced.
 - `preaggregate-not-a-measure`, `preaggregate-unknown-grain` and `preaggregate-not-mergeable` are now `rollup-not-a-measure`, `rollup-unknown-grain` and `rollup-not-mergeable` (load failures, so only the `[code]` in the failure's message and `loadErrors[].codes` change).
 - `table-kept-after-rename` is now `table-kept`: it also fires after a `storage=` or tier move and for a destination no longer configured, and its `reason` field says which.
 - The rollup refusals `preaggregate-hidden-field`, `preaggregate-access-filter`, `preaggregate-time-zone`, `preaggregate-current-time`, `preaggregate-reads-given`, `preaggregate-unreadable-measure`, `preaggregate-join-level` and `preaggregate-name-clash` are no longer produced: each is `rollup-not-built`, with the reason `hidden_field`, `access_filter` (or `authorize` for a lock), `time_zone`, `current_time`, `reads_given` or `inherited_where_with_given`, `unreadable_measure`, `join_not_in_grain` or `partial_name_collision` on its `refusedSources` record.
@@ -981,8 +992,15 @@ a working one: the build succeeds, the manifest binds, and every query is quietl
 plan and the binding on every read. Its `tier` is where queries read the table: a storage binding
 that stores the source decides it, so a source with no `storage=` that a host's build instructions
 placed in a storage destination is judged as a storage table, as queries read it; with no storage
-binding, `storage=` does. A source the served copy reads whose storage table is stale while its
-database table is fresh is judged on the database tier, which the served copy reads.
+binding, `storage=` does. A source the served copy reads that is bound in both tiers is read from
+one table: the storage table while it is fresh and `PERSIST_STORAGE_MODE` is `on`, else the
+database table (fresh, beside a stale storage table; beside a storage table the served copy cannot
+read whole, such as one missing a column the source exposes; or under `write-only` and `off`, where
+no storage table is read). A storage table that holds a column it cannot read back as live answers
+it (a list stored as its text) is still read, for the queries that do not read that column; a query
+that does is answered live. Its verdict is judged on that tier. A rollup, persisted view or persisted
+query reads its storage binding whenever it has one, so under `write-only` and `off` it answers live
+(`storage_mode`) even with a database table bound beside it.
 
 | `verdict` | Meaning |
 | --- | --- |
@@ -1052,6 +1070,11 @@ standalone run or a control plane built the table.
   names it `READ_FAILED`. The worker logs it at error level with code
   `ducklake_catalog_unavailable` and reopens the destination, so the next query reads the table
   again.
+- A stored read that fails at run time (a column renamed or dropped after the build, say) answers
+  live under `freshness.fallback="live"`, with `servedFrom: live_fallback` and the table named
+  `READ_FAILED`: a `storage=` table, a database table the served copy reads, and a rollup on
+  either tier, whose fallback never vetoes since a rollup only accelerates. Under any other
+  fallback the error is returned.
 
 Each key resolves on its own, most specific first: the source's own declaration, then the model
 file's (`## freshness.window="…"`, or inside `## materialization { … }`), then `materialization.freshness`
@@ -1134,7 +1157,7 @@ If the load does not take, the run still settles at `MANIFEST_FILE_READY`, since
 
 A build ignores the package's [published surface](discovery-and-access.md). It builds every `#@ persist` source in every model, including one `index.malloy` does not export, so a hidden intermediate can be persisted and an exported source that reads it reads the built table.
 
-Each run records a **trigger** in its metadata: `on_demand` (a manual/API build) or `scheduler` (a scheduled fire), the words `RunContext.trigger` uses. Runs recorded before 0.15 say `ON_DEMAND` and `SCHEDULER`, and every reader accepts both. Only one materialization can be active per (environment, package) at a time — a second concurrent build is rejected with HTTP 409, and the scheduler coalesces (skips) rather than stacking a second build. A package with published versions builds per version, under the rules in [package-versions.md](package-versions.md#materializations): a run under `scope: "version"`, or one with `buildInstructions`, holds its own version's slot instead.
+Each run records a **trigger** in its metadata: `on_demand` (a manual/API build) or `scheduler` (a scheduled fire), the words `RunContext.trigger` uses. Runs recorded before 0.15 say `ON_DEMAND` and `SCHEDULER`. The API and the CLI accept both; since 0.16.1 the scheduler reads only `scheduler`, so a scheduled fire a release before 0.15 recorded is not read when it anchors a schedule. Only one materialization can be active per (environment, package) at a time — a second concurrent build is rejected with HTTP 409, and the scheduler coalesces (skips) rather than stacking a second build. A package with published versions builds per version, under the rules in [package-versions.md](package-versions.md#materializations): a run under `scope: "version"`, or one with `buildInstructions`, holds its own version's slot instead.
 
 On demand, via the CLI:
 

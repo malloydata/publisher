@@ -155,6 +155,9 @@ running server, the same spec is at
 
 ## Generated clients
 
-The spec drives a generated **Python client** ([`packages/python-client`](../packages/python-client))
-and the TypeScript client the SDK uses. Regenerate them from `api-doc.yaml` after any spec change —
-see [CONTRIBUTING.md](../CONTRIBUTING.md).
+The spec drives the generated TypeScript types and clients the server, the SDK and the CLI use;
+regenerate them after any spec change with `bun run generate-api-types` (server and SDK) and
+`bun run generate-api-types:cli`. There is no supported Python client: call the
+REST API directly, as the standard-library example in
+[AGENTS.md section 7](../AGENTS.md#7-working-unattended-the-rest-api) does, or generate a client of
+your own from the spec.

@@ -152,14 +152,6 @@ describe("refusal findings, byte for byte", () => {
          },
          {
             model: "m.malloy",
-            subject: "baked",
-            message: ROLLUP_GIVEN,
-            code: "preaggregate-not-built",
-            reason: "reads_given",
-            severity: "warn",
-         },
-         {
-            model: "m.malloy",
             subject: "no_delta",
             message: MAT_INCREMENTAL,
             code: "materialize-not-built",

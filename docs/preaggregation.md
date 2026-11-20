@@ -32,7 +32,7 @@ source: orders is duckdb.table('data/orders.parquet') extend {
 
 The rest of this page describes `#@ preaggregate`, which keeps working (deprecated). Where `#(rollup)` differs:
 
-- **Keys.** `grain=[…]` (required), `storage=` or `name=`, never both (`name=` places the table; see [below](#where-the-rollups-table-is-created)), and `freshness.window=` and `freshness.fallback=` ([Freshness](#freshness)). `namespace=` is `name=`'s deprecated spelling. Any other key, a grain that is not a list of the source's own dimensions, or the annotation on anything but a measure fails the publish and the load (`rollup-unknown-key`, `rollup-unknown-grain`, `rollup-not-a-measure`).
+- **Keys.** `grain=[…]` (required), `storage=` or `name=` (`name=` places the table; see [below](#where-the-rollups-table-is-created)); beside `storage=`, `name=` may only be a bare leaf, which starts the table's readable name, and `freshness.window=` and `freshness.fallback=` ([Freshness](#freshness)). `namespace=` is `name=`'s deprecated spelling. Any other key, a grain that is not a list of the source's own dimensions, or the annotation on anything but a measure fails the publish and the load (`rollup-unknown-key`, `rollup-unknown-grain`, `rollup-not-a-measure`).
 - **Which measures.** Read from the measure's own text: `count()`, `x.sum()`, `x.min()`, `x.max()` (and `sum(x)` and so on), each optionally filtered, references to other such measures, and arithmetic or scalar functions over them. Each aggregate is stored as its own partial and merged at read, so `revenue / order_count` stays a ratio of totals. `avg`, a distinct count (`count(x)`), `stddev` and the like, `all()` and `exclude()` fail the publish and the load (`rollup-not-mergeable`). Text outside what is read (`pick`, a cast, a date literal, `|` in a filter, `x.count()` on a field, a joined source's measure) is a warning, and the measure serves live. The reading is checked against the compiled measure: a measure whose aggregates the compiler records differently is a warning too, never stored.
 - **Joins.** A source with a `join_many` or `join_cross` can be rolled up. An aggregate through a join (`carriers.fleet.sum()`) is stored only when the join's key (`carrier` in `join_one: carriers with carrier`) is in the grain; otherwise it is a warning and serves live. Its stored total is the joined rows' within each group, and groups that share the key hold the same joined rows, so a query reads a join-level sum or count from the rollup only when it groups by, or fixes, every other grain dimension at each level that aggregates it (a grain of the key alone has none). A join-level `min` or `max` (`carriers.fleet.max()`, key in the grain) is stored too, and merged with `min` or `max`: a repeated joined row cannot change either, so it is read from the rollup however the query groups, and a group with no joined row is `NULL`, as live. An aggregate through more than one join (`carriers.hubs.gates.sum()`) is a warning and serves live. A grain dimension read through a `join_many` is a fan-out dimension: a query reads the rollup only when it groups by it, or fixes it to one value with `where:`, at every level that aggregates.
 - **Where it is declared.** A declaration belongs to the source that writes it. An extension inherits its base's rollups' meaning but does not get its own; an include-list item's annotation is the including source's. Each rollup is planned once, under the model that declares its base, and its name carries that model, so two same-named sources in two models never share a table.
@@ -367,10 +367,12 @@ placed differently — one in the store, one alongside the base. Measures sharin
 share its one table, so two of them naming different destinations fail the publish and the
 load (`rollup-invalid`).
 
-**`name=` and `storage=` cannot be combined on a rollup.** Placement inside a destination is
+**Beside `storage=`, a rollup's `name=` is a leaf only.** Placement inside a destination is
 derived, not authored: a freshly provisioned catalog has no schema to create the table
-in. Writing both (or `namespace=` beside `storage=`) on one line fails the publish and
-the load (`rollup-invalid`).
+in. So a bare `name="orders_rollup"` is accepted and starts the table's readable name
+(`orders_rollup__p<hash>`), as on the database tier, but a `name=` with a container
+(`name="analytics.orders_rollup"`), or any `namespace=`, beside `storage=` fails the publish
+and the load (`rollup-invalid`).
 
 **The tier's switch applies.** With `PERSIST_STORAGE_MODE` off, a `storage=` rollup is
 not built — and not built anywhere else either. Falling back to a build alongside the

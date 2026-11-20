@@ -223,6 +223,20 @@ source: f is duckdb.sql("SELECT 1 as x")
    );
 
    it(
+      "rejects an empty schedule, which would never fire (#917)",
+      async () => {
+         const pkg = await loadPackage(PLAIN_MODEL, {
+            scope: "version",
+            materialization: { schedule: "" },
+         });
+         const joined = pkg.formatInvalidPersistencePolicy();
+         expect(joined).toContain("UNIX cron");
+         expect(joined).toContain('""');
+      },
+      { timeout: 30000 },
+   );
+
+   it(
       "rejects a cron-parser extension the UNIX grammar lacks (L)",
       async () => {
          // Guards config-parity: cron-parser accepts `0 6 L * *` but the control

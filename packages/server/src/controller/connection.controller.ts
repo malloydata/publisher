@@ -28,6 +28,7 @@ import {
    TableNotFoundError,
    UnconfiguredConnectionError,
 } from "../errors";
+import { bigIntReplacer } from "../json_utils";
 import { recordQueryCapExceeded } from "../query_cap_metrics";
 import { logger } from "../logger";
 import { assertSafePackageName } from "../path_safety";
@@ -1110,7 +1111,7 @@ export class ConnectionController {
                   );
                }
             }, getQueryTimeoutMs());
-            const data = JSON.stringify(streamed);
+            const data = JSON.stringify(streamed, bigIntReplacer);
             pending?.emit(responseBytes(data));
             return { data, queryCorrelationId };
          }
@@ -1142,7 +1143,7 @@ export class ConnectionController {
             );
          }
 
-         const data = JSON.stringify(result);
+         const data = JSON.stringify(result, bigIntReplacer);
          pending?.emit(responseBytes(data));
          return { data, queryCorrelationId };
       } finally {

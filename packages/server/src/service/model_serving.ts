@@ -930,7 +930,8 @@ export class ModelServing {
          // `freshnessFallback=live` marks the tier as an optimisation, not a
          // dependency, so a store failing UNDER a routed query degrades to
          // live. Deliberately narrow:
-         //  - only when the query actually routed to storage;
+         //  - only when the query read a stored table (a virtual map, or a
+         //    database rollup through the build manifest);
          //  - only per `bindingsAllowDegradeToLive` over the bindings that
          //    produced THIS shape (a sibling source must not decide);
          //  - or for DECIMAL arithmetic past 38 digits, whatever the policy
@@ -1744,7 +1745,8 @@ export class ModelServing {
 }
 
 /**
- * `manifest` less every table stored as of its build (`Binding.asOfBuild`):
+ * `manifest` less every table stored as of its build (`Binding.asOfBuild`, or
+ * the manifest entry's own flag for a table with no binding):
  * a legacy notebook cell compiles with the manifest and passes no read
  * admission, so a cell that is an access decision could otherwise read one.
  * Such a table is answered live there, gated or not (fail closed).
@@ -1754,11 +1756,16 @@ function withoutAsOfBuildEntries(
    pinned: Pinned,
 ): BuildManifest | undefined {
    if (!manifest) return manifest;
-   const asOfBuild = new Set(
-      pinned.snapshot.bindings
+   // A database persisted view's or query's table has no binding: its own
+   // entry carries the flag.
+   const asOfBuild = new Set([
+      ...pinned.snapshot.bindings
          .filter((b) => b.asOfBuild === true)
          .map((b) => b.virtualHandle),
-   );
+      ...Object.entries(pinned.snapshot.entries)
+         .filter(([, e]) => e.asOfBuild === true)
+         .map(([id]) => id),
+   ]);
    if (asOfBuild.size === 0) return manifest;
    const entries = Object.fromEntries(
       Object.entries(manifest.entries).filter(([id]) => !asOfBuild.has(id)),

@@ -28,7 +28,7 @@ import {
    switches,
    switchesLabel,
 } from "./domain/gate_policy_frozen_rows";
-import { LEGS } from "./domain/vocabulary";
+import { LEGS, type Tier } from "./domain/vocabulary";
 import { computeServeVerdicts } from "./serve/serve_verdict";
 import { verdictKeepsGate } from "./serve_verdicts";
 
@@ -259,5 +259,163 @@ describe("admission and the serve verdict agree with the frozen gate policy", ()
       }
       expect(wrong).toEqual([]);
       expect([...outcomes].sort()).toEqual(["live", "serves"]);
+   });
+
+   // A database-origin source bound in both tiers, both tables fresh: the
+   // served copy re-roots it on one table (written out below, not derived
+   // from the rule the code uses), so the verdict names that tier and keeps
+   // a gate exactly where admitRead admits the read of that table.
+   it("judges a source bound fresh in both tiers on the tier the served copy reads, as admitRead does", () => {
+      const sourceID = "orders@file:///pkg/m.malloy";
+      const plan = {
+         graphs: [],
+         sources: {
+            [sourceID]: {
+               name: "orders",
+               sourceID,
+               connectionName: "duckdb",
+               sourceEntityId: "entity-orders",
+               sql: "SELECT 1",
+               columns: [],
+               modelPath: "m.malloy",
+            },
+         },
+      };
+      const wrong: string[] = [];
+      const tiersSaid = new Set<string>();
+      const outcomes = new Set<string>();
+      for (const mode of ["on", "write-only", "off"] as const) {
+         // The tiers whose binding the served copy may read under `mode`.
+         // The table the served copy reads, written out: the storage table
+         // while the mode reads it, else the database table.
+         const read: Tier = {
+            on: "storage",
+            "write-only": "database",
+            off: "database",
+         }[mode] as Tier;
+         for (const sw of switches()) {
+            const label = switchesLabel(sw);
+            for (const gated of [false, true]) {
+               const asked: string[] = [];
+               const [verdict] = computeServeVerdicts({
+                  plan: plan as never,
+                  storageMode: mode,
+                  reachable: () => true,
+                  gated: () => gated,
+                  keepsGate: (_id, tier) => {
+                     asked.push(tier);
+                     return verdictKeepsGate(
+                        {
+                           rollup: false,
+                           table: { tier, ...EXACT_TABLE[tier] },
+                        },
+                        sw,
+                     );
+                  },
+                  refusedAtBind: () => undefined,
+                  boundEntityIds: new Set(["entity-orders"]),
+                  freshEntityIds: new Set(["entity-orders"]),
+                  boundStorageNames: new Set(["orders"]),
+                  boundStorageIds: new Set([sourceID]),
+                  freshStorageIds: new Set([sourceID]),
+                  servedStorageNames: new Set(["orders"]),
+                  freshStorageNames: new Set(["orders"]),
+                  materialize: () => undefined,
+                  persistedViewOf: () => undefined,
+                  destinationConfigured: () => undefined,
+                  connectionCanHoldTable: () => undefined,
+               });
+               tiersSaid.add(verdict.tier);
+               outcomes.add(verdict.verdict);
+               const admitted =
+                  admitRead(
+                     "served",
+                     [{ tier: read, ...EXACT_TABLE[read] }],
+                     EXACT,
+                     sw,
+                  ).admit === true;
+               const expected = gated && !admitted ? "live" : "serves";
+               if (verdict.tier !== read || verdict.verdict !== expected) {
+                  wrong.push(
+                     `mode=${mode} gated=${gated} ${label}: ${verdict.tier} ${verdict.verdict} ${verdict.reason ?? ""}`,
+                  );
+               }
+               if (asked.some((t) => t !== read)) {
+                  wrong.push(
+                     `mode=${mode} gated=${gated} ${label}: asked ${asked}`,
+                  );
+               }
+            }
+         }
+      }
+      expect(wrong).toEqual([]);
+      expect([...tiersSaid].sort()).toEqual(["database", "storage"]);
+      expect(outcomes.has("serves")).toBe(true);
+   });
+
+   // The same source shape read by a leg whose storage binding decides its
+   // tier (a rollup): under `on` it reads the storage table; where the mode
+   // reads none, it answers live (`storage_mode`) today. The r4 spec
+   // both_tiers_bound holds the same literals against real queries.
+   it("judges a rollup bound fresh in both tiers on the tier its leg reads, under every mode", () => {
+      const sourceID = "orders__rollup__region@file:///pkg/m.malloy";
+      const plan = {
+         graphs: [],
+         sources: {
+            [sourceID]: {
+               name: "orders__rollup__region",
+               sourceID,
+               origin: "rollup",
+               connectionName: "duckdb",
+               sourceEntityId: "entity-rollup",
+               sql: "SELECT 1",
+               columns: [],
+               modelPath: "m.malloy",
+               preaggregate: {
+                  baseSourceName: "orders",
+                  grainDimensions: ["region"],
+               },
+            },
+         },
+      };
+      const wrong: string[] = [];
+      for (const mode of ["on", "write-only", "off"] as const) {
+         // Written out: the rollup leg reads its storage table under `on`,
+         // and its fresh database table under the other modes, which read no
+         // storage table.
+         const expected = {
+            on: { tier: "storage", verdict: "serves" },
+            "write-only": { tier: "database", verdict: "serves" },
+            off: { tier: "database", verdict: "serves" },
+         }[mode];
+         const [verdict] = computeServeVerdicts({
+            plan: plan as never,
+            storageMode: mode,
+            reachable: () => true,
+            gated: () => false,
+            keepsGate: () => true,
+            refusedAtBind: () => undefined,
+            boundEntityIds: new Set(["entity-rollup"]),
+            freshEntityIds: new Set(["entity-rollup"]),
+            boundStorageNames: new Set(["orders__rollup__region"]),
+            boundStorageIds: new Set([sourceID]),
+            freshStorageIds: new Set([sourceID]),
+            servedStorageNames: new Set(["orders__rollup__region"]),
+            freshStorageNames: new Set(["orders__rollup__region"]),
+            materialize: () => undefined,
+            persistedViewOf: () => undefined,
+            destinationConfigured: () => undefined,
+            connectionCanHoldTable: () => undefined,
+         });
+         const said = {
+            tier: verdict.tier,
+            verdict: verdict.verdict,
+            ...(verdict.reason ? { reason: verdict.reason } : {}),
+         };
+         if (JSON.stringify(said) !== JSON.stringify(expected)) {
+            wrong.push(`mode=${mode}: ${JSON.stringify(said)}`);
+         }
+      }
+      expect(wrong).toEqual([]);
    });
 });

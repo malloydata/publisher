@@ -49,8 +49,7 @@ describe("settings at startup", () => {
 
    it("binds the ports the flags name, over their variables", async () => {
       const flagPort = await getFreePort();
-      let flagMcpPort = await getFreePort();
-      while (flagMcpPort === flagPort) flagMcpPort = await getFreePort();
+      const flagMcpPort = await getFreePort();
       server = await spawnServer({
          args: ["--port", String(flagPort), "--mcp_port", String(flagMcpPort)],
          // "Settings given" is info, whatever LOG_LEVEL the shell exports.
