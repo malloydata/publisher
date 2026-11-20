@@ -223,7 +223,7 @@ Callers use this metadata to render input widgets without out-of-band knowledge 
 }
 ```
 
-**Execute a report cell** — a report's tile, or a legacy `.malloynb`'s code cell, runs through the query endpoint above: its `run:` statement as the `query`, which for a `.malloynb` cell is the `runQuery` the reports read serves on it, and the report's path as the model, with `givens` in the body. Every cell of a `.malloynb` compiles into that one model, so every cell takes the notebook's givens. That is REST only: the MCP `execute_query` tool does not take a `.malloynb` path.
+**Execute a report cell** — a report's tile, or a legacy `.malloynb`'s code cell, runs through the query endpoint above: its `run:` statement as the `query`, which for a `.malloynb` cell is the `runQuery` the reports read serves on it, and the report's path as the model, with `givens` in the body. Every cell of a `.malloynb` compiles into that one model, so every cell takes the notebook's givens. That works over REST and in the report panel MCP `show_report` draws; the MCP `execute_query` tool does not take a `.malloynb` path.
 
 ### MCP Tool
 

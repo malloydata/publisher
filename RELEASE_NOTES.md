@@ -205,6 +205,16 @@ Now a raw SQL request that meets an expired credential before its first row rene
 
 **Warning and path report text:** a `served-copy-not-served` warning with reason `column_types` now ends with the columns it is about, each named with its declared type and its stored type (``column `v` (declared `string[]`) is not in the stored table``), as does the path report's `detail` of a query that source answers live; a query that reads a left-out column says the same in its path report's `detail` instead of ``no cast reads column `v` as declared``. A hidden column is named only as "a hidden column". The warning's code and `reason` are unchanged; a client that matched the message text sees the longer form.
 
+## [Unreleased]: the MCP report tools list and show a `.malloynb`
+
+Follows 0.13.0, where `list_reports` left a legacy `.malloynb` out and `show_report` refused one with its Console address, because the panel's `Report` did not run it. `Report` now runs a `.malloynb`, each code cell through `POST …/models/{path}/query` on the notebook's path, so the report tools offer one too.
+
+- **`list_reports` lists a `.malloynb`**, with `layout` `linear`, beside the `.malloy` reports.
+- **`show_report` draws one in the panel.** Its text result counts the notebook's code cells and names its filters, says the format is deprecated and that `execute_query` does not take its path, and gives its Console address as before. The `error://showReport/notebook` refusal is gone.
+- **The panel runs each cell through `report_api`**, which calls the same controller as the REST query route. A cell answers in the panel as it does over REST: the package surface, `#(authorize)`, row-level gates, givens, the query-slot pool and the access record apply the same way, and the panel never sends an `#(authorize)` bypass.
+
+What stays: MCP `execute_query` still refuses a `.malloynb` path, so an agent builds nothing new on the deprecated format. **Who is affected:** an agent or host that relied on `list_reports` leaving notebooks out now sees them; to keep the old listing, drop the paths that end in `.malloynb`. No setting, route or wire field is added.
+
 ## [Unreleased] — (BREAKING) the deprecated dashboards and notebooks API routes, the SDK `Dashboard` and `Notebook` components and the CLI notebook commands are removed
 
 **`GET …/packages/{pkg}/dashboards` and `GET …/packages/{pkg}/dashboards/{name}` are gone.** They were deprecated aliases for the grid reports. A request to either now answers `404` like any unknown API path. Use `GET …/packages/{pkg}/reports`, which lists every report of either layout with its `path` and `layout` (filter on `layout: "grid"` for what the old listing returned), and `GET …/packages/{pkg}/reports/{path}`, which returns one report's manifest by its path. The manifest carries the same fields the old dashboard manifest did, without `kind`, with `editable`, and with a `resource` that names the report route; its tiles run through `POST …/models/{path}/query` as before.
