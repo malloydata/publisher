@@ -7,6 +7,7 @@ import { getQueryTimeoutMs } from "../config";
 import { recordDeprecatedUsage } from "../deprecated_usage_metrics";
 import { DashboardNotFoundError, ModelNotFoundError } from "../errors";
 import { logger } from "../logger";
+import { meteringReaders } from "../service/query_metadata";
 import { runWithQueryTimeout } from "../query_timeout";
 import {
    type AccessIdentity,
@@ -226,6 +227,8 @@ export class LegacyReportController {
                abortSignal,
                {
                   environment: environmentName,
+                  // A cell's statement is metered as a model query's is.
+                  ...meteringReaders(environment),
                   // Read here because the model knows neither its package's
                   // manifest nor the environment's connection configs.
                   packageDeclaration: p.getDeclaredQueryMetadata(),

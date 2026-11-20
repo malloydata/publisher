@@ -38,7 +38,7 @@ import {
    type QueryRowLimitSource,
 } from "./model_limits";
 import { type QueryMetadata } from "./query_metadata";
-import { withStatementUsage } from "./statement_usage";
+import { meterStatement, type PendingStatementUsage } from "./statement_usage";
 
 /**
  * The options prepare and run must agree on. Spread into both calls, so a key
@@ -53,6 +53,12 @@ export interface PreparedRun {
    rowLimit: number;
    rowLimitSource: QueryRowLimitSource;
    queryMetadata: QueryMetadata | undefined;
+   /**
+    * The statement's usage record, when its connection is metered, waiting for
+    * the size of the response. The caller emits it where it serializes the
+    * result, and on every path that does not get there.
+    */
+   usage?: PendingStatementUsage;
 }
 
 /**
@@ -128,20 +134,27 @@ async function prepareAndRunUntraced(
          queryMetadata,
       });
    const usage = run.usage;
-   const result =
-      usage && safeMetered(usage.metered, prepared.connectionName)
-         ? await withStatementUsage(
-              {
-                 environment: usage.environment,
-                 connection: prepared.connectionName,
-                 surface: "serve",
-                 package: usage.package,
-                 catalog: safeCatalog(usage.catalog, prepared.connectionName),
-              },
-              execute,
-              (r) => r.data.rowCount,
-           )
-         : await execute();
+   if (usage && safeMetered(usage.metered, prepared.connectionName)) {
+      const metered = await meterStatement(
+         {
+            environment: usage.environment,
+            connection: prepared.connectionName,
+            surface: "serve",
+            package: usage.package,
+            catalog: safeCatalog(usage.catalog, prepared.connectionName),
+         },
+         execute,
+         (r) => r.data.rowCount,
+      );
+      return {
+         result: metered.result,
+         rowLimit,
+         rowLimitSource,
+         queryMetadata,
+         usage: metered.usage,
+      };
+   }
+   const result = await execute();
    return { result, rowLimit, rowLimitSource, queryMetadata };
 }
 
