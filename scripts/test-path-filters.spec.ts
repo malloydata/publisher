@@ -385,6 +385,7 @@ describe("the roster this file checks", () => {
     expect(files).toEqual([
       ".github/workflows/connection-integration-tests.yml",
       ".github/workflows/main-thread-regression.yml",
+      ".github/workflows/warehouse-conformance.yml",
     ]);
   });
 });

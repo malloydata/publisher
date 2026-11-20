@@ -1,0 +1,470 @@
+# Copyright (c) Credible Data Inc.
+# SPDX-License-Identifier: MIT
+
+# Materialization conformance against real warehouses: every conformance shape
+# that is plain Malloy, plus warehouse-typed ones (integers past 2^53, NUMERIC,
+# zoned timestamps, a quoted mixed-case name, arrays and structs), built and
+# served on BigQuery and Snowflake, in the warehouse and in a DuckLake that
+# reads from it, each served answer compared with live.
+# packages/server/tests/component/r4/warehouse_conformance.component.spec.ts
+# is the suite; its header says what it covers and how to read a failure.
+#
+# Credentials:
+#  - BigQuery: BQ_PRESTO_TRINO_KEY, a service-account key this repo already
+#    uses, set up as connection-integration-tests.yml does. It creates a dataset per run in the
+#    key's own project, so it needs bigquery.datasets.create there (and
+#    bigquery.readsessions.create for the storage= tier's Storage Read API
+#    passthrough); the run's first step says which is missing.
+#    If it may not, the repository variable WAREHOUSE_CONFORMANCE_BQ_DATASET
+#    can name a dataset it can create tables in, and the run uses run-prefixed
+#    tables there.
+#  - Snowflake: SNOW_CI_ACCOUNT and SNOW_CI_KEY, new to this repo and shared
+#    with malloydata/malloy's CI: its key-pair user MALLOY_CI with role
+#    MALLOY_CI_ROLE, on the shared warehouse MALLOY_CI_WH.
+#    It creates a schema per run in MALLOYTEST; it never writes into
+#    malloytest, the schema Malloy's CI reads, so a role without CREATE SCHEMA
+#    fails setup with that grant named.
+#
+# The Snowflake key secret is set on one step only, which decodes, re-wraps
+# and masks it and writes it to a file under RUNNER_TEMP (mode 600). That
+# file then stays on disk until the cleanup step: the test and the checks
+# read it, and so could any later step's code, which on a pull request is the
+# pull request's own. Containment here is masking and the artifact checks,
+# not isolation from the code under test. The driver is fetched before the
+# key file exists. The account is set on the masking, test, cleanup and check
+# steps. The test's output goes to the job log alone; the artifact is the
+# spec's JSON report and summary, scrubbed, and checked for a PEM header, for
+# any piece of either key, and for the account in any case before it is
+# posted or uploaded.
+#
+# Cost: a few hundred rows in all. Every native BigQuery job carries
+# maximumBytesBilled (1 GiB); the warehouse is shared with Malloy's CI, so the
+# queries stay tiny. Every scratch area is dropped by the run, by the cleanup
+# step below whatever the outcome, and by the next run's sweep once it is a day
+# old; a BigQuery scratch dataset's tables also expire on their own after a day.
+#
+# Runs nightly, on demand, and on a same-repo pull request that touches
+# materialization (or this suite): when the `warehouse-conformance` label is
+# added, and on each push while it is on. Any other label change does
+# nothing. Never on a fork's pull request: it holds no secrets, and the suite
+# runs warehouse SQL a pull request writes.
+
+name: Warehouse Conformance
+
+on:
+  schedule:
+    - cron: "23 8 * * *"
+  workflow_dispatch:
+    inputs:
+      shapes:
+        description: "Only shapes whose name matches this regex (empty: all)"
+        required: false
+        default: ""
+      variants:
+        description: "Only these variants, comma-separated (storage, database, materialize, materialize_database)"
+        required: false
+        default: ""
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+    paths:
+      - "packages/server/src/service/materialization/**"
+      - "packages/server/tests/component/r4/conformance/**"
+      - "packages/server/tests/component/r4/warehouse_conformance.component.spec.ts"
+      - ".github/workflows/warehouse-conformance.yml"
+
+env:
+  BUN_VERSION: 1.4.4
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+permissions:
+  contents: read
+
+# A run for an unrelated label change gets a group of its own, so it can never
+# cancel a real run that is in progress.
+concurrency:
+  group: >-
+    ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}${{
+    (github.event.action == 'labeled' && github.event.label.name != 'warehouse-conformance')
+    && format('-ignored-{0}', github.run_id) || '' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  conformance:
+    name: ${{ matrix.dialect }}
+    # A pull request runs it only from this repository: when the label is
+    # added, or on a push (or reopen) while the label is on.
+    if: >-
+      github.event_name != 'pull_request'
+      || (github.event.pull_request.head.repo.full_name == github.repository
+          && ((github.event.action == 'labeled'
+               && github.event.label.name == 'warehouse-conformance')
+              || (github.event.action != 'labeled'
+                  && contains(github.event.pull_request.labels.*.name, 'warehouse-conformance'))))
+    # The secrets are meant to live in a GitHub environment, not the
+    # repository or the organization: `warehouse-conformance` deploying from
+    # main only (the schedule, and a dispatch from main), and
+    # `warehouse-conformance-pr` needing a reviewer's approval before a
+    # labelled pull request's run reads them. These protections exist only
+    # once an admin creates both environments with those rules and moves the
+    # SNOW_CI_* secrets into them (the PR body's setup list). Until then a job
+    # naming a missing environment gets an unprotected one, created on the
+    # fly, and reads the repository and organization secrets as before.
+    environment: ${{ github.event_name == 'pull_request' && 'warehouse-conformance-pr' || 'warehouse-conformance' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        dialect: [bigquery, snowflake]
+
+    # The storage= tier's DuckLake keeps its catalog here.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: lake_catalog
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+    env:
+      WAREHOUSE_CONFORMANCE_DIALECTS: ${{ matrix.dialect }}
+      WAREHOUSE_CONFORMANCE_RUN_ID: ${{ github.run_id }}x${{ github.run_attempt }}
+      WAREHOUSE_CONFORMANCE_OUT: ${{ github.workspace }}/warehouse-conformance
+      WAREHOUSE_CONFORMANCE_SHAPES: ${{ inputs.shapes }}
+      WAREHOUSE_CONFORMANCE_VARIANTS: ${{ inputs.variants }}
+      PUBLISHER_TEST_POSTGRES_URL: postgresql://postgres:postgres@localhost:5432/lake_catalog
+      WAREHOUSE_CONFORMANCE_BQ_DATASET: ${{ vars.WAREHOUSE_CONFORMANCE_BQ_DATASET }}
+      # Malloy CI's Snowflake setup (malloydata/malloy db-snowflake.yaml); the
+      # account and key are set on the steps that use them.
+      SNOWFLAKE_USER: MALLOY_CI
+      SNOWFLAKE_ROLE: MALLOY_CI_ROLE
+      SNOWFLAKE_WAREHOUSE: MALLOY_CI_WH
+      SNOWFLAKE_DATABASE: MALLOYTEST
+      SNOWFLAKE_SCHEMA: malloytest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          # The suite runs the checked-out code; it needs no token in .git.
+          persist-credentials: false
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+          # This job holds secrets: restore no cache another branch could write.
+          no-cache: true
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Setup BigQuery credentials
+        id: bigquery
+        if: matrix.dialect == 'bigquery'
+        env:
+          BQ_PRESTO_TRINO_KEY: ${{ secrets.BQ_PRESTO_TRINO_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          if [ -z "$BQ_PRESTO_TRINO_KEY" ]; then
+            echo "BQ_PRESTO_TRINO_KEY is not available to this run"
+            exit 0
+          fi
+          if [[ "$BQ_PRESTO_TRINO_KEY" =~ ^[[:space:]]*eyJ ]]; then
+            printf '%s\n' "$BQ_PRESTO_TRINO_KEY" | base64 --decode > "$RUNNER_TEMP/bq-credentials.json"
+          else
+            printf '%s\n' "$BQ_PRESTO_TRINO_KEY" > "$RUNNER_TEMP/bq-credentials.json"
+          fi
+          jq . "$RUNNER_TEMP/bq-credentials.json" > /dev/null
+          # A base64 secret is masked as stored, not decoded: mask the key's
+          # lines and id as they now appear.
+          jq -r '.private_key // empty' "$RUNNER_TEMP/bq-credentials.json" \
+            | while IFS= read -r line; do
+                case "$line" in ""|-----*) ;; *) echo "::add-mask::$line" ;; esac
+              done
+          key_id=$(jq -r '.private_key_id // empty' "$RUNNER_TEMP/bq-credentials.json")
+          if [ -n "$key_id" ]; then echo "::add-mask::$key_id"; fi
+          echo "GOOGLE_APPLICATION_CREDENTIALS=$RUNNER_TEMP/bq-credentials.json" >> "$GITHUB_ENV"
+          echo "BIGQUERY_TEST_PROJECT_ID=$(jq -r '.project_id' "$RUNNER_TEMP/bq-credentials.json")" >> "$GITHUB_ENV"
+          echo "ready=true" >> "$GITHUB_OUTPUT"
+
+      - name: Check Snowflake credentials
+        id: snowflake
+        if: matrix.dialect == 'snowflake'
+        # Whether the secrets are present, not their values.
+        env:
+          HAS_SNOWFLAKE: ${{ secrets.SNOW_CI_ACCOUNT != '' && secrets.SNOW_CI_KEY != '' }}
+        run: |
+          if [ "$HAS_SNOWFLAKE" != "true" ]; then
+            echo "SNOW_CI_ACCOUNT or SNOW_CI_KEY is not available to this run"
+            exit 0
+          fi
+          echo "ready=true" >> "$GITHUB_OUTPUT"
+
+      # The storage= tier reads Snowflake through DuckDB's snowflake extension,
+      # which needs the ADBC driver beside it; INSTALL does not bring it, and
+      # without it every snowflake_query() fails. Installed as the Dockerfile
+      # installs it (its adbc-driver stage and the copy beside each extension):
+      # the same release, digests and shim. Before the key is written, so no
+      # key file is on disk while it fetches.
+      - name: Install the ADBC Snowflake driver
+        if: steps.snowflake.outputs.ready == 'true'
+        env:
+          ADBC_SNOWFLAKE_VERSION: 1.12.0
+          ADBC_SNOWFLAKE_SHA256_AMD64: 9f3b44bd2c5d1a84acd1dadf7b9995e47bad78ca37f799c9e8460ac196fd319c
+          ADBC_HEADER_SHA256: b6ce3eb8394d4877af1693654d34bc11648a2dfb1f0eacc0c47d062ca69feb71
+        run: |
+          set -euo pipefail
+          (cd packages/server && bun scripts/bake-duckdb-extensions.js)
+          work="$RUNNER_TEMP/adbc"
+          mkdir -p "$work/out" "$work/stub"
+          curl -fsSL --retry 8 --retry-delay 3 --retry-max-time 180 --retry-all-errors \
+            -o "$work/adbc-snowflake.tar.gz" \
+            "https://github.com/adbc-drivers/snowflake/releases/download/go/v${ADBC_SNOWFLAKE_VERSION}/snowflake_linux_amd64_v${ADBC_SNOWFLAKE_VERSION}.tar.gz"
+          echo "${ADBC_SNOWFLAKE_SHA256_AMD64}  $work/adbc-snowflake.tar.gz" | sha256sum -c -
+          tar -xzf "$work/adbc-snowflake.tar.gz" -C "$work" libadbc_driver_snowflake.so
+          mv "$work/libadbc_driver_snowflake.so" "$work/out/libadbc_driver_snowflake.real.so"
+          shim=packages/server/adbc-shim
+          echo "${ADBC_HEADER_SHA256}  $shim/adbc.h" | sha256sum -c -
+          gcc -O2 -Wall -Wextra -shared -fPIC -o "$work/out/libadbc_driver_snowflake.so" "$shim/shim.c" -ldl
+          gcc -O2 -Wall -Wextra -o "$work/selftest" "$shim/selftest.c" -ldl
+          (cd "$work/out" && "$work/selftest" "$work/out/libadbc_driver_snowflake.so")
+          gcc -O2 -Wall -Wextra -I"$shim" -shared -fPIC -o "$work/stub/libadbc_driver_snowflake.real.so" "$shim/stub_driver.c"
+          ADBC_REAL_DRIVER="$work/stub/libadbc_driver_snowflake.real.so" "$work/selftest" "$work/out/libadbc_driver_snowflake.so"
+          # Beside every snowflake extension, and one pair per extension.
+          find "$HOME/.duckdb/extensions" -name snowflake.duckdb_extension -printf '%h\n' \
+            | while read -r d; do cp "$work/out/libadbc_driver_snowflake.so" "$work/out/libadbc_driver_snowflake.real.so" "$d/"; done
+          ext=$(find "$HOME/.duckdb/extensions" -name snowflake.duckdb_extension | wc -l)
+          shims=$(find "$HOME/.duckdb/extensions" -name libadbc_driver_snowflake.so | wc -l)
+          real=$(find "$HOME/.duckdb/extensions" -name libadbc_driver_snowflake.real.so | wc -l)
+          echo "snowflake extensions: $ext, shims: $shims, drivers: $real"
+          test "$ext" -gt 0 && test "$shims" -eq "$ext" && test "$real" -eq "$ext"
+
+      # The key is decoded, re-wrapped and converted here, in a step of its
+      # own, and every line of every form it takes is masked before any later
+      # step runs: a mask command printed by the test process would land in
+      # whatever keeps that output. The test reads the key from a file.
+      - name: Prepare Snowflake key
+        if: steps.snowflake.outputs.ready == 'true'
+        env:
+          SNOW_CI_KEY: ${{ secrets.SNOW_CI_KEY }}
+          SNOW_CI_ACCOUNT: ${{ secrets.SNOW_CI_ACCOUNT }}
+        run: |
+          set -euo pipefail
+          umask 077
+          # The account as a connection error may spell it: in either case,
+          # and with _ and - swapped (its URL form). Whitespace a stored
+          # secret carries is dropped first; an account holds none.
+          account=$(printf '%s' "$SNOW_CI_ACCOUNT" | tr -d '[:space:]')
+          for form in "$account" "${account//_/-}" "${account//-/_}"; do
+            [ -n "$form" ] || continue
+            echo "::add-mask::$form"
+            echo "::add-mask::${form,,}"
+            echo "::add-mask::${form^^}"
+          done
+          dir="$RUNNER_TEMP/snowflake"
+          mkdir -p "$dir"
+          raw="$dir/raw"
+          printf '%s\n' "$SNOW_CI_KEY" > "$raw"
+          # Every piece of key text in a file, however it is laid out: one
+          # PEM line per line, a whole PEM on one line, or lines joined by a
+          # literal \n. Markers become breaks, so the body around them is
+          # masked; a piece longer than a PEM line is masked whole and in
+          # 64-character lines too.
+          mask_lines() {
+            sed -e 's/\\n/\n/g' -e 's/-----[A-Z ]*-----/\n/g' "$1" | tr -s ' \t\r' '\n' \
+              | while IFS= read -r piece; do
+                  [ "${#piece}" -ge 8 ] || continue
+                  echo "::add-mask::$piece"
+                  if [ "${#piece}" -gt 64 ]; then
+                    printf '%s\n' "$piece" | fold -w 64 | while IFS= read -r line; do
+                      if [ "${#line}" -ge 8 ]; then echo "::add-mask::$line"; fi
+                    done
+                  fi
+                done
+          }
+          mask_lines "$raw"
+          # A PEM as stored, a PEM base64-encoded whole, or a bare PKCS#8 body.
+          if grep -q -- '-----BEGIN' "$raw"; then
+            pem="$raw"
+          elif base64 -d < "$raw" > "$dir/decoded" 2>/dev/null && grep -q -- '-----BEGIN' "$dir/decoded"; then
+            pem="$dir/decoded"
+          else
+            pem=""
+          fi
+          if [ -n "$pem" ]; then
+            mask_lines "$pem"
+            kind=$(grep -o -- '-----BEGIN [A-Z ]*PRIVATE KEY-----' "$pem" | head -1 | sed -E 's/-----BEGIN (.*)-----/\1/')
+            sed -E -e 's/\\n//g' -e 's/-----(BEGIN|END) [A-Z ]*PRIVATE KEY-----//g' "$pem" | tr -d ' \t\r\n' > "$dir/body"
+          else
+            kind="PRIVATE KEY"
+            tr -d ' \t\r\n' < "$raw" > "$dir/body"
+          fi
+          { echo "-----BEGIN $kind-----"; fold -w 64 "$dir/body"; echo; echo "-----END $kind-----"; } \
+            | sed '/^$/d' > "$dir/key.pem"
+          # PKCS#1 is converted to the PKCS#8 the driver takes, here rather
+          # than in the server, so the converted form is masked too.
+          if [ "$kind" = "RSA PRIVATE KEY" ]; then
+            openssl pkcs8 -topk8 -nocrypt -in "$dir/key.pem" -out "$dir/key8.pem"
+            mv "$dir/key8.pem" "$dir/key.pem"
+          fi
+          mask_lines "$dir/key.pem"
+          rm -f "$raw" "$dir/decoded" "$dir/body"
+          echo "SNOWFLAKE_PRIVATE_KEY_PATH=$dir/key.pem" >> "$GITHUB_ENV"
+
+      - name: Skip without credentials
+        if: steps.bigquery.outputs.ready != 'true' && steps.snowflake.outputs.ready != 'true'
+        run: |
+          echo "### Warehouse conformance: ${{ matrix.dialect }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "Skipped: this run has no ${{ matrix.dialect }} credentials." >> "$GITHUB_STEP_SUMMARY"
+
+      # Its output goes to the job log only, where the runner applies the
+      # masks; it is never copied into the artifact.
+      - name: Run warehouse conformance
+        id: run
+        if: steps.bigquery.outputs.ready == 'true' || steps.snowflake.outputs.ready == 'true'
+        timeout-minutes: 120
+        env:
+          SNOWFLAKE_ACCOUNT: ${{ matrix.dialect == 'snowflake' && secrets.SNOW_CI_ACCOUNT || '' }}
+        run: |
+          mkdir -p "$WAREHOUSE_CONFORMANCE_OUT"
+          cd packages/server
+          bun test --timeout 1200000 ./tests/component/r4/warehouse_conformance.component.spec.ts
+
+      # Whatever the test step did (failed, timed out, cancelled), drop this
+      # run's scratch area.
+      - name: Drop this run's scratch area
+        if: always() && (steps.bigquery.outputs.ready == 'true' || steps.snowflake.outputs.ready == 'true')
+        timeout-minutes: 10
+        env:
+          SNOWFLAKE_ACCOUNT: ${{ matrix.dialect == 'snowflake' && secrets.SNOW_CI_ACCOUNT || '' }}
+        run: |
+          cd packages/server
+          bun ./tests/component/r4/conformance/warehouse/sweep.ts --run-id "$WAREHOUSE_CONFORMANCE_RUN_ID"
+
+      # Only the spec's report and summary are kept, both scrubbed by the spec.
+      # Fail closed first on what the spec's scrub should have removed: a PEM
+      # header line. Then scrub again here (mask commands, PEM markers, long
+      # base64 runs, key field names, the account in any case and form), and
+      # check for any piece of either key and for the account: a file that
+      # still holds one fails the job and is neither posted nor uploaded.
+      - name: Scrub and check the results
+        id: scrub
+        if: always() && steps.run.outcome != 'skipped'
+        env:
+          SNOW_CI_ACCOUNT: ${{ matrix.dialect == 'snowflake' && secrets.SNOW_CI_ACCOUNT || '' }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          umask 077
+          mkdir -p "$WAREHOUSE_CONFORMANCE_OUT"
+          find "$WAREHOUSE_CONFORMANCE_OUT" -type f ! -name '*.json' ! -name '*.md' -delete
+          files=("$WAREHOUSE_CONFORMANCE_OUT"/*.json "$WAREHOUSE_CONFORMANCE_OUT"/*.md)
+          leaked=0
+          refuse() {
+            echo "::error::$(basename "$1") still holds $2; it is not uploaded"
+            rm -f "$1"
+            leaked=1
+          }
+          # The account as configured and with _ and - swapped; matched and
+          # replaced case-insensitively, as fixed strings. An account holds no
+          # whitespace, so a stored secret's trailing newline or space is
+          # dropped, and no empty pattern is ever written: `grep -F -f` reads
+          # an empty line as matching everything.
+          accounts="$RUNNER_TEMP/account-forms"
+          : > "$accounts"
+          account=$(printf '%s' "$SNOW_CI_ACCOUNT" | tr -d '[:space:]')
+          if [ -n "$account" ]; then
+            printf '%s\n' "$account" "${account//_/-}" "${account//-/_}" \
+              | { grep -v '^$' || true; } | sort -u > "$accounts"
+          fi
+          kept=()
+          for f in "${files[@]}"; do
+            if grep -q -E -- '-----BEGIN [A-Z ]*PRIVATE KEY-----' "$f"; then
+              refuse "$f" "a PEM header"
+              continue
+            fi
+            sed -i -E \
+              -e '/::add-mask::/d' \
+              -e 's/-----(BEGIN|END) [A-Z ]*PRIVATE KEY-----/[redacted pem marker]/g' \
+              -e 's#[A-Za-z0-9+/]{40,}={0,2}#[redacted base64]#g' \
+              -e 's/private_key(_id)?/[key field]/Ig' \
+              "$f"
+            if [ -s "$accounts" ]; then
+              ACCOUNTS="$accounts" perl -i -pe '
+                BEGIN { open my $h, "<", $ENV{ACCOUNTS} or die; chomp(@a = <$h>);
+                        @a = sort { length $b <=> length $a } grep { length } @a; }
+                for my $x (@a) { s/\Q$x\E/[redacted account]/gi }' "$f"
+            fi
+            kept+=("$f")
+          done
+          # The keys themselves, whatever encoding hid their shape: every
+          # 16-character window of a key's body, and every 12-character window
+          # of each run of letters and digits in it (a run stops at +, / and =,
+          # which an encoding may rewrite). Read from the key files, which the
+          # next step removes; nothing here prints a fragment.
+          frags="$RUNNER_TEMP/key-fragments"
+          : > "$frags"
+          windows() {
+            { grep -v -- '-----' || true; } | sed -e 's/\\n//g' | tr -d ' \t\r\n' \
+              | awk '{
+                  for (i = 1; i + 15 <= length($0); i++) print substr($0, i, 16)
+                  n = split($0, runs, /[+\/=]/)
+                  for (r = 1; r <= n; r++)
+                    for (i = 1; i + 11 <= length(runs[r]); i++) print substr(runs[r], i, 12)
+                }' >> "$frags"
+          }
+          if [ -f "$RUNNER_TEMP/snowflake/key.pem" ]; then
+            windows < "$RUNNER_TEMP/snowflake/key.pem"
+          fi
+          if [ -f "$RUNNER_TEMP/bq-credentials.json" ]; then
+            jq -r '.private_key // empty' "$RUNNER_TEMP/bq-credentials.json" | windows
+          fi
+          for f in "${kept[@]}"; do
+            if [ -s "$frags" ] && grep -q -F -f "$frags" "$f"; then
+              refuse "$f" "a piece of a key"
+            elif [ -s "$accounts" ] && grep -q -i -F -f "$accounts" "$f"; then
+              refuse "$f" "the Snowflake account"
+            fi
+          done
+          rm -f "$frags" "$accounts"
+          if [ "$leaked" -ne 0 ]; then exit 1; fi
+          echo "clean=true" >> "$GITHUB_OUTPUT"
+
+      # After the check above, which reads them.
+      - name: Remove the key files
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/snowflake" "$RUNNER_TEMP/bq-credentials.json" "$RUNNER_TEMP/key-fragments" "$RUNNER_TEMP/account-forms"
+
+      # Only a summary the check above passed is posted.
+      - name: Job summary
+        if: always() && steps.run.outcome != 'skipped'
+        env:
+          CLEAN: ${{ steps.scrub.outputs.clean }}
+        run: |
+          summary="$WAREHOUSE_CONFORMANCE_OUT/${{ matrix.dialect }}.md"
+          if [ "$CLEAN" = "true" ] && [ -f "$summary" ]; then
+            cat "$summary" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "### Warehouse conformance: ${{ matrix.dialect }}" >> "$GITHUB_STEP_SUMMARY"
+            echo "No checked summary was written; see the job log." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload results
+        if: always() && steps.scrub.outputs.clean == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: warehouse-conformance-${{ matrix.dialect }}
+          path: |
+            warehouse-conformance/*.json
+            warehouse-conformance/*.md
+          if-no-files-found: warn
+          retention-days: 30
