@@ -42,19 +42,25 @@ export async function closeCorpus(): Promise<void> {
 }
 
 /**
- * Each model of `corpus` in turn, its connections closed once the loop body
- * is done with it. The corpus is a few hundred models with a DuckDB instance
+ * Each model of `corpus` in turn, each of its connections closed once the
+ * loop body is done with the last model that reads it (a scenario's models
+ * share theirs). The corpus is a few hundred models with a DuckDB instance
  * each; held open together until {@link closeCorpus}, they are most of the
  * instances a serial unit run holds at its peak.
  */
 export async function* releasingEach(
    corpus: CorpusModel[],
 ): AsyncGenerator<CorpusModel> {
-   for (const model of corpus) {
+   const lastUse = new Map<DuckDBConnection, number>();
+   corpus.forEach((model, i) => {
+      for (const c of model.connections.values()) lastUse.set(c, i);
+   });
+   for (const [i, model] of corpus.entries()) {
       try {
          yield model;
       } finally {
          for (const c of model.connections.values()) {
+            if (lastUse.get(c) !== i) continue;
             const at = opened.indexOf(c);
             if (at >= 0) opened.splice(at, 1);
             await c.close().catch(() => {});
@@ -62,6 +68,9 @@ export async function* releasingEach(
       }
    }
 }
+
+/** A corpus scenario the stand-ins cannot set up: fails the corpus. */
+class CorpusSetupError extends Error {}
 
 /** One model to plan: its files, entry file, and connections. */
 export interface CorpusModel {
@@ -278,10 +287,16 @@ export async function hammerModels(
          }
          // `lake_probe` reaches the destination's own catalog, so what the
          // operator writes there is a table it reads. A statement the
-         // stand-in cannot run (DuckLake's own, say) is skipped.
+         // stand-in cannot run fails the corpus, naming it.
          const probe = connections.get("lake_probe");
-         for (const sql of scenario.lakeSql) {
-            await probe?.runSQL(sql).catch(() => undefined);
+         for (const sql of probe ? scenario.lakeSql : []) {
+            try {
+               await probe?.runSQL(sql);
+            } catch (err) {
+               throw new CorpusSetupError(
+                  `${scenario.id}: its operator SQL does not run on the lake_probe stand-in: ${(err as Error).message}`,
+               );
+            }
          }
          const files = new Map<string, string>();
          for (const [rel, text] of scenario.models) {
@@ -296,6 +311,7 @@ export async function hammerModels(
             });
          }
       } catch (err) {
+         if (err instanceof CorpusSetupError) throw err;
          skipped.push(
             `${scenario.id}: ${(err as Error).message.split("\n")[0]}`,
          );
