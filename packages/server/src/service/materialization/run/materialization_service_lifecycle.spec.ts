@@ -233,6 +233,62 @@ describe("MaterializationService", () => {
          expect(runBuild.called).toBe(false);
       });
 
+      it("cancels a run whose start waited on the package lock until a delete had removed the package", async () => {
+         const runBuild = sinon.stub().resolves();
+         const service = serviceWith(ctx, {
+            runBuild: runBuild as unknown as RunCollaborators["runBuild"],
+         });
+         ctx.repository.getActiveMaterialization.resolves(null);
+         const pending = makeMaterialization({
+            id: "m-late",
+            status: "PENDING",
+         });
+         ctx.repository.createMaterialization.resolves(pending);
+         let status = "PENDING" as MaterializationStatus;
+         ctx.repository.getMaterializationById.callsFake(async () => ({
+            ...pending,
+            status,
+         }));
+         ctx.repository.updateMaterialization.callsFake(async (_id, update) => {
+            status = (update.status as MaterializationStatus) ?? status;
+            return { ...pending, ...update } as never;
+         });
+         // The create found the package lock-free; its start queues on the
+         // lock the delete holds, and runs once the package is gone.
+         let loaded = true;
+         let releaseLock!: () => void;
+         const lockFree = new Promise<void>((resolve) => {
+            releaseLock = resolve;
+         });
+         const environment = await (
+            ctx.environmentStore.getEnvironment as sinon.SinonStub
+         )();
+         (ctx.environmentStore.getEnvironment as sinon.SinonStub).resolves({
+            ...environment,
+            hasLoadedPackage: () => loaded,
+            withPackageLock: async (
+               _name: string,
+               fn: () => Promise<unknown>,
+            ) => {
+               await lockFree;
+               return fn();
+            },
+         });
+
+         // The delete's aborts ran before this create began, so they found
+         // nothing to stop; it then removes the package while holding the
+         // lock the create's start waits on.
+         await service.abortPackageRuns("my-env", "pkg", 0);
+         const created = service.createMaterialization("my-env", "pkg");
+         await new Promise((r) => setTimeout(r, 5));
+         loaded = false;
+         releaseLock();
+         const result = await created;
+
+         expect(result.status).toBe("CANCELLED");
+         expect(runBuild.called).toBe(false);
+      });
+
       it("starts the build when no abort lands during the insert", async () => {
          const runBuild = sinon.stub().resolves();
          const service = serviceWith(ctx, {

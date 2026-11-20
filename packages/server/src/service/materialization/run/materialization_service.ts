@@ -950,9 +950,16 @@ export class MaterializationService {
          }
          throw err;
       }
-      // The package was deleted or unloaded while the record was written:
-      // its abort found no run to stop, so none starts.
-      if (retired.aborted) {
+      // The package was deleted or unloaded while the record was written
+      // (its abort found no run to stop), or before this start took the
+      // package's lock (a create that began after the delete's last abort
+      // found the package lock-free, then queued on the lock the delete
+      // held): either way none starts. A version's start has already
+      // re-resolved the version under its lock.
+      if (
+         retired.aborted ||
+         (version === null && !environment.hasLoadedPackage(packageName))
+      ) {
          return this.lifecycle.transition(created.id, "CANCELLED", {
             completedAt: new Date(),
             error: "Cancelled",
