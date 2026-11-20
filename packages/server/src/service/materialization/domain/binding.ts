@@ -338,6 +338,50 @@ export function pin(snapshot: Snapshot, asOf: Date): Pinned {
 }
 
 /**
+ * A database table Malloy files under a key that is not its address: sources
+ * of one build placed in two tables (foldDistinctTableNames) each have an
+ * address of their own, and Malloy files every one under the build's
+ * `buildId` (PlannedTable.compilerKey).
+ */
+export interface KeyedTable {
+   readonly tableId: string;
+   readonly compilerKey: string;
+}
+
+/**
+ * `manifest` with `table`'s entry also under its compiler key, so a compile
+ * that reads `table`'s source substitutes `table`, not a twin filed under the
+ * same key. Unchanged when `manifest` holds no entry at `table`'s address.
+ */
+export function manifestUnderCompilerKey<M extends BuildManifest | undefined>(
+   manifest: M,
+   table: KeyedTable | undefined,
+): M {
+   const own = table ? manifest?.entries[table.tableId] : undefined;
+   if (!manifest || !table || !own) return manifest;
+   return {
+      ...manifest,
+      entries: { ...manifest.entries, [table.compilerKey]: own },
+   };
+}
+
+/**
+ * The manifest entries a run read, by address: a read under `table`'s
+ * compiler key is a read of `table`, since {@link manifestUnderCompilerKey}
+ * put its entry there.
+ */
+export function readsByAddress(
+   read: ReadonlySet<string>,
+   table: KeyedTable | undefined,
+): ReadonlySet<string> {
+   if (!table || !read.has(table.compilerKey)) return read;
+   const byAddress = new Set(read);
+   byAddress.delete(table.compilerKey);
+   byAddress.add(table.tableId);
+   return byAddress;
+}
+
+/**
  * Whether a model may serve `binding`: false only when the model's own source
  * of that name carries a sourceID the binding does not name, an unrelated
  * source that happens to share the name. A binding with no `sourceIDs`, a

@@ -21,6 +21,14 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — a database rollup or persisted view placed apart from another of the same build answers from its own table
+
+**Fixed: a database `#(rollup)` that shares its build SQL with another rollup, but is placed in a table of its own, never served.** Two rollups whose builds compile to the same SQL (the same base table, grain and measures, say one over a source with an unused `join_one` and one without) and that name different tables (one carries a `name=` the other does not, or a different one; the other may be in the database or a `storage=` destination) each get a table of their own, at an address of their own. Malloy still files both under one key, the build's, which is the address of only one of them. The rollup leg compiled the moved one against a manifest keyed by address, so Malloy found no entry under its key and recomputed the rollup; the leg saw SQL that did not read the table and declined it, `NOT_BUILT` "the rollup has no fresh table", though the table was built and bound. Every query on it answered live. The leg, and the run that answers, now read such a table under Malloy's key, so it serves from its own table.
+
+**Fixed: a database persisted view or persisted query placed the same way answered from its twin's table.** The view and query legs already compiled under Malloy's key, but the run that answers used the manifest keyed by address, so it read the twin's table under that key: the same SQL, but built by another source's run and on its schedule. The path report still named the view's own table. The run now reads the view's own table.
+
+**Who is affected:** a package with two rollups, persisted views or persisted queries whose builds compile to the same SQL and are placed in different tables. **What to do:** nothing; such a rollup now reports `used` in the path report, with `servedBy.kind` `rollup`, where it reported `NOT_BUILT`.
+
 ## [Unreleased] — under `PERSIST_STORAGE_MODE=write-only`, a rollup, persisted view or persisted query with a database table answers from it, and its storage table is reported `storage_mode`
 
 Follows 0.16.1, where `write-only` and `off` stopped reading storage tables on every leg.

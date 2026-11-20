@@ -192,6 +192,8 @@ import {
    type Binding,
    heldReadBinding,
    isDatabase,
+   type KeyedTable,
+   manifestUnderCompilerKey,
    type Pinned,
    storageLookupOf,
 } from "../domain/binding";
@@ -260,6 +262,11 @@ interface RollupAnswer {
     * definition (its collation) reads that table.
     */
    databaseTablePath?: string;
+   /**
+    * For a database rollup whose address is not Malloy's key for it: the run
+    * that answers reads its entry under that key too.
+    */
+   keyedTable?: KeyedTable;
    /**
     * Every stored table the answer reads, when that is more than the
     * rollup's: a join branch answered in a storage destination reads the query
@@ -1065,7 +1072,10 @@ export class RollupVariantServe {
       try {
          result = await runnable.getPreparedResult({
             ...(q.args.givens ? { givens: q.args.givens as never } : {}),
-            buildManifest: q.args.pinned.compilerManifest,
+            buildManifest: manifestUnderCompilerKey(
+               q.args.pinned.compilerManifest,
+               table.keyedTable,
+            ),
          } as never);
       } catch {
          throw new LegDecline(
@@ -1083,6 +1093,7 @@ export class RollupVariantServe {
          runnable,
          rollupSourceName: plan.rollupSourceName,
          databaseTablePath: databaseTable,
+         ...(table.keyedTable ? { keyedTable: table.keyedTable } : {}),
          ...(await this.joinGraft(q, runnable, variant)),
       };
    }
@@ -1446,10 +1457,14 @@ export class RollupVariantServe {
             ...(table.virtualMap ? { virtualMap: table.virtualMap } : {}),
             ...(args.givens ? { givens: args.givens as never } : {}),
             // Explicit even beside a virtualMap: an undefined manifest reads
-            // the Runtime's, unfiltered by freshness.
+            // the Runtime's, unfiltered by freshness. A database table filed
+            // under a key not its address is substituted under that key.
             buildManifest: table.virtualMap
                ? EMPTY_BUILD_MANIFEST
-               : args.pinned.compilerManifest,
+               : manifestUnderCompilerKey(
+                    args.pinned.compilerManifest,
+                    table.keyedTable,
+                 ),
          } as never);
       } catch {
          throw new LegDecline(
@@ -1481,6 +1496,9 @@ export class RollupVariantServe {
          ...(table.binding ? { binding: table.binding } : {}),
          ...(!table.virtualMap && databaseTable
             ? { databaseTablePath: databaseTable }
+            : {}),
+         ...(!table.virtualMap && table.keyedTable
+            ? { keyedTable: table.keyedTable }
             : {}),
          ...(variant.modelDef && variant.cacheScope
             ? {
@@ -1686,6 +1704,8 @@ export class RollupVariantServe {
            quotedPath?: string;
            binding?: Binding;
            sourceEntityId?: string;
+           /** A database table filed under a key not its address. */
+           keyedTable?: KeyedTable;
            /** A database table's columns the bind left out (`leftOutColumns`). */
            leftOut?: readonly string[];
         }
@@ -1750,6 +1770,14 @@ export class RollupVariantServe {
       }
       return {
          sourceEntityId: planned.sourceEntityId,
+         ...(planned.compilerKey
+            ? {
+                 keyedTable: {
+                    tableId: planned.sourceEntityId,
+                    compilerKey: planned.compilerKey,
+                 },
+              }
+            : {}),
          ...(leftOut?.length ? { leftOut } : {}),
       };
    }

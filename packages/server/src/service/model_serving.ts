@@ -65,8 +65,10 @@ import {
    type QueryAudit,
 } from "./access_record";
 import {
+   manifestUnderCompilerKey,
    pin,
    type Pinned,
+   readsByAddress,
    type Snapshot,
 } from "./materialization/domain/binding";
 import type { BuildManifest } from "./materialization/domain/types";
@@ -860,7 +862,7 @@ export class ModelServing {
       const { prepared, governed, admitted } = args;
       let answer = args.answer;
       const buildManifest = pinnedManifest(args.pinned);
-      const effectiveBuildManifest = runManifestOf(answer, {
+      const runManifest = runManifestOf(answer, {
          pinned: buildManifest,
          withoutRollups: args.viewManifest,
          // The live compile reads no table at all: an explicit empty
@@ -869,6 +871,19 @@ export class ModelServing {
          // filters and no path report names.
          live: EMPTY_BUILD_MANIFEST,
       });
+      // A stored answer's table that Malloy files under a key not its address
+      // is read under that key, as the leg compiled it; a read of the key is
+      // a read of that table.
+      const keyed =
+         answer.leg !== "live" && !answer.runFailed
+            ? answer.answer.keyedTable
+            : undefined;
+      const keyedTable =
+         keyed && runManifest?.entries[keyed.tableId] ? keyed : undefined;
+      const effectiveBuildManifest = manifestUnderCompilerKey(
+         runManifest,
+         keyedTable,
+      );
       const maxRows = getMaxQueryRows();
       const maxBytes = getMaxResponseBytes();
       let executionTime = 0;
@@ -911,7 +926,7 @@ export class ModelServing {
          );
          // AFTER run(), so it includes the warehouse round trip.
          executionTime = performance.now() - ctx.startTime;
-         answer = answeredWith(answer, runRead);
+         answer = answeredWith(answer, readsByAddress(runRead, keyedTable));
       } catch (error) {
          // `freshnessFallback=live` marks the tier as an optimisation, not a
          // dependency, so a store failing UNDER a routed query degrades to

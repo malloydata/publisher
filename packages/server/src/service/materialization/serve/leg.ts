@@ -41,7 +41,12 @@ import type {
 } from "@malloydata/malloy";
 import type { GraftScope } from "../../gate_classification";
 import type { ConsideredVariant } from "../../query_router";
-import { type Binding, isDatabase, type Pinned } from "../domain/binding";
+import {
+   type Binding,
+   isDatabase,
+   type KeyedTable,
+   type Pinned,
+} from "../domain/binding";
 import type { BuildManifest } from "../domain/types";
 import type { TableRead } from "../domain/gate_policy";
 import { assertSameCompositeMember } from "./composite_member";
@@ -103,6 +108,13 @@ export interface LegAnswer {
    readonly graftScope: GraftScope | undefined;
    /** For a rollup answer: the rollup that answered. */
    readonly rollupMember?: string;
+   /**
+    * A database table the answer reads that Malloy files under a key not its
+    * address (sources of one build placed in two tables): the run's manifest
+    * carries its entry under that key, as the leg's compile did
+    * (`manifestUnderCompilerKey`).
+    */
+   readonly keyedTable?: KeyedTable;
    /** For a view or query answer: the persisted view's or named query's table. */
    readonly viewTable?: ViewTable & { readonly kind?: "query" };
    /**
@@ -225,6 +237,7 @@ function persistedResultLeg(
             ...(answer.databaseTableRead
                ? { resultTableRead: answer.databaseTableRead }
                : {}),
+            ...(answer.keyedTable ? { keyedTable: answer.keyedTable } : {}),
          };
       },
    };
@@ -283,6 +296,7 @@ function rollupLeg(rollups: RollupVariantServe): Leg {
             virtualMap: answer.virtualMap,
             graftScope: answer.graftScope,
             rollupMember: answer.rollupSourceName,
+            ...(answer.keyedTable ? { keyedTable: answer.keyedTable } : {}),
          };
       },
    };
