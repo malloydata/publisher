@@ -91,6 +91,8 @@ export function DownloadRowsCsv({
                versionId,
             },
             undefined,
+            // versionId: carried in the body.
+            undefined,
             { signal: controller.signal },
          );
          if (controller.signal.aborted) return;

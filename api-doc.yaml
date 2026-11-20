@@ -1684,7 +1684,7 @@ paths:
         DEPRECATED. In-place mutation of a package contradicts immutable versions, so this
         operation will be removed. On a package that has published versions it changes only
         what is not content: a `manifestLocation` URI is bound to the package's `latest` version
-        (as `PUT .../packages/{packageName}/versions/{version}/manifest` does for any version),
+        (as `PUT .../packages/{packageName}/versions/{versionId}/manifest` does for any version),
         while a null or empty one leaves the binding as it is (clear it with that route), and
         `description` is the package's. `name` and the `location` the version was published from
         may be sent back unchanged. Any other change is refused with 409 (`reason`
@@ -1784,8 +1784,8 @@ paths:
         background, cleans up each version as deleting it alone does: its own auto-runs still
         running are stopped and its own `scope: version` tables reclaimed. To take one
         version out of service while keeping the rest, archive it with
-        `PATCH .../packages/{packageName}/versions/{version}`; to remove one version for good,
-        delete it with `DELETE .../packages/{packageName}/versions/{version}`.
+        `PATCH .../packages/{packageName}/versions/{versionId}`; to remove one version for good,
+        delete it with `DELETE .../packages/{packageName}/versions/{versionId}`.
       parameters:
         - name: environmentName
           in: path
@@ -1850,7 +1850,7 @@ paths:
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
-  /environments/{environmentName}/packages/{packageName}/versions/{version}:
+  /environments/{environmentName}/packages/{packageName}/versions/{versionId}:
     get:
       tags:
         - versions
@@ -1897,7 +1897,7 @@ paths:
           table is tried once: one that cannot be dropped is left, and its run record goes all
           the same. Its
           files stay on disk, so it can be unarchived. To remove them, delete the version with
-          `DELETE .../versions/{version}`.
+          `DELETE .../versions/{versionId}`.
         - `unarchive` puts it back in service. It loads again on its next read, and serves live
           until it is built again.
 
@@ -2000,7 +2000,7 @@ paths:
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
-  /environments/{environmentName}/packages/{packageName}/versions/{version}/manifest:
+  /environments/{environmentName}/packages/{packageName}/versions/{versionId}/manifest:
     put:
       tags:
         - versions
@@ -2411,6 +2411,10 @@ paths:
         fails only at the grammar and names no source to run (for example `run` with no colon) is also
         a 400, because a grammar error says nothing about the model, unless the model carries any
         `#(authorize)` or `#(access_filter)`, or the text joins a source off the surface.
+
+        The version queried may be named in the body (`QueryRequest.versionId`), in the URL
+        (`?versionId=`), or both. When both name a version and they differ, the request answers
+        400 with `reason` VERSION_ID_INVALID; an empty value in either names none.
       parameters:
         - name: environmentName
           in: path
@@ -2431,6 +2435,7 @@ paths:
           schema:
             $ref: "#/components/schemas/PathPattern"
         - $ref: "#/components/parameters/includeHiddenFilesAndSources"
+        - $ref: "#/components/parameters/versionId"
       requestBody:
         required: true
         content:
@@ -3956,6 +3961,12 @@ paths:
             plan (read off `Package.buildPlan`). Returns the materialization already building.
           * Auto-run (standalone, default) — omit `buildInstructions`; the publisher
             self-assigns names and runs all phases in one pass.
+
+        The version to build is named in the body (`versionId`). A `?versionId=` in the URL,
+        as every other materialization operation takes, is read too; when both name a version
+        and they differ, the request answers 400 with `reason` VERSION_ID_INVALID, and an empty
+        value in either names none. It is not declared as a parameter here: an optional query
+        parameter would move the optional body argument of every generated client.
       parameters:
         - $ref: "#/components/parameters/environmentName"
         - $ref: "#/components/parameters/packageName"
@@ -4777,7 +4788,7 @@ components:
           description: >-
             The build manifest this version is bound to (see
             `Package.manifestLocation`); null when it serves live. Set with
-            `PUT .../versions/{version}/manifest`.
+            `PUT .../versions/{versionId}/manifest`.
         gitCommitSha:
           type: ["string", "null"]
           readOnly: true
@@ -8629,10 +8640,9 @@ components:
             empty, the query runs against the package's `latest` version. An unknown version
             answers 404 (`reason` VERSION_NOT_FOUND) and an archived one 410
             (`reason` VERSION_ARCHIVED). A `versionId` in the request's query
-            string, as a proxy forwarding a page's URL sends, is read the same way;
-            when both name a version they must agree, or the request answers 400.
-            It is not declared as a query parameter, so generated clients keep
-            their argument order.
+            string (the operation's `versionId` parameter) is read the same way;
+            when both name a version they must agree, or the request answers 400
+            with `reason` VERSION_ID_INVALID.
         filterParams:
           type: object
           deprecated: true
@@ -10834,9 +10844,12 @@ components:
             The published version of the package to build. `latest`, omitted or
             empty, the package's `latest` version is built. An unknown version answers 404
             (`reason` VERSION_NOT_FOUND) and an archived one 410 (`reason`
-            VERSION_ARCHIVED). Carried in the body rather than the query string
-            because the body is optional: a new optional query parameter ahead
-            of it would move the body argument of every generated client.
+            VERSION_ARCHIVED). Carried in the body rather than a declared query
+            parameter because the body is optional: a new optional query
+            parameter ahead of it would move the body argument of every
+            generated client. A `?versionId=` in the URL is read too, and must
+            agree with this one when both name a version (400
+            VERSION_ID_INVALID otherwise).
 
             The run records the version it built in `metadata.versionId`, with
             the package's materialization scope in `metadata.scope`, which
@@ -12831,10 +12844,14 @@ components:
 
         Build metadata must be percent-encoded: send `1.2.0+build.5` as
         `1.2.0%2Bbuild.5`, since a bare `+` in a query string decodes to a space.
+
+        Accepted: `latest`, empty, or a semantic version. The schema carries no
+        pattern on purpose: a validator generated from one would refuse `latest`
+        and the empty value.
       schema:
         type: string
     versionPath:
-      name: version
+      name: versionId
       in: path
       required: true
       description: |

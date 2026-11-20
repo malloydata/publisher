@@ -206,6 +206,8 @@ export function runQueryOptions({
                   }),
                },
                run.includeHiddenFilesAndSources ? true : undefined,
+               // versionId: carried in the body.
+               undefined,
                { signal },
             );
             run.onQueryRun?.({ outcome: "success", durationMs: durationMs() });

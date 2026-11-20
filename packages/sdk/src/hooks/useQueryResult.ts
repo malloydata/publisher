@@ -95,6 +95,8 @@ export function useQueryResult(
                versionId: spec.versionId,
             },
             undefined,
+            // versionId: carried in the body.
+            undefined,
             { signal },
          ),
       enabled,
