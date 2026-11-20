@@ -12,7 +12,9 @@ import { PUBLISHER_CONFIG_NAME } from "../constants";
 import { logger } from "../logger";
 import {
    assembleEnvironmentConnections,
+   assertValidAttachName,
    normalizeSnowflakePrivateKey,
+   validateDuckdbApiSurface,
    validateStorageDestinations,
 } from "./connection_config";
 import { installSettings } from "../test_helpers/settings_env";
@@ -1505,6 +1507,47 @@ describe("assembleEnvironmentConnections — S3 credential shape at config load"
          ]);
          expect(pojo.connections["generic"]).toBeDefined();
       });
+   });
+});
+
+// F-19: an attachedDatabases[].name becomes a SQL identifier and, for the bigquery/snowflake
+// attach types, is interpolated into the ATTACH setup SQL unquoted. validateDuckdbApiSurface
+// enforces the documented ^[a-zA-Z_][a-zA-Z0-9_]*$ pattern so a metacharacter name cannot
+// reach that SQL, at the config chokepoint every build path crosses.
+describe("validateDuckdbApiSurface — attach name validation (F-19)", () => {
+   const withAttachName = (name: string): ApiConnection =>
+      ({
+         name: "generic",
+         type: "duckdb",
+         duckdbConnection: {
+            attachedDatabases: [{ name, type: "s3", s3Connection: {} }],
+         },
+      }) as unknown as ApiConnection;
+
+   it.each([
+      'evil"; SELECT 1 --',
+      "a AS x; ATTACH 'x'",
+      "n) ; DROP TABLE t; --",
+      "has space",
+      "1startsdigit",
+      "",
+   ])("rejects an attach name with SQL metacharacters: %p", (bad) => {
+      expect(() => validateDuckdbApiSurface(withAttachName(bad))).toThrow(
+         /Invalid attachedDatabases name/,
+      );
+   });
+
+   it("accepts a valid identifier attach name", () => {
+      expect(() =>
+         validateDuckdbApiSurface(withAttachName("valid_attach_1")),
+      ).not.toThrow();
+   });
+
+   it("assertValidAttachName gates a bad name vs a good one", () => {
+      expect(() => assertValidAttachName("bad name", "c")).toThrow(
+         /Invalid attachedDatabases name/,
+      );
+      expect(() => assertValidAttachName("good_name", "c")).not.toThrow();
    });
 });
 

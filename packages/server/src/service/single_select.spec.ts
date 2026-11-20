@@ -45,6 +45,18 @@ describe("assertSingleSelect", () => {
       ["SET threads = 1", "it is not a SELECT"],
       ["SELECT 1; SELECT 2", "it holds 2 statements"],
       ["", "it holds no statement"],
+      // The @malloydata/db-duckdb connector splits on "-- hack: split on this" and runs
+      // every fragment; json_serialize_sql treats the marker as a comment, so without the
+      // per-fragment classification a second statement after it is smuggled past the gate.
+      [
+         "SELECT 1 AS one -- hack: split on this SET threads = 3",
+         "it is not a SELECT",
+      ],
+      [
+         "SELECT 1 AS one -- hack: split on this CREATE SECRET s (TYPE s3)",
+         "it is not a SELECT",
+      ],
+      ["SELECT 1 -- hack: split on this SELECT 2", "it holds 2 statements"],
    ])("refuses %p with a 400 naming the database and why", async (sql, why) => {
       const refused = assertSingleSelect("sales", sql);
       await expect(refused).rejects.toBeInstanceOf(BadRequestError);

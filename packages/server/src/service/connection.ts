@@ -79,6 +79,7 @@ import {
 } from "../path_safety";
 import {
    assembleEnvironmentConnections,
+   assertValidAttachName,
    buildPostgresConnectionString,
    CoreConnectionEntry,
    EnvironmentConnectionMetadata,
@@ -566,6 +567,9 @@ async function attachBigQuery(
          `BigQuery connection configuration missing for: ${attachedDb.name}`,
       );
    }
+   // The attach name is interpolated into the ATTACH SQL below unquoted; reject a name that
+   // is not a safe identifier before building it (also enforced at config time).
+   assertValidAttachName(attachedDb.name ?? "", attachedDb.name ?? "<unnamed>");
 
    const key = parseBigQueryServiceAccount(
       attachedDb.name,
@@ -596,6 +600,9 @@ async function attachSnowflake(
          `Snowflake connection configuration missing for: ${attachedDb.name}`,
       );
    }
+   // The attach name (and the derived `${name}_secret`) is interpolated into the ATTACH SQL
+   // below unquoted; reject a name that is not a safe identifier before building it.
+   assertValidAttachName(attachedDb.name ?? "", attachedDb.name ?? "<unnamed>");
 
    const config = attachedDb.snowflakeConnection;
 
@@ -980,6 +987,9 @@ async function attachPostgres(
    if (!attachedDb.name) {
       throw new Error("Attached database name is required");
    }
+   // Postgres already quotes the alias, but reject a non-identifier name here too so every
+   // attach type enforces the same documented pattern.
+   assertValidAttachName(attachedDb.name, attachedDb.name);
 
    await installAndLoadExtension(connection, "postgres");
 

@@ -223,6 +223,27 @@ export function normalizeSnowflakePrivateKey(privateKey: string): string {
 // attachedDatabases[].path is not constrained to the environment root, and
 // DuckDB's local-file access is unchanged. Adversarial filesystem isolation
 // (path-traversal checks, an allowlist) is not provided.
+// A DuckDB attach name (attachedDatabases[].name) becomes a SQL identifier and, for the
+// bigquery/snowflake attach types, is interpolated into the ATTACH setup SQL without
+// quoting (connection.ts). Enforce the documented pattern — the OpenAPI AttachedDatabase.name
+// schema, ^[a-zA-Z_][a-zA-Z0-9_]*$ — so a name carrying SQL metacharacters cannot reach the
+// setup SQL. This is validated at the config chokepoint below and re-asserted at each attach
+// sink in connection.ts (defense in depth).
+export const ATTACH_NAME_PATTERN = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
+
+export function assertValidAttachName(
+   name: string,
+   connectionName: string,
+): void {
+   if (!ATTACH_NAME_PATTERN.test(name)) {
+      throw new Error(
+         `Invalid attachedDatabases name "${name}" on DuckDB connection ` +
+            `"${connectionName}": an attach name becomes a SQL identifier and must match ` +
+            `${ATTACH_NAME_PATTERN.source}.`,
+      );
+   }
+}
+
 export function validateDuckdbApiSurface(connection: ApiConnection): void {
    if (connection.type !== "duckdb" || !connection.duckdbConnection) return;
 
@@ -239,6 +260,18 @@ export function validateDuckdbApiSurface(connection: ApiConnection): void {
             ", ",
          )}. Publisher only supports attachedDatabases and setupSQL for environment-authored DuckDB connections.`,
       );
+   }
+
+   // Reject an attach name that would not be a safe SQL identifier, before any ATTACH SQL is
+   // built. Every path that builds a connection passes through here (config load, create,
+   // update, test), so this covers all of them.
+   const attached = connection.duckdbConnection.attachedDatabases;
+   if (Array.isArray(attached)) {
+      for (const db of attached) {
+         if (db && typeof db.name === "string") {
+            assertValidAttachName(db.name, connection.name ?? "<unnamed>");
+         }
+      }
    }
 
    const setupSQL = connection.duckdbConnection.setupSQL;
