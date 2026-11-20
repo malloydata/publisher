@@ -31,6 +31,7 @@ const executeQueryModel = mock(
       _modelPath: string,
       _request: { versionId?: string },
       _includeHidden?: boolean,
+      _versionId?: string,
       _options?: { signal?: AbortSignal },
    ) => pending(),
 );

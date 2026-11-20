@@ -33,6 +33,7 @@ const executeQueryModel = mock(
          versionId?: string;
       },
       _includeHidden?: boolean,
+      _versionId?: string,
       _options?: { signal?: AbortSignal },
    ): Promise<unknown> => pending(),
 );
