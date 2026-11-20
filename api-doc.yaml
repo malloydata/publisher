@@ -7029,8 +7029,9 @@ components:
     ReportCells:
       type: object
       description: >-
-        A `.malloynb`, or a linear `.malloy` report read as cells (its
-        definitions, then its tiles): its cells, unexecuted, and its model.
+        A `.malloynb` read as cells: its cells, unexecuted, and its model.
+        `GET …/reports/{path}` serves it for a `.malloynb` only; a `.malloy`
+        report carries its manifest instead.
       properties:
         type:
           type: string
@@ -7045,11 +7046,11 @@ components:
         format:
           type: string
           enum: ["malloynb", "malloy"]
-          description:
-            The file format the notebook is written in. `malloynb` is the
-            cell-separated format; `malloy` is a linear `.malloy` report (see
-            list-reports), wherever it lives, whose cells are
-            its statements and its floating `(markdown)` notes in file order.
+          description: >-
+            The file format the notebook is written in. Always `malloynb`, the
+            cell-separated format. `malloy`, a linear `.malloy` report read
+            statement by statement, is no longer returned: no route serves a
+            `.malloy` report as cells.
         malloyVersion:
           type: string
           description: Version of the Malloy compiler used to generate the notebook data
@@ -7064,30 +7065,23 @@ components:
         annotations:
           type: array
           description:
-            Array of file-level (##) annotations attached to the notebook. For
-            a `.malloy` notebook, every own note that is not a floating
-            `(markdown)` cell, in file order, each note once. A `"` or `(text)`
-            note below the `## artifact` tag is dropped and not listed.
+            Array of file-level (##) annotations attached to the notebook.
           items:
             type: string
         startingGivens:
           allOf:
             - $ref: "#/components/schemas/EncodedGivenValues"
           description:
-            Starting values for the notebook's controls. A `.malloy` notebook
-            declares them in its artifact tag (`## artifact { givens { … } }`),
-            a `.malloynb` in its file-level tags (`## givens { … }`). URL
-            parameters override these, which is why the two share a shape.
-            Omitted when the notebook declares none.
+            Starting values for the notebook's controls, from its file-level
+            tags (`## givens { … }`). URL parameters override these. Omitted
+            when the notebook declares none.
         autorun:
           type: boolean
           description:
             False batches control changes behind an Apply button instead of
-            re-running on every change. Defaults to true. A `.malloy` notebook
-            reads it from its artifact tag (`## artifact { autorun=false }`), a
-            `.malloynb` from its file-level tags (`## autorun=false`). The same
-            flag, with the same default, that `DashboardManifest.autorun`
-            carries.
+            re-running on every change. Defaults to true. Read from the
+            notebook's file-level tags (`## autorun=false`). The same flag, with
+            the same default, that `DashboardManifest.autorun` carries.
         sources:
           type: array
           description: Sources defined in the notebook's model
@@ -8192,17 +8186,21 @@ components:
         kind:
           type: string
           enum: ["markdown", "query", "definition"]
-          description:
-            What a cell is, on a `.malloy` notebook. A definition cell
-            (`source:`, `import`, `query:`, `given:`, `type:`, `export`) has type `code`
-            and produces no result. Absent on a `.malloynb`.
+          description: >-
+            What a cell is, on a cell of a compiled document
+            (`CompileResult.document.cells`), where every cell is a definition:
+            a `source:`, `import`, `query:`, `given:`, `type:` or `export`
+            statement, with type `code`, that produces no result. Absent on a
+            `.malloynb`'s cells. `markdown` and `query` are no longer returned:
+            they marked a linear `.malloy` report's prose and query cells, which
+            no route serves as cells now.
         text:
           type: string
           description: Text contents of the notebook cell (either markdown or Malloy code)
         markdown:
           type: string
           description:
-            On a `.malloy` notebook's code cell, the prose written on the
+            On a compiled document's code cell, the prose written on the
             `(markdown)` route in its own tag lines (`#(markdown) text` lines,
             `#|(markdown)` … `|#` blocks), which `text` still contains. Blocks
             join with a blank line, adjacent lines with a newline. Author
@@ -8211,8 +8209,8 @@ components:
         proseLines:
           type: array
           description:
-            Present on every code cell of a `.malloy` notebook, and absent on
-            a `.malloynb` or from a server that predates it. The lines of
+            Present on every code cell of a compiled document, and absent on
+            a `.malloynb`'s cells or from a server that predates it. The lines of
             `text` that hold `markdown`, as `[start, end]` pairs in file order;
             `[]` when the cell has none. Lines are 0-based and inclusive,
             counted on `text` split at `\n`. Strip exactly these lines to get
@@ -8233,7 +8231,7 @@ components:
         codeLine:
           type: integer
           description:
-            Present on every code cell of a `.malloy` notebook, as `proseLines`
+            Present on every code cell of a compiled document, as `proseLines`
             is. The 0-based line of `text` (split at `\n`) where the
             statement's code starts, its first token that is neither a note nor
             a comment, so the `source`, `run`, `given` or `import` keyword sits
@@ -8241,7 +8239,7 @@ components:
         caption:
           type: string
           description:
-            On a `.malloy` notebook's code cell, the joined text of its leading
+            On a compiled document's code cell, the joined text of its leading
             `#"` lines (space-joined, trimmed). Author prose, so it is served
             even when `queryInfo` is withheld. Absent when the cell has none,
             which is authoritative wherever `proseLines` is present.
