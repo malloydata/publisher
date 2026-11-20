@@ -548,8 +548,11 @@ route's checks, in the route's order, on the text the Console sends, and a test 
 for every cell of a fixture package. Markdown cells are not read, since the Console does not run them. A
 cell that only a reader's givens refuse, by `#(authorize)` or a row-level gate, gets no warning, and a
 caller sending `includeHiddenFilesAndSources` still runs an `off_surface` cell. A notebook lists at most
-10 refused cells one by one and a package at most 50; the rest of a notebook's are named by number and
-reason in one `malloynb-cells-unlisted` warning.
+10 refused cells one by one and a package at most 50. The rest of a notebook that lists some are named
+by number and reason in one `malloynb-cells-unlisted` warning for that notebook. The notebooks after the
+package limit share one `malloynb-cells-unlisted` warning with no `model`, which counts their cells by
+reason and names the first 10 of them, so the number of warnings stays bounded however many notebooks
+there are.
 
 ## Filter controls
 

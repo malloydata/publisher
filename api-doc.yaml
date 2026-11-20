@@ -5752,11 +5752,14 @@ components:
                   reader's givens refuse, by `#(authorize)` or a row-level
                   gate, is not reported. Markdown cells are not read, as the
                   Console does not run them. A notebook lists at most 10
-                  refused cells one by one, and the package at most 50; the
-                  rest of a notebook's are named by number and reason in one
-                  `malloynb-cells-unlisted` warning (`model` the notebook;
-                  `warn`), and the report lint metric still counts each
-                  refused cell under `malloynb-cell-refused`.
+                  refused cells one by one, and the package at most 50. The
+                  rest of a notebook that lists some are named by number and
+                  reason in one `malloynb-cells-unlisted` warning (`model` the
+                  notebook; `warn`). The notebooks after the package limit
+                  share one `malloynb-cells-unlisted` warning with no `model`,
+                  which counts their cells by reason and names the first 10 of
+                  them. The report lint metric still counts each refused cell
+                  under `malloynb-cell-refused`.
                   `malloynb-cell-check-failed`: a notebook whose cell check
                   could not run, so a refused cell of it may have no warning;
                   the cause is in the server log (one per notebook, `warn`).
@@ -10134,8 +10137,9 @@ components:
             (code "render-tag"), the dashboard, given and drill findings
             (code "dashboard-lint") and each .malloynb code cell the query
             route would refuse (code "malloynb-cell-refused", at most 10 per
-            notebook and 50 per package, with the rest named in one
-            "malloynb-cells-unlisted" per notebook and
+            notebook and 50 per package, with the rest named in
+            "malloynb-cells-unlisted" summaries, one per notebook that lists
+            some and one for the notebooks past the package limit, and
             "malloynb-cell-check-failed" for a notebook that could not be
             checked) a reload would put on the package's warnings, at their own severity and with no
             position, and the
