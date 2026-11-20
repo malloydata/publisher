@@ -536,9 +536,12 @@ markdown cells, the rule as `reason` and the fix. The rules are `off_surface`, `
 an annotation only the model author may write, such as `#(authorize)` in a comment beside the `run:`,
 `required_filter` for a required `#(filter)`, which the Console never fills, `restricted_mode`, and
 `compile_error` for any other compile failure of the `run:` statement on its own. It runs the query
-route's checks on the text the Console sends, and a test holds the two together for every cell of a
-fixture package. A cell that only a reader's givens refuse, by `#(authorize)` or a row-level gate, gets no
-warning, and a caller sending `includeHiddenFilesAndSources` still runs an `off_surface` cell.
+route's checks, in the route's order, on the text the Console sends, and a test holds the two together
+for every cell of a fixture package. Markdown cells are not read, since the Console does not run them. A
+cell that only a reader's givens refuse, by `#(authorize)` or a row-level gate, gets no warning, and a
+caller sending `includeHiddenFilesAndSources` still runs an `off_surface` cell. A notebook lists at most
+10 refused cells one by one and a package at most 50; the rest of a notebook's are named by number and
+reason in one `malloynb-cells-unlisted` warning.
 
 ## Filter controls
 

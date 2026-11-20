@@ -5740,8 +5740,8 @@ components:
                   cells, markdown cells included, and the fix. `reason` names
                   the rule: `off_surface` is the 404 for a source the package
                   surface does not publish, which a source the notebook
-                  declares never is on a package with an `index.malloy`; a
-                  caller with `includeHiddenFilesAndSources` still runs such a
+                  declares never is on a package with a curated surface, an
+                  `index.malloy` or the deprecated `explores`; a caller with `includeHiddenFilesAndSources` still runs such a
                   cell. `caller_annotation` is the 400 for text carrying an
                   annotation only the model author may write, such as
                   `#(authorize)`, comments included. `required_filter` is the
@@ -5750,7 +5750,16 @@ components:
                   table read. `compile_error` is the 400 for any other failure
                   of the statement to compile on its own. A cell that only a
                   reader's givens refuse, by `#(authorize)` or a row-level
-                  gate, is not reported.
+                  gate, is not reported. Markdown cells are not read, as the
+                  Console does not run them. A notebook lists at most 10
+                  refused cells one by one, and the package at most 50; the
+                  rest of a notebook's are named by number and reason in one
+                  `malloynb-cells-unlisted` warning (`model` the notebook;
+                  `warn`), and the report lint metric still counts each
+                  refused cell under `malloynb-cell-refused`.
+                  `malloynb-cell-check-failed`: a notebook whose cell check
+                  could not run, so a refused cell of it may have no warning;
+                  the cause is in the server log (one per notebook, `warn`).
                   `deprecated-filter-annotation`: a source declaring
                   deprecated `#(filter)` annotations (one per declaring source,
                   `model` naming its file and `subject` the source).
@@ -6015,8 +6024,8 @@ components:
                 type: string
                 description: >-
                   The bounded cause of a finding, so a client branches on it
-                  rather than on the message (whose wording may change): the refusal record's `reason` on a `*-not-built`
-                  warning; the served copy's reason on
+                  rather than on the message (whose wording may change): the
+                  refusal record's `reason` on a `*-not-built` warning; the served copy's reason on
                   `served-copy-not-served`; the unread reason on
                   `database-table-unread`; the kept table's reason on
                   `table-kept`; the serve verdict's reason on a
