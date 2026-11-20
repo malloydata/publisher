@@ -157,21 +157,12 @@ for (const mode of ["on", "write-only", "off"] as const) {
       });
 
       for (const l of LEGS) {
-         // Under `on` the served copy does not re-root `copy_d` with both
-         // tables bound (a `served-copy-not-served` warning), so it answers
-         // live there, as it did before this fix: pinned, not endorsed.
-         const onLive = mode === "on" && l.kind === "materialized";
          const tier = mode === "on" ? "storage" : "database";
-         it(`the ${l.leg} leg: ${onLive ? "answered live" : `answered from its ${tier} table`}, equal to live`, () => {
+         it(`the ${l.leg} leg: answered from its ${tier} table, equal to live`, () => {
             const before = live.get(l.leg)!;
             const after = served.get(l.leg)!;
             expect(before.servedBy).toBe("live");
             expect(after.rows).toEqual(before.rows);
-            if (onLive) {
-               expect(after.servedBy).toBe("live");
-               expect(after.skipped).toEqual(["NOT_SERVED:served_copy"]);
-               return;
-            }
             expect(after.servedBy).toBe(l.kind);
             expect(after.tier).toBe(tier);
             if (mode === "on") {

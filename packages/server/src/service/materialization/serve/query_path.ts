@@ -637,7 +637,10 @@ function storageTableDecisions(
    } else {
       // Not routed at all (the tier is off or write-only): every storage table
       // carries the package's warning, and the query reads its own warehouse.
-      for (const t of storageTables) if (t.warned) skip(t, "NOT_SERVED");
+      // The storage mode is the reason, whichever tier the verdict judged.
+      for (const t of storageTables) {
+         if (t.warned) skip(t, "NOT_SERVED", undefined, "storage_mode");
+      }
    }
    return storageAnswered;
 }
