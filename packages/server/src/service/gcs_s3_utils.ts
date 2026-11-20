@@ -2,10 +2,15 @@
 // SPDX-License-Identifier: MIT
 
 import {
+   GetObjectCommand,
    ListBucketsCommand,
    ListObjectsV2Command,
+   S3,
    S3Client,
 } from "@aws-sdk/client-s3";
+import { Storage } from "@google-cloud/storage";
+import * as fs from "fs";
+import { fileURLToPath } from "url";
 import { Connection } from "@malloydata/malloy";
 import { components } from "../api";
 import { ConnectionOrigin, getS3CredentialChainPolicy } from "../config";
@@ -689,4 +694,62 @@ export async function listCloudDirectorySchemas(
       isHidden: false,
       isDefault: false,
    }));
+}
+
+// Lazily created; both use the ambient credential chain, as the package
+// downloader does.
+let locationGcsClient: Storage | undefined;
+let locationS3Client: S3 | undefined;
+
+function parseLocationBucketUri(
+   uri: string,
+   scheme: "gs://" | "s3://",
+   what: string,
+): { bucket: string; key: string } {
+   const rest = uri.slice(scheme.length);
+   const slash = rest.indexOf("/");
+   if (slash <= 0 || slash === rest.length - 1) {
+      throw new Error(`Malformed ${what} URI: ${uri}`);
+   }
+   return { bucket: rest.slice(0, slash), key: rest.slice(slash + 1) };
+}
+
+/**
+ * Read the raw bytes at a location URI (gs://, s3://, file://, or an absolute
+ * local path), with the ambient credential chain: what a build manifest and a
+ * compiled bundle have in common.
+ */
+export async function readLocationBytes(
+   uri: string,
+   /** What the URI names, for the error a malformed or empty one gets ("manifest", "bundle"). */
+   what: string,
+): Promise<Buffer> {
+   if (uri.startsWith("gs://")) {
+      const { bucket, key } = parseLocationBucketUri(uri, "gs://", what);
+      locationGcsClient ??= new Storage();
+      const [contents] = await locationGcsClient
+         .bucket(bucket)
+         .file(key)
+         .download();
+      return contents;
+   }
+   if (uri.startsWith("s3://")) {
+      const { bucket, key } = parseLocationBucketUri(uri, "s3://", what);
+      locationS3Client ??= new S3({ followRegionRedirects: true });
+      const res = await locationS3Client.send(
+         new GetObjectCommand({ Bucket: bucket, Key: key }),
+      );
+      if (!res.Body) {
+         throw new Error(`Empty S3 response for ${what} URI: ${uri}`);
+      }
+      return Buffer.from(await res.Body.transformToByteArray());
+   }
+   if (uri.startsWith("file://")) {
+      return fs.promises.readFile(fileURLToPath(uri));
+   }
+   // Bare local path. The URI is operator config (publisher.json or an
+   // authenticated request), not end-user input, and the bytes are never
+   // returned to a caller, so CodeQL's js/path-injection alert here is a false
+   // positive (as for the manifest reader this replaced).
+   return fs.promises.readFile(uri);
 }

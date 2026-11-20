@@ -59,7 +59,7 @@ import {
    publisherVersion,
    writeBundleFile,
 } from "../package_load/bundle";
-import { readLocationBytes } from "./materialization/run/manifest_loader";
+import { readLocationBytes } from "./gcs_s3_utils";
 import { queryBoundaryActive } from "./package_manifest";
 import {
    DEFAULT_PACKAGE_RETRIEVAL,
@@ -1231,7 +1231,9 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       let stamp: BundleStamp;
       let result: LoadPackageResult;
       try {
-         ({ stamp, result } = decodeBundle(await readLocationBytes(location)));
+         ({ stamp, result } = decodeBundle(
+            await readLocationBytes(location, "bundle"),
+         ));
       } catch (err) {
          const code = (err as NodeJS.ErrnoException).code;
          return done(code === "ENOENT" ? "absent" : "unreadable", {
