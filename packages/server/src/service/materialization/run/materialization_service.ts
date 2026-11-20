@@ -609,11 +609,39 @@ export class MaterializationService {
     * validated synchronously against the compiled build plan, so a bad
     * instruction is rejected at create time rather than failing the background
     * run.
+    *
+    * The create is registered with the package's runs before its first
+    * await, so a delete or unload of the package while it runs aborts it: a
+    * create aborted before its run starts records CANCELLED and builds
+    * nothing.
     */
    async createMaterialization(
       environmentName: string,
       packageName: string,
       options: CreateMaterializationOptions = {},
+   ): Promise<Materialization> {
+      const creating = this.lifecycle.beginCreate({
+         environmentName,
+         packageName,
+      });
+      try {
+         return await this.createRun(
+            environmentName,
+            packageName,
+            options,
+            creating.signal,
+         );
+      } finally {
+         creating.done();
+      }
+   }
+
+   /** {@link createMaterialization}'s body; `retired` aborts it before the run starts. */
+   private async createRun(
+      environmentName: string,
+      packageName: string,
+      options: CreateMaterializationOptions,
+      retired: AbortSignal,
    ): Promise<Materialization> {
       const {
          environmentId,
@@ -681,6 +709,7 @@ export class MaterializationService {
             forceRefresh,
             reseed,
             trigger,
+            retired,
          });
 
       // An unversioned package's run is created under the package's lock,
@@ -852,6 +881,8 @@ export class MaterializationService {
       forceRefresh: boolean;
       reseed: boolean;
       trigger: "on_demand" | "scheduler";
+      /** Aborted when the package retired while this create ran. */
+      retired: AbortSignal;
    }): Promise<Materialization> {
       const {
          environmentId,
@@ -867,6 +898,7 @@ export class MaterializationService {
          forceRefresh,
          reseed,
          trigger,
+         retired,
       } = args;
       const active = await this.repository.getActiveMaterialization(
          environmentId,
@@ -917,6 +949,14 @@ export class MaterializationService {
             );
          }
          throw err;
+      }
+      // The package was deleted or unloaded while the record was written:
+      // its abort found no run to stop, so none starts.
+      if (retired.aborted) {
+         return this.lifecycle.transition(created.id, "CANCELLED", {
+            completedAt: new Date(),
+            error: "Cancelled",
+         });
       }
 
       // Registered before the version's lock is released (see below), and
@@ -1808,8 +1848,9 @@ export class MaterializationService {
    // ==================== CANCELLATION ====================
 
    /**
-    * Abort every run of a package running in this process, for a package
-    * being deleted or unloaded: the abort lands before this returns, so call
+    * Abort every run of a package running in this process, and every create
+    * of one whose run has not started, for a package being deleted or
+    * unloaded: the abort lands before this returns, so call
     * it before the package goes. Resolves once those runs have settled
     * (CANCELLED unless one finished first), or after `settleWithinMs`.
     */

@@ -50,7 +50,43 @@ export class RunLifecycle {
       { environmentName: string; packageName: string; settled: Promise<void> }
    >();
 
+   /** Each create whose run has not started yet, so a retiring package's abort reaches it. */
+   private readonly creating = new Set<{
+      environmentName: string;
+      packageName: string;
+      controller: AbortController;
+      settled: Promise<void>;
+   }>();
+
    constructor(private readonly repository: () => ResourceRepository) {}
+
+   /**
+    * Register a create of `owner`'s run before the create's first await, so
+    * {@link abortPackageRuns} aborts it as it aborts a running run: the
+    * create reads `signal` once its record is written and, aborted, records
+    * CANCELLED rather than start the run. `done` ends the registration, once
+    * the create has started its run (which the abort then reaches as a run)
+    * or given up; the abort's settle waits for it.
+    */
+   beginCreate(owner: { environmentName: string; packageName: string }): {
+      signal: AbortSignal;
+      done: () => void;
+   } {
+      const controller = new AbortController();
+      let done!: () => void;
+      const settled = new Promise<void>((resolve) => {
+         done = resolve;
+      });
+      const entry = { ...owner, controller, settled };
+      this.creating.add(entry);
+      return {
+         signal: controller.signal,
+         done: () => {
+            this.creating.delete(entry);
+            done();
+         },
+      };
+   }
 
    validateTransition(
       current: MaterializationStatus,
@@ -119,7 +155,7 @@ export class RunLifecycle {
 
    /**
     * Abort every run of `packageName` in `environmentName` running in this
-    * process, before this returns, so a package about to be unloaded starts
+    * process, and every create of one not yet started, before this returns, so a package about to be unloaded starts
     * no further build. Resolves once each has settled (CANCELLED, or what it
     * reached first), or after `settleWithinMs`, whichever is sooner: a
     * statement already sent finishes on a database that ignores the abort,
@@ -140,6 +176,16 @@ export class RunLifecycle {
          }
          this.runningAbortControllers.get(id)?.abort();
          settles.push(run.settled);
+      }
+      for (const create of this.creating) {
+         if (
+            create.environmentName !== environmentName ||
+            create.packageName !== packageName
+         ) {
+            continue;
+         }
+         create.controller.abort();
+         settles.push(create.settled);
       }
       if (settles.length === 0) return Promise.resolve();
       let timer: ReturnType<typeof setTimeout> | undefined;
