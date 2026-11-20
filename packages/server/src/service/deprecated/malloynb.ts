@@ -74,7 +74,9 @@ export function listMalloynbCellFindings<F extends CellFinding>(
       const byReason = new Map<string, number[]>();
       for (const { cell, finding } of rest) {
          const reason = finding.reason ?? "unknown";
-         byReason.set(reason, [...(byReason.get(reason) ?? []), cell]);
+         const cells = byReason.get(reason);
+         if (cells) cells.push(cell);
+         else byReason.set(reason, [cell]);
       }
       const groups = Array.from(
          byReason,
