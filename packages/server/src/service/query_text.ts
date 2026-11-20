@@ -24,6 +24,7 @@
 import { ParseUtil } from "@malloydata/malloy-tag";
 import type { LogMessage } from "@malloydata/malloy";
 import {
+   annotationsBefore,
    isNameCode,
    isSpaceCode,
    StringScan,
@@ -97,9 +98,14 @@ const COLON_STATEMENTS = ["run", "source", "query", "given", "sql", "type"];
 
 /**
  * The last top-level `run:` statement of `text`, as written, up to the next
- * top-level statement or `;`, or undefined when there is none. It is what the
- * SDK's `Report` sends as `query` for a `.malloynb` code cell, less the render
- * tags above it, which no check here reads.
+ * top-level statement or `;`, with the `#` render tags written above it, or
+ * undefined when there is none. The tags are the `#` lines and `#|` … `|#`
+ * blocks between the statement before it and the `run:`, with any comment
+ * among them; a `##` line or `##|` block ends them, being the notebook's own.
+ *
+ * The reports read serves it as a `.malloynb` code cell's `runQuery`, which
+ * the SDK's `Report` sends as `query` unchanged, and the cell's `queryInfo`
+ * screen checks the same text.
  */
 export function lastRunStatementText(text: string): string | undefined {
    const tokens = tokenize(stripMalloyCommentsAndLiterals(text));
@@ -132,7 +138,24 @@ export function lastRunStatementText(text: string): string | undefined {
          depth = Math.max(0, depth - 1);
    }
    if (open >= 0) found = [open, last];
-   return found && text.slice(tokens.start[found[0]], tokens.end[found[1]]);
+   if (!found) return undefined;
+   const [run, end] = found;
+   let from = tokens.start[run];
+   const before = annotationsBefore(
+      text,
+      run > 0 ? rawEnd(tokens, run - 1) : 0,
+      from,
+   );
+   for (const tag of before.reverse()) {
+      if (tag.model) break;
+      from = tag.from;
+   }
+   return text.slice(from, rawEnd(tokens, end));
+}
+
+/** Where token `k` ends in the text: past a backtick name's closing backtick. */
+function rawEnd(tokens: Tokens, k: number): number {
+   return tokens.end[k] + (tokens.kind[k] === QUOTED ? 1 : 0);
 }
 
 /**

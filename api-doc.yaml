@@ -8274,6 +8274,21 @@ components:
             JSON string containing QueryInfo object for the query in this cell
             (if the cell contains a query). On a package with a surface, left out
             for a cell whose query reads a source the notebook may not read.
+        runQuery:
+          type: string
+          description: >-
+            On a `.malloynb` code cell, the text to send as `query` to
+            `POST …/models/{path}/query`, with the notebook's own path as the
+            model, to run the cell. It is the cell's last top-level `run:`
+            statement, up to the next top-level statement or `;`, with the
+            render tags written above it: the `#` lines and `#|` … `|#` blocks
+            between the statement before it and the `run:`, and any comment
+            among them. A `##` line or `##|` block, the notebook's own, ends
+            them. The cell's imports and declarations are left out, since the
+            notebook's path compiles every cell. Read by Publisher's own lexer,
+            so a `run:` in a comment, a string or a block annotation does not
+            count. Absent on a markdown cell, on a code cell with no `run:`, on
+            a compiled document's cells, and from a server that predates it.
 
     QueryMetadata:
       type: object

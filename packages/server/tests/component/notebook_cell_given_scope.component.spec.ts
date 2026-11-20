@@ -13,7 +13,6 @@
 import { unrecordedAudit } from "../../src/service/access_record";
 import { type GivenValue, MalloyError } from "@malloydata/malloy";
 import { describe, expect, it } from "bun:test";
-import { malloynbCellQuery } from "../../../sdk/src/components/Report/malloynb/cellKind";
 import { AccessDeniedError } from "../../src/errors";
 import type { Model, ModelQueryResults } from "../../src/service/model";
 import {
@@ -40,7 +39,7 @@ async function createModelWithFiles(
 
 /**
  * Run cell `cellIndex`'s query on the notebook's own path, as the Console
- * sends it: the SDK's `malloynbCellQuery` of the cell.
+ * sends it: the cell's served `runQuery`.
  */
 async function runCell(
    model: Model,
@@ -48,7 +47,7 @@ async function runCell(
    givens?: Record<string, GivenValue>,
 ): Promise<ModelQueryResults> {
    const cell = (await model.getNotebook()).notebookCells?.[cellIndex];
-   const query = cell && malloynbCellQuery(cell);
+   const query = cell?.runQuery;
    if (query === undefined) throw new Error(`cell ${cellIndex} runs no query`);
    return model.runQuery(unrecordedAudit(), { query, givens });
 }

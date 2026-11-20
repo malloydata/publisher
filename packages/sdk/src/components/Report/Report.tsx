@@ -14,7 +14,6 @@ import type { TileChrome } from "../Dashboard/TileCard";
 import type { DrillNavigation } from "../drill";
 import { Loading, LOADING_COPY } from "../Loading";
 import { useServer } from "../ServerProvider";
-import { malloynbCellQuery } from "./malloynb/cellKind";
 import { MalloynbReport } from "./malloynb/MalloynbReport";
 import { reportQueryOptions } from "./reportQuery";
 import {
@@ -197,9 +196,7 @@ export function Report({
             tiles:
                manifest.tiles?.length ??
                manifest.notebook?.notebookCells?.filter(
-                  (cell) =>
-                     cell.type === "code" &&
-                     malloynbCellQuery(cell) !== undefined,
+                  (cell) => cell.type === "code" && cell.runQuery !== undefined,
                ).length ??
                0,
             durationMs: now() - started.current.at,

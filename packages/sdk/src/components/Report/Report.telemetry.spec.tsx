@@ -202,7 +202,11 @@ describe("opening a report", () => {
             notebookCells: [
                { type: "markdown", text: "Cell prose" },
                { type: "code", text: 'import "orders.malloy"' },
-               { type: "code", text: "run: orders -> by_month" },
+               {
+                  type: "code",
+                  text: "run: orders -> by_month",
+                  runQuery: "run: orders -> by_month",
+               },
             ],
          },
       } as ReportManifest;

@@ -1918,9 +1918,9 @@ export class Model {
     * decide it. A served notebook's cell has every code cell up to this one
     * as derivation context, so `source: big is orders extend {...}` in an
     * earlier cell still counts as derived from `orders`, as the file's own
-    * text makes it on the query route. A `.malloynb` cell runs as its last
-    * `run:` statement alone, the text the SDK sends, so that text is put
-    * through the route's boundary checks: see
+    * text makes it on the query route. A `.malloynb` cell runs as its
+    * `runQuery` alone, the text the reports read serves and the SDK sends, so
+    * that text is put through the route's boundary checks: see
     * {@link assertMalloynbRunOnSurface}. Inert with no surface and under
     * `"all"`.
     */
@@ -1933,7 +1933,7 @@ export class Model {
       const cells = this.runnableNotebookCells ?? [];
       if (this.notebookFormat() !== "malloy") {
          await this.assertMalloynbRunOnSurface(
-            lastRunStatementText(cells[cellIndex]?.text ?? ""),
+            malloynbRunQuery(cells[cellIndex]),
          );
          return;
       }
@@ -3679,6 +3679,10 @@ export class Model {
             caption: cell.caption,
             newSources: this.serializeNewSources(cell.newSources, index),
             queryInfo: queryInfo ? JSON.stringify(queryInfo) : undefined,
+            runQuery:
+               this.notebookFormat() === "malloynb"
+                  ? malloynbRunQuery(cell)
+                  : undefined,
          } as ApiNotebookCell);
       }
 
@@ -3816,4 +3820,16 @@ function compileErrorLine(message: string): string {
             !l.startsWith("FILE:"),
       );
    return said ? said.replace(/^line \d+: /, "") : firstLine(message);
+}
+
+/**
+ * What a `.malloynb` code cell runs: the `runQuery` the reports read serves,
+ * which the SDK sends as `query` on the notebook's path, and the text the
+ * cell's `queryInfo` screen checks. Undefined for a markdown cell and for a
+ * code cell with no `run:`.
+ */
+function malloynbRunQuery(
+   cell: Pick<RunnableNotebookCell, "type" | "text"> | undefined,
+): string | undefined {
+   return cell?.type === "code" ? lastRunStatementText(cell.text) : undefined;
 }

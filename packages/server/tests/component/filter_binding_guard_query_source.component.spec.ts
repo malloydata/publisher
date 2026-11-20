@@ -31,7 +31,6 @@ import { afterAll, describe, expect, it, spyOn } from "bun:test";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
-import { malloynbCellQuery } from "../../../sdk/src/components/Report/malloynb/cellKind";
 import { AccessDeniedError } from "../../src/errors";
 import { logger } from "../../src/logger";
 import { Environment } from "../../src/service/environment";
@@ -42,6 +41,7 @@ import {
    isSameDeclaration,
 } from "../../src/service/filter_binding_guard";
 import type { Package } from "../../src/service/package";
+import { lastRunStatementText } from "../../src/service/query_text";
 import { writePackageFiles } from "../../src/test_helpers/temp_package";
 import { QueryPrivileges } from "../../src/service/model_query_request";
 
@@ -156,10 +156,10 @@ function firstCellValue(compactResult: unknown): string {
    return `n=${String(v)}`;
 }
 
-/** A `.malloynb` cell's query, as the Console sends it: the SDK's `malloynbCellQuery`. */
+/** A `.malloynb` cell's query, as the Console sends it: the `runQuery` the reports read serves. */
 function cellQuery(notebook: string, index: number): string {
    const text = notebook.split(/^>>>malloy\n/m).filter((c) => c !== "")[index];
-   const query = malloynbCellQuery({ text });
+   const query = lastRunStatementText(text);
    if (query === undefined) throw new Error(`cell ${index} runs no query`);
    return query;
 }

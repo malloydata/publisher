@@ -4,8 +4,9 @@
 /**
  * @deprecated `.malloynb` only, and deleted with the format. A `.malloynb`
  * drawn by `Report` from the `notebook` that `GET …/reports/{path}` serves,
- * each code cell run through the governed query endpoint,
- * `POST …/models/{path}/query`, with the notebook's own path as the model.
+ * each code cell's served `runQuery` sent as it is to the governed query
+ * endpoint, `POST …/models/{path}/query`, with the notebook's own path as the
+ * model.
  */
 
 import { useCallback } from "react";
@@ -13,7 +14,6 @@ import type { ReportCells } from "../../../client";
 import { encodeResourceUri } from "../../../utils/formatting";
 import { givensToRequest } from "../../given/paramCodec";
 import { useServer } from "../../ServerProvider";
-import { malloynbCellQuery } from "./cellKind";
 import {
    CellRunnerView,
    type CellReportProps,
@@ -41,7 +41,7 @@ export function MalloynbReport({
    const { apiClients } = useServer();
    const runCell = useCallback<CellRunner>(
       async ({ cell, givens, declaredTypes, signal }) => {
-         const query = malloynbCellQuery(cell);
+         const query = cell.runQuery;
          // A cell that only imports or declares has nothing to run.
          if (query === undefined) return {};
          const request = givensToRequest(givens, declaredTypes);

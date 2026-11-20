@@ -347,10 +347,12 @@ describe("rendering by layout", () => {
                {
                   type: "code",
                   text: '##! experimental.givens\nimport "../orders.malloy"\n# bar_chart\nrun: orders -> by_month',
+                  runQuery: "# bar_chart\nrun: orders -> by_month",
                },
                {
                   type: "code",
                   text: "run: big -> { aggregate: n is count() }",
+                  runQuery: "run: big -> { aggregate: n is count() }",
                },
             ],
             sources: [
@@ -429,6 +431,62 @@ describe("rendering by layout", () => {
                   givens: { REGION: "West" },
                },
             });
+         }
+      });
+
+      it("sends each code cell's served runQuery as it is, and reads no cell's text for one", async () => {
+         const chart = "#| bar_chart {\n  size: lg\n|#\nrun: s -> v";
+         const markdown =
+            "#|(markdown)\nRevenue (USD, by region\n|#\nrun: s -> v";
+         const filter = [
+            "run: s -> {",
+            "  where: label ~ f'''",
+            "    \\} source: x",
+            "  '''",
+            "  aggregate: n",
+            "}",
+         ].join("\n");
+         const unicode = "run: importé -> by_region";
+         manifest = {
+            ...LEGACY,
+            notebook: {
+               format: "malloynb",
+               notebookCells: [
+                  { type: "code", text: chart, runQuery: chart },
+                  { type: "code", text: markdown, runQuery: markdown },
+                  { type: "code", text: filter, runQuery: filter },
+                  { type: "code", text: unicode, runQuery: unicode },
+                  {
+                     type: "code",
+                     text: "run: a -> v\n#|(markdown)\nthen run: b -> v\n|#\nsource: t is s",
+                     runQuery: "run: a -> v",
+                  },
+                  // No runQuery served: nothing to run, whatever the text says.
+                  { type: "code", text: "run: s -> v" },
+               ],
+            },
+         } as ReportManifest;
+         // Answered, since only four cells run at once.
+         executeQueryModel.mockImplementation(
+            () => Promise.resolve({ data: { result: "{}" } }) as Promise<never>,
+         );
+         try {
+            render(
+               <Report resourceUri={URI} path="notebooks/legacy.malloynb" />,
+               { wrapper: serverWrapper },
+            );
+
+            await waitFor(() =>
+               expect(executeQueryModel).toHaveBeenCalledTimes(5),
+            );
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            expect(
+               cellRequests().map(
+                  (call) => (call.request as { query: string }).query,
+               ),
+            ).toEqual([chart, markdown, filter, unicode, "run: a -> v"]);
+         } finally {
+            executeQueryModel.mockImplementation(() => pending());
          }
       });
 

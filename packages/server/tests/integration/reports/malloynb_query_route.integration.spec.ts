@@ -6,9 +6,9 @@
 /**
  * A `.malloynb`'s cells run through the governed query endpoint, the way the
  * SDK's `Report` runs them: the cells read from `GET …/reports/{path}`'s
- * `notebook`, and each code cell's `run:` statement (with the render tags
- * right above it) sent as `query` to `POST …/models/{path}/query`, the
- * notebook's own path as the model. That path compiles every cell, so the
+ * `notebook`, and each code cell's served `runQuery` (its `run:` statement
+ * with the render tags right above it) sent as `query` to
+ * `POST …/models/{path}/query`, the notebook's own path as the model. That path compiles every cell, so the
  * setup cells before a query (its imports, `source:` and `given:`
  * declarations) are already in scope and nothing is prepended.
  *
@@ -24,9 +24,9 @@
 import { rm } from "fs/promises";
 import path from "path";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { malloynbCellQuery } from "../../../../sdk/src/components/Report/malloynb/cellKind";
 import {
    fixture,
+   lf,
    startPackageEnv,
    type PackageEnv,
 } from "../../harness/reports";
@@ -41,6 +41,7 @@ interface Cell {
    text: string;
    newSources?: string[];
    queryInfo?: string;
+   runQuery?: string;
 }
 
 type Outcome = { rows: unknown[][] } | { refused: number; message?: string };
@@ -114,7 +115,7 @@ describe(".malloynb cells through the query route (E2E)", () => {
       i: number,
       givens: object = {},
    ): Promise<Outcome> => {
-      const query = malloynbCellQuery((await cellsOf(pkg, nb))[i]);
+      const query = (await cellsOf(pkg, nb))[i].runQuery;
       if (query === undefined) throw new Error(`${nb} cell ${i} has no run:`);
       const res = await env.query(`notebooks/${nb}`, { query, givens }, pkg);
       return outcomeOf(res.status, await res.json());
@@ -126,7 +127,7 @@ describe(".malloynb cells through the query route (E2E)", () => {
    it("sends the code cells that run, and only those", async () => {
       const sent = async (nb: string) =>
          (await cellsOf(CURATED, nb)).flatMap((cell, i) =>
-            cell.type === "code" && malloynbCellQuery(cell) ? [i] : [],
+            cell.type === "code" && cell.runQuery ? [i] : [],
          );
       // Markdown and declaration-only cells are not sent.
       expect(await sent("surface.malloynb")).toEqual([2, 3, 5, 6]);
@@ -135,9 +136,55 @@ describe(".malloynb cells through the query route (E2E)", () => {
       expect(await sent("caller_join.malloynb")).toEqual([2, 3, 4, 5, 6, 7]);
       // The render tag goes with the run, the selective import does not.
       const cells = await cellsOf(CURATED, "import_cell.malloynb");
-      expect(malloynbCellQuery(cells[3])).toBe(
+      expect(lf(cells[3].runQuery)).toBe(
          "# bar_chart\nrun: orders -> { group_by: region; aggregate: order_count; order_by: region }",
       );
+   });
+
+   it("serves each code cell's run: with the render tags above it, and runs what it serves", async () => {
+      const nb = "render_tags.malloynb";
+      const expected = [
+         undefined,
+         undefined,
+         "#| bar_chart {\n  size: lg\n|#\nrun: orders -> { group_by: region; aggregate: order_count; order_by: region }",
+         "#|(markdown)\nOrders (by region\n|#\nrun: orders -> { aggregate: order_count }",
+         "run: orders -> { aggregate: order_count }",
+         "run: importé -> { aggregate: order_count }",
+      ];
+      for (const pkg of [CURATED, OPEN]) {
+         const served = (await cellsOf(pkg, nb)).map((cell) =>
+            lf(cell.runQuery),
+         );
+         expect(served).toEqual(expected);
+      }
+      // The block annotation's chart config goes with the query.
+      const chart = await env.query(
+         `notebooks/${nb}`,
+         { query: (await cellsOf(CURATED, nb))[2].runQuery },
+         CURATED,
+      );
+      const body = (await chart.json()) as { result?: string };
+      expect(chart.status).toBe(200);
+      expect(body.result).toContain("size: lg");
+      expect(outcomeOf(200, body)).toEqual({
+         rows: [
+            ["EU", 3],
+            ["US", 3],
+         ],
+      });
+      for (const i of [3, 4]) {
+         expect(await run(CURATED, nb, i)).toEqual({ rows: [[6]] });
+      }
+      // `importé` is the cell's own source: off the surface, where the
+      // queryInfo screen withholds its schema too.
+      expect(await run(OPEN, nb, 5)).toEqual({ rows: [[6]] });
+      expect(refusal(await run(CURATED, nb, 5))?.refused).toBe(404);
+      const withSchema = async (pkg: string) =>
+         (await cellsOf(pkg, nb)).flatMap((cell, i) =>
+            cell.queryInfo !== undefined ? [i] : [],
+         );
+      expect(await withSchema(CURATED)).toEqual([2, 3, 4]);
+      expect(await withSchema(OPEN)).toEqual([2, 3, 4, 5]);
    });
 
    it("holds the cells to the package surface", async () => {
