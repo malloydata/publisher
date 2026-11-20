@@ -111,6 +111,7 @@ export function recordPackageLoadPhases(
  * meanwhile. `Package.reloadAllModels` records none of them.
  */
 export type PackageLoadPhase =
+   | "bundle"
    | "worker"
    | "hydrate"
    | "render_validation"
@@ -228,4 +229,14 @@ export async function measurePackageOperation<T>(
          outcome,
       });
    }
+}
+
+const bundleLoads = lazyCounter(
+   "publisher_package_bundle_load_total",
+   "Package loads by how their models were produced: hydrated from a compiled bundle (hit), or compiled because the bundle was absent, unreadable, stale (compiler, protocol or source), or none was named (compiled). Label: status.",
+);
+
+/** Count one package load's bundle outcome (see package_load/bundle.ts). */
+export function recordPackageBundleLoad(status: string): void {
+   bundleLoads().add(1, { status });
 }

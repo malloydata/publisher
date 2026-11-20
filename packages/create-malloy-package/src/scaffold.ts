@@ -1673,6 +1673,8 @@ export const SERVER_VALUE_FLAGS = new Set([
    "--workload-log-store",
    "--workload-log-retention-days",
    "--workload-log-max-rows",
+   "--compile-package",
+   "--bundle-out",
 ]);
 
 /** True when a quote is left open, which sh refuses to run at all. */
