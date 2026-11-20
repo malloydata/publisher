@@ -200,7 +200,8 @@ describe("a .malloynb cell the query route refuses warns at load", () => {
          "the source it runs declares a required #(filter), and the " +
             "Console sends no filter value for a notebook cell (400): " +
             'Required filter "region" (dimension: region) was not provided. ' +
-            "Fix: drop required from that #(filter), which is deprecated.",
+            "Fix: move the filter to a given: declaration, as " +
+            "docs/givens.md#coming-from-filter describes.",
       );
       const firstFour = (pkg: Package) =>
          refusedCells(pkg, "route_text.malloynb").filter((w) => cellOf(w) <= 4);

@@ -532,8 +532,9 @@ join the author's, declare it in a source in a model file.
 Two more shapes are refused for every reader. A `run:` whose text carries an annotation only the model
 author may write, such as `#(authorize)` or `#(classification)`, answers `400`, even when the annotation
 is only spelled in a comment beside the `run:`; remove it from the cell. A `run:` over a source with a
-required `#(filter)` answers `400`, because the Console sends no filter value for a notebook cell; drop
-`required` from that `#(filter)`, which is deprecated. A `run:` that fails to compile on its own for any
+required `#(filter)` answers `400`, because the Console sends no filter value for a notebook cell; move
+the filter to a `given:` declaration, as [Coming from `#(filter)`](givens.md#coming-from-filter)
+describes. A `run:` that fails to compile on its own for any
 other reason answers `400` with the compiler's message; fix the statement so it compiles alone.
 
 Each code cell the query route would refuse for every reader in the Console is a package warning when
