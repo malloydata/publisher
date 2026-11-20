@@ -460,7 +460,9 @@ export class PackageMaterialization {
    } {
       const ids = new Set(Object.keys(this.plan.asOfBuild));
       if (ids.size === 0) return { addresses: new Set(), binding: () => false };
-      const sources = this.plan.buildPlan?.sources ?? {};
+      // The plan the bindings and `asOfBuild` are read from: after a failed
+      // refresh the current plan is gone, and the last good one still serves.
+      const sources = this.plan.servingPlan()?.sources ?? {};
       const addresses = new Set(
          [...ids].flatMap((id) => {
             const address = sources[id]?.sourceEntityId;
