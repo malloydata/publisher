@@ -7390,8 +7390,8 @@ components:
             in `tiles=[…]`, or else from a `# break` on the view or query it
             names; `break=false` on the entry turns off the view's. Named for the tag, so every per-tile field on this
             schema is spelled the way an author writes it. A generated client
-            escapes the attribute where the word is reserved (the Python client
-            exposes `break_`) while the wire key stays `break`.
+            escapes the attribute where the word is reserved (a generated Python
+            client exposes `break_`) while the wire key stays `break`.
         borderless:
           type: boolean
           description: >-

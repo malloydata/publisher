@@ -6,7 +6,7 @@ name: Security Scan
 # Trivy filesystem + config + secret scans of the source tree.
 #
 # - `vulns` job: scans the working tree for language-package CVEs in lockfiles
-#   (bun.lock, package-lock.json, pyproject.toml, etc.). Uploads results as SARIF
+#   (bun.lock, package-lock.json, etc.). Uploads results as SARIF
 #   to the Code Scanning UI.
 # - `config` job: scans the Dockerfiles for security misconfigurations. Trivy's
 #   misconfiguration scanner has no GitHub Actions support, so the workflows are
