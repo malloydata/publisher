@@ -72,6 +72,9 @@ const DECIDED: Record<Flag, DialectName[]> = {
    stringCollation: ["duckdb", "postgres", "standardsql"],
    // BigQuery refuses GROUP BY on these (F-45); a pair table's build groups.
    ungroupableTypes: ["standardsql"],
+   // A stored DOUBLE compares as live only where live's double orders NaN
+   // as DuckDB does (not BigQuery's FLOAT64).
+   binary64Types: ["duckdb", "postgres", "snowflake"],
 };
 
 /** Each dialect's leaf budget, as decided (`domain/table_name.ts`). */

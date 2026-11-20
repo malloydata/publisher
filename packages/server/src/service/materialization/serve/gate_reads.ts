@@ -34,7 +34,8 @@ import { stripMalloyCommentsAndLiterals } from "../../malloy_lexer_core";
 import { malloyIdentifiers } from "../../query_text";
 
 import { fieldPathsIn } from "./gate_paths";
-import type { GateReads } from "./gate_reads_types";
+import type { ColumnOrigin, GateReads } from "./gate_reads_types";
+import type { UpstreamTableSchema } from "../domain/upstream_schemas";
 
 /** The names a gate's text reads: each identifier it names, fields or not. */
 export function gateIdentifiers(exprs: readonly string[]): string[] {
@@ -278,6 +279,25 @@ interface QueryLike {
    pipeline?: unknown;
 }
 
+/**
+ * The warehouse column a plain field named `column` of `source` reads, when
+ * `source` is a `.table()` source; undefined for any other relation (a
+ * query stage, author SQL), whose column the build computed.
+ */
+function tableColumnOf(
+   source: unknown,
+   column: string,
+): ColumnOrigin | undefined {
+   const s = source as
+      | { type?: unknown; tablePath?: unknown; connection?: unknown }
+      | undefined;
+   return s?.type === "table" &&
+      typeof s.tablePath === "string" &&
+      typeof s.connection === "string"
+      ? { connectionName: s.connection, table: s.tablePath, column }
+      : undefined;
+}
+
 /** One stage's output field still to follow back, and the names it went by. */
 interface Wanted {
    path: string[];
@@ -291,6 +311,8 @@ interface Wanted {
 class GateReadWalk {
    readonly names = new Set<string>();
    readonly columns: string[][] = [];
+   /** Each of {@link columns}'s origin, by position (GateReads.columnOrigins). */
+   readonly columnOrigins: (ColumnOrigin | undefined)[] = [];
    unresolved = false;
    scoped = false;
    equalityOnly = true;
@@ -542,6 +564,7 @@ class GateReadWalk {
       const flattened =
          joins.length === 0 ? [] : along.map((n) => [...joins, n].join("__"));
       this.columns.push([...new Set([...along, ...flattened])]);
+      this.columnOrigins.push(tableColumnOf(source, stored));
    }
 
    /** The fields one stage outputs, by the name each goes by. */
@@ -1142,6 +1165,7 @@ export function gateReads(
    return {
       names: walk.names,
       columns: walk.columns,
+      columnOrigins: walk.columnOrigins,
       unresolved: walk.unresolved,
       scoped: walk.scoped,
       gated: exprs.length > 0,
@@ -1248,6 +1272,77 @@ export function gateColumnTypesOf(
    return schemas.map((s) => typesIn(reads, s ?? []));
 }
 
+/** A stored gate column's type in the warehouse table it copies. */
+interface UpstreamType {
+   dialect: string;
+   nativeType: string;
+}
+
+/**
+ * For each table, by the tables' order, and each of its gate columns in
+ * {@link gateColumnTypesOf}'s order: the column's type in the warehouse
+ * table it is a plain copy of (its `columnOrigins` entry, looked up in the
+ * table's `upstreams`), or undefined when the build computed it, its origin
+ * is not one column, or its table was not read. Undefined for a table
+ * {@link gateColumnTypesOf} lists nothing for.
+ */
+export function gateColumnUpstreamTypesOf(
+   reads: GateReads | undefined,
+   schemas: readonly (Schema | undefined)[],
+   upstreams: readonly (readonly UpstreamTableSchema[] | undefined)[],
+): ((UpstreamType | undefined)[] | undefined)[] {
+   const types = gateColumnTypesOf(reads, schemas);
+   return schemas.map((schema, i) => {
+      if (types[i] === undefined || reads === undefined) return undefined;
+      const held = new Set(reads.columns.flat());
+      return (schema ?? [])
+         .filter((c) => held.has(c.name))
+         .map((c) => upstreamTypeOf(reads, c.name, upstreams[i]));
+   });
+}
+
+/** The upstream type of the stored column `name` (see gateColumnUpstreamTypesOf). */
+function upstreamTypeOf(
+   reads: GateReads,
+   name: string,
+   upstreams: readonly UpstreamTableSchema[] | undefined,
+): UpstreamType | undefined {
+   const origins = reads.columns.flatMap((names, j) =>
+      names.includes(name) ? [reads.columnOrigins?.[j]] : [],
+   );
+   const origin = origins[0];
+   if (
+      origin === undefined ||
+      origins.some(
+         (o) =>
+            o === undefined ||
+            o.connectionName !== origin.connectionName ||
+            o.table !== origin.table ||
+            o.column !== origin.column,
+      )
+   ) {
+      return undefined;
+   }
+   const table = upstreams?.find(
+      (u) =>
+         u.connectionName === origin.connectionName && u.table === origin.table,
+   );
+   if (!table?.columns || !table.dialect) return undefined;
+   const exact = table.columns.filter((c) => c.name === origin.column);
+   const folded = table.columns.filter(
+      (c) => c.name.toLowerCase() === origin.column.toLowerCase(),
+   );
+   const column =
+      exact.length === 1
+         ? exact[0]
+         : folded.length === 1
+           ? folded[0]
+           : undefined;
+   return column
+      ? { dialect: table.dialect, nativeType: column.nativeType }
+      : undefined;
+}
+
 /**
  * {@link gateReads} for the source a compiled query runs on, read from the
  * author's compile (the live one), or undefined when it cannot be read.
@@ -1319,6 +1414,7 @@ export async function queryFilterReadsOfQuery(
       return {
          names: walk.names,
          columns: walk.columns,
+         columnOrigins: walk.columnOrigins,
          unresolved: walk.unresolved,
          scoped: walk.scoped,
          gated: false,

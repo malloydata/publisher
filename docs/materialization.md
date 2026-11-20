@@ -207,7 +207,13 @@ follow the same rule ([the served copy](#the-served-copy-materialization-v2-publ
   joined source's, and a query-shaped source's base's and stages'), and every field those are
   computed from, through renames, joins and the stages of a query-shaped source. Every `where:`
   counts, not only one that reads a given: a scope written as a literal merges neighbours just the
-  same. The cost: a source whose `where:` reads a column genuinely stored as a float answers live.
+  same. The cost: a source whose `where:` reads a column genuinely stored as a float answers live,
+  unless the column is a plain copy of a warehouse double that compares as DuckDB's does
+  (Snowflake's `FLOAT`, `DOUBLE` and `REAL`, Postgres's `double precision`, DuckDB's `DOUBLE`),
+  stored as a DuckDB `DOUBLE`: the copy holds the same bits, so the gate admits the same rows.
+  The type is read from the table's manifest entry (`upstreamSchemas`); a column the build
+  computed, a copy of BigQuery's `FLOAT64` (whose comparisons with NaN are false, DuckDB's true),
+  of a 4-byte float, of an exact number, or of a table whose types were not recorded, answers live.
   - A query that sets its own `timezone:` (or reads a table built in another zone) answers live
     when the gate reads a time value the table stored in its build's zone: a truncation computed
     in a query stage, or a rollup's time grain. The path report says `served_copy_time_zone` or

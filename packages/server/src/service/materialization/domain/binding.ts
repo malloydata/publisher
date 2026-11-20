@@ -35,6 +35,7 @@ import type {
    FreshnessManifest,
    ManifestEntry,
 } from "./types";
+import type { UpstreamTableSchema } from "./upstream_schemas";
 
 /** What a stored table holds, from the plan: never read off a name. */
 export type BindingKind = Exclude<TableKind, "pair">;
@@ -128,6 +129,14 @@ export interface Binding {
     * its type. Absent for a storage table, whose schema is native.
     */
    nativeSchema?: { name: string; type: string }[];
+   /**
+    * The warehouse tables the table's build read, with their columns'
+    * native types (`ManifestEntry.upstreamSchemas`): what a stored column
+    * that copies one of them is a copy of, which the gate policy judges a
+    * stored float gate column by. Set on a `storage=` table; absent, none
+    * is known.
+    */
+   upstreamSchemas?: UpstreamTableSchema[];
    /** The data-as-of instant the freshness window is aged from. */
    freshAsOf?: string;
    freshnessWindowSeconds?: number;
@@ -496,6 +505,9 @@ export function deriveServeBindings(
             freshnessFallback: entry.freshnessFallback,
             ...(primaryKeys ? { primaryKeys } : {}),
             ...(rollupKey ? { rollupKey } : {}),
+            ...(entry.upstreamSchemas?.length
+               ? { upstreamSchemas: entry.upstreamSchemas }
+               : {}),
          });
       }
    }
