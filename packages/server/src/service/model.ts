@@ -2790,7 +2790,8 @@ export class Model {
       // rebind): each source the copy does not serve whole, `declined`
       // beating `partial`, and `partial` only while it is still re-rooted.
       for (const { outcome, reason } of servedCopyOutcomes(
-         this.servedCopy.problems(),
+         // A storage table dropped for its database twin serves the source.
+         this.servedCopy.problems().filter((p) => !p.servedFromDatabase),
          this.servedCopy.rerootedSourceIDs() ?? new Set(),
       )) {
          recordServedCopyOutcome(outcome, reason);

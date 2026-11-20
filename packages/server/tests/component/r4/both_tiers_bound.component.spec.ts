@@ -176,6 +176,13 @@ interface Loaded {
    run: (c: Pick<Case, "query" | "givens">) => Promise<Answer>;
    live: Map<string, Answer>;
    verdicts: Verdict[];
+   /** The package's served-copy warnings, after the bind. */
+   servedCopyWarnings: {
+      subject?: string;
+      code?: string;
+      reason?: string;
+      message?: string;
+   }[];
    dispose: () => Promise<void>;
 }
 
@@ -300,7 +307,8 @@ async function loadAndBind(
          await pkg.getModel(modelPath)?.prepareServedCopy();
       }
       const verdicts = pkg.materialization().serveVerdicts() as Verdict[];
-      return { run, live, verdicts, dispose };
+      const servedCopyWarnings = pkg.materialization().servedCopyWarnings();
+      return { run, live, verdicts, servedCopyWarnings, dispose };
    } catch (error) {
       await dispose();
       throw error;
@@ -471,6 +479,20 @@ describe("PERSIST_STORAGE_MODE=on, both fresh, the storage table missing a colum
       await ctx?.dispose();
    });
 
+   it("warns why the storage table is not read, and that the database table serves instead", () => {
+      const warned = ctx!.servedCopyWarnings.filter(
+         (w) => w.subject === "copy_h",
+      );
+      expect(warned).toEqual([
+         expect.objectContaining({
+            code: "served-copy-not-served",
+            reason: "fields_not_carried",
+            message:
+               "This source inherits fields (a measure, view or join declared on the source it is built from) that its stored table does not carry, so the served copy reads its database table instead.",
+         }),
+      ]);
+   });
+
    for (const c of QUERIES) {
       it(`served from the database, as the verdict says: ${c.query}`, async () => {
          const { run, live, verdicts } = ctx!;
@@ -527,6 +549,14 @@ describe("PERSIST_STORAGE_MODE=on, both fresh, a list column stored as its text"
    });
    afterAll(async () => {
       await ctx?.dispose();
+   });
+
+   it("raises no warning that the database table serves instead", () => {
+      expect(
+         ctx!.servedCopyWarnings.filter((w) =>
+            (w.message ?? "").includes("database table instead"),
+         ),
+      ).toEqual([]);
    });
 
    it("the source's verdict is storage/serves", () => {

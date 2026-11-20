@@ -1849,6 +1849,9 @@ export class ServedCopyServe {
       asOf = 0,
    ): Promise<Compiled> {
       const passedOver = new Set<Binding>();
+      // Why each storage table passed over was dropped, from the compile
+      // that dropped it: still warned, as served from the database instead.
+      const fellBack: ServedCopyProblem[] = [];
       for (;;) {
          const twins = new Map<Binding, Binding>();
          const compiled = await this.compileOver(
@@ -1864,7 +1867,29 @@ export class ServedCopyServe {
          const dropped = [...twins.keys()].filter(
             (b) => !passedOver.has(b) && !rerooted.has(b),
          );
-         if (dropped.length === 0) return compiled;
+         if (dropped.length === 0) {
+            if (fellBack.length === 0) return compiled;
+            // Only for a source the database table now serves.
+            const onDatabase = new Set(
+               compiled.rerooted.flatMap((b) => b.sourceIDs ?? []),
+            );
+            return {
+               ...compiled,
+               problems: [
+                  ...compiled.problems,
+                  ...fellBack.filter(
+                     (p) =>
+                        p.sourceID !== undefined && onDatabase.has(p.sourceID),
+                  ),
+               ],
+            };
+         }
+         const droppedIDs = new Set(dropped.flatMap((b) => b.sourceIDs ?? []));
+         for (const p of compiled.problems) {
+            if (p.sourceID !== undefined && droppedIDs.has(p.sourceID)) {
+               fellBack.push({ ...p, servedFromDatabase: true });
+            }
+         }
          for (const b of dropped) passedOver.add(b);
       }
    }
