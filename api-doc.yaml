@@ -11394,7 +11394,10 @@ components:
             give no container; refused at plan, before any warehouse work);
             `storage_source_unsupported` (`storage=` on a
             source whose connection the build cannot pass through to a
-            destination, e.g. the package's DuckDB sandbox);
+            destination, e.g. the package's DuckDB sandbox; or a source on a
+            DuckLake catalog that carries author SQL, an `.sql()` source, a
+            `sql_*` expression or a file or URL read as a table, which the
+            catalog's own build never runs);
             `table_name_collision` (under `PERSIST_COLLISION_ENFORCE=false`, a
             declaration whose `name=` puts it on one table with another, so
             neither is built; by default such a package does not load; a run

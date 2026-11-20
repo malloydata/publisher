@@ -60,8 +60,10 @@ import { EMPTY_STORAGE_REASON } from "./declaration";
 import { rollupGateEnforcedAtRead } from "./rollup_plan";
 import {
    storageBuildReadsConnectionType,
+   catalogAuthorSqlMessage,
    unreadableSourceConnectionMessage,
 } from "../domain/source_connection_type";
+import { carriesAuthorSql } from "../domain/same_catalog_build";
 
 /**
  * What an eligible source carries into the build. Returned by the gate rather
@@ -204,11 +206,22 @@ function assertStorageBuildReadsConnection(
    connectionTypes: TierGateInputs["connectionTypes"],
 ): void {
    const type = connectionTypes?.[persistSource.connectionName];
-   if (type === undefined || storageBuildReadsConnectionType(type)) return;
-   throw new MaterializationEligibilityError({
-      reason: "storage_source_unsupported",
-      message: unreadableSourceConnectionMessage(persistSource, type),
-   });
+   if (type === undefined) return;
+   if (!storageBuildReadsConnectionType(type)) {
+      throw new MaterializationEligibilityError({
+         reason: "storage_source_unsupported",
+         message: unreadableSourceConnectionMessage(persistSource, type),
+      });
+   }
+   // A DuckLake source builds into its own catalog only, on a read-write
+   // session that runs only SQL Malloy generated (the build session's
+   // same-catalog rule), so one carrying author SQL can never build.
+   if (type === "ducklake" && carriesAuthorSql(sourceDefOf(persistSource))) {
+      throw new MaterializationEligibilityError({
+         reason: "storage_source_unsupported",
+         message: catalogAuthorSqlMessage(persistSource),
+      });
+   }
 }
 
 /**

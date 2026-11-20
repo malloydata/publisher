@@ -283,6 +283,36 @@ source: daily is raw -> { where: category = $CAT; group_by: category; aggregate:
    );
 });
 
+describe("a storage= source on a DuckLake catalog that carries author SQL", () => {
+   // The sandbox stands in for a DuckLake catalog: its build runs inside the
+   // catalog, on a session that runs only SQL Malloy generated.
+   let restore: () => void;
+   beforeAll(() => {
+      restore = recordConnectionsAsForTests({ duckdb: "ducklake" });
+   });
+   afterAll(() => restore());
+
+   it(
+      "is refused at load with persist-not-built, not left to fail at build",
+      async () => {
+         const pkg = await loadPackage(
+            `${RAW}#@ persist name="t" storage=lake\n${ROLLUP}\n`,
+         );
+         const [warning] = coded(pkg, "persist-not-built");
+         expect(warning).toMatchObject({ severity: "warn", subject: "daily" });
+         const refused = Object.values(
+            pkg.getBuildPlan()?.refusedSources ?? {},
+         );
+         expect(refused.map((r) => [r.name, r.tier, r.reason])).toEqual([
+            ["daily", "storage", "storage_source_unsupported"],
+         ]);
+         expect(refused[0].message).toContain("carries SQL its author wrote");
+         expect(Object.keys(pkg.getBuildPlan()?.sources ?? {})).toEqual([]);
+      },
+      { timeout: 30000 },
+   );
+});
+
 describe("annotation findings on a loaded package", () => {
    it(
       "codes a pre-aggregation of a field the source hides",
