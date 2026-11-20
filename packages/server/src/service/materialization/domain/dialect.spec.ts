@@ -70,6 +70,8 @@ const DECIDED: Record<Flag, DialectName[]> = {
    // A string column's comparison is read only where it can be: BigQuery is
    // byte-exact, DuckDB and Postgres are probed (`serve/gate_collation.ts`).
    stringCollation: ["duckdb", "postgres", "standardsql"],
+   // BigQuery refuses GROUP BY on these (F-45); a pair table's build groups.
+   ungroupableTypes: ["standardsql"],
 };
 
 /** Each dialect's leaf budget, as decided (`domain/table_name.ts`). */
@@ -110,6 +112,15 @@ describe("the dialect table", () => {
             DECIDED_LEAF_BUDGETS[name],
          );
       }
+   });
+
+   it("names the types BigQuery's GROUP BY refuses", () => {
+      expect(capabilitiesOf("standardsql").ungroupableTypes).toEqual([
+         "geography",
+         "json",
+         "array",
+         "record",
+      ]);
    });
 
    it("gives an unknown dialect no capability, and the least leaf budget", () => {

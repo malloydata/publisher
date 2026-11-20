@@ -85,7 +85,7 @@ import {
    withDeclaration,
 } from "./materialize_read_time";
 import type { MalloyRange, TermUse } from "../domain/read_time_terms";
-import { capabilitiesOf } from "../domain/dialect";
+import { capabilitiesOf, describeDialects } from "../domain/dialect";
 import type { RefusedReason } from "../domain/types";
 import {
    rollingWindowTerms,
@@ -1867,6 +1867,10 @@ function pairLayoutOf(
       if (problem) {
          return new Declined(problem.reason, { refused: "inline_unsupported" });
       }
+      const ungrouped = ungroupablePairColumn(def, map, columns);
+      if (ungrouped) {
+         return new Declined(ungrouped, { refused: "inline_unsupported" });
+      }
       const pairs = (laid as { pair: MaterializePair }[]).map((l) => l.pair);
       pair = pairs[0];
       if (pairs.length > 1) {
@@ -1941,6 +1945,67 @@ function pairLayoutOf(
       ...(pairBlocks ? { pairBlocks } : {}),
       ...(pairFullRefresh ? { pairFullRefresh } : {}),
    };
+}
+
+/**
+ * Why a pair table cannot be built in its source's dialect: its build groups
+ * by every stored column (build_file_generator.ts, `pairBody`), and one of
+ * them has a type that dialect's `GROUP BY` refuses (BigQuery: GEOGRAPHY,
+ * JSON, ARRAY, STRUCT). Undefined when every column can be grouped.
+ */
+function ungroupablePairColumn(
+   def: PlannedDef,
+   map: SourceMap,
+   columns: readonly MaterializeColumn[],
+): string | undefined {
+   const refused = capabilitiesOf(def.dialect).ungroupableTypes;
+   if (!refused) return undefined;
+   for (const c of columns) {
+      const type = groupedTypeOf(storedFieldOf(def, map, c));
+      if (type === undefined || !refused.includes(type)) continue;
+      return (
+         `inline= names a join_many, whose pair table's build groups by every ` +
+         `stored column, and \`${c.column}\` is a ${type.toUpperCase()} column, ` +
+         `which ${describeDialects(new Set([String(def.dialect)]))} cannot ` +
+         "group by; leave the column out of the source (and of the joined " +
+         "source's public dimensions), or inline no join_many"
+      );
+   }
+   return undefined;
+}
+
+/**
+ * A field's type as a dialect's `GROUP BY` judges it: a `sql native` field's
+ * raw type in lower case, any other its Malloy type.
+ */
+function groupedTypeOf(field: FieldLike | undefined): string | undefined {
+   if (field?.type === "sql native" && typeof field.rawType === "string") {
+      return field.rawType.toLowerCase();
+   }
+   return typeof field?.type === "string" ? field.type : undefined;
+}
+
+/**
+ * The compiled field a stored column reads: the source's own, or the field
+ * of the joined source at the end of the column's join path.
+ */
+function storedFieldOf(
+   def: PlannedDef,
+   map: SourceMap,
+   c: MaterializeColumn,
+): FieldLike | undefined {
+   let fields = def.fields ?? [];
+   let joins = map.joinsOf(def.sourceID);
+   for (const name of c.join === undefined ? [] : (c.path ?? [c.join])) {
+      const join = joins.find((j) => j.name === name);
+      if (!join) return undefined;
+      fields = join.fields;
+      joins = map.joinedReadsOf(join).joins;
+   }
+   return fields.find((raw) => {
+      const f = raw as FieldLike;
+      return (typeof f.as === "string" ? f.as : f.name) === c.dimension;
+   }) as FieldLike | undefined;
 }
 
 /**

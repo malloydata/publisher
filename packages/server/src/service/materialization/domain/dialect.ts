@@ -181,6 +181,14 @@ export interface Capabilities {
     * cannot be read, which keeps no gate over a string column there.
     */
    stringCollation: "binary" | "instance" | "column" | undefined;
+   /**
+    * The column types its `GROUP BY` refuses, as Malloy types a field: a
+    * Malloy type (`json`, `array`, `record`), or a `sql native` field's raw
+    * type in lower case (BigQuery's `geography`). A pair table's build groups
+    * by every stored column, so a pair table holding one is refused at plan.
+    * Undefined: none is known.
+    */
+   ungroupableTypes: readonly string[] | undefined;
 }
 
 const NONE: Capabilities = Object.freeze({
@@ -206,6 +214,7 @@ const NONE: Capabilities = Object.freeze({
    passthroughNumericAsDouble: false,
    catalogHidesTables: false,
    stringCollation: undefined,
+   ungroupableTypes: undefined,
 });
 
 /** Each dialect's capabilities. */
@@ -254,6 +263,7 @@ export const CAPABILITIES: Record<DialectName, Capabilities> = {
       onlyBigIntegerType: "INT64",
       leafBudget: 120,
       stringCollation: "binary",
+      ungroupableTypes: ["geography", "json", "array", "record"],
    }),
    snowflake: Object.freeze({
       ...NONE,

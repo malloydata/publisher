@@ -21,6 +21,12 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — a BigQuery pair table over a GEOGRAPHY, JSON, ARRAY or STRUCT column is refused at load, not failed at every build
+
+**Fixed: a pair table (`inline=` on a join_many) on BigQuery failed every build when the source or the joined source had a GEOGRAPHY column.** A pair table's build groups by every stored column, and BigQuery refuses `GROUP BY` on a GEOGRAPHY, JSON, ARRAY or STRUCT column ("Grouping by expressions of type GEOGRAPHY is not allowed"), so the build failed on each run, colocated or `storage=`, and the source answered live. Such a source is now refused when the package loads: it is not built, the package loads with a `materialize-not-built` warning (reason `inline_unsupported`) naming the column, and the source answers live as before. The same source without `inline=` of a join_many builds as it did, since its build selects rather than groups.
+
+**Who is affected:** BigQuery `#(materialize)` sources with `inline=` naming a join_many, where either side stores a GEOGRAPHY, JSON, ARRAY or STRUCT column. **What to do:** to get a pair table, leave the column out of the source (and of the joined source's public dimensions); otherwise nothing, the source answers live as it did.
+
 ## [Unreleased] — a database rollup or persisted view placed apart from another of the same build answers from its own table
 
 ## [Unreleased] — (BREAKING for generated clients) a model query declares its `versionId` query parameter, and a version path parameter is named `versionId`
