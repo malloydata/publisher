@@ -21,6 +21,12 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — a cross-file `#(materialize)` extension is served from its own table when its parent's file imports another file
+
+**Fixed: a `#(materialize)` extension declared in a file that imports its parent's file was answered from its parent's table, its own table built and never read, whenever the parent's file itself imported any file.** `long_2017 is trips_2017 extend { where: … }` in ext.malloy, over `trips_2017` in a materialize.malloy that imports bikes.malloy, read `trips_2017`'s table with the `where:` applied again (equal to live, but reading the larger table), and its serve verdict said `not_serving` (`served_copy`) with no warning naming why. The served copy keeps the parent's `extend { … }` blocks on the extension's re-root only when it can prove each name in them reads the same in both files, and it treated any import in the parent's file as unproven. It now requires only that no name the blocks read is one the parent's file imports (a selective import's names, or every name a whole-imported file declares or imports, through its own imports), so the extension is re-rooted on its own table. A parent whose blocks do read a name its file imports is served as before.
+
+**Who is affected:** packages with a cross-file `#(materialize)` extension whose parent's file imports another file. **What to do:** nothing; such queries read the extension's own table, and the path report names it.
+
 ## [Unreleased] — a zero or negative `freshness.window=` is refused as not positive
 
 ## [Unreleased] — a reload that fails over a changed upstream column stops serving the tables built from it
