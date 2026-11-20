@@ -993,8 +993,15 @@ a working one: the build succeeds, the manifest binds, and every query is quietl
 plan and the binding on every read. Its `tier` is where queries read the table: a storage binding
 that stores the source decides it, so a source with no `storage=` that a host's build instructions
 placed in a storage destination is judged as a storage table, as queries read it; with no storage
-binding, `storage=` does. A source the served copy reads whose storage table is stale while its
-database table is fresh is judged on the database tier, which the served copy reads.
+binding, `storage=` does. A source the served copy reads that is bound in both tiers is read from
+one table: the storage table while it is fresh and `PERSIST_STORAGE_MODE` is `on`, else the
+database table (fresh, beside a stale storage table; beside a storage table the served copy cannot
+read whole, such as one missing a column the source exposes; or under `write-only` and `off`, where
+no storage table is read). A storage table that holds a column it cannot read back as live answers
+it (a list stored as its text) is still read, for the queries that do not read that column; a query
+that does is answered live. Its verdict is judged on that tier. A rollup, persisted view or persisted
+query reads its storage binding whenever it has one, so under `write-only` and `off` it answers live
+(`storage_mode`) even with a database table bound beside it.
 
 | `verdict` | Meaning |
 | --- | --- |

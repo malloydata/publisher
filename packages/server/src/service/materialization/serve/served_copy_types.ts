@@ -59,6 +59,12 @@ export interface ServedCopyProblem {
     * `include { … }` hides that its stored table does not hold.
     */
    hiddenUnstored?: string[];
+   /**
+    * The problem is a storage table's, of a source bound in both tiers: the
+    * served copy dropped that table and serves the source from its database
+    * table instead.
+    */
+   servedFromDatabase?: true;
 }
 
 export interface Compiled {
