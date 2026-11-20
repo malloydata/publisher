@@ -478,6 +478,9 @@ export class Model {
       discoveryCuration: boolean;
       ownCuratedSourceNames: ReadonlySet<string>;
       curatedBasesOf: Map<string, ReadonlySet<string> | undefined>;
+      /** {@link showsCellQueryInfo}'s verdict per notebook cell, which a
+       *  `.malloynb` reaches through a compile of the cell's `run:`. */
+      cellQueryInfoShown: WeakMap<RunnableNotebookCell, Promise<boolean>>;
    };
    /** Whether discovery accessors curate to the `export {}` closure: true
     *  only when the owning package declares `explores` in publisher.json. */
@@ -525,6 +528,7 @@ export class Model {
          discoveryCuration,
          ownCuratedSourceNames,
          curatedBasesOf: new Map(),
+         cellQueryInfoShown: new WeakMap(),
       };
       return this.curationMemo;
    }
@@ -3605,9 +3609,27 @@ export class Model {
     * refuse (`run: secret -> { select: * }`) would otherwise describe the
     * hidden source here. Asks {@link assertNotebookCellOnSurface}, which for a
     * `.malloynb` runs the query route's own boundary checks on the cell's
-    * `run:`, its joins included.
+    * `run:`, its joins included. Decided once per cell for the boundary in
+    * force, since the cells and the model are fixed for this Model's life; a
+    * read that fails is not remembered.
     */
-   private async showsCellQueryInfo(
+   private showsCellQueryInfo(
+      cellIndex: number,
+      cell: RunnableNotebookCell,
+   ): Promise<boolean> {
+      const memo = this.curation.cellQueryInfoShown;
+      const known = memo.get(cell);
+      if (known) return known;
+      const shown = this.decideCellQueryInfo(cellIndex, cell);
+      memo.set(cell, shown);
+      shown.catch(() => {
+         if (memo.get(cell) === shown) memo.delete(cell);
+      });
+      return shown;
+   }
+
+   /** {@link showsCellQueryInfo}, decided afresh. */
+   private async decideCellQueryInfo(
       cellIndex: number,
       cell: RunnableNotebookCell,
    ): Promise<boolean> {
