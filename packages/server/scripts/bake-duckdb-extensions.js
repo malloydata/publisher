@@ -23,6 +23,12 @@
  * Each extension is baked independently, with a few attempts so a transient CDN
  * error is retried: a failure that outlasts them (an offline build, say) is
  * logged and skipped, never aborting the others or the build.
+ * Where CI_DUCKDB_EXTENSION_MIRROR is set (Credible's runners set it to a mirror
+ * of DuckDB's two repositories inside their own network), each extension is
+ * installed from `<mirror>/core` or `<mirror>/community` first, once, and from
+ * the CDN as before if that fails. DuckDB checks an extension's signature when it loads it,
+ * whichever repository it came from, and the runtime's plain INSTALL no-ops
+ * against an extension the mirror installed.
  * With DUCKDB_BAKE_STRICT=1, which the Docker image's stage sets, the script
  * still tries every extension but exits non-zero if any failed: that stage's
  * output is cached across builds, so a skipped extension would not come back
@@ -36,6 +42,12 @@ const STRICT = process.env.DUCKDB_BAKE_STRICT === "1";
 // between: 5 s, then 10 s.
 const ATTEMPTS = 3;
 const ATTEMPT_DELAY_MS = 5000;
+// Only a plain http(s) URL is used: it goes into the INSTALL statement verbatim.
+const MIRROR = (process.env.CI_DUCKDB_EXTENSION_MIRROR ?? "").replace(
+   /\/+$/,
+   "",
+);
+const USE_MIRROR = /^https?:\/\/[^\s']+$/.test(MIRROR);
 
 // Every extension the connection layer (packages/server/src/service/connection.ts)
 // and storage manager INSTALL/LOAD at runtime, for cloud attach, the per-package
@@ -72,7 +84,22 @@ async function main() {
          const install = community
             ? `FORCE INSTALL '${name}' FROM community;`
             : `INSTALL ${name};`;
-         for (let attempt = 1; ; attempt++) {
+         let fromMirror = false;
+         if (USE_MIRROR) {
+            const repository = `${MIRROR}/${community ? "community" : "core"}`;
+            try {
+               await connection.run(
+                  `${community ? "FORCE " : ""}INSTALL '${name}' FROM '${repository}'; LOAD ${name};`,
+               );
+               fromMirror = true;
+            } catch (err) {
+               const message = err instanceof Error ? err.message : String(err);
+               console.warn(
+                  `DuckDB extension "${name}" not installed from the mirror, falling back to the CDN: ${message}`,
+               );
+            }
+         }
+         for (let attempt = 1; !fromMirror; attempt++) {
             try {
                await connection.run(`${install} LOAD ${name};`);
                break;
@@ -99,7 +126,9 @@ async function main() {
 
          results.push({ name, installed, loaded });
          if (loaded) {
-            console.log(`baked DuckDB extension: ${name} (loaded)`);
+            console.log(
+               `baked DuckDB extension: ${name} (loaded${fromMirror ? ", from the mirror" : ""})`,
+            );
          } else {
             console.warn(
                `DuckDB extension "${name}" installed=${installed} but not loaded`,

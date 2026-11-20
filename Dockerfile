@@ -175,6 +175,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
     rm -rf /var/lib/apt/lists/*
 COPY packages/server/scripts/bake-duckdb-extensions.js ./packages/server/scripts/
 WORKDIR /publisher/packages/server
+# Empty unless the build passes it: CI on Credible's runners passes their mirror of
+# DuckDB's extension repositories (the bake script's header), and a release passes none.
+ARG CI_DUCKDB_EXTENSION_MIRROR=""
 RUN HOME=/root DUCKDB_BAKE_STRICT=1 bun scripts/bake-duckdb-extensions.js
 
 # Builder stage
