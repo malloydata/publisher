@@ -202,6 +202,10 @@ source: f is duckdb.sql("SELECT 1 as x")
          });
          const joined = pkg.formatInvalidPersistencePolicy();
          expect(joined).toContain("mutually exclusive");
+         expect(joined).toContain(
+            "source 'f' in model.malloy declares freshness",
+         );
+         expect(joined).not.toContain("mutually exclusive in publisher.json");
       },
       { timeout: 30000 },
    );
@@ -233,8 +237,11 @@ source: p is base -> { where: tenant = $tenant; aggregate: c is count() }
             (r) => r.name === "p",
          );
          expect(refused?.freshness).toEqual({ window: "1h" });
-         expect(pkg.formatInvalidPersistencePolicy()).toContain(
-            "mutually exclusive",
+         const joined = pkg.formatInvalidPersistencePolicy();
+         expect(joined).toContain("mutually exclusive");
+         // Names the source and its model file, not publisher.json.
+         expect(joined).toContain(
+            "source 'p' in model.malloy declares freshness",
          );
       },
       { timeout: 30000 },
