@@ -212,8 +212,6 @@ export interface NotebookCellSpan {
    /** 1-based and inclusive. */
    startLine: number;
    endLine: number;
-   /** A query cell's index into `modelDef.queryList` and `modelInfo.anonymous_queries`. */
-   queryIndex?: number;
 }
 
 /**
@@ -425,7 +423,7 @@ function markdownLineBody(noteText: string): string {
 }
 
 /**
- * A linear `.malloy` report's cells, read off Malloy's parse tree and token stream.
+ * A linear report's cells, read off Malloy's parse tree and token stream.
  * Pure over its inputs. `modelDef` is the compile of the same `text`, used only
  * to check that every `run:` the reader found is one Malloy compiled, so the
  * k-th query cell is `queryList[k]`.
@@ -774,13 +772,11 @@ export function readNotebookCells(
    const annotations: string[] = [];
    // The markdown cell a contiguous `##(markdown)` run is building, which the next adjacent line joins.
    let lineRun: NotebookCellSpan | undefined;
-   let runsSeen = 0;
    items.forEach((item, index) => {
       const belowTag = index > artifactAt;
       if (item.kind === "statement") {
          lineRun = undefined;
-         const queryIndex = item.run ? runsSeen++ : undefined;
-         // A `run:` above the tag is header, so a definition cell, but it still holds its queryList slot.
+         // A `run:` above the tag is header, so a definition cell.
          const pushed: NotebookCellSpan =
             item.run && belowTag
                ? {
@@ -797,7 +793,6 @@ export function readNotebookCells(
                     }),
                     startLine: item.startLine,
                     endLine: item.endLine,
-                    queryIndex,
                  }
                : {
                     kind: "definition",

@@ -186,18 +186,18 @@ describe("service/model", () => {
       });
 
       describe("getNotebook", () => {
-         it("should throw ModelCompilationError if a compilation error exists", async () => {
+         it("should throw a .malloynb's compilation error", async () => {
             const model = new Model({
                packageName,
-               modelPath: mockModelPath,
+               modelPath: "mockNotebook.malloynb",
                dataStyles: {},
                modelType: "notebook",
                compilationError: new Error("Compilation error"),
             });
 
-            await expect(async () => {
-               await model.getNotebook();
-            }).toThrowError(Error);
+            await expect(model.getNotebook()).rejects.toThrow(
+               "Compilation error",
+            );
 
             sinon.restore();
          });
