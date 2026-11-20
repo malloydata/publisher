@@ -71,6 +71,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.obp_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "b31f2f709776b803834dd6982a95182b59a368d0ba250f4cae49447f50b8e918",
         "sourceID": "daily@<hammer>/obp/obp.malloy",

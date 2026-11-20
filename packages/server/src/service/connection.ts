@@ -89,6 +89,7 @@ import {
    PROXIED_SSLMODES,
 } from "./connection_config";
 import { buildSnowflakeConnection } from "./snowflake_connection";
+import { guardBigQueryTruncation } from "./bigquery_truncation";
 import { gcpImpersonationOverlay } from "./gcp_impersonation";
 import { assertGoogleCredentialsIsNotADirectory } from "./google_credentials";
 import {
@@ -4324,6 +4325,9 @@ export function buildEnvironmentMalloyConfig(
             // This generation's lookup created it, so releasing the generation
             // hard-closes it.
             ownDuckDBConnection(malloyConfig, connection);
+            if (metadata?.apiConnection.type === "bigquery") {
+               guardBigQueryTruncation(connection);
+            }
             if (metadata) {
                await attachOnce(connection, metadata);
             }
@@ -4393,9 +4397,12 @@ export function buildEnvironmentMalloyConfig(
                      });
                   }
                }
-               // Its configured type, which a `storage=` build's eligibility
-               // reads (a dialect does not tell DuckDB from DuckLake).
-               recordConnectionType(connection, metadata?.apiConnection.type);
+               // Its configured type, and whether it is `managed`, which a
+               // build's eligibility reads (a dialect does not tell DuckDB
+               // from DuckLake, nor a managed catalog from another).
+               recordConnectionType(connection, metadata?.apiConnection.type, {
+                  managed: metadata?.apiConnection.managed === true,
+               });
                return applyConnectionFingerprint(connection, metadata);
             },
          };

@@ -3,6 +3,11 @@
 // ==== <pkg>/m.malloy
 ##! experimental { persistence }
 ##! experimental { virtual_source }
+type: month__served is {
+   `month`::number,
+   group::string,
+   total::number
+}
 type: order__served is {
    order::number,
    `select`::string,
@@ -20,3 +25,6 @@ source: `order` is __served_copy_alias_of_lake.virtual('f4c625d477b98206d172cedd
     order is order__stored::"HUGEINT"
   measure: `group` is amt.sum()
 }
+
+#(materialize) storage="lake"
+source: `month` is __served_copy_alias_of_lake.virtual('506790f386a062d41ddcf1ebc52dcb1313c9a71c07ed5b97cbdc1a72c7067220')::month__served

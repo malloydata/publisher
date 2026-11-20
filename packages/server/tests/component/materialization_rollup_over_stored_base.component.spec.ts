@@ -248,6 +248,58 @@ describe("a database rollup over a database #@ persist base", () => {
       };
    }
 
+   /** A query's rows, each value as a string (never through a double), and which table answered. */
+   async function exactAnswer(query: string) {
+      const pkg = await env.getPackage(parsePackageName(PKG), false);
+      const result = await pkg
+         .getModel("m.malloy")!
+         .runQuery(
+            unrecordedAudit(),
+            { query } as never,
+            QueryPrivileges.of({ includeHiddenFilesAndSources: true }),
+         );
+      return {
+         rows: (result.compactResult as Record<string, unknown>[]).map((r) =>
+            Object.fromEntries(
+               Object.entries(r).map(([k, v]) => [k, String(v)]),
+            ),
+         ),
+         servedBy: result.path?.servedBy?.kind ?? "live",
+      };
+   }
+
+   /**
+    * The rollup `m` built answers `daily` by `sub` equal to live (the same
+    * sums over `raw`, which nothing stores). Then the rollup's table and the
+    * base's are tampered, each with its own suffix, so an answer read from the
+    * base's table, or live, is told apart from one read from the rollup's.
+    */
+   async function expectBySubFromRollup(m: Materialization): Promise<void> {
+      const bySub =
+         "run: daily -> { group_by: sub; aggregate: grand; order_by: sub }";
+      const live = await exactAnswer(
+         "run: raw -> { group_by: sub; aggregate: grand is amt.sum(); order_by: sub }",
+      );
+      expect(live.servedBy).toBe("live");
+      const served = await exactAnswer(bySub);
+      expect(served.servedBy).toBe("rollup");
+      expect(served.rows).toEqual(live.rows);
+      const base = entries(m).find((e) => e.sourceName === "daily")!;
+      for (const [table, tag] of [
+         [rollupOf(m, "daily").physicalTableName, "_rollup"],
+         [base.physicalTableName, "_base"],
+      ]) {
+         await (
+            await connection()
+         ).runSQL(`UPDATE ${table} SET sub = sub || '${tag}'`);
+      }
+      const tampered = await exactAnswer(bySub);
+      expect(tampered.servedBy).toBe("rollup");
+      expect(tampered.rows).toEqual(
+         live.rows.map((r) => ({ ...r, sub: `${r.sub}_rollup` })),
+      );
+   }
+
    it("builds from the base's table in the run that builds the base, storing the warehouse build's rows", async () => {
       await setUp();
       const live = await answer(ROLLUP_QUERY);
@@ -370,10 +422,7 @@ describe("a database rollup over a database #@ persist base", () => {
          expect(Date.parse(rollup.dataAsOf!)).toBeGreaterThanOrEqual(
             started - 1000,
          );
-         const served = await answer(
-            "run: daily -> { group_by: sub; aggregate: grand; order_by: sub }",
-         );
-         expect(served.servedBy).toBe("rollup");
+         await expectBySubFromRollup(second);
       });
 
       it("builds a rollup whose window is narrower than its carried base's age from the warehouse, so it is served fresh rather than stale on arrival", async () => {
@@ -400,10 +449,7 @@ describe("a database rollup over a database #@ persist base", () => {
          expect(Date.parse(rollup.dataAsOf!)).toBeGreaterThanOrEqual(
             started - 1000,
          );
-         const served = await answer(
-            "run: daily -> { group_by: sub; aggregate: grand; order_by: sub }",
-         );
-         expect(served.servedBy).toBe("rollup");
+         await expectBySubFromRollup(second);
       });
 
       it("builds a windowed rollup from a carried base inside its window, anchored at the base", async () => {

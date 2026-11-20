@@ -87,6 +87,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.cwos_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "02e7093897c36710ae20395fe7a6f7b846582809951b7bc6930ddcbcbe77a6f5",
         "sourceID": "daily@<hammer>/cwos/cwos.malloy",
@@ -111,6 +117,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.cwos_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "a0ae1a2cb1d4498e1a0fb2816ccf8b8000cb5adc203de9249226cc69bcbbe3ba",
         "sourceID": "rollup@<hammer>/cwos/cwos.malloy",

@@ -71,6 +71,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "lake_probe",
+            "table": "lake_probe.main.scb_events"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "6114093e2543f407a900fc53c472d8a2c6f09ebf2d85a9bc7151a6ae786ec241",
         "sourceID": "by_kind@<hammer>/scb/scb.malloy",

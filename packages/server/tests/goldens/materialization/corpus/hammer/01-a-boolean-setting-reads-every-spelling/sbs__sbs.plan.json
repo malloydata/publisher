@@ -83,6 +83,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.sbs_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "42fb492cb3a0b0328859d9f43465ab0dc385bae580cf1258fdf92841341ac7e2",
         "sourceID": "alpha@<hammer>/sbs/sbs.malloy",
@@ -111,6 +117,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.sbs_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "c5d73e0a2f0dc61461b7331162dc73efa42862dab5d46874880886b7ac08353a",
         "sourceID": "beta@<hammer>/sbs/sbs.malloy",

@@ -137,6 +137,12 @@
           ]
         },
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.pf_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "f950521b89c57ada2bc2659cb944f87cd0bfc564e0df9b81bc5879e8df9a8e0e",
         "sourceID": "orders__rollup__category__17b7053b@<hammer>/pf/pf.malloy.preaggregate.malloy",

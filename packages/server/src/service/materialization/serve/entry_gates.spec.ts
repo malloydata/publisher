@@ -48,6 +48,7 @@ describe("entryGates", () => {
             exprs: ["region = $S"],
             route: "access_filter",
             selfContained: false,
+            baseHops: 0,
             struct: struct as never,
          },
          {
@@ -55,6 +56,7 @@ describe("entryGates", () => {
             exprs: ["false"],
             route: "authorize",
             selfContained: true,
+            baseHops: 0,
          },
       ]);
       expect(entryGates(struct, modelDef)).toBe("unreadable");
@@ -68,6 +70,7 @@ describe("entryGates", () => {
             exprs: ["region = $S"],
             route: "access_filter",
             selfContained: false,
+            baseHops: 0,
             struct: struct as never,
          },
          {
@@ -75,6 +78,7 @@ describe("entryGates", () => {
             exprs: ["'a' = $ROLE"],
             route: "authorize",
             selfContained: false,
+            baseHops: 0,
             struct: struct as never,
          },
       ]);

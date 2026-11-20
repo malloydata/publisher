@@ -251,6 +251,7 @@ function gateSources(
                compiled.connectionDigests,
                undefined,
                tableFolds,
+               compiled.upstreamSchemas,
             ),
             destination,
          });

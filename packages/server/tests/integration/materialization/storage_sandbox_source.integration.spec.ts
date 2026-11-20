@@ -307,7 +307,7 @@ describe.skipIf(!url)(
          ).toEqual([]);
       });
 
-      it("admits a storage= source on a DuckLake connection to the destination's own catalog", async () => {
+      it("refuses a storage= source on the destination's own DuckLake catalog for its author SQL, not as a sandbox source", async () => {
          const plan = (
             (await (
                await fetch(
@@ -316,14 +316,22 @@ describe.skipIf(!url)(
             ).json()) as {
                buildPlan?: {
                   sources?: Record<string, { name: string }>;
-                  refusedSources?: Record<string, { reason?: string }>;
+                  refusedSources?: Record<
+                     string,
+                     { name: string; reason?: string; message?: string }
+                  >;
                };
             }
          ).buildPlan;
-         expect(Object.values(plan?.sources ?? {}).map((s) => s.name)).toEqual([
-            "lk_stored",
+         // A DuckLake catalog is a connection a storage= build reads, so the
+         // sandbox rule does not refuse it; its `.sql()` does, at plan,
+         // where it used to fail at build (R-11).
+         expect(Object.values(plan?.sources ?? {})).toEqual([]);
+         const refused = Object.values(plan?.refusedSources ?? {});
+         expect(refused.map((r) => [r.name, r.reason])).toEqual([
+            ["lk_stored", "storage_source_unsupported"],
          ]);
-         expect(Object.values(plan?.refusedSources ?? {})).toEqual([]);
+         expect(refused[0].message).toContain("carries SQL its author wrote");
       });
 
       it("builds the Postgres sibling and the database source, and fails nothing", () => {

@@ -57,6 +57,7 @@
 
 import type { Switches } from "./switches";
 import { type Leg, type TableKind, TIERS } from "./vocabulary";
+import { isBinary64Type, STORAGE_DIALECT } from "./dialect";
 
 /** The deployment switches gate keeping reads (a part of {@link Switches}). */
 export type GateSwitches = Pick<Switches, "materialize" | "gatedSources">;
@@ -253,6 +254,18 @@ export interface TableRead {
     */
    readonly gateColumnTypes?: readonly string[];
    /**
+    * For each of {@link gateColumnTypes}, by position, the column's type in
+    * the warehouse table it is a plain copy of, as that table's catalog
+    * names it (`ManifestEntry.upstreamSchemas`), with the dialect naming it;
+    * undefined for a column computed by the build, or one whose table was
+    * not read. A gate column stored as a DuckDB DOUBLE is exact when it is a
+    * copy of a binary64 its dialect compares as DuckDB does.
+    */
+   readonly gateColumnUpstreamTypes?: readonly (
+      | { readonly dialect: string; readonly nativeType: string }
+      | undefined
+   )[];
+   /**
     * The entry point's gates read no column at all: each is an
     * `#(authorize)` lock over givens and literals, decided per request on the
     * live entry point, so no stored row changes its outcome. Set by the
@@ -272,9 +285,26 @@ export interface TableRead {
 const INEXACT_GATE_TYPE =
    /\b(DOUBLE|FLOAT[0-9]*|REAL|HUGEINT|UHUGEINT|U?INT128)\b/i;
 
-/** Whether a gate compares a column stored as `type` as live compares it. */
-function gateColumnTypeExact(type: string): boolean {
-   return !INEXACT_GATE_TYPE.test(type);
+/**
+ * Whether a gate compares a column stored as `type` as live compares it.
+ * Every other number type holds what it was given exactly. A binary float
+ * is exact only as a copy of the same binary float: a column stored as a
+ * DuckDB DOUBLE that copies, unchanged, a warehouse column whose type is an
+ * 8-byte IEEE double compared with NaN equal to itself and above every
+ * value, as DuckDB compares it (`Capabilities.binary64Types`): the bits
+ * are the same on both sides, and so is every comparison, a decimal
+ * literal's included (each side reads it as the nearest double). A wider
+ * or narrower source, an exact number stored as a float, a column the
+ * build computed, and an unknown source are not.
+ */
+function gateColumnTypeExact(
+   type: string,
+   upstream: { dialect: string; nativeType: string } | undefined,
+): boolean {
+   if (!INEXACT_GATE_TYPE.test(type)) return true;
+   // Stored as the destination's own 8-byte double.
+   if (!upstream || !isBinary64Type(STORAGE_DIALECT, type)) return false;
+   return isBinary64Type(upstream.dialect, upstream.nativeType);
 }
 
 /**
@@ -285,7 +315,9 @@ function gateColumnTypeExact(type: string): boolean {
  */
 export function gateColumnsExact(t: TableRead): boolean {
    if (t.gateColumnTypes === undefined) return t.tier === "database";
-   return t.gateColumnTypes.every(gateColumnTypeExact);
+   return t.gateColumnTypes.every((type, i) =>
+      gateColumnTypeExact(type, t.gateColumnUpstreamTypes?.[i]),
+   );
 }
 
 /**

@@ -91,6 +91,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.pvd_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "e566ea484bad7c76993f198ce5a584fb6c1a2fbe1a9a2d952e009d5e15dcf83b",
         "sourceID": "daily@<hammer>/pvd/pvd.malloy",
@@ -119,6 +125,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.pvd_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "58ddf70d17900279a26de7a8d111b12552ffb04acfcb2f097841f992d74cec52",
         "sourceID": "rollup@<hammer>/pvd/pvd.malloy",

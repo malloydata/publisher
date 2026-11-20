@@ -23,6 +23,7 @@
  */
 
 import { refusalKey, tierOf } from "./refusal_key";
+import type { RefusedReason } from "../domain/types";
 import { errorCodeOf } from "../../../error_code";
 import type { KeyCheckCompiler } from "../domain/key_check";
 import {
@@ -158,7 +159,11 @@ import {
    getMaterializeEnabled,
    getPersistCollisionEnforce,
 } from "../../../config";
-import { resolveConnectionTypes } from "../../connection_type";
+import {
+   resolveConnectionTypes,
+   resolveManagedConnections,
+} from "../../connection_type";
+import { sourceReads } from "../../governance/ir/source_reads";
 import { collectAccessReads } from "./access_closure";
 import {
    admitGivenPositions,
@@ -186,8 +191,15 @@ import {
    resolveConnectionDigests,
    withoutSourceIDs,
    sourceBuildsOf,
+   upstreamSchemasOfSource,
+   upstreamTablesOf,
    type PlanAddresses,
 } from "./addressing";
+import {
+   type UpstreamSchemaReadings,
+   type UpstreamTable,
+   upstreamTableKey,
+} from "../domain/upstream_schemas";
 import {
    materializePlansOf,
    type CompiledBuildPlan as PlannedBuild,
@@ -260,6 +272,7 @@ import type { BuildPlanPackage } from "../domain/plan_input";
 
 type WireBuildGraph = components["schemas"]["BuildGraph"];
 type WirePersistSourcePlan = components["schemas"]["PersistSourcePlan"];
+type WireTableRead = components["schemas"]["TableRead"];
 type WireRefusedSource = components["schemas"]["RefusedSource"];
 type WireStrippedTerm = components["schemas"]["StrippedTerm"];
 type WireJoinedTerms = components["schemas"]["JoinedTerms"];
@@ -1775,6 +1788,7 @@ export function deriveBuildPlan(
       | "connectionTypes"
       | "omittedSources"
       | "tableFolds"
+      | "upstreamSchemas"
    > & { addresses: PlanAddresses },
    packageMaterialization?: WirePackageMaterialization | null,
    verdicts: ReadonlyMap<string, TableVerdict> = planVerdicts(compiled),
@@ -1805,13 +1819,26 @@ export function deriveBuildPlan(
       try {
          const decided = verdicts.get(sourceID)!.wire;
          if ("failed" in decided) throw decided.failed;
-         if (decided.refused) refusedSources[sourceID] = decided.refused;
+         if (decided.refused) {
+            // Its declared freshness, so the package's schedule rule reads a
+            // refused source's window as it reads a planned one's.
+            const freshness = resolveFreshness(
+               source,
+               packageMaterialization,
+               table.rollup?.freshness,
+            );
+            refusedSources[sourceID] = {
+               ...decided.refused,
+               ...(freshness ? { freshness } : {}),
+            };
+         }
          if (!decided.inPlan) continue;
          wireSources[sourceID] = wireSourceOf(
             table,
             decided.annotationFields,
             planAddressOf(compiled, sourceID),
             packageMaterialization,
+            compiled.upstreamSchemas,
          );
       } catch (err) {
          // Reported, so a host does not read the source's absence as its
@@ -1858,6 +1885,7 @@ function wireSourceOf(
    annotationFields: Record<string, string>,
    sourceEntityId: string,
    packageMaterialization: WirePackageMaterialization | null | undefined,
+   upstreamSchemaReadings: UpstreamSchemaReadings | undefined,
 ): WirePersistSourcePlan {
    const { source, rollup, modelPath } = table;
    return {
@@ -1885,12 +1913,31 @@ function wireSourceOf(
       ),
       queryMetadata: resolveQueryMetadata(source, packageMaterialization),
       columns: deriveColumns(source),
+      // Omitted, never partial, when the tables cannot be known.
+      ...readsOf(source),
+      // The readings its address folds in; absent with `reads`.
+      ...upstreamSchemasFieldOf(source, upstreamSchemaReadings),
       // Resolved, not passed through; a source failing either is in
       // `refusedSources` instead.
       ...planDynamicFields(source),
       annotationFields,
       modelPath,
    };
+}
+
+/** The plan's `upstreamSchemas` for one source; {} when it folds none. */
+function upstreamSchemasFieldOf(
+   source: PersistSource,
+   readings: UpstreamSchemaReadings | undefined,
+): Pick<WirePersistSourcePlan, "upstreamSchemas"> {
+   const upstreamSchemas = upstreamSchemasOfSource(source, readings);
+   return upstreamSchemas ? { upstreamSchemas } : {};
+}
+
+/** The plan's `reads` for one source; {} when they cannot be known. */
+function readsOf(source: PersistSource): { reads?: WireTableRead[] } {
+   const reads = sourceReads(source);
+   return reads === undefined ? {} : { reads };
 }
 
 /**
@@ -1938,6 +1985,7 @@ function refuseDatabaseTablesSharedWithARefusal(
          modelPath: tables[sourceID]?.modelPath,
          tier: "database",
          reason: (sibling.reason ?? "authorize") as WireRefusedSource["reason"],
+         ...(planned.freshness ? { freshness: planned.freshness } : {}),
          message:
             `'${planned.name}' is not built: it shares its table with ` +
             `'${sibling.name}', which the eligibility gate refuses for a ` +
@@ -2016,6 +2064,8 @@ export function finishBuildPlan(
    parts: BuildPlanParts,
    ctx: {
       connectionDigests: Record<string, string>;
+      /** See {@link CompiledBuildPlan.upstreamSchemas}; absent, none read. */
+      upstreamSchemas?: UpstreamSchemaReadings;
       connections: Map<string, MalloyConnection>;
       /** The package names its tables per version (`scope: "version"`). */
       versionScoped: boolean;
@@ -2032,7 +2082,9 @@ export function finishBuildPlan(
       ...(ctx.versionScoped ? { versionScoped: true } : {}),
       ...parts,
       connectionDigests: ctx.connectionDigests,
+      ...(ctx.upstreamSchemas ? { upstreamSchemas: ctx.upstreamSchemas } : {}),
       connectionTypes: resolveConnectionTypes(ctx.connections),
+      managedConnections: resolveManagedConnections(ctx.connections),
       connections: ctx.connections,
       ...(ctx.keyCheckCompilers && ctx.keyCheckCompilers.size > 0
          ? { keyCheckCompilers: ctx.keyCheckCompilers }
@@ -2047,9 +2099,10 @@ export function finishBuildPlan(
          addresses: planAddresses({ ...plan, tableFolds }),
       }),
    );
+   const known = refuseUpstreamUnread(refused);
    return ctx.keepIncrementalUnbuildable
-      ? refused
-      : refuseIncrementalUnbuildable(refused);
+      ? known
+      : refuseIncrementalUnbuildable(known);
 }
 
 /**
@@ -2063,12 +2116,18 @@ export async function finishPackagePlan(
    parts: BuildPlanParts,
    ctx: Omit<
       Parameters<typeof finishBuildPlan>[1],
-      "connectionDigests" | "connections"
+      "connectionDigests" | "connections" | "upstreamSchemas"
    > & {
       getMalloyConnection(name: string): Promise<MalloyConnection>;
+      /**
+       * Read the native column types of the tables the plan's sources read
+       * (the load's catalog read, or a run's reuse of its load's readings).
+       * Absent, none is read and every address is its SQL's alone: a spec's.
+       */
+      readUpstreamSchemas?: UpstreamSchemaReader;
    },
 ): Promise<{ compiled: FinishedBuildPlan; digestSkipped: string[] }> {
-   const { getMalloyConnection, ...finish } = ctx;
+   const { getMalloyConnection, readUpstreamSchemas, ...finish } = ctx;
    const connections = await resolvePackageConnections(
       { getMalloyConnection },
       parts.builds.map((b) => b.connectionName),
@@ -2079,14 +2138,44 @@ export async function finishPackagePlan(
       parts.builds,
       (name) => digestSkipped.push(name),
    );
+   const upstreamSchemas = readUpstreamSchemas
+      ? await readUpstreamSchemas(planUpstreamTables(parts.tables))
+      : undefined;
    return {
       compiled: finishBuildPlan(parts, {
          ...finish,
          connectionDigests,
+         ...(upstreamSchemas ? { upstreamSchemas } : {}),
          connections,
       }),
       digestSkipped,
    };
+}
+
+/**
+ * Reads the native column types of `tables`, each answered by
+ * `upstreamTableKey`: a reading for every table asked, never a throw.
+ */
+export type UpstreamSchemaReader = (
+   tables: UpstreamTable[],
+) => Promise<UpstreamSchemaReadings>;
+
+/**
+ * Every table the plan's sources read (their `reads`), distinct, in a stable
+ * order: what a load reads the catalog for.
+ */
+function planUpstreamTables(
+   tables: Readonly<Record<string, { source: PersistSource }>>,
+): UpstreamTable[] {
+   const out = new Map<string, UpstreamTable>();
+   for (const { source } of Object.values(tables)) {
+      for (const read of upstreamTablesOf(source) ?? []) {
+         out.set(upstreamTableKey(read), read);
+      }
+   }
+   return [...out.entries()]
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+      .map(([, t]) => t);
 }
 
 /**
@@ -2139,11 +2228,13 @@ export function derivePackagePlan(
       builds: compiled.builds,
       connectionDigests: compiled.connectionDigests,
       connectionTypes: compiled.connectionTypes ?? {},
+      managedConnections: compiled.managedConnections ?? [],
       buildConnectionNames: [
          ...new Set(compiled.builds.map((b) => b.connectionName)),
       ].sort(),
       versionScoped: compiled.versionScoped === true,
       tableFolds: { ...compiled.tableFolds },
+      upstreamSchemas: { ...compiled.upstreamSchemas },
       addresses: { ...compiled.addresses },
       compilerKeys: compilerKeysOf(compiled),
       annotationFindings,
@@ -2284,54 +2375,113 @@ function refuseIncrementalUnbuildable<
       });
       if (reason === undefined) continue;
       dropped.add(sourceID);
-      const model = compiled.tables[sourceID]?.modelPath ?? "";
-      const plan = compiled.tables[sourceID]?.materialize;
-      const tier = tierOf(declaredStorage(source));
-      const refused = refusalKey(
-         sourceID,
-         source.name,
-         "incremental_unsupported",
-         tier,
-      );
       findings.push(
-         plan
-            ? materializeRefusalFinding(
-                 {
-                    sourceName: plan.sourceName,
-                    sourceID,
-                    reason,
-                    outcome: {
-                       refused: { reason: "incremental_unsupported", tier },
-                    },
-                 },
-                 model,
-              )
-            : view
-              ? {
-                   ...persistedViewRefusalFinding(
-                      {
-                         ...view,
-                         sourceID,
-                         reason,
-                         outcome: { refused: "incremental_unsupported" },
-                      },
-                      model,
-                   ),
-                   // Keyed by the source the plan holds.
-                   refused,
-                }
-              : {
-                   route: "@",
-                   tier: "unservable",
-                   code: PERSIST_NOT_BUILT_CODE,
-                   message: `#@ persist source "${source.name}" is not built, so it is answered live: ${reason}.`,
-                   subject: source.name,
-                   model,
-                   refused,
-                },
+         notBuiltFinding(compiled, sourceID, "incremental_unsupported", reason),
       );
    }
    return withoutSources(compiled, findings, dropped);
+}
+
+/**
+ * The compiled plan less every source a table of whose `reads` has no
+ * reading (`unread: "read_failed"`: its catalog read failed, after the
+ * reader's retries, and this process holds no earlier reading of it), each
+ * refused alone as `upstream_unread` under its mechanism's `*-not-built`
+ * warning naming the table. Its content address would fold an unknown
+ * schema, which a later successful read moves, so it is neither built nor
+ * served: it answers live, no run builds it, and a host's instruction for it
+ * is refused, until a reload or a plan refresh reads the catalog and plans it
+ * at its address. A reading of what the catalog holds (`no_catalog`,
+ * `not_found`, `ambiguous`) is a stable fold and refuses nothing.
+ */
+function refuseUpstreamUnread<T extends Omit<FinishedBuildPlan, "connections">>(
+   compiled: T,
+): T {
+   const readings = compiled.upstreamSchemas;
+   if (!readings) return compiled;
+   const findings: PackageAnnotationFinding[] = [];
+   const dropped = new Set<string>();
+   for (const [sourceID, { source }] of Object.entries(compiled.tables)) {
+      const unread = (upstreamTablesOf(source) ?? []).filter((t) => {
+         const reading = readings[upstreamTableKey(t)];
+         return reading !== undefined && "unread" in reading
+            ? reading.unread === "read_failed"
+            : false;
+      });
+      if (unread.length === 0) continue;
+      dropped.add(sourceID);
+      const tables = unread
+         .map((t) => `"${t.table}" on connection "${t.connectionName}"`)
+         .join(", ");
+      findings.push(
+         notBuiltFinding(
+            compiled,
+            sourceID,
+            "upstream_unread",
+            `the columns of ${tables}, which its build reads, could not be ` +
+               "read from the warehouse's catalog, so its table's address is " +
+               "not known; it is planned once a reload, or a plan refresh, " +
+               "reads them",
+         ),
+      );
+   }
+   return withoutSources(compiled, findings, dropped);
+}
+
+/**
+ * The `*-not-built` finding refusing the plan's source `sourceID` alone, as
+ * `reason`, under its mechanism's code: a `#(materialize)` source's, a
+ * persisted view's, a rollup's, or a `#@ persist` source's.
+ */
+function notBuiltFinding(
+   compiled: Omit<FinishedBuildPlan, "connections">,
+   sourceID: string,
+   reason: RefusedReason,
+   why: string,
+): PackageAnnotationFinding {
+   const table = compiled.tables[sourceID];
+   const source = table.source;
+   const model = table.modelPath ?? "";
+   const tier = tierOf(declaredStorage(source));
+   const refused = refusalKey(sourceID, source.name, reason, tier);
+   if (table.materialize) {
+      return materializeRefusalFinding(
+         {
+            sourceName: table.materialize.sourceName,
+            sourceID,
+            reason: why,
+            outcome: { refused: { reason, tier } },
+         },
+         model,
+      );
+   }
+   const view = persistedViewOf(source);
+   if (view) {
+      return {
+         ...persistedViewRefusalFinding(
+            { ...view, sourceID, reason: why, outcome: { refused: reason } },
+            model,
+         ),
+         // Keyed by the source the plan holds.
+         refused,
+      };
+   }
+   return {
+      route: "@",
+      tier: "unservable",
+      ...(table.kind === "rollup"
+         ? {
+              code: ROLLUP_NOT_BUILT_CODE,
+              message: `Rollup "${source.name}" is not built, so its measures are answered live: ${why}.`,
+           }
+         : {
+              code: PERSIST_NOT_BUILT_CODE,
+              message: `#@ persist source "${source.name}" is not built, so it is answered live: ${why}.`,
+           }),
+      subject: source.name,
+      model,
+      refused,
+   };
 }
 
 /** A persisted view's generated build source, read back to the author's names. */

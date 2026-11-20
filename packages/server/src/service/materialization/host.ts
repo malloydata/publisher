@@ -132,6 +132,12 @@ export interface MaterializationEnvironment {
     */
    getStaleCompileErrors(): ReadonlyMap<string, unknown>;
    withPackageLock<T>(packageName: string, fn: () => Promise<T>): Promise<T>;
+   /**
+    * Whether a compiled copy of the package is in memory; never loads it
+    * (`Environment.hasLoadedPackage`). A run's start reads it under the
+    * package's lock, so a package a delete removed starts no build.
+    */
+   hasLoadedPackage(packageName: string): boolean;
 
    getVersionService(): MaterializationVersions | null;
    /**

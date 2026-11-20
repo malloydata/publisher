@@ -464,6 +464,8 @@ source: X is duckdb.table('parent') extend {
             exprs: ["org_id in $GROUPS"],
             selfContained: false,
             route: "access_filter",
+            // Read on X itself, not through a `->` derivation.
+            baseHops: 0,
             struct: modelDef.contents["X"] as unknown as SourceDef,
          };
 
@@ -539,6 +541,7 @@ source: X is duckdb.table('parent') extend {
             label: "X",
             exprs: ["false"],
             selfContained: true,
+            baseHops: 0,
             struct: modelDef.contents["X"] as unknown as SourceDef,
          };
 
@@ -1031,10 +1034,10 @@ source: X is duckdb.table('parent') extend {
 
 describe("row-level authorize — other", () => {
    it("error scrubbing: a fail-closed row-level deny never names the column/join/expression to the caller", async () => {
-      // A query-source projection dropping `authorized` — the shape that
-      // reproduces a thrown `AccessDeniedError` under the dimension form
-      // (see the "fail-closed" describe block's own tests: an `extend {
-      // except: ... }` resolves to a live, empty result instead).
+      // A query-source over a base that `except:`s the gated column: the gate
+      // has no base copy carrying the column to filter, so it denies (a
+      // projection that merely drops the column answers the base's admitted
+      // rows: the gate filters the base before the derivation runs).
       const { internals, mm, duckdb } = await buildGatedModel(`
 #(secure)
 given:
@@ -1044,7 +1047,7 @@ given:
 source: X is duckdb.table('parent') extend {
    measure: n is count()
 }
-source: W is X -> { group_by: id, val; aggregate: n is count() }
+source: W is X extend { except: org_id } -> { group_by: id, val; aggregate: n is count() }
 `);
       try {
          const err = await boundRows(
@@ -1765,20 +1768,18 @@ source: X is duckdb.table('parent') extend {
       }
    });
 
-   it("CRITICAL — an entry point whose gate resolves to `deny` does not route to storage (`queryEntryPointHasRowLevelGate` used to admit routing for any non-`row_level` resolution, including `deny`)", async () => {
+   it("CRITICAL — a derivation that inherits a row gate through `->` does not route to storage: it answers live, its base filtered first", async () => {
       const { restore: restoreSettings } = installSettings({
          env: { PERSIST_STORAGE_MODE: "on" },
       });
       const duckdb = await seededDuckdb();
-      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rla-storage-deny-"));
+      const dir = fs.mkdtempSync(
+         path.join(os.tmpdir(), "rla-storage-derived-"),
+      );
       try {
-         // `W_except` is a query-source projection dropping the gate
-         // dimension itself — the shape that makes `resolveGateShape`
-         // return `deny` rather than `row_level` UNDER `Model.create` (an
-         // `extend { except: org_id }` instead aborts the WHOLE model's
-         // load here — see load_validation.spec.ts's unexpressible-derivation
-         // coverage of that shape; this test is about the routing
-         // PRE-CHECK, not load validation).
+         // `W` drops the gate column; the gate filters `X`'s rows before `W`
+         // groups them. A storage table for `W` would be built from every
+         // org's rows, so it must never answer a gated caller.
          fs.writeFileSync(
             path.join(dir, "m.malloy"),
             `##! experimental.givens
@@ -1792,7 +1793,79 @@ source: X is duckdb.table('parent') extend {
    measure: n is count()
 }
 
-source: W_except is X -> { group_by: id, val; aggregate: n is count() }
+source: W is X -> { group_by: id, val; aggregate: n is count() }
+`,
+         );
+         const model = await Model.create(
+            "test-pkg",
+            dir,
+            "m.malloy",
+            connectionsFor(duckdb),
+         );
+         expect(
+            (model as unknown as { compilationError?: Error }).compilationError,
+         ).toBeUndefined();
+         await duckdb.runSQL(
+            "CREATE OR REPLACE TABLE mz_derived AS SELECT 999 AS n",
+         );
+         const serveConfig = duckdbMalloyConfig(duckdb).malloyConfig;
+         model.setServeDestinationConfig(() => serveConfig);
+         model.setServeBindings([
+            {
+               kind: "persist",
+               tier: "storage",
+               sourceName: "W",
+               destinationName: "duckdb",
+               virtualHandle: "h",
+               tablePath: "mz_derived",
+               schema: [{ name: "n", type: "BIGINT" }],
+            },
+         ]);
+         const result = await model.runQuery(
+            unrecordedAudit(),
+            {
+               query: "run: W -> { aggregate: c is count() }",
+               filterParams: {},
+               givens: { GROUPS: [1] },
+            },
+            QueryPrivileges.of({ bypassFilters: true }),
+         );
+         expect(result.servedFrom).not.toBe("storage");
+         // org 1 holds ids 1 and 2: two groups, not the stub's 999 and not
+         // the four groups of every org.
+         expect(JSON.stringify(result.compactResult)).toBe('[{"c":2}]');
+      } finally {
+         restoreSettings();
+         await duckdb.close();
+         fs.rmSync(dir, { recursive: true, force: true });
+      }
+   });
+
+   it("CRITICAL — an entry point whose gate resolves to `deny` does not route to storage (`queryEntryPointHasRowLevelGate` used to admit routing for any non-`row_level` resolution, including `deny`)", async () => {
+      const { restore: restoreSettings } = installSettings({
+         env: { PERSIST_STORAGE_MODE: "on" },
+      });
+      const duckdb = await seededDuckdb();
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rla-storage-deny-"));
+      try {
+         // `W_except` is a query-source over a base that `except:`s the
+         // gate column: the gate has no base copy to filter, so
+         // `resolveGateShape` returns `deny` rather than `row_level`. This
+         // test is about the routing PRE-CHECK, not load validation.
+         fs.writeFileSync(
+            path.join(dir, "m.malloy"),
+            `##! experimental.givens
+
+#(secure)
+given:
+  GROUPS :: number[]
+
+#(access_filter) org_id in $GROUPS
+source: X is duckdb.table('parent') extend {
+   measure: n is count()
+}
+
+source: W_except is X extend { except: org_id } -> { group_by: id, val; aggregate: n is count() }
 `,
          );
          const model = await Model.create(

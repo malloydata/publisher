@@ -70,6 +70,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.pcf_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "0c4b42ebd3cd91935530187db099b00a7869b6c83f472fd7fcaa292fce8453c4",
         "sourceID": "daily@<hammer>/pcf/pcf.malloy",

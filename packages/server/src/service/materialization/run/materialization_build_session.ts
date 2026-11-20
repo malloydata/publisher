@@ -106,7 +106,7 @@ import {
    destinationSchemaOf,
    storageTablePath,
 } from "../domain/storage_table_path";
-import { carriesAuthorSql, isSameCatalog } from "./same_catalog_build";
+import { carriesAuthorSql, isSameCatalog } from "../domain/same_catalog_build";
 import {
    numericAsTextSQL,
    postgresNumericColumns,

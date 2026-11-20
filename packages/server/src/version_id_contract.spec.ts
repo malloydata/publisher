@@ -97,6 +97,29 @@ describe("versionId in api-doc.yaml", () => {
       expect(doc.components.schemas).not.toHaveProperty("VersionIdOrEmpty");
    });
 
+   it("declares versionId on a model query, which reads it from the URL as well as the body", () => {
+      const op = doc.paths[
+         "/environments/{environmentName}/packages/{packageName}/models/{path}/query"
+      ].post as Operation & { description?: string };
+      expect(
+         (op.parameters ?? []).filter((p) => p.$ref === VERSION_ID_REF),
+      ).toHaveLength(1);
+      expect(op.description).toContain("VERSION_ID_INVALID");
+   });
+
+   it("names a version path parameter versionId, as the query parameter is named", () => {
+      const versionPath = doc.components.parameters.versionPath as {
+         name?: string;
+         in?: string;
+      };
+      expect([versionPath.name, versionPath.in]).toEqual(["versionId", "path"]);
+      const routes = Object.keys(doc.paths).filter((r) =>
+         r.includes("/versions/"),
+      );
+      expect(routes.length).toBeGreaterThan(0);
+      expect(routes.filter((r) => r.includes("{version}"))).toEqual([]);
+   });
+
    it("declares no version on the Materialization record: it goes out in metadata", () => {
       expect(
          Object.keys(doc.components.schemas.Materialization.properties ?? {}),

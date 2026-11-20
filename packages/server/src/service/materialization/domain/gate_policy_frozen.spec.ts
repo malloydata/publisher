@@ -74,6 +74,7 @@ const READ_FIELDS: Exactly<
    | "ownGateKept"
    | "holdsOnlyUngatedRows"
    | "gateColumnTypes"
+   | "gateColumnUpstreamTypes"
    | "gatesReadNoColumn"
 > = true;
 void [

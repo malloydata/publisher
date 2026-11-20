@@ -71,6 +71,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.gx_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "d4066df29187f2e7cb015cc002a7917bfa54f5026445ad4c0c643a4fcc0d2f9c",
         "sourceID": "daily@<hammer>/gx/gx.malloy",
