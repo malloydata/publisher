@@ -34,7 +34,11 @@ import { installSettings } from "../../../test_helpers/settings_env";
 import { projectToStoredColumns, storedColumnNames } from "./build_plan";
 import { compilePackageBuildPlan } from "./build_plan_compile";
 
-/** BigQuery's dry-run schema for `bq.sql(...)`: scalars, two REPEATED, a RECORD. */
+/**
+ * BigQuery's dry-run schema for `bq.sql(...)`: scalars, two REPEATED, a
+ * repeated RECORD, a RECORD, a RECORD holding a RECORD, and a RECORD holding
+ * a REPEATED.
+ */
 const BIGQUERY_SCHEMA = {
    fields: [
       { name: "start_station_id", type: "INTEGER", mode: "NULLABLE" },
@@ -54,6 +58,25 @@ const BIGQUERY_SCHEMA = {
          type: "RECORD",
          mode: "NULLABLE",
          fields: [{ name: "a", type: "STRING", mode: "NULLABLE" }],
+      },
+      {
+         name: "nr",
+         type: "RECORD",
+         mode: "NULLABLE",
+         fields: [
+            {
+               name: "inner",
+               type: "RECORD",
+               mode: "NULLABLE",
+               fields: [{ name: "b", type: "FLOAT", mode: "NULLABLE" }],
+            },
+         ],
+      },
+      {
+         name: "rl",
+         type: "RECORD",
+         mode: "NULLABLE",
+         fields: [{ name: "tags", type: "STRING", mode: "REPEATED" }],
       },
    ],
 };
@@ -104,7 +127,7 @@ async function planned(model: string, name: string): Promise<PersistSource> {
 }
 
 describe("the columns a storage= build stores", () => {
-   it("include a BigQuery source's ARRAY columns, scalar or record, but not a record", async () => {
+   it("include a BigQuery source's ARRAY and STRUCT columns, nested or holding a list", async () => {
       const source = await planned(
          `#(materialize) storage="lake"
 source: s_arr is bq.sql("select start_station_id, array_agg(distinct subscriber_type) as v from t group by 1") extend {
@@ -119,24 +142,69 @@ source: s_arr is bq.sql("select start_station_id, array_agg(distinct subscriber_
          "v",
          "w",
          "lr",
+         "rec",
+         "nr",
+         "rl",
       ]);
       // The projection the CTAS reads, quoted for BigQuery.
       const sql = projectToStoredColumns(source, "SELECT 1");
       expect(sql.slice(0, sql.indexOf(" FROM ("))).toBe(
-         "SELECT `start_station_id`, `v`, `w`, `lr`",
+         "SELECT `start_station_id`, `v`, `w`, `lr`, `rec`, `nr`, `rl`",
       );
    });
 
-   it("include a DuckDB source's list columns", async () => {
+   it("include a DuckDB source's list and struct columns", async () => {
       const source = await planned(
          `#(materialize) storage="lake"
-source: d_arr is duckdb.sql("select 1 as sid, ['a', 'b'] as v, [{'a': 'p'}] as lr, {'a': 'q'} as rec") extend {
+source: d_arr is duckdb.sql("select 1 as sid, ['a', 'b'] as v, [{'a': 'p'}] as lr, {'a': 'q'} as rec, {'i': {'b': 1.5}} as nr, {'tags': ['t']} as rl") extend {
   measure: n is count()
 }
 `,
          "d_arr",
       );
-      expect(storedColumnNames(source)).toEqual(["sid", "v", "lr"]);
+      expect(storedColumnNames(source)).toEqual([
+         "sid",
+         "v",
+         "lr",
+         "rec",
+         "nr",
+         "rl",
+      ]);
+   });
+
+   it("make a #(materialize) source's struct columns plan columns, not a computed record", async () => {
+      const model = `#(materialize) storage="lake"
+source: d_rec is duckdb.sql("select 1 as sid, {'a': 'q', 'n': 2} as rec") extend {
+  dimension: made is { a is 'x' }
+  measure: n is count()
+}
+`;
+      const plan = Object.values(materializePlansIn(await compiled(model)))[0];
+      expect(plan.columns).toContainEqual(
+         expect.objectContaining({ column: "rec", computed: false }),
+      );
+      expect(plan.columns.map((c) => c.column)).not.toContain("made");
+      expect(storedColumnNames(await planned(model, "d_rec"))).toEqual([
+         "sid",
+         "rec",
+      ]);
+   });
+
+   it("include a hidden struct, marked with its access", async () => {
+      const model = `##! experimental { access_modifiers }
+#(materialize) storage="lake"
+source: hr is duckdb.sql("select 1 as sid, {'a': 'q', 'n': 2} as rec") include {
+  internal: rec
+  public: *
+} extend {
+  measure: total is rec.n.sum()
+}
+`;
+      const plan = Object.values(materializePlansIn(await compiled(model)))[0];
+      expect(plan.columns).toContainEqual(
+         expect.objectContaining({ column: "rec", access: "internal" }),
+      );
+      expect(storedColumnNames(await planned(model, "hr"))).toContain("rec");
    });
 
    it("include a v1 persisted query's nest and the lists it selects", async () => {

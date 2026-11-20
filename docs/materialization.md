@@ -805,12 +805,15 @@ warning clears. A change made after a bind is read at the next one.
 
 **Columns with no Malloy basic type.** A `storage=` build stores an array column, public or hidden
 (a BigQuery `ARRAY`, a DuckDB or Postgres list, a persisted query's `nest:`), as a DuckDB list of its element type
-(`VARCHAR[]`, `BIGINT[]`, `STRUCT(…)[]`). A stored list or struct column is declared as Malloy's array
+(`VARCHAR[]`, `BIGINT[]`, `STRUCT(…)[]`), and a struct (record) column, public or hidden (a BigQuery
+`STRUCT`, a DuckDB `STRUCT`), as a DuckDB `STRUCT(…)` of its mapped field types, a struct inside it or a
+list it holds included. A stored list or struct column is declared as Malloy's array
 or record type, so it reads back as it does live, when the source's field is one; a column Malloy has
 no faithful declaration for (a MAP, UNION, ENUM, BLOB, INTERVAL or JSON column, a list or struct
 holding one, a list or struct whose field live types as a warehouse-native type or that holds one, or
-a list or struct holding an integer live keeps exact past 2^53, such as a DuckDB `BIGINT[]`) is left out
-of its source, so a query reading it is answered live and every other query reads the table. A list or
+a list or struct holding an integer live keeps exact past 2^53, such as a DuckDB `BIGINT[]` or a
+BigQuery `STRUCT` with an `INT64` field) is left out of its source as a whole column, so a query
+reading it, or any field of it, is answered live and every other query reads the table. A list or
 struct of zoned timestamps is declared `timestamptz`, as live types it. A stored scalar whose field live
 types as a warehouse-native type (`sql native`: a `uuid`, or a Postgres `json`, `jsonb` or composite
 type, which the destination stores as text) is left out the same way, and a Postgres `bytea` or
@@ -825,15 +828,13 @@ no type declares is counted in `publisher_storage_serve_shape_type_fallback_tota
 
 **A column the served copy cannot carry sends a `#(materialize)` source live as a whole.** A
 `#(materialize)` source leaves a column out per query, as above, only when the column is stored: a
-list (a DuckDB `BIGINT[]`, a BigQuery `ARRAY<INT64>`), a MAP, a UUID and the like. A list column its
-table lacks is left out per query too: a `storage=` build by an earlier release left every array
-column out of its table, so such a table serves every query that does not read the list until its
-next full build. Three kinds of column are never on its table, and each one sends **every** query
-over the source live, whatever the query reads, in a `storage=` table and a database one (a database origin) alike:
+list (a DuckDB `BIGINT[]`, a BigQuery `ARRAY<INT64>`), a struct holding such an integer, a MAP, a
+UUID and the like. A list or struct column its table lacks is left out per query too: a `storage=`
+build by an earlier release left every array and struct column out of its table, so such a table
+serves every query that does not read the column until its next full build. Two kinds of column
+are never on its table, and each one sends **every** query over the source live, whatever the query
+reads, in a `storage=` table and a database one (a database origin) alike:
 
-- a struct (record) column of the source's own, such as a DuckDB `STRUCT(a BIGINT)` or a BigQuery
-  `STRUCT<…>`: Malloy types it as a join, so the plan stores no column for it and the served copy
-  cannot carry the field (`served-copy-not-served`, reason `fields_not_carried`);
 - a column of an `inline=` join that no `type:` declares, such as a BigQuery `GEOGRAPHY` or a
   DuckDB `MAP` on the joined source (`served-copy-not-served`, reason `column_types`);
 - a nest of a database table outside DuckDB, which its warehouse stores as JSON (`column_types`).
@@ -843,8 +844,7 @@ The answers are live's, so nothing is wrong, only slower. Each query's path repo
 `served-copy-not-served` warning names why, in its message and its `reason` field. For
 `column_types`, the warning's message and the path report's `detail` also name each column, with
 its declared type and its stored type (or that the table does not hold it); a hidden column is
-named only as "a hidden column". A v1 `#@ persist`
-`storage=` source stores a struct column of its own and serves it from the table.
+named only as "a hidden column", with no types.
 
 **Integers past 2^53.** A stored table's columns are declared to Malloy as plain numbers, which it
 reads through a JavaScript number, so 9007199254740993 would come back as 9007199254740992. A

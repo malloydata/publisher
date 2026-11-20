@@ -2652,12 +2652,16 @@ function withoutLeftOutColumn(
 ): boolean {
    const { withoutKept, problems } = state;
    const message = error instanceof Error ? error.message : String(error);
+   // A path through a record left out (`ecom.qty`) names the record too.
    const named = new Set(
       [
          ...message.matchAll(
             /'([^']+)' is not defined|Reference to undefined (?:value|object) `?([^`\s]+)/g,
          ),
-      ].map((m) => m[1] ?? m[2]),
+      ].flatMap((m) => {
+         const name = m[1] ?? m[2];
+         return [name, name.split(".")[0]];
+      }),
    );
    if (named.size === 0) return false;
    const naming = state.candidates.filter((c) =>
@@ -2873,9 +2877,10 @@ function recordTypeText(fields: unknown, depth: number): string | undefined {
    return `{ ${parts.join(", ")} }`;
 }
 
-/** Whether live answers a field as a list, of scalars or of records. */
-function isList(field: unknown): boolean {
-   return (field as { type?: unknown } | undefined)?.type === "array";
+/** Whether live answers a field as a list (of scalars or records) or a record. */
+function isListOrRecord(field: unknown): boolean {
+   const type = (field as { type?: unknown } | undefined)?.type;
+   return type === "array" || type === "record";
 }
 
 /** How a caller's detail names a column the author's source hides. */
@@ -3176,16 +3181,16 @@ function materializedOwnColumns(
          columnsLeftOut.push(c.column);
          continue;
       }
-      // A list the table does not hold (a `storage=` table built before its
-      // build stored arrays, until its next full build) is left out as a
-      // stored list no declaration reads back is: only a query reading it
-      // (the copy's compile of it fails, directly or through a field,
-      // filter or nest over it) answers live, and every other query reads
-      // the table.
+      // A list or record the table does not hold (a `storage=` table built
+      // before its build stored arrays and records, until its next full
+      // build) is left out as one no declaration reads back is: only a
+      // query reading it (the copy's compile of it fails, directly or
+      // through a field, filter or nest over it) answers live, and every
+      // other query reads the table.
       if (
          type === undefined &&
          c.column === c.dimension &&
-         isList(fieldsByName.get(c.dimension))
+         isListOrRecord(fieldsByName.get(c.dimension))
       ) {
          columnsLeftOut.push(c.column);
          subject.leftOutWhy.set(
