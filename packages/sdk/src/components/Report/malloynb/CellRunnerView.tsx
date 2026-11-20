@@ -126,7 +126,7 @@ export interface CellReportProps {
 }
 
 /**
- * Cells run one by one, the engine behind a report written as `run:` cells.
+ * Cells run one by one, the engine behind a `.malloynb` notebook.
  * Takes the cells (undefined while they load, `error` when they could not be
  * read) and the runner that executes one; what reads the cells and what runs
  * them is the caller's.
