@@ -9,7 +9,7 @@ SPDX-License-Identifier: MIT
 
 # Releasing Publisher
 
-A release is one `workflow_dispatch` of `Release (NPM + Docker + PyPI)`
+A release is one `workflow_dispatch` of `Release (NPM + Docker)`
 (`.github/workflows/release.yml`), followed by one pull request: the
 `release/v<version>` branch the release published from, merged back into
 `main`. That branch already carries the version bump and the stamped release
@@ -87,7 +87,7 @@ from `main`, which still reads `[Unreleased]`.
 ## The versioning policy
 
 **`0.MINOR.PATCH` for every published package, while pre-1.0.** `sdk`/`app`/`server`
-have followed it since `0.2.0` (the Python client follows them, in lockstep), and
+have followed it since `0.2.0`, and
 `skills` has always been on `0.1.x`. `create-malloy-package` is the exception: it
 is still on its own `0.0.x` line, computed at release time.
 Nothing enforces the *shape* of
@@ -168,7 +168,6 @@ not a precaution.
 | `sdk`, `app`, `server` | lockstep | `release.yml` itself, on a `release/v<v>` branch | n/a — the release sets it |
 | `skills` | its own line, `package.json` carries a fixed `0.0.0-dev` placeholder | release time, from npm's own state (`scripts/independent-version.mjs`); you, for a minor | n/a — nothing is committed ahead of time to forget |
 | `create-malloy-package` | its own line, same placeholder | release time, the same way | n/a, same reason |
-| `malloy-publisher-sdk` (Python) | lockstep with sdk/app/server | `release.yml` itself, in `packages/python-client/pyproject.toml` on the release branch | n/a — the release sets it |
 
 **Skills and create-malloy-package no longer have a version to forget.** Nothing
 is bumped ahead of a release: both packages' `package.json` declare `0.0.0-dev`
@@ -204,23 +203,14 @@ hand dispatch with `-f version=`.** After a hand-dispatched skills minor,
 hand-dispatch the scaffolder too — it depends on skills' version — or wait for
 the next release, which republishes the scaffolder anyway.
 
-**It publishes from `release.yml` itself**, not from `publish-packages`:
-`prepare` stamps the release version into `pyproject.toml` with the three
-`package.json` files, `build-python-sdk` calls `python-sdk.yml` on the release
-branch (build and verify; the smoke test against a server is `build.yml`'s, on
-every PR, like the Docker image's), and `publish-python-sdk` uploads the
-verified wheel and sdist through PyPI trusted publishing once `publish-npm` and
-`publish-docker` have succeeded, so PyPI never holds a version whose server did
-not ship. It skips only a version already on PyPI, which in lockstep means a
-re-run, and both jobs skip a prerelease or `+build` version. The first upload
-was `0.10.5`, on 2026-10-31, and every release since has published there. The
-trusted publisher names project `malloy-publisher-sdk`, workflow `release.yml`,
-environment `pypi`; *Publishing to PyPI* in `.github/workflows/CONTEXT.md`
-explains why each of those is pinned, and what breaks if one moves.
+**Nothing publishes to PyPI.** The Python client was removed in 0.17.0, and the
+`malloy-publisher-sdk` versions already there stay as they are. The trusted
+publisher (project `malloy-publisher-sdk`, workflow `release.yml`, environment
+`pypi`) is kept for a future client; *PyPI: currently not published* in
+`.github/workflows/CONTEXT.md` records it and what a new upload job must match.
 
 `main`'s `packages/sdk/package.json` used to lag npm permanently. It no longer
-does: merging the release PR (step 6) brings those three files (and
-`packages/python-client/pyproject.toml`) to the version
+does: merging the release PR (step 6) brings those three files to the version
 that shipped, and CI's `Release sync` check fails while a shipped
 release's PR is unmerged. `prepare` still takes the max of npm and the file for
 its floor rather than trusting either. Ask npm when you want to know what is
@@ -263,9 +253,6 @@ npm view "@malloy-publisher/create-malloy-package@$(npm view @malloy-publisher/c
 `unchanged` means it skips. create-malloy-package publishes regardless, unless
 its `publisherServer` already equals the version this release is about to ship —
 that only happens on a re-run.
-
-The Python client needs no check: it releases in lockstep with sdk/app/server,
-so this release publishes it at this release's version.
 
 #### The scaffolder's server pin is derived now — do not set it by hand
 
@@ -379,8 +366,7 @@ gh release view "v<version>" --repo malloydata/publisher
 This is the one step the release cannot finish itself, and as the agent running
 this skill **you open the PR**. The branch already exists and already holds
 everything: `prepare` committed the three `packages/{sdk,app,server}/package.json`
-versions, the Python client's `packages/python-client/pyproject.toml` version,
-and the stamped `RELEASE_NOTES.md` headings to `release/v<version>` as one
+versions and the stamped `RELEASE_NOTES.md` headings to `release/v<version>` as one
 commit. Do not create another branch and do not stamp anything by hand.
 
 Open it once the run has finished, for any release whose sdk reached npm
@@ -400,7 +386,7 @@ git fetch origin
 git ls-remote --exit-code --heads origin "release/v$V"
 # 2. one commit ahead of main, titled chore(release): $V
 git log --oneline "origin/main..origin/release/v$V"
-# 3. only the three manifests, python-client/pyproject.toml and RELEASE_NOTES.md
+# 3. only the three manifests and RELEASE_NOTES.md
 git diff --stat "origin/main...origin/release/v$V"
 # 4. the [$V] sections it stamped, which should match the release page
 NOTES="$(mktemp)" && git show "origin/release/v$V:RELEASE_NOTES.md" > "$NOTES"
@@ -427,7 +413,7 @@ Then open it against `main`:
 ```bash
 gh pr create --repo malloydata/publisher --base main --head "release/v$V" \
   --title "chore(release): $V" \
-  --body "Merges the v$V release branch back into main: sets sdk, app, server and the Python client to $V and stamps the RELEASE_NOTES.md sections v$V shipped.
+  --body "Merges the v$V release branch back into main: sets sdk, app and server to $V and stamps the RELEASE_NOTES.md sections v$V shipped.
 
 Release: https://github.com/malloydata/publisher/releases/tag/v$V"
 ```
@@ -505,12 +491,6 @@ after the merge (the first command in step 3).
   anchor release (`packages/server/tests/perf/main-thread/anchor.json`), so
   main-thread growth above about 1.3x that is wanted still blocks the release.
   Move the anchor forward in a PR of its own, then dispatch again.
-- **Only `build-python-sdk` or `publish-python-sdk` is red** → npm and Docker are
-  unaffected; neither job is in `gh-release`'s `needs`. *Re-run failed jobs*:
-  the publish job skips a version PyPI already holds, and reuses the verified
-  artifact. **Do not re-run the release.** If `publish-npm` or `publish-docker`
-  is red instead, `publish-python-sdk` shows as skipped, not failed: it waits
-  for both, and *Re-run failed jobs* runs it once they pass.
 - **Only `publish-packages` is red** → the sdk/app/server release completed and
   the tag exists; that job sits outside `gh-release`'s `needs`. Use *Re-run
   failed jobs*, which re-enters that job alone and skips whatever already landed.

@@ -9,7 +9,7 @@ Curated release notes for `@malloy-publisher/sdk`, `@malloy-publisher/app`, and 
 
 ## How this file is used
 
-The `Release (NPM + Docker + PyPI)` workflow (`.github/workflows/release.yml`) creates GitHub releases automatically with a standard header (NPM/Docker links) plus an auto-generated "What's Changed" PR list via `gh release create --generate-notes`. That auto list is sufficient for routine patch releases.
+The `Release (NPM + Docker)` workflow (`.github/workflows/release.yml`) creates GitHub releases automatically with a standard header (NPM/Docker links) plus an auto-generated "What's Changed" PR list via `gh release create --generate-notes`. That auto list is sufficient for routine patch releases.
 
 For releases that warrant narrative — redesigns, breaking changes, migration steps — write a `## [Unreleased]` section below, in the PR that changes the behaviour. **The release workflow does almost all of the rest**: `prepare` restamps every `[Unreleased]` heading with the release's version on the `release/v<version>` branch it publishes from, in the same commit as the version bump, and `gh-release` appends those sections to the release page alongside the generated PR list. Nothing to paste, and nothing to remember while writing.
 
@@ -20,6 +20,12 @@ Both steps handle several sections, which matters because unrelated narratives a
 Give the heading a title — `## [Unreleased] — what changed`, with an em dash, a colon or a hyphen. The version is already the release's own title, so the marker is stripped and the title is what appears on the page; a bare `## [Unreleased]` has nothing to put there and fails CI on the PR that writes it.
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
+
+## [Unreleased] — (BREAKING) the Python client is removed and no longer published to PyPI
+
+**Removed: the generated Python client, `malloy-publisher-sdk` on PyPI.** This release does not build or publish it, and neither will later ones: its source (`packages/python-client`), its build workflow and its release jobs are gone from the repository. The versions already on PyPI (0.10.5 up to the release before this one) stay there, unchanged and not yanked, but none is updated for this release's API or any later one.
+
+- **What to do:** call the REST API directly. Python's standard library is enough, and [AGENTS.md section 7](AGENTS.md#7-working-unattended-the-rest-api) has a copyable example; the running server serves its full OpenAPI spec at `/api-doc.yaml` for anyone who wants to generate a client of their own. A pinned `malloy-publisher-sdk` keeps installing, against the API of the release it was generated from.
 
 ## [Unreleased] — (BREAKING) Snowflake: live answers keep every digit of an integer, and give dates and timestamps in UTC ISO form
 

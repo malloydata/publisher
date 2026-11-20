@@ -268,7 +268,7 @@ curl -s -X POST \
   -d '{"query":"run: order_items -> by_category","compactJson":true}' | jq -r .result
 ```
 
-The same query from Python, with only the standard library. There is no Python SDK on PyPI to install: `packages/python-client` is generated from the OpenAPI spec but not published, and an unrelated `malloy-publisher-client` there is a third-party project.
+The same query from Python, with only the standard library. There is no supported Python client today, so call the REST API directly, as below. The `malloy-publisher-sdk` releases on PyPI are no longer maintained, and an unrelated `malloy-publisher-client` there is a third-party project.
 
 ```python
 import json
