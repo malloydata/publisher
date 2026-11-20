@@ -113,7 +113,7 @@ import {
    tagText,
 } from "./motly";
 import { onlyParseFailures, restrictedRejections } from "./compile_restriction";
-import { malloynbCellQuery } from "./deprecated/malloynb";
+import { isMalloynbPath, malloynbCellQuery } from "./deprecated/malloynb";
 import {
    assertNoCallerAuthorizeAnnotation,
    assertNoCallerClassificationAnnotation,
@@ -2189,7 +2189,7 @@ export class Model {
    public async malloynbCellRefusals(
       yielder: EventLoopYielder = createEventLoopYielder(),
    ): Promise<({ cell: number } & QueryTextRefusal)[]> {
-      if (this.notebookFormat() !== "malloynb" || !this.isNotebook()) return [];
+      if (!isMalloynbPath(this.modelPath)) return [];
       const refusals: ({ cell: number } & QueryTextRefusal)[] = [];
       for (const [index, cell] of (
          this.runnableNotebookCells ?? []
