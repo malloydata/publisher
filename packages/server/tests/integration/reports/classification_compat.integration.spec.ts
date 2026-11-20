@@ -323,10 +323,11 @@ describe("Report classification compatibility (E2E)", () => {
                      lf(without(now, "resource", "layout", "editable")),
                   ).toEqual(without(body.dashboard, "kind"));
                } else if (notebookPath.endsWith(".malloynb")) {
+                  // `runQuery` is new on the reports read; the route had none.
                   expect(
                      lf(
                         (now.notebook?.notebookCells ?? []).map((cell) =>
-                           without(cell, "newSources", "queryInfo"),
+                           without(cell, "newSources", "queryInfo", "runQuery"),
                         ),
                      ),
                   ).toEqual(body.notebookCells);
