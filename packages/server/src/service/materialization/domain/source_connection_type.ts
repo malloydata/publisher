@@ -75,17 +75,19 @@ export function unreadableSourceConnectionMessage(
 }
 
 /**
- * Why a `storage=` source on a DuckLake connection that carries author SQL is
- * refused (`storage_source_unsupported`): its build runs on a read-write
- * session on its own catalog, which runs only SQL Malloy generated.
+ * Why a source that carries author SQL is refused
+ * (`storage_source_unsupported`) when its table would be built inside a
+ * catalog, on a read-write session that runs only SQL Malloy generated: a
+ * `storage=` source on a DuckLake connection, or any source on a connection
+ * configured `managed`.
  */
-export function catalogAuthorSqlMessage(source: {
-   name: string;
-   connectionName: string;
-}): string {
+export function catalogAuthorSqlMessage(
+   source: { name: string; connectionName: string },
+   { managed = false }: { managed?: boolean } = {},
+): string {
    return (
       `Source '${source.name}' cannot be materialized: its connection ` +
-      `'${source.connectionName}' is a DuckLake catalog, whose tables are ` +
+      `'${source.connectionName}' is a ${managed ? "managed database" : "DuckLake catalog"}, whose tables are ` +
       `built inside the catalog by SQL Malloy generates, and the source ` +
       `carries SQL its author wrote (an .sql() source or a sql_* ` +
       `expression, its own or a joined source's) or reads a file or URL as a ` +

@@ -95,6 +95,8 @@ export interface ConnectionMetadata {
     * thread recorded none.
     */
    connectionType?: string;
+   /** The connection is configured `managed`; absent when it is not. */
+   managed?: boolean;
    digest: string;
    /**
     * Identifies the main thread's connection instance, so the worker's schema

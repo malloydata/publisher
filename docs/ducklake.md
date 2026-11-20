@@ -283,7 +283,9 @@ source carrying an `.sql()` source or a `sql_*` expression anywhere beneath it i
 DuckLake source was before, and so is a table read from a file or URL (`lake.table('/x.csv')`),
 which that session would read with the destination's storage credential. Such a source is refused when
 the package loads (`persist-not-built`, reason `storage_source_unsupported`) and answered live, rather
-than failing its build. A chained build (a
+than failing its build. On a connection configured `managed` the same holds with no `storage=` too: a
+managed catalog's tables are built inside it, so a `#@ persist`, `#(materialize)` or rollup over author
+SQL there is refused at load whatever it declares. A chained build (a
 downstream stacked on its stored parents in the destination) runs on the same kind of session and follows
 the same rule: a downstream carrying author SQL is recomputed from raw instead of stacked on its parents.
 

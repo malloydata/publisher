@@ -54,6 +54,12 @@ export interface CompiledBuildPlan<Finding = unknown> {
     * (materialization_eligibility.ts). Absent: none recorded.
     */
    connectionTypes?: Record<string, string>;
+   /**
+    * The connections configured `managed` (a catalog an orchestrator
+    * provisions, whose tables are built inside the catalog by SQL Malloy
+    * generates), by name, sorted. Data, as `connectionTypes` is. Absent: none.
+    */
+   managedConnections?: string[];
    connections: Map<string, MalloyConnection>;
    /**
     * The package is a published version of a `scope: "version"` package:

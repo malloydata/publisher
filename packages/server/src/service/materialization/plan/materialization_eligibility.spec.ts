@@ -1815,6 +1815,18 @@ source: stored is base -> { group_by: region; aggregate: c is count() }`)
       ).not.toThrow();
    });
 
+   it("refuses a database-tier source over author SQL on a managed connection only", async () => {
+      const source = (await persistSources(model)).stored;
+      const err = refusalOf(() =>
+         assertTierEligible(source, false, { managedConnections: ["duckdb"] }),
+      );
+      expect(err.reason).toBe("storage_source_unsupported");
+      expect(err.message).toContain("is a managed database");
+      expect(() =>
+         assertTierEligible(source, false, { managedConnections: ["other"] }),
+      ).not.toThrow();
+   });
+
    it("leaves a connection with no recorded type to the build", async () => {
       const source = (await persistSources(model)).stored;
       expect(() => assertTierEligible(source, true, {})).not.toThrow();

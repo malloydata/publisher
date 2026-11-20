@@ -42,7 +42,11 @@ import {
 import type { PackageAnnotationFinding } from "./annotation_reader";
 import { installSettings } from "../test_helpers/settings_env";
 import { BadRequestError } from "../errors";
-import { recordConnectionsAsForTests } from "./connection_type";
+import { unrecordedAudit } from "./access_record";
+import {
+   recordConnectionsAsForTests,
+   recordConnectionsManagedForTests,
+} from "./connection_type";
 
 // The package sandbox stands in for a warehouse in these fixtures: a
 // `storage=` build cannot read the sandbox, and the plan refuses a `storage=`
@@ -308,6 +312,94 @@ describe("a storage= source on a DuckLake catalog that carries author SQL", () =
          ]);
          expect(refused[0].message).toContain("carries SQL its author wrote");
          expect(Object.keys(pkg.getBuildPlan()?.sources ?? {})).toEqual([]);
+      },
+      { timeout: 30000 },
+   );
+});
+
+describe("a source over author SQL on a managed connection", () => {
+   // The sandbox stands in for a managed DuckLake catalog: every table built
+   // on one is built inside the catalog, by SQL Malloy generated only.
+   let restoreType: () => void;
+   let restoreManaged: (() => void) | undefined;
+   beforeAll(() => {
+      restoreType = recordConnectionsAsForTests({ duckdb: "ducklake" });
+   });
+   afterAll(() => restoreType());
+   afterEach(() => {
+      restoreManaged?.();
+      restoreManaged = undefined;
+   });
+   const managed = () => {
+      restoreManaged = recordConnectionsManagedForTests(["duckdb"]);
+   };
+   const refusals = (pkg: Package) =>
+      Object.values(pkg.getBuildPlan()?.refusedSources ?? {}).map((r) => [
+         r.name,
+         r.tier,
+         r.reason,
+      ]);
+
+   it(
+      "is refused at load in the database tier, with persist-not-built",
+      async () => {
+         managed();
+         const pkg = await loadPackage(
+            `${RAW}#@ persist name="t"\n${ROLLUP}\n`,
+         );
+         const [warning] = coded(pkg, "persist-not-built");
+         expect(warning).toMatchObject({ severity: "warn", subject: "daily" });
+         expect(warning.message).toContain("is a managed database");
+         expect(refusals(pkg)).toEqual([
+            ["daily", "database", "storage_source_unsupported"],
+         ]);
+         expect(Object.keys(pkg.getBuildPlan()?.sources ?? {})).toEqual([]);
+         // Answered live: no table is bound, and the query reads the source.
+         const result = await pkg
+            .getModel("model.malloy")!
+            .runQuery(unrecordedAudit(), {
+               query: "run: daily -> { select: * }",
+               filterParams: {},
+               givens: {},
+               responseShape: "compact",
+            });
+         expect(result.servedFrom ?? null).toBeNull();
+      },
+      { timeout: 30000 },
+   );
+
+   it(
+      "is refused at load as a #(materialize) source, with materialize-not-built",
+      async () => {
+         managed();
+         await withMaterialize(async () => {
+            const pkg = await loadPackage(
+               `${RAW}#(materialize)\nsource: kept is raw extend { where: amount > 0 }\n`,
+            );
+            const [warning] = coded(pkg, "materialize-not-built");
+            expect(warning).toMatchObject({
+               severity: "warn",
+               subject: "kept",
+            });
+            expect(refusals(pkg)).toEqual([
+               ["kept", "database", "storage_source_unsupported"],
+            ]);
+         });
+      },
+      { timeout: 30000 },
+   );
+
+   it(
+      "still plans the same source on a connection that is not managed",
+      async () => {
+         const pkg = await loadPackage(
+            `${RAW}#@ persist name="t"\n${ROLLUP}\n`,
+         );
+         expect(coded(pkg, "persist-not-built")).toEqual([]);
+         expect(refusals(pkg)).toEqual([]);
+         expect(
+            Object.values(pkg.getBuildPlan()?.sources ?? {}).map((s) => s.name),
+         ).toEqual(["daily"]);
       },
       { timeout: 30000 },
    );

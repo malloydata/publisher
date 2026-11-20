@@ -178,6 +178,8 @@ export interface PackagePlan<Finding = unknown> {
    connectionDigests: Record<string, string>;
    /** Each connection's configured type, by name (see `CompiledBuildPlan`). */
    connectionTypes: Record<string, string>;
+   /** The connections configured `managed` (see `CompiledBuildPlan`). */
+   managedConnections: string[];
    /**
     * Every connection a persist source builds on, including sources the plan
     * skipped (a connection that did not resolve) or refused, so a connection

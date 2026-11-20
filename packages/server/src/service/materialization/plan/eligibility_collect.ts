@@ -73,6 +73,8 @@ interface EligibilityPlan {
    addresses: PlanAddresses;
    /** See `CompiledBuildPlan.connectionTypes`. */
    connectionTypes?: Record<string, string>;
+   /** See `CompiledBuildPlan.managedConnections`. */
+   managedConnections?: readonly string[];
    /** See `CompiledBuildPlan.accessReads`. */
    accessReads?: readonly string[];
    /** See `CompiledBuildPlan.versionScoped` ({@link persistTableTarget}). */
@@ -533,12 +535,13 @@ export function withoutSources<
 export function tierGateInputs(
    compiled: Pick<
       EligibilityPlan,
-      "tables" | "connectionTypes" | "accessReads"
+      "tables" | "connectionTypes" | "managedConnections" | "accessReads"
    >,
 ): TierGateInputs {
    return {
       tables: compiled.tables,
       connectionTypes: compiled.connectionTypes,
+      managedConnections: compiled.managedConnections,
       accessReads: compiled.accessReads,
    };
 }

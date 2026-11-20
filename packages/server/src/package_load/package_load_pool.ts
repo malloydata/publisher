@@ -74,7 +74,10 @@ import {
    checkCompileServedCopyResult,
    checkLoadPackageResult,
 } from "./protocol_decode";
-import { connectionTypeOf } from "../service/connection_type";
+import {
+   connectionTypeOf,
+   isManagedConnection,
+} from "../service/connection_type";
 import { SchemaRefetches } from "./schema_refetch";
 import { sqlKey } from "@malloydata/malloy";
 
@@ -930,6 +933,7 @@ export class PackageLoadPool {
                name: msg.connectionName,
                dialectName: conn.dialectName,
                connectionType: connectionTypeOf(conn),
+               ...(isManagedConnection(conn) ? { managed: true } : {}),
                digest:
                   typeof conn.getDigest === "function"
                      ? conn.getDigest()

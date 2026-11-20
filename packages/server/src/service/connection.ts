@@ -4397,9 +4397,12 @@ export function buildEnvironmentMalloyConfig(
                      });
                   }
                }
-               // Its configured type, which a `storage=` build's eligibility
-               // reads (a dialect does not tell DuckDB from DuckLake).
-               recordConnectionType(connection, metadata?.apiConnection.type);
+               // Its configured type, and whether it is `managed`, which a
+               // build's eligibility reads (a dialect does not tell DuckDB
+               // from DuckLake, nor a managed catalog from another).
+               recordConnectionType(connection, metadata?.apiConnection.type, {
+                  managed: metadata?.apiConnection.managed === true,
+               });
                return applyConnectionFingerprint(connection, metadata);
             },
          };

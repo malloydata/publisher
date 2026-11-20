@@ -36,6 +36,7 @@ export type RunPlan = Pick<PackagePlan, "builds" | "connectionDigests"> &
       Pick<
          PackagePlan,
          | "connectionTypes"
+         | "managedConnections"
          | "versionScoped"
          | "tableFolds"
          | "addresses"
@@ -78,6 +79,7 @@ export async function compileRunPlan(
          builds: packagePlan.builds,
          connectionDigests: packagePlan.connectionDigests,
          connectionTypes: packagePlan.connectionTypes,
+         managedConnections: packagePlan.managedConnections,
          versionScoped: packagePlan.versionScoped,
          tableFolds: packagePlan.tableFolds,
          addresses: packagePlan.addresses,

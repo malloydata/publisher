@@ -158,7 +158,10 @@ import {
    getMaterializeEnabled,
    getPersistCollisionEnforce,
 } from "../../../config";
-import { resolveConnectionTypes } from "../../connection_type";
+import {
+   resolveConnectionTypes,
+   resolveManagedConnections,
+} from "../../connection_type";
 import { sourceReads } from "../../governance/ir/source_reads";
 import { collectAccessReads } from "./access_closure";
 import {
@@ -2043,6 +2046,7 @@ export function finishBuildPlan(
       ...parts,
       connectionDigests: ctx.connectionDigests,
       connectionTypes: resolveConnectionTypes(ctx.connections),
+      managedConnections: resolveManagedConnections(ctx.connections),
       connections: ctx.connections,
       ...(ctx.keyCheckCompilers && ctx.keyCheckCompilers.size > 0
          ? { keyCheckCompilers: ctx.keyCheckCompilers }
@@ -2149,6 +2153,7 @@ export function derivePackagePlan(
       builds: compiled.builds,
       connectionDigests: compiled.connectionDigests,
       connectionTypes: compiled.connectionTypes ?? {},
+      managedConnections: compiled.managedConnections ?? [],
       buildConnectionNames: [
          ...new Set(compiled.builds.map((b) => b.connectionName)),
       ].sort(),

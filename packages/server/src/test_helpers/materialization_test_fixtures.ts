@@ -431,6 +431,7 @@ export function makePlanOutcome(
       builds: [],
       connectionDigests: {},
       connectionTypes: {},
+      managedConnections: [],
       versionScoped: false,
       tableFolds: {},
       addresses: {},
