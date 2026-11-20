@@ -490,6 +490,69 @@ describe("rendering by layout", () => {
          }
       });
 
+      it("keeps each cell's answer under a tile's query key, so a remount within the cache window does not ask again", async () => {
+         executeQueryModel.mockImplementation(
+            () => Promise.resolve({ data: { result: "{}" } }) as Promise<never>,
+         );
+         try {
+            const first = render(
+               <Report resourceUri={URI} path="notebooks/legacy.malloynb" />,
+               { wrapper: serverWrapper },
+            );
+            await waitFor(() =>
+               expect(
+                  screen.getAllByRole("button", { name: "Malloy code" }),
+               ).toHaveLength(2),
+            );
+            expect(executeQueryModel).toHaveBeenCalledTimes(2);
+            expect(cacheKeys("queryResult")).toContain(
+               '["queryResult","env","pkg",null,"notebooks/legacy.malloynb",null,"run: big -> { aggregate: n is count() }",null,"{}","http://localhost/api/v0"]',
+            );
+            first.unmount();
+
+            render(
+               <Report resourceUri={URI} path="notebooks/legacy.malloynb" />,
+               { wrapper: serverWrapper },
+            );
+            await waitFor(() =>
+               expect(
+                  screen.getAllByRole("button", { name: "Malloy code" }),
+               ).toHaveLength(2),
+            );
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            expect(executeQueryModel).toHaveBeenCalledTimes(2);
+         } finally {
+            executeQueryModel.mockImplementation(() => pending());
+         }
+      });
+
+      it("cancels a cell's request when the report goes away, and caches nothing for it", async () => {
+         let signal: AbortSignal | undefined;
+         executeQueryModel.mockImplementation(((..._args: unknown[]) => {
+            signal = (_args[6] as { signal?: AbortSignal } | undefined)?.signal;
+            return pending();
+         }) as never);
+         try {
+            const view = render(
+               <Report resourceUri={URI} path="notebooks/legacy.malloynb" />,
+               { wrapper: serverWrapper },
+            );
+            await waitFor(() =>
+               expect(executeQueryModel).toHaveBeenCalledTimes(2),
+            );
+            expect(signal?.aborted).toBe(false);
+            view.unmount();
+            await waitFor(() => expect(signal?.aborted).toBe(true));
+            const states = globalQueryClient
+               .getQueryCache()
+               .findAll({ queryKey: ["queryResult"] })
+               .map((query) => query.state.data);
+            expect(states.every((data) => data === undefined)).toBe(true);
+         } finally {
+            executeQueryModel.mockImplementation(() => pending());
+         }
+      });
+
       it("sends no givens when none is set", async () => {
          render(<Report resourceUri={URI} path="notebooks/legacy.malloynb" />, {
             wrapper: serverWrapper,
