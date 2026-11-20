@@ -806,7 +806,9 @@ refused alone, with reason `upstream_unread` and a `*-not-built` warning naming 
 answers live, no run builds it, and a host's instruction for it is refused, until a reload (or a
 connection change's plan refresh) reads the catalog and plans it at its address, where a table
 already built for it serves again. A table the dialect gives no catalog to read folds `no_catalog`,
-a stable value. A source whose tables cannot be known (an
+one the catalog does not hold (a BigQuery wildcard table such as `events_*`) folds `not_found`, and an
+unqualified name the catalog holds in more than one schema folds `ambiguous`: each a stable value, so
+such a source is planned and built. A source whose tables cannot be known (an
 `.sql()` source or a raw SQL expression in its lineage, so no `reads`) folds nothing: a column
 retyped under it is not seen, and is handled at the bind as below. Each build records what it
 read on its manifest entry (`upstreamSchemas`).

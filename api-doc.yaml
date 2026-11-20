@@ -11935,13 +11935,17 @@ components:
                 type: string
         unread:
           type: string
-          enum: [no_catalog, read_failed]
+          enum: [no_catalog, not_found, ambiguous, read_failed]
           description: >-
             Why the table has no columns here. `no_catalog`: its dialect gives
             this table no catalog to read (an unqualified BigQuery name, a path
-            the catalog cannot parse). `read_failed`: the catalog read failed
-            and no earlier reading of the table was known in this process;
-            a later load that reads it moves the address once.
+            the catalog cannot parse). `not_found`: the catalog holds no such
+            table (a BigQuery wildcard table, a table not created yet).
+            `ambiguous`: an unqualified name the catalog holds in more than one
+            schema. These three are stable and fold into the address.
+            `read_failed`: the catalog read failed and no earlier reading of
+            the table was known in this process; the plan refuses each source
+            that reads it (`upstream_unread`), so no address folds it.
     TableRead:
       type: object
       required: [connectionName, table]

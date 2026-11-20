@@ -39,7 +39,19 @@ export type UpstreamSchemaReading =
          */
         dialect?: string;
      }
-   | { unread: "no_catalog" | "read_failed" };
+   | {
+        /**
+         * Why there are no columns. Permanent, folded into the address as a
+         * stable value: `no_catalog` (the dialect gives the table no catalog
+         * to read), `not_found` (the catalog holds no such table: a BigQuery
+         * wildcard table, a table not created yet), `ambiguous` (an unqualified
+         * name the catalog holds in more than one schema). Transient, so the
+         * plan refuses each source that reads it until a read succeeds:
+         * `read_failed` (the catalog query or the connection failed, or timed
+         * out).
+         */
+        unread: "no_catalog" | "not_found" | "ambiguous" | "read_failed";
+     };
 
 /** Every table a plan's sources read, by {@link upstreamTableKey}. */
 export type UpstreamSchemaReadings = Readonly<

@@ -2391,8 +2391,8 @@ function refuseIncrementalUnbuildable<
  * schema, which a later successful read moves, so it is neither built nor
  * served: it answers live, no run builds it, and a host's instruction for it
  * is refused, until a reload or a plan refresh reads the catalog and plans it
- * at its address. A table the dialect gives no catalog to read
- * (`no_catalog`) is a stable fold and refuses nothing.
+ * at its address. A reading of what the catalog holds (`no_catalog`,
+ * `not_found`, `ambiguous`) is a stable fold and refuses nothing.
  */
 function refuseUpstreamUnread<T extends Omit<FinishedBuildPlan, "connections">>(
    compiled: T,

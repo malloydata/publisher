@@ -61,22 +61,23 @@ describe("R-13: a source whose upstream table has no reading", () => {
       expect(refusals[0].message).toContain('"t" on connection "duckdb"');
    });
 
-   it("is planned, at a stable address, when the dialect gives it no catalog to read", async () => {
-      const first = await planWith({ unread: "no_catalog" });
-      const second = await planWith({ unread: "no_catalog" });
-      expect(names(first)).toEqual(["by_cat", "plain"]);
-      const addressOf = (plan: typeof first) => {
-         const source = Object.values(sourcesIn(plan)).find(
-            (s) => s.name === "by_cat",
-         )!;
-         return computeSourceEntityId(
-            source,
-            plan.connectionDigests,
-            undefined,
-            undefined,
-            plan.upstreamSchemas,
-         );
-      };
-      expect(addressOf(first)).toBe(addressOf(second));
-   });
+   for (const unread of ["no_catalog", "not_found", "ambiguous"] as const)
+      it(`is planned, at a stable address, for a ${unread} reading of what the catalog holds`, async () => {
+         const first = await planWith({ unread });
+         const second = await planWith({ unread });
+         expect(names(first)).toEqual(["by_cat", "plain"]);
+         const addressOf = (plan: typeof first) => {
+            const source = Object.values(sourcesIn(plan)).find(
+               (s) => s.name === "by_cat",
+            )!;
+            return computeSourceEntityId(
+               source,
+               plan.connectionDigests,
+               undefined,
+               undefined,
+               plan.upstreamSchemas,
+            );
+         };
+         expect(addressOf(first)).toBe(addressOf(second));
+      });
 });

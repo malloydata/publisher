@@ -22,7 +22,8 @@
  * none, the table reads `read_failed`, and the plan refuses each source that
  * reads it (`upstream_unread`) rather than address it, until a read
  * succeeds. A table the dialect gives no catalog to read reads `no_catalog`,
- * a stable fold. Never throws.
+ * one the catalog does not hold `not_found`, and an unqualified name it holds
+ * in more than one schema `ambiguous`: each a stable fold. Never throws.
  */
 
 import { errorCodeOf } from "../../../error_code";
@@ -229,6 +230,15 @@ async function readOnce(
          });
       } else if (observed?.unread === "unparseable") {
          out.set(key, { reading: { unread: "no_catalog" }, retryable: false });
+      } else if (
+         observed?.unread === "not_found" ||
+         observed?.unread === "ambiguous"
+      ) {
+         // What the catalog holds, not a failure to read it: a stable reading.
+         out.set(key, {
+            reading: { unread: observed.unread },
+            retryable: false,
+         });
       } else {
          const reason = observed?.unread ?? "not_read";
          out.set(key, {

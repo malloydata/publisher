@@ -216,3 +216,67 @@ describe("R-13: an upstream table's path, resolved as the warehouse resolves SQL
       expect(sql).toContain("'Orders'");
    });
 });
+
+describe("R-13: what the catalog holds, read as a stable reading", () => {
+   /** One table read on a fake `dialect` connection answering `rows`, or failing. */
+   async function readingOf(
+      dialect: string,
+      table: string,
+      rows: Record<string, unknown>[] | Error,
+   ) {
+      let calls = 0;
+      const connection = {
+         dialectName: dialect,
+         runSQL: async () => {
+            calls++;
+            if (rows instanceof Error) throw rows;
+            return { rows, totalRows: rows.length };
+         },
+      } as unknown as Connection;
+      const readings = await readUpstreamSchemas({
+         tables: [{ connectionName: "w", table }],
+         connection: async () => connection,
+         refresh: true,
+         timeoutMs: 5_000,
+      });
+      return {
+         reading: readings[upstreamTableKey({ connectionName: "w", table })],
+         calls,
+      };
+   }
+
+   it("reads a BigQuery wildcard table the catalog has no columns for as not_found, read once", async () => {
+      const { reading, calls } = await readingOf(
+         "standardsql",
+         "proj.ds.events_*",
+         [],
+      );
+      expect(reading).toEqual({ unread: "not_found" });
+      expect(calls).toBe(1);
+   });
+
+   it("reads an unqualified Snowflake name held in two schemas as ambiguous", async () => {
+      const row = (schema: string) => ({
+         table_catalog: "DB",
+         table_schema: schema,
+         table_name: "ORDERS",
+         column_name: "ID",
+         data_type: "NUMBER",
+      });
+      const { reading } = await readingOf("snowflake", "orders", [
+         row("A"),
+         row("B"),
+      ]);
+      expect(reading).toEqual({ unread: "ambiguous" });
+   });
+
+   it("still reads a failed catalog query as read_failed, after retrying", async () => {
+      const { reading, calls } = await readingOf(
+         "standardsql",
+         "proj.ds.events",
+         new Error("catalog unavailable"),
+      );
+      expect(reading).toEqual({ unread: "read_failed" });
+      expect(calls).toBeGreaterThan(1);
+   });
+});
