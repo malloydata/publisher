@@ -974,7 +974,9 @@ describe("readNotebookCells on inline text", () => {
    it("refuses when the compile holds a different number of runs than the file", () => {
       const result = readText("## artifact {}\nrun: a -> b\n", 2);
       expect(result.cells).toEqual([]);
-      expect(result.error?.message).toContain("found 1 run:");
+      expect(result.error?.message).toContain(
+         "disagree on the number of run: statements. The reader found 1 and the compiler 2.",
+      );
    });
 
    it("keeps an emoji-bearing line whole, slicing by code point", () => {

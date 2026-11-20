@@ -759,14 +759,11 @@ export function readNotebookCells(
    const runCount = items.filter(
       (item) => item.kind === "statement" && item.run,
    ).length;
-   // A reader that disagrees with the compiler about the runs refuses rather
-   // than guess. Its message still says query cells are matched to results,
-   // which nothing does any more; the refusal stays as the check.
    // No modelDef reads cells off text that is not compiled whole (a document with restricted cells blanked).
    if (modelDef && runCount !== modelDef.queryList.length) {
       return refuse({
          line: 1,
-         message: `Line 1: the notebook reader found ${runCount} run: statements where Malloy compiled ${modelDef.queryList.length}, so its query cells cannot be matched to their results. Fix: none in the file; report it, since the reader and the compiler disagree.`,
+         message: `Line 1: the notebook reader and the Malloy compiler disagree on the number of run: statements. The reader found ${runCount} and the compiler ${modelDef.queryList.length}. Fix: none in the file; report it.`,
       });
    }
 
