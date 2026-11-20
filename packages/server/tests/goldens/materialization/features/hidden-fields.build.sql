@@ -5,8 +5,8 @@
 -- ==== source orders
 -- sourceID: orders@<pkg>/m.malloy
 -- connection: duckdb
--- sourceEntityId: c215bd26b05cb26ff0cc5d7d83a4ed555895a01a0516d9ce4abfe890ba3be71c
--- compiler key: c215bd26b05cb26ff0cc5d7d83a4ed555895a01a0516d9ce4abfe890ba3be71c (the sourceEntityId)
+-- sourceEntityId: 6be85f7d514ffc4f5a414247bb5bf431858df7313b2e2c41d711997beaccfaac
+-- compiler key: c215bd26b05cb26ff0cc5d7d83a4ed555895a01a0516d9ce4abfe890ba3be71c
 -- build SQL:
 SELECT 
    base."customer_id" as "customer_id",
@@ -25,8 +25,8 @@ FROM 'data/orders.csv' as base
 -- ==== source wide
 -- sourceID: wide@<pkg>/m.malloy
 -- connection: duckdb
--- sourceEntityId: 2f6d3e57f13e9e62faf8122e60768b040c87df9c415fd3890f48c5d3915609ce
--- compiler key: 2f6d3e57f13e9e62faf8122e60768b040c87df9c415fd3890f48c5d3915609ce (the sourceEntityId)
+-- sourceEntityId: 096ef4223a870d93cbadb8d536e5ec94269c97c6aef6b62e8b89622774d48605
+-- compiler key: 2f6d3e57f13e9e62faf8122e60768b040c87df9c415fd3890f48c5d3915609ce
 -- build SQL:
 SELECT 
    base."id" as "id",

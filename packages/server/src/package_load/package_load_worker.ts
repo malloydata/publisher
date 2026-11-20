@@ -132,6 +132,8 @@ import type {
    ReadUrlResponse,
    SchemaForSqlRequest,
    SchemaForSqlResponse,
+   UpstreamSchemasRequest,
+   UpstreamSchemasResponse,
    SchemaForTablesRequest,
    SchemaForTablesResponse,
    SerializedModel,
@@ -196,6 +198,7 @@ function dispatchMainResponse(message: MainToWorkerMessage): void {
    if (
       message.type === "schema-for-tables-response" ||
       message.type === "schema-for-sql-response" ||
+      message.type === "upstream-schemas-response" ||
       message.type === "read-url-response" ||
       message.type === "connection-metadata-response"
    ) {
@@ -1574,6 +1577,7 @@ async function loadPackage(
       packageMetadata.materialization ?? null,
       // Only a published version's tables are named per version.
       !!job.publishedVersion && packageMetadata.scope === "version",
+      job.requestId,
    );
    const loadEnd = performance.now();
    return {
@@ -1612,6 +1616,8 @@ async function finishWorkerBuildPlan(
    load: LoadContext,
    materializationConfig: WirePackageMaterialization | null,
    versionScoped: boolean,
+   /** The job the main thread answers this load's requests for. */
+   jobId: string,
 ): Promise<WorkerBuildPlan | undefined> {
    if (!load.planParts || load.failed || load.planLeftToMainThread) {
       return undefined;
@@ -1632,6 +1638,20 @@ async function finishWorkerBuildPlan(
          getMalloyConnection: (name: string) =>
             malloyConfig.connections.lookupConnection(name),
          versionScoped,
+         // Read on the main thread, which holds the connections; refetched
+         // there under a refreshing load.
+         readUpstreamSchemas: async (tables) =>
+            (
+               await callMain<UpstreamSchemasResponse>((requestId) => {
+                  const req: UpstreamSchemasRequest = {
+                     type: "upstream-schemas",
+                     requestId,
+                     jobId,
+                     tables,
+                  };
+                  port.postMessage(req);
+               })
+            ).readings,
       });
       digestSkipped = finished.digestSkipped;
       return {

@@ -190,8 +190,15 @@ import {
    resolveConnectionDigests,
    withoutSourceIDs,
    sourceBuildsOf,
+   upstreamSchemasOfSource,
+   upstreamTablesOf,
    type PlanAddresses,
 } from "./addressing";
+import {
+   type UpstreamSchemaReadings,
+   type UpstreamTable,
+   upstreamTableKey,
+} from "../domain/upstream_schemas";
 import {
    materializePlansOf,
    type CompiledBuildPlan as PlannedBuild,
@@ -1780,6 +1787,7 @@ export function deriveBuildPlan(
       | "connectionTypes"
       | "omittedSources"
       | "tableFolds"
+      | "upstreamSchemas"
    > & { addresses: PlanAddresses },
    packageMaterialization?: WirePackageMaterialization | null,
    verdicts: ReadonlyMap<string, TableVerdict> = planVerdicts(compiled),
@@ -1817,6 +1825,7 @@ export function deriveBuildPlan(
             decided.annotationFields,
             planAddressOf(compiled, sourceID),
             packageMaterialization,
+            compiled.upstreamSchemas,
          );
       } catch (err) {
          // Reported, so a host does not read the source's absence as its
@@ -1863,6 +1872,7 @@ function wireSourceOf(
    annotationFields: Record<string, string>,
    sourceEntityId: string,
    packageMaterialization: WirePackageMaterialization | null | undefined,
+   upstreamSchemaReadings: UpstreamSchemaReadings | undefined,
 ): WirePersistSourcePlan {
    const { source, rollup, modelPath } = table;
    return {
@@ -1892,12 +1902,23 @@ function wireSourceOf(
       columns: deriveColumns(source),
       // Omitted, never partial, when the tables cannot be known.
       ...readsOf(source),
+      // The readings its address folds in; absent with `reads`.
+      ...upstreamSchemasFieldOf(source, upstreamSchemaReadings),
       // Resolved, not passed through; a source failing either is in
       // `refusedSources` instead.
       ...planDynamicFields(source),
       annotationFields,
       modelPath,
    };
+}
+
+/** The plan's `upstreamSchemas` for one source; {} when it folds none. */
+function upstreamSchemasFieldOf(
+   source: PersistSource,
+   readings: UpstreamSchemaReadings | undefined,
+): Pick<WirePersistSourcePlan, "upstreamSchemas"> {
+   const upstreamSchemas = upstreamSchemasOfSource(source, readings);
+   return upstreamSchemas ? { upstreamSchemas } : {};
 }
 
 /** The plan's `reads` for one source; {} when they cannot be known. */
@@ -2029,6 +2050,8 @@ export function finishBuildPlan(
    parts: BuildPlanParts,
    ctx: {
       connectionDigests: Record<string, string>;
+      /** See {@link CompiledBuildPlan.upstreamSchemas}; absent, none read. */
+      upstreamSchemas?: UpstreamSchemaReadings;
       connections: Map<string, MalloyConnection>;
       /** The package names its tables per version (`scope: "version"`). */
       versionScoped: boolean;
@@ -2045,6 +2068,7 @@ export function finishBuildPlan(
       ...(ctx.versionScoped ? { versionScoped: true } : {}),
       ...parts,
       connectionDigests: ctx.connectionDigests,
+      ...(ctx.upstreamSchemas ? { upstreamSchemas: ctx.upstreamSchemas } : {}),
       connectionTypes: resolveConnectionTypes(ctx.connections),
       managedConnections: resolveManagedConnections(ctx.connections),
       connections: ctx.connections,
@@ -2077,12 +2101,18 @@ export async function finishPackagePlan(
    parts: BuildPlanParts,
    ctx: Omit<
       Parameters<typeof finishBuildPlan>[1],
-      "connectionDigests" | "connections"
+      "connectionDigests" | "connections" | "upstreamSchemas"
    > & {
       getMalloyConnection(name: string): Promise<MalloyConnection>;
+      /**
+       * Read the native column types of the tables the plan's sources read
+       * (the load's catalog read, or a run's reuse of its load's readings).
+       * Absent, none is read and every address is its SQL's alone: a spec's.
+       */
+      readUpstreamSchemas?: UpstreamSchemaReader;
    },
 ): Promise<{ compiled: FinishedBuildPlan; digestSkipped: string[] }> {
-   const { getMalloyConnection, ...finish } = ctx;
+   const { getMalloyConnection, readUpstreamSchemas, ...finish } = ctx;
    const connections = await resolvePackageConnections(
       { getMalloyConnection },
       parts.builds.map((b) => b.connectionName),
@@ -2093,14 +2123,44 @@ export async function finishPackagePlan(
       parts.builds,
       (name) => digestSkipped.push(name),
    );
+   const upstreamSchemas = readUpstreamSchemas
+      ? await readUpstreamSchemas(planUpstreamTables(parts.tables))
+      : undefined;
    return {
       compiled: finishBuildPlan(parts, {
          ...finish,
          connectionDigests,
+         ...(upstreamSchemas ? { upstreamSchemas } : {}),
          connections,
       }),
       digestSkipped,
    };
+}
+
+/**
+ * Reads the native column types of `tables`, each answered by
+ * `upstreamTableKey`: a reading for every table asked, never a throw.
+ */
+export type UpstreamSchemaReader = (
+   tables: UpstreamTable[],
+) => Promise<UpstreamSchemaReadings>;
+
+/**
+ * Every table the plan's sources read (their `reads`), distinct, in a stable
+ * order: what a load reads the catalog for.
+ */
+function planUpstreamTables(
+   tables: Readonly<Record<string, { source: PersistSource }>>,
+): UpstreamTable[] {
+   const out = new Map<string, UpstreamTable>();
+   for (const { source } of Object.values(tables)) {
+      for (const read of upstreamTablesOf(source) ?? []) {
+         out.set(upstreamTableKey(read), read);
+      }
+   }
+   return [...out.entries()]
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+      .map(([, t]) => t);
 }
 
 /**
@@ -2159,6 +2219,7 @@ export function derivePackagePlan(
       ].sort(),
       versionScoped: compiled.versionScoped === true,
       tableFolds: { ...compiled.tableFolds },
+      upstreamSchemas: { ...compiled.upstreamSchemas },
       addresses: { ...compiled.addresses },
       compilerKeys: compilerKeysOf(compiled),
       annotationFindings,

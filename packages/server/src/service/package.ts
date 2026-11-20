@@ -4,7 +4,16 @@
 import { quotedIdentifier, quotedPath, stringLiteral } from "./malloy_text";
 import { INCREMENTAL_NO_MERGE_KEY_CODE } from "./materialization/plan/incremental_policy";
 import { recordConnectionType } from "./connection_type";
-import { withNameProblems, withRetainedAliases } from "./materialization";
+import {
+   readUpstreamSchemas,
+   withNameProblems,
+   withRetainedAliases,
+} from "./materialization";
+import {
+   type UpstreamSchemaReadings,
+   type UpstreamTable,
+   upstreamTableKey,
+} from "./materialization/domain/upstream_schemas";
 import * as fs from "fs/promises";
 import * as path from "path";
 import { pathToFileURL } from "url";
@@ -400,6 +409,12 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
     * per-package or deprecated-usage metrics. See {@link Package.create}.
     */
    private dryRun = false;
+   /**
+    * This load is an explicit refresh (a reload, a publish): it reads its
+    * upstream tables' column types from their catalogs again rather than
+    * keep this process's readings (readUpstreamSchemas).
+    */
+   private refreshesUpstreamSchemas = false;
    /**
     * The package's materialization state: build plan, eligibility, bound
     * manifest, serve routing and persistence-policy findings.
@@ -1576,6 +1591,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          modelPolicy,
       );
       pkg.dryRun = dryRun;
+      pkg.refreshesUpstreamSchemas = refreshSchemas;
       pkg.persistNameProblems = nameProblems;
       let reportTimings: Awaited<ReturnType<Package["discoverReports"]>>;
       let buildPlanMs: Awaited<
@@ -2706,6 +2722,38 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       connectionName: string,
    ): Promise<Connection> {
       return this.malloyConfig.connections.lookupConnection(connectionName);
+   }
+
+   /** See {@link BuildPlanPackage.readUpstreamSchemas}. */
+   public async readUpstreamSchemas(
+      tables: UpstreamTable[],
+      use: "load" | "run",
+   ): Promise<UpstreamSchemaReadings> {
+      const connection = (name: string) => this.getMalloyConnection(name);
+      if (use === "load") {
+         return readUpstreamSchemas({
+            tables,
+            connection,
+            refresh: this.refreshesUpstreamSchemas,
+         });
+      }
+      // A run addresses each source as the plan in force does: its load's
+      // readings, and a reading only of a table that plan did not read.
+      const known = this.mz.plan.upstreamSchemas;
+      const unknown = tables.filter((t) => !(upstreamTableKey(t) in known));
+      const read = unknown.length
+         ? await readUpstreamSchemas({
+              tables: unknown,
+              connection,
+              refresh: false,
+           })
+         : {};
+      return Object.fromEntries(
+         tables.map((t) => {
+            const key = upstreamTableKey(t);
+            return [key, known[key] ?? read[key]];
+         }),
+      );
    }
 
    /**

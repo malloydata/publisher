@@ -1125,6 +1125,25 @@ function informationSchemaCatalogRead(
    };
 }
 
+/**
+ * The statement that reads the columns, with their native types, of any
+ * relation a model names (a table, a DuckDB file or URL), as Malloy reads
+ * its schema: `DESCRIBE SELECT * FROM <path>`, its rows' `column_name` and
+ * `column_type`. `path` is the model's table path, canonical SQL. Undefined
+ * on a dialect whose catalog is read instead.
+ */
+export function relationDescribeSQL(
+   path: string,
+   dialect: string,
+): string | undefined {
+   switch (registeredDialect(dialect)) {
+      case "duckdb":
+         return `DESCRIBE SELECT * FROM ${path}`;
+      default:
+         return undefined;
+   }
+}
+
 /** One table a batched catalog read asks for: a caller's key and its path's parts. */
 export interface CatalogTable {
    key: string;

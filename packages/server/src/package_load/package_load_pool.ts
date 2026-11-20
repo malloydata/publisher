@@ -26,6 +26,7 @@
  *   query may be waiting on it, and its caller compiles inline instead.
  */
 import type {
+   Connection,
    FetchSchemaOptions,
    InfoConnection,
    LookupConnection,
@@ -64,6 +65,8 @@ import type {
    RpcErrorResponse,
    SchemaForSqlRequest,
    SchemaForSqlResponse,
+   UpstreamSchemasRequest,
+   UpstreamSchemasResponse,
    SchemaForTablesRequest,
    SchemaForTablesResponse,
    SerializedModel,
@@ -79,6 +82,7 @@ import {
    isManagedConnection,
 } from "../service/connection_type";
 import { SchemaRefetches } from "./schema_refetch";
+import { readUpstreamSchemas } from "../service/materialization";
 import { sqlKey } from "@malloydata/malloy";
 
 // ──────────────────────────────────────────────────────────────────────
@@ -798,6 +802,9 @@ export class PackageLoadPool {
          case "schema-for-sql":
             this.answerWorker(pw, msg, this.handleSchemaForSql(pw, msg));
             return;
+         case "upstream-schemas":
+            this.answerWorker(pw, msg, this.handleUpstreamSchemas(pw, msg));
+            return;
          case "read-url":
             this.answerWorker(pw, msg, this.handleReadUrl(pw, msg));
             return;
@@ -940,6 +947,56 @@ export class PackageLoadPool {
                      : msg.connectionName,
                generation: connectionGeneration(conn),
             },
+         });
+      } catch (error) {
+         reply({
+            type: "rpc-error",
+            requestId: msg.requestId,
+            ok: false,
+            error: serializeError(error),
+         });
+      }
+   }
+
+   /**
+    * Read the native column types of a worker's plan's upstream tables
+    * through the job's connections; a refreshing load reads them again.
+    */
+   private async handleUpstreamSchemas(
+      pw: PoolWorker,
+      msg: UpstreamSchemasRequest,
+   ): Promise<void> {
+      const ctx = this.jobs.get(msg.jobId);
+      const reply = (
+         response: UpstreamSchemasResponse | RpcErrorResponse,
+      ): void => {
+         this.postToWorker(pw, response as MainToWorkerMessage);
+      };
+      if (!ctx) {
+         reply({
+            type: "rpc-error",
+            requestId: msg.requestId,
+            ok: false,
+            error: { name: "Error", message: `Unknown jobId ${msg.jobId}` },
+         });
+         return;
+      }
+      try {
+         const readings = await readUpstreamSchemas({
+            tables: msg.tables,
+            // The job's own connections, on this thread: real ones, which
+            // run SQL (the lookup's type is the compile's narrower view).
+            connection: async (name) =>
+               (await ctx.connections.lookupConnection(
+                  name,
+               )) as unknown as Connection,
+            refresh: ctx.refreshRequestedAt !== undefined,
+         });
+         reply({
+            type: "upstream-schemas-response",
+            requestId: msg.requestId,
+            ok: true,
+            readings,
          });
       } catch (error) {
          reply({

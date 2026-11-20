@@ -36,6 +36,7 @@ import { getPersistStorageMode } from "../../../config";
 import { groupAliasesByName, planSourceIds } from "../domain/source_aliases";
 import type { ApiConnection } from "../../model";
 import { packageRelativeText } from "../../../package_relative_text";
+import type { UpstreamSchemaReadings } from "../domain/upstream_schemas";
 
 /**
  * What a build needs from the plan about stored tables: which reached sources
@@ -396,6 +397,8 @@ export function chainedPlanFacts(
    connectionDigests: Record<string, string>,
    /** The plan's table folds (RunPlan.tableFolds). */
    tableFolds: TableFolds | undefined,
+   /** The plan's upstream readings (RunPlan.upstreamSchemas). */
+   upstreamSchemas: UpstreamSchemaReadings | undefined,
    /**
     * The run's instruction for a source, when it has one: its `destination`
     * decides the source's current tier over the `storage=` annotation, since a
@@ -425,6 +428,7 @@ export function chainedPlanFacts(
             connectionDigests,
             undefined,
             tableFolds,
+            upstreamSchemas,
          );
          compilerKeyBySourceId[sourceID] = compilerBuildId(source);
       } catch {

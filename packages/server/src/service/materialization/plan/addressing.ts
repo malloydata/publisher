@@ -31,6 +31,13 @@ import {
 import type { SourceBuild } from "../domain/compiled_build_plan";
 import { notesDeclarePersist } from "./declaration";
 import { reachableSourceIDs } from "../text/source_map";
+import { sourceReads } from "../../governance/ir/source_reads";
+import {
+   type UpstreamSchemaReadings,
+   type UpstreamTableSchema,
+   upstreamSchemaFold,
+   upstreamSchemasOf,
+} from "../domain/upstream_schemas";
 import {
    plannedModelDefOf,
    sourceDefOf,
@@ -310,6 +317,13 @@ export function computeSourceEntityId(
    target?: BuildTarget,
    /** The plan's {@link TableFolds}; absent, nothing is folded. */
    tableFolds?: TableFolds,
+   /**
+    * The plan's readings of the tables its sources read
+    * (`CompiledBuildPlan.upstreamSchemas`); absent, none is folded. Pass it
+    * wherever a plan's source is addressed, so a retyped upstream moves the
+    * address everywhere at once.
+    */
+   upstreamSchemas?: UpstreamSchemaReadings,
 ): string {
    // The target's `sql` is load-bearing: this address keys the covered_through
    // ledger (incremental_build.ts), so it must describe WHAT the source
@@ -324,17 +338,65 @@ export function computeSourceEntityId(
    // (build_targets_address_equality pins that); otherwise the two differ and
    // `manifestForCompiler` carries an entry under both. The digest stays the
    // caller's, so the same SQL on another connection is another table.
+   //
+   // The upstream fold names each table the build reads with its columns'
+   // native types (domain/upstream_schemas.ts), so a column retyped upstream,
+   // which leaves the SQL as it was, still re-addresses the table.
    const resolved = buildTargetOf(source, target);
    const fold = tableFolds?.[source.sourceID];
+   const upstream = upstreamFoldOf(source, upstreamSchemas);
    const chosen = testAddresses.get(resolved);
    if (chosen !== undefined) {
-      const layout = addressText(source, "", fold);
+      const layout = addressText(source, "", fold, upstream);
       return layout === "" ? chosen : makeDigest(chosen, layout);
    }
    return makeDigest(
       connectionDigests[source.connectionName],
-      addressText(source, resolved.sql, fold),
+      addressText(source, resolved.sql, fold, upstream),
    );
+}
+
+/**
+ * What `source`'s address folds in from `readings`: its `reads` with each
+ * table's reading. Undefined when its tables cannot be known, which keeps
+ * the address its SQL gives it.
+ */
+function upstreamFoldOf(
+   source: PersistSource,
+   readings: UpstreamSchemaReadings | undefined,
+): string | undefined {
+   if (!readings) return undefined;
+   return upstreamSchemaFold(upstreamTablesOf(source), readings);
+}
+
+/** Each source's `reads`, walked once: a compiled source never changes. */
+const readsBySource = new WeakMap<
+   PersistSource,
+   { reads: ReturnType<typeof sourceReads> }
+>();
+
+/** {@link sourceReads} of `source`, memoized. */
+export function upstreamTablesOf(
+   source: PersistSource,
+): ReturnType<typeof sourceReads> {
+   let known = readsBySource.get(source);
+   if (!known) {
+      known = { reads: sourceReads(source) };
+      readsBySource.set(source, known);
+   }
+   return known.reads;
+}
+
+/**
+ * The tables `source`'s build reads with their readings, as its manifest
+ * entry records them; undefined when its address folded none.
+ */
+export function upstreamSchemasOfSource(
+   source: PersistSource,
+   readings: UpstreamSchemaReadings | undefined,
+): UpstreamTableSchema[] | undefined {
+   if (!readings) return undefined;
+   return upstreamSchemasOf(upstreamTablesOf(source), readings);
 }
 
 /**
@@ -398,11 +460,14 @@ export function addressText(
    sql: string,
    /** The source's entry in its plan's {@link TableFolds}. */
    tableFold?: string,
+   /** What its upstream tables' readings fold in (upstreamSchemaFold). */
+   upstream?: string,
 ): string {
    let text = sql;
    const destination = addressDestination(source);
    if (destination !== undefined) text += `\n-- stored in: ${destination}`;
    if (tableFold) text += `\n-- table: ${tableFold}`;
+   if (upstream) text += `\n-- upstream schemas: ${upstream}`;
    return text;
 }
 
@@ -485,6 +550,7 @@ export function planAddresses(plan: {
    >;
    connectionDigests: Record<string, string>;
    tableFolds?: TableFolds;
+   upstreamSchemas?: UpstreamSchemaReadings;
 }): PlanAddresses {
    const addresses: Record<string, string | { unaddressable: string }> = {};
    for (const [sourceID, { source, target }] of Object.entries(plan.tables)) {
@@ -494,6 +560,7 @@ export function planAddresses(plan: {
             plan.connectionDigests,
             target,
             plan.tableFolds,
+            plan.upstreamSchemas,
          );
       } catch (err) {
          addresses[sourceID] = {

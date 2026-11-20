@@ -39,6 +39,7 @@ export type RunPlan = Pick<PackagePlan, "builds" | "connectionDigests"> &
          | "managedConnections"
          | "versionScoped"
          | "tableFolds"
+         | "upstreamSchemas"
          | "addresses"
          | "asOfBuild"
          | "accessReads"
@@ -82,6 +83,7 @@ export async function compileRunPlan(
          managedConnections: packagePlan.managedConnections,
          versionScoped: packagePlan.versionScoped,
          tableFolds: packagePlan.tableFolds,
+         upstreamSchemas: packagePlan.upstreamSchemas,
          addresses: packagePlan.addresses,
          asOfBuild: packagePlan.asOfBuild,
          accessReads: packagePlan.accessReads,
@@ -108,7 +110,11 @@ export function runPlanGateText(
 
 // The plan's per-source derivations the run reads: addresses, build SQL,
 // annotation fields, stored columns, and the gates a source is held to.
-export { buildSQLOf, presentAs } from "../plan/addressing";
+export {
+   buildSQLOf,
+   presentAs,
+   upstreamSchemasOfSource,
+} from "../plan/addressing";
 export {
    addressSQL,
    collectIncrementalDeclarations,

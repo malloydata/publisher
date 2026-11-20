@@ -324,6 +324,7 @@ export function resolveInstruction(
    persistSource: PersistSource,
    connectionDigests: RunPlan["connectionDigests"],
    tableFolds?: RunPlan["tableFolds"],
+   upstreamSchemas?: RunPlan["upstreamSchemas"],
 ): ResolvedInstruction | undefined {
    // sourceID first, so the caller's sourceEntityId scheme stays opaque; the
    // sourceEntityId lookup is the fallback for instructions without one.
@@ -346,6 +347,7 @@ export function resolveInstruction(
          connectionDigests,
          undefined,
          tableFolds,
+         upstreamSchemas,
       );
    } catch {
       return undefined;
@@ -384,6 +386,7 @@ export function assertNoTableCollisions(
    connectionDigests: RunPlan["connectionDigests"],
    index: InstructionIndex,
    tableFolds?: RunPlan["tableFolds"],
+   upstreamSchemas?: RunPlan["upstreamSchemas"],
 ): void {
    // Keyed by the table segment on its connection or destination: `main.t`
    // and `t` may be one table, as the plan's collision check reads them
@@ -420,6 +423,7 @@ export function assertNoTableCollisions(
                connectionDigests,
                undefined,
                tableFolds,
+               upstreamSchemas,
             );
          } catch {
             // getSQL() throws for a source the eligibility gate is about to

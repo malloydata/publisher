@@ -434,6 +434,7 @@ export function makePlanOutcome(
       managedConnections: [],
       versionScoped: false,
       tableFolds: {},
+      upstreamSchemas: {},
       addresses: {},
       persistedViews: {},
       eligibilityRefused: {},

@@ -47,6 +47,7 @@ import type { IncrementalPolicySource } from "./plan/incremental_policy";
 import type { MaterializePlan } from "./domain/table_plans";
 import type { IncrementalDeclaration } from "./domain/incremental";
 import type { BuildPlan } from "./domain/types";
+import type { UpstreamSchemaReadings } from "./domain/upstream_schemas";
 
 type ApiPackage = components["schemas"]["Package"];
 
@@ -93,6 +94,8 @@ interface PlanRecord {
    buildConnectionNames: ReadonlySet<string>;
    /** See PackagePlan.asOfBuild. */
    asOfBuild: Readonly<Record<string, AsOfBuildSource>>;
+   /** See PackagePlan.upstreamSchemas. */
+   upstreamSchemas: UpstreamSchemaReadings;
 }
 
 /** A record holding nothing: no plan, both eligibilities unknown. */
@@ -111,6 +114,7 @@ const EMPTY_RECORD: PlanRecord = {
    persistedViews: {},
    buildConnectionNames: new Set(),
    asOfBuild: {},
+   upstreamSchemas: {},
 };
 
 /**
@@ -236,6 +240,14 @@ export class PlanLifecycle {
    }
    get persistedViews(): Record<string, PersistedViewName> {
       return this.serving().persistedViews;
+   }
+   /**
+    * The readings of the tables the plan's sources read, as its load read
+    * them (PackagePlan.upstreamSchemas): a run reuses them, so it addresses
+    * each source as the load did.
+    */
+   get upstreamSchemas(): UpstreamSchemaReadings {
+      return this.serving().upstreamSchemas;
    }
    /** See PackagePlan.asOfBuild. */
    get asOfBuild(): Readonly<Record<string, AsOfBuildSource>> {
@@ -364,6 +376,7 @@ export class PlanLifecycle {
          persistedViews: outcome.persistedViews,
          buildConnectionNames: new Set(outcome.buildConnectionNames),
          asOfBuild: outcome.asOfBuild ?? {},
+         upstreamSchemas: outcome.upstreamSchemas ?? {},
       };
    }
 

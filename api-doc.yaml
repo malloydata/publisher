@@ -11788,6 +11788,19 @@ components:
             table MUST treat an absent `reads` as possibly reading any table on
             its connection, and an empty one as reading none. Not part of
             `sourceEntityId`.
+        upstreamSchemas:
+          type: array
+          items:
+            $ref: "#/components/schemas/UpstreamTableSchema"
+          description: >-
+            Each table in `reads` with its columns' types as its warehouse's
+            catalog named them when this package was loaded (or why it could
+            not be read). Part of `sourceEntityId`: a table whose columns or
+            types change re-addresses every source that reads it, so its table
+            is rebuilt rather than carried or reused. Read at the package's
+            first load in a process and again on every explicit reload or
+            publish. Absent when `reads` is absent: such a source's address is
+            its SQL's alone.
         annotationFields:
           type: object
           additionalProperties:
@@ -11859,6 +11872,48 @@ components:
             `#@ preaggregate` annotations it was synthesized from, which is where
             an author would go to change it.
 
+    UpstreamTableSchema:
+      type: object
+      required: [connectionName, table]
+      description: >-
+        One warehouse table a persist source's build reads, with its columns'
+        types as the warehouse's own catalog names them (`NUMERIC(12,4)`,
+        `FLOAT64`, `DOUBLE`), read when the package was loaded. Exactly one of
+        `columns` and `unread` is present.
+      properties:
+        connectionName:
+          type: string
+          description: The Malloy connection the table is read through, as in `TableRead`.
+        table:
+          type: string
+          description: The table path exactly as the model wrote it, as in `TableRead`.
+        dialect:
+          type: string
+          description: >-
+            The dialect of the connection the types are named in (`snowflake`,
+            `postgres`, `standardsql`, `duckdb`, ...): one type name means
+            different types on different dialects (Snowflake's `FLOAT` is a
+            double, DuckDB's a 4-byte float). Present with `columns`.
+        columns:
+          type: array
+          description: Each column, in catalog order, with its native type.
+          items:
+            type: object
+            required: [name, nativeType]
+            properties:
+              name:
+                type: string
+              nativeType:
+                type: string
+        unread:
+          type: string
+          enum: [no_catalog, read_failed]
+          description: >-
+            Why the table has no columns here. `no_catalog`: its dialect gives
+            this table no catalog to read (an unqualified BigQuery name, a path
+            the catalog cannot parse). `read_failed`: the catalog read failed
+            and no earlier reading of the table was known in this process;
+            a later load that reads it moves the address once.
     TableRead:
       type: object
       required: [connectionName, table]
@@ -12543,6 +12598,18 @@ components:
             producer did not record it.
           items:
             $ref: "#/components/schemas/Column"
+        upstreamSchemas:
+          type: array
+          description: >-
+            The warehouse tables this table's build read, each with its columns'
+            native types as the build's plan read them from the catalog (the
+            plan's `PersistSourcePlan.upstreamSchemas`), on both tiers. The
+            `sourceEntityId` folds them in, so an entry whose upstream was
+            retyped since is never the current address's. A host that stores
+            entries keeps this field as written. Absent on an entry built
+            before 0.17.0, and for a source whose tables cannot be known.
+          items:
+            $ref: "#/components/schemas/UpstreamTableSchema"
         realization:
           allOf:
             - $ref: "#/components/schemas/Realization"

@@ -49,6 +49,10 @@ import type {
 import type { PackageRetrievalSettings } from "../service/package_retrieval_settings";
 import type { DeprecatedManifestKey } from "../service/deprecated/manifest_keys";
 import type { ModelEntitiesPlan } from "../service/entities/plan";
+import type {
+   UpstreamSchemaReadings,
+   UpstreamTable,
+} from "../service/materialization/domain/upstream_schemas";
 
 /**
  * Version of this wire protocol. The worker stamps it on every
@@ -74,8 +78,11 @@ import type { ModelEntitiesPlan } from "../service/entities/plan";
  * 7: a refreshing load (`LoadPackageRequest.refreshTimestamp`), the schema
  * keys it refetched (`LoadPackageResult.refreshedSchemaKeys`), and
  * {@link ForgetSchemasMessage}.
+ *
+ * 8: the upstream-schema read ({@link UpstreamSchemasRequest}), and a build
+ * plan's `upstreamSchemas`.
  */
-export const PACKAGE_LOAD_PROTOCOL_VERSION = 7;
+export const PACKAGE_LOAD_PROTOCOL_VERSION = 8;
 
 // ──────────────────────────────────────────────────────────────────────
 // Direction: main ──▶ worker (load-package job)
@@ -509,6 +516,29 @@ export interface SchemaForSqlResponse {
    error?: string;
 }
 
+// ──────────────────────────────────────────────────────────────────────
+// Direction: worker ──▶ main (the build plan's upstream column types)
+// ──────────────────────────────────────────────────────────────────────
+
+/**
+ * Read the native column types of the tables a build plan's sources read,
+ * through the main thread's connections (a worker runs no SQL), refetched
+ * under a refreshing load.
+ */
+export interface UpstreamSchemasRequest {
+   type: "upstream-schemas";
+   requestId: string;
+   jobId: string;
+   tables: UpstreamTable[];
+}
+
+export interface UpstreamSchemasResponse {
+   type: "upstream-schemas-response";
+   requestId: string;
+   ok: true;
+   readings: UpstreamSchemaReadings;
+}
+
 export interface RpcErrorResponse {
    type: "rpc-error";
    requestId: string;
@@ -570,6 +600,7 @@ export type MainToWorkerMessage =
    | ConnectionMetadataResponse
    | SchemaForTablesResponse
    | SchemaForSqlResponse
+   | UpstreamSchemasResponse
    | ReadUrlResponse
    | RpcErrorResponse
    | ShutdownRequest
@@ -582,6 +613,7 @@ export type WorkerToMainMessage =
    | ConnectionMetadataRequest
    | SchemaForTablesRequest
    | SchemaForSqlRequest
+   | UpstreamSchemasRequest
    | ReadUrlRequest
    | WorkerLogMessage
    | WorkerUnhandledRejectionMessage

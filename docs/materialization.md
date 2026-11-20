@@ -784,18 +784,35 @@ in the same
 is reported too; one moved by a widening that loses nothing is not. Rebuilding the table
 clears it.
 
-The same holds when the table did not move but its source did: a warehouse column retyped
-upstream after the build, so the source now declares a type the table's value does not read as
-(an integer column now declared `string`). The build's SQL, and so the table's content address,
-is unchanged, so the bind finds the table as built. Every mechanism (a persisted view or query, a
+**A column retyped upstream re-addresses the sources that read it.** A source's content address
+folds in the native column types of every table its build reads (its plan entry's `reads`, each
+with its `upstreamSchemas`: `NUMERIC(12,4)`, `FLOAT64`, `DOUBLE`, read from the warehouse's catalog,
+DuckDB's `DESCRIBE`), so a column retyped, added or dropped upstream moves the address even
+though the build's SQL is unchanged: the table built from the old column is no longer the
+source's, the source answers live, and the next run builds a new table rather than carrying or
+reusing the old one. The types are read when a package is first loaded in a process and again on
+every explicit reload or publish, as Malloy's own schemas are; a read that fails keeps the
+table's last reading, so a passing failure never moves an address, and a table never read
+folds `read_failed` until a read succeeds (the one move that follows rebuilds once). A table the
+dialect gives no catalog to read folds `no_catalog`. A source whose tables cannot be known (an
+`.sql()` source or a raw SQL expression in its lineage, so no `reads`) folds nothing: a column
+retyped under it is not seen, and is handled at the bind as below. Each build records what it
+read on its manifest entry (`upstreamSchemas`).
+
+The same holds when the table did not move but its source did, and the address did not move with
+it (the type was read before the retype, with no reload since, or the source has no `reads`): a
+warehouse column retyped upstream after the build, so the source now declares a type the table's
+value does not read as (an integer column now declared `string`). The bind finds the table as
+built. Every mechanism (a persisted view or query, a
 `#(materialize)` or `#@ persist` source, a rollup) takes the column as moved: a query that reads
 it answers live with `MISSING_FIELD` and the column in its path report's detail, a query that
 does not still serves, and the warning says what its source reads changed type since the build. A
 column the table holds as a naive timestamp now declared `date`, or as an integer now declared
 `boolean`, is read through its faithful cast (`DATE`, `BOOLEAN`) and not reported: those are also
 the types a build writes by design for a `date` truncation and a `boolean` flag, and the cast
-leaves such a value as it is. Because the address did not move, a normal run
-reuses the table; only a forced refresh (`forceRefresh`) rebuilds it and clears the warning. The log line has the same code and names each changed column. A table
+leaves such a value as it is. While the address has not moved, a normal run
+reuses the table; a reload that reads the new type moves it, and a forced refresh
+(`forceRefresh`) rebuilds it in place; either clears the warning. The log line has the same code and names each changed column. A table
 whose columns cannot be read at the bind (missing, unreadable, or slower than the bound) is answered
 live, with a `database-table-unread` package warning that names the table, a fixed reason (the
 driver's own text, secrets redacted, is in the log alone) and whether a retry is pending, and read
