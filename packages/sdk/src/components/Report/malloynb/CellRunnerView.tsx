@@ -10,8 +10,15 @@
  */
 
 import "@malloydata/malloy-explorer/styles.css";
-import { Typography } from "@mui/material";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Stack, Typography } from "@mui/material";
+import {
+   useCallback,
+   useEffect,
+   useMemo,
+   useRef,
+   useState,
+   type ReactNode,
+} from "react";
 import type { NotebookCell as RawCell, ReportCells } from "../../../client";
 import type { GivenValue } from "../../../hooks/givenValue";
 import { useDocumentControls } from "../../../hooks/useDocumentControls";
@@ -123,6 +130,12 @@ export interface CellReportProps {
     * destinations inert AND unmarked rather than painting a dead link.
     */
    onDrillNavigate?: (target: DrillNavigation, event?: MouseEvent) => void;
+   /**
+    * The host's actions for the report, drawn on the title's line when there
+    * is a title, and otherwise on a row of their own above the cells, since a
+    * `.malloynb`'s title is its own first markdown cell.
+    */
+   actions?: ReactNode;
 }
 
 /**
@@ -140,6 +153,7 @@ export function CellRunnerView({
    onGivensChange,
    onNavigate,
    onDrillNavigate,
+   actions,
    notebook,
    error,
    runCell,
@@ -496,6 +510,7 @@ export function CellRunnerView({
             title || description ? (
                <ReportHeader
                   title={title ?? ""}
+                  actions={actions}
                   description={
                      description ? (
                         <TextTileFrame>
@@ -504,6 +519,10 @@ export function CellRunnerView({
                      ) : undefined
                   }
                />
+            ) : actions ? (
+               <Stack direction="row" sx={{ justifyContent: "flex-end" }}>
+                  {actions}
+               </Stack>
             ) : null
          }
          controls={

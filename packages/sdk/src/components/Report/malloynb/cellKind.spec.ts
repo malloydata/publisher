@@ -88,6 +88,14 @@ describe("malloynbCellQuery", () => {
       ).toBe("run: s -> v");
    });
 
+   it("ends the query at a type: statement too", () => {
+      expect(
+         malloynbCellQuery({
+            text: "run: orders -> by_region\ntype: Foo is { a :: string }",
+         }),
+      ).toBe("run: orders -> by_region");
+   });
+
    it("finds a run: that shares a line with a declaration", () => {
       expect(
          malloynbCellQuery({

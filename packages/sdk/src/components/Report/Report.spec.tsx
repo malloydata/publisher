@@ -448,6 +448,55 @@ describe("rendering by layout", () => {
          }
       });
 
+      it("draws the host's actions, on a row of their own above the cells", async () => {
+         render(
+            <Report
+               resourceUri={URI}
+               path="notebooks/legacy.malloynb"
+               actions={<button type="button">Download</button>}
+            />,
+            { wrapper: serverWrapper },
+         );
+
+         const prose = await screen.findByText("Legacy prose");
+         const action = screen.getByRole("button", { name: "Download" });
+         // Above the notebook's first cell, which is its title.
+         expect(
+            action.compareDocumentPosition(prose) &
+               Node.DOCUMENT_POSITION_FOLLOWING,
+         ).toBeTruthy();
+      });
+
+      it("runs the cells with a ## givens starting value, and keeps it out of what it reports to the host", async () => {
+         manifest = {
+            ...LEGACY,
+            notebook: {
+               ...LEGACY.notebook,
+               startingGivens: { REGION: "East" },
+            },
+         } as ReportManifest;
+         const onGivensChange = mock(() => {});
+         render(
+            <Report
+               resourceUri={URI}
+               path="notebooks/legacy.malloynb"
+               onGivensChange={onGivensChange}
+            />,
+            { wrapper: serverWrapper },
+         );
+
+         await waitFor(() =>
+            expect(executeQueryModel).toHaveBeenCalledTimes(2),
+         );
+         for (const { request } of cellRequests()) {
+            expect(request).toMatchObject({ givens: { REGION: "East" } });
+         }
+         // `Report` mounts the cells only once the manifest has arrived, so
+         // the starting value is the controls' first state and is never
+         // reported as a change for the host to write into its URL.
+         expect(onGivensChange).not.toHaveBeenCalled();
+      });
+
       it("shows a cell's failure in that cell, and still runs the others", async () => {
          const quiet = spyOn(console, "error").mockImplementation(() => {});
          executeQueryModel.mockImplementation(((

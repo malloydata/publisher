@@ -68,7 +68,10 @@ export interface ReportProps {
     * router. Omitted, links are plain anchors.
     */
    onLinkNavigate?: (to: string, event?: NavigationClick) => void;
-   /** Height cap for a grid tile's result panel; see `DashboardView`. */
+   /**
+    * Height cap for a grid tile's result panel; see `DashboardView`. A linear
+    * report's tiles, and a `.malloynb`'s cells, take the layout's own.
+    */
    height?: number;
    maxResultSize?: number;
    /**
@@ -76,7 +79,10 @@ export interface ReportProps {
     * shown, a drill — for the host to log or count; see `ReportEvent`.
     */
    onEvent?: ReportEventHandler;
-   /** Ignored: kept so existing callers compile. Both layouts draw the same cards. */
+   /**
+    * Ignored: kept so existing callers compile. Both layouts draw the same
+    * cards, and a `.malloynb` draws its cells the same way.
+    */
    chrome?: TileChrome;
    /**
     * How long a read of the report is reused without asking the server again,
@@ -90,12 +96,16 @@ export interface ReportProps {
    /**
     * The host's actions for the report (a download, its own menu), drawn at
     * the end of the title's line rather than on a row of their own above it.
+    * A `.malloynb` has no title line, since its title is its own first
+    * markdown cell, so there they are drawn on a row of their own above the
+    * cells.
     */
    actions?: ReactNode;
    /**
     * The host's actions for the rows behind a clicked value (a download),
     * drawn in the rows dialog's title row. Omitted, the dialog offers its own
-    * Download CSV; return `null` for none.
+    * Download CSV; return `null` for none. A `.malloynb`'s cells open no rows
+    * dialog, so there it is unused.
     */
    rowsActions?: RowsActions;
 }
@@ -243,6 +253,7 @@ export function Report({
             onNavigate={onLinkNavigate}
             onDrillNavigate={drillNavigate}
             maxResultSize={maxResultSize}
+            {...(actions !== undefined ? { actions } : {})}
          />
       ) : (
          <DashboardView
