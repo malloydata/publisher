@@ -1916,9 +1916,13 @@ export class Model {
 
    /**
     * The query boundary for one notebook cell: the same two checks as the
-    * query route, with every code cell up to this one as derivation context,
-    * so `source: big is orders extend {...}` in an earlier cell still counts
-    * as derived from `orders`. Inert with no surface and under `"all"`.
+    * query route. A served notebook's cell has every code cell up to this one
+    * as derivation context, so `source: big is orders extend {...}` in an
+    * earlier cell still counts as derived from `orders`, as the file's own
+    * text makes it on the query route. A `.malloynb` cell runs as its `run:`
+    * statement alone, so it gets no cell text and no context: only its
+    * compiled run target is asked, and a source the cells declare is not on
+    * the surface. Inert with no surface and under `"all"`.
     */
    private async assertNotebookCellOnSurface(
       cellIndex: number,
@@ -1926,13 +1930,16 @@ export class Model {
    ): Promise<void> {
       const { mode, exploresDeclared } = this.queryBoundary;
       if (mode === "all" || !exploresDeclared) return;
+      const served = this.notebookFormat() === "malloy";
       const cells = this.runnableNotebookCells ?? [];
-      const cellText = cells[cellIndex]?.text ?? "";
-      const context = cells
-         .slice(0, cellIndex + 1)
-         .filter((c) => c.type === "code")
-         .map((c) => c.text)
-         .join("\n");
+      const cellText = served ? (cells[cellIndex]?.text ?? "") : undefined;
+      const context = served
+         ? cells
+              .slice(0, cellIndex + 1)
+              .filter((c) => c.type === "code")
+              .map((c) => c.text)
+              .join("\n")
+         : undefined;
       const early = this.assertQueryBoundaryEarly(
          undefined,
          undefined,
@@ -3500,8 +3507,8 @@ export class Model {
       cellIndex: number,
    ): string[] | undefined {
       // An import cell reports every source it brings in, schema and all, so
-      // under a surface only the ones this notebook may read are shown.
-      const readable = this.notebookReadable(cellIndex);
+      // under a surface only the ones a query on this notebook may name are shown.
+      const readable = this.notebookQueryable(cellIndex);
       return newSources
          ?.filter((source) => !readable || readable(source.name))
          .map((source) =>
@@ -3535,10 +3542,29 @@ export class Model {
    }
 
    /**
+    * Under an active surface, a predicate for the source names the notebook
+    * GET lists with their schema: the ones a query on this notebook's path
+    * may name. For a served notebook those are {@link notebookReadable}'s,
+    * since its file proves its own sources derive from the surface. A
+    * `.malloynb` cell runs as its `run:` statement alone, which the query
+    * route admits only over what the surface publishes, so a source its
+    * cells declare is withheld, as a hidden one is. Undefined when nothing is
+    * curated.
+    */
+   private notebookQueryable(
+      cellIndex?: number,
+   ): ((name: string) => boolean) | undefined {
+      const readable = this.notebookReadable(cellIndex);
+      if (!readable || this.notebookFormat() === "malloy") return readable;
+      return (name) => this.admitsSourceByName(name);
+   }
+
+   /**
     * Whether the notebook GET may show a cell's `queryInfo`. Its schema lists
     * every column the cell's query returns, so a cell the query route would
     * refuse (`run: secret -> { select: * }`) would otherwise describe the
-    * hidden source here. Asks the same check running the cell does.
+    * hidden source here. Asks the check the query route asks of the cell's
+    * query.
     */
    private async showsCellQueryInfo(
       cellIndex: number,
@@ -3631,8 +3657,8 @@ export class Model {
 
       // No `as` cast, so a field rename in `api-doc.yaml` fails to typecheck.
       // Not export-curated (a notebook cannot be imported), but under a surface
-      // it shows only what its cells may read.
-      const readable = this.notebookReadable(notebookCells.length - 1);
+      // it shows only what a query on it may name.
+      const readable = this.notebookQueryable(notebookCells.length - 1);
       const shownSource = (name: string | undefined) =>
          !readable || (name !== undefined && readable(name));
       const shownRuns = readable

@@ -55,6 +55,68 @@ describe("malloynbCellQuery", () => {
       );
    });
 
+   it("keeps a render tag a blank line or a comment separates from the run:", () => {
+      expect(malloynbCellQuery({ text: "# bar_chart\n\nrun: s -> v" })).toBe(
+         "# bar_chart\n\nrun: s -> v",
+      );
+      expect(
+         malloynbCellQuery({ text: "# bar_chart\n// by month\nrun: s -> v" }),
+      ).toBe("# bar_chart\n// by month\nrun: s -> v");
+      expect(
+         malloynbCellQuery({
+            text: "source: s is t extend {}\n\n# bar_chart\n\nrun: s -> v",
+         }),
+      ).toBe("# bar_chart\n\nrun: s -> v");
+      expect(malloynbCellQuery({ text: '## title="T"\n\nrun: s -> v' })).toBe(
+         "run: s -> v",
+      );
+   });
+
+   it("ends the query at the statement after the run:", () => {
+      expect(
+         malloynbCellQuery({
+            text: "run: orders -> by_region\nsource: later is orders extend {}",
+         }),
+      ).toBe("run: orders -> by_region");
+      expect(
+         malloynbCellQuery({
+            text: "run: s -> {\n  group_by: a\n}\n# doc\nquery: q is s -> v",
+         }),
+      ).toBe("run: s -> {\n  group_by: a\n}");
+      expect(
+         malloynbCellQuery({ text: "run: s -> v; source: t is s extend {}" }),
+      ).toBe("run: s -> v");
+   });
+
+   it("finds a run: that shares a line with a declaration", () => {
+      expect(
+         malloynbCellQuery({
+            text: "source: s is orders extend {}; run: s -> { aggregate: n is count() }",
+         }),
+      ).toBe("run: s -> { aggregate: n is count() }");
+   });
+
+   it("skips a run: in a comment or a string", () => {
+      expect(
+         malloynbCellQuery({ text: "run: a -> v\n/*\nrun: b -> v\n*/" }),
+      ).toBe("run: a -> v");
+      expect(
+         malloynbCellQuery({
+            text: "run: a -> v\n// run: b -> v\n-- run: c -> v",
+         }),
+      ).toBe("run: a -> v");
+      expect(
+         malloynbCellQuery({
+            text: "run: a -> { where: note = 'run: b'; select: * }",
+         }),
+      ).toBe("run: a -> { where: note = 'run: b'; select: * }");
+      expect(
+         malloynbCellQuery({
+            text: "/* run: a -> v */ source: s is t extend {}",
+         }),
+      ).toBeUndefined();
+   });
+
    it("sends nothing for a cell that only imports or declares", () => {
       expect(malloynbCellQuery({ text: 'import "a.malloy"' })).toBeUndefined();
       expect(

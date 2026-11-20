@@ -519,6 +519,14 @@ read-only support, so existing ones still open and run as linear reports, wherev
 create one. A `.malloynb`'s compile errors show only when its cells run, and it takes its options as
 file-level `## autorun=false` and `## givens { … }` lines rather than inside an artifact tag.
 
+Each code cell runs through `POST …/models/{path}/query` as query text, so its `run:` statement runs in
+restricted mode: a `run:` that calls a `sql_*` function answers `400`, and so does one that reads a table
+directly, such as `run: duckdb.table('data/orders.csv') -> …`, on a package with no `index.malloy`. With
+one, the surface refuses that read first, with `404`. To keep such a cell, declare the table, or a dimension
+over the `sql_*` expression, in a source the notebook declares, and run that source. On a
+package with an `index.malloy`, a source the cells declare is not queryable, so declare it in a model file
+and export it from `index.malloy`.
+
 ## Filter controls
 
 Controls are the `given:` declarations the tiles reference. **Declare them in the report file**: it is the

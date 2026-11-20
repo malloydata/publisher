@@ -1,5 +1,5 @@
 {
    "name": "malloynb-parity",
    "version": "1.0.0",
-   "description": "Fixture for running a .malloynb's cells through the query route: a surface, #(authorize), a row-level gate, givens declared in later cells, imports in a run cell"
+   "description": "Fixture for running a .malloynb's cells through the query route: a surface, #(authorize), a row-level gate, givens declared in later cells, imports in a run cell, and cells restricted mode refuses with the way to keep each"
 }

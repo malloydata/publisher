@@ -14,12 +14,16 @@
  *
  * It pins the governance answers on that path: the package surface,
  * `#(authorize)`, a row-level `#(access_filter)` with and without its given, a
- * given declared only in a later cell, and an import in the cell that runs.
+ * given declared only in a later cell, an import in the cell that runs, and
+ * the restricted mode every query's text runs in. It also pins that the
+ * notebook read lists a source with its schema only where that path may
+ * query it.
  */
 
 import { rm } from "fs/promises";
 import path from "path";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { malloynbCellQuery } from "../../../../sdk/src/components/Report/malloynb/cellKind";
 import {
    fixture,
    startPackageEnv,
@@ -31,28 +35,11 @@ const CURATED = "malloynb-curated";
 /** The same files with no `index.malloy`: every source is on the surface. */
 const OPEN = "malloynb-open";
 
-/**
- * The text the SDK sends for a `.malloynb` code cell: from the cell's last
- * `run:` line to its end, with the `#` render tags directly above it. The
- * cell's imports and declarations are left out, because the notebook's path
- * already compiles them. Undefined for a cell with nothing to run. Mirrors
- * `malloynbCellQuery` in the SDK.
- */
-function malloynbCellQuery(text: string): string | undefined {
-   const lines = text.split("\n");
-   let run = -1;
-   lines.forEach((line, i) => {
-      if (/^\s*run\s*:/.test(line)) run = i;
-   });
-   if (run < 0) return undefined;
-   let start = run;
-   while (start > 0 && /^\s*#(?!#)/.test(lines[start - 1])) start--;
-   return lines.slice(start).join("\n").trim();
-}
-
 interface Cell {
    type: "markdown" | "code";
    text: string;
+   newSources?: string[];
+   queryInfo?: string;
 }
 
 type Outcome = { rows: unknown[][] } | { refused: number; message?: string };
@@ -102,14 +89,22 @@ describe(".malloynb cells through the query route (E2E)", () => {
 
    afterAll(() => env?.stop());
 
-   /** A notebook's cells, as `GET …/reports/{path}` serves them. */
-   const cellsOf = async (pkg: string, nb: string): Promise<Cell[]> => {
+   /** A notebook, as `GET …/reports/{path}` serves it. */
+   const notebookOf = async (pkg: string, nb: string) => {
       const report = await env.getJson<{
-         notebook?: { format?: string; notebookCells?: Cell[] };
+         notebook?: {
+            format?: string;
+            notebookCells?: Cell[];
+            sources?: { name?: string }[];
+         };
       }>(env.api(`/reports/notebooks/${nb}`, pkg));
       expect(report.notebook?.format).toBe("malloynb");
-      return report.notebook?.notebookCells ?? [];
+      return report.notebook ?? {};
    };
+
+   /** A notebook's cells, as `GET …/reports/{path}` serves them. */
+   const cellsOf = async (pkg: string, nb: string): Promise<Cell[]> =>
+      (await notebookOf(pkg, nb)).notebookCells ?? [];
 
    /** Run cell `i` of `nb` as the SDK does, with `givens`. */
    const run = async (
@@ -118,7 +113,7 @@ describe(".malloynb cells through the query route (E2E)", () => {
       i: number,
       givens: object = {},
    ): Promise<Outcome> => {
-      const query = malloynbCellQuery((await cellsOf(pkg, nb))[i].text);
+      const query = malloynbCellQuery((await cellsOf(pkg, nb))[i]);
       if (query === undefined) throw new Error(`${nb} cell ${i} has no run:`);
       const res = await env.query(`notebooks/${nb}`, { query, givens }, pkg);
       return outcomeOf(res.status, await res.json());
@@ -130,7 +125,7 @@ describe(".malloynb cells through the query route (E2E)", () => {
    it("sends the code cells that run, and only those", async () => {
       const sent = async (nb: string) =>
          (await cellsOf(CURATED, nb)).flatMap((cell, i) =>
-            cell.type === "code" && malloynbCellQuery(cell.text) ? [i] : [],
+            cell.type === "code" && malloynbCellQuery(cell) ? [i] : [],
          );
       // Markdown and declaration-only cells are not sent.
       expect(await sent("surface.malloynb")).toEqual([2, 3, 5, 6]);
@@ -138,7 +133,7 @@ describe(".malloynb cells through the query route (E2E)", () => {
       expect(await sent("import_cell.malloynb")).toEqual([1, 2, 3]);
       // The render tag goes with the run, the selective import does not.
       const cells = await cellsOf(CURATED, "import_cell.malloynb");
-      expect(malloynbCellQuery(cells[3].text)).toBe(
+      expect(malloynbCellQuery(cells[3])).toBe(
          "# bar_chart\nrun: orders -> { group_by: region; aggregate: order_count; order_by: region }",
       );
    });
@@ -168,6 +163,66 @@ describe(".malloynb cells through the query route (E2E)", () => {
          rows: [[1550]],
       });
       expect(await run(OPEN, "surface.malloynb", 5)).toEqual({ rows: [[4]] });
+   });
+
+   it("lists a source the cells declare, with its schema, only where the query route takes it", async () => {
+      // surface.malloynb declares `mine` over the published orders in cell 4
+      // and runs it in cell 5, which answers 404 on the curated package.
+      const shown = async (pkg: string) => {
+         const notebook = await notebookOf(pkg, "surface.malloynb");
+         const cells = notebook.notebookCells ?? [];
+         return {
+            declared: (cells[4].newSources ?? []).map(
+               (source) => (JSON.parse(source) as { name?: string }).name,
+            ),
+            listed: (notebook.sources ?? []).some((s) => s.name === "mine"),
+            runSchema: cells[5].queryInfo !== undefined,
+            publishedSchema: cells[2].queryInfo !== undefined,
+         };
+      };
+      expect(await shown(CURATED)).toEqual({
+         declared: [],
+         listed: false,
+         runSchema: false,
+         publishedSchema: true,
+      });
+      expect(await shown(OPEN)).toEqual({
+         declared: ["mine"],
+         listed: true,
+         runSchema: true,
+         publishedSchema: true,
+      });
+   });
+
+   it("runs every cell's query in restricted mode, and the way to keep each shape runs", async () => {
+      const nb = "restricted.malloynb";
+      // A direct table read: refused on the open package; on the curated one
+      // the surface refuses it first, as before.
+      const table = refusal(await run(OPEN, nb, 2));
+      expect(table?.refused).toBe(400);
+      expect(table?.message).toContain(
+         "`duckdb.table(...)` cannot be used in a restricted query",
+      );
+      expect(refusal(await run(CURATED, nb, 2))?.refused).toBe(404);
+      // A sql_* call in the query: refused on both.
+      for (const pkg of [OPEN, CURATED]) {
+         const sql = refusal(await run(pkg, nb, 3));
+         expect(sql?.refused).toBe(400);
+         expect(sql?.message).toContain(
+            "`sql_number(...)` cannot be used in a restricted query",
+         );
+      }
+      // The remedy: declare the table, or the sql_* dimension, in a source of
+      // a cell and run that source. On the curated package a source a cell
+      // declares is off the surface, so there it goes in a model file that
+      // index.malloy exports.
+      expect(await run(OPEN, nb, 4)).toEqual({ rows: [[6]] });
+      expect(await run(OPEN, nb, 5)).toEqual({ rows: [[1, 6]] });
+      expect(refusal(await run(CURATED, nb, 4))?.refused).toBe(404);
+      expect(refusal(await run(CURATED, nb, 5))?.refused).toBe(404);
+      for (const pkg of [OPEN, CURATED]) {
+         expect(await run(pkg, nb, 6)).toEqual({ rows: [[1, 6]] });
+      }
    });
 
    it("applies #(authorize), on the source and on one a cell derives from it", async () => {

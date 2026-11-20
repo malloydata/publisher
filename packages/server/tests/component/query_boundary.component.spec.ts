@@ -1157,20 +1157,22 @@ export { \`customer-orders\` }`,
                }),
             ).rejects.toThrow(NotQueryableError);
 
-            // And the notebook does not show what it may not read: the import
-            // cell's newSources and the notebook's sources leave base_source out.
+            // And the notebook does not show what a query on it may not name:
+            // the import cell's newSources and the notebook's sources leave
+            // base_source out, and mine with it.
             const raw = await notebook.getNotebook();
             const shown = JSON.stringify(raw);
             expect(shown).not.toContain('"base_source"');
             expect(
                (raw.sources ?? []).map((source) => source.name).sort(),
-            ).toEqual(["customers", "mine"]);
+            ).toEqual(["customers"]);
+            expect(raw.notebookCells?.[2]?.newSources ?? []).toEqual([]);
             // Nor a refused cell's queryInfo, whose schema lists the columns its
-            // query returns. The cells that run keep theirs.
+            // query returns. The cell that runs keeps its own.
             const queryInfo = (raw.notebookCells ?? []).map(
                (cell) => cell.queryInfo !== undefined,
             );
-            expect(queryInfo).toEqual([false, false, false, true, true]);
+            expect(queryInfo).toEqual([false, false, false, false, true]);
          } finally {
             await duckdb.close();
          }
