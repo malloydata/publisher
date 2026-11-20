@@ -19,7 +19,7 @@ import * as path from "path";
 import { resetReportMetricsForTest } from "../../src/report_metrics";
 import { Model } from "../../src/service/model";
 import { startMetricsHarness } from "../../src/test_helpers/metrics_harness";
-import type { Package } from "../../src/service/package";
+import { Package } from "../../src/service/package";
 import {
    loadPackageCopy,
    loadTempPackage,
@@ -408,6 +408,46 @@ describe("the .malloynb cell check, as a neighbor of the other lints", () => {
             ),
          ).toBe(12);
       } finally {
+         await loaded.cleanup();
+         resetReportMetricsForTest();
+         await harness.shutdown();
+      }
+   });
+
+   it("a lint that stops early counts no refused cell from the pass before, and says the cell check may not have run", async () => {
+      const cells = ['>>>malloy\nimport "../orders.malloy"'];
+      for (let c = 0; c < 12; c++) {
+         cells.push(
+            `>>>malloy\nrun: orders -> { group_by: one is sql_number("${c}") }`,
+         );
+      }
+      const harness = await startMetricsHarness();
+      resetReportMetricsForTest();
+      const loaded = await loadTempPackage({
+         "orders.malloy": `##! experimental.sql_functions\n${ORDERS}`,
+         "notebooks/many.malloynb": cells.join("\n"),
+      });
+      const proto = Package.prototype as unknown as Record<string, unknown>;
+      const curation = proto.curationWarnings;
+      try {
+         const counted = () =>
+            harness.collectCounter("publisher_report_lint_findings_total", {
+               code: CODE,
+               severity: "warn",
+            });
+         expect(await counted()).toBe(12);
+         // The lint throws before the cell check; the reload counts its pass.
+         proto.curationWarnings = () => {
+            throw new Error("curation failed");
+         };
+         await loaded.pkg.reloadAllModels({});
+         expect(await counted()).toBe(12);
+         const stopped = (loaded.pkg.getPackageMetadata().warnings ?? []).find(
+            (w) => (w.message ?? "").startsWith("Report lint stopped early"),
+         );
+         expect(stopped?.message).toContain(".malloynb cell");
+      } finally {
+         proto.curationWarnings = curation;
          await loaded.cleanup();
          resetReportMetricsForTest();
          await harness.shutdown();

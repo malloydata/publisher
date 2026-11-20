@@ -529,6 +529,13 @@ and export it from `index.malloy`. A join written in a cell's `run:` is the call
 target is, as [authorize.md](authorize.md#the-entry-point-and-only-the-entry-point) describes. To keep a
 join the author's, declare it in a source in a model file.
 
+Two more shapes are refused for every reader. A `run:` whose text carries an annotation only the model
+author may write, such as `#(authorize)` or `#(classification)`, answers `400`, even when the annotation
+is only spelled in a comment beside the `run:`; remove it from the cell. A `run:` over a source with a
+required `#(filter)` answers `400`, because the Console sends no filter value for a notebook cell; drop
+`required` from that `#(filter)`, which is deprecated. A `run:` that fails to compile on its own for any
+other reason answers `400` with the compiler's message; fix the statement so it compiles alone.
+
 Each code cell the query route would refuse for every reader in the Console is a package warning when
 the package loads, code `malloynb-cell-refused`, so these show in the package warnings and the Console
 before a reader opens the notebook. The warning names the notebook, the cell by its position counting

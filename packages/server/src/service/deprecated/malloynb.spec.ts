@@ -103,10 +103,9 @@ describe("listMalloynbCellFindings: bounded, nothing lost", () => {
          message:
             "3 more cells of a.malloynb won't run for any reader in the " +
             "Console, not listed one by one: cells 7 and 9 (off_surface); " +
-            "cell 8 (restricted_mode). Each rule's fix is in the legacy .malloynb " +
-            "section of docs/reports.md, and the warnings listed for this " +
-            "package show it for cells like these; a reload after fixing " +
-            "lists what remains.",
+            "cell 8 (restricted_mode). The legacy .malloynb section of " +
+            "docs/reports.md gives the fix for each reason, and a reload " +
+            "after fixing lists what remains.",
       });
    });
 

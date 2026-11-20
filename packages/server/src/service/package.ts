@@ -3839,6 +3839,8 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       discovery: ReportDiscovery,
       textLint: boolean,
    ): Promise<ApiPackageWarning[]> {
+      // Set again by the cell check; a pass that stops before it names none.
+      this.malloynbCellsUnlisted = 0;
       const warnings: ApiPackageWarning[] = [];
       const files = Array.from(discovery.files).filter(([modelPath]) =>
          modelPath.endsWith(MODEL_FILE_SUFFIX),
@@ -3935,8 +3937,8 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          warnings.push({
             message:
                `Report lint stopped early, so this list is incomplete: an ` +
-               `unknown subset of the tile, report, drill, given and curation ` +
-               `checks did not run. Treat a missing ` +
+               `unknown subset of the tile, report, drill, given, curation ` +
+               `and .malloynb cell checks did not run. Treat a missing ` +
                `finding of any of those kinds as unknown rather than clean. ` +
                `Reload the package to run the lint again. The ` +
                `reports themselves are unaffected, because they are ` +

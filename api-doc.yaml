@@ -5735,7 +5735,7 @@ components:
                   whose `run:` statement the query route refuses for every
                   reader in the Console, which sends no privilege and no
                   `filterParams`, so the cell never runs there. One per cell,
-                  `model` naming the notebook, severity `warn`. The message
+                  up to the bound below, `model` naming the notebook, severity `warn`. The message
                   names the cell by its 1-based position among the notebook's
                   cells, markdown cells included, and the fix. `reason` names
                   the rule: `off_surface` is the 404 for a source the package
@@ -10133,8 +10133,11 @@ components:
             against the replacement. It also reports the render-tag findings
             (code "render-tag"), the dashboard, given and drill findings
             (code "dashboard-lint") and each .malloynb code cell the query
-            route would refuse (code "malloynb-cell-refused") a reload would
-            put on the package's warnings, at their own severity and with no
+            route would refuse (code "malloynb-cell-refused", at most 10 per
+            notebook and 50 per package, with the rest named in one
+            "malloynb-cells-unlisted" per notebook and
+            "malloynb-cell-check-failed" for a notebook that could not be
+            checked) a reload would put on the package's warnings, at their own severity and with no
             position, and the
             load's verdict on the materialization annotations: each line a
             load fails with as an error with its code, each annotation the

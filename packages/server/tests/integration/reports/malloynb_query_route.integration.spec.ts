@@ -577,4 +577,13 @@ describe(".malloynb cells through the query route (E2E)", () => {
          400,
       );
    });
+
+   it("keeps a cell's queryInfo back where the route refuses its text before reading its joins", async () => {
+      // Cell 6 of route_text.malloynb carries an `#(authorize)` spelling in a
+      // comment beside a join to hidden. The reports read runs the join check
+      // whatever the spelling, so on the curated package it shows no schema.
+      const cells = await cellsOf(CURATED, "route_text.malloynb");
+      expect(cells[5].text).toContain("#(authorize)");
+      expect(cells[5].queryInfo).toBeUndefined();
+   });
 });

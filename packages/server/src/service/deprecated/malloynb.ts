@@ -89,9 +89,8 @@ export function listMalloynbCellFindings<F extends CellFinding>(
             `${rest.length} ${kept.length > 0 ? "more " : ""}` +
             `${rest.length === 1 ? "cell" : "cells"} of ${model} won't run ` +
             `for any reader in the Console, not listed one by one: ${groups}. ` +
-            `Each rule's fix is in the legacy .malloynb section of ` +
-            `docs/reports.md, and the warnings listed for this package show ` +
-            `it for cells like these; a reload after fixing lists what remains.`,
+            `The legacy .malloynb section of docs/reports.md gives the fix ` +
+            `for each reason, and a reload after fixing lists what remains.`,
       });
    }
    return { warnings, unlisted };
