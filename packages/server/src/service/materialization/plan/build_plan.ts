@@ -1818,7 +1818,19 @@ export function deriveBuildPlan(
       try {
          const decided = verdicts.get(sourceID)!.wire;
          if ("failed" in decided) throw decided.failed;
-         if (decided.refused) refusedSources[sourceID] = decided.refused;
+         if (decided.refused) {
+            // Its declared freshness, so the package's schedule rule reads a
+            // refused source's window as it reads a planned one's.
+            const freshness = resolveFreshness(
+               source,
+               packageMaterialization,
+               table.rollup?.freshness,
+            );
+            refusedSources[sourceID] = {
+               ...decided.refused,
+               ...(freshness ? { freshness } : {}),
+            };
+         }
          if (!decided.inPlan) continue;
          wireSources[sourceID] = wireSourceOf(
             table,
@@ -1972,6 +1984,7 @@ function refuseDatabaseTablesSharedWithARefusal(
          modelPath: tables[sourceID]?.modelPath,
          tier: "database",
          reason: (sibling.reason ?? "authorize") as WireRefusedSource["reason"],
+         ...(planned.freshness ? { freshness: planned.freshness } : {}),
          message:
             `'${planned.name}' is not built: it shares its table with ` +
             `'${sibling.name}', which the eligibility gate refuses for a ` +

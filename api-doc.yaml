@@ -11499,6 +11499,15 @@ components:
             declaration's `*-not-built` warning. For a `#@ persist` gate
             refusal it is the same text a build attempting the source would
             422 with.
+        freshness:
+          $ref: "#/components/schemas/Freshness"
+          description: >-
+            The freshness the refused source declares, resolved as a planned
+            source's is (source, then model file, then package). A package
+            `materialization.schedule` beside it is refused at publish as
+            beside a planned source's: a refused source declares its window
+            all the same. Absent when it declares none, or when the refusal
+            comes from an annotation finding rather than the plan.
 
     BuildGraph:
       type: object

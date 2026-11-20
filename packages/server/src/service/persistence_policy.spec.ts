@@ -206,6 +206,54 @@ source: f is duckdb.sql("SELECT 1 as x")
       { timeout: 30000 },
    );
 
+   it(
+      "rejects a schedule declared alongside a REFUSED source's freshness (R-06)",
+      async () => {
+         // Refused at plan (a persisted query that reads a given), so the
+         // source is absent from the plan's `sources`; its window still
+         // counts, as it would for a planned source.
+         const model = `##! experimental.persistence
+##! experimental.givens
+
+given: tenant :: string is 'acme'
+source: base is duckdb.sql("SELECT 1 AS x, 'acme' AS tenant")
+
+#@ persist name="p_table" freshness.window="1h"
+source: p is base -> { where: tenant = $tenant; aggregate: c is count() }
+`;
+         const pkg = await loadPackage(model, {
+            scope: "version",
+            materialization: { schedule: "0 6 * * *" },
+         });
+         const plan = pkg.getBuildPlan();
+         expect(
+            Object.values(plan?.sources ?? {}).some((s) => s.name === "p"),
+         ).toBe(false);
+         const refused = Object.values(plan?.refusedSources ?? {}).find(
+            (r) => r.name === "p",
+         );
+         expect(refused?.freshness).toEqual({ window: "1h" });
+         expect(pkg.formatInvalidPersistencePolicy()).toContain(
+            "mutually exclusive",
+         );
+      },
+      { timeout: 30000 },
+   );
+
+   it(
+      "accepts a schedule beside a refused source that declares no freshness",
+      async () => {
+         const pkg = await loadPackage(GIVEN_IN_QUERY_MODEL, {
+            scope: "version",
+            materialization: { schedule: "0 6 * * *" },
+         });
+         expect(pkg.formatInvalidPersistencePolicy() ?? "").not.toContain(
+            "mutually exclusive",
+         );
+      },
+      { timeout: 30000 },
+   );
+
    // ── Rule 4: the cron must be a valid 5-field UNIX expression ──────────
 
    it(

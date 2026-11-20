@@ -813,7 +813,12 @@ export function persistencePolicyWarnings(
          !!(
             packageFreshness &&
             (packageFreshness.window || packageFreshness.fallback)
-         ) || sources.some((s) => s.freshness != null);
+         ) ||
+         sources.some((s) => s.freshness != null) ||
+         // A refused source declares its window all the same (R-06).
+         Object.values(plan?.refusedSources ?? {}).some(
+            (r) => r.freshness != null,
+         );
       if (freshnessDeclared) {
          warnings.push(
             `materialization.schedule and freshness are mutually exclusive in ` +
