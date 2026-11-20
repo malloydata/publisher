@@ -425,8 +425,7 @@ function markdownLineBody(noteText: string): string {
 /**
  * A linear report's cells, read off Malloy's parse tree and token stream.
  * Pure over its inputs. `modelDef` is the compile of the same `text`, used only
- * to check that every `run:` the reader found is one Malloy compiled, so the
- * k-th query cell is `queryList[k]`.
+ * to check that every `run:` the reader found is one Malloy compiled.
  *
  * All-or-nothing: a top-level construct the reader cannot classify, or a
  * default-channel token outside every recognized statement and note, refuses
@@ -760,6 +759,9 @@ export function readNotebookCells(
    const runCount = items.filter(
       (item) => item.kind === "statement" && item.run,
    ).length;
+   // A reader that disagrees with the compiler about the runs refuses rather
+   // than guess. Its message still says query cells are matched to results,
+   // which nothing does any more; the refusal stays as the check.
    // No modelDef reads cells off text that is not compiled whole (a document with restricted cells blanked).
    if (modelDef && runCount !== modelDef.queryList.length) {
       return refuse({
