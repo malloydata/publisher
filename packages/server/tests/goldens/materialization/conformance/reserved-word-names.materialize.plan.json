@@ -5,18 +5,63 @@
       {
         "connectionName": "duckdb",
         "dependsOn": {
+          "month@<pkg>/m.malloy": [],
           "order@<pkg>/m.malloy": []
         },
         "order": [
+          "month@<pkg>/m.malloy",
           "order@<pkg>/m.malloy"
         ]
       }
     ],
     "droppedPersistSources": [],
     "kinds": {
+      "month@<pkg>/m.malloy": "materialize",
       "order@<pkg>/m.malloy": "materialize"
     },
     "materializePlans": {
+      "month@<pkg>/m.malloy": {
+        "buildSourceName": "month__mat",
+        "columns": [
+          {
+            "column": "month",
+            "computed": false,
+            "dimension": "month"
+          },
+          {
+            "column": "group",
+            "computed": false,
+            "dimension": "group"
+          },
+          {
+            "column": "total",
+            "computed": false,
+            "dimension": "total"
+          }
+        ],
+        "nameDefaulted": true,
+        "persist": {
+          "name": "month",
+          "storage": "lake"
+        },
+        "sourceID": "month@<pkg>/m.malloy",
+        "sourceName": "month",
+        "storedColumns": [
+          {
+            "name": "month",
+            "type": "BIGINT"
+          },
+          {
+            "name": "group",
+            "type": "VARCHAR"
+          },
+          {
+            "name": "total",
+            "type": "DOUBLE"
+          }
+        ],
+        "zoneFreeRows": true
+      },
       "order@<pkg>/m.malloy": {
         "buildSourceName": "order__mat",
         "columns": [
@@ -71,12 +116,17 @@
     },
     "rollupPlans": {},
     "sourceGateOutcomes": {
+      "month@<pkg>/m.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
       "order@<pkg>/m.malloy": {
         "attributed": true,
         "classification": "row_level"
       }
     },
     "sourceModelPaths": {
+      "month@<pkg>/m.malloy": "m.malloy",
       "order@<pkg>/m.malloy": "m.malloy"
     }
   },
@@ -89,6 +139,10 @@
           [
             {
               "dependsOn": [],
+              "sourceID": "month@<pkg>/m.malloy"
+            },
+            {
+              "dependsOn": [],
               "sourceID": "order@<pkg>/m.malloy"
             }
           ]
@@ -99,6 +153,38 @@
     "omittedSources": [],
     "refusedSources": {},
     "sources": {
+      "month@<pkg>/m.malloy": {
+        "annotationFields": {
+          "name": "month",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "month",
+            "type": "number"
+          },
+          {
+            "name": "group",
+            "type": "string"
+          },
+          {
+            "name": "total",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "month",
+        "origin": "materialize",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "506790f386a062d41ddcf1ebc52dcb1313c9a71c07ed5b97cbdc1a72c7067220",
+        "sourceID": "month@<pkg>/m.malloy",
+        "sql": "sha256:ee4f1d30ea772a7f"
+      },
       "order@<pkg>/m.malloy": {
         "annotationFields": {
           "name": "order",
