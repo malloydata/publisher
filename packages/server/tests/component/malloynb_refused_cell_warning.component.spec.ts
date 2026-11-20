@@ -17,6 +17,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { resetReportMetricsForTest } from "../../src/report_metrics";
+import { setEventLoopYieldBudgetMsForTesting } from "../../src/service/event_loop_yield";
 import { Model } from "../../src/service/model";
 import { startMetricsHarness } from "../../src/test_helpers/metrics_harness";
 import { Package } from "../../src/service/package";
@@ -345,13 +346,14 @@ describe("the .malloynb cell check, as a neighbor of the other lints", () => {
       }
    });
 
-   it("hands the event loop a turn while it checks many cells", async () => {
-      // 20 notebooks of 20 code cells: one block of about 100 ms if the check
-      // never yields.
+   it("hands the event loop a turn before each cell it checks", async () => {
+      // 3 notebooks of 4 code cells. At a yield budget of 0 a loop that yields
+      // does so at every step, so the test reads the order of events, not the
+      // clock.
       const files: Record<string, string> = { "orders.malloy": ORDERS };
-      for (let n = 0; n < 20; n++) {
+      for (let n = 0; n < 3; n++) {
          const cells = ['>>>malloy\nimport "../orders.malloy"'];
-         for (let c = 0; c < 20; c++) {
+         for (let c = 0; c < 4; c++) {
             cells.push(
                `>>>malloy\nrun: orders -> { group_by: r; aggregate: c${c} is count() }`,
             );
@@ -359,26 +361,38 @@ describe("the .malloynb cell check, as a neighbor of the other lints", () => {
          files[`notebooks/n${n}.malloynb`] = cells.join("\n");
       }
       const loaded = await loadTempPackage(files);
+      const events: ("cell" | "turn")[] = [];
+      const check = Model.prototype.consoleCellRefusal;
+      const realSetImmediate = globalThis.setImmediate;
+      const budget = setEventLoopYieldBudgetMsForTesting(0);
       try {
-         let last = performance.now();
-         let longest = 0;
-         const timer = setInterval(() => {
-            const now = performance.now();
-            longest = Math.max(longest, now - last);
-            last = now;
-         }, 1);
-         const started = performance.now();
+         Model.prototype.consoleCellRefusal = function (
+            this: Model,
+            ...args: Parameters<Model["consoleCellRefusal"]>
+         ) {
+            events.push("cell");
+            return check.apply(this, args);
+         };
+         globalThis.setImmediate = ((
+            ...args: Parameters<typeof setImmediate>
+         ) => {
+            events.push("turn");
+            return realSetImmediate(...args);
+         }) as typeof setImmediate;
          await loaded.pkg.relintReports();
-         const took = performance.now() - started;
-         // A block that never yielded ends here: the timer never ran inside it.
-         longest = Math.max(longest, performance.now() - last);
-         clearInterval(timer);
-         // The check really ran long enough to need the yields.
-         expect(took).toBeGreaterThan(60);
-         expect(longest).toBeLessThan(50);
       } finally {
+         globalThis.setImmediate = realSetImmediate;
+         Model.prototype.consoleCellRefusal = check;
+         setEventLoopYieldBudgetMsForTesting(budget);
          await loaded.cleanup();
       }
+      expect(events.filter((e) => e === "cell")).toHaveLength(12);
+      // Each cell's check starts right after a turn of the event loop.
+      expect(
+         events.flatMap((e, i) =>
+            e === "cell" && events[i - 1] !== "turn" ? [i] : [],
+         ),
+      ).toEqual([]);
    });
 
    it("lists a notebook's first refused cells, names the rest in one warning, and counts every one", async () => {
