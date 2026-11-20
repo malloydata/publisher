@@ -1297,9 +1297,8 @@ A host that supports [MCP Apps](https://github.com/modelcontextprotocol/ext-apps
 claude.ai among them) draws the report in the conversation, as the Console's reader draws it: the filter row,
 every tile, the click menu with Show rows, and `# drill` click-through, where a drill to another report opens it
 in the same panel with Back to return. "Open in Publisher" takes the report and its current filter values to the
-Console. A legacy `.malloynb` opens there too. The one difference from the Console is that the panel never
-offers the Explorer, which the Console offers on a notebook's cells unless the server runs with
-`PUBLISHER_MODEL_PAGE=viewer`. A host that draws no panel shows the tool's text, which names the report, its tiles and filters, and
+Console. A legacy `.malloynb` opens there too. On a notebook's cells the panel also never offers the
+Explorer, which the Console offers unless the server runs with `PUBLISHER_MODEL_PAGE=viewer`. A host that draws no panel shows the tool's text, which names the report, its tiles and filters, and
 its Console address.
 
 The panel holds no credentials and fetches nothing itself. Its reads (the report, its tiles' queries, the
