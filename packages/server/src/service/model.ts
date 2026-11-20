@@ -37,8 +37,6 @@ import {
    NOTEBOOK_FILE_SUFFIX,
 } from "../constants";
 import {
-   AccessDeniedError,
-   BadRequestError,
    ModelCompilationError,
    ModelNotFoundError,
    NotQueryableError,
@@ -97,15 +95,7 @@ import {
    readNotebookCells,
    type NotebookReaderError,
 } from "./notebook";
-import {
-   recordNotebookCellExecution,
-   type NotebookFormat,
-} from "../notebook_metrics";
-import {
-   FILTER_ANNOTATION_PREFIX,
-   type FilterDefinition,
-   type FilterParams,
-} from "./filter";
+import { FILTER_ANNOTATION_PREFIX, type FilterDefinition } from "./filter";
 import { assertFilterGivensParse, gateGivenSource } from "./given";
 import {
    deprecatedPersistAnnotations,
@@ -160,11 +150,9 @@ import {
    type ModelType,
 } from "./model_runtime";
 import {
-   declaredGivensPerCell,
    tileQueryInfo,
-   type CellDeclaredGivens,
+   type NotebookFormat,
    type RunnableNotebookCell,
-   type NotebookCellRunResult,
 } from "./model_notebook_cell";
 import { quotedIdentifier } from "./malloy_text";
 import { runReadsPublished, scrubHiddenIds } from "./model_projection";
@@ -205,10 +193,7 @@ import type {
 
 export type { ModelConnectionInput, ModelType } from "./model_runtime";
 export type { ModelQueryResults } from "./model_serving";
-export type {
-   NotebookCellRunResult,
-   RunnableNotebookCell,
-} from "./model_notebook_cell";
+export type { RunnableNotebookCell } from "./model_notebook_cell";
 
 export type { ModelQueryMetadataInput } from "./query_metadata";
 import {
@@ -224,7 +209,7 @@ export type { QueryRequest } from "./model_query_request";
 
 type ApiCompiledModel = components["schemas"]["CompiledModel"];
 type ApiNotebookCell = components["schemas"]["NotebookCell"];
-type ApiRawNotebook = components["schemas"]["RawNotebook"];
+type ApiReportCells = components["schemas"]["ReportCells"];
 type ApiSource = components["schemas"]["Source"];
 type ApiGiven = components["schemas"]["Given"];
 type ApiQuery = components["schemas"]["Query"];
@@ -447,14 +432,10 @@ export class Model {
    private notebookReaderRefusal: NotebookReaderError | undefined;
    /** A served notebook's own notes as the reader collected them (see `NotebookReadResult.annotations`). */
    private notebookAnnotations: string[] | undefined;
-   /** The tile layout of a served linear `.malloy` report; undefined for a `.malloynb`. */
-   private notebookLayout: ServedReportManifest | undefined;
    /** Parsed #(filter) definitions keyed by source name. */
    private filterMap: Map<string, FilterDefinition[]>;
    /** Givens declared on the model, in declaration order. */
    private givens: ApiGiven[] | undefined;
-   /** Indexed like {@link runnableNotebookCells}; `undefined` = no modelDef, filter as before. */
-   private notebookCellDeclaredGivens: (CellDeclaredGivens | undefined)[] = [];
    /**
     * Memo for {@link getDeclaredQueryMetadata}. `undefined` = not yet computed,
     * `null` = computed and nothing declared.
@@ -577,9 +558,6 @@ export class Model {
       this.givens = state.givens;
       this.policy = state.policy ?? ModelPolicy.standalone();
       this.governor = new QueryGovernor(this.governorHost(state.gateRuntime));
-      this.notebookCellDeclaredGivens = declaredGivensPerCell(
-         this.runnableNotebookCells ?? [],
-      );
       this.modelInfo =
          state.modelInfo ??
          (this.modelDef ? modelInfoOf(this.modelDef) : undefined);
@@ -717,11 +695,8 @@ export class Model {
          queries: () => this.queries,
          givens: () => this.givens,
          filterMap: () => this.filterMap,
-         runnableNotebookCells: () => this.runnableNotebookCells,
          siblingModelDefResolver: () => this.siblingModelDefResolver,
          queryBoundary: () => this.queryBoundary,
-         isNotebook: () => this.isNotebook(),
-         notebookFormat: () => this.notebookFormat(),
          isCuratedSource: (name) => this.isCuratedSource(name),
          isCuratedQuery: (name) => this.isCuratedQuery(name),
          derivesFromCurated: (name, query, derivationContext) =>
@@ -2446,11 +2421,10 @@ export class Model {
 
    /**
     * Attach the cells of a served notebook, which is only known to be one after
-    * discovery, and recompute the givens each cell may name.
+    * discovery.
     */
    public setNotebookCells(cells: RunnableNotebookCell[]): void {
       this.runnableNotebookCells = cells;
-      this.notebookCellDeclaredGivens = declaredGivensPerCell(cells);
    }
 
    /**
@@ -2463,7 +2437,6 @@ export class Model {
    public attachServedNotebookCells(text: string): "ok" | "refused" | "broken" {
       this.notebookReaderRefusal = undefined;
       this.notebookAnnotations = undefined;
-      this.notebookLayout = undefined;
       const modelDef = this.modelDef;
       const materializer = this.modelMaterializer;
       if (this.compilationError || !modelDef || !materializer) {
@@ -2481,7 +2454,6 @@ export class Model {
       if (read.error) return refuse(read.error);
       this.notebookAnnotations = read.annotations;
       const layout = this.readNotebookLayout();
-      this.notebookLayout = layout;
       // A linear report's prose and queries are its tiles, in tile order; the
       // file's own cells are only its definitions (`report.ts`).
       const cells: RunnableNotebookCell[] = read.cells
@@ -2572,7 +2544,7 @@ export class Model {
       return undefined;
    }
 
-   public async getNotebook(): Promise<ApiRawNotebook> {
+   public async getNotebook(): Promise<ApiReportCells> {
       if (this.compilationError) {
          throw this.compilationError;
       }
@@ -3170,14 +3142,6 @@ export class Model {
             this.unqueryableTextRefusal(query, compileError),
          resolveQueryMetadata: (input, connectionName, sourceName) =>
             this.resolveQueryMetadata(input, connectionName, sourceName),
-         notebookReaderError: () => this.notebookReaderError(),
-         runnableNotebookCells: () => this.runnableNotebookCells,
-         assertNotebookCellOnSurface: (cellIndex, runnable) =>
-            this.assertNotebookCellOnSurface(cellIndex, runnable),
-         notebookCellDeclaredGivens: (cellIndex) =>
-            this.notebookCellDeclaredGivens[cellIndex],
-         serializeNewSources: (newSources, cellIndex) =>
-            this.serializeNewSources(newSources, cellIndex),
       };
    }
 
@@ -3613,7 +3577,7 @@ export class Model {
       return shown;
    }
 
-   private async getNotebookModel(): Promise<ApiRawNotebook> {
+   private async getNotebookModel(): Promise<ApiReportCells> {
       // Return raw cell contents without executing them
       const cells = this.runnableNotebookCells ?? [];
       const notebookCells: ApiNotebookCell[] = [];
@@ -3663,7 +3627,7 @@ export class Model {
       const shownRuns = readable
          ? this.shownRunIndexes(cells, shownCells)
          : undefined;
-      const notebook: ApiRawNotebook = {
+      const notebook: ApiReportCells = {
          type: "notebook",
          format: this.notebookFormat(),
          packageName: this.packageName,
@@ -3704,79 +3668,8 @@ export class Model {
             (name) => (this.givens ?? []).find((g) => g.name === name)?.type,
          ),
          notebookCells,
-         ...(this.notebookLayout && {
-            dashboard: {
-               packageName: this.packageName,
-               name: this.notebookLayout.name,
-               path: this.modelPath,
-               layout: this.notebookLayout.layout,
-               title: this.notebookLayout.title,
-               description: this.notebookLayout.description,
-               tiles: this.notebookLayout.tiles,
-               dashboardColumns: this.notebookLayout.dashboardColumns,
-               startingGivens: this.notebookLayout.startingGivens,
-               autorun: this.notebookLayout.autorun,
-               givens: this.notebookLayout.givens,
-            },
-         }),
       };
       return notebook;
-   }
-
-   public async executeNotebookCell(
-      audit: QueryAudit,
-      cellIndex: number,
-      filterParams?: FilterParams,
-      bypassFilters?: boolean,
-      givens?: Record<string, GivenValue>,
-      // Cancels the query on timeout (see `runQuery`).
-      abortSignal?: AbortSignal,
-      // Tagged like any query, but with no correlation id: the cell response
-      // has no field to return it on.
-      queryMetadataInput?: ModelQueryMetadataInput,
-   ): Promise<NotebookCellRunResult> {
-      const started = performance.now();
-      const cell = this.runnableNotebookCells?.[cellIndex];
-      // A served run that names no cell (out of range, or refused by the reader) is `none`, never `.malloynb`'s `code`.
-      const kind =
-         this.notebookFormat() === "malloy"
-            ? (cell?.kind ?? "none")
-            : cell?.type === "markdown"
-              ? "markdown"
-              : "code";
-      try {
-         const result = await this.serving.runNotebookCell(
-            audit,
-            cellIndex,
-            filterParams,
-            bypassFilters,
-            givens,
-            abortSignal,
-            queryMetadataInput,
-         );
-         recordNotebookCellExecution(
-            this.notebookFormat(),
-            kind,
-            "ok",
-            performance.now() - started,
-         );
-         return result;
-      } catch (error) {
-         recordNotebookCellExecution(
-            this.notebookFormat(),
-            kind,
-            error instanceof AccessDeniedError
-               ? "denied"
-               : error instanceof NotQueryableError
-                 ? "not_queryable"
-                 : error instanceof BadRequestError ||
-                     error instanceof MalloyError
-                   ? "bad_request"
-                   : "error",
-            performance.now() - started,
-         );
-         throw error;
-      }
    }
 
    /** See {@link createModelRuntime}. */

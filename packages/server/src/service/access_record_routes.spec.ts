@@ -13,10 +13,9 @@ import sinon from "sinon";
 import request from "supertest";
 import type { Connection } from "@malloydata/malloy";
 import { ConnectionController } from "../controller/connection.controller";
-import { LegacyReportController } from "../controller/legacy_report.controller";
 import { QueryController } from "../controller/query.controller";
 import { QueryUseCase } from "../usecases/query";
-import { AccessDeniedError, PayloadTooLargeError } from "../errors";
+import { PayloadTooLargeError } from "../errors";
 import { logger } from "../logger";
 import { registerExecuteQueryTool } from "../mcp/tools/execute_query_tool";
 import { indexValueFetcherFor } from "../retrieval/index/values_index";
@@ -440,58 +439,11 @@ describe("value search writes exactly one record per lookup", () => {
    });
 });
 
-describe("legacy notebook cell writes exactly one record", () => {
-   const cell = (model: unknown, path = "m.malloy") =>
-      new LegacyReportController(storeOf(model)).executeNotebookCell(
-         "env",
-         "pkg",
-         path,
-         0,
-         undefined,
-         undefined,
-         undefined,
-         undefined,
-         {},
-      );
-   const notebook = (run: () => Promise<unknown>) => ({
-      isNotebook: () => true,
-      executeNotebookCell: run,
-   });
-
-   it("on success", async () => {
-      await cell(notebook(async () => ({ type: "markdown" })));
-      expect(records()).toMatchObject([{ outcome: "ok", status: 200 }]);
-   });
-
-   it("on a refusal before the model", async () => {
-      await expect(
-         cell(
-            notebook(async () => ({})),
-            "nope",
-         ),
-      ).rejects.toThrow();
-      expect(records()).toMatchObject([{ outcome: "not_found" }]);
-   });
-
-   it("on a refusal inside the model", async () => {
-      await expect(
-         cell(
-            notebook(async () => {
-               throw new AccessDeniedError("denied");
-            }),
-         ),
-      ).rejects.toThrow();
-      expect(records()).toMatchObject([{ outcome: "denied_lock" }]);
-   });
-});
-
 describe("a request refused before its controller runs still writes one record", () => {
    const MODEL_QUERY =
       "/api/v0/environments/env/packages/pkg/models/m.malloy/query";
    const LEGACY_MODEL_QUERY =
       "/api/v0/projects/env/packages/pkg/models/m.malloy/query";
-   const cell = (prefix: string, index: string, query = "") =>
-      `/api/v0/${prefix}/env/packages/pkg/notebooks/n.malloynb/cells/${index}${query}`;
    const CALLER = { "x-publisher-caller": "alice@example.com" };
    const appOver = (store: AccessStore) =>
       buildRouteApp({
@@ -551,58 +503,6 @@ describe("a request refused before its controller runs still writes one record",
          },
       ]);
    });
-
-   it.each([
-      ["a cell index that is not a number", "abc", ""],
-      ["filter_params that are not JSON", "0", "?filter_params=%7B"],
-      ["a bad bypass_filters", "0", "?bypass_filters=maybe"],
-      ["givens that are not JSON", "0", "?givens=%7B"],
-   ])("on the notebook cell route with %s", async (_name, index, query) => {
-      await request(appOver(storeOf({})))
-         .get(cell("environments", index, query))
-         .set(CALLER)
-         .expect(400);
-      expect(records()).toMatchObject([
-         {
-            outcome: "bad_request",
-            status: 400,
-            modelPath: "n.malloynb",
-            caller: "alice@example.com",
-         },
-      ]);
-   });
-
-   it.each([
-      ["a cell index that is not a number", "abc", ""],
-      ["filter_params that are not JSON", "0", "?filter_params=%7B"],
-      ["a bad bypass_filters", "0", "?bypass_filters=maybe"],
-   ])(
-      "on the legacy notebook cell route with %s",
-      async (_name, index, query) => {
-         await request(appOver(storeOf({})))
-            .get(cell("projects", index, query))
-            .set(CALLER)
-            .expect(400);
-         expect(records()).toMatchObject([
-            { outcome: "bad_request", status: 400, modelPath: "n.malloynb" },
-         ]);
-      },
-   );
-
-   it.each([["environments"], ["projects"]])(
-      "at the concurrency cap on the %s notebook cell route",
-      async (prefix) => {
-         await atCap(async () => {
-            await request(appOver(storeOf({})))
-               .get(cell(prefix, "0"))
-               .set(CALLER)
-               .expect(503);
-         });
-         expect(records()).toMatchObject([
-            { outcome: "error", status: 503, modelPath: "n.malloynb" },
-         ]);
-      },
-   );
 
    it("once, not twice, when the request reaches its controller", async () => {
       await withAuthorizeModel(MODEL, async ({ model }) => {

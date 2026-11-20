@@ -63,7 +63,7 @@ const EXPECTED: Record<string, string[] | undefined> = {
 
 type Tile = { kind?: string; query?: string; givenNames?: string[] };
 
-/** The same tiles as a grid report, or as a notebook read through the notebook route. */
+/** The same tiles as a grid report, or as a linear one. */
 async function tileGivens(
    kind: "dashboard" | "notebook",
 ): Promise<Record<string, string[] | undefined>> {
@@ -75,11 +75,9 @@ async function tileGivens(
       ),
    });
    try {
-      const tiles: Tile[] | undefined =
-         kind === "dashboard"
-            ? (await pkg.getReport("dashboards/d.malloy"))?.tiles
-            : (await pkg.getModel("notebooks/d.malloy")?.getNotebook())
-                 ?.dashboard?.tiles;
+      const tiles: Tile[] | undefined = (
+         await pkg.getReport(`${folder}/d.malloy`)
+      )?.tiles;
       expect(tiles).toBeDefined();
       return Object.fromEntries(
          (tiles ?? []).flatMap((tile) =>
@@ -98,7 +96,7 @@ describe("dashboard tile givenNames come from the compiled query", () => {
       expect(await tileGivens("dashboard")).toEqual(EXPECTED);
    });
 
-   it("on the notebook route, in process", async () => {
+   it("on a linear report, in process", async () => {
       expect(await tileGivens("notebook")).toEqual(EXPECTED);
    });
 
@@ -109,7 +107,7 @@ describe("dashboard tile givenNames come from the compiled query", () => {
          expect(await tileGivens("dashboard")).toEqual(EXPECTED);
       });
 
-      it("matches on the notebook route", async () => {
+      it("matches on a linear report", async () => {
          expect(await tileGivens("notebook")).toEqual(EXPECTED);
       });
    });

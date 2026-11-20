@@ -144,10 +144,6 @@ const ROUTES: Route[] = [
       call: (base, v) => get(`${base}/reports${query(v)}`),
    },
    {
-      name: "GET notebooks",
-      call: (base, v) => get(`${base}/notebooks${query(v)}`),
-   },
-   {
       name: "GET data-apps",
       call: (base, v) =>
          get(`${base}/data-apps${query(v)}`, marker(/answers (\d+)/)),
@@ -199,10 +195,10 @@ const ROUTES: Route[] = [
          }).then((res) => probe(res)),
    },
    {
-      name: "GET notebook",
+      name: "GET notebook report",
       call: (base, v) =>
          get(
-            `${base}/notebooks/notes.malloynb${query(v)}`,
+            `${base}/reports/notes.malloynb${query(v)}`,
             marker(/notebook answers (\d+)/),
          ),
    },
@@ -247,7 +243,7 @@ const ANSWERING = new Set([
    "GET data-apps",
    "GET databases",
    "POST connection sqlQuery",
-   "GET notebook",
+   "GET notebook report",
    "GET static page",
 ]);
 
@@ -569,7 +565,6 @@ describe("package versions across promotion modes and package kinds", () => {
             "GET models",
             "GET model",
             "POST query",
-            "GET notebooks",
             "GET databases",
             "GET connection schemas",
          ];

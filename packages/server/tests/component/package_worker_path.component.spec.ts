@@ -292,8 +292,8 @@ source: gated is duckdb.sql("select 1 as id") extend {}`,
          }
       });
 
-      it("a notebook cell hydrated from the worker's cellModelDef receives only its own scope's givens", async () => {
-         // Here a cell's modelDef comes from the worker's cellModelDef, not a live compile.
+      it("a worker-loaded notebook's gated cell filters by its given, and an ungated cell ignores it", async () => {
+         // Here the notebook's model comes from the worker, not a live compile.
          writeManifest();
          fs.writeFileSync(
             path.join(tempDir, "nb.malloynb"),
@@ -328,43 +328,18 @@ run: gated -> { aggregate: c }`,
             );
             const model = pkg.getModel("nb.malloynb");
 
-            const preImport = await model!.executeNotebookCell(
-               unrecordedAudit(),
-               1,
-               undefined,
-               false,
-               { GROUPS: [1] },
-            );
-            const preImportRows = JSON.parse(preImport.result!) as {
-               data?: {
-                  array_value?: Array<{
-                     record_value?: Array<{ number_value?: number }>;
-                  }>;
-               };
-            };
-            expect(
-               preImportRows.data?.array_value?.[0]?.record_value?.[0]
-                  ?.number_value,
-            ).toBe(4);
+            // Each cell's query, run on the notebook's own path.
+            const ungated = await model!.runQuery(unrecordedAudit(), {
+               query: "run: plain -> { aggregate: c }",
+               givens: { GROUPS: [1] },
+            });
+            expect((ungated.compactResult as { c: number }[])[0].c).toBe(4);
 
-            const postImport = await model!.executeNotebookCell(
-               unrecordedAudit(),
-               2,
-               undefined,
-               false,
-               { GROUPS: [1] },
-            );
-            const postImportRows = JSON.parse(postImport.result!) as {
-               data?: {
-                  array_value?: Array<{
-                     record_value?: Array<{ number_value?: number }>;
-                  }>;
-               };
-            };
-            const count =
-               postImportRows.data?.array_value?.[0]?.record_value?.[0]
-                  ?.number_value;
-            expect(count).toBe(2);
+            const gated = await model!.runQuery(unrecordedAudit(), {
+               query: "run: gated -> { aggregate: c }",
+               givens: { GROUPS: [1] },
+            });
+            expect((gated.compactResult as { c: number }[])[0].c).toBe(2);
          } finally {
             await duckdb.close();
          }
@@ -382,8 +357,9 @@ run: gated -> { aggregate: c }`,
             );
             const err = await pkg
                .getModel("og_nb.malloynb")!
-               .executeNotebookCell(unrecordedAudit(), 0, undefined, false, {
-                  HIDE: "a",
+               .runQuery(unrecordedAudit(), {
+                  query: "run: mid_ungated -> { aggregate: c }",
+                  givens: { HIDE: "a" },
                })
                .catch((e: unknown) => e);
             expect((err as Error).message).toMatch(/unknown given 'HIDE'/);

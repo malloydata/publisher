@@ -206,19 +206,4 @@ export class OracleGuard {
          decided,
       );
    }
-
-   /**
-    * A notebook cell's gate on its UNREFINED runnable, before a `#(filter)`
-    * refinement rebuilds it, so a denied caller gets the 403 rather than a
-    * 400 from a broken refinement or bad `filterParams`. Locks and rejected
-    * gates throw; row-level gates are left to `govern` on the refined
-    * runnable.
-    */
-   public async beforeCellRefinement(
-      runnable: QueryMaterializer,
-      givens: Record<string, GivenValue>,
-      graftScope: GraftScope | undefined,
-   ): Promise<void> {
-      await this.checks.probeEntryPointGates(runnable, givens, graftScope);
-   }
 }

@@ -15,8 +15,7 @@ import { LATEST_VERSION_ALIAS } from "./service/versions/version_service";
 /**
  * Read a boolean query param, keeping absent distinct from `false`, and throw
  * a {@link BadRequestError} for an unusable value. Only for params that need
- * the distinction, such as `bypass_filters`, whose Deprecation header fires on
- * `!== undefined`; otherwise use {@link booleanParam}.
+ * the distinction; otherwise use {@link booleanParam}.
  */
 export function optionalBooleanParam(
    req: Pick<Request, "query" | "path" | "method">,

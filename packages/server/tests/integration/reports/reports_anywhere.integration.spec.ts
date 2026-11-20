@@ -104,16 +104,19 @@ describe("Reports anywhere in a package (E2E)", () => {
       expect(warningsByCode(warnings, "report-name-ambiguous")).toEqual([]);
    });
 
-   // DEPRECATED FEATURE COVERAGE — delete together with
-   // the `…/notebooks` routes (see RELEASE_NOTES deprecations).
-   describe("deprecated: the …/notebooks routes", () => {
-      it("lists the deprecated alias by layout", async () => {
-         const notebooks = await getJson<{ path: string }[]>(api("/notebooks"));
-         expect(notebooks.map((n) => n.path).sort()).toEqual([
-            "dashboards/linear_in_dashboards.malloy",
-            "deep/story.malloy",
-         ]);
-      });
+   it("lists the linear reports by their tag, wherever they live", async () => {
+      const reports = await getJson<{ path: string; layout: string }[]>(
+         api("/reports"),
+      );
+      expect(
+         reports
+            .filter((r) => r.layout === "linear")
+            .map((r) => r.path)
+            .sort(),
+      ).toEqual([
+         "dashboards/linear_in_dashboards.malloy",
+         "deep/story.malloy",
+      ]);
    });
 
    it("serves each report's manifest by path, of either layout", async () => {
@@ -155,24 +158,9 @@ describe("Reports anywhere in a package (E2E)", () => {
          query: `run: ${story.tiles?.[1].query}`,
       });
       expect(ran.status).toBe(200);
-      // The deprecated notebooks route reads the same report as cells: its
-      // definitions, then its tiles.
-      const asCells = await getJson<{
-         notebookCells?: { kind?: string }[];
-      }>(api("/notebooks/deep/story.malloy"));
-      const queryCell = (asCells.notebookCells ?? []).findIndex(
-         (c) => c.kind === "query",
-      );
-      expect(queryCell).toBeGreaterThanOrEqual(0);
       expect(
-         (await fetch(api(`/reports/deep/story.malloy/cells/${queryCell}`)))
-            .status,
+         (await fetch(api("/reports/deep/story.malloy/cells/1"))).status,
       ).toBe(404);
-      // The deprecated notebooks route still answers the same cell.
-      const old = await fetch(
-         api(`/notebooks/deep/story.malloy/cells/${queryCell}`),
-      );
-      expect(old.status).toBe(200);
    });
 
    it("answers 404 for a path that is not a report", async () => {

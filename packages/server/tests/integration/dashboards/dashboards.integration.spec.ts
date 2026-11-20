@@ -175,6 +175,26 @@ describe("Dashboard discovery (E2E)", () => {
       }
    });
 
+   // The deprecated notebook routes, and their `/projects` twins, are removed
+   // the same way. Read `/reports`; run a cell through the model query route.
+   it("answers the removed …/notebooks routes as unknown API endpoints", async () => {
+      const paths = [
+         "/notebooks",
+         "/notebooks/orders-since.malloynb",
+         "/notebooks/orders-since.malloynb/cells/3",
+      ].flatMap((sub) => [
+         `/api/v0/environments/${ENV_NAME}/packages/${PACKAGE_NAME}${sub}`,
+         `/api/v0/projects/${ENV_NAME}/packages/${PACKAGE_NAME}${sub}`,
+      ]);
+      expect(paths).toHaveLength(6);
+      for (const path of paths) {
+         const res = await fetch(`${baseUrl}${path}`);
+         expect([path, res.status]).toEqual([path, 404]);
+         const body = (await res.json()) as { message?: string };
+         expect(body.message).toStartWith(`Unknown API endpoint: ${path}.`);
+      }
+   });
+
    it("answers a versionId on a package with no versions as no such version", async () => {
       // This package was loaded from a directory, so it has no published
       // versions: a well-formed version is 404, a malformed one 400.
@@ -561,22 +581,22 @@ describe("Dashboard discovery (E2E)", () => {
       it("reads a date given in the bare form on a .malloynb cell", async () => {
          const countSince = async (since: string) => {
             const res = await fetch(
-               apiUrl(
-                  `/notebooks/orders-since.malloynb/cells/3?givens=${encodeURIComponent(
-                     JSON.stringify({ SINCE: since }),
-                  )}`,
-               ),
+               apiUrl("/models/orders-since.malloynb/query"),
+               {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                     query: "run: orders -> since_totals",
+                     givens: { SINCE: since },
+                     compactJson: true,
+                  }),
+               },
             );
             expect(res.status).toBe(200);
-            const body = (await res.json()) as { result?: string };
-            const cell = JSON.parse(body.result ?? "{}") as {
-               data?: {
-                  array_value?: {
-                     record_value?: { number_value?: number }[];
-                  }[];
-               };
-            };
-            return cell.data?.array_value?.[0]?.record_value?.[0]?.number_value;
+            const rows = JSON.parse(
+               ((await res.json()) as { result: string }).result,
+            ) as Record<string, number>[];
+            return Object.values(rows[0] ?? {})[0];
          };
          // Six orders in the fixture; two are ordered on or after 2024-03-01.
          expect(await countSince("2024-01-01")).toBe(6);
@@ -756,31 +776,25 @@ describe("Dashboard discovery (E2E)", () => {
        * app-level handler maps an unclassified error to 500, and that the
        * reports route is not somehow special among its neighbours.
        *
-       * `models` and `notebooks` are the comparison because they take a param in
-       * the same position, so the bodies match only while every capture is the
-       * single segment `p%q`. The package route behaves the same way and is
-       * simply not expressible through the helper below.
+       * `models` is the comparison because it takes a param in the same
+       * position, so the bodies match only while both captures are the single
+       * segment `p%q`. The package route behaves the same way and is simply not
+       * expressible through the helper below.
        *
        * Expected to go red when the middleware is fixed to return 400, which is
        * the point of writing it down.
        */
-      // DEPRECATED FEATURE COVERAGE — drop the `notebooks` neighbour together
-      // with the `…/notebooks` routes (see RELEASE_NOTES deprecations).
-      describe("deprecated: the …/notebooks routes", () => {
-         it("answers a raw, undecodable name exactly as its neighbours do", async () => {
-            const raw = (suffix: string) =>
-               fetch(
-                  `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${LINT_PACKAGE}/${suffix}/p%q`,
-               );
-            const onReports = await raw("reports");
-            expect(onReports.status).toBe(500);
-            const body = await onReports.text();
-            for (const neighbour of ["models", "notebooks"]) {
-               const other = await raw(neighbour);
-               expect(other.status).toBe(onReports.status);
-               expect(await other.text()).toBe(body);
-            }
-         });
+      it("answers a raw, undecodable name exactly as its neighbour does", async () => {
+         const raw = (suffix: string) =>
+            fetch(
+               `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${LINT_PACKAGE}/${suffix}/p%q`,
+            );
+         const onReports = await raw("reports");
+         expect(onReports.status).toBe(500);
+         const body = await onReports.text();
+         const other = await raw("models");
+         expect(other.status).toBe(onReports.status);
+         expect(await other.text()).toBe(body);
       });
 
       it("says nothing about the unconventional name", async () => {

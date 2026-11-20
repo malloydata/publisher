@@ -1,3 +1,0 @@
-source: orders is duckdb.table('data/orders.csv') extend {
-   measure: order_count is count()
-}

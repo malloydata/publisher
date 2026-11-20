@@ -337,7 +337,6 @@ describe("the versions contract a generated client sees", () => {
             "reports/{path}",
             () => fetch(`${pkgApi(name)}/reports/report.malloy?${bad}`),
          ],
-         ["notebooks", () => fetch(`${pkgApi(name)}/notebooks?${bad}`)],
          ["databases", () => fetch(`${pkgApi(name)}/databases?${bad}`)],
          [
             "materializations",

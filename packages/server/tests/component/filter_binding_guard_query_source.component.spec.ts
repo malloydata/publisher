@@ -149,10 +149,18 @@ function firstValue(rows: Record<string, unknown>[]): string {
    return "n" in row ? `n=${String(row.n)}` : `row=${JSON.stringify(row)}`;
 }
 
-function firstCellValue(resultJson: string): string {
-   const cell = JSON.parse(resultJson)?.data?.array_value?.[0]?.record_value;
-   const v = cell?.[0];
-   return `n=${String(v?.number_value ?? v?.string_value ?? JSON.stringify(v))}`;
+function firstCellValue(compactResult: unknown): string {
+   const row = (compactResult as Record<string, unknown>[])[0];
+   const v = row ? Object.values(row)[0] : undefined;
+   return `n=${String(v)}`;
+}
+
+/** A `.malloynb` cell's query: its last `run:` to the end of the cell. */
+function cellQuery(notebook: string, index: number): string {
+   const cell = notebook.split(/^>>>malloy\n/m).filter((c) => c !== "")[index];
+   const at = cell.lastIndexOf("run:");
+   if (at < 0) throw new Error(`cell ${index} runs no query`);
+   return cell.slice(at).trim();
 }
 
 const roots: string[] = [];
@@ -277,7 +285,7 @@ async function serve(
    return result;
 }
 
-/** Run notebook cell 1 of `nb.malloynb` (cells compile unrestricted). */
+/** Run notebook cell 1's query on the path of `nb.malloynb`, as the query route does. */
 async function serveCell(id: string, notebook: string): Promise<Outcome> {
    let outcome: Outcome;
    try {
@@ -287,8 +295,15 @@ async function serveCell(id: string, notebook: string): Promise<Outcome> {
             withDenialSpy(async () => {
                const r = await pkg
                   .getModel("nb.malloynb")!
-                  .executeNotebookCell(unrecordedAudit(), 1, {}, false, {});
-               return { kind: "SERVED", detail: firstCellValue(r.result!) };
+                  .runQuery(unrecordedAudit(), {
+                     query: cellQuery(notebook, 1),
+                     filterParams: {},
+                     givens: {},
+                  });
+               return {
+                  kind: "SERVED",
+                  detail: firstCellValue(r.compactResult),
+               };
             }),
       );
    } catch (e) {
@@ -1096,12 +1111,6 @@ ${BASE}`,
       );
       check(id, outcome);
       checkRows(id, outcome);
-   });
-   it("I5-cell-misbound: a cell that declares a where: and rebinds its field is refused", async () => {
-      await serveCell(
-         "I5-cell-misbound",
-         `>>>malloy\n${BASE}\n>>>malloy\nrun: deals_incl extend { where: is_open } extend { except: is_open } extend { dimension: is_open is true } -> { aggregate: n is count() }\n`,
-      );
    });
 });
 
@@ -2619,7 +2628,6 @@ const COMPILE_DIVERGENCE_ALLOWED: Record<
 const EXPECTED: Record<string, Kind> = {
    "I5-adhoc-dim-where": "SERVED",
    "I5-adhoc-where": "SERVED",
-   "I5-cell-misbound": "DENIED",
    "I5-caller-where-before-dim": "SERVED",
    "I5-caller-where-before-dim-gated": "SERVED",
    "I5-caller-where-before-dim-bypass": "SERVED",

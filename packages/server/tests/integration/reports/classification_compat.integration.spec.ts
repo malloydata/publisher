@@ -14,9 +14,10 @@
  * manifest and notebook body, the model listing, and the package warnings.
  * This test asserts that every report's layout equals its kind then (grid for a
  * dashboard, linear for a notebook), that the grid reports' listing and
- * manifests (read from the report routes now the dashboards routes are gone)
- * and the deprecated notebooks routes answer exactly what they answered (plus
- * the new `layout` field), and that the warnings are
+ * manifests, and the linear reports' listing, manifests and `.malloynb` cells,
+ * all read from the report routes now the dashboards and notebooks routes are
+ * gone, answer exactly what they answered (plus the new `layout` field), and
+ * that the warnings are
  * the same apart from the new report findings and the two retired folder
  * findings, and apart from the deliberate changes in {@link DELIBERATE}, which
  * are applied to the baseline before comparing.
@@ -252,7 +253,7 @@ describe("Report classification compatibility (E2E)", () => {
             expect(layouts).toEqual(before);
          });
 
-         it("answers the grid reports and the deprecated routes as before", async () => {
+         it("answers the reports the removed routes answered as before", async () => {
             const was = expectedFor(pkg, expected[pkg]);
             // The removed dashboards routes' answers, read from the report
             // routes: the grid reports, and each one's manifest by its path.
@@ -281,45 +282,55 @@ describe("Report classification compatibility (E2E)", () => {
                   lf(without(now, "resource", "layout", "editable")),
                ).toEqual(without(manifest, "kind"));
             }
-            const notebooks = await get<Record<string, unknown>[]>(
-               api(pkg, "/notebooks"),
-            );
+            // The removed notebooks routes' answers, read from the report
+            // routes: the linear reports, and each one's manifest, or a
+            // `.malloynb`'s cells, by its path.
             const rewritten = rewrittenIn(pkg);
-            expect(
-               lf(
-                  notebooks
-                     .filter((n) => !rewritten.has(n.path as string))
-                     .map((n) => without(n, "environmentName")),
-               ),
-            ).toEqual(was.notebooks);
+            const linear = reports.filter(
+               (r) => r.layout === "linear" && !rewritten.has(r.path as string),
+            );
+            expect(linear.map((r) => r.path)).toEqual(
+               was.notebooks.map((n) => n.path),
+            );
+            for (const listed of was.notebooks) {
+               const now = linear.find((r) => r.path === listed.path) ?? {};
+               // The report listing falls back to the name where the notebook
+               // listing left the title out.
+               if (listed.title !== undefined)
+                  expect(lf(now.title)).toEqual(listed.title);
+               expect(lf(now.description)).toEqual(listed.description);
+            }
             for (const [notebookPath, body] of Object.entries(
                was.notebookBodies,
             )) {
-               // Raw: a notebook whose cells the reader refused answered 424
-               // before too, and the baseline holds that body.
-               const now = (await (
-                  await fetch(api(pkg, `/notebooks/${notebookPath}`))
-               ).json()) as {
-                  dashboard?: Record<string, unknown>;
-                  notebookCells?: Record<string, unknown>[];
+               const res = await fetch(
+                  api(
+                     pkg,
+                     `/reports/${notebookPath
+                        .split("/")
+                        .map(encodeURIComponent)
+                        .join("/")}`,
+                  ),
+               );
+               const now = (await res.json()) as Record<string, unknown> & {
+                  notebook?: { notebookCells?: Record<string, unknown>[] };
                };
                if (body.dashboard) {
-                  expect(now.dashboard?.layout).toBe("linear");
-               }
-               expect(
-                  lf(
-                     now.dashboard
-                        ? without(now.dashboard, "resource", "layout")
-                        : null,
-                  ),
-               ).toEqual(body.dashboard);
-               expect(
-                  lf(
-                     (now.notebookCells ?? []).map((cell) =>
-                        without(cell, "newSources", "queryInfo"),
+                  // A linear report written as tiles: its manifest, which
+                  // the notebook route carried as `dashboard`.
+                  expect(now.layout).toBe("linear");
+                  expect(
+                     lf(without(now, "resource", "layout", "editable")),
+                  ).toEqual(without(body.dashboard, "kind"));
+               } else if (notebookPath.endsWith(".malloynb")) {
+                  expect(
+                     lf(
+                        (now.notebook?.notebookCells ?? []).map((cell) =>
+                           without(cell, "newSources", "queryInfo"),
+                        ),
                      ),
-                  ),
-               ).toEqual(body.notebookCells);
+                  ).toEqual(body.notebookCells);
+               }
             }
             const models = await get<Record<string, unknown>[]>(
                api(pkg, "/models"),

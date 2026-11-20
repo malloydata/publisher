@@ -12,14 +12,9 @@
  * setup cells before a query (its imports, `source:` and `given:`
  * declarations) are already in scope and nothing is prepended.
  *
- * The first block pins the governance answers on that path: the package
- * surface, `#(authorize)`, a row-level `#(access_filter)` with and without its
- * given, a given declared only in a later cell, and an import in the cell that
- * runs. It stays when the deprecated cell route is removed.
- *
- * The second block compares every cell against the deprecated cell route
- * (`GET …/notebooks/{path}/cells/{i}`) and lists where the two differ. It is
- * deleted with that route.
+ * It pins the governance answers on that path: the package surface,
+ * `#(authorize)`, a row-level `#(access_filter)` with and without its given, a
+ * given declared only in a later cell, and an import in the cell that runs.
  */
 
 import { rm } from "fs/promises";
@@ -270,119 +265,6 @@ describe(".malloynb cells through the query route (E2E)", () => {
             ["EU", 3],
             ["US", 3],
          ],
-      });
-   });
-
-   // DEPRECATED ROUTE COMPARISON: deleted with `GET …/notebooks/{path}/cells/{i}`.
-   describe("compared with the deprecated cell route", () => {
-      const GIVENS: object[] = [
-         {},
-         { ROLES: ["admin"] },
-         { ROLES: ["viewer"] },
-         { GROUPS: [1, 2] },
-         { GROUPS: [] },
-         { GROUPS: [4, 5] },
-         { REGION: "EU" },
-         { REGION: "EU", GROUPS: [1] },
-         { NOtaGiven: 1 },
-      ];
-      const NOTEBOOKS = [
-         "surface.malloynb",
-         "raw_sql.malloynb",
-         "authorize.malloynb",
-         "row_level.malloynb",
-         "later_given.malloynb",
-         "import_cell.malloynb",
-      ];
-      /**
-       * Where the two differ, by `package/notebook#cell`. A source a cell
-       * declares over a published one is not on a curated package's surface,
-       * so the query route answers 404 whatever the givens; the cell route
-       * ran it under its gate.
-       */
-      const SURFACE_DIFFERENCES = [
-         `${CURATED}/surface.malloynb#5`,
-         `${CURATED}/authorize.malloynb#2`,
-         `${CURATED}/row_level.malloynb#2`,
-      ];
-      /** The unknown-given 400 lists the givens in scope: the cell's, or the notebook's. */
-      const scopeFree = (outcome: Outcome): Outcome =>
-         "refused" in outcome && outcome.message
-            ? {
-                 ...outcome,
-                 message: outcome.message.replace(
-                    / Model surfaces \[.*\]$/,
-                    "",
-                 ),
-              }
-            : outcome;
-
-      it("agrees cell by cell, except where a curated package refuses a cell's own source", async () => {
-         const differences = new Set<string>();
-         const unexpected: unknown[] = [];
-         const seen = { answered: 0, refused: 0, notSent: 0 };
-         for (const pkg of [CURATED, OPEN]) {
-            for (const nb of NOTEBOOKS) {
-               const cells = await cellsOf(pkg, nb);
-               for (let i = 0; i < cells.length; i++) {
-                  if (cells[i].type !== "code") continue;
-                  const query = malloynbCellQuery(cells[i].text);
-                  for (const givens of GIVENS) {
-                     const viaCell = await fetch(
-                        env.api(
-                           `/notebooks/notebooks/${nb}/cells/${i}?givens=${encodeURIComponent(JSON.stringify(givens))}`,
-                           pkg,
-                        ),
-                     );
-                     const cellBody = (await viaCell.json()) as {
-                        result?: string;
-                        message?: string;
-                     };
-                     if (query === undefined) {
-                        // A cell the SDK does not send is one the cell route
-                        // ran without a result.
-                        expect(viaCell.status).toBe(200);
-                        expect(cellBody.result).toBeUndefined();
-                        seen.notSent++;
-                        continue;
-                     }
-                     const viaQuery = await env.query(
-                        `notebooks/${nb}`,
-                        { query, givens },
-                        pkg,
-                     );
-                     const a = scopeFree(outcomeOf(viaCell.status, cellBody));
-                     const b = scopeFree(
-                        outcomeOf(viaQuery.status, await viaQuery.json()),
-                     );
-                     const key = `${pkg}/${nb}#${i}`;
-                     if (JSON.stringify(a) === JSON.stringify(b)) {
-                        seen["rows" in a ? "answered" : "refused"]++;
-                     } else if (
-                        SURFACE_DIFFERENCES.includes(key) &&
-                        "refused" in b &&
-                        b.refused === 404
-                     ) {
-                        differences.add(key);
-                     } else {
-                        unexpected.push({
-                           key,
-                           givens,
-                           cellRoute: a,
-                           queryRoute: b,
-                        });
-                     }
-                  }
-               }
-            }
-         }
-         expect(unexpected).toEqual([]);
-         expect([...differences].sort()).toEqual(
-            [...SURFACE_DIFFERENCES].sort(),
-         );
-         expect(seen.answered).toBeGreaterThan(60);
-         expect(seen.refused).toBeGreaterThan(100);
-         expect(seen.notSent).toBeGreaterThan(0);
       });
    });
 });

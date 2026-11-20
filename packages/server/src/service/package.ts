@@ -219,7 +219,7 @@ type ApiDatabase = components["schemas"]["Database"];
 type ApiModel = components["schemas"]["Model"];
 type ApiReport = components["schemas"]["Report"];
 type ApiReportManifest = components["schemas"]["ReportManifest"];
-type ApiRawNotebook = components["schemas"]["RawNotebook"];
+type ApiReportCells = components["schemas"]["ReportCells"];
 
 /** One report discovery found and serves, keyed by its path. */
 interface ServedReport {
@@ -3850,7 +3850,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       if (!report) return undefined;
       const entry = this.reportEntry(report);
       const manifest = report.manifest;
-      let notebook: ApiRawNotebook | undefined;
+      let notebook: ApiReportCells | undefined;
       if (
          !manifest &&
          report.layout === "linear" &&

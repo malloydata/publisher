@@ -2,42 +2,26 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * DEPRECATED: the report surface as the old `…/notebooks*` routes served it,
- * for clients that still read that shape. Every function here is a projection
- * of the report API (`Package.listReports`) into the old shape; report
- * code imports nothing from this module. What imports it, and so what a
- * removal has to touch: `controller/legacy_report.controller.ts` (the
- * notebook routes), `controller/compile.controller.ts` (`kind` on a compiled
+ * DEPRECATED: the report vocabulary older clients still read. Report code
+ * imports nothing from this module. What imports it, and so what a removal has
+ * to touch: `controller/compile.controller.ts` (`kind` on a compiled
  * document), `routes/spa.ts` (the Console's `dashboards/<name>` and
  * `notebooks/<name>` alias) and `service/package.ts` (which implements
  * {@link ReportViewPackage}).
  *
- * What only these routes have: `kind`, the layout in the old vocabulary
+ * What only these have: `kind`, the layout in the old vocabulary
  * (`dashboard` for grid, `notebook` for linear), synthesized here and nowhere
  * else.
  */
 
-import { components } from "../api";
 import { recordDeprecatedUsage } from "../deprecated_usage_metrics";
 import type { CompiledDocument } from "./compile_document";
 import { reportName, type ReportLayout } from "./report";
 
-type ApiNotebook = components["schemas"]["Notebook"];
-type ApiRawNotebook = components["schemas"]["RawNotebook"];
-type ApiReport = components["schemas"]["Report"];
-
-/** What the deprecated projections read from a package. `Package` implements it. */
+/** What the Console alias reads from a package. `Package` implements it. */
 export interface ReportViewPackage {
-   getPackageName(): string;
-   listReports(): ApiReport[];
    isServedReport(modelPath: string): boolean;
    servedReportPaths(): IterableIterator<string>;
-   getModel(modelPath: string):
-      | {
-           getNotebookListing(): { title?: string; description?: string };
-           getNotebookError(): Error | undefined;
-        }
-      | undefined;
 }
 
 /** The old name of a layout. */
@@ -45,47 +29,6 @@ export type LegacyKind = "dashboard" | "notebook";
 
 export function legacyKindOf(layout: ReportLayout): LegacyKind {
    return layout === "grid" ? "dashboard" : "notebook";
-}
-
-/**
- * The linear reports, as list-notebooks lists them: a title only when the
- * file resolves one (the report listing falls back to the name), and the
- * error a linear report that failed to compile or to read lists with.
- */
-export function listNotebooks(
-   pkg: ReportViewPackage,
-   environmentName: string,
-): ApiNotebook[] {
-   return pkg
-      .listReports()
-      .filter((report) => report.layout === "linear")
-      .map((report) => {
-         const model = pkg.getModel(report.path);
-         const listing = model?.getNotebookListing() ?? {};
-         return {
-            environmentName,
-            packageName: pkg.getPackageName(),
-            path: report.path,
-            title: listing.title,
-            description: listing.description,
-            error: model?.getNotebookError()?.message,
-         };
-      });
-}
-
-/** A linear report's cells, with its tile layout (when it is written as tiles) carrying `kind`. */
-export function withLegacyNotebookKind(
-   notebook: ApiRawNotebook,
-): ApiRawNotebook {
-   if (!notebook.dashboard) return notebook;
-   const { layout } = notebook.dashboard;
-   return {
-      ...notebook,
-      dashboard: {
-         ...notebook.dashboard,
-         ...(layout && { kind: legacyKindOf(layout) }),
-      },
-   };
 }
 
 /**

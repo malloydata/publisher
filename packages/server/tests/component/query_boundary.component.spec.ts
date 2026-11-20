@@ -1134,21 +1134,28 @@ export { \`customer-orders\` }`,
             });
             expect(published.result.data).toBeDefined();
 
-            // The author's own cell is held to the surface too: it reads
-            // base_source, which the surface does not publish.
+            // The author's own cell is held to the surface too: its query
+            // reads base_source, which the surface does not publish.
             await expect(
-               notebook.executeNotebookCell(unrecordedAudit(), 1),
+               notebook.runQuery(unrecordedAudit(), {
+                  query: "run: base_source -> v",
+               }),
             ).rejects.toThrow(NotQueryableError);
-            // A cell over what the surface publishes runs, and so does one over a
-            // source an EARLIER cell derives from it.
+            // A cell over what the surface publishes runs.
             expect(
-               (await notebook.executeNotebookCell(unrecordedAudit(), 4))
-                  .result,
+               (
+                  await notebook.runQuery(unrecordedAudit(), {
+                     query: "run: customers -> v",
+                  })
+               ).result.data,
             ).toBeDefined();
-            expect(
-               (await notebook.executeNotebookCell(unrecordedAudit(), 3))
-                  .result,
-            ).toBeDefined();
+            // A source an earlier cell derives from a published one is not on
+            // the surface, so its cell answers 404 on the query route.
+            await expect(
+               notebook.runQuery(unrecordedAudit(), {
+                  query: "run: mine -> v",
+               }),
+            ).rejects.toThrow(NotQueryableError);
 
             // And the notebook does not show what it may not read: the import
             // cell's newSources and the notebook's sources leave base_source out.
@@ -1199,10 +1206,14 @@ export { \`customer-orders\` }`,
             );
             const notebook = pkg.getModel("report.malloynb")!;
             await expect(
-               notebook.executeNotebookCell(unrecordedAudit(), 1),
+               notebook.runQuery(unrecordedAudit(), {
+                  query: "run: base_locked -> { aggregate: c is count() }",
+               }),
             ).rejects.toThrow(NotQueryableError);
             await expect(
-               notebook.executeNotebookCell(unrecordedAudit(), 3),
+               notebook.runQuery(unrecordedAudit(), {
+                  query: "run: raw -> { aggregate: c is count() }",
+               }),
             ).rejects.toThrow(NotQueryableError);
          } finally {
             await duckdb.close();

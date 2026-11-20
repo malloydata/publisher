@@ -2,15 +2,14 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * DEPRECATED FEATURE COVERAGE — delete together with the `…/notebooks*`
- * routes: the old shapes, projected from the report API.
+ * DEPRECATED FEATURE COVERAGE — delete together with the old report
+ * vocabulary: `kind` on a compiled document and the Console alias.
  */
 import { describe, expect, it } from "bun:test";
 import {
    isLegacyReportAlias,
    legacyKindOf,
    withLegacyDocumentKind,
-   withLegacyNotebookKind,
 } from "./legacy_report_views";
 import type { Package } from "./package";
 
@@ -19,7 +18,6 @@ type Listed = { path: string; name: string; layout: "grid" | "linear" };
 /** A package that serves `reports`. */
 const fakePackage = (reports: Listed[]) =>
    ({
-      getPackageName: () => "pkg",
       servedReportPaths: () => reports.map((r) => r.path).values(),
       isServedReport: (path: string) => reports.some((r) => r.path === path),
    }) as unknown as Package;
@@ -56,7 +54,7 @@ describe("legacy report views", () => {
       expect(isLegacyReportAlias(pkg, "dashboards/absent")).toBe(false);
    });
 
-   it("adds kind to a compiled document and its manifest, and to a notebook's tile layout", () => {
+   it("adds kind to a compiled document and its manifest", () => {
       expect(
          withLegacyDocumentKind({
             layout: "linear",
@@ -69,11 +67,5 @@ describe("legacy report views", () => {
          cells: [],
          kind: "dashboard",
       });
-      expect(
-         withLegacyNotebookKind({
-            dashboard: { layout: "linear" },
-         } as never).dashboard,
-      ).toMatchObject({ kind: "notebook" });
-      expect(withLegacyNotebookKind({} as never)).toEqual({});
    });
 });

@@ -30,7 +30,6 @@ import {
    duckdbMalloyConfig,
    usePackageLoadPool,
 } from "../../src/test_helpers/temp_package";
-import { listNotebooks } from "../../src/service/legacy_report_views";
 import { QueryPrivileges } from "../../src/service/model_query_request";
 
 describe("Explore Visibility via worker pool", () => {
@@ -126,9 +125,12 @@ export { customers }`,
          expect(result.data).toBeDefined();
 
          // Reports are always public regardless of the surface.
-         expect((await listNotebooks(pkg, "env")).map((n) => n.path)).toEqual([
-            "report.malloy",
-         ]);
+         expect(
+            pkg
+               .listReports()
+               .filter((r) => r.layout === "linear")
+               .map((r) => r.path),
+         ).toEqual(["report.malloy"]);
 
          // The derived entry always resolves, so it can never be an invalid
          // explores entry -- getInvalidExplores has nothing to report.

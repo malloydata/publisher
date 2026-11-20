@@ -171,9 +171,9 @@ const READ_ROUTES: ReadRoute[] = [
       marker: (n) => `Overview v${n}`,
    },
    {
-      name: "GET notebook cell",
-      path: "/notebooks/notes.malloynb/cells/2",
-      marker: (n) => `SELECT ${n} AS answer`,
+      name: "GET notebook report",
+      path: "/reports/notes.malloynb",
+      marker: (n) => `Notes v${n}`,
       normalize: withoutRunIds,
    },
    { name: "GET skills", path: "/skills", marker: (n) => `House rules v${n}` },

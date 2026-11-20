@@ -22,7 +22,6 @@ import {
    isReportEligiblePath,
    readReportTagOfText,
 } from "../../src/service/report";
-import { listNotebooks } from "../../src/service/legacy_report_views";
 import {
    duckdbMalloyConfig,
    usePackageLoadPool,
@@ -31,6 +30,11 @@ import {
 /** The grid reports a package lists. */
 const gridReports = (pkg: Package) =>
    pkg.listReports().filter((report) => report.layout === "grid");
+const linearReports = (pkg: Package) =>
+   pkg.listReports().filter((report) => report.layout === "linear");
+/** A linear report's own title and description, before the listing falls back to its name. */
+const listingOf = (pkg: Package, path: string) =>
+   pkg.getModel(path)!.getNotebookListing();
 
 /** The layout `readReportTagOfText` gives, or `null` for no report. */
 const layoutOfText = (source: string) => {
@@ -404,8 +408,7 @@ describe("served notebooks (worker path)", () => {
          pkg.getModel("notebooks/c_heading.malloy")!.setNotebookCells([
             { type: "markdown", text: "# Heading title\nbody" },
          ]);
-         const listed = await listNotebooks(pkg, "env");
-         const by = (p: string) => listed.find((n) => n.path === p)!;
+         const by = (p: string) => listingOf(pkg, p);
          expect(await by("notebooks/a_titled.malloy")).toMatchObject({
             title: "Explicit",
             description: "Prose above",
@@ -431,7 +434,7 @@ describe("served notebooks (worker path)", () => {
          `## artifact { layout=linear tiles=[] title="T" }\n##(markdown) a markdown cell, not a description\n${BASE}`,
       );
       await withPackage(async (pkg) => {
-         const [nb] = await listNotebooks(pkg, "env");
+         const nb = listingOf(pkg, "notebooks/nb.malloy");
          expect(nb.title).toBe("T");
          expect(nb.description).toBeUndefined();
       });
@@ -492,7 +495,7 @@ describe("served notebooks (worker path)", () => {
          `## artifact { layout=linear tiles=[] }\n##(markdown) a markdown cell\n${BASE}`,
       );
       await withPackage(async (pkg) => {
-         const [nb] = await listNotebooks(pkg, "env");
+         const nb = listingOf(pkg, "notebooks/nb.malloy");
          expect(nb.description).toBeUndefined();
          expect(nb.title).toBeUndefined();
       });
@@ -527,7 +530,7 @@ describe("served notebooks (worker path)", () => {
             `## artifact { layout=linear tiles=[] }\n##|"\n## artifact kinds\n|##\nsource: oops is\n`,
          );
          await pkg.reloadAllModels({});
-         const listed = await listNotebooks(pkg, "env");
+         const listed = linearReports(pkg);
          expect(listed.map((n) => n.path)).toEqual(["notebooks/nb.malloy"]);
          expect(listed[0].error).toBeTruthy();
          expect(pkg.getReportLayout("notebooks/nb.malloy")).toBe("linear");
@@ -543,7 +546,7 @@ describe("served notebooks (worker path)", () => {
             `##|"\n## artifact kinds\n|##\nsource: oops is\n`,
          );
          await pkg.reloadAllModels({});
-         expect(await listNotebooks(pkg, "env")).toEqual([]);
+         expect(linearReports(pkg)).toEqual([]);
       });
    });
 
