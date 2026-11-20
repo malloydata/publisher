@@ -1,5 +1,6 @@
 >>>malloy
 import "../models/orders.malloy"
+import "../models/hidden.malloy"
 import "../models/hidden_q.malloy"
 import "../models/filtered.malloy"
 >>>malloy
@@ -11,3 +12,20 @@ run: orders -> {
 run: hq
 >>>malloy
 run: filtered -> { aggregate: n }
+>>>markdown
+To run: open the notebook in the Console.
+>>>malloy
+run: orders -> {
+   // #(authorize) is the author's to write, not this cell's
+   join_one: h is hidden on h.id = id
+   aggregate: order_count, s is h.secret_total
+}
+>>>malloy
+run: orders -> {
+   // #(classification) pii
+   aggregate: order_count
+}
+>>>malloy
+run: filtered extend { join_one: h is hidden on h.id = id } -> { aggregate: n, s is h.secret_total }
+>>>malloy
+run: orders extend { join_one: q is hq on q.secret_total = id } -> { aggregate: order_count }

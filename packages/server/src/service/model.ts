@@ -117,6 +117,7 @@ import { malloynbCellQuery } from "./deprecated/malloynb";
 import {
    assertNoCallerAuthorizeAnnotation,
    assertNoCallerClassificationAnnotation,
+   hasCallerAuthorizeAnnotation,
 } from "./authorize";
 import { buildFilterClause, FilterValidationError } from "./filter";
 import { compileErrorOf } from "./model_query_compile";
@@ -2037,7 +2038,9 @@ export class Model {
     * DEPRECATED (`.malloynb` only; deleted with the format). The query
     * route's stages for a `.malloynb` cell's `run:` sent as `query` on this
     * file, in the route's order (`ModelServing.run`), stopping at the first
-    * that refuses: the boundary on the text and the joins it writes; then
+    * that refuses: the boundary on the text and the joins it writes, the
+    * joins skipped as the route skips them for text with an `authorize`
+    * spelling when `beforeCompile` models the stage that refuses it; then
     * `beforeCompile`, the route's prepare-stage checks for a caller that wants
     * them; then the restricted compile; then, when the early check deferred,
     * the boundary on the compiled run target and those joins again. A
@@ -2064,7 +2067,13 @@ export class Model {
       let boundary: "cleared" | "deferred";
       try {
          boundary = this.assertQueryBoundaryEarly(undefined, undefined, query);
-         await this.governor.assertDocumentJoinsQueryable(query);
+         // The route reads the joins of text that carries an `authorize`
+         // spelling only after the prepare stage has refused it
+         // (`OracleGuard.beforeQueryCompile`), so a caller modeling that stage
+         // skips them here, and hears the annotation's 400 as the route does.
+         if (!(beforeCompile && hasCallerAuthorizeAnnotation(query))) {
+            await this.governor.assertDocumentJoinsQueryable(query);
+         }
       } catch (error) {
          if (error instanceof NotQueryableError) {
             return { stage: "boundary", error };
@@ -2185,6 +2194,9 @@ export class Model {
       for (const [index, cell] of (
          this.runnableNotebookCells ?? []
       ).entries()) {
+         // The Console runs code cells only (the SDK's `cellRuns`); a markdown
+         // cell keeps its place in the count.
+         if (cell.type !== "code") continue;
          const query = malloynbCellQuery(cell.text);
          if (query === undefined) continue;
          await yielder.maybeYield();

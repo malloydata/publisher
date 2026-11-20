@@ -16,7 +16,9 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
+import { resetReportMetricsForTest } from "../../src/report_metrics";
 import { Model } from "../../src/service/model";
+import { startMetricsHarness } from "../../src/test_helpers/metrics_harness";
 import type { Package } from "../../src/service/package";
 import {
    loadPackageCopy,
@@ -33,6 +35,14 @@ const refusedCells = (pkg: Package, notebook: string) =>
    (pkg.getPackageMetadata().warnings ?? []).filter(
       (w) => w.code === CODE && w.model === `notebooks/${notebook}`,
    );
+
+/** The cell number a refused-cell warning names. */
+const cellOf = (w: { message?: string }) =>
+   Number(/^Cell (\d+) /.exec(w.message ?? "")?.[1]);
+
+/** Each refused cell of `notebook` as `[cell, reason]`, in load order. */
+const reasons = (pkg: Package, notebook: string) =>
+   refusedCells(pkg, notebook).map((w) => [cellOf(w), w.reason]);
 
 describe("a .malloynb cell the query route refuses warns at load", () => {
    usePackageLoadPool();
@@ -192,13 +202,12 @@ describe("a .malloynb cell the query route refuses warns at load", () => {
             'Required filter "region" (dimension: region) was not provided. ' +
             "Fix: drop required from that #(filter), which is deprecated.",
       );
-      expect(refusedCells(open.pkg, "route_text.malloynb")).toEqual([
-         annotation,
-         required,
-      ]);
+      const firstFour = (pkg: Package) =>
+         refusedCells(pkg, "route_text.malloynb").filter((w) => cellOf(w) <= 4);
+      expect(firstFour(open.pkg)).toEqual([annotation, required]);
       // Behind index.malloy, the named query over a hidden source is refused
       // too, and the warning names the source the query reads.
-      expect(refusedCells(curated.pkg, "route_text.malloynb")).toEqual([
+      expect(firstFour(curated.pkg)).toEqual([
          annotation,
          guarded(
             3,
@@ -209,6 +218,72 @@ describe("a .malloynb cell the query route refuses warns at load", () => {
          ),
          required,
       ]);
+   });
+   it("reads code cells only: a markdown cell that says run: gets no warning", () => {
+      // Cell 5 is prose: "To run: open the notebook in the Console."
+      for (const { pkg } of [curated, open]) {
+         expect(
+            refusedCells(pkg, "route_text.malloynb").map(cellOf),
+         ).not.toContain(5);
+      }
+   });
+
+   it("follows the route's order: an #(authorize) spelling is refused before any join is read", () => {
+      // Cell 6 carries the spelling in a comment and joins a hidden source.
+      // The route skips the caller-join boundary for such text and answers
+      // 400 for the annotation, on both packages.
+      for (const { pkg } of [curated, open]) {
+         expect(reasons(pkg, "route_text.malloynb")).toContainEqual([
+            6,
+            "caller_annotation",
+         ]);
+      }
+   });
+
+   it("the classification guard: a #(classification) spelling in the run:", () => {
+      const why =
+         "the query route refuses query text that carries an annotation " +
+         "only the model author may write (400): A `classification` or " +
+         "`carries` annotation is not permitted in caller-submitted Malloy " +
+         "text. Fix: remove the annotation, or the text that spells it, " +
+         "from the cell's run: statement, comments included.";
+      for (const { pkg } of [curated, open]) {
+         expect(
+            refusedCells(pkg, "route_text.malloynb").filter(
+               (w) => cellOf(w) === 7,
+            ),
+         ).toEqual([
+            {
+               model: "notebooks/route_text.malloynb",
+               code: CODE,
+               reason: "caller_annotation",
+               severity: "warn" as const,
+               message:
+                  "Cell 7 of notebooks/route_text.malloynb won't run for any " +
+                  `reader in the Console: ${why}`,
+            },
+         ]);
+      }
+   });
+
+   it("each join check on its own: the early one before the prepare stage, the compiled one for a join the text cannot follow", () => {
+      // Cell 8 joins hidden to the required-filter source: the early join
+      // check refuses it (404) before the filter is read. Cell 9 joins hq, a
+      // query over hidden: only the compiled join check sees hidden.
+      expect(
+         reasons(curated.pkg, "route_text.malloynb").filter(
+            ([cell]) => (cell as number) >= 8,
+         ),
+      ).toEqual([
+         [8, "off_surface"],
+         [9, "off_surface"],
+      ]);
+      // With no surface, the filter is what refuses cell 8, and cell 9 runs.
+      expect(
+         reasons(open.pkg, "route_text.malloynb").filter(
+            ([cell]) => (cell as number) >= 8,
+         ),
+      ).toEqual([[8, "required_filter"]]);
    });
 });
 
@@ -250,8 +325,10 @@ describe("the .malloynb cell check, as a neighbor of the other lints", () => {
                .filter((w) =>
                   (w.message ?? "").startsWith("The .malloynb cell check"),
                )
-               .map((w) => [w.model, w.severity]),
-         ).toEqual([["notebooks/n.malloynb", "warn"]]);
+               .map((w) => [w.model, w.code, w.severity]),
+         ).toEqual([
+            ["notebooks/n.malloynb", "malloynb-cell-check-failed", "warn"],
+         ]);
       } finally {
          Model.prototype.malloynbCellRefusals = original;
          await loaded.cleanup();
@@ -291,6 +368,49 @@ describe("the .malloynb cell check, as a neighbor of the other lints", () => {
          expect(longest).toBeLessThan(50);
       } finally {
          await loaded.cleanup();
+      }
+   });
+
+   it("lists a notebook's first refused cells, names the rest in one warning, and counts every one", async () => {
+      // One notebook of 12 cells restricted mode refuses: 10 listed, 2
+      // named in a summary, and the metric counts all 12.
+      const cells = ['>>>malloy\nimport "../orders.malloy"'];
+      for (let c = 0; c < 12; c++) {
+         cells.push(
+            `>>>malloy\nrun: orders -> { group_by: one is sql_number("${c}") }`,
+         );
+      }
+      const harness = await startMetricsHarness();
+      resetReportMetricsForTest();
+      const loaded = await loadTempPackage({
+         "orders.malloy": `##! experimental.sql_functions\n${ORDERS}`,
+         "notebooks/many.malloynb": cells.join("\n"),
+      });
+      try {
+         const mine = (loaded.pkg.getPackageMetadata().warnings ?? []).filter(
+            (w) =>
+               w.model === "notebooks/many.malloynb" &&
+               (w.code === CODE || w.code === "malloynb-cells-unlisted"),
+         );
+         expect(mine.map((w) => [w.code, w.reason])).toEqual([
+            ...Array(10).fill([CODE, "restricted_mode"]),
+            ["malloynb-cells-unlisted", undefined],
+         ]);
+         expect(mine[10].message).toStartWith(
+            "2 more cells of notebooks/many.malloynb won't run for any " +
+               "reader in the Console, not listed one by one: cells 12 and " +
+               "13 (restricted_mode).",
+         );
+         expect(
+            await harness.collectCounter(
+               "publisher_report_lint_findings_total",
+               { code: CODE, severity: "warn" },
+            ),
+         ).toBe(12);
+      } finally {
+         await loaded.cleanup();
+         resetReportMetricsForTest();
+         await harness.shutdown();
       }
    });
 });

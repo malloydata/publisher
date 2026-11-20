@@ -166,7 +166,13 @@ import {
 } from "./join_bypass";
 import { type ReportViewPackage } from "./legacy_report_views";
 import { recordDeprecatedManifestKeys } from "./deprecated/manifest_keys";
-import { isMalloynbPath, MALLOYNB_CELL_REFUSED } from "./deprecated/malloynb";
+import {
+   isMalloynbPath,
+   listMalloynbCellFindings,
+   MALLOYNB_CELL_CHECK_FAILED,
+   MALLOYNB_CELL_REFUSED,
+   MALLOYNB_CELLS_LISTED,
+} from "./deprecated/malloynb";
 import {
    EXPLORES_IMPORTER,
    exploresSurfaceFiles,
@@ -478,6 +484,8 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    /** The annotations the entities extraction left out, as warnings. */
    private entitiesWarnings: ApiPackageWarning[] = [];
    private reportWarnings: ApiPackageWarning[] = [];
+   /** Refused `.malloynb` cells the last lint named only in a summary warning. */
+   private malloynbCellsUnlisted = 0;
    /** Linear reports whose cells the reader refused; set with the reports. */
    private readerWarnings: ApiPackageWarning[] = [];
    // Every served report keyed by path, in path order, computed per load (the
@@ -3327,7 +3335,14 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             status,
             layout: report?.layout,
          })),
-         findings,
+         [
+            ...findings,
+            // Each refused cell counts once, listed or only named in a summary.
+            ...Array.from({ length: this.malloynbCellsUnlisted }, () => ({
+               code: MALLOYNB_CELL_REFUSED,
+               severity: "warn",
+            })),
+         ],
       );
       recordReportDiscovery(summary);
       logger.info("Report discovery", {
@@ -3636,6 +3651,9 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
     * gate) is not reported. One yielder spans every notebook, so the event
     * loop gets a turn between cells. A notebook whose check throws gets one
     * finding saying so, and the other notebooks and lints are unaffected.
+    * The findings are bounded by {@link listMalloynbCellFindings}, and the
+    * cells it names only in a summary are kept in
+    * {@link malloynbCellsUnlisted} so the lint metric counts every one.
     */
    private async lintMalloynbCells(): Promise<ApiPackageWarning[]> {
       const findings: ApiPackageWarning[] = [];
@@ -3650,6 +3668,10 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          `Fix: declare the table, or a dimension over the sql_* ` +
          `expression, in ${home}, and run that source.`;
       const yielder = createEventLoopYielder();
+      const notebooks: {
+         model: string;
+         refusals: { cell: number; finding: ApiPackageWarning }[];
+      }[] = [];
       for (const [modelPath, model] of this.models) {
          if (!isMalloynbPath(modelPath)) continue;
          let refusals: Awaited<ReturnType<Model["malloynbCellRefusals"]>>;
@@ -3663,6 +3685,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             });
             findings.push({
                model: modelPath,
+               code: MALLOYNB_CELL_CHECK_FAILED,
                severity: "warn",
                message:
                   `The .malloynb cell check could not run for ${modelPath}, ` +
@@ -3672,6 +3695,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             });
             continue;
          }
+         const cells: { cell: number; finding: ApiPackageWarning }[] = [];
          for (const refusal of refusals) {
             const { source, problem } = refusal;
             let why: string;
@@ -3721,18 +3745,27 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
                   `its run: statement does not compile on its own (400): ` +
                   `${problem}`;
             }
-            findings.push({
-               model: modelPath,
-               code: MALLOYNB_CELL_REFUSED,
-               reason: refusal.reason,
-               severity: "warn",
-               message:
-                  `Cell ${refusal.cell} of ${modelPath} won't run for any ` +
-                  `reader in the Console: ${why}`,
+            cells.push({
+               cell: refusal.cell,
+               finding: {
+                  model: modelPath,
+                  code: MALLOYNB_CELL_REFUSED,
+                  reason: refusal.reason,
+                  severity: "warn",
+                  message:
+                     `Cell ${refusal.cell} of ${modelPath} won't run for any ` +
+                     `reader in the Console: ${why}`,
+               },
             });
          }
+         notebooks.push({ model: modelPath, refusals: cells });
       }
-      return findings;
+      const { warnings, unlisted } = listMalloynbCellFindings(
+         notebooks,
+         MALLOYNB_CELLS_LISTED,
+      );
+      this.malloynbCellsUnlisted = unlisted;
+      return [...findings, ...warnings];
    }
 
    /**

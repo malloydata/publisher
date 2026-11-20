@@ -490,6 +490,8 @@ describe(".malloynb cells through the query route (E2E)", () => {
                ? allGates
                : {};
             for (let i = 0; i < cells.length; i++) {
+               // The Console runs code cells only (the SDK's `cellRuns`).
+               if (cells[i].type !== "code") continue;
                if (malloynbCellQuery(cells[i]) === undefined) continue;
                const warning = warned.get(`notebooks/${nb} ${i + 1}`);
                const answered = await run(pkg, nb, i, gates);
@@ -527,7 +529,7 @@ describe(".malloynb cells through the query route (E2E)", () => {
       }
       expect(disagreements).toEqual([]);
       // Both outcomes were exercised, on both packages.
-      expect(seen.warned).toBe(21);
+      expect(seen.warned).toBe(28);
       expect(seen.clean).toBeGreaterThan(15);
    });
 
