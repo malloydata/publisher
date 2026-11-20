@@ -109,6 +109,10 @@ A query that fails tells you whose problem it is. Branch on `reason`, not on the
 - **502 with `reason: CONNECTION_FAILED`:** the database connection is down: the database could not
   be reached, so the query never ran. The query is fine; retry once, then report it. Without that reason, a 502 is some other
   failure in the database behind the connection.
+- **502 with `reason: RESULT_TRUNCATED`:** the database answered with fewer rows than it reported,
+  and no row limit cut them. BigQuery returns one results page of about 10 MB and the connector does
+  not read the rest, so an answer larger than that is refused rather than served short. Retrying fails
+  the same way; select fewer columns, aggregate, or return fewer rows.
 
 For `CONNECTION_FAILED` and `CONNECTION_AUTH_FAILED` the body carries a fixed message, because the
 driver's text can name a host or a user; it is in the server log.

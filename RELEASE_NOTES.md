@@ -49,6 +49,10 @@ Two consequences worth knowing. A section merged to `main` ships in the **next**
 
 **Who is affected:** a host or control plane that reads the build plan. **What to do:** to rebuild after replacing a table, rebuild each source whose `reads` names it, and treat a source with no `reads` as possibly reading any table on its connection. Nothing else changes: `reads` is not part of `sourceEntityId`, so no table is re-addressed.
 
+## [Unreleased] — a BigQuery answer larger than one results page is refused, not answered short
+
+**Fixed: a BigQuery answer over about 10 MB lost rows with no error.** BigQuery returns one results page of about 10 MB whatever row count is asked for, and Malloy's BigQuery connector reads only that page (malloydata/malloy#3243). A wide answer, `limit: 99000` over seven columns say, came back with 50,000 rows, status 200 and no warning, live and served alike. Publisher now compares the rows returned with the total BigQuery reports: when fewer came back than both the row limit and that total, the query is refused with **502 `reason: RESULT_TRUNCATED`**, a message naming both counts, and MCP advice to shrink the answer. An answer the row limit cut (`limit:`, `PUBLISHER_MAX_QUERY_ROWS`) is not refused. **Who is affected:** queries on a BigQuery connection whose answer passes one results page; they now fail instead of answering short. **What to do:** select fewer columns, aggregate, or return fewer rows. The log line is `Database result truncated`.
+
 ## [Unreleased] — under `PERSIST_STORAGE_MODE=write-only`, a rollup, persisted view or persisted query with a database table answers from it, and its storage table is reported `storage_mode`
 
 Follows 0.16.1, where `write-only` and `off` stopped reading storage tables on every leg.

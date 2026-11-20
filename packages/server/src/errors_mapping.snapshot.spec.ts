@@ -23,6 +23,7 @@ import {
    ConnectionNotFoundError,
    ConnectionPoolExhaustedError,
    ConnectionSaveError,
+   ResultTruncatedError,
    DashboardNotFoundError,
    DestinationNotFoundError,
    DryRunCapacityError,
@@ -294,6 +295,7 @@ const CASES: Array<[string, () => unknown]> = [
       "ConnectionPoolExhaustedError",
       () => new ConnectionPoolExhaustedError("The connection pool is full."),
    ],
+   ["ResultTruncatedError", () => new ResultTruncatedError(50000, 99000)],
    [
       "DestinationNotFoundError",
       () => new DestinationNotFoundError("No destination named warehouse"),

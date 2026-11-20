@@ -4591,6 +4591,10 @@ components:
         succeed. That reason is what marks the customer's database being down
         rather than this server failing. The body carries a fixed message,
         because the driver's text can name an internal host; it is logged.
+        With `reason: RESULT_TRUNCATED` the database answered, but with fewer
+        rows than it reported and no row limit cut them (a BigQuery answer past
+        one results page of about 10 MB); the query is refused rather than
+        answered short, and a retry fails the same way.
       content:
         application/json:
           schema:
@@ -10368,6 +10372,13 @@ components:
             are fine; retrying elsewhere will not help, and neither will
             rewriting the query.
 
+            RESULT_TRUNCATED, on a 502, means the database returned fewer rows
+            than it reported and no row limit cut them: a BigQuery answer
+            larger than one results page (about 10 MB) whose later pages were
+            not read. The query is refused rather than answered short.
+            Retrying returns the same page; select fewer columns, aggregate,
+            or return fewer rows.
+
             CONNECTION_AUTH_FAILED, on a 424, means the database rejected the
             connection's credentials (a wrong password, an invalid key, an
             expired token), so the query never ran. Whoever configures the
@@ -10477,7 +10488,7 @@ components:
               * VERSION_ARCHIVED (410): the version is archived.
 
             Known values: TABLE_NOT_FOUND, CONNECTION_FAILED,
-            CONNECTION_AUTH_FAILED, CONNECTION_NOT_FOUND,
+            CONNECTION_AUTH_FAILED, CONNECTION_NOT_FOUND, RESULT_TRUNCATED,
             STORAGE_ACCESS_DENIED, PATH_ACCESS_DENIED, ACCESS_DENIED,
             MATERIALIZATION_REFUSED, TABLE_OWNED_ELSEWHERE,
             TABLE_OWNERSHIP_UNVERIFIED, TABLE_IN_USE, BUILD_INSTRUCTIONS_INVALID,

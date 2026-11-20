@@ -1601,6 +1601,45 @@
       ]
     }
   },
+  "ResultTruncatedError": {
+    "class": "ResultTruncatedError",
+    "http": {
+      "status": 502,
+      "json": {
+        "code": 502,
+        "message": "The database returned 50000 of the 99000 rows it reported, and no row limit cut them: BigQuery returns one results page of about 10 MB, and the rest of the answer was not read. The query was refused rather than answered short. Project fewer columns or return fewer rows so the answer fits in one page.",
+        "reason": "RESULT_TRUNCATED"
+      },
+      "logged": true,
+      "logs": [
+        [
+          "warn",
+          "Database result truncated"
+        ]
+      ]
+    },
+    "mcp": {
+      "message": "The database returned 50000 of the 99000 rows it reported, and no row limit cut them: BigQuery returns one results page of about 10 MB, and the rest of the answer was not read. The query was refused rather than answered short. Project fewer columns or return fewer rows so the answer fits in one page.",
+      "suggestions": [
+        "This is not transient. The same query will fail the same way, so change the query rather than retrying it.",
+        "Shrink the answer so it fits in one results page of about 10 MB: select fewer columns, aggregate, or add a LIMIT."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: The database returned 50000 of the 99000 rows it reported, and no row limit cut them: BigQuery returns one results page of about 10 MB, and the rest of the answer was not read. The query was refused rather than answered short. Project fewer columns or return fewer rows so the answer fits in one page.",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
   "DestinationNotFoundError": {
     "class": "DestinationNotFoundError",
     "http": {

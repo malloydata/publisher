@@ -89,6 +89,7 @@ import {
    PROXIED_SSLMODES,
 } from "./connection_config";
 import { buildSnowflakeConnection } from "./snowflake_connection";
+import { guardBigQueryTruncation } from "./bigquery_truncation";
 import { gcpImpersonationOverlay } from "./gcp_impersonation";
 import { assertGoogleCredentialsIsNotADirectory } from "./google_credentials";
 import {
@@ -4324,6 +4325,9 @@ export function buildEnvironmentMalloyConfig(
             // This generation's lookup created it, so releasing the generation
             // hard-closes it.
             ownDuckDBConnection(malloyConfig, connection);
+            if (metadata?.apiConnection.type === "bigquery") {
+               guardBigQueryTruncation(connection);
+            }
             if (metadata) {
                await attachOnce(connection, metadata);
             }

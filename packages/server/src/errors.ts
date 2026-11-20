@@ -158,6 +158,9 @@ export type ErrorReason =
    // 409: a create-only report write found a file at the path; another name
    // may be free.
    | "FILE_EXISTS"
+   // 502: the database answered with fewer rows than it reported, and no row
+   // limit cut them (a BigQuery results page cut at its byte size).
+   | "RESULT_TRUNCATED"
    // Package versions; each is raised only as a PackageVersionError, whose
    // reason fixes its status (see PACKAGE_VERSION_ERROR_STATUS).
    | PackageVersionErrorReason;
@@ -814,6 +817,28 @@ export class ConnectionError extends Error {
 export class ConnectionFailedError extends ConnectionError {
    override get kind(): "connection_failed" {
       return "connection_failed";
+   }
+}
+
+/**
+ * The database reported more rows than it returned, and no row limit cut
+ * them: BigQuery returns one results page of about 10 MB, and the connector
+ * reads only that page (malloydata/malloy#3243). A short answer is a wrong
+ * answer, so it is refused rather than served: 502 with
+ * `reason: RESULT_TRUNCATED`. Retrying returns the same page, so the caller
+ * shrinks the answer instead.
+ */
+export class ResultTruncatedError extends ConnectionError {
+   override get kind(): "result_truncated" {
+      return "result_truncated";
+   }
+
+   constructor(returned: number, reported: number) {
+      super(
+         `The database returned ${returned} of the ${reported} rows it reported, and no row limit cut them: BigQuery returns one results page of about 10 MB, and the rest of the answer was not read. The query was refused rather than answered short. Project fewer columns or return fewer rows so the answer fits in one page.`,
+         { callerSafe: true },
+      );
+      this.name = "ResultTruncatedError";
    }
 }
 
@@ -1607,7 +1632,8 @@ type BadRequestKind =
 type ConnectionKind =
    | "connection"
    | "connection_failed"
-   | "connection_pool_exhausted";
+   | "connection_pool_exhausted"
+   | "result_truncated";
 type NotQueryableKind = "not_queryable" | "off_surface";
 type PackageAdmissionKind = "package_admission_refused" | "dry_run_capacity";
 type ServiceUnavailableKind = "service_unavailable" | PackageAdmissionKind;
@@ -1641,6 +1667,7 @@ interface ErrorByKind {
    connection_failed: ConnectionFailedError;
    unconfigured_connection: UnconfiguredConnectionError;
    connection_pool_exhausted: ConnectionPoolExhaustedError;
+   result_truncated: ResultTruncatedError;
    destination_not_found: DestinationNotFoundError;
    storage_destination_not_found: StorageDestinationNotFoundError;
    storage_catalog_not_found: StorageCatalogNotFoundError;
@@ -1728,6 +1755,7 @@ const ERROR_CLASSES: {
    connection_failed: ConnectionFailedError,
    unconfigured_connection: UnconfiguredConnectionError,
    connection_pool_exhausted: ConnectionPoolExhaustedError,
+   result_truncated: ResultTruncatedError,
    destination_not_found: DestinationNotFoundError,
    storage_destination_not_found: StorageDestinationNotFoundError,
    storage_catalog_not_found: StorageCatalogNotFoundError,
@@ -2177,6 +2205,18 @@ export const ERROR_TABLE: { [K in ErrorKind]: ErrorMapping<ErrorByKind[K]> } = {
          suggestions: [
             "Retry shortly; this clears as other queries on the connection finish.",
             "If it persists, run fewer queries at once on this connection, or ask the operator to raise PUBLISHER_POSTGRES_POOL_MAX.",
+         ],
+      },
+   },
+   result_truncated: {
+      ...CONNECTION,
+      reason: "RESULT_TRUNCATED",
+      log: { summary: "Database result truncated", level: "warn" },
+      mcp: {
+         advice: "fixed",
+         suggestions: [
+            NOT_TRANSIENT_CHANGE_QUERY,
+            "Shrink the answer so it fits in one results page of about 10 MB: select fewer columns, aggregate, or add a LIMIT.",
          ],
       },
    },
