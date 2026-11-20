@@ -113,12 +113,6 @@ describe("served linear report cells", () => {
       expect(pkg.getReportLayout(LAYOUT)).toBe("linear");
    });
 
-   it("reads autorun and starting givens off the artifact tag", async () => {
-      const raw = await model(SETTINGS).getNotebook();
-      expect(raw.autorun).toBe(false);
-      expect(raw.startingGivens).toEqual({ REGION: "EU" });
-   });
-
    it("runs a tile cell's query on the report's path", async () => {
       const nb = model(LAYOUT);
       const text = (await nb.getNotebook()).notebookCells?.[4].text ?? "";

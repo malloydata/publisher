@@ -471,8 +471,6 @@ export class Model {
    private compilationError: MalloyError | Error | undefined;
    /** Why the reader refused this served notebook's cells; the model itself still compiled and serves. */
    private notebookReaderRefusal: NotebookReaderError | undefined;
-   /** A served notebook's own notes as the reader collected them (see `NotebookReadResult.annotations`). */
-   private notebookAnnotations: string[] | undefined;
    /** Parsed #(filter) definitions keyed by source name. */
    private filterMap: Map<string, FilterDefinition[]>;
    /** Givens declared on the model, in declaration order. */
@@ -1959,47 +1957,16 @@ export class Model {
 
    /**
     * The query boundary for one notebook cell, as the query route would
-    * decide it. A served notebook's cell has every code cell up to this one
-    * as derivation context, so `source: big is orders extend {...}` in an
-    * earlier cell still counts as derived from `orders`, as the file's own
-    * text makes it on the query route. A `.malloynb` cell runs as its
-    * `runQuery` alone, the text the reports read serves and the SDK sends, so
-    * that text is put through the route's boundary checks: see
-    * {@link assertMalloynbRunOnSurface}. Inert with no surface and under
-    * `"all"`.
+    * decide it. A `.malloynb` cell runs as its `runQuery` alone, the text
+    * the reports read serves and the SDK sends, so that text is put through
+    * the route's boundary checks: see {@link assertMalloynbRunOnSurface}.
+    * Inert with no surface and under `"all"`.
     */
-   private async assertNotebookCellOnSurface(
-      cellIndex: number,
-      runnable: { getPreparedQuery(): Promise<unknown> },
-   ): Promise<void> {
+   private async assertNotebookCellOnSurface(cellIndex: number): Promise<void> {
       const { mode, exploresDeclared } = this.queryBoundary;
       if (mode === "all" || !exploresDeclared) return;
       const cells = this.runnableNotebookCells ?? [];
-      if (this.notebookFormat() !== "malloy") {
-         await this.assertMalloynbRunOnSurface(
-            malloynbRunQuery(cells[cellIndex]),
-         );
-         return;
-      }
-      const cellText = cells[cellIndex]?.text ?? "";
-      const context = cells
-         .slice(0, cellIndex + 1)
-         .filter((c) => c.type === "code")
-         .map((c) => c.text)
-         .join("\n");
-      const early = this.assertQueryBoundaryEarly(
-         undefined,
-         undefined,
-         cellText,
-         context,
-      );
-      if (early === "deferred") {
-         this.assertQueryBoundaryCompiled(
-            await this.governor.resolveAuthorizeSourceFromRunnable(runnable),
-            cellText,
-            context,
-         );
-      }
+      await this.assertMalloynbRunOnSurface(malloynbRunQuery(cells[cellIndex]));
    }
 
    /**
@@ -2799,7 +2766,6 @@ export class Model {
     */
    public attachServedNotebookCells(text: string): "ok" | "refused" | "broken" {
       this.notebookReaderRefusal = undefined;
-      this.notebookAnnotations = undefined;
       const modelDef = this.modelDef;
       const materializer = this.modelMaterializer;
       if (this.compilationError || !modelDef || !materializer) {
@@ -2815,7 +2781,6 @@ export class Model {
       if (isNotebookReaderError(parse)) return refuse(parse);
       const read = readNotebookCells(parse, modelDef, text);
       if (read.error) return refuse(read.error);
-      this.notebookAnnotations = read.annotations;
       const layout = this.readNotebookLayout();
       // A linear report's prose and queries are its tiles, in tile order; the
       // file's own cells are only its definitions (`report.ts`).
@@ -3899,18 +3864,16 @@ export class Model {
    /**
     * Under an active surface, a predicate for the source names the notebook
     * GET lists with their schema: the ones a query on this notebook's path
-    * may name. For a served notebook those are {@link notebookReadable}'s,
-    * since its file proves its own sources derive from the surface. A
-    * `.malloynb` cell runs as its `run:` statement alone, which the query
-    * route admits only over what the surface publishes, so a source its
-    * cells declare is withheld, as a hidden one is. Undefined when nothing is
-    * curated.
+    * may name. A `.malloynb` cell runs as its `run:` statement alone, which
+    * the query route admits only over what the surface publishes, so a source
+    * its cells declare is withheld, as a hidden one is. Undefined when nothing
+    * is curated.
     */
    private notebookQueryable(
       cellIndex?: number,
    ): ((name: string) => boolean) | undefined {
       const readable = this.notebookReadable(cellIndex);
-      if (!readable || this.notebookFormat() === "malloy") return readable;
+      if (!readable) return readable;
       return (name) => this.admitsSourceByName(name);
    }
 
@@ -3947,7 +3910,7 @@ export class Model {
       // Nothing to check an unhydrated cell against, so under a surface it shows nothing.
       if (!cell.runnable) return this.notebookReadable(cellIndex) === undefined;
       try {
-         await this.assertNotebookCellOnSurface(cellIndex, cell.runnable);
+         await this.assertNotebookCellOnSurface(cellIndex);
          return true;
       } catch (error) {
          if (error instanceof NotQueryableError) return false;
@@ -3957,22 +3920,15 @@ export class Model {
 
    /**
     * Which of `modelInfo.anonymous_queries` a cell whose `queryInfo` is shown
-    * describes. A served notebook's query cell names its run; a `.malloynb`'s
-    * model info is its last code cell's compile, whose final run is that cell's
-    * `queryInfo`. A run no shown cell describes is withheld.
+    * describes. A `.malloynb`'s model info is its last code cell's compile,
+    * whose final run is that cell's `queryInfo`. A run no shown cell
+    * describes is withheld.
     */
    private shownRunIndexes(
       cells: readonly RunnableNotebookCell[],
       shownCells: ReadonlySet<number>,
    ): Set<number> {
       const shown = new Set<number>();
-      if (this.notebookFormat() === "malloy") {
-         cells.forEach((cell, index) => {
-            if (cell.queryIndex !== undefined && shownCells.has(index))
-               shown.add(cell.queryIndex);
-         });
-         return shown;
-      }
       const last = cells.findLastIndex(
          (cell) => cell.type === "code" && cell.modelDef !== undefined,
       );
@@ -4020,18 +3976,10 @@ export class Model {
       }
 
       // The notebook's own `##` tags, not its imports' (a shared include must
-      // not configure every importer). A served notebook's `"` notes below the
-      // tag are its markdown cells, not annotations.
-      const served = this.notebookFormat() === "malloy";
-      const allAnnotations = served
-         ? (this.notebookAnnotations ?? [])
-         : this.modelDef
-           ? ownModelNotes(this.modelDef)
-           : [];
+      // not configure every importer).
+      const allAnnotations = this.modelDef ? ownModelNotes(this.modelDef) : [];
 
-      // A served notebook declares `title`/`autorun`/`givens` in its artifact tag.
-      const ownTag = motlyTag(allAnnotations);
-      const notebookTag = served ? ownTag?.tag("artifact") : ownTag;
+      const notebookTag = motlyTag(allAnnotations);
 
       // No `as` cast, so a field rename in `api-doc.yaml` fails to typecheck.
       // Not export-curated (a notebook cannot be imported), but under a surface

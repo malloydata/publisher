@@ -55,8 +55,6 @@ export interface RunnableNotebookCell {
    codeLine?: number;
    /** The joined text of the statement's leading `#"` lines. */
    caption?: string;
-   /** A served query cell's index into `modelInfo.anonymous_queries`. */
-   queryIndex?: number;
    runnable?: QueryMaterializer;
    /**
     * This cell's compiled modelDef: the model state AFTER its own declarations.
