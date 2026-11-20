@@ -217,7 +217,7 @@ describe("connection integration tests", () => {
                expect(dbNames).toContain("pg_test");
 
                const result = await connection.runSQL(
-                  "SELECT 1 as test_value FROM pg_test.information_schema.tables LIMIT 1",
+                  "SELECT 1 as test_value FROM information_schema.schemata WHERE catalog_name = 'pg_test' LIMIT 1",
                );
                expect(result.rows).toBeDefined();
             },
@@ -268,7 +268,7 @@ describe("connection integration tests", () => {
 
                // listSchemas equivalent
                const result = await connection.runSQL(
-                  "SELECT schema_name FROM pg_schemas.information_schema.schemata ORDER BY schema_name",
+                  "SELECT schema_name FROM information_schema.schemata WHERE catalog_name = 'pg_schemas' ORDER BY schema_name",
                );
                expect(result.rows.length).toBeGreaterThan(0);
                const schemaNames = result.rows.map(
@@ -324,8 +324,9 @@ describe("connection integration tests", () => {
                // listTables equivalent
                const result = await connection.runSQL(`
                   SELECT table_schema, table_name, table_type
-                  FROM pg_tables_db.information_schema.tables
-                  WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
+                  FROM information_schema.tables
+                  WHERE table_catalog = 'pg_tables_db'
+                    AND table_schema NOT IN ('pg_catalog', 'information_schema')
                   ORDER BY table_schema, table_name
                `);
                expect(result.rows).toBeDefined();
@@ -334,7 +335,7 @@ describe("connection integration tests", () => {
          );
 
          it(
-            "should get table columns from attached PostgreSQL database",
+            "refuses reading the attached PostgreSQL database's own information_schema",
             async () => {
                if (!hasPostgresCredentials()) {
                   console.log(
@@ -375,19 +376,16 @@ describe("connection integration tests", () => {
                ) as DuckDBConnection;
                createdConnections.push(connection);
 
-               const result = await connection.runSQL(`
-                  SELECT column_name, data_type, is_nullable
-                  FROM pg_cols.information_schema.columns
-                  WHERE table_schema = 'information_schema'
-                    AND table_name = 'tables'
-                  ORDER BY ordinal_position
-               `);
-               expect(result.rows.length).toBeGreaterThan(0);
-               const columnNames = result.rows.map(
-                  (row) => (row as Record<string, unknown>)["column_name"],
-               );
-               expect(columnNames).toContain("table_name");
-               expect(columnNames).toContain("table_schema");
+               // The attached database's own system schemas are not
+               // readable from caller SQL; only its tables are.
+               await expect(
+                  connection.runSQL(`
+                     SELECT column_name, data_type, is_nullable
+                     FROM pg_cols.information_schema.columns
+                     WHERE table_schema = 'information_schema'
+                       AND table_name = 'tables'
+                  `),
+               ).rejects.toThrow("pg_cols.information_schema");
             },
             { timeout: 30000 },
          );
@@ -533,7 +531,7 @@ describe("connection integration tests", () => {
                createdConnections.push(connection);
 
                const result = await connection.runSQL(
-                  "SELECT schema_name FROM bq_schemas.information_schema.schemata",
+                  "SELECT schema_name FROM information_schema.schemata WHERE catalog_name = 'bq_schemas'",
                );
                expect(result.rows.length).toBeGreaterThan(0);
                const datasetNames = result.rows.map(
@@ -2005,9 +2003,9 @@ describe("connection integration tests", () => {
          });
 
          it("should drop explicitly-null Snowflake options from private-key connOptions", async () => {
-            // This is the path that actually throws. A key-pair connection
+            // This is the path that actually throws. A Snowflake connection
             // bypasses the core connection registry (which strips nulls itself)
-            // and is built directly by buildSnowflakePrivateKeyConnection, where
+            // and is built directly by buildSnowflakeConnection, where
             // cloneApiConnection's shallow spread leaves nulls intact. A
             // surviving null reaches SnowflakeConnection.getDigest(), whose
             // makeDigest reads `.length` off each part and special-cases only

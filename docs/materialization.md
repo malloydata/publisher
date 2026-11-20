@@ -876,9 +876,8 @@ live; the next full rebuild records the types and clears it. Served never exceed
 itself rounds such values (Postgres returns its rows through JSON), a `storage=` table reads the
 column as a plain number, which rounds the same way, and a database one reads it through
 Postgres's own `bigint` type, on live's own path ([known limitation
-12](materialization-v2-plan.md#known-limitations-to-revisit)). Where the dialect says live keeps
-every digit but the connector does not, served is the exact answer and live rounds: Snowflake's
-`NUMBER(p,0)` today (see "Snowflake: live and served differences" below).
+12](materialization-v2-plan.md#known-limitations-to-revisit)). Snowflake's `NUMBER(p,0)` keeps every
+digit live as well as served (see "Snowflake: how live reads integers and timestamps" below).
 
 **A 128-bit integer in DuckLake.** DuckLake (DuckDB 1.5) writes a `HUGEINT` or `UHUGEINT` column to
 its Parquet files as a `DOUBLE`, while its catalog still reports the 128-bit type, so a value past
@@ -910,20 +909,27 @@ cannot tell which it has. A plain DuckDB table keeps every digit. So:
 - A database build on a `ducklake` connection still stores the 128-bit type, which is answered
   live as above.
 
-**Snowflake: live and served differences.** Two Snowflake answers differ between live and served
-today, and in both the served answer is the right one; each needs a fix in Malloy's Snowflake
-connector, not in Publisher.
+**Snowflake: how live reads integers and timestamps.** Every Snowflake connection Publisher
+builds, password or key pair, reads its rows so that a live answer equals the served one:
 
-- *Integers past 2^53.* Malloy's Snowflake dialect says live keeps every digit of a `NUMBER(p,0)`, so
-  a stored read keeps them too (above). Live does not, on any connection Publisher configures: the
-  connector gives snowflake-sdk the configured options without its own `jsTreatIntegerAsBigInt`
-  default, so the driver returns the integer as a JavaScript number. A `sum()` over a
-  `NUMBER(38,0)` past 2^53, such as 4530000000000225187, comes back rounded live
-  (4530000000000225300) and exact served. Publisher does not round the served answer to match.
-- *`TIMESTAMP_TZ`.* The connector pins the session's text format for `TIMESTAMP_NTZ` and
-  `TIMESTAMP_LTZ`, not for `TIMESTAMP_TZ`, so live renders a zoned value in the account's own format
-  and offset (`2026-01-15 10:00:00.000 -0800`), and served renders the same instant in UTC ISO form
-  (`2026-01-15T18:00:00.000Z`). The instant is the same; only the text differs.
+- *Integers.* An integer column (a `NUMBER(p,0)`, or a `sum()` over one) is read with every digit,
+  as Malloy's Snowflake connector does by default (`jsTreatIntegerAsBigInt`); the connector applies
+  that default only to options it reads from the environment or a TOML file, so Publisher sets it
+  itself. A value within ±2^53 is a number, as before; past it, a `bigint` field's value keeps every
+  digit and a compact answer gives it as a JSON string, as for a DuckDB `BIGINT`. A `sum()` over a
+  `NUMBER(38,0)` of 4530000000000225187 answers `"4530000000000225187"` live and served. Until 0.17
+  live answered the rounded number 4530000000000225300.
+- *Dates and timestamps.* A `DATE`, `TIMESTAMP_NTZ`, `TIMESTAMP_LTZ` or `TIMESTAMP_TZ` value is
+  answered as its instant in UTC ISO form, as a stored copy (DuckDB) answers it: a
+  `TIMESTAMP_TZ` of `2026-01-15 10:00:00 -08:00` answers `2026-01-15T18:00:00.000Z`, and a `DATE`
+  `2026-01-15T00:00:00.000Z`. A `TIMESTAMP_TZ`'s own offset is not kept, live or served: a stored copy
+  holds only the instant, so keeping it live would make the two differ. Until 0.17 a compact live
+  answer rendered each in the session's text format (`2026-01-15 10:00:00.000 -0800`,
+  `2026-01-15T18:00:00.000+00:00`, `2026-01-15`). The full result's `timestamp_value` and
+  `date_value` were already UTC ISO and are unchanged.
+
+An integer inside a nested (array or record) column is not covered: a Snowflake nest arrives as
+JSON, which the driver parses into JavaScript numbers, so a value in it past 2^53 is rounded live.
 
 A run's record (`GET …/packages/{packageName}/materializations/{materializationId}`, and the
 listing) returns its build manifest. Each entry names the physical table it built, and a database
