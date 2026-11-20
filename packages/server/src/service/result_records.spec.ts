@@ -123,6 +123,42 @@ describe("a row the result cannot hold", () => {
    });
 });
 
+describe("a throw while the result is wrapped", () => {
+   it("is a 502 for a value Malloy cannot convert: a timestamp no date parses", async () => {
+      const result = await model
+         .loadQuery("run: t -> { select: ts is now() }")
+         .run();
+      (result.data.rawData[0] as unknown as Record<string, unknown>).ts =
+         "not a date";
+      expect(() => serializeWithinCaps(result, CAPS)).toThrow(ResultShapeError);
+   });
+
+   it("is rethrown unchanged when Publisher's own code throws, not read as a database fault", async () => {
+      const { result } = await run();
+      // The drill-metadata correction throws on a field's metadata.
+      const structs = result._queryResult.structs as unknown as {
+         fields: object[];
+      }[];
+      Object.defineProperty(
+         structs[structs.length - 1].fields[0],
+         "resultMetadata",
+         {
+            get() {
+               throw new TypeError("a bug in the drill-metadata correction");
+            },
+         },
+      );
+      let thrown: unknown;
+      try {
+         serializeWithinCaps(result, CAPS);
+      } catch (err) {
+         thrown = err;
+      }
+      expect(thrown).toBeInstanceOf(TypeError);
+      expect(thrown).not.toBeInstanceOf(ResultShapeError);
+   });
+});
+
 describe("a model query whose database row does not fit", () => {
    /** The model, with each row the database returns passed through `edit`. */
    async function withEditedRows<T>(

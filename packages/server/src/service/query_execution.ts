@@ -178,20 +178,45 @@ export function serializeWithinCaps(
 }
 
 /**
- * Wrap the result, reading a throw as a row the database returned that does
- * not fit the result's schema ({@link ResultShapeError}, a 502), not as a
- * server crash or the caller's bad query.
+ * Wrap the result, reading a value Malloy cannot convert as a row the
+ * database returned that does not fit the result's schema
+ * ({@link ResultShapeError}, a 502), not as a server crash or the caller's
+ * bad query. Any other throw (a bug in Publisher's own drill-metadata code,
+ * say) is rethrown unchanged.
  */
 function wrapResultShape(result: Result): Malloy.Result {
    try {
       return wrapWithCorrectDrillMetadata(result);
    } catch (err) {
+      if (!isValueConversionFailure(err)) throw err;
       logger.error("Query result does not fit its schema", {
          error: err instanceof Error ? err.message : String(err),
          connection: result.connectionName,
       });
       throw new ResultShapeError({ cause: err });
    }
+}
+
+/**
+ * The messages Malloy's result wrapper (`API.util.wrapResult`, its
+ * `mapValue` and `rowDataToNumber`) throws on a value its field's type
+ * cannot hold.
+ */
+const VALUE_CONVERSION_MESSAGE =
+   /^(?:Invalid (?:boolean|string|array) |Invalid record in result |Cannot convert \w+ to number: )/;
+
+/**
+ * Whether `err` is Malloy's wrapper refusing a value: one of its own
+ * messages, or the `RangeError` a date or timestamp no date parses raises
+ * (`rowDataToDate(value).toISOString()`: "Invalid time value" in V8,
+ * "Invalid Date" in Bun).
+ */
+function isValueConversionFailure(err: unknown): boolean {
+   if (!(err instanceof Error)) return false;
+   if (err instanceof RangeError) {
+      return /^Invalid (?:time value|Date)$/.test(err.message);
+   }
+   return VALUE_CONVERSION_MESSAGE.test(err.message);
 }
 
 type ErrorClass = abstract new (...args: never[]) => Error;
