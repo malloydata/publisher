@@ -6,7 +6,12 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { skillsDir } from "./index.js";
-import { countSkills, installSkills } from "./install.js";
+import {
+   countSkills,
+   installSkills,
+   skillGroup,
+   skillGroups,
+} from "./install.js";
 
 /**
  * `.claude/skills/` is shared agent territory, so a symlink can be anywhere in
@@ -151,5 +156,35 @@ describe("installSkills: the checks that were already there", () => {
       expect(result.refreshed).toEqual([]);
       expect(result.skipped).toEqual([]);
       expect(countSkills(targetDir)).toBe(SKILL_COUNT);
+   });
+});
+
+describe("installing a group", () => {
+   test("the core group is shipped, and smaller than the whole set", () => {
+      const core = skillGroup("core");
+      expect(core.length).toBeGreaterThan(0);
+      expect(core.length).toBeLessThan(SKILL_COUNT);
+      for (const name of core) {
+         expect(fs.existsSync(path.join(skillsDir, name, "SKILL.md"))).toBe(
+            true,
+         );
+      }
+   });
+
+   test("`only` installs exactly the named skills", () => {
+      const core = skillGroup("core");
+      const result = installSkills(targetDir, tmp, { only: core });
+      expect(result.installed).toBe(core.length);
+      expect(countSkills(targetDir)).toBe(core.length);
+   });
+
+   test("an unknown group names the ones that exist", () => {
+      expect(() => skillGroup("nope")).toThrow(/Expected one of: .*core/);
+   });
+
+   test("every group the manifest defines is packed", () => {
+      expect(Object.keys(skillGroups())).toEqual(
+         expect.arrayContaining(["core", "analysis", "modeling", "eval"]),
+      );
    });
 });

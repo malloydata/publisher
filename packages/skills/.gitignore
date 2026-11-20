@@ -2,4 +2,5 @@
 # repo's top-level skills/ directory. Shipped anyway: package.json "files"
 # overrides .gitignore.
 skills/
+groups.json
 dist/

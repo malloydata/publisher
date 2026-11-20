@@ -3,7 +3,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { skillsDir } from "./payload.js";
+import { groupsFile, skillsDir } from "./payload.js";
 
 export interface SkillInstall {
    /** How many skills were copied in. */
@@ -67,7 +67,9 @@ export interface SkillInstall {
 export function installSkills(
    targetDir: string,
    workspaceRoot: string,
+   options: InstallOptions = {},
 ): SkillInstall {
+   const only = options.only ? new Set(options.only) : undefined;
    const empty = { installed: 0, skipped: [], refreshed: [], removed: [] };
    if (isSymlink(targetDir)) {
       return {
@@ -92,6 +94,9 @@ export function installSkills(
    let installed = 0;
    for (const entry of fs.readdirSync(skillsDir, { withFileTypes: true })) {
       if (!entry.isDirectory()) {
+         continue;
+      }
+      if (only && !only.has(entry.name)) {
          continue;
       }
       const source = path.join(skillsDir, entry.name);
@@ -120,6 +125,44 @@ export function installSkills(
       installed += 1;
    }
    return { installed, skipped, refreshed, removed };
+}
+
+export interface InstallOptions {
+   /**
+    * Install only these skills (by name), for example `skillGroup("core")`.
+    * Omitted, every shipped skill is installed.
+    */
+   only?: readonly string[];
+}
+
+/**
+ * The named skill subsets from the repo's manifest (`core`, `analysis`,
+ * `modeling`, `eval`), as packed beside the skills. A group never
+ * `skill:`-references a skill outside it, which the manifest tests hold it
+ * to, so installing one gives an agent nothing to follow that is missing.
+ */
+export function skillGroups(): Record<string, string[]> {
+   if (!fs.existsSync(groupsFile)) return {};
+   return JSON.parse(fs.readFileSync(groupsFile, "utf8")) as Record<
+      string,
+      string[]
+   >;
+}
+
+/** One group's members. Throws on a name the manifest does not define. */
+export function skillGroup(name: string): string[] {
+   const groups = skillGroups();
+   const members = groups[name];
+   if (!members) {
+      const known = Object.keys(groups);
+      throw new Error(
+         `Unknown skill group '${name}'. ` +
+            (known.length > 0
+               ? `Expected one of: ${known.join(", ")}.`
+               : `This install of @malloy-publisher/skills has no groups.json.`),
+      );
+   }
+   return members;
 }
 
 /**

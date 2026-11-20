@@ -63,5 +63,8 @@ export {
    countSkills,
    installSkills,
    isWithinDirectory,
+   skillGroup,
+   skillGroups,
+   type InstallOptions,
    type SkillInstall,
 } from "./install.js";

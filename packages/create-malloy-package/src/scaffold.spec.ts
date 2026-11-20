@@ -14,7 +14,7 @@ import {
    type ScaffoldResult,
 } from "./scaffold";
 import { REQUIRED_NODE_RANGE } from "./node_version";
-import { countSkills, skillsDir } from "@malloy-publisher/skills";
+import { countSkills, skillGroup } from "@malloy-publisher/skills";
 import { flagsTakingAValue } from "../../server/src/settings/settings";
 
 /**
@@ -22,7 +22,8 @@ import { flagsTakingAValue } from "../../server/src/settings/settings";
  * cross-platform job on three OSes the day someone adds a skill, and the number
  * would say nothing about why.
  */
-const SKILL_COUNT = countSkills(skillsDir);
+// The scaffolder installs the core group, not every shipped skill.
+const SKILL_COUNT = skillGroup("core").length;
 
 let tmp: string;
 
@@ -373,7 +374,10 @@ describe("scaffold: skills", () => {
 
    test("copies reference/ subfiles, not just SKILL.md", () => {
       run();
-      const ref = path.join(tmp, ".claude/skills/malloy-review/reference");
+      const ref = path.join(
+         tmp,
+         ".claude/skills/malloy-html-data-apps/reference",
+      );
       expect(fs.existsSync(ref)).toBe(true);
       expect(fs.readdirSync(ref).length).toBeGreaterThan(0);
    });
@@ -1838,9 +1842,14 @@ describe("scaffold: the skill count is the one on disk", () => {
       fs.writeFileSync(stolenFile, "MINE\n");
       fs.mkdirSync(stolenDir);
       fs.writeFileSync(path.join(stolenDir, "keep.txt"), "MINE\n");
-      // malloy-review ships both a SKILL.md and a reference/ directory, so both
-      // links sit on a path the copy really writes.
-      const skill = path.join(tmp, ".claude", "skills", "malloy-review");
+      // malloy-html-data-apps is a core skill with both a SKILL.md and a
+      // reference/ directory, so both links sit on a path the copy really writes.
+      const skill = path.join(
+         tmp,
+         ".claude",
+         "skills",
+         "malloy-html-data-apps",
+      );
       fs.mkdirSync(skill, { recursive: true });
       fs.symlinkSync(stolenFile, path.join(skill, "SKILL.md"));
       fs.symlinkSync(stolenDir, path.join(skill, "reference"));

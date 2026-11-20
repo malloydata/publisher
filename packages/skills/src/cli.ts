@@ -28,7 +28,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { listSkills } from "./index.js";
-import { installSkills, type SkillInstall } from "./install.js";
+import { installSkills, skillGroup, type SkillInstall } from "./install.js";
 import { skillsDir } from "./payload.js";
 
 /** Where each host looks for skills, relative to a project or to the home dir. */
@@ -62,6 +62,8 @@ const USAGE = `malloy-skills - list and install the Malloy Publisher agent skill
 Usage:
   npx -y @malloy-publisher/skills@latest [list]          List every skill.
   npx -y @malloy-publisher/skills@latest install [host]  Copy the skills onto disk.
+  npx -y @malloy-publisher/skills@latest install [host] --group <name>
+                                     Copy one group: core, analysis, modeling or eval.
 
 Keep the @latest: without it npx may reuse an old cached copy.
 
@@ -135,7 +137,15 @@ function report(target: string, dir: string, result: SkillInstall): void {
    }
 }
 
-function install(hosts: string[], global: boolean): void {
+function install(hosts: string[], global: boolean, group?: string): void {
+   let only: string[] | undefined;
+   if (group !== undefined) {
+      try {
+         only = skillGroup(group);
+      } catch (error) {
+         fail((error as Error).message);
+      }
+   }
    const root = global ? os.homedir() : process.cwd();
    const scope = global ? "global" : "project";
    let chosen = hosts;
@@ -152,13 +162,25 @@ function install(hosts: string[], global: boolean): void {
    }
    for (const host of chosen) {
       const dir = path.join(root, TARGETS[host]);
-      report(host, dir, installSkills(dir, root));
+      report(host, dir, installSkills(dir, root, { only }));
    }
 }
 
 function main(argv: string[]): void {
    const global = argv.includes("--global");
-   const args = argv.filter((arg) => arg !== "--global");
+   let group: string | undefined;
+   const groupAt = argv.indexOf("--group");
+   if (groupAt !== -1) {
+      group = argv[groupAt + 1];
+      if (group === undefined || group.startsWith("-")) {
+         fail("--group needs a name: core, analysis, modeling or eval.");
+      }
+   }
+   const args = argv.filter(
+      (arg, i) =>
+         arg !== "--global" &&
+         !(groupAt !== -1 && (i === groupAt || i === groupAt + 1)),
+   );
    const [command = "list", ...rest] = args;
 
    if (command === "--help" || command === "-h" || command === "help") {
@@ -174,7 +196,7 @@ function main(argv: string[]): void {
             );
          }
       }
-      return install(rest, global);
+      return install(rest, global, group);
    }
    // Anything else is refused rather than skipped: a silently ignored argument
    // is how a typo turns into a command that looks like it worked.
@@ -192,6 +214,7 @@ function main(argv: string[]): void {
       fail(`'list' takes no arguments, got: ${rest.join(" ")}.`);
    }
    if (global) fail("--global only applies to install.");
+   if (group !== undefined) fail("--group only applies to install.");
    return list();
 }
 
