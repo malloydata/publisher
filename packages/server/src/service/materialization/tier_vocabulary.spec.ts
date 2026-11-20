@@ -127,9 +127,9 @@ describe("the rollup vocabulary", () => {
       ]) {
          expect(API_DOC).toContain(`\`${code}\``);
       }
-      // The warning's old code is repeated beside the new one this release.
+      // The warning's old code is named as retained, no longer produced.
       expect(API_DOC).toMatch(
-         /`preaggregate-not-built` is\s+`rollup-not-built`'s former name/,
+         /`preaggregate-not-built` is\s+`rollup-not-built`'s former name, retained, no longer\s+produced/,
       );
       for (const code of [
          "rollup-not-a-measure",

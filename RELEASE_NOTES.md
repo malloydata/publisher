@@ -21,6 +21,9 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — (BREAKING) the 0.14.0 warning codes are no longer repeated
+
+**Removed: the repeat of three renamed warnings under their 0.14.0 codes.** 0.15.0 renamed `preaggregate-not-built`, `preaggregate-join-one-key-repeated` and `stored-native-schema-missing` to `rollup-not-built`, `rollup-join-one-key-repeated` and `database-native-type-missing`, and 0.15.0 and 0.16 repeated each new warning under its old code, with the same message, in a package's `warnings`. That repeat is gone: each warning now appears once, under its new code. The old codes stay documented as retained, no longer produced. **Who is affected:** a client that matches a package warning by one of the three old codes. **What to do:** match the new code; a client that already reads both needs nothing.
 ## [Unreleased] — under `PERSIST_STORAGE_MODE=write-only`, a rollup, persisted view or persisted query with a database table answers from it, and its storage table is reported `storage_mode`
 
 Follows 0.16.1, where `write-only` and `off` stopped reading storage tables on every leg.
