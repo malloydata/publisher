@@ -650,6 +650,49 @@ describe("a stream on a DuckLake destination", () => {
       }
    });
 
+   it("throws each statement its own expired credential when the renewal they share fails", async () => {
+      const renewing = signal();
+      const secondFailed = signal();
+      let reads = 0;
+      stubDuckLake({
+         beforeRead: async (sql) => {
+            if (!sql.includes("expiring")) return;
+            if (++reads === 2) {
+               await within(renewing.promise, 2000);
+               secondFailed.fire();
+            }
+            throw expiredToken();
+         },
+      });
+      const env = buildEnvironmentMalloyConfig([DESTINATION], root, false, {
+         origin: "storage-destination",
+      });
+      try {
+         const connection = await lookUp(env);
+         const renew = sinon.fake(async () => {
+            renewing.fire();
+            await within(secondFailed.promise, 2000);
+            await new Promise((r) => setTimeout(r, 20));
+            throw new Error("STS: Could not connect to sts.amazonaws.com");
+         });
+         connection.setStorageSecretRenewer(renew);
+
+         const results = await Promise.allSettled([
+            connection.runSQL("SELECT 1 AS expiring"),
+            connection.runSQL("SELECT 1 AS expiring"),
+         ]);
+         for (const result of results) {
+            expect(result.status).toBe("rejected");
+            const reason = (result as PromiseRejectedResult).reason;
+            expect(String(reason)).toContain("ExpiredToken");
+            expect(String(reason)).not.toContain("STS");
+         }
+         expect(renew.callCount).toBe(1);
+      } finally {
+         await env.releaseConnections().catch(() => {});
+      }
+   });
+
    it("throws a renewal whose own statement meets the expired credential, rather than wait on itself", async () => {
       stubDuckLake({
          beforeRead: async (sql) => {
