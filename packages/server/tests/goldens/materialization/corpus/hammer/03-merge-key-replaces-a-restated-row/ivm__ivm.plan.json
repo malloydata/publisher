@@ -78,6 +78,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.ivm_orders"
+          }
+        ],
         "refresh": "incremental",
         "sourceEntityId": "0590287a429e95b9a7f1c85100e5da24bf537419ecef8ac84d2556d481d83ee3",
         "sourceID": "order_rows@<hammer>/ivm/ivm.malloy",

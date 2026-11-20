@@ -37,6 +37,12 @@ Two consequences worth knowing. A section merged to `main` ships in the **next**
 
 **Who is affected:** anyone querying a Snowflake `OBJECT` or `VARIANT` column. **What to do:** nothing.
 
+## [Unreleased] — the build plan names the warehouse tables each source's build reads
+
+**Added: `reads` on each build-plan source (`PersistSourcePlan.reads`).** Each entry lists the warehouse tables its build reads, as `{ connectionName, table }`, so a host whose warehouse table was replaced can rebuild only the sources that read it. The list is taken from the compiled source: every `connection.table('...')` in its lineage, a persisted upstream's tables included (the entry's `sql` inlines them), and a join only when the build uses it. It is absent when the tables cannot be known: the lineage holds an `.sql()` source, whose SQL text Malloy does not parse, or a raw SQL expression such as `sql_number()`. An empty list means the build reads no table.
+
+**Who is affected:** a host or control plane that reads the build plan. **What to do:** to rebuild after replacing a table, rebuild each source whose `reads` names it, and treat a source with no `reads` as possibly reading any table on its connection. Nothing else changes: `reads` is not part of `sourceEntityId`, so no table is re-addressed.
+
 ## [Unreleased] — under `PERSIST_STORAGE_MODE=write-only`, a rollup, persisted view or persisted query with a database table answers from it, and its storage table is reported `storage_mode`
 
 Follows 0.16.1, where `write-only` and `off` stopped reading storage tables on every leg.

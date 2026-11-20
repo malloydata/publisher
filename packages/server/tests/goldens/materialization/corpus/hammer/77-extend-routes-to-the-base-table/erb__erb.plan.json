@@ -87,6 +87,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.erb_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "4879af40cfeb86fb6982ff4b648b86b327244fbd980ca03f4ec5e4ea788251f1",
         "sourceID": "daily@<hammer>/erb/erb.malloy",
@@ -119,6 +125,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.erb_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "4879af40cfeb86fb6982ff4b648b86b327244fbd980ca03f4ec5e4ea788251f1",
         "sourceID": "daily_with_avg@<hammer>/erb/erb.malloy",

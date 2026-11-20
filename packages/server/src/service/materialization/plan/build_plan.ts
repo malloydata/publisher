@@ -159,6 +159,7 @@ import {
    getPersistCollisionEnforce,
 } from "../../../config";
 import { resolveConnectionTypes } from "../../connection_type";
+import { sourceReads } from "../../governance/ir/source_reads";
 import { collectAccessReads } from "./access_closure";
 import {
    admitGivenPositions,
@@ -260,6 +261,7 @@ import type { BuildPlanPackage } from "../domain/plan_input";
 
 type WireBuildGraph = components["schemas"]["BuildGraph"];
 type WirePersistSourcePlan = components["schemas"]["PersistSourcePlan"];
+type WireTableRead = components["schemas"]["TableRead"];
 type WireRefusedSource = components["schemas"]["RefusedSource"];
 type WireStrippedTerm = components["schemas"]["StrippedTerm"];
 type WireJoinedTerms = components["schemas"]["JoinedTerms"];
@@ -1885,12 +1887,20 @@ function wireSourceOf(
       ),
       queryMetadata: resolveQueryMetadata(source, packageMaterialization),
       columns: deriveColumns(source),
+      // Omitted, never partial, when the tables cannot be known.
+      ...readsOf(source),
       // Resolved, not passed through; a source failing either is in
       // `refusedSources` instead.
       ...planDynamicFields(source),
       annotationFields,
       modelPath,
    };
+}
+
+/** The plan's `reads` for one source; {} when they cannot be known. */
+function readsOf(source: PersistSource): { reads?: WireTableRead[] } {
+   const reads = sourceReads(source);
+   return reads === undefined ? {} : { reads };
 }
 
 /**

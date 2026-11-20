@@ -75,6 +75,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.jnp_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "5fdef7ca019202125b9bf9738c51d8bad2b92220dc189123dae67de751141657",
         "sourceID": "orders@<hammer>/jnp/jnp.malloy",

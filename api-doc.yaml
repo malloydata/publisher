@@ -11737,6 +11737,28 @@ components:
           description: Output schema of the source.
           items:
             $ref: "#/components/schemas/Column"
+        reads:
+          type: array
+          items:
+            $ref: "#/components/schemas/TableRead"
+          description: >-
+            The warehouse tables this entry's build reads, distinct and sorted
+            by connection then table: each `connection.table('...')` in the
+            source's lineage, read off the same fully inlined definition `sql`
+            and `sourceEntityId` are computed from. A table a persisted
+            upstream reads is therefore listed here too, since this source's
+            rows derive from it. A join is listed only when the build reads it
+            (a field, filter or nest of the build reaches it); a join the
+            source declares and the build never uses is not.
+
+
+            Absent when the tables cannot be known: the lineage holds an
+            `.sql()` source (its SQL text names tables Malloy does not parse)
+            or a raw SQL expression such as `sql_number()` (which may hold a
+            subquery). A host that rebuilds only the entries reading a replaced
+            table MUST treat an absent `reads` as possibly reading any table on
+            its connection, and an empty one as reading none. Not part of
+            `sourceEntityId`.
         annotationFields:
           type: object
           additionalProperties:
@@ -11808,6 +11830,22 @@ components:
             `#@ preaggregate` annotations it was synthesized from, which is where
             an author would go to change it.
 
+    TableRead:
+      type: object
+      required: [connectionName, table]
+      description: One warehouse table a persist source's build reads.
+      properties:
+        connectionName:
+          type: string
+          description: >-
+            The Malloy connection the table is read through, as the model names
+            it (the `lake` of `lake.table('orders')`).
+        table:
+          type: string
+          description: >-
+            The table path exactly as the model wrote it inside `.table('...')`
+            (e.g. `analytics.orders`), unquoted and unqualified by anything the
+            connection adds; on DuckDB it may be a file path or URL.
     PreaggregatePlan:
       type: object
       description: >-

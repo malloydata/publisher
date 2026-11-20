@@ -71,6 +71,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.f2b_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "2366a624d0cf11ca69e0a782e347b8963aacba4a638baa46c8260dc49a8beb02",
         "sourceID": "high_value_daily@<hammer>/f2b/f2b.malloy",

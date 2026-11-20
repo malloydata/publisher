@@ -105,6 +105,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.owr_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "1997ed9b6f5e8e658f6671e2e85ab91fca60278f5f894dff7ae59251290160de",
         "sourceID": "daily@<hammer>/owr/owr.malloy",
@@ -137,6 +143,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.owr_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "1997ed9b6f5e8e658f6671e2e85ab91fca60278f5f894dff7ae59251290160de",
         "sourceID": "daily_regional@<hammer>/owr/owr.malloy",
@@ -165,6 +177,16 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.owr_orders"
+          },
+          {
+            "connectionName": "orders_pg",
+            "table": "public.owr_regions"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "e9c5961d50654eb6b8849888003b5ad3e0ebf92d67be62e0d649608277f4c4b8",
         "sourceID": "rollup@<hammer>/owr/owr.malloy",

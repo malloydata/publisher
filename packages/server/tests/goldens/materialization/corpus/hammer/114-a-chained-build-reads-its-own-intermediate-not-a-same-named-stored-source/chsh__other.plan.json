@@ -71,6 +71,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.chsh_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "c60a1c296206c555bb268cc320acddc1e51ae519676e66ffc55a76af673caa7a",
         "sourceID": "mid@<hammer>/chsh/other.malloy",
