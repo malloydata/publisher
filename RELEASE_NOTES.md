@@ -207,13 +207,14 @@ Now a raw SQL request that meets an expired credential before its first row rene
 
 ## [Unreleased]: the MCP report tools list and show a `.malloynb`
 
-Follows 0.13.0, where `list_reports` left a legacy `.malloynb` out and `show_report` refused one with its Console address, because the panel's `Report` did not run it. `Report` now runs a `.malloynb`, each code cell through `POST …/models/{path}/query` on the notebook's path, so the report tools offer one too.
+Since 0.13.0, `list_reports` has left a legacy `.malloynb` out and `show_report` has refused one with its Console address, because the panel's `Report` did not run it. `Report` now runs a `.malloynb`, each code cell through `POST …/models/{path}/query` on the notebook's path, so the report tools offer one too.
 
 - **`list_reports` lists a `.malloynb`**, with `layout` `linear`, beside the `.malloy` reports.
-- **`show_report` draws one in the panel.** Its text result counts the notebook's code cells and names its filters, says the format is deprecated and that `execute_query` does not take its path, and gives its Console address as before. The `error://showReport/notebook` refusal is gone.
+- **`show_report` draws one in the panel**, with the panel's Open in Publisher and Back. Its text result counts the cells that run a query and names the notebook's filters. It says the format is deprecated and that `execute_query` does not take its path, and gives the Console address as before. For a notebook that failed to load, it gives the problem and no count. The `error://showReport/notebook` refusal is gone.
 - **The panel runs each cell through `report_api`**, which calls the same controller as the REST query route. A cell answers in the panel as it does over REST: the package surface, `#(authorize)`, row-level gates, givens, the query-slot pool and the access record apply the same way, and the panel never sends an `#(authorize)` bypass.
+- **The panel offers no Explorer.** `report_api`'s status read now answers `modelPage: "viewer"` whatever `PUBLISHER_MODEL_PAGE` says, so a notebook's cells in the panel do not offer "Data sources", the Explorer's query builder. On a `.malloy` report the one effect is that a filter's suggestion query is written with quoted names, as the Console writes it on a `viewer` server.
 
-What stays: MCP `execute_query` still refuses a `.malloynb` path, so an agent builds nothing new on the deprecated format. **Who is affected:** an agent or host that relied on `list_reports` leaving notebooks out now sees them; to keep the old listing, drop the paths that end in `.malloynb`. No setting, route or wire field is added.
+What stays: MCP `execute_query` still refuses a `.malloynb` path. `report_api` does not. On a host without MCP Apps it is listed to the model like any tool, and it runs a query on a notebook's path under the REST route's rules; only its description tells an agent not to call it. **Who is affected:** an agent or host that relied on `list_reports` leaving notebooks out now sees them; to keep the old listing, drop the paths that end in `.malloynb`. No setting, route or wire field is added.
 
 ## [Unreleased] — (BREAKING) the deprecated dashboards and notebooks API routes, the SDK `Dashboard` and `Notebook` components and the CLI notebook commands are removed
 
