@@ -1070,6 +1070,11 @@ standalone run or a control plane built the table.
   names it `READ_FAILED`. The worker logs it at error level with code
   `ducklake_catalog_unavailable` and reopens the destination, so the next query reads the table
   again.
+- A stored read that fails at run time (a column renamed or dropped after the build, say) answers
+  live under `freshness.fallback="live"`, with `servedFrom: live_fallback` and the table named
+  `READ_FAILED`: a `storage=` table, a database table the served copy reads, and a rollup on
+  either tier, whose fallback never vetoes since a rollup only accelerates. Under any other
+  fallback the error is returned.
 
 Each key resolves on its own, most specific first: the source's own declaration, then the model
 file's (`## freshness.window="…"`, or inside `## materialization { … }`), then `materialization.freshness`
@@ -1152,7 +1157,7 @@ If the load does not take, the run still settles at `MANIFEST_FILE_READY`, since
 
 A build ignores the package's [published surface](discovery-and-access.md). It builds every `#@ persist` source in every model, including one `index.malloy` does not export, so a hidden intermediate can be persisted and an exported source that reads it reads the built table.
 
-Each run records a **trigger** in its metadata: `on_demand` (a manual/API build) or `scheduler` (a scheduled fire), the words `RunContext.trigger` uses. Runs recorded before 0.15 say `ON_DEMAND` and `SCHEDULER`, and every reader accepts both. Only one materialization can be active per (environment, package) at a time — a second concurrent build is rejected with HTTP 409, and the scheduler coalesces (skips) rather than stacking a second build. A package with published versions builds per version, under the rules in [package-versions.md](package-versions.md#materializations): a run under `scope: "version"`, or one with `buildInstructions`, holds its own version's slot instead.
+Each run records a **trigger** in its metadata: `on_demand` (a manual/API build) or `scheduler` (a scheduled fire), the words `RunContext.trigger` uses. Runs recorded before 0.15 say `ON_DEMAND` and `SCHEDULER`. The API and the CLI accept both; since 0.16.1 the scheduler reads only `scheduler`, so a scheduled fire a release before 0.15 recorded is not read when it anchors a schedule. Only one materialization can be active per (environment, package) at a time — a second concurrent build is rejected with HTTP 409, and the scheduler coalesces (skips) rather than stacking a second build. A package with published versions builds per version, under the rules in [package-versions.md](package-versions.md#materializations): a run under `scope: "version"`, or one with `buildInstructions`, holds its own version's slot instead.
 
 On demand, via the CLI:
 

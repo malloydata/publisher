@@ -21,6 +21,17 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — (BREAKING) an empty materialization schedule is refused
+
+**Changed: `"materialization": { "schedule": "" }` in `publisher.json` fails the publish, and warns at load.** An empty string skipped every rule of the persistence-policy gate, so it was accepted and stored, and the scheduler, which treats it as no schedule, never fired it. It now meets the same rule as any other schedule: it must be a valid 5-field UNIX cron, and under `"scope": "package"` a schedule is refused anyway. A schedule of spaces was already refused. **Who is affected:** a package whose manifest stores an empty schedule. **What to do:** remove the `schedule` key, or give it a cron.
+
+## [Unreleased] — a database rollup falls back to live when its read fails, and a lost sandbox table is rebuilt
+
+**Fixed: a database rollup whose stored read failed at run time returned the error.** Under `freshness.fallback="live"`, a database `#@ persist` or `#(materialize)` table whose read failed (a column renamed or dropped after the build, say) was answered live, but a database rollup returned the warehouse's error (`Binder Error: … does not have a column named …`). A rollup on either tier now falls back to live on any stored-read failure but a client error or a cancel, as a `storage=` rollup already did, since a rollup only accelerates: the answer reports `servedFrom: live_fallback` and the path report names the table `READ_FAILED`.
+
+**Fixed: a table built in the package's own `duckdb` sandbox and lost to a restart was never rebuilt.** The sandbox is in memory, but the run record survives a restart, and a run reused any unchanged source's table on the record's word. So after a restart every run reported the source reused (`sourcesReused`), the table stayed missing, and its queries answered live. A run now checks that each such table still exists before reusing it, and rebuilds one that does not (one catalog read per table on the sandbox). A table at an exact `name=` was already rebuilt.
+
+**Who is affected:** callers of a database rollup whose table was altered after its build; packages that persist sources in their own `duckdb` sandbox. No setting, wire field or code is added.
 ## [Unreleased] — (BREAKING) the 0.14.0 warning codes are no longer repeated
 
 **Removed: the repeat of three renamed warnings under their 0.14.0 codes.** 0.15.0 renamed `preaggregate-not-built`, `preaggregate-join-one-key-repeated` and `stored-native-schema-missing` to `rollup-not-built`, `rollup-join-one-key-repeated` and `database-native-type-missing`, and 0.15.0 and 0.16 repeated each new warning under its old code, with the same message, in a package's `warnings`. That repeat is gone: each warning now appears once, under its new code. The old codes stay documented as retained, no longer produced. **Who is affected:** a client that matches a package warning by one of the three old codes. **What to do:** match the new code; a client that already reads both needs nothing.

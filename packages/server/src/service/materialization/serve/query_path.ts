@@ -699,8 +699,13 @@ function databaseRollupDecisions(
             continue;
          } else if (rollupDecision.outcome === "used") {
             if (t === used) {
-               markUsed(t);
-               rollupAnswered = true;
+               // Its read failed and the query was retried live.
+               if (input.runFailed) {
+                  skip(t, "READ_FAILED");
+               } else {
+                  markUsed(t);
+                  rollupAnswered = true;
+               }
             } else if (!used && input.rollupMember !== undefined) {
                // The rollup leg answered from another rollup.
                skip(t, "GRAIN_TOO_COARSE");

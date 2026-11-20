@@ -121,7 +121,7 @@ import { packageRelativeText } from "../../../package_relative_text";
 import { buildSource } from "./source_build";
 import { StorageBuildStrategy } from "./storage_build_strategy";
 import { TableClaims } from "./table_claims";
-import { uncarryUnownedTables } from "./table_ownership";
+import { uncarryLostTables, uncarryUnownedTables } from "./table_ownership";
 import { isRollupOrigin } from "../domain/table_plans";
 
 /** What a run is asked to do: createMaterialization's options, resolved. */
@@ -1259,6 +1259,7 @@ export class MaterializationService {
             reader,
          );
          let recheck: Record<string, BuildInstruction>;
+         let confirmExists: Record<string, BuildInstruction>;
          const freshness = declaredFreshnessIndex(pkg.getBuildPlan());
          ({
             instructions,
@@ -1266,6 +1267,7 @@ export class MaterializationService {
             refused: derivedRefused,
             cleared: clearedTiers,
             recheck = {},
+            confirmExists = {},
             renamed = [],
          } = this.collaborators.deriveSelfInstructions(
             compiled,
@@ -1296,20 +1298,32 @@ export class MaterializationService {
          ));
          // A carried table at the author's `name=` is reused only while
          // it is still marked as this package's (table_ownership.ts).
+         const siteContext = () =>
+            tableSiteContext({
+               compiled,
+               environment,
+               buildMetadata: {
+                  packageMaterialization: pkg.getMaterializationConfig(),
+                  context: runQueryContext(run),
+               },
+            });
          if (Object.keys(recheck).length > 0) {
             await uncarryUnownedTables(
                recheck,
                carried,
                instructions,
                packageOwner(environmentName, packageName),
-               tableSiteContext({
-                  compiled,
-                  environment,
-                  buildMetadata: {
-                     packageMaterialization: pkg.getMaterializationConfig(),
-                     context: runQueryContext(run),
-                  },
-               }),
+               siteContext(),
+            );
+         }
+         // A carried table in the package's in-memory sandbox is reused
+         // only while it still exists: a restart empties the sandbox.
+         if (Object.keys(confirmExists).length > 0) {
+            await uncarryLostTables(
+               confirmExists,
+               carried,
+               instructions,
+               siteContext(),
             );
          }
       }
