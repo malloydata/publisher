@@ -1181,13 +1181,11 @@ export class Model {
 
    /**
     * `manifest` with the rollups' own entries removed, for a run that reads
-    * the author's model rather than a rollup variant: a legacy `.malloynb`
-    * notebook cell, which still compiles with the build manifest (its cells
-    * are not routed through the served copy), and the persisted-view leg's
-    * variant. Malloy refuses a non-empty `buildManifest` against a model
+    * the author's model rather than a rollup variant: the persisted-view
+    * leg's variant. Malloy refuses a non-empty `buildManifest` against a model
     * without `##! experimental.persistence`, which a model declaring only
     * rollups need not carry, so a rollup entry there would 400 every query
-    * (guard 3 of the plan's D3 list, kept past 6g for these two readers).
+    * (guard 3 of the plan's D3 list, kept past 6g for this reader).
     * Undefined when nothing survives, which `prepareAndRun` hands Malloy as
     * EMPTY_BUILD_MANIFEST, never as undefined (that would substitute from the
     * Runtime's unfiltered manifest, #1721).

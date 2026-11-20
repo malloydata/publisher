@@ -2073,6 +2073,93 @@ query: raw_t is ${RAW}`,
          }
       });
 
+      it("holds a linear report's own sources to the gates and the surface of their bases", async () => {
+         // The same rule as a grid report's, for a linear one: its sources
+         // over served bases run, under the gates those bases carry; one over
+         // a hidden file, and a raw SQL query, are off the surface.
+         writeManifest();
+         fs.writeFileSync(
+            path.join(tempDir, "secured.malloy"),
+            `##! experimental.givens
+#(secure)
+given: GROUPS :: number[]
+#(secure)
+given: ROLES :: string[]
+
+#(access_filter) id in $GROUPS
+source: gated is duckdb.sql("select 1 as id union all select 2 union all select 3") extend {
+  measure: n is count()
+}
+
+#(authorize) 'admin' in $ROLES
+source: locked is duckdb.sql("select 1 as id union all select 2") extend {
+  measure: n is count()
+}`,
+         );
+         fs.writeFileSync(
+            path.join(tempDir, "hidden.malloy"),
+            `source: hidden is duckdb.sql("select 1 as id")`,
+         );
+         fs.writeFileSync(
+            path.join(tempDir, "index.malloy"),
+            `##! experimental.givens\nimport "secured.malloy"\nexport { gated, locked }`,
+         );
+         fs.writeFileSync(
+            path.join(tempDir, "story.malloy"),
+            `##! experimental.givens
+## artifact { layout=linear title="Story" tiles=["derived -> { aggregate: m }", "derived_locked -> { aggregate: m }", "from_hidden -> { aggregate: c }"] }
+import "secured.malloy"
+import "hidden.malloy"
+source: derived is gated extend { measure: m is count() }
+source: derived_locked is locked extend { measure: m is count() }
+source: from_hidden is hidden extend { measure: c is count() }`,
+         );
+         const { malloyConfig, duckdb } = duckdbMalloyConfig();
+         try {
+            const pkg = await Package.create(
+               "env",
+               "pkg",
+               tempDir,
+               malloyConfig,
+            );
+            const story = pkg.getModel("story.malloy")!;
+            const run = (
+               query: string,
+               givens: Record<string, number[] | string[]> = {},
+            ) =>
+               story
+                  .runQuery(unrecordedAudit(), { query, givens })
+                  .then((answer) => answer.compactResult);
+
+            expect(
+               await run("run: derived -> { aggregate: m }", {
+                  GROUPS: [1, 2],
+               }),
+            ).toEqual([{ m: 2 }]);
+            await expect(
+               run("run: derived -> { aggregate: m }"),
+            ).rejects.toBeInstanceOf(AccessDeniedError);
+            expect(
+               await run("run: derived_locked -> { aggregate: m }", {
+                  ROLES: ["admin"],
+               }),
+            ).toEqual([{ m: 2 }]);
+            await expect(
+               run("run: derived_locked -> { aggregate: m }", {
+                  ROLES: ["viewer"],
+               }),
+            ).rejects.toBeInstanceOf(AccessDeniedError);
+            await expect(
+               run("run: from_hidden -> { aggregate: c }"),
+            ).rejects.toBeInstanceOf(NotQueryableError);
+            await expect(
+               run("run: duckdb.sql('select 1 as one') -> { select: one }"),
+            ).rejects.toBeInstanceOf(NotQueryableError);
+         } finally {
+            await duckdb.close();
+         }
+      });
+
       it("widens nothing outside the report", async () => {
          writeReportPackage();
          const { malloyConfig, duckdb } = duckdbMalloyConfig();

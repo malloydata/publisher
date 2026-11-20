@@ -429,7 +429,8 @@ Each step is shippable alone and leaves the system consistent.
    the root, and drafts by path, with the `security-posture.md` rewrite in the same pull request.
 4. **Docs, skills, and storefront.** §12, plus the release note.
 5. **Later release: end the deprecations.** The `…/dashboards` and `…/notebooks` routes and the
-   name alias go (delete `routes/deprecated.ts`, its controller and `legacy_report_views.ts`);
+   name alias go (delete `routes/deprecated.ts` and its controller; what is left of
+   `legacy_report_views.ts` stays for the Console alias);
    `Dashboard` and `Notebook` SDK exports go once Credible has moved. `kind=`, the query-level
    `# artifact` and bare-name drill fallback are already gone: they existed only for this format.
    **The routes are done**: the `…/dashboards` routes, their basename alias and its

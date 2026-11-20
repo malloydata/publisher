@@ -226,7 +226,7 @@ describe("report panel tools over the MCP protocol", () => {
          .map((c) => c.text)
          .join("\n");
       expect(text).toContain(
-         "notebooks/old.malloynb is a .malloynb notebook, which the report panel does not run.",
+         "notebooks/old.malloynb is a .malloynb notebook, a deprecated format the report panel does not show.",
       );
       expect(text).toContain(
          `${reportAppOrigin()}/examples/storefront/notebooks/old.malloynb`,

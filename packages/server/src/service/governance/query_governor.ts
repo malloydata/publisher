@@ -264,8 +264,7 @@ export interface GovernRequest {
    /**
     * The compiled half of the query boundary, for an admission the early
     * check DEFERRED (see `Model.assertQueryBoundaryEarly`). Absent when the
-    * boundary is already settled: cleared early, lifted by privilege, or (a
-    * notebook cell) checked by the caller before anything ran.
+    * boundary is already settled: cleared early, or lifted by privilege.
     */
    boundary?: { compiledSource: string | undefined; query?: string };
    /**
@@ -520,7 +519,8 @@ export class QueryGovernor {
     * A graft never depends on a caller's givens or query text (those bind at
     * `run()`), so requests hitting the same gate set share the expensive
     * `structuredClone`. `cacheScope` is in the key so a graft built against
-    * one notebook cell's modelDef is never served for another scope.
+    * one scope's modelDef, such as a served copy's or a rollup's, is never
+    * served for another scope.
     */
    private graftedMaterializerCache: Map<string, ModelMaterializer> = new Map();
    /**
@@ -1146,7 +1146,7 @@ export class QueryGovernor {
       givens: Record<string, GivenValue>,
       bypassAuthorize = false,
       /** The scope a row-level gate classifies against; defaults to the
-       *  model-wide scope (a notebook cell passes its own). */
+       *  model-wide scope. */
       graftScope: GraftScope | undefined = this.defaultGraftScope(),
    ): Promise<void> {
       if (bypassAuthorize) {
@@ -1178,8 +1178,7 @@ export class QueryGovernor {
       }
       // Not a declared top-level source: nothing gates it here. A caller
       // cannot reach the warehouse through an inline source without restricted
-      // mode refusing it first (see `runQuery`); a notebook cell's
-      // inline source is author-written.
+      // mode refusing it first (see `runQuery`).
    }
 
    /**
@@ -2559,7 +2558,7 @@ export class QueryGovernor {
          proveGraft?: (recompiled: QueryMaterializer) => Promise<void>;
          bypassAuthorize?: boolean;
          /** The scope a row-level gate grafts against; defaults to
-          *  {@link defaultGraftScope}. A notebook cell must pass its own. */
+          *  {@link defaultGraftScope}. */
          graftScope?: GraftScope;
          /** See {@link assertAuthorizedFromCompiledRunnable}. */
          skipOwnSourceGate?: boolean;
@@ -2571,8 +2570,8 @@ export class QueryGovernor {
          /**
           * The CALLER-written query text, read by
           * {@link assertRequestDeclaredEntryPointIsNotLaundered} and
-          * {@link foldRequestDeclaredTwins}. Absent for a notebook cell, whose
-          * text is the author's and keeps the author-side fail-open.
+          * {@link foldRequestDeclaredTwins}. Absent for text the author wrote,
+          * which keeps the author-side fail-open.
           */
          callerQueryText?: string;
          /**
@@ -2584,8 +2583,8 @@ export class QueryGovernor {
           * Where caller-written text sits, and the LIVE compiled query to find
           * its joins in — never a storage serve shape or pre-aggregation
           * runnable, which re-emit author joins with no annotations. Absent
-          * for text the author wrote (a notebook cell, a named query, a
-          * whole-file `/compile`). See {@link probeCallerJoinGates}.
+          * for text the author wrote, such as a named query or a whole-file
+          * `/compile`. See {@link probeCallerJoinGates}.
           */
          callerJoins?: { runnable: QueryMaterializer; region: CallerRegion };
          /**

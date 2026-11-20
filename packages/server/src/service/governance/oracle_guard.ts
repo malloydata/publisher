@@ -13,7 +13,7 @@
  * unconditionally. Removing a check here may leak schema through compile
  * errors; it must never change which rows a query can read.
  *
- * Moved verbatim from `Model.runQueryResults`, `Model.runNotebookCell` and
+ * Moved verbatim from `Model.runQueryResults` and
  * `Model.assertAuthorizedForText`; the checks themselves stay on
  * `QueryGovernor`, which hands them in as {@link OracleChecks}.
  */

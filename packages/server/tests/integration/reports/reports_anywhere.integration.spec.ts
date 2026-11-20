@@ -100,8 +100,6 @@ describe("Reports anywhere in a package (E2E)", () => {
       );
       expect(a.title).toBe("Sales summary");
       expect(b.title).toBe("Finance summary");
-      // Only the removed by-name dashboards route needed a warning for it.
-      expect(warningsByCode(warnings, "report-name-ambiguous")).toEqual([]);
    });
 
    it("lists the linear reports by their tag, wherever they live", async () => {
