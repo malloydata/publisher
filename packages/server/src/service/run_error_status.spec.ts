@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * A classified database failure keeps its status on both run paths: a model
- * query and a report cell. A truncated BigQuery page (502 RESULT_TRUNCATED)
- * and a row that does not fit the result's schema (502) must not become the
- * cell path's generic 400.
+ * A classified database failure keeps its status on a model query and on a
+ * `.malloynb` cell, which runs as a model query on the notebook's own path. A
+ * truncated BigQuery page (502 RESULT_TRUNCATED) and a row that does not fit
+ * the result's schema (502) must not become a generic 400.
  */
 import type { DuckDBConnection } from "@malloydata/db-duckdb";
 import type { Connection } from "@malloydata/malloy";
@@ -17,51 +17,49 @@ import {
 } from "../errors";
 import { queryRows } from "../test_helpers/authorize_fixture";
 import { seededDuckdb, writeTempPackage } from "../test_helpers/temp_package";
-import { unrecordedAudit } from "./access_record";
 import { Model, ModelPolicy } from "./model";
 
 const MODEL = `source: t is duckdb.sql("""select {'n': 1, 's': 'a'} as obj""")
 `;
 
-const REPORT = `## artifact { layout=linear title="Cells" tiles=["t -> { select: obj }"] }
+const NOTEBOOK = `>>>malloy
 import "m.malloy"
+>>>malloy
+run: t -> { select: obj }
 `;
 
 describe("a classified database failure", () => {
    let model: Model;
+   let notebook: Model;
    let duckdb: DuckDBConnection;
    let removeDir: () => void;
-   let cell = -1;
 
    beforeAll(async () => {
       const written = writeTempPackage({
          "m.malloy": MODEL,
-         "report.malloy": REPORT,
+         "nb.malloynb": NOTEBOOK,
       });
       removeDir = written.cleanup;
       duckdb = await seededDuckdb();
-      model = await Model.create(
-         "cells-pkg",
-         written.dir,
-         "report.malloy",
-         new Map<string, Connection>([["duckdb", duckdb]]),
-         {
-            policy: ModelPolicy.fixed({
-               queryBoundary: {
-                  mode: "all",
-                  exploresDeclared: false,
-                  isQueryEntryPoint: true,
-                  layout: "linear",
-               },
-            }),
-         },
-      );
-      expect(
-         model.attachServedNotebookCells(model.getCompiledSourceText()!),
-      ).toBe("ok");
-      const listed = (await model.getNotebook()).notebookCells ?? [];
-      cell = listed.findIndex((c) => c.kind === "query");
-      expect(cell).toBeGreaterThanOrEqual(0);
+      const open = (modelPath: string) =>
+         Model.create(
+            "cells-pkg",
+            written.dir,
+            modelPath,
+            new Map<string, Connection>([["duckdb", duckdb]]),
+            {
+               policy: ModelPolicy.fixed({
+                  queryBoundary: {
+                     mode: "all",
+                     exploresDeclared: false,
+                     isQueryEntryPoint: true,
+                  },
+               }),
+            },
+         );
+      model = await open("m.malloy");
+      notebook = await open("nb.malloynb");
+      expect(notebook.isNotebook()).toBe(true);
    });
 
    afterAll(async () => {
@@ -106,8 +104,9 @@ describe("a classified database failure", () => {
       }
       return data;
    };
-   const runCell = () => model.executeNotebookCell(unrecordedAudit(), cell);
-   const runQuery = () => queryRows(model, "run: t -> { select: obj }");
+   const RUN = "run: t -> { select: obj }";
+   const runCell = () => queryRows(notebook, RUN);
+   const runQuery = () => queryRows(model, RUN);
 
    function expect502(thrown: unknown, kind: new (...a: never[]) => Error) {
       expect(thrown).toBeInstanceOf(kind);
@@ -116,7 +115,7 @@ describe("a classified database failure", () => {
       ).toBe(502);
    }
 
-   it("keeps a truncated page's 502 RESULT_TRUNCATED on a report cell", async () => {
+   it("keeps a truncated page's 502 RESULT_TRUNCATED on a .malloynb cell", async () => {
       const thrown = await withDatabase(truncated, runCell);
       expect502(thrown, ResultTruncatedError);
       expect(
@@ -128,7 +127,7 @@ describe("a classified database failure", () => {
       expect502(await withDatabase(truncated, runQuery), ResultTruncatedError);
    });
 
-   it("keeps a misshapen row's 502 on a report cell", async () => {
+   it("keeps a misshapen row's 502 on a .malloynb cell", async () => {
       expect502(await withDatabase(misshapen, runCell), ResultShapeError);
    });
 

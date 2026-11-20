@@ -229,20 +229,6 @@ describe("package-scoped routes of a versioned package", () => {
       expect(String((await compile("")).sql)).toContain("SELECT 2 AS answer");
    });
 
-   it("dashboards are the named version's", async () => {
-      const list = (await (
-         await fetch(api(`${PKG}/dashboards?versionId=1.0.0`))
-      ).json()) as { title?: string }[];
-      expect(list.map((d) => d.title)).toEqual(["Overview v1"]);
-      const one = await json(
-         await fetch(api(`${PKG}/dashboards/overview?versionId=1.0.0`)),
-      );
-      expect(one.title).toBe("Overview v1");
-      expect(
-         (await json(await fetch(api(`${PKG}/dashboards/overview`)))).title,
-      ).toBe("Overview v2");
-   });
-
    it("reports are the named version's", async () => {
       const list = (await (
          await fetch(api(`${PKG}/reports?versionId=1.0.0`))
@@ -259,21 +245,29 @@ describe("package-scoped routes of a versioned package", () => {
       expect((await report("")).title).toBe("Overview v2");
    });
 
-   it("notebooks, and a notebook cell, are the named version's", async () => {
-      expect(
-         (await fetch(api(`${PKG}/notebooks?versionId=1.0.0`))).status,
-      ).toBe(200);
+   it("a notebook, and a notebook cell's query, are the named version's", async () => {
       const nb = JSON.stringify(
          await json(
-            await fetch(api(`${PKG}/notebooks/notes.malloynb?versionId=1.0.0`)),
+            await fetch(api(`${PKG}/reports/notes.malloynb?versionId=1.0.0`)),
          ),
       );
       expect(nb).toContain("Notes v1");
       const cell = await fetch(
-         api(`${PKG}/notebooks/notes.malloynb/cells/2?versionId=1.0.0`),
+         api(`${PKG}/models/notes.malloynb/query?versionId=1.0.0`),
+         {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+               query: "run: numbers -> which_version",
+               compactJson: true,
+            }),
+         },
       );
       expect(cell.status).toBe(200);
-      expect(JSON.stringify(await cell.json())).toContain("SELECT 1 AS answer");
+      const rows = JSON.parse(String((await json(cell)).result)) as {
+         answer: number;
+      }[];
+      expect(Number(rows[0].answer)).toBe(1);
    });
 
    it("databases, data apps and events take the version", async () => {
@@ -386,10 +380,6 @@ describe("package-scoped routes of a versioned package", () => {
          `${PKG}/models/model.malloy`,
          `${PKG}/reports`,
          `${PKG}/reports/dashboards/overview.malloy`,
-         `${PKG}/dashboards`,
-         `${PKG}/dashboards/overview`,
-         `${PKG}/notebooks`,
-         `${PKG}/notebooks/notes.malloynb`,
          `${PKG}/databases`,
          `${PKG}/data-apps`,
          ...SKILL_AND_AGENT_ROUTES,

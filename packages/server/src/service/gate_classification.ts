@@ -156,9 +156,9 @@ export function derivationLevel(
 
 /**
  * The model def + materializer a row-level gate is classified, lifted and
- * grafted against. The query path uses the model's cumulative scope; a
- * notebook cell passes an earlier cell's scope or its own (see
- * `Model.graftScopeForCell` and friends).
+ * grafted against. The query path uses the model's cumulative scope; an
+ * answer from a stored table, such as a served copy or a rollup, passes its
+ * own.
  *
  * `cacheScope` namespaces the gate-shape and grafted-materializer caches: two
  * scopes that name a source identically must never share a classification or
@@ -175,8 +175,8 @@ export interface GraftScope {
    cacheScope: string;
    /**
     * The runtime `modelDef` was compiled in, which a graft on this scope
-    * reloads its grafted copy through: the model's own for the query path and
-    * notebook cells, the served copy's for a served-copy answer (its
+    * reloads its grafted copy through: the model's own for the query path,
+    * the served copy's for a served-copy answer (its
     * connections reach the storage destinations its `virtual()` sources name).
     * Never defaulted: a graft reloaded through another runtime would bind the
     * gate to the wrong connections, so a scope without one denies every
@@ -315,8 +315,7 @@ export function collectEntryPointGates(
  * (a caller's `source: mine is X extend {}` becomes a real `contents` entry
  * only there), so its keys may not exist in the graft scope.
  * `originModelDef` is still what the ancestor walk uses, since only its
- * `sourceRegistry` links `entry.struct` to its bases. The two coincide on the
- * query path and differ for notebook cells.
+ * `sourceRegistry` links `entry.struct` to its bases.
  *
  * `graftScope` undefined (nothing to graft against) always rejects: a filter
  * with nowhere to attach cannot be enforced.
@@ -353,8 +352,7 @@ export async function resolveGateShape(
 > {
    if (!entry.struct) return { shape: "rejected" };
    if (!graftScope) {
-      // No scope at all to graft against: for a notebook cell, no earlier code
-      // cell and no compiled model of its own. The caller still gets the same
+      // No scope at all to graft against. The caller still gets the same
       // opaque 403 (it must not leak whether a gate exists); the log line
       // tells operators this case apart.
       logger.debug(
@@ -369,9 +367,8 @@ export async function resolveGateShape(
       originModelDef,
       graftScope.modelDef,
    );
-   // No key to graft onto: an ephemeral run target (an independently
-   // recompiled `/compile` model, a notebook cell's `source: mine is
-   // base_locked extend {…}`) can fail this. Both routes need the lifted
+   // No key to graft onto: an ephemeral run target, such as an independently
+   // recompiled `/compile` model, can fail this. Both routes need the lifted
    // condition, so reject rather than fall back.
    if (!graftTarget) {
       return { shape: "rejected" };
@@ -640,8 +637,7 @@ export async function resolveGateShape(
  * and lift compile against), never `originModelDef`: there `mine` is a real
  * entry and would be returned directly, though it does not exist in
  * `graftModelDef`. `originModelDef` is still what the walk reads, since only
- * it links `struct` to its base. The two are the same on the query path and
- * differ for notebook cells (see {@link GraftScope}).
+ * it links `struct` to its base.
  *
  * Matches by identity, then `sourceID`, never by name alone: distinct
  * `SourceDef`s can share a name across an inheritance chain.

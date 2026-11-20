@@ -615,21 +615,12 @@ run: gated_active -> { group_by: id, child.org_id; order_by: id }
             "nb.malloynb",
          );
          try {
-            const result = await model.executeNotebookCell(
-               unrecordedAudit(),
-               1,
-               undefined,
-               false,
-               {
-                  GROUPS: [1, 2],
-               },
-            );
-            const served = (
-               JSON.parse(result.result!) as {
-                  data?: { array_value?: unknown[] };
-               }
-            ).data?.array_value?.length;
-            expect(served).toBe(2);
+            // Cell 1's query, run on the notebook's own path.
+            const result = await model.runQuery(unrecordedAudit(), {
+               query: "run: gated_active -> { group_by: id, child.org_id; order_by: id }",
+               givens: { GROUPS: [1, 2] },
+            });
+            expect((result.compactResult as unknown[]).length).toBe(2);
          } finally {
             await cleanup();
          }

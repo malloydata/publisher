@@ -13,7 +13,7 @@
  * unconditionally. Removing a check here may leak schema through compile
  * errors; it must never change which rows a query can read.
  *
- * Moved verbatim from `Model.runQueryResults`, `Model.runNotebookCell` and
+ * Moved verbatim from `Model.runQueryResults` and
  * `Model.assertAuthorizedForText`; the checks themselves stay on
  * `QueryGovernor`, which hands them in as {@link OracleChecks}.
  */
@@ -205,20 +205,5 @@ export class OracleGuard {
          false,
          decided,
       );
-   }
-
-   /**
-    * A notebook cell's gate on its UNREFINED runnable, before a `#(filter)`
-    * refinement rebuilds it, so a denied caller gets the 403 rather than a
-    * 400 from a broken refinement or bad `filterParams`. Locks and rejected
-    * gates throw; row-level gates are left to `govern` on the refined
-    * runnable.
-    */
-   public async beforeCellRefinement(
-      runnable: QueryMaterializer,
-      givens: Record<string, GivenValue>,
-      graftScope: GraftScope | undefined,
-   ): Promise<void> {
-      await this.checks.probeEntryPointGates(runnable, givens, graftScope);
    }
 }

@@ -40,7 +40,7 @@ describe("query_cap_metrics", () => {
       recordQueryCapExceeded("rows", "connection_sql");
       recordQueryCapExceeded("rows", "connection_sql");
       recordQueryCapExceeded("bytes", "model_query");
-      recordQueryCapExceeded("rows", "notebook_cell");
+      recordQueryCapExceeded("rows", "model_query");
 
       expect(
          await harness.collectCounter("publisher_query_cap_exceeded_total", {
@@ -57,7 +57,7 @@ describe("query_cap_metrics", () => {
       expect(
          await harness.collectCounter("publisher_query_cap_exceeded_total", {
             cap_type: "rows",
-            source: "notebook_cell",
+            source: "model_query",
          }),
       ).toBe(1);
    });
@@ -70,18 +70,11 @@ describe("query_cap_metrics", () => {
       // stringifyQueryResponse; not emitted with source connection_sql, which has
       // no such guard on its own path.
       recordQueryCapExceeded("unserializable", "model_query");
-      recordQueryCapExceeded("unserializable", "notebook_cell");
 
       expect(
          await harness.collectCounter("publisher_query_cap_exceeded_total", {
             cap_type: "unserializable",
             source: "model_query",
-         }),
-      ).toBe(1);
-      expect(
-         await harness.collectCounter("publisher_query_cap_exceeded_total", {
-            cap_type: "unserializable",
-            source: "notebook_cell",
          }),
       ).toBe(1);
       // And it must not have landed in the bytes series.

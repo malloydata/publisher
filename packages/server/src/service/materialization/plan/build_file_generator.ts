@@ -50,9 +50,7 @@
  * needs a dataset, needs a `name=` that names one (`needs_qualified_name`). The served copy re-roots it on that table, on its own connection,
  * as it re-roots a `storage=` source on its destination, and a v1 database
  * `#@ persist` table the same way
- * (`tests/component/r4/served_copy_database.component.spec.ts`). Only a
- * legacy `.malloynb` cell still reads a table through Malloy's compiler
- * manifest (`ModelServing.manifestIfPersistent`).
+ * (`tests/component/r4/served_copy_database.component.spec.ts`).
  *
  * Joins. A join is a reference by default: it is not stored,
  * the served copy keeps it as written, and it reads the joined source (its own

@@ -106,9 +106,9 @@ export function reportPanelHtml(origin: string, version = SERVER_VERSION) {
 }
 
 /**
- * A legacy `.malloynb` notebook. The report index lists one, but the panel
- * mounts the SDK's `Report`, which does not run it, so the report tools leave
- * it to the Console.
+ * A legacy `.malloynb` notebook. The report index lists one, and the SDK's
+ * `Report` the panel mounts can run it, but the format is deprecated and the
+ * panel is not offered for it, so the report tools leave it to the Console.
  */
 export const isLegacyNotebook = (reportPath: string) =>
    reportPath.endsWith(".malloynb");
@@ -401,7 +401,7 @@ export function registerReportAppTools(
                uri,
                {
                   reports: reports
-                     // The panel cannot run one; see isLegacyNotebook.
+                     // The panel is not offered for one; see isLegacyNotebook.
                      .filter((r) => !isLegacyNotebook(r.path))
                      .map((r) => ({
                         path: r.path,
@@ -455,7 +455,7 @@ export function registerReportAppTools(
          };
          if (isLegacyNotebook(reportPath)) {
             return jsonToolError("error://showReport/notebook", {
-               message: `${reportPath} is a .malloynb notebook, which the report panel does not run.`,
+               message: `${reportPath} is a .malloynb notebook, a deprecated format the report panel does not show.`,
                suggestions: [
                   `Give the user its Console address instead: ${consoleReportUrl(reportAppOrigin(), environmentName, packageName, reportPath, givens)}`,
                ],

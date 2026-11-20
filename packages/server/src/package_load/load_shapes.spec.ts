@@ -82,9 +82,9 @@ const CHECKS: [model: string, query: string, row: Record<string, number>][] = [
 
 /** The notebook's query cells, by cell index, and the row each must return. */
 const NOTEBOOK = "notebooks/shapes.malloynb";
-const NOTEBOOK_CELLS: [cell: number, row: Record<string, number>][] = [
-   [2, { row_count: 6, left_total: 420, right_total: 1050 }],
-   [3, { order_count: 3, amount_total: 600 }],
+const NOTEBOOK_CELLS: [query: string, row: Record<string, number>][] = [
+   ["check_diamond", { row_count: 6, left_total: 420, right_total: 1050 }],
+   ["check_nested", { order_count: 3, amount_total: 600 }],
 ];
 
 /** A query result's rows, with DuckDB's bigints as numbers. */
@@ -92,22 +92,6 @@ function rowsOf(compactResult: unknown): unknown {
    return JSON.parse(
       JSON.stringify(compactResult ?? [], (_k, v) =>
          typeof v === "bigint" ? Number(v) : v,
-      ),
-   );
-}
-
-/** A notebook cell's result (a Malloy `Result`, as JSON) as one object per row. */
-function cellRows(result: string | undefined): unknown {
-   const { schema, data } = JSON.parse(result ?? "{}") as {
-      schema?: { fields: { name: string }[] };
-      data?: { array_value: { record_value: { number_value: number }[] }[] };
-   };
-   return data?.array_value.map((record) =>
-      Object.fromEntries(
-         record.record_value.map((cell, i) => [
-            schema?.fields[i].name,
-            cell.number_value,
-         ]),
       ),
    );
 }
@@ -271,12 +255,12 @@ describe("the load-shapes fixture", () => {
    );
 
    it.each(NOTEBOOK_CELLS)(
-      "the notebook's cell %d returns its fixed answer",
-      async (cell, row) => {
+      "the notebook's cell running %s returns its fixed answer",
+      async (query, row) => {
          const ran = await pkg
             .getModel(NOTEBOOK)!
-            .executeNotebookCell(unrecordedAudit(), cell);
-         expect(cellRows(ran.result)).toEqual([row]);
+            .runQuery(unrecordedAudit(), { query: `run: ${query}` });
+         expect(rowsOf(ran.compactResult)).toEqual([row]);
       },
    );
 });

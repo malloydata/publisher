@@ -21,7 +21,7 @@ export const query = [
       default: DEFAULT_MAX_QUERY_ROWS,
       description:
          "Row cap on ad-hoc connection SQL; 0 leaves only the byte cap.",
-      notes: "Maximum rows returned per query on every query surface (`/connections/.../sqlQuery`, model query, notebook cell, MCP `executeQuery`). Forwarded to the connector / Malloy `runnable.run` as the effective row limit; queries that exceed the cap fail with HTTP 413. Set to `0` to disable. A caller-supplied `rowLimit` smaller than the cap is preserved.",
+      notes: "Maximum rows returned per query on every query surface (`/connections/.../sqlQuery`, model query, MCP `executeQuery`). Forwarded to the connector / Malloy `runnable.run` as the effective row limit; queries that exceed the cap fail with HTTP 413. Set to `0` to disable. A caller-supplied `rowLimit` smaller than the cap is preserved.",
       aliases: { env: ["PUBLISHER_MAX_QUERY_ROWS"] },
    }),
    setting({
@@ -30,7 +30,7 @@ export const query = [
       default: DEFAULT_MAX_RESPONSE_BYTES,
       description:
          "Byte cap on ad-hoc connection SQL responses; 0 leaves only the row cap.",
-      notes: "Maximum JSON-serialized response size, for ad-hoc SQL, model queries and notebook cells. Streaming-capable connections (Postgres, DuckDB) enforce mid-stream and abort the driver immediately; non-streaming connections enforce post-buffer. Exceeding the cap fails with HTTP 413. Set to `0` to disable. See the note below the table.",
+      notes: "Maximum JSON-serialized response size, for ad-hoc SQL and model queries. Streaming-capable connections (Postgres, DuckDB) enforce mid-stream and abort the driver immediately; non-streaming connections enforce post-buffer. Exceeding the cap fails with HTTP 413. Set to `0` to disable. See the note below the table.",
       defaultText: "`50000000` (50 MB)",
       aliases: { env: ["PUBLISHER_MAX_RESPONSE_BYTES"] },
    }),

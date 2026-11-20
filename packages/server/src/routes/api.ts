@@ -34,7 +34,6 @@ import {
    versionRefOf,
 } from "../route_params";
 import { processStorageDestinationsOrThrow } from "../service/connection_config";
-import { registerDeprecatedRoutes } from "./deprecated";
 import {
    apiRoute,
    legacyErrorBody,
@@ -763,8 +762,6 @@ function registerPackageRoutes(
          ),
       ),
    );
-
-   registerDeprecatedRoutes(app, apiPrefix, environmentStore, querySlots);
 }
 
 function registerQueryRoutes(

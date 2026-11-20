@@ -13,7 +13,7 @@ info:
     ## Key Features
 
     - **Discovery**: List environments, packages, and the models, notebooks, data apps, and data a package contains
-    - **Query Execution**: Run queries against models, execute notebooks a cell at a time, and compile-check Malloy without running it
+    - **Query Execution**: Run queries against models and compile-check Malloy without running it
     - **Data Apps**: In-package HTML data apps served from a package's `public/` directory
     - **Materializations**: Persist Malloy sources as tables, on a schedule or on demand
     - **Connection Management**: Configure and test warehouse connections, and browse their schemas and tables
@@ -32,7 +32,7 @@ info:
         └── Packages
             ├── Versions              published, immutable versions and `latest`
             ├── Models                query and compile
-            ├── Notebooks             execute a cell at a time
+            ├── Reports               dashboards and notebooks, run as model queries
             ├── Data Apps             static HTML data apps from public/
             ├── Databases             embedded data files
             ├── Materializations      persisted sources
@@ -71,10 +71,6 @@ tags:
       Reports - any `.malloy` file in a package carrying an artifact tag,
       wherever it lives, with a linear or grid layout - their listing,
       manifests, and cells
-  - name: notebooks
-    description: Deprecated aliases for the linear reports. Use the `reports` routes.
-  - name: dashboards
-    description: Deprecated aliases for the grid reports. Use the `reports` routes.
   - name: data-apps
     description:
       In-package HTML data apps (static pages served from a package's public/
@@ -2656,8 +2652,9 @@ paths:
         `startingGivens`, `autorun`, `givens`): its tiles run through the model
         query endpoint with `givens`, using `path` as the model. A
         `.malloynb`, the one cell format left, carries `notebook` instead: its
-        cells as get-notebook returned them, run through the deprecated
-        execute-notebook-cell.
+        cells and model. Its code cells run through the same model query
+        endpoint, using `path` as the model, where every cell compiles into one
+        model, so a cell's imports and declarations are in scope.
       parameters:
         - name: environmentName
           in: path
@@ -3274,398 +3271,6 @@ paths:
           $ref: "#/components/responses/InternalServerError"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
-
-  # ── DEPRECATED ──────────────────────────────────────────────────────────
-  # The `…/dashboards*` and `…/notebooks*` routes, kept for clients that still
-  # read them, until a later release removes them. Use `…/reports*` above.
-  # Their schemas (`Dashboard`, `DashboardManifest`, `DashboardTile`,
-  # `Notebook`, `RawNotebook`) are in the deprecated section of the schemas;
-  # no report schema references them.
-  /environments/{environmentName}/packages/{packageName}/dashboards:
-    get:
-      tags:
-        - dashboards
-      operationId: list-dashboards
-      deprecated: true
-      summary: List package dashboards (deprecated; use list-reports)
-      description: |
-        **DEPRECATED**: use list-reports, which lists every report of either
-        layout by path. This route lists the package's grid reports (see
-        list-reports for what makes a file a report and which layout it has),
-        wherever they live in the package. Two may share a `name`; their `path`
-        tells them apart. A file with no artifact tag is an ordinary model and is
-        not listed, whether or not it compiles.
-
-        **Contract change since reports.** This route used to list only
-        `.malloy` files directly under `dashboards/`, so every `name` was unique
-        and every `path` was `dashboards/<name>.malloy`. It now lists grid
-        reports from anywhere in the package (`sales/q3.malloy`,
-        `notebooks/x.malloy`, `a/b/c.malloy`), so `path` may have any depth and
-        `name` may repeat. Key on `path`.
-
-        A tagged dashboard that failed to compile is listed carrying its
-        `error` where that state can arise at all, so a broken dashboard is
-        visibly broken rather than silently absent. In practice it rarely does:
-        a package whose model fails to compile is not loaded, and a reload that
-        would break one is refused and leaves the previously loaded package
-        serving, so `error` is only reachable on the paths that keep per-model
-        placeholders. Treat it as present-but-uncommon rather than the normal
-        way a broken dashboard surfaces.
-
-        Every tagged dashboard is listed, whatever the package's surface. To
-        hide one, remove its `# artifact` tag. On a package with a surface (a
-        root `index.malloy`, or a legacy `explores`) with `queryableSources`
-        left at `"declared"`, a dashboard's tiles, its single query and its
-        filter `suggest` queries may read only sources the surface exports. A
-        source the dashboard declares on top of a surface source may be read;
-        one over a hidden source may not. The dashboard file's own
-        `export {}` and named queries add nothing to the surface. A tile over a
-        hidden source answers 404 when it runs, and the package's `warnings`
-        report each such tile, single query and suggest, with severity
-        `error`, as of the last load, naming the source and the fix. Under
-        `"all"` nothing is refused, so the situation does not arise.
-      parameters:
-        - name: environmentName
-          in: path
-          description: Name of the environment
-          required: true
-          schema:
-            $ref: "#/components/schemas/IdentifierPattern"
-        - name: packageName
-          in: path
-          description: Name of the package
-          required: true
-          schema:
-            $ref: "#/components/schemas/IdentifierPattern"
-        - $ref: "#/components/parameters/versionId"
-      responses:
-        "200":
-          description: A list of dashboards in the package
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/Dashboard"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "410":
-          $ref: "#/components/responses/Gone"
-        "500":
-          $ref: "#/components/responses/InternalServerError"
-        "503":
-          $ref: "#/components/responses/ServiceUnavailable"
-
-  /environments/{environmentName}/packages/{packageName}/dashboards/{dashboardName}:
-    get:
-      tags:
-        - dashboards
-      operationId: get-dashboard
-      deprecated: true
-      summary: Get a dashboard manifest (deprecated; use get-report)
-      description: |
-        **DEPRECATED**: use get-report, which addresses a report by its path.
-        Retrieves everything a viewer needs to render one grid report: the
-        artifact tag's declarations plus the control contract derived from the
-        givens its query references. Running it needs no further endpoint — its
-        query, each tile, and each control's suggest query all run
-        through the model query endpoint with `givens`, using the manifest's
-        `path` as the model.
-
-        `dashboardName` is a basename, which is not an identity: it resolves
-        only when exactly one grid report in the package has it. When several
-        do, the answer is 409 naming every matching path; address the report
-        by path with get-report instead.
-
-        **Contract change since reports.** This route never answered 409
-        before: a dashboard lived directly under `dashboards/`, so its name was
-        unique. A grid report may now live anywhere, two may share a basename,
-        and a client of this route must handle 409. The match also covers grid
-        reports outside `dashboards/`.
-      parameters:
-        - name: environmentName
-          in: path
-          description: Name of the environment
-          required: true
-          schema:
-            $ref: "#/components/schemas/IdentifierPattern"
-        - name: packageName
-          in: path
-          description: Name of the package
-          required: true
-          schema:
-            $ref: "#/components/schemas/IdentifierPattern"
-        - name: dashboardName
-          in: path
-          description: >-
-            The report's name: its filename basename. Conventionally letters,
-            digits, "-" and "_", and a package is warned when one of its
-            grid reports falls outside that. It is NOT constrained to it, because
-            the name comes from a filename rather than being chosen: a file such
-            as `v1.2.malloy` is served, and its published `resource`
-            carries the name percent-encoded. Send it percent-encoded.
-          required: true
-          schema:
-            type: string
-            minLength: 1
-        - $ref: "#/components/parameters/versionId"
-      responses:
-        "200":
-          description: The dashboard manifest
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/DashboardManifest"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "409":
-          description:
-            More than one grid report in the package has this basename. The
-            message names every matching path; use get-report with one.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
-        "410":
-          $ref: "#/components/responses/Gone"
-        "500":
-          $ref: "#/components/responses/InternalServerError"
-        "503":
-          $ref: "#/components/responses/ServiceUnavailable"
-
-  /environments/{environmentName}/packages/{packageName}/notebooks:
-    get:
-      tags:
-        - notebooks
-      operationId: list-notebooks
-      deprecated: true
-      summary: List package notebooks (deprecated; use list-reports)
-      description: |
-        **DEPRECATED**: use list-reports. Lists the package's linear reports (see
-        list-reports): every `.malloynb` file outside `public/`, and every tagged
-        `.malloy` report whose layout is linear, wherever it lives. Each entry
-        includes the relative path, package name, title, description, and any
-        compilation or reading error.
-
-        **Contract change since reports.** This route used to list `.malloy`
-        notebooks only directly under `notebooks/`. It now lists linear reports
-        from anywhere in the package, including `dashboards/` and nested
-        directories, and no longer lists a kindless tiled file in `notebooks/`,
-        which is now grid.
-      parameters:
-        - name: environmentName
-          in: path
-          description: Name of the environment
-          required: true
-          schema:
-            $ref: "#/components/schemas/IdentifierPattern"
-        - name: packageName
-          in: path
-          description: Name of the package
-          required: true
-          schema:
-            $ref: "#/components/schemas/IdentifierPattern"
-        - $ref: "#/components/parameters/versionId"
-      responses:
-        "200":
-          description: A list of notebooks in the package
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/Notebook"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "410":
-          $ref: "#/components/responses/Gone"
-        "500":
-          $ref: "#/components/responses/InternalServerError"
-        "503":
-          $ref: "#/components/responses/ServiceUnavailable"
-
-  /environments/{environmentName}/packages/{packageName}/notebooks/{path}:
-    get:
-      tags:
-        - notebooks
-      operationId: get-notebook
-      deprecated: true
-      summary: Get Malloy notebook cells (deprecated; use get-report)
-      description: |
-        **DEPRECATED**: use get-report. Retrieves a linear report with its raw
-        cell contents (markdown and code). A `.malloy` report's cells run
-        through the model query endpoint (each cell's `text` as the query); a
-        `.malloynb`'s through execute-notebook-cell. A linear `.malloy`
-        report, wherever it lives, answers here as well as a `.malloynb`.
-        On a package with a surface, the response shows only the sources the notebook may read.
-      parameters:
-        - name: environmentName
-          in: path
-          description: Name of the environment
-          required: true
-          schema:
-            $ref: "#/components/schemas/IdentifierPattern"
-        - name: packageName
-          in: path
-          description: Name of the package
-          required: true
-          schema:
-            type: string
-        - name: path
-          in: path
-          description: Path to notebook within the package.
-          required: true
-          schema:
-            type: string
-        - $ref: "#/components/parameters/versionId"
-      responses:
-        "200":
-          description: A Malloy notebook with raw cell contents.
-          content:
-            "application/json":
-              schema:
-                $ref: "#/components/schemas/RawNotebook"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "410":
-          $ref: "#/components/responses/Gone"
-        "500":
-          $ref: "#/components/responses/InternalServerError"
-
-  /environments/{environmentName}/packages/{packageName}/notebooks/{path}/cells/{cellIndex}:
-    get:
-      tags:
-        - notebooks
-      operationId: execute-notebook-cell
-      deprecated: true
-      summary: Execute a specific notebook cell (deprecated)
-      description: |
-        **DEPRECATED**: removed with the other notebook routes. For a `.malloy`
-        report, run a cell through the model query endpoint instead: the
-        report's path as the model, the cell's `text` (from get-report) as
-        `query`, and `givens` in the body, which applies the same surface,
-        `#(authorize)` and row-level gates. A `.malloynb` has no other route.
-        Executes a specific cell in a linear report by index.
-        For code cells, this compiles and runs the Malloy code, returning query
-        results and any new sources defined. For markdown cells, this simply
-        returns the cell content. A linear `.malloy` report, wherever it lives,
-        answers here as well as a `.malloynb`.
-
-        On a package with a surface (a root `index.malloy`, or a legacy `explores`) with
-        `queryableSources` left at `"declared"`, a code cell may read only sources the surface
-        exports. A cell over a hidden source answers 404, and 404 rather than 403 even when the
-        source is also `#(authorize)`-gated. A source an earlier cell declares on top of a
-        published source still works. A cell's own source over a raw table (`duckdb.table(...)`
-        or `.sql(...)`) has no published source under it, so it is refused. The response shows
-        only the sources the notebook may read.
-      parameters:
-        - name: environmentName
-          in: path
-          description: Name of the environment
-          required: true
-          schema:
-            $ref: "#/components/schemas/IdentifierPattern"
-        - name: packageName
-          in: path
-          description: Name of the package
-          required: true
-          schema:
-            type: string
-        - name: path
-          in: path
-          description: Path to notebook within the package
-          required: true
-          schema:
-            type: string
-        - name: cellIndex
-          in: path
-          description: Index of the cell to execute (0-based)
-          required: true
-          schema:
-            type: integer
-        - $ref: "#/components/parameters/versionId"
-        - name: filter_params
-          in: query
-          deprecated: true
-          description: |
-            **DEPRECATED**: Use `givens` (native Malloy runtime parameters) instead.
-            Targets the deprecated `#(filter)` annotation path. See docs/givens.md
-            for migration recipes.
-
-            JSON-encoded filter parameter values keyed by filter name.
-          required: false
-          schema:
-            type: string
-        - name: bypass_filters
-          in: query
-          deprecated: true
-          description: |
-            **DEPRECATED**: Use `givens` (native Malloy runtime parameters) instead.
-            See docs/givens.md for migration recipes.
-
-            When true, skip filter injection entirely.
-          required: false
-          schema:
-            type: string
-            enum:
-              - "true"
-              - "false"
-        - name: givens
-          in: query
-          description:
-            A `GivenValues` object, JSON-encoded so it can travel in a query
-            string. Values are typed as `GivenValues` describes them, not
-            string-encoded as `EncodedGivenValues` would be. The parameter keeps
-            its name for compatibility; the schema it carries is the one named
-            here.
-          required: false
-          schema:
-            type: string
-      responses:
-        "200":
-          description: Cell execution result
-          content:
-            "application/json":
-              schema:
-                $ref: "#/components/schemas/NotebookCellResult"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "410":
-          $ref: "#/components/responses/Gone"
-        "413":
-          $ref: "#/components/responses/PayloadTooLarge"
-        "500":
-          $ref: "#/components/responses/InternalServerError"
-        "424":
-          $ref: "#/components/responses/ConnectionUnavailable"
-        "502":
-          $ref: "#/components/responses/DatabaseUnreachable"
-        "503":
-          $ref: "#/components/responses/ServiceUnavailable"
-        "504":
-          $ref: "#/components/responses/GatewayTimeout"
 
   /environments/{environmentName}/packages/{packageName}/databases:
     get:
@@ -4565,9 +4170,9 @@ components:
           * The response could not be serialized at all, past the JavaScript
             engine's own limit (V8 refuses the string; JSC fails the
             allocation). No cap was necessarily exceeded here, and raising one
-            does not help. This third case applies to the model-query and
-            notebook-cell endpoints; the connection SQL endpoints have no such
-            guard and answer 500.
+            does not help. This third case applies to the model-query
+            endpoint; the connection SQL endpoints have no such guard and
+            answer 500.
         In every case, refine the query (add a LIMIT, a more selective WHERE,
         project fewer columns, or filter out wide values); retrying unchanged
         will not succeed. Raising the relevant cap is an option for the first
@@ -6126,7 +5731,39 @@ components:
                   acts on it rather than only showing it; absent for a family that
                   has none yet. `deprecated-malloynb-notebook`: a `.malloynb`
                   notebook, the deprecated cell format (one per file, `model`
-                  naming it). `deprecated-filter-annotation`: a source declaring
+                  naming it). `malloynb-cell-refused`: a `.malloynb` code cell
+                  whose `run:` statement the query route refuses for every
+                  reader in the Console, which sends no privilege and no
+                  `filterParams`, so the cell never runs there. One per cell,
+                  up to the bound below, `model` naming the notebook, severity `warn`. The message
+                  names the cell by its 1-based position among the notebook's
+                  cells, markdown cells included, and the fix. `reason` names
+                  the rule: `off_surface` is the 404 for a source the package
+                  surface does not publish, which a source the notebook
+                  declares never is on a package with a curated surface, an
+                  `index.malloy` or the deprecated `explores`; a caller with `includeHiddenFilesAndSources` still runs such a
+                  cell. `caller_annotation` is the 400 for text carrying an
+                  annotation only the model author may write, such as
+                  `#(authorize)`, comments included. `required_filter` is the
+                  400 for a source with a required `#(filter)`.
+                  `restricted_mode` is the 400 for a `sql_*` call or a direct
+                  table read. `compile_error` is the 400 for any other failure
+                  of the statement to compile on its own. A cell that only a
+                  reader's givens refuse, by `#(authorize)` or a row-level
+                  gate, is not reported. Markdown cells are not read, as the
+                  Console does not run them. A notebook lists at most 10
+                  refused cells one by one, and the package at most 50. The
+                  rest of a notebook that lists some are named by number and
+                  reason in one `malloynb-cells-unlisted` warning (`model` the
+                  notebook; `warn`). The notebooks after the package limit
+                  share one `malloynb-cells-unlisted` warning with no `model`,
+                  which counts their cells by reason and names the first 10 of
+                  them. The report lint metric still counts each refused cell
+                  under `malloynb-cell-refused`.
+                  `malloynb-cell-check-failed`: a notebook whose cell check
+                  could not run, so a refused cell of it may have no warning;
+                  the cause is in the server log (one per notebook, `warn`).
+                  `deprecated-filter-annotation`: a source declaring
                   deprecated `#(filter)` annotations (one per declaring source,
                   `model` naming its file and `subject` the source).
                   `deprecated-preaggregate-annotation`: a measure declaring
@@ -6140,10 +5777,7 @@ components:
                   container; still read, in that container under the readable
                   name (one per measure and container, `subject`
                   `<base>.<measure>`; `warn`).
-                  `report-name-ambiguous`: two or more grid reports share a
-                  basename, so the deprecated `GET …/dashboards/{name}` route
-                  answers 409 for it (one per name, `subject` naming it and the
-                  message every path; `warn`). `classification-coverage`: a
+                  `classification-coverage`: a
                   published source with a dimension or measure that carries no
                   `#(classification)` while some field in the package does (one
                   per source, `model` naming its file and `subject` the source;
@@ -6392,15 +6026,16 @@ components:
               reason:
                 type: string
                 description: >-
-                  The bounded cause of a materialization finding, so a client
-                  branches on it rather than on the message (whose wording may
-                  change): the refusal record's `reason` on a `*-not-built`
-                  warning; the served copy's reason on
+                  The bounded cause of a finding, so a client branches on it
+                  rather than on the message (whose wording may change): the
+                  refusal record's `reason` on a `*-not-built` warning; the served copy's reason on
                   `served-copy-not-served`; the unread reason on
                   `database-table-unread`; the kept table's reason on
                   `table-kept`; the serve verdict's reason on a
                   `materialization-*` verdict warning; `storage_mode` on
-                  `materialization-storage-mode`. Always snake_case. An open
+                  `materialization-storage-mode`; the rule a cell breaks on
+                  `malloynb-cell-refused` (`off_surface`, `caller_annotation`,
+                  `required_filter`, `restricted_mode`, `compile_error`). Always snake_case. An open
                   string; absent on a finding that has none.
               severity:
                 type: string
@@ -6422,8 +6057,7 @@ components:
                   findings use both: `error` for something that cannot work as
                   written, such as a tile naming a view the source does not
                   have, and `warn` for something that works but not as the
-                  author probably intended, such as a dashboard name outside
-                  the conventional shape. The two findings about Publisher rather than about
+                  author probably intended. The two findings about Publisher rather than about
                   the package split across both: a file that carries an artifact
                   tag and could not be read is `error`, because the dashboard it
                   should have produced does not exist, and a lint that stopped
@@ -7322,9 +6956,10 @@ components:
               allOf:
                 - $ref: "#/components/schemas/ReportCells"
               description: >-
-                For a `.malloynb`: its cells and model, each cell run with
-                execute-notebook-cell. Absent on a `.malloy` report, and on a
-                `.malloynb` that failed to compile.
+                For a `.malloynb`: its cells and model, each code cell run
+                through `POST …/models/{path}/query` with `givens`, using the
+                report's `path` as the model. Absent on a `.malloy` report, and
+                on a `.malloynb` that failed to compile.
 
     ReportTile:
       type: object
@@ -7446,8 +7081,9 @@ components:
     ReportCells:
       type: object
       description: >-
-        A `.malloynb`, or a linear `.malloy` report read as cells (its
-        definitions, then its tiles): its cells, unexecuted, and its model.
+        A `.malloynb` read as cells: its cells, unexecuted, and its model.
+        `GET …/reports/{path}` serves it for a `.malloynb` only; a `.malloy`
+        report carries its manifest instead.
       properties:
         type:
           type: string
@@ -7462,11 +7098,11 @@ components:
         format:
           type: string
           enum: ["malloynb", "malloy"]
-          description:
-            The file format the notebook is written in. `malloynb` is the
-            cell-separated format; `malloy` is a linear `.malloy` report (see
-            list-reports), wherever it lives, whose cells are
-            its statements and its floating `(markdown)` notes in file order.
+          description: >-
+            The file format the notebook is written in. Always `malloynb`, the
+            cell-separated format. `malloy`, a linear `.malloy` report read
+            statement by statement, is no longer returned: no route serves a
+            `.malloy` report as cells.
         malloyVersion:
           type: string
           description: Version of the Malloy compiler used to generate the notebook data
@@ -7481,30 +7117,23 @@ components:
         annotations:
           type: array
           description:
-            Array of file-level (##) annotations attached to the notebook. For
-            a `.malloy` notebook, every own note that is not a floating
-            `(markdown)` cell, in file order, each note once. A `"` or `(text)`
-            note below the `## artifact` tag is dropped and not listed.
+            Array of file-level (##) annotations attached to the notebook.
           items:
             type: string
         startingGivens:
           allOf:
             - $ref: "#/components/schemas/EncodedGivenValues"
           description:
-            Starting values for the notebook's controls. A `.malloy` notebook
-            declares them in its artifact tag (`## artifact { givens { … } }`),
-            a `.malloynb` in its file-level tags (`## givens { … }`). URL
-            parameters override these, which is why the two share a shape.
-            Omitted when the notebook declares none.
+            Starting values for the notebook's controls, from its file-level
+            tags (`## givens { … }`). URL parameters override these. Omitted
+            when the notebook declares none.
         autorun:
           type: boolean
           description:
             False batches control changes behind an Apply button instead of
-            re-running on every change. Defaults to true. A `.malloy` notebook
-            reads it from its artifact tag (`## artifact { autorun=false }`), a
-            `.malloynb` from its file-level tags (`## autorun=false`). The same
-            flag, with the same default, that `DashboardManifest.autorun`
-            carries.
+            re-running on every change. Defaults to true. Read from the
+            notebook's file-level tags (`## autorun=false`). The same flag, with
+            the same default, that `DashboardManifest.autorun` carries.
         sources:
           type: array
           description: Sources defined in the notebook's model
@@ -7567,84 +7196,8 @@ components:
             content-driven app, which keeps content-height auto-sizing.
 
     # ── DEPRECATED ────────────────────────────────────────────────────────
-    # The shapes of the deprecated `…/dashboards*` and `…/notebooks*` routes.
+    # The shapes the compile response's `manifest` still answers in.
     # No report schema references them; each removal deletes its block here.
-
-    Notebook:
-      type: object
-      deprecated: true
-      description: DEPRECATED, use `Report`. A linear report as the deprecated
-        list-notebooks route lists it.
-      properties:
-        environmentName:
-          type: string
-          description: Name of the environment containing this notebook
-        packageName:
-          type: string
-          description: Name of the package containing this notebook
-        path:
-          type: string
-          description: Relative path to the notebook file within its package directory
-        title:
-          type: string
-          description:
-            Human title. For a `.malloynb`, resolved from its own `## title="…"`,
-            then its `#"` doc comment, then its first markdown heading. For a
-            `.malloy` notebook, from the `title` in its `## artifact` tag, then
-            the first line of the `"` notes above that tag, then its first
-            markdown heading when no prose precedes it. Absent when none of
-            those resolve, leaving the caller to show the path.
-        description:
-          type: string
-          description:
-            The notebook's doc comment, when it has one. For a `.malloy`
-            notebook that is the `"` notes above the `## artifact` line; prose
-            below it is a `##(markdown)` or `##|(markdown)` cell.
-        error:
-          type: string
-          description: Error message if the notebook failed to compile or load
-
-    Dashboard:
-      type: object
-      deprecated: true
-      description: |
-        DEPRECATED: use `Report`. A grid report (see list-reports), as the
-        deprecated list-dashboards route lists it. The list entry; see
-        DashboardManifest for the detail a viewer needs to render one.
-      properties:
-        resource:
-          type: string
-          description: Resource path to the dashboard
-        packageName:
-          type: string
-          description: Name of the package containing this dashboard
-        name:
-          type: string
-          description: >-
-            The report's filename basename: a display label, and the segment of
-            the deprecated get-dashboard URL. Not an identity: two reports may
-            share it. A change since reports: it used to be unique within the
-            package (every dashboard was directly under `dashboards/`), and a
-            client that keyed a map on it must key on `path` instead.
-        path:
-          type: string
-          description:
-            Relative path to the report file within its package directory,
-            which is its identity
-        title:
-          type: string
-          description:
-            Human title from the artifact tag, falling back to the file's `#"`
-            doc comment and then to the slug
-        description:
-          type: string
-          description: >-
-            The file's unnamed `"` notes above the `## artifact` tag; when it
-            has none there, the ones below it (a legacy spot the lint flags). For
-            a dashboard whose tag sits on one query, that query's `#"` notes.
-        error:
-          type: string
-          description: Error message if the dashboard file failed to compile
 
     DashboardManifest:
       type: object
@@ -7666,11 +7219,11 @@ components:
         name:
           type: string
           description: >-
-            The report's filename basename: a display label, and the segment of
-            the deprecated get-dashboard URL. Not an identity: two reports may
-            share it. A change since reports: it used to be unique within the
-            package (every dashboard was directly under `dashboards/`), and a
-            client that keyed a map on it must key on `path` instead.
+            The report's filename basename: a display label. Not an identity:
+            two reports may share it. A change since reports: it used to be
+            unique within the package (every dashboard was directly under
+            `dashboards/`), and a client that keyed a map on it must key on
+            `path` instead.
         path:
           type: string
           description: |
@@ -7706,10 +7259,7 @@ components:
           deprecated: true
           description: >-
             DEPRECATED: read `layout`. The same thing in the old vocabulary:
-            `dashboard` for a grid report, `notebook` for a linear one. Always
-            `dashboard` on `GET …/dashboards/{dashboardName}`; a linear
-            report's manifest is the `dashboard` field of
-            `GET …/notebooks/{path}`.
+            `dashboard` for a grid report, `notebook` for a linear one.
         tiles:
           type: array
           description: >-
@@ -7772,29 +7322,10 @@ components:
     DashboardTile:
       deprecated: true
       description: >-
-        DEPRECATED: `ReportTile`, under the name the deprecated dashboard
+        DEPRECATED: `ReportTile`, under the name the removed dashboard
         routes gave it.
       allOf:
         - $ref: "#/components/schemas/ReportTile"
-
-    RawNotebook:
-      deprecated: true
-      description: >-
-        DEPRECATED: `ReportCells`, as get-notebook answers them, plus the tile
-        layout of a linear report written as tiles.
-      allOf:
-        - $ref: "#/components/schemas/ReportCells"
-        - type: object
-          properties:
-            dashboard:
-              allOf:
-                - $ref: "#/components/schemas/DashboardManifest"
-              description: >-
-                The tile layout of a linear report written as one (`## artifact {
-                layout=linear tiles=[…] }`), in the shape a dashboard has, with
-                `layout` `linear` and one column. Absent on a `.malloynb`. Its tiles run through the model query endpoint at
-                `modelPath`; `notebookCells` carries the same content as cells for
-                readers that do not draw a layout.
 
     CompiledModel:
       type: object
@@ -8474,7 +8005,7 @@ components:
         The role it names: a surface's URL parameters and the starting values a
         document declares share this shape, so the two can merge and then be
         decoded once against the declarations and sent as `GivenValues`.
-        `RawNotebook.startingGivens` and `DashboardManifest.startingGivens` are
+        `ReportCells.startingGivens` and `DashboardManifest.startingGivens` are
         both typed as it and both populated, so this schema now describes live
         traffic rather than only the contract. A `filter<…>` value is unwrapped
         to its body and every other type is published as declared, keyed on the
@@ -8706,17 +8237,21 @@ components:
         kind:
           type: string
           enum: ["markdown", "query", "definition"]
-          description:
-            What a cell is, on a `.malloy` notebook. A definition cell
-            (`source:`, `import`, `query:`, `given:`, `type:`, `export`) has type `code`
-            and produces no result. Absent on a `.malloynb`.
+          description: >-
+            What a cell is, on a cell of a compiled document
+            (`CompileResult.document.cells`), where every cell is a definition:
+            a `source:`, `import`, `query:`, `given:`, `type:` or `export`
+            statement, with type `code`, that produces no result. Absent on a
+            `.malloynb`'s cells. `markdown` and `query` are no longer returned:
+            they marked a linear `.malloy` report's prose and query cells, which
+            no route serves as cells now.
         text:
           type: string
           description: Text contents of the notebook cell (either markdown or Malloy code)
         markdown:
           type: string
           description:
-            On a `.malloy` notebook's code cell, the prose written on the
+            On a compiled document's code cell, the prose written on the
             `(markdown)` route in its own tag lines (`#(markdown) text` lines,
             `#|(markdown)` … `|#` blocks), which `text` still contains. Blocks
             join with a blank line, adjacent lines with a newline. Author
@@ -8725,8 +8260,8 @@ components:
         proseLines:
           type: array
           description:
-            Present on every code cell of a `.malloy` notebook, and absent on
-            a `.malloynb` or from a server that predates it. The lines of
+            Present on every code cell of a compiled document, and absent on
+            a `.malloynb`'s cells or from a server that predates it. The lines of
             `text` that hold `markdown`, as `[start, end]` pairs in file order;
             `[]` when the cell has none. Lines are 0-based and inclusive,
             counted on `text` split at `\n`. Strip exactly these lines to get
@@ -8747,7 +8282,7 @@ components:
         codeLine:
           type: integer
           description:
-            Present on every code cell of a `.malloy` notebook, as `proseLines`
+            Present on every code cell of a compiled document, as `proseLines`
             is. The 0-based line of `text` (split at `\n`) where the
             statement's code starts, its first token that is neither a note nor
             a comment, so the `source`, `run`, `given` or `import` keyword sits
@@ -8755,7 +8290,7 @@ components:
         caption:
           type: string
           description:
-            On a `.malloy` notebook's code cell, the joined text of its leading
+            On a compiled document's code cell, the joined text of its leading
             `#"` lines (space-joined, trimmed). Author prose, so it is served
             even when `queryInfo` is withheld. Absent when the cell has none,
             which is authoritative wherever `proseLines` is present.
@@ -8772,52 +8307,21 @@ components:
             JSON string containing QueryInfo object for the query in this cell
             (if the cell contains a query). On a package with a surface, left out
             for a cell whose query reads a source the notebook may not read.
-
-    NotebookCellResult:
-      type: object
-      description: Result of executing a notebook cell
-      properties:
-        type:
+        runQuery:
           type: string
-          enum: ["markdown", "code"]
-          description: Type of notebook cell
-        kind:
-          type: string
-          enum: ["markdown", "query", "definition"]
-          description: The cell's kind, on a `.malloy` notebook. Absent on a `.malloynb`.
-        text:
-          type: string
-          description: Text contents of the notebook cell
-        markdown:
-          type: string
-          description:
-            A `.malloy` notebook code cell's own `(markdown)` prose, as on
-            `NotebookCell`. Absent when the cell has none.
-        proseLines:
-          type: array
-          description: The lines of `text` that hold `markdown`, as on `NotebookCell`; `[]` when none.
-          items:
-            type: array
-            minItems: 2
-            maxItems: 2
-            items:
-              type: integer
-        codeLine:
-          type: integer
-          description: The line of `text` where the statement's code starts, as on `NotebookCell`.
-        caption:
-          type: string
-          description: The cell's leading `#"` caption, as on `NotebookCell`. Absent when the cell has none.
-        result:
-          type: string
-          description: JSON string containing the execution result for this cell
-        newSources:
-          type: array
-          description:
-            Array of JSON strings containing SourceInfo objects made available
-            in this cell
-          items:
-            type: string
+          description: >-
+            On a `.malloynb` code cell, the text to send as `query` to
+            `POST …/models/{path}/query`, with the notebook's own path as the
+            model, to run the cell. It is the cell's last top-level `run:`
+            statement, up to the next top-level statement or `;`, with the
+            render tags written above it: the `#` lines and `#|` … `|#` blocks
+            between the statement before it and the `run:`, and any comment
+            among them. A `##` line or `##|` block, the notebook's own, ends
+            them. The cell's imports and declarations are left out, since the
+            notebook's path compiles every cell. Read by Publisher's own lexer,
+            so a `run:` in a comment, a string or a block annotation does not
+            count. Absent on a markdown cell, on a code cell with no `run:`, on
+            a compiled document's cells, and from a server that predates it.
 
     QueryMetadata:
       type: object
@@ -10630,9 +10134,15 @@ components:
             reload over every .malloy and .malloynb file, without swapping the
             result into the served package; with a source, importers compile
             against the replacement. It also reports the render-tag findings
-            (code "render-tag") and the dashboard, given and drill findings
-            (code "dashboard-lint") a reload would put on the package's
-            warnings, at their own severity and with no position, and the
+            (code "render-tag"), the dashboard, given and drill findings
+            (code "dashboard-lint") and each .malloynb code cell the query
+            route would refuse (code "malloynb-cell-refused", at most 10 per
+            notebook and 50 per package, with the rest named in
+            "malloynb-cells-unlisted" summaries, one per notebook that lists
+            some and one for the notebooks past the package limit, and
+            "malloynb-cell-check-failed" for a notebook that could not be
+            checked) a reload would put on the package's warnings, at their own severity and with no
+            position, and the
             load's verdict on the materialization annotations: each line a
             load fails with as an error with its code, each annotation the
             load leaves unbuilt as a warning ("file" reports the same verdict
@@ -12875,9 +12385,8 @@ components:
         true }`, which is for authoring servers. Without it the argument is not
         in the tool's schema and is ignored if sent, so an agent answering
         questions stays on the curated surface.
-        This route is not affected by that setting. The notebook-cell route, the dashboards
-        route, the other MCP tools, and the legacy `/projects/...` aliases of
-        these routes ignore it.
+        This route is not affected by that setting. The other MCP tools and the
+        legacy `/projects/...` aliases of these routes ignore it.
 
         Like every route on this server, it is unauthenticated. A deployment
         that authenticates in front of Publisher decides who may send it, and

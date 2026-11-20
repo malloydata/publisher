@@ -6,17 +6,15 @@
 /**
  * Linear `.malloy` reports through the real server: a file written as `run:`
  * cells, the retired format, is no report and says why; a report written as
- * tiles serves its manifest, runs each tile through `POST …/models/{path}/query`,
- * and reads as cells (its definitions, then its tiles) on the deprecated
- * notebook routes; and, on a package with a surface, each tile takes the same
- * governed path a `.malloynb` cell runs through.
+ * tiles serves its manifest and runs each tile through
+ * `POST …/models/{path}/query`; and, on a package with a surface, each tile
+ * takes the same governed path a `.malloynb` cell runs through.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import path from "path";
 import { resetAuthorizeGuardTelemetryForTesting } from "../../../src/authorize_metrics";
-import { resetNotebookMetricsForTest } from "../../../src/notebook_metrics";
 import { resetReportMetricsForTest } from "../../../src/report_metrics";
 import {
    startMetricsHarness,
@@ -85,11 +83,13 @@ describe("Linear .malloy reports through the real server (E2E)", () => {
       const res = await fetch(url);
       return { status: res.status, body: (await res.json()) as T };
    };
-   /** A report's cells, off the deprecated `GET …/notebooks/{path}`. */
-   const getCells = (pkg: string, report: string) =>
-      getJson<{ format?: string; modelInfo?: string; notebookCells?: Cell[] }>(
-         pkgUrl(pkg, `/notebooks/${report}`),
-      );
+   /** A `.malloynb`'s cells, off `GET …/reports/{path}`. */
+   const getCells = async (pkg: string, report: string) => {
+      const { status, body } = await getJson<{
+         notebook?: { modelInfo?: string; notebookCells?: Cell[] };
+      }>(pkgUrl(pkg, `/reports/${report}`));
+      return { status, body: body.notebook ?? {} };
+   };
    /** A report's tiles, off `GET …/reports/{path}`. */
    const tilesOf = async (pkg: string, report: string) =>
       (
@@ -117,27 +117,6 @@ describe("Linear .malloy reports through the real server (E2E)", () => {
          body: (await res.json()) as { result?: string },
       };
    };
-   /** The deprecated per-cell route, by the cell's text. */
-   const runCellRoute = async (
-      pkg: string,
-      report: string,
-      text: string,
-      params: {
-         givens?: Record<string, unknown>;
-         filterParams?: Record<string, unknown>;
-      } = {},
-   ) => {
-      const cells = (await getCells(pkg, report)).body.notebookCells ?? [];
-      const index = cells.findIndex((cell) => cell.text === text);
-      if (index < 0) throw new Error(`${pkg}/${report} has no cell ${text}`);
-      const query = new URLSearchParams();
-      if (params.givens) query.set("givens", JSON.stringify(params.givens));
-      if (params.filterParams)
-         query.set("filter_params", JSON.stringify(params.filterParams));
-      return getJson<Cell & { message?: string }>(
-         pkgUrl(pkg, `/notebooks/${report}/cells/${index}?${query}`),
-      );
-   };
    const compile = async (
       pkg: string,
       modelPath: string,
@@ -161,7 +140,6 @@ describe("Linear .malloy reports through the real server (E2E)", () => {
             // replaced, and before the packages load, so their discovery counts.
             beforeCreate: async () => {
                harness = await startMetricsHarness();
-               resetNotebookMetricsForTest();
                resetReportMetricsForTest();
                resetAuthorizeGuardTelemetryForTesting();
             },
@@ -171,7 +149,6 @@ describe("Linear .malloy reports through the real server (E2E)", () => {
 
    afterAll(async () => {
       await env?.stop();
-      resetNotebookMetricsForTest();
       resetReportMetricsForTest();
       await harness?.shutdown();
    });
@@ -289,62 +266,13 @@ describe("Linear .malloy reports through the real server (E2E)", () => {
          expect(status).toBe(200);
          expect(rowsOf(body.result)).toEqual([{ order_count: 6 }]);
       });
-
-      // DEPRECATED FEATURE COVERAGE — delete together with
-      // the `…/notebooks` routes (see RELEASE_NOTES deprecations).
-      describe("deprecated: the …/notebooks routes", () => {
-         it("reads it as its definitions, then its tiles", async () => {
-            const { status, body } = await getCells(PLAIN, LAYOUT);
-            expect(status).toBe(200);
-            expect(body.format).toBe("malloy");
-            expect(body.notebookCells?.map((cell) => cell.kind)).toEqual([
-               "definition",
-               "definition",
-               "markdown",
-               "query",
-               "query",
-            ]);
-         });
-
-         it("answers a definition cell with its text and kind and no result", async () => {
-            const { status, body } = await runCellRoute(
-               PLAIN,
-               LAYOUT,
-               'import "../models/orders.malloy"',
-            );
-            expect(status).toBe(200);
-            expect(body).toMatchObject({ type: "code", kind: "definition" });
-            expect(body.result).toBeUndefined();
-         });
-
-         it("runs a tile cell", async () => {
-            const { status, body } = await runCellRoute(
-               PLAIN,
-               LAYOUT,
-               "run: orders_tiles -> headline",
-            );
-            expect(status).toBe(200);
-            expect(rowsOf(body.result)).toEqual([{ order_count: 6 }]);
-         });
-      });
    });
 
    describe("a package with a surface", () => {
-      it("describes only the named queries over readable sources in the notebook GET's model info", async () => {
-         const { status, body } = await getCells(SURFACE, CELLS);
-         expect(status).toBe(200);
-         expect(body.modelInfo ?? "").not.toContain("secret_total");
-         const info = JSON.parse(body.modelInfo ?? "{}") as {
-            entries?: { name?: string }[];
-         };
-         // `hidden_q` reads the hidden source, so only `own_cells_query` is described.
-         expect(info.entries?.map((e) => e.name)).toEqual(["own_cells_query"]);
-      });
-
       // DEPRECATED FEATURE COVERAGE — delete together with
       // `.malloynb` notebooks (see RELEASE_NOTES deprecations).
       describe("deprecated: .malloynb notebooks", () => {
-         it("applies the cells' surface filter to a .malloynb GET's model info", async () => {
+         it("applies the cells' surface filter to a .malloynb's model info on the report GET", async () => {
             const columns = async (notebook: string) => {
                const { status, body } = await getCells(SURFACE, notebook);
                expect(status).toBe(200);
@@ -391,16 +319,20 @@ describe("Linear .malloy reports through the real server (E2E)", () => {
       // DEPRECATED FEATURE COVERAGE — delete together with
       // `#(filter)` / `filter_params` (see RELEASE_NOTES deprecations).
       describe("deprecated: #(filter)", () => {
-         it("rebuilds a tile cell with the source's #(filter) values", async () => {
-            const text = "run: filtered -> { aggregate: n }";
-            const unfiltered = await runCellRoute(SURFACE, CELLS, text);
-            expect(unfiltered.status).toBe(200);
-            expect(rowsOf(unfiltered.body.result)).toEqual([{ n: 6 }]);
-            const filtered = await runCellRoute(SURFACE, CELLS, text, {
-               filterParams: { region: "EU" },
-            });
-            expect(filtered.status).toBe(200);
-            expect(rowsOf(filtered.body.result)).toEqual([{ n: 3 }]);
+         it("rebuilds a tile's query with the source's #(filter) values", async () => {
+            const run = async (filterParams?: Record<string, unknown>) => {
+               const res = await env.query(
+                  CELLS,
+                  { query: "run: filtered -> { aggregate: n }", filterParams },
+                  SURFACE,
+               );
+               expect(res.status).toBe(200);
+               return rowsOf(
+                  ((await res.json()) as { result?: string }).result,
+               );
+            };
+            expect(await run()).toEqual([{ n: 6 }]);
+            expect(await run({ region: "EU" })).toEqual([{ n: 3 }]);
          });
       });
 
@@ -421,18 +353,8 @@ describe("Linear .malloy reports through the real server (E2E)", () => {
          expect(res.status).toBe(404);
       });
 
-      it("refuses a tile naming its own query over a hidden source, and withholds its queryInfo", async () => {
+      it("refuses a tile naming its own query over a hidden source", async () => {
          expect((await runTile(SURFACE, CELLS, 5)).status).toBe(404);
-         const cells =
-            (await getCells(SURFACE, CELLS)).body.notebookCells ?? [];
-         const hidden = cells.find((cell) => cell.text === "run: hidden_q");
-         expect(hidden?.kind).toBe("query");
-         expect(hidden?.queryInfo).toBeUndefined();
-         // Positive control: the tile over a curated source keeps its queryInfo.
-         const open = cells.find(
-            (cell) => cell.text === "run: orders -> { aggregate: order_count }",
-         );
-         expect(open?.queryInfo).toBeDefined();
       });
 
       it("answers 403 on a locked tile's query without the role, and runs it with the role", async () => {
@@ -456,33 +378,6 @@ describe("Linear .malloy reports through the real server (E2E)", () => {
          expect(allowed.status).toBe(200);
          expect(rowsOf(allowed.body.result)).toEqual([{ n: 6 }]);
          expect((await denied()) - before).toBe(2);
-      });
-
-      // DEPRECATED FEATURE COVERAGE — delete together with
-      // the `…/notebooks` routes (see RELEASE_NOTES deprecations).
-      describe("deprecated: the …/notebooks routes", () => {
-         it("answers 403 on a locked tile cell without the role, and runs it with the role", async () => {
-            const text = "run: locked -> { aggregate: n }";
-            expect((await runCellRoute(SURFACE, CELLS, text)).status).toBe(403);
-            expect(
-               (
-                  await runCellRoute(SURFACE, CELLS, text, {
-                     givens: { ROLES: ["viewer"] },
-                  })
-               ).status,
-            ).toBe(403);
-            const allowed = await runCellRoute(SURFACE, CELLS, text, {
-               givens: { ROLES: ["admin"] },
-            });
-            expect(allowed.status).toBe(200);
-            expect(rowsOf(allowed.body.result)).toEqual([{ n: 6 }]);
-            expect(
-               await harness.collectCounter(
-                  "publisher_notebook_cell_executions_total",
-                  { format: "malloy", kind: "query", outcome: "denied" },
-               ),
-            ).toBeGreaterThanOrEqual(2);
-         });
       });
    });
 });

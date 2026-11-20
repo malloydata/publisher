@@ -164,12 +164,15 @@ import {
    JOIN_BYPASS,
    joinBypasses,
 } from "./join_bypass";
-import {
-   ambiguousDashboardNameWarnings,
-   type ReportViewPackage,
-} from "./legacy_report_views";
+import { type ReportViewPackage } from "./legacy_report_views";
 import { recordDeprecatedManifestKeys } from "./deprecated/manifest_keys";
-import { isMalloynbPath } from "./deprecated/malloynb";
+import {
+   isMalloynbPath,
+   listMalloynbCellFindings,
+   MALLOYNB_CELL_CHECK_FAILED,
+   MALLOYNB_CELL_REFUSED,
+   MALLOYNB_CELLS_LISTED,
+} from "./deprecated/malloynb";
 import {
    EXPLORES_IMPORTER,
    exploresSurfaceFiles,
@@ -181,7 +184,6 @@ import {
    buildReportManifest,
    dropGridTileLayoutFindings,
    factsReportTag,
-   matchesDocumentedReportName,
    lintReport,
    lintDrillTargets,
    lintGivenTags,
@@ -230,7 +232,7 @@ type ApiDatabase = components["schemas"]["Database"];
 type ApiModel = components["schemas"]["Model"];
 type ApiReport = components["schemas"]["Report"];
 type ApiReportManifest = components["schemas"]["ReportManifest"];
-type ApiRawNotebook = components["schemas"]["RawNotebook"];
+type ApiReportCells = components["schemas"]["ReportCells"];
 
 /** One report discovery found and serves, keyed by its path. */
 interface ServedReport {
@@ -482,6 +484,8 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    /** The annotations the entities extraction left out, as warnings. */
    private entitiesWarnings: ApiPackageWarning[] = [];
    private reportWarnings: ApiPackageWarning[] = [];
+   /** Refused `.malloynb` cells the last lint named only in a summary warning. */
+   private malloynbCellsUnlisted = 0;
    /** Linear reports whose cells the reader refused; set with the reports. */
    private readerWarnings: ApiPackageWarning[] = [];
    // Every served report keyed by path, in path order, computed per load (the
@@ -2191,7 +2195,6 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          ...this.classificationWarningsMemoized(),
          ...this.joinBypassWarnings(),
          ...this.gateLoadWarnings(),
-         ...ambiguousDashboardNameWarnings(this),
          // The 404s a broken surface causes name models that are not broken.
          ...this.brokenSurfaceWarnings(),
          ...(this.surfaceWidenedWarning !== undefined
@@ -3332,7 +3335,14 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             status,
             layout: report?.layout,
          })),
-         findings,
+         [
+            ...findings,
+            // Each refused cell counts once, listed or only named in a summary.
+            ...Array.from({ length: this.malloynbCellsUnlisted }, () => ({
+               code: MALLOYNB_CELL_REFUSED,
+               severity: "warn",
+            })),
+         ],
       );
       recordReportDiscovery(summary);
       logger.info("Report discovery", {
@@ -3569,9 +3579,9 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    }
 
    /**
-    * Read each linear report's definition cells, for the deprecated notebook
-    * route. A reader refusal is returned as a finding, since the model still
-    * compiles and nothing else would say so.
+    * Read each linear report's definition cells. A reader refusal is returned
+    * as a finding, since the model still compiles and nothing else would say
+    * so.
     */
    private attachNotebookCells(
       models: ReadonlyMap<string, Model>,
@@ -3612,6 +3622,153 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    }
 
    /**
+    * How a surface refusal is explained, and its fix, under the surface this
+    * package declares: `index.malloy`, or the deprecated `explores`. `source`
+    * is absent when the refusal would not name it (a gated model).
+    */
+   private surfaceFix(): {
+      unexported: string;
+      fixFor: (source: string | undefined) => string;
+   } {
+      return this.surfaceIsIndexModel()
+         ? {
+              unexported: `which ${INDEX_MODEL_NAME} doesn't export`,
+              fixFor: (source: string | undefined) =>
+                 `Fix: add ${source ?? "the source it reads"} to the ` +
+                 `export { ... } in ${INDEX_MODEL_NAME}.`,
+           }
+         : exploresSurfaceFix(this.packageMetadata.explores, (entry) =>
+              this.isServedReport(entry),
+           );
+   }
+
+   /**
+    * DEPRECATED (`.malloynb` only; deleted with the format). One finding per
+    * `.malloynb` code cell the query route refuses for every reader in the
+    * Console ({@link Model.malloynbCellRefusals}, which runs the route's own
+    * checks), since a cell's errors otherwise show only when a reader opens
+    * it. A cell only a reader's givens refuse (`#(authorize)`, a row-level
+    * gate) is not reported. One yielder spans every notebook, so the event
+    * loop gets a turn between cells. A notebook whose check throws gets one
+    * finding saying so, and the other notebooks and lints are unaffected.
+    * The findings are bounded by {@link listMalloynbCellFindings}, and the
+    * cells it names only in a summary are kept in
+    * {@link malloynbCellsUnlisted} so the lint metric counts every one.
+    */
+   private async lintMalloynbCells(): Promise<ApiPackageWarning[]> {
+      const findings: ApiPackageWarning[] = [];
+      const curated = this.queryBoundaryActive();
+      const { unexported, fixFor } = this.surfaceFix();
+      const home = !curated
+         ? "a source the notebook declares"
+         : this.surfaceIsIndexModel()
+           ? `a model file that ${INDEX_MODEL_NAME} exports`
+           : "a source the package surface publishes";
+      const restrictedFix =
+         `Fix: declare the table, or a dimension over the sql_* ` +
+         `expression, in ${home}, and run that source.`;
+      const yielder = createEventLoopYielder();
+      const notebooks: {
+         model: string;
+         refusals: { cell: number; finding: ApiPackageWarning }[];
+      }[] = [];
+      for (const [modelPath, model] of this.models) {
+         if (!isMalloynbPath(modelPath)) continue;
+         let refusals: Awaited<ReturnType<Model["malloynbCellRefusals"]>>;
+         try {
+            refusals = await model.malloynbCellRefusals(yielder);
+         } catch (err) {
+            logger.warn(".malloynb cell check failed", {
+               packageName: this.packageName,
+               modelPath,
+               error: errMessage(err),
+            });
+            findings.push({
+               model: modelPath,
+               code: MALLOYNB_CELL_CHECK_FAILED,
+               severity: "warn",
+               message:
+                  `The .malloynb cell check could not run for ${modelPath}, ` +
+                  `so a cell the query route refuses may have no warning ` +
+                  `here. An operator can find the cause in the server log ` +
+                  `under ".malloynb cell check failed".`,
+            });
+            continue;
+         }
+         const cells: { cell: number; finding: ApiPackageWarning }[] = [];
+         for (const refusal of refusals) {
+            const { source, problem } = refusal;
+            let why: string;
+            if (refusal.reason === "off_surface") {
+               if (problem) {
+                  why =
+                     `the package surface refuses it (404), and restricted ` +
+                     `mode refuses it too: ${problem} ${restrictedFix}`;
+               } else if (source === undefined) {
+                  why =
+                     `it reads a source the package surface does not ` +
+                     `publish, or one the notebook declares (404). ` +
+                     `${fixFor(undefined).replace(/\.$/, "")}, declaring ` +
+                     `it in a model file first if the notebook declares it.`;
+               } else if (refusal.via) {
+                  why =
+                     `it runs the query ${refusal.via}, and ${refusal.via} ` +
+                     `reads ${source}, ${unexported} (404). ${fixFor(source)}`;
+               } else if (refusal.declared) {
+                  why =
+                     `it reads ${source}, a source the notebook declares, and ` +
+                     `the query route takes only a source the package ` +
+                     `surface publishes (404). Declare ${source} in a model ` +
+                     `file instead. ${fixFor(source)}`;
+               } else {
+                  why = `it reads ${source}, ${unexported} (404). ${fixFor(source)}`;
+               }
+            } else if (refusal.reason === "caller_annotation") {
+               why =
+                  `the query route refuses query text that carries an ` +
+                  `annotation only the model author may write (400): ` +
+                  `${problem} Fix: remove the annotation, or the text that ` +
+                  `spells it, from the cell's run: statement, comments ` +
+                  `included.`;
+            } else if (refusal.reason === "required_filter") {
+               why =
+                  `the source it runs declares a required #(filter), and the ` +
+                  `Console sends no filter value for a notebook cell (400): ` +
+                  `${problem}. Fix: move the filter to a given: declaration, ` +
+                  `as docs/givens.md#coming-from-filter describes.`;
+            } else if (refusal.reason === "restricted_mode") {
+               why =
+                  `the query route runs its run: statement in restricted ` +
+                  `mode, which refuses it (400): ${problem} ${restrictedFix}`;
+            } else {
+               why =
+                  `its run: statement does not compile on its own (400): ` +
+                  `${problem}`;
+            }
+            cells.push({
+               cell: refusal.cell,
+               finding: {
+                  model: modelPath,
+                  code: MALLOYNB_CELL_REFUSED,
+                  reason: refusal.reason,
+                  severity: "warn",
+                  message:
+                     `Cell ${refusal.cell} of ${modelPath} won't run for any ` +
+                     `reader in the Console: ${why}`,
+               },
+            });
+         }
+         notebooks.push({ model: modelPath, refusals: cells });
+      }
+      const { warnings, unlisted } = listMalloynbCellFindings(
+         notebooks,
+         MALLOYNB_CELLS_LISTED,
+      );
+      this.malloynbCellsUnlisted = unlisted;
+      return [...findings, ...warnings];
+   }
+
+   /**
     * One finding per tile or filter suggest the query route will refuse as
     * off-surface (/compile is exempt, so nothing else would say so). Uses the
     * query route's own check ({@link Model.surfaceRefusal}), so they cannot
@@ -3623,17 +3780,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    ): Promise<ApiPackageWarning[]> {
       const model = this.models.get(modelPath);
       if (!model || !this.queryBoundaryActive()) return [];
-      // `source` is absent when the refusal would not name it (a gated model).
-      const { unexported, fixFor } = this.surfaceIsIndexModel()
-         ? {
-              unexported: `which ${INDEX_MODEL_NAME} doesn't export`,
-              fixFor: (source: string | undefined) =>
-                 `Fix: add ${source ?? "the source it reads"} to the ` +
-                 `export { ... } in ${INDEX_MODEL_NAME}.`,
-           }
-         : exploresSurfaceFix(this.packageMetadata.explores, (entry) =>
-              this.isServedReport(entry),
-           );
+      const { unexported, fixFor } = this.surfaceFix();
       const checks: {
          request: { queryName?: string; query?: string };
          describe: (source: string) => string;
@@ -3692,6 +3839,8 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       discovery: ReportDiscovery,
       textLint: boolean,
    ): Promise<ApiPackageWarning[]> {
+      // Set again by the cell check; a pass that stops before it names none.
+      this.malloynbCellsUnlisted = 0;
       const warnings: ApiPackageWarning[] = [];
       const files = Array.from(discovery.files).filter(([modelPath]) =>
          modelPath.endsWith(MODEL_FILE_SUFFIX),
@@ -3709,24 +3858,6 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
                   `that path. The cause is in the server log. Reload the ` +
                   `package to try again.`,
                severity: "error",
-            });
-         }
-         for (const [modelPath, { report, name }] of files) {
-            // Served and only noted: the by-name route still works, encoded.
-            if (report?.layout !== "grid" || matchesDocumentedReportName(name))
-               continue;
-            warnings.push({
-               model: modelPath,
-               subject: name,
-               message:
-                  `is served, but "${name}" is outside the conventional ` +
-                  `dashboard name shape (letters, digits, "-" and "_"). This ` +
-                  `server routes it and its published URL carries the name ` +
-                  `encoded, so the dashboard works. The convention is worth ` +
-                  `keeping anyway: a name outside it has to be percent-encoded ` +
-                  `by every caller that builds the URL by hand. Rename the ` +
-                  `file if that matters to yours.`,
-               severity: "warn",
             });
          }
          for (const finding of this.curationWarnings(discovery)) {
@@ -3794,6 +3925,8 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          for (const finding of lintGivenTags(drillFacts)) {
             warnings.push(finding);
          }
+         // Last, and isolated per notebook: a throw there costs no other finding.
+         warnings.push(...(await this.lintMalloynbCells()));
       } catch (err) {
          logger.warn("Report lint failed", {
             packageName: this.packageName,
@@ -3804,8 +3937,8 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          warnings.push({
             message:
                `Report lint stopped early, so this list is incomplete: an ` +
-               `unknown subset of the tile, report, drill, given and curation ` +
-               `checks did not run. Treat a missing ` +
+               `unknown subset of the tile, report, drill, given, curation ` +
+               `and .malloynb cell checks did not run. Treat a missing ` +
                `finding of any of those kinds as unknown rather than clean. ` +
                `Reload the package to run the lint again. The ` +
                `reports themselves are unaffected, because they are ` +
@@ -3980,7 +4113,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       if (!report) return undefined;
       const entry = this.reportEntry(report);
       const manifest = report.manifest;
-      let notebook: ApiRawNotebook | undefined;
+      let notebook: ApiReportCells | undefined;
       if (
          !manifest &&
          report.layout === "linear" &&
