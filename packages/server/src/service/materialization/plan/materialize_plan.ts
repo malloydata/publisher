@@ -411,14 +411,14 @@ function storableDimension(field: FieldLike): string | undefined {
 }
 
 /**
- * Whether a compiled field is a public array its table can hold as it is: a
+ * Whether a compiled field is an array its table can hold as it is: a
  * persisted query's `nest:` (a repeated record) or an array column the source
  * reads, neither computed. A declared `join_many:` is the joined source's
- * type, never `array`, so it is not one. A hidden array is not stored.
+ * type, never `array`, so it is not one. A hidden array is a candidate, as a
+ * hidden dimension is, marked with its `access` by {@link materializeColumns}.
  */
 function storableArray(field: FieldLike): string | undefined {
    if (field.type !== "array" || field.e !== undefined) return undefined;
-   if (hiddenAccess(field)) return undefined;
    const dimension =
       typeof field.as === "string"
          ? field.as
@@ -464,7 +464,13 @@ export function materializeColumns(
       const field = raw as FieldLike;
       const nested = storableArray(field);
       if (nested !== undefined) {
-         out.push({ dimension: nested, column: nested, computed: false });
+         const access = hiddenAccess(field);
+         out.push({
+            dimension: nested,
+            column: nested,
+            computed: false,
+            ...(access ? { access } : {}),
+         });
          continue;
       }
       const dimension = storableDimension(field);

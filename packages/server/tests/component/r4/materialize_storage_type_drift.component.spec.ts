@@ -270,8 +270,14 @@ ${tier.model("drift_m", "amt.sum()", "drift_m_t")}`,
 
       it("a source whose own measure reads a left-out column is not re-rooted", async () => {
          const problems = await fixture.servedCopyProblems();
+         // Named, with its declared and stored types (F-07).
          expect(problems).toEqual([
-            { sourceName: "drift_m", reason: "column_types" },
+            {
+               sourceName: "drift_m",
+               reason: "column_types",
+               detail:
+                  "column `amt` (declared `number`, stored as VARCHAR) has no declaration that reads it back as live answers it",
+            },
          ]);
       });
 

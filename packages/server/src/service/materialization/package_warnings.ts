@@ -938,7 +938,11 @@ function servedCopyProblemReasonMessage(
       case "cross_connection_unbuilt":
          return "This model's served copy re-roots a source onto its storage destination, which moves a join of it across connections, and the join cannot be left out; the copy compiles once both sides are built into one destination, and serves live until then.";
       case "column_types":
-         return "This source's stored column types differ from the types the model declares, or one cannot be declared on its table, so the served copy leaves it as written and it answers live.";
+         return (
+            "This source's stored column types differ from the types the model declares, or one cannot be declared on its table, so the served copy leaves it as written and it answers live" +
+            // The columns, named with their declared and stored types.
+            (problem.detail ? `: ${problem.detail}.` : ".")
+         );
       case "no_declaration":
          return "This source's declaration was not found in the compiled model, so the served copy leaves it as written and it answers live.";
       case "definition_not_parsed":
