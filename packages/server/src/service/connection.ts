@@ -3107,8 +3107,9 @@ class DuckLakeConnection extends DuckDBConnection {
     * expired credential meanwhile: the statement gate hands the connection to
     * the next statement as soon as one fails, so a second can fail before the
     * first's renewal has run, and it must wait for that renewal, not give up.
+    * Resolves to whether the renewal succeeded; it never rejects.
     */
-   private storageSecretRenewal?: Promise<void>;
+   private storageSecretRenewal?: Promise<boolean>;
    /**
     * How many renewals have completed. A statement that started before the
     * latest one completed ran on the old credential, so it runs again on the
@@ -3199,7 +3200,10 @@ class DuckLakeConnection extends DuckDBConnection {
     * A renewal already in flight is joined rather than started again, and
     * one that completed since the statement started (`renewalsBefore`) is
     * taken as done, so statements failing together share one renewal and each
-    * runs once more.
+    * runs once more. A renewal that fails (an STS outage) is logged once and
+    * answers false to every statement sharing it, so each throws its own
+    * expired-credential error, the storage refusal the caller is told of,
+    * rather than the renewer's.
     */
    private async renewedStorageSecretAfter(
       error: unknown,
@@ -3228,9 +3232,25 @@ class DuckLakeConnection extends DuckDBConnection {
          );
          const renewal = renewingStorageSecretOf
             .run(this, renew)
-            .then(() => {
-               this.storageSecretRenewals++;
-            })
+            .then(
+               () => {
+                  this.storageSecretRenewals++;
+                  return true;
+               },
+               (renewalError: unknown) => {
+                  logger.warn(
+                     "Object-storage credential renewal failed; answering the expired credential's refusal",
+                     {
+                        connection: this.connectionName,
+                        error:
+                           renewalError instanceof Error
+                              ? renewalError.message
+                              : String(renewalError),
+                     },
+                  );
+                  return false;
+               },
+            )
             .finally(() => {
                if (this.storageSecretRenewal === renewal) {
                   this.storageSecretRenewal = undefined;
@@ -3238,8 +3258,9 @@ class DuckLakeConnection extends DuckDBConnection {
             });
          this.storageSecretRenewal = renewal;
       }
-      await this.storageSecretRenewal;
-      return true;
+      // None in flight: one completed since the statement started, so its
+      // credential is already fresh.
+      return (await this.storageSecretRenewal) ?? true;
    }
 
    /**

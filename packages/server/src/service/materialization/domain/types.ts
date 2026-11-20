@@ -138,6 +138,14 @@ export interface FreshnessAwareManifestEntry {
     */
    leftOutColumns?: string[];
    /**
+    * Set when the snapshot is built: the plan stores this table as of its
+    * build (`PackagePlan.asOfBuild`), so read admission declines an access
+    * decision over it. A database persisted view's or query's table has no
+    * serve binding to carry `Binding.asOfBuild`, only this entry. Internal,
+    * never on the wire.
+    */
+   asOfBuild?: boolean;
+   /**
     * The connection the physical table lives on, carried from the run
     * manifest so the bind step can quote `tableName` for that connection's
     * dialect (see Package.quoteBoundTableNames). Absent on entries whose

@@ -19,6 +19,8 @@ import { join } from "path";
 import sinon from "sinon";
 
 import { ConnectionController } from "../../src/controller/connection.controller";
+import { StorageAccessDeniedError } from "../../src/errors";
+import { logger } from "../../src/logger";
 import { buildEnvironmentMalloyConfig } from "../../src/service/connection";
 import type { ConnectionAdmin } from "../../src/service/environment_ports";
 import {
@@ -35,6 +37,7 @@ function controllerOver(env: Env): ConnectionController {
    const fakeEnv = {
       assertCanAdmitQuery: () => undefined,
       getApiConnection: () => ({ name: "credible", type: "duckdb" }),
+      isConfiguredStorageUrl: () => true,
    };
    const controller = new ConnectionController(
       fakeOf<ConnectionAdmin>({
@@ -162,5 +165,60 @@ describe("raw SQL on a DuckLake destination", () => {
       expect(answers).toEqual([{ rows: [{ x: 1 }] }, { rows: [{ x: 1 }] }]);
       expect(renew.callCount).toBe(1);
       expect(refused).toBe(2);
+   });
+
+   it("answers both requests the storage refusal when the renewal they share fails", async () => {
+      stubDuckLake({});
+      env = buildEnvironmentMalloyConfig([DESTINATION], root, false, {
+         origin: "storage-destination",
+      });
+      const controller = controllerOver(env);
+      const connection = (await env.malloyConfig.connections.lookupConnection(
+         "credible",
+      )) as DuckDBConnection & {
+         setStorageSecretRenewer(renew: () => Promise<void>): void;
+      };
+      // The renewal fails (STS unreachable), after both requests have met the
+      // expired credential, so the second waits on the first's renewal.
+      let refused = 0;
+      let bothRefused!: () => void;
+      const refusedTwice = new Promise<void>((r) => (bothRefused = r));
+      const renew = sinon.fake(async () => {
+         await refusedTwice;
+         // Past the second request's refusal reaching the renewal it joins.
+         await new Promise((r) => setTimeout(r, 20));
+         throw new Error("STS: Could not connect to sts.amazonaws.com");
+      });
+      connection.setStorageSecretRenewer(renew);
+      const warn = sinon.spy(logger, "warn");
+      const native = (
+         connection as unknown as {
+            connection: { stream(sql: string): Promise<unknown> };
+         }
+      ).connection;
+      sinon.stub(native, "stream").callsFake(async () => {
+         if (++refused === 2) bothRefused();
+         throw new Error(
+            "HTTP Error: HTTP GET error on 's3://lake/data/t.parquet' (HTTP 403) ExpiredToken: The provided token has expired.",
+         );
+      });
+
+      const answers = await Promise.all([
+         sqlQuery(controller, "SELECT 1 AS x"),
+         sqlQuery(controller, "SELECT 1 AS x"),
+      ]);
+      for (const { error } of answers) {
+         expect(error).toBeInstanceOf(StorageAccessDeniedError);
+         expect(String(error)).toContain("ExpiredToken");
+      }
+      expect(renew.callCount).toBe(1);
+      expect(refused).toBe(2);
+      expect(
+         warn
+            .getCalls()
+            .filter((c) =>
+               String(c.args[0]).includes("credential renewal failed"),
+            ),
+      ).toHaveLength(1);
    });
 });

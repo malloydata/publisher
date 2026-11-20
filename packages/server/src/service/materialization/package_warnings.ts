@@ -890,7 +890,38 @@ function nativeSchemaMissingMessage(n: NativeSchemaNotice): string {
  * A caller-safe sentence for why a served copy leaves a source unserved. The
  * compiler's own message stays in the logs: it can name the destination alias.
  */
+/**
+ * A dropped storage table's problem, said of the source the database table
+ * now serves: the reason, then that the served copy reads its database table
+ * instead of leaving the source as written.
+ */
+function fellBackMessage(message: string): string {
+   const instead = "the served copy reads its database table instead.";
+   const at = message.search(/[Tt]he served copy leaves /);
+   if (at < 0)
+      return `${message} ${instead[0].toUpperCase()}${instead.slice(1)}`;
+   const head = message.slice(0, at);
+   return head.endsWith(". ") || head === ""
+      ? `${head}${instead[0].toUpperCase()}${instead.slice(1)}`
+      : `${head}${instead}`;
+}
+
 function servedCopyProblemMessage(
+   problem: ServedCopyProblem,
+   inlinedButKept = false,
+   takesInline = true,
+): string {
+   const message = servedCopyProblemReasonMessage(
+      problem,
+      inlinedButKept,
+      takesInline,
+   );
+   // A storage table the served copy dropped for a source it then
+   // re-rooted on its database table: the reason, said of that table.
+   return problem.servedFromDatabase ? fellBackMessage(message) : message;
+}
+
+function servedCopyProblemReasonMessage(
    problem: ServedCopyProblem,
    inlinedButKept = false,
    /** Whether the source's declaration takes `inline=` (a `#(materialize)` one). */

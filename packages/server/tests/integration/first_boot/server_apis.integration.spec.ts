@@ -10,22 +10,11 @@
 
 import { afterEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "fs";
-import { createServer } from "net";
 import { tmpdir } from "os";
 import { join } from "path";
+import { getFreePort as freePort } from "../../harness/spawn_server";
 
 const SERVER_ENTRY = join(import.meta.dir, "../../../src/server.ts");
-
-async function freePort(): Promise<number> {
-   return new Promise((resolve, reject) => {
-      const probe = createServer();
-      probe.once("error", reject);
-      probe.listen(0, "127.0.0.1", () => {
-         const { port } = probe.address() as { port: number };
-         probe.close(() => resolve(port));
-      });
-   });
-}
 
 async function answers(url: string): Promise<number | null> {
    try {
