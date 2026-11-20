@@ -81,6 +81,13 @@ import { selfAssignTableName, STAGING_ID_LEN } from "./build_table_names";
 import { hasAuthorTableName } from "./table_ownership";
 
 /**
+ * The per-package connection Publisher creates for every package: an
+ * in-memory DuckDB sandbox (connection_config.ts reserves the name), so
+ * nothing built in it survives a restart.
+ */
+const PACKAGE_SANDBOX = "duckdb";
+
+/**
  * Whose tables an auto-run names (see deriveSelfInstructions). Absent: the
  * names as written, as only a test seam asks for.
  */
@@ -827,6 +834,13 @@ export function deriveSelfInstructions(
     * still marked as this package's (see uncarryUnownedTables).
     */
    recheck: Record<string, BuildInstruction>;
+   /**
+    * Carried tables in the package's own `duckdb` sandbox, by content
+    * address, with the instruction that rebuilds each: the sandbox is in
+    * memory, so a restart empties it while the run record survives. Carried
+    * only while the table still exists (see uncarryLostTables).
+    */
+   confirmExists: Record<string, BuildInstruction>;
    /** Tables this run builds under a new name in place of an earlier run's. */
    renamed: RenamedTable[];
 } {
@@ -834,6 +848,7 @@ export function deriveSelfInstructions(
    const instructions: BuildInstruction[] = [];
    const carried: Record<string, ManifestEntry> = {};
    const recheck: Record<string, BuildInstruction> = {};
+   const confirmExists: Record<string, BuildInstruction> = {};
    const renamed: RenamedTable[] = [];
    const { sources, refused, refusals, cleared } = gateSources(
       compiled,
@@ -948,6 +963,10 @@ export function deriveSelfInstructions(
          if (named && prior!.physicalTableName === logicalName) {
             recheck[sourceEntityId] = instruction;
          }
+         // The package's in-memory sandbox loses every table on a restart.
+         if (!destination && prior!.connectionName === PACKAGE_SANDBOX) {
+            confirmExists[sourceEntityId] = instruction;
+         }
          continue;
       }
 
@@ -990,6 +1009,7 @@ export function deriveSelfInstructions(
       refused,
       cleared,
       recheck,
+      confirmExists,
       renamed: notWrittenThisRun(renamed, instructions, carried, sources),
    };
 }

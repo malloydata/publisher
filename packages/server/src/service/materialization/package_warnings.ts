@@ -782,12 +782,14 @@ export function persistencePolicyWarnings(
 ): string[] {
    const warnings: string[] = [];
    const sources = plan?.sources ? Object.values(plan.sources) : [];
+   // Present, not truthy: an empty string is a schedule that never fires,
+   // so it must reach the cron rule rather than skip every rule.
    const packageSchedule = metadata.materialization?.schedule ?? null;
    const packageFreshness = metadata.materialization?.freshness ?? null;
    const scope = metadata.scope ?? "package";
 
    // A package-level cron is legal only with scope: version.
-   if (packageSchedule && scope !== "version") {
+   if (packageSchedule !== null && scope !== "version") {
       warnings.push(
          `materialization.schedule (cron) in ${PACKAGE_MANIFEST_NAME} requires ` +
             `"scope": "version": a package-scoped lineage is reused across ` +
@@ -797,7 +799,7 @@ export function persistencePolicyWarnings(
    }
 
    // Schedule and freshness are mutually exclusive.
-   if (packageSchedule) {
+   if (packageSchedule !== null) {
       const freshnessDeclared =
          !!(
             packageFreshness &&
@@ -814,7 +816,10 @@ export function persistencePolicyWarnings(
 
    // A valid 5-field cron, here so publish, PATCH, load and the scheduler all
    // apply one rule and a bad cron cannot silently never arm.
-   if (packageSchedule && !new CronEvaluator().isValid(packageSchedule)) {
+   if (
+      packageSchedule !== null &&
+      !new CronEvaluator().isValid(packageSchedule)
+   ) {
       warnings.push(
          `materialization.schedule in ${PACKAGE_MANIFEST_NAME} is not a valid ` +
             `5-field UNIX cron: ${JSON.stringify(packageSchedule)}. Use ` +

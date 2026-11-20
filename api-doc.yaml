@@ -8917,9 +8917,11 @@ components:
             database `#(materialize)` table the served copy read, or a
             database rollup or persisted view.
 
-            `live_fallback` — the query DID route to storage and the store then
-            failed underneath it, and the source's freshness fallback allowed it
-            to degrade to the live warehouse. **The rows are correct and the
+            `live_fallback` — the query DID route to a stored table (a
+            `storage=` table, a database table the served copy reads, or a
+            rollup on either tier) and that read then failed underneath it, and
+            the source's freshness fallback allowed it to degrade to the live
+            warehouse (a rollup's always does). **The rows are correct and the
             request succeeded**, which is why this needs its own value: it is
             indistinguishable from a storage hit at the call site, and treating it
             as one would report a healthy hit rate for a broken store. On
