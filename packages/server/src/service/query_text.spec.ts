@@ -146,6 +146,18 @@ describe("service/query_text", () => {
                undefined,
             ],
             ["", undefined],
+            [
+               'run: a -> { where: note = """run: b -> v"""; select: * }',
+               'run: a -> { where: note = """run: b -> v"""; select: * }',
+            ],
+            [
+               "run: `my source` -> { aggregate: n is count() }",
+               "run: `my source` -> { aggregate: n is count() }",
+            ],
+            [
+               "# bar_chart\n# size=large\nrun: s -> v\n",
+               "# bar_chart\n# size=large\nrun: s -> v",
+            ],
          ];
          for (const [cell, query] of cases) {
             expect(lastRunStatementText(cell)).toBe(query);

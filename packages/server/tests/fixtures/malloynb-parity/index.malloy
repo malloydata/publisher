@@ -1,5 +1,6 @@
 import "models/orders.malloy"
 import "models/secured.malloy"
 import "models/sql_dims.malloy"
+import "models/filtered.malloy"
 
-export { orders, gated, locked, orders_sql }
+export { orders, gated, locked, orders_sql, filtered }

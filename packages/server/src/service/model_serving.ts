@@ -792,27 +792,26 @@ export class ModelServing {
    ): Promise<void> {
       const { sourceName, queryName, query } = ctx.request;
       if (!sourceName && !queryName && query && answer.leg === "live") {
-         const compileError = await compileErrorOf(prepared.liveRunnable);
-         if (compileError && !isGivenBindingFailure(compileError)) {
-            if (admitted.boundary === "deferred") {
-               const refusal = this.host.unqueryableTextRefusal(
-                  query,
-                  compileError,
-               );
-               if (refusal) throw refusal;
-            }
-            queryExecutionHistogram().record(
-               performance.now() - ctx.startTime,
-               this.queryMetricAttributes({
-                  environment: ctx.request.queryMetadataInput?.environment,
-                  queryName,
-                  sourceName,
-                  status: "error",
-                  servedFrom: servedFromOf(answer),
-               }),
-            );
-            throw queryCompileError(compileError, query);
-         }
+         const settled = await settledCompileError(
+            prepared.liveRunnable,
+            query,
+            admitted.boundary,
+            (text, compileError) =>
+               this.host.unqueryableTextRefusal(text, compileError),
+         );
+         if (!settled) return;
+         if (settled.offSurface) throw settled.refusal;
+         queryExecutionHistogram().record(
+            performance.now() - ctx.startTime,
+            this.queryMetricAttributes({
+               environment: ctx.request.queryMetadataInput?.environment,
+               queryName,
+               sourceName,
+               status: "error",
+               servedFrom: servedFromOf(answer),
+            }),
+         );
+         throw settled.refusal;
       }
    }
 
@@ -1317,6 +1316,42 @@ export class ModelServing {
 /** The pinned build manifest, or undefined when nothing database is bound. */
 function pinnedManifest(pinned: Pinned): BuildManifest | undefined {
    return pinned.hasEntries ? pinned.compilerManifest : undefined;
+}
+
+/**
+ * How ad-hoc caller `query`, compiled as `runnable`, is answered when it does
+ * not compile: the boundary's 404 when the boundary deferred and a source the
+ * text names is not queryable (`offSurface`), otherwise the compiler's
+ * problems as a 400. Undefined when it compiles, or when the failure is an
+ * unbound given, which the run path answers. The query route's settling
+ * (`ModelServing.settleCompileError`), shared with the load-time `.malloynb`
+ * cell check (`Model.consoleCellRefusal`) so the two cannot settle apart.
+ */
+export async function settledCompileError(
+   runnable: { getPreparedQuery(): Promise<unknown> },
+   query: string,
+   boundary: "cleared" | "deferred",
+   unqueryableTextRefusal: (
+      query: string,
+      compileError: MalloyError,
+   ) => Error | undefined,
+): Promise<
+   | { refusal: Error; compileError: MalloyError; offSurface: boolean }
+   | undefined
+> {
+   const compileError = await compileErrorOf(runnable);
+   if (!compileError || isGivenBindingFailure(compileError)) return undefined;
+   const unqueryable =
+      boundary === "deferred"
+         ? unqueryableTextRefusal(query, compileError)
+         : undefined;
+   return unqueryable
+      ? { refusal: unqueryable, compileError, offSurface: true }
+      : {
+           refusal: queryCompileError(compileError, query),
+           compileError,
+           offSurface: false,
+        };
 }
 
 /**

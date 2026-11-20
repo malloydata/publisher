@@ -5731,7 +5731,39 @@ components:
                   acts on it rather than only showing it; absent for a family that
                   has none yet. `deprecated-malloynb-notebook`: a `.malloynb`
                   notebook, the deprecated cell format (one per file, `model`
-                  naming it). `deprecated-filter-annotation`: a source declaring
+                  naming it). `malloynb-cell-refused`: a `.malloynb` code cell
+                  whose `run:` statement the query route refuses for every
+                  reader in the Console, which sends no privilege and no
+                  `filterParams`, so the cell never runs there. One per cell,
+                  up to the bound below, `model` naming the notebook, severity `warn`. The message
+                  names the cell by its 1-based position among the notebook's
+                  cells, markdown cells included, and the fix. `reason` names
+                  the rule: `off_surface` is the 404 for a source the package
+                  surface does not publish, which a source the notebook
+                  declares never is on a package with a curated surface, an
+                  `index.malloy` or the deprecated `explores`; a caller with `includeHiddenFilesAndSources` still runs such a
+                  cell. `caller_annotation` is the 400 for text carrying an
+                  annotation only the model author may write, such as
+                  `#(authorize)`, comments included. `required_filter` is the
+                  400 for a source with a required `#(filter)`.
+                  `restricted_mode` is the 400 for a `sql_*` call or a direct
+                  table read. `compile_error` is the 400 for any other failure
+                  of the statement to compile on its own. A cell that only a
+                  reader's givens refuse, by `#(authorize)` or a row-level
+                  gate, is not reported. Markdown cells are not read, as the
+                  Console does not run them. A notebook lists at most 10
+                  refused cells one by one, and the package at most 50. The
+                  rest of a notebook that lists some are named by number and
+                  reason in one `malloynb-cells-unlisted` warning (`model` the
+                  notebook; `warn`). The notebooks after the package limit
+                  share one `malloynb-cells-unlisted` warning with no `model`,
+                  which counts their cells by reason and names the first 10 of
+                  them. The report lint metric still counts each refused cell
+                  under `malloynb-cell-refused`.
+                  `malloynb-cell-check-failed`: a notebook whose cell check
+                  could not run, so a refused cell of it may have no warning;
+                  the cause is in the server log (one per notebook, `warn`).
+                  `deprecated-filter-annotation`: a source declaring
                   deprecated `#(filter)` annotations (one per declaring source,
                   `model` naming its file and `subject` the source).
                   `deprecated-preaggregate-annotation`: a measure declaring
@@ -5994,15 +6026,16 @@ components:
               reason:
                 type: string
                 description: >-
-                  The bounded cause of a materialization finding, so a client
-                  branches on it rather than on the message (whose wording may
-                  change): the refusal record's `reason` on a `*-not-built`
-                  warning; the served copy's reason on
+                  The bounded cause of a finding, so a client branches on it
+                  rather than on the message (whose wording may change): the
+                  refusal record's `reason` on a `*-not-built` warning; the served copy's reason on
                   `served-copy-not-served`; the unread reason on
                   `database-table-unread`; the kept table's reason on
                   `table-kept`; the serve verdict's reason on a
                   `materialization-*` verdict warning; `storage_mode` on
-                  `materialization-storage-mode`. Always snake_case. An open
+                  `materialization-storage-mode`; the rule a cell breaks on
+                  `malloynb-cell-refused` (`off_surface`, `caller_annotation`,
+                  `required_filter`, `restricted_mode`, `compile_error`). Always snake_case. An open
                   string; absent on a finding that has none.
               severity:
                 type: string
@@ -10101,9 +10134,15 @@ components:
             reload over every .malloy and .malloynb file, without swapping the
             result into the served package; with a source, importers compile
             against the replacement. It also reports the render-tag findings
-            (code "render-tag") and the dashboard, given and drill findings
-            (code "dashboard-lint") a reload would put on the package's
-            warnings, at their own severity and with no position, and the
+            (code "render-tag"), the dashboard, given and drill findings
+            (code "dashboard-lint") and each .malloynb code cell the query
+            route would refuse (code "malloynb-cell-refused", at most 10 per
+            notebook and 50 per package, with the rest named in
+            "malloynb-cells-unlisted" summaries, one per notebook that lists
+            some and one for the notebooks past the package limit, and
+            "malloynb-cell-check-failed" for a notebook that could not be
+            checked) a reload would put on the package's warnings, at their own severity and with no
+            position, and the
             load's verdict on the materialization annotations: each line a
             load fails with as an error with its code, each annotation the
             load leaves unbuilt as a warning ("file" reports the same verdict

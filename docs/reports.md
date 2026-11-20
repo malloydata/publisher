@@ -529,6 +529,31 @@ and export it from `index.malloy`. A join written in a cell's `run:` is the call
 target is, as [authorize.md](authorize.md#the-entry-point-and-only-the-entry-point) describes. To keep a
 join the author's, declare it in a source in a model file.
 
+Two more shapes are refused for every reader. A `run:` whose text carries an annotation only the model
+author may write, such as `#(authorize)` or `#(classification)`, answers `400`, even when the annotation
+is only spelled in a comment beside the `run:`; remove it from the cell. A `run:` over a source with a
+required `#(filter)` answers `400`, because the Console sends no filter value for a notebook cell; move
+the filter to a `given:` declaration, as [Coming from `#(filter)`](givens.md#coming-from-filter)
+describes. A `run:` that fails to compile on its own for any
+other reason answers `400` with the compiler's message; fix the statement so it compiles alone.
+
+Each code cell the query route would refuse for every reader in the Console is a package warning when
+the package loads, code `malloynb-cell-refused`, so these show in the package warnings and the Console
+before a reader opens the notebook. The warning names the notebook, the cell by its position counting
+markdown cells, the rule as `reason` and the fix. The rules are `off_surface`, `caller_annotation` for
+an annotation only the model author may write, such as `#(authorize)` in a comment beside the `run:`,
+`required_filter` for a required `#(filter)`, which the Console never fills, `restricted_mode`, and
+`compile_error` for any other compile failure of the `run:` statement on its own. It runs the query
+route's checks, in the route's order, on the text the Console sends, and a test holds the two together
+for every cell of a fixture package. Markdown cells are not read, since the Console does not run them. A
+cell that only a reader's givens refuse, by `#(authorize)` or a row-level gate, gets no warning, and a
+caller sending `includeHiddenFilesAndSources` still runs an `off_surface` cell. A notebook lists at most
+10 refused cells one by one and a package at most 50. The rest of a notebook that lists some are named
+by number and reason in one `malloynb-cells-unlisted` warning for that notebook. The notebooks after the
+package limit share one `malloynb-cells-unlisted` warning with no `model`, which counts their cells by
+reason and names the first 10 of them, so the number of warnings stays bounded however many notebooks
+there are.
+
 ## Filter controls
 
 Controls are the `given:` declarations the tiles reference. **Declare them in the report file**: it is the

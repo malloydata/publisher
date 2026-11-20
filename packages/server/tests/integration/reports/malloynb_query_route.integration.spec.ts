@@ -18,7 +18,8 @@
  * join the cell's query writes, and the restricted mode every query's text
  * runs in. It also pins that the
  * notebook read lists a source with its schema only where that path may
- * query it.
+ * query it, and that the load warns about exactly the cells that path
+ * refuses for every reader.
  */
 
 import { rm } from "fs/promises";
@@ -28,6 +29,7 @@ import {
    fixture,
    lf,
    startPackageEnv,
+   warningsByCode,
    type PackageEnv,
 } from "../../harness/reports";
 
@@ -449,5 +451,141 @@ describe(".malloynb cells through the query route (E2E)", () => {
             ["US", 3],
          ],
       });
+   });
+
+   it("warns at load about each cell the query route refuses for every reader, and only those", async () => {
+      // Every gate the fixture declares, satisfied, sent to a notebook that
+      // declares them: an unknown given is itself a 400.
+      const allGates: Record<string, unknown> = {
+         ROLES: ["admin"],
+         GROUPS: [1, 2],
+      };
+      const notebooks = [
+         "authorize.malloynb",
+         "caller_join.malloynb",
+         "import_cell.malloynb",
+         "later_given.malloynb",
+         "raw_sql.malloynb",
+         "render_tags.malloynb",
+         "restricted.malloynb",
+         "route_text.malloynb",
+         "row_level.malloynb",
+         "surface.malloynb",
+      ];
+      const seen = { warned: 0, clean: 0 };
+      const disagreements: unknown[] = [];
+      for (const pkg of [CURATED, OPEN]) {
+         const warned = new Map(
+            warningsByCode(
+               await env.warnings(pkg),
+               "malloynb-cell-refused",
+            ).map((w) => [
+               `${w.model} ${/^Cell (\d+) /.exec(w.message ?? "")?.[1]}`,
+               w,
+            ]),
+         );
+         for (const nb of notebooks) {
+            const cells = await cellsOf(pkg, nb);
+            // secured.malloy declares both gate givens; no other file declares one.
+            const gates = cells.some((c) => c.text.includes("secured.malloy"))
+               ? allGates
+               : {};
+            for (let i = 0; i < cells.length; i++) {
+               // The Console runs code cells only (the SDK's `cellRuns`), and
+               // sends a cell's served `runQuery`.
+               if (cells[i].type !== "code") continue;
+               if (cells[i].runQuery === undefined) continue;
+               const warning = warned.get(`notebooks/${nb} ${i + 1}`);
+               const answered = await run(pkg, nb, i, gates);
+               const status = "rows" in answered ? 200 : answered.refused;
+               const expected =
+                  warning === undefined
+                     ? 200
+                     : warning.reason === "off_surface"
+                       ? 404
+                       : 400;
+               if (status !== expected) {
+                  disagreements.push({
+                     pkg,
+                     nb,
+                     cell: i + 1,
+                     warning,
+                     answered,
+                  });
+               }
+               // With no givens, a gate may answer 403 first; never a 200
+               // for a cell warned about, never a 400 or 404 for one not.
+               const bare = await run(pkg, nb, i);
+               const bareStatus = "rows" in bare ? 200 : bare.refused;
+               if (
+                  warning === undefined
+                     ? bareStatus === 400 || bareStatus === 404
+                     : bareStatus !== expected && bareStatus !== 403
+               ) {
+                  disagreements.push({ pkg, nb, cell: i + 1, warning, bare });
+               }
+               if (warning) seen.warned++;
+               else seen.clean++;
+            }
+         }
+      }
+      expect(disagreements).toEqual([]);
+      // Both outcomes were exercised, on both packages.
+      expect(seen.warned).toBe(29);
+      expect(seen.clean).toBeGreaterThan(15);
+   });
+
+   it("the warning is for a reader in the Console: an editor's surface lift still runs an off-surface cell", async () => {
+      const lifted = async (nb: string, i: number) => {
+         const query = (await cellsOf(CURATED, nb))[i].runQuery;
+         const res = await env.post(
+            env.api(
+               `/models/notebooks/${nb}/query?includeHiddenFilesAndSources=true`,
+               CURATED,
+            ),
+            { query },
+         );
+         return outcomeOf(res.status, await res.json());
+      };
+      const warnings = warningsByCode(
+         await env.warnings(CURATED),
+         "malloynb-cell-refused",
+      );
+      // Every message says whom the refusal is for.
+      for (const w of warnings) {
+         expect(w.message).toContain(
+            "won't run for any reader in the Console:",
+         );
+      }
+      const warned = warnings.map((w) => [
+         w.model,
+         w.reason,
+         /^Cell (\d+) /.exec(w.message ?? "")?.[1],
+      ]);
+      expect(warned).toContainEqual([
+         "notebooks/surface.malloynb",
+         "off_surface",
+         "6",
+      ]);
+      expect(warned).toContainEqual([
+         "notebooks/restricted.malloynb",
+         "restricted_mode",
+         "4",
+      ]);
+      // Cell 6 of surface.malloynb (index 5) runs with the lift; restricted
+      // mode still refuses cell 4 of restricted.malloynb (index 3).
+      expect(await lifted("surface.malloynb", 5)).toEqual({ rows: [[4]] });
+      expect(refusal(await lifted("restricted.malloynb", 3))?.refused).toBe(
+         400,
+      );
+   });
+
+   it("keeps a cell's queryInfo back where the route refuses its text before reading its joins", async () => {
+      // Cell 6 of route_text.malloynb carries an `#(authorize)` spelling in a
+      // comment beside a join to hidden. The reports read runs the join check
+      // whatever the spelling, so on the curated package it shows no schema.
+      const cells = await cellsOf(CURATED, "route_text.malloynb");
+      expect(cells[5].text).toContain("#(authorize)");
+      expect(cells[5].queryInfo).toBeUndefined();
    });
 });
