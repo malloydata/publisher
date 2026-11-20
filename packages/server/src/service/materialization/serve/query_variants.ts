@@ -288,6 +288,7 @@ export class PersistedQueryServe {
       }
       const table = this.views.tableOf(plan, args.pinned, args.buildManifest);
       if (!table.built) throw new LegDecline("query_not_built");
+      if (table.storageNotServed) throw new LegDecline("query_storage_mode");
       if (table.stale || (!table.virtualMap && !table.databaseTable)) {
          throw new LegDecline("query_stale");
       }
