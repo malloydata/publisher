@@ -1,0 +1,13 @@
+>>>malloy
+import "../models/orders.malloy"
+import "../models/hidden_q.malloy"
+import "../models/filtered.malloy"
+>>>malloy
+run: orders -> {
+   // see #(authorize) on locked
+   aggregate: order_count
+}
+>>>malloy
+run: hq
+>>>malloy
+run: filtered -> { aggregate: n }

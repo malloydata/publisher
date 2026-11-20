@@ -466,6 +466,7 @@ describe(".malloynb cells through the query route (E2E)", () => {
          "later_given.malloynb",
          "raw_sql.malloynb",
          "restricted.malloynb",
+         "route_text.malloynb",
          "row_level.malloynb",
          "surface.malloynb",
       ];
@@ -525,7 +526,52 @@ describe(".malloynb cells through the query route (E2E)", () => {
       }
       expect(disagreements).toEqual([]);
       // Both outcomes were exercised, on both packages.
-      expect(seen.warned).toBe(13);
+      expect(seen.warned).toBe(18);
       expect(seen.clean).toBeGreaterThan(15);
+   });
+
+   it("the warning is for a reader in the Console: an editor's surface lift still runs an off-surface cell", async () => {
+      const lifted = async (nb: string, i: number) => {
+         const query = malloynbCellQuery((await cellsOf(CURATED, nb))[i]);
+         const res = await env.post(
+            env.api(
+               `/models/notebooks/${nb}/query?includeHiddenFilesAndSources=true`,
+               CURATED,
+            ),
+            { query },
+         );
+         return outcomeOf(res.status, await res.json());
+      };
+      const warnings = warningsByCode(
+         await env.warnings(CURATED),
+         "malloynb-cell-refused",
+      );
+      // Every message says whom the refusal is for.
+      for (const w of warnings) {
+         expect(w.message).toContain(
+            "won't run for any reader in the Console:",
+         );
+      }
+      const warned = warnings.map((w) => [
+         w.model,
+         w.reason,
+         /^Cell (\d+) /.exec(w.message ?? "")?.[1],
+      ]);
+      expect(warned).toContainEqual([
+         "notebooks/surface.malloynb",
+         "off_surface",
+         "6",
+      ]);
+      expect(warned).toContainEqual([
+         "notebooks/restricted.malloynb",
+         "restricted_mode",
+         "4",
+      ]);
+      // Cell 6 of surface.malloynb (index 5) runs with the lift; restricted
+      // mode still refuses cell 4 of restricted.malloynb (index 3).
+      expect(await lifted("surface.malloynb", 5)).toEqual({ rows: [[4]] });
+      expect(refusal(await lifted("restricted.malloynb", 3))?.refused).toBe(
+         400,
+      );
    });
 });

@@ -222,8 +222,8 @@ describe("report discovery: what it does with a report it cannot read", () => {
          {
             message:
                "Report lint stopped early, so this list is incomplete: an " +
-               "unknown subset of the tile, report, notebook cell, drill, " +
-               "given and curation checks did not run. Treat a missing " +
+               "unknown subset of the tile, report, drill, given and curation " +
+               "checks did not run. Treat a missing " +
                "finding of any of those kinds as unknown rather than clean. " +
                "Reload the package to run the lint again. The reports " +
                "themselves are unaffected, because they are discovered " +

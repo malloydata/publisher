@@ -23,6 +23,7 @@ import type { QueryServingHost } from "./query_serving";
 import { makeLegs, PersistedQueryServe } from "./materialization/serve/leg";
 import {
    ModelServing,
+   settledCompileError,
    type ModelQueryResults,
    type ModelServingHost,
 } from "./model_serving";
@@ -37,6 +38,7 @@ import {
    NOTEBOOK_FILE_SUFFIX,
 } from "../constants";
 import {
+   BadRequestError,
    ModelCompilationError,
    ModelNotFoundError,
    NotQueryableError,
@@ -112,9 +114,15 @@ import {
 } from "./motly";
 import { onlyParseFailures, restrictedRejections } from "./compile_restriction";
 import { malloynbCellQuery } from "./deprecated/malloynb";
-import { compileErrorOf } from "./model_query_compile";
-import { isGivenBindingFailure } from "./query_execution";
-import { createEventLoopYielder } from "./event_loop_yield";
+import {
+   assertNoCallerAuthorizeAnnotation,
+   assertNoCallerClassificationAnnotation,
+} from "./authorize";
+import { buildFilterClause, FilterValidationError } from "./filter";
+import {
+   createEventLoopYielder,
+   type EventLoopYielder,
+} from "./event_loop_yield";
 import {
    buildDerivationBaseMap,
    buildJoinBaseMap,
@@ -218,20 +226,30 @@ type ApiSource = components["schemas"]["Source"];
 type ApiGiven = components["schemas"]["Given"];
 type ApiQuery = components["schemas"]["Query"];
 /**
- * Why the query route refuses a query for every caller
- * ({@link Model.refusalForEveryCaller}): `off_surface` is the boundary's 404,
- * `restricted_mode` a construct restricted mode refuses (400), and
- * `compile_error` any other compile failure of the text on its own (400).
+ * Why the query route refuses a query for every caller that sends it as the
+ * Console sends a `.malloynb` cell ({@link Model.consoleCellRefusal}):
+ * `off_surface` is the boundary's 404; `caller_annotation` an annotation only
+ * the model author may write (400); `required_filter` a required `#(filter)`
+ * with no value (400); `restricted_mode` a construct restricted mode refuses
+ * (400); and `compile_error` any other compile failure of the text on its own
+ * (400).
  */
 export interface QueryTextRefusal {
    status: 400 | 404;
-   reason: "off_surface" | "restricted_mode" | "compile_error";
+   reason:
+      | "off_surface"
+      | "caller_annotation"
+      | "required_filter"
+      | "restricted_mode"
+      | "compile_error";
    /** The compiler's message; on a 404, restricted mode's, when it also refused the text. */
    problem?: string;
    /** The refused source, only where the query route's refusal names it. */
    source?: string;
    /** Whether a `.malloynb`'s own cells declare {@link source}. */
    declared?: boolean;
+   /** The named query the text runs, when the refused source is the one it reads. */
+   via?: string;
 }
 
 export type ApiConnection = components["schemas"]["Connection"];
@@ -2086,42 +2104,47 @@ export class Model {
 
    /**
     * DEPRECATED (`.malloynb` only; deleted with the format). Each code cell
-    * the query route refuses for every reader, sent as the SDK's `Report`
-    * sends it ({@link malloynbCellQuery}): its 1-based position among the
-    * notebook's cells, markdown included, and the refusal
-    * ({@link refusalForEveryCaller}). Empty for any other file, and for a
-    * notebook that does not compile, whose error every cell answers with.
+    * the query route refuses for every reader in the Console, sent as the
+    * SDK's `Report` sends it ({@link malloynbCellQuery}): its 1-based
+    * position among the notebook's cells, markdown included, and the refusal
+    * ({@link consoleCellRefusal}). Empty for any other file, and for a
+    * notebook with no compiled model. Hands the event loop a turn between
+    * cells through `yielder`, which a caller checking several notebooks
+    * shares.
     */
-   public async malloynbCellRefusals(): Promise<
-      ({ cell: number } & QueryTextRefusal)[]
-   > {
+   public async malloynbCellRefusals(
+      yielder: EventLoopYielder = createEventLoopYielder(),
+   ): Promise<({ cell: number } & QueryTextRefusal)[]> {
       if (this.notebookFormat() !== "malloynb" || !this.isNotebook()) return [];
       const refusals: ({ cell: number } & QueryTextRefusal)[] = [];
       for (const [index, cell] of (
          this.runnableNotebookCells ?? []
       ).entries()) {
-         if (cell.type !== "code") continue;
          const query = malloynbCellQuery(cell.text);
          if (query === undefined) continue;
-         const refusal = await this.refusalForEveryCaller(query);
+         await yielder.maybeYield();
+         const refusal = await this.consoleCellRefusal(query);
          if (refusal) refusals.push({ cell: index + 1, ...refusal });
       }
       return refusals;
    }
 
    /**
-    * How the query route answers ad-hoc `query` on this file for every
-    * caller, or undefined when some caller could get rows. It runs the
-    * route's checks that read only the text and the model, in the route's
-    * order (`ModelServing.run`): the boundary on the text and on its joins
-    * (404), the restricted compile (400, or the boundary's 404 for text that
-    * names a source off the surface), then the boundary on the compiled run
-    * target and joins (404). The checks that read a caller's givens
-    * (`#(authorize)`, row-level gates, a given left unbound) are left out:
-    * their answer is the caller's. Undefined, too, for a file that does not
-    * compile.
+    * How the query route answers ad-hoc `query` on this file for every caller
+    * that sends it as the Console sends a `.malloynb` cell: no privilege such
+    * as `includeHiddenFilesAndSources`, and no `filterParams`. Undefined when
+    * some such caller could get rows. It runs the route's checks that read
+    * only the text and the model, in the route's order (`ModelServing.run`):
+    * the boundary on the text and its joins (404); the caller-annotation
+    * guards (400); a required `#(filter)` left without a value (400); the
+    * restricted compile, settled by the route's own
+    * {@link settledCompileError} (400, or the boundary's 404); then the
+    * boundary on the compiled run target and its joins (404). The checks that
+    * read a caller's givens (`#(authorize)`, row-level gates) are left out:
+    * their answer is the caller's. Undefined, too, for a file with no
+    * compiled model.
     */
-   public async refusalForEveryCaller(
+   public async consoleCellRefusal(
       query: string,
    ): Promise<QueryTextRefusal | undefined> {
       const materializer = this.modelMaterializer;
@@ -2135,38 +2158,71 @@ export class Model {
       } catch (error) {
          return this.offSurfaceRefusal(error, query);
       }
+      // `ModelServing.prepare`: the guards `assertNoCallerAnnotations` runs on
+      // query text, then `#(filter)` injection with no `filterParams`.
+      try {
+         assertNoCallerAuthorizeAnnotation(query);
+         assertNoCallerClassificationAnnotation(query);
+      } catch (error) {
+         if (!(error instanceof BadRequestError)) throw error;
+         return {
+            status: 400,
+            reason: "caller_annotation",
+            problem: firstSentence(error.message),
+         };
+      }
+      const filterSource = this.governor.resolveFilterSource(query);
+      if (filterSource) {
+         try {
+            buildFilterClause(this.getFilters(filterSource), {});
+         } catch (error) {
+            if (!(error instanceof FilterValidationError)) throw error;
+            return {
+               status: 400,
+               reason: "required_filter",
+               problem: error.message,
+            };
+         }
+      }
       await this.ensureSharedQueryModel(materializer);
       const runnable = materializer.loadRestrictedQuery("\n" + query);
-      const compileError = await compileErrorOf(runnable);
-      if (compileError) {
-         if (isGivenBindingFailure(compileError)) return undefined;
-         const errors = compileError.problems.filter(
+      const settled = await settledCompileError(
+         runnable,
+         query,
+         boundary,
+         (text, compileError) =>
+            this.unqueryableTextRefusal(text, compileError),
+      );
+      if (settled) {
+         const errors = settled.compileError.problems.filter(
             (problem) => problem.severity === "error",
          );
          const restricted = restrictedRejections(errors);
-         const problem = (restricted[0] ?? errors[0])?.message ?? "";
-         const unqueryable =
-            boundary === "deferred"
-               ? this.unqueryableTextRefusal(query, compileError)
-               : undefined;
-         if (unqueryable) {
+         if (settled.offSurface) {
             return {
-               ...this.offSurfaceRefusal(unqueryable, query),
-               ...(restricted.length > 0 ? { problem } : {}),
+               ...this.offSurfaceRefusal(settled.refusal, query),
+               ...(restricted.length > 0
+                  ? { problem: restricted[0].message }
+                  : {}),
             };
          }
          return {
             status: 400,
             reason: restricted.length > 0 ? "restricted_mode" : "compile_error",
-            problem: problem || firstLine(compileError.message),
+            problem:
+               (restricted[0] ?? errors[0])?.message ??
+               firstLine(settled.compileError.message),
          };
       }
       if (boundary === "deferred") {
+         const compiledSource =
+            await this.governor.resolveAuthorizeSourceFromRunnable(runnable);
          try {
-            this.assertQueryBoundaryCompiled(
-               await this.governor.resolveAuthorizeSourceFromRunnable(runnable),
-               query,
-            );
+            this.assertQueryBoundaryCompiled(compiledSource, query);
+         } catch (error) {
+            return this.offSurfaceRefusal(error, query, compiledSource);
+         }
+         try {
             await this.governor.assertDocumentJoinsQueryable(query, runnable);
          } catch (error) {
             return this.offSurfaceRefusal(error, query);
@@ -2178,26 +2234,47 @@ export class Model {
    /**
     * A boundary refusal as a {@link QueryTextRefusal}, naming the source only
     * where the query route's own refusal does (an {@link OffSurfaceError}),
-    * so a gated model's 404 gives nothing away here either. Rethrows anything
-    * else.
+    * so a gated model's 404 gives nothing away here either. `compiledSource`
+    * is the run target the compiled check refused, which a named query
+    * reaches through its own name: then that query is `via`. Rethrows
+    * anything else.
     */
-   private offSurfaceRefusal(error: unknown, query: string): QueryTextRefusal {
+   private offSurfaceRefusal(
+      error: unknown,
+      query: string,
+      compiledSource?: string,
+   ): QueryTextRefusal {
       if (!(error instanceof NotQueryableError)) throw error;
       if (!(error instanceof OffSurfaceError)) {
          return { status: 404, reason: "off_surface" };
       }
-      const source = extractRunTargetSourceNames(query).find(
+      const named = extractRunTargetSourceNames(query).find(
          (name) =>
             !this.isCuratedSource(name) &&
             !this.derivesFromCurated(name, query),
       );
+      const source = compiledSource ?? named;
       if (source === undefined) return { status: 404, reason: "off_surface" };
       const declared = (this.runnableNotebookCells ?? []).some(
          (cell) =>
             cell.type === "code" &&
             buildDerivationBaseMap(cell.text).has(source),
       );
-      return { status: 404, reason: "off_surface", source, declared };
+      const target = extractRunTargetSourceNames(query)[0];
+      const via =
+         compiledSource !== undefined &&
+         target !== undefined &&
+         target !== compiledSource &&
+         !this.declaresSource(target)
+            ? target
+            : undefined;
+      return {
+         status: 404,
+         reason: "off_surface",
+         source,
+         declared,
+         ...(via ? { via } : {}),
+      };
    }
 
    /**
@@ -3955,6 +4032,12 @@ function placeholderGivens(
       out[given.name] = /^filter\b/i.test(given.type ?? "") ? "" : null;
    }
    return out;
+}
+
+/** The first sentence of a message, up to its first ". ". */
+function firstSentence(message: string): string {
+   const end = message.indexOf(". ");
+   return end < 0 ? message : message.slice(0, end + 1);
 }
 
 /** The first line of an error message, which is where Malloy says what failed. */

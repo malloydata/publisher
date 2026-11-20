@@ -38,9 +38,11 @@ export function parseMalloynb(
  * load-time cell lint checks the text a reader's request carries: the cell's
  * last `run:` statement, up to the statement after it, with the `#` render
  * tags above it. A copy of the SDK's `malloynbCellQuery`
- * (`packages/sdk/src/components/Report/malloynb/cellKind.ts`); both specs
- * read one case table (`cellQueryParity.json` beside it), so they cannot
- * drift apart. Undefined for a cell with nothing to run, which is never sent.
+ * (`packages/sdk/src/components/Report/malloynb/cellKind.ts`): this file's
+ * spec fails unless everything from the function's first statement to the
+ * end of the file is the same text as the SDK's, and both specs read one
+ * case table, `cellQueryParity.json` beside the SDK's. Undefined for a cell
+ * with nothing to run, which is never sent.
  */
 export function malloynbCellQuery(text: string): string | undefined {
    const tokens = topLevelTokens(text);

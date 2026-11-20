@@ -16,9 +16,11 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
+import { Model } from "../../src/service/model";
 import type { Package } from "../../src/service/package";
 import {
    loadPackageCopy,
+   loadTempPackage,
    usePackageLoadPool,
    type LoadedTempPackage,
 } from "../../src/test_helpers/temp_package";
@@ -62,7 +64,7 @@ describe("a .malloynb cell the query route refuses warns at load", () => {
             severity: "warn" as const,
             message:
                "Cell 4 of notebooks/surface.malloynb won't run for any " +
-               "reader: it reads hidden, which index.malloy doesn't export " +
+               "reader in the Console: it reads hidden, which index.malloy doesn't export " +
                "(404). Fix: add hidden to the export { ... } in index.malloy.",
          },
          {
@@ -72,7 +74,7 @@ describe("a .malloynb cell the query route refuses warns at load", () => {
             severity: "warn" as const,
             message:
                "Cell 6 of notebooks/surface.malloynb won't run for any " +
-               "reader: it reads mine, a source the notebook declares, and " +
+               "reader in the Console: it reads mine, a source the notebook declares, and " +
                "the query route takes only a source the package surface " +
                "publishes (404). Declare mine in a model file instead. Fix: " +
                "add mine to the export { ... } in index.malloy.",
@@ -84,7 +86,7 @@ describe("a .malloynb cell the query route refuses warns at load", () => {
             severity: "warn" as const,
             message:
                "Cell 7 of notebooks/surface.malloynb won't run for any " +
-               "reader: it reads from_hidden, a source the notebook " +
+               "reader in the Console: it reads from_hidden, a source the notebook " +
                "declares, and the query route takes only a source the " +
                "package surface publishes (404). Declare from_hidden in a " +
                "model file instead. Fix: add from_hidden to the export " +
@@ -103,7 +105,7 @@ describe("a .malloynb cell the query route refuses warns at load", () => {
          severity: "warn" as const,
          message:
             `Cell ${cell} of notebooks/restricted.malloynb won't run for ` +
-            `any reader: the query route runs its run: statement in ` +
+            `any reader in the Console: the query route runs its run: statement in ` +
             `restricted mode, which refuses it (400): ${problem} Fix: ` +
             `declare the table, or a dimension over the sql_* expression, ` +
             `in ${home}, and run that source.`,
@@ -130,13 +132,13 @@ describe("a .malloynb cell the query route refuses warns at load", () => {
          ["off_surface", "Cell 5 "],
          ["off_surface", "Cell 6 "],
       ]);
+      // The table read has no source to export: the fix is restricted mode's.
       expect(curatedWarnings[0].message).toBe(
-         "Cell 3 of notebooks/restricted.malloynb won't run for any reader: " +
-            "it reads a source the package surface does not publish, or one " +
-            "the notebook declares (404). Fix: add the source it reads to " +
-            "the export { ... } in index.malloy, declaring it in a model " +
-            `file first if the notebook declares it. Restricted mode also ` +
-            `refuses it: ${table}`,
+         "Cell 3 of notebooks/restricted.malloynb won't run for any reader " +
+            "in the Console: the package surface refuses it (404), and " +
+            `restricted mode refuses it too: ${table} Fix: declare the ` +
+            "table, or a dimension over the sql_* expression, in a model " +
+            "file that index.malloy exports, and run that source.",
       );
       expect(curatedWarnings[1]).toEqual(
          restricted(4, sql, "a model file that index.malloy exports"),
@@ -161,5 +163,134 @@ describe("a .malloynb cell the query route refuses warns at load", () => {
          .getModel("notebooks/restricted.malloynb")!
          .malloynbCellRefusals();
       expect(restricted.map(({ cell }) => cell)).toEqual([3, 4]);
+   });
+
+   it("the route's text guards: an annotation reserved for the author, and a required #(filter)", () => {
+      const guarded = (cell: number, reason: string, why: string) => ({
+         model: "notebooks/route_text.malloynb",
+         code: CODE,
+         reason,
+         severity: "warn" as const,
+         message:
+            `Cell ${cell} of notebooks/route_text.malloynb won't run for any ` +
+            `reader in the Console: ${why}`,
+      });
+      const annotation = guarded(
+         2,
+         "caller_annotation",
+         "the query route refuses query text that carries an annotation " +
+            "only the model author may write (400): An `authorize` " +
+            "annotation is not permitted in caller-submitted Malloy text. " +
+            "Fix: remove the annotation, or the text that spells it, from " +
+            "the cell's run: statement, comments included.",
+      );
+      const required = guarded(
+         4,
+         "required_filter",
+         "the source it runs declares a required #(filter), and the " +
+            "Console sends no filter value for a notebook cell (400): " +
+            'Required filter "region" (dimension: region) was not provided. ' +
+            "Fix: drop required from that #(filter), which is deprecated.",
+      );
+      expect(refusedCells(open.pkg, "route_text.malloynb")).toEqual([
+         annotation,
+         required,
+      ]);
+      // Behind index.malloy, the named query over a hidden source is refused
+      // too, and the warning names the source the query reads.
+      expect(refusedCells(curated.pkg, "route_text.malloynb")).toEqual([
+         annotation,
+         guarded(
+            3,
+            "off_surface",
+            "it runs the query hq, and hq reads hidden, which index.malloy " +
+               "doesn't export (404). Fix: add hidden to the export { ... } " +
+               "in index.malloy.",
+         ),
+         required,
+      ]);
+   });
+});
+
+// DEPRECATED FEATURE COVERAGE: delete with `.malloynb` notebooks.
+describe("the .malloynb cell check, as a neighbor of the other lints", () => {
+   usePackageLoadPool();
+
+   const ORDERS = `source: orders is duckdb.sql("select 1 as id, 'US' as region") extend {
+   # drill
+   dimension: r is region
+   measure: order_count is count()
+}
+`;
+
+   it("a throw in it keeps the drill, self-drill and given findings", async () => {
+      const loaded = await loadTempPackage({
+         "orders.malloy": ORDERS,
+         "notebooks/n.malloynb":
+            '>>>malloy\nimport "../orders.malloy"\n>>>malloy\nrun: orders -> { aggregate: order_count }',
+      });
+      const original = Model.prototype.malloynbCellRefusals;
+      try {
+         const drill = (w: { message?: string }) =>
+            (w.message ?? "").includes("names no destination");
+         const warnings = () => loaded.pkg.getPackageMetadata().warnings ?? [];
+         expect(warnings().filter(drill)).toHaveLength(1);
+         Model.prototype.malloynbCellRefusals = async () => {
+            throw new Error("cell check failed");
+         };
+         await loaded.pkg.relintReports();
+         expect(warnings().filter(drill)).toHaveLength(1);
+         expect(
+            warnings().filter((w) =>
+               (w.message ?? "").startsWith("Report lint stopped early"),
+            ),
+         ).toEqual([]);
+         expect(
+            warnings()
+               .filter((w) =>
+                  (w.message ?? "").startsWith("The .malloynb cell check"),
+               )
+               .map((w) => [w.model, w.severity]),
+         ).toEqual([["notebooks/n.malloynb", "warn"]]);
+      } finally {
+         Model.prototype.malloynbCellRefusals = original;
+         await loaded.cleanup();
+      }
+   });
+
+   it("hands the event loop a turn while it checks many cells", async () => {
+      // 20 notebooks of 20 code cells: one block of about 100 ms if the check
+      // never yields.
+      const files: Record<string, string> = { "orders.malloy": ORDERS };
+      for (let n = 0; n < 20; n++) {
+         const cells = ['>>>malloy\nimport "../orders.malloy"'];
+         for (let c = 0; c < 20; c++) {
+            cells.push(
+               `>>>malloy\nrun: orders -> { group_by: r; aggregate: c${c} is count() }`,
+            );
+         }
+         files[`notebooks/n${n}.malloynb`] = cells.join("\n");
+      }
+      const loaded = await loadTempPackage(files);
+      try {
+         let last = performance.now();
+         let longest = 0;
+         const timer = setInterval(() => {
+            const now = performance.now();
+            longest = Math.max(longest, now - last);
+            last = now;
+         }, 1);
+         const started = performance.now();
+         await loaded.pkg.relintReports();
+         const took = performance.now() - started;
+         // A block that never yielded ends here: the timer never ran inside it.
+         longest = Math.max(longest, performance.now() - last);
+         clearInterval(timer);
+         // The check really ran long enough to need the yields.
+         expect(took).toBeGreaterThan(60);
+         expect(longest).toBeLessThan(50);
+      } finally {
+         await loaded.cleanup();
+      }
    });
 });
