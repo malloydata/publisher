@@ -26,7 +26,6 @@ import {
    setDefaultTimeout,
    spyOn,
 } from "bun:test";
-import { DuckDBConnection as RawDuckDB } from "@malloydata/db-duckdb";
 import * as path from "path";
 import { logger } from "../../src/logger";
 import { unrecordedAudit } from "../../src/service/access_record";
@@ -237,16 +236,17 @@ describe("F-42: what retiring a package mid-build leaves in its warehouse", () =
       await __setPackageLoadPoolForTests(null);
    });
 
-   /** Run `sql` on a fresh, unlocked instance over the warehouse's file. */
+   /**
+    * Run `sql` on the warehouse, through the environment's own connection,
+    * which has its file attached and in use. A second instance over the file
+    * is refused on Windows, which locks a DuckDB file to the instance that
+    * opened it.
+    */
    async function onWarehouseFile(
       sql: string,
    ): Promise<Record<string, unknown>[]> {
-      const raw = new RawDuckDB("wh_probe", path.join(envPath, "wh.duckdb"));
-      try {
-         return (await raw.runSQL(sql)).rows as Record<string, unknown>[];
-      } finally {
-         await raw.close();
-      }
+      const warehouse = await env.getMalloyConnection("warehouse");
+      return (await warehouse.runSQL(sql)).rows as Record<string, unknown>[];
    }
 
    /** The package's tables in the warehouse, by name. */
