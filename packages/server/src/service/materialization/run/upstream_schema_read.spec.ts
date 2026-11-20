@@ -115,6 +115,29 @@ describe("R-13: reading the upstream tables' column types", () => {
       });
    });
 
+   it("retries a failed read within the load, so a passing failure reads the table", async () => {
+      await duckdb.runSQL("CREATE TABLE t_retry AS SELECT 1 AS n");
+      let failures = 1;
+      const connection = new Proxy(duckdb, {
+         get(target, prop, receiver) {
+            if (prop === "runSQL") {
+               return (...args: Parameters<Connection["runSQL"]>) =>
+                  failures-- > 0
+                     ? Promise.reject(new Error("catalog unavailable"))
+                     : target.runSQL(...args);
+            }
+            const value = Reflect.get(target, prop, receiver);
+            return typeof value === "function" ? value.bind(target) : value;
+         },
+      });
+      expect(
+         (await read(["t_retry"], connection, true))[key("t_retry")],
+      ).toEqual({
+         columns: [{ name: "n", nativeType: "INTEGER" }],
+         dialect: "duckdb",
+      });
+   });
+
    it("reads a file as Malloy reads its schema", async () => {
       fs.writeFileSync(path.join(temp.dir, "f.csv"), "cat,amt\na,1.5\n");
       const file = path.join(temp.dir, "f.csv");

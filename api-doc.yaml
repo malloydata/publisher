@@ -11367,6 +11367,7 @@ components:
               partial_name_collision,
               given_where_over_unstored_field,
               unreadable_grain,
+              upstream_unread,
             ]
           description: >-
             The bounded refusal reason; `message` says the specifics.
@@ -11423,7 +11424,13 @@ components:
             source's own extend block is applied at every read and is
             admitted); `incremental_unsupported` (a valid incremental
             declaration this deployment's dialect or destination cannot
-            honour).
+            honour); `upstream_unread` (a table its build reads could not be
+            read from its warehouse's catalog when the package loaded, after
+            retrying, and this process has no earlier reading of it, so its
+            content address is not known: it is not built, no run builds it,
+            and a host's instruction for it is refused, until a reload or a
+            plan refresh reads the catalog and plans it at its address; the
+            `*-not-built` warning names the table).
 
 
             A persisted view or named query: `materialization_off` (persisted

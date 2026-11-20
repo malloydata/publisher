@@ -798,10 +798,15 @@ or dropped upstream moves the address even though the build's SQL is unchanged (
 dropped or retyped beside it does not): the table built from the old column is no longer the
 source's, the source answers live, and the next run builds a new table rather than carrying or
 reusing the old one. The types are read when a package is first loaded in a process and again on
-every explicit reload or publish, as Malloy's own schemas are; a read that fails keeps the
-table's last reading, so a passing failure never moves an address, and a table never read
-folds `read_failed` until a read succeeds (the one move that follows rebuilds once). A table the
-dialect gives no catalog to read folds `no_catalog`. A source whose tables cannot be known (an
+every explicit reload or publish, as Malloy's own schemas are. A read whose catalog query or
+connection fails is retried with backoff within the read's 15-second timeout; a read that still
+fails keeps the table's last reading, so a passing failure never moves an address. A table this
+process has never read is not addressed by an unknown schema: each source whose build reads it is
+refused alone, with reason `upstream_unread` and a `*-not-built` warning naming the table, so it
+answers live, no run builds it, and a host's instruction for it is refused, until a reload (or a
+connection change's plan refresh) reads the catalog and plans it at its address, where a table
+already built for it serves again. A table the dialect gives no catalog to read folds `no_catalog`,
+a stable value. A source whose tables cannot be known (an
 `.sql()` source or a raw SQL expression in its lineage, so no `reads`) folds nothing: a column
 retyped under it is not seen, and is handled at the bind as below. Each build records what it
 read on its manifest entry (`upstreamSchemas`).

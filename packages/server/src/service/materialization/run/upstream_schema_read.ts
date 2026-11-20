@@ -16,11 +16,13 @@
  * Readings are kept in this process, by connection (the object), its digest
  * and the table, as Malloy keeps a table's schema: a load reads a table it has no
  * reading of, and an explicit reload or publish (`refresh`) reads every
- * table again. A read that fails keeps the table's last reading, so a
- * transient failure never moves an address; with none, the table reads
- * `read_failed`, a stable value a later successful read moves from once. A
- * table the dialect gives no catalog to read reads `no_catalog`. Never
- * throws.
+ * table again. A read whose catalog query or connection failed is retried
+ * with backoff, within one read's timeout. A read that still fails keeps the
+ * table's last reading, so a transient failure never moves an address; with
+ * none, the table reads `read_failed`, and the plan refuses each source that
+ * reads it (`upstream_unread`) rather than address it, until a read
+ * succeeds. A table the dialect gives no catalog to read reads `no_catalog`,
+ * a stable fold. Never throws.
  */
 
 import { errorCodeOf } from "../../../error_code";
@@ -35,7 +37,10 @@ import { readTableColumns } from "./database_column_read";
 import { NATIVE_SCHEMA_ROW_LIMIT } from "./database_native_types";
 import { relationDescribeSQL } from "./warehouse_sql";
 
-/** How long a `DESCRIBE` may take before it reads as failed. */
+/**
+ * How long a `DESCRIBE` or a catalog read may take before it reads as
+ * failed; a failed read's retries stay within it too.
+ */
 const DESCRIBE_TIMEOUT_MS = 15_000;
 
 type ColumnsReading = Extract<UpstreamSchemaReading, { columns: unknown }>;
@@ -104,6 +109,77 @@ export async function readUpstreamSchemas(args: {
       toRead.push({ key, table, cached });
    }
    if (toRead.length === 0) return out;
+   const timeoutMs = args.timeoutMs ?? DESCRIBE_TIMEOUT_MS;
+   const started = Date.now();
+   let pending = toRead;
+   for (let attempt = 0; ; attempt++) {
+      const read = await readOnce(pending, connections, timeoutMs);
+      // A read that failed for a reason a retry may clear (the catalog query
+      // or the connection failed, not a timeout, which spent the budget, nor
+      // a table not found) is read again, after a backoff, while the retries
+      // stay within one read's timeout.
+      const delay = RETRY_DELAYS_MS[attempt];
+      const retry = pending.filter(({ key }) => read.get(key)!.retryable);
+      if (
+         retry.length > 0 &&
+         delay !== undefined &&
+         Date.now() - started + delay < timeoutMs
+      ) {
+         for (const t of pending) {
+            if (!read.get(t.key)!.retryable) settle(t, read.get(t.key)!, out);
+         }
+         await new Promise((resolve) => setTimeout(resolve, delay));
+         pending = retry;
+         continue;
+      }
+      for (const t of pending) settle(t, read.get(t.key)!, out);
+      return out;
+   }
+
+   /** Record `t`'s reading, keeping its last reading in place of a failure. */
+   function settle(
+      t: (typeof toRead)[number],
+      { reading: read, reason }: TableRead,
+      into: Record<string, UpstreamSchemaReading>,
+   ): void {
+      const readings = readingsOf(connections.get(t.table.connectionName)!);
+      let reading = read;
+      if ("columns" in reading) {
+         reading = {
+            ...reading,
+            dialect: connections.get(t.table.connectionName)!.dialectName,
+         };
+         readings.set(t.cached, reading);
+      } else if (reading.unread === "read_failed") {
+         const last = readings.get(t.cached);
+         logger.warn(
+            last
+               ? "Upstream table's columns could not be read; keeping its last reading"
+               : "Upstream table's columns could not be read; the sources that read it are refused until a read succeeds",
+            { connectionName: t.table.connectionName, reason },
+         );
+         if (last) reading = last;
+      }
+      into[t.key] = reading;
+   }
+}
+
+/** The pause before each retry of a failed catalog read, in order. */
+const RETRY_DELAYS_MS = [250, 1_000];
+
+/** One table's read: its reading, why it failed, and whether a retry may help. */
+interface TableRead {
+   reading: UpstreamSchemaReading;
+   reason?: string;
+   retryable: boolean;
+}
+
+/** Read each of `tables` once, from its catalog or by DuckDB's `DESCRIBE`. */
+async function readOnce(
+   tables: readonly { key: string; table: UpstreamTable }[],
+   connections: ReadonlyMap<string, UpstreamReadConnection | undefined>,
+   timeoutMs: number,
+): Promise<Map<string, TableRead>> {
    // A dialect that reads any relation as Malloy reads its schema (DuckDB's
    // DESCRIBE, in process) reads every table so; the rest read the catalog.
    const describeOf = (table: UpstreamTable) =>
@@ -112,7 +188,7 @@ export async function readUpstreamSchemas(args: {
          connections.get(table.connectionName)!.dialectName,
       );
    const catalog = await readTableColumns({
-      tables: toRead
+      tables: tables
          .filter(({ table }) => describeOf(table) === undefined)
          .map(({ key, table }) => ({
             key,
@@ -122,57 +198,47 @@ export async function readUpstreamSchemas(args: {
       connection: async (name) => connections.get(name)!,
       // A model's `connection.table('...')` path, resolved as SQL resolves it.
       foldUnquoted: true,
-      ...(args.timeoutMs !== undefined ? { timeoutMs: args.timeoutMs } : {}),
+      timeoutMs,
    });
-   for (const { key, table, cached } of toRead) {
+   const out = new Map<string, TableRead>();
+   for (const { key, table } of tables) {
       const describe = describeOf(table);
-      const observed = catalog.get(key);
-      let reading: UpstreamSchemaReading;
       if (describe !== undefined) {
-         reading = await describeRelation(
+         const reading = await describeRelation(
             connections.get(table.connectionName)!,
             describe,
+            timeoutMs,
          );
-      } else if (observed && "columns" in observed) {
-         reading = {
-            columns: observed.columns.map((c) => ({
-               name: c.name,
-               nativeType: c.nativeType ?? c.type ?? "",
-            })),
-         };
-      } else if (observed?.unread === "unparseable") {
-         reading = { unread: "no_catalog" };
-      } else {
-         reading = { unread: "read_failed" };
-      }
-      if ("columns" in reading) {
-         reading = {
-            ...reading,
-            dialect: connections.get(table.connectionName)!.dialectName,
-         };
-         readingsOf(connections.get(table.connectionName)!).set(
-            cached,
+         out.set(key, {
             reading,
-         );
-      } else if (reading.unread === "read_failed") {
-         const last = readingsOf(connections.get(table.connectionName)!).get(
-            cached,
-         );
-         logger.warn(
-            last
-               ? "Upstream table's columns could not be read; keeping its last reading"
-               : "Upstream table's columns could not be read; its sources are addressed as unread",
-            {
-               connectionName: table.connectionName,
-               reason:
-                  observed && "unread" in observed
-                     ? observed.unread
-                     : "describe_failed",
-            },
-         );
-         if (last) reading = last;
+            ...("unread" in reading ? { reason: "describe_failed" } : {}),
+            retryable: "unread" in reading,
+         });
+         continue;
       }
-      out[key] = reading;
+      const observed = catalog.get(key);
+      if (observed && "columns" in observed) {
+         out.set(key, {
+            reading: {
+               columns: observed.columns.map((c) => ({
+                  name: c.name,
+                  nativeType: c.nativeType ?? c.type ?? "",
+               })),
+            },
+            retryable: false,
+         });
+      } else if (observed?.unread === "unparseable") {
+         out.set(key, { reading: { unread: "no_catalog" }, retryable: false });
+      } else {
+         const reason = observed?.unread ?? "not_read";
+         out.set(key, {
+            reading: { unread: "read_failed" },
+            reason,
+            retryable:
+               reason === "catalog_query_failed" ||
+               reason === "connection_failed",
+         });
+      }
    }
    return out;
 }
@@ -185,6 +251,7 @@ export async function readUpstreamSchemas(args: {
 async function describeRelation(
    connection: UpstreamReadConnection,
    describe: string,
+   timeoutMs: number,
 ): Promise<UpstreamSchemaReading> {
    let timer: ReturnType<typeof setTimeout> | undefined;
    try {
@@ -193,7 +260,7 @@ async function describeRelation(
          new Promise<never>((_, reject) => {
             timer = setTimeout(
                () => reject(new Error("the describe timed out")),
-               DESCRIBE_TIMEOUT_MS,
+               timeoutMs,
             );
          }),
       ]);

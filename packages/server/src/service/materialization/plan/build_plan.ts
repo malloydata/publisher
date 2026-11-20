@@ -23,6 +23,7 @@
  */
 
 import { refusalKey, tierOf } from "./refusal_key";
+import type { RefusedReason } from "../domain/types";
 import { errorCodeOf } from "../../../error_code";
 import type { KeyCheckCompiler } from "../domain/key_check";
 import {
@@ -2098,9 +2099,10 @@ export function finishBuildPlan(
          addresses: planAddresses({ ...plan, tableFolds }),
       }),
    );
+   const known = refuseUpstreamUnread(refused);
    return ctx.keepIncrementalUnbuildable
-      ? refused
-      : refuseIncrementalUnbuildable(refused);
+      ? known
+      : refuseIncrementalUnbuildable(known);
 }
 
 /**
@@ -2373,54 +2375,113 @@ function refuseIncrementalUnbuildable<
       });
       if (reason === undefined) continue;
       dropped.add(sourceID);
-      const model = compiled.tables[sourceID]?.modelPath ?? "";
-      const plan = compiled.tables[sourceID]?.materialize;
-      const tier = tierOf(declaredStorage(source));
-      const refused = refusalKey(
-         sourceID,
-         source.name,
-         "incremental_unsupported",
-         tier,
-      );
       findings.push(
-         plan
-            ? materializeRefusalFinding(
-                 {
-                    sourceName: plan.sourceName,
-                    sourceID,
-                    reason,
-                    outcome: {
-                       refused: { reason: "incremental_unsupported", tier },
-                    },
-                 },
-                 model,
-              )
-            : view
-              ? {
-                   ...persistedViewRefusalFinding(
-                      {
-                         ...view,
-                         sourceID,
-                         reason,
-                         outcome: { refused: "incremental_unsupported" },
-                      },
-                      model,
-                   ),
-                   // Keyed by the source the plan holds.
-                   refused,
-                }
-              : {
-                   route: "@",
-                   tier: "unservable",
-                   code: PERSIST_NOT_BUILT_CODE,
-                   message: `#@ persist source "${source.name}" is not built, so it is answered live: ${reason}.`,
-                   subject: source.name,
-                   model,
-                   refused,
-                },
+         notBuiltFinding(compiled, sourceID, "incremental_unsupported", reason),
       );
    }
    return withoutSources(compiled, findings, dropped);
+}
+
+/**
+ * The compiled plan less every source a table of whose `reads` has no
+ * reading (`unread: "read_failed"`: its catalog read failed, after the
+ * reader's retries, and this process holds no earlier reading of it), each
+ * refused alone as `upstream_unread` under its mechanism's `*-not-built`
+ * warning naming the table. Its content address would fold an unknown
+ * schema, which a later successful read moves, so it is neither built nor
+ * served: it answers live, no run builds it, and a host's instruction for it
+ * is refused, until a reload or a plan refresh reads the catalog and plans it
+ * at its address. A table the dialect gives no catalog to read
+ * (`no_catalog`) is a stable fold and refuses nothing.
+ */
+function refuseUpstreamUnread<T extends Omit<FinishedBuildPlan, "connections">>(
+   compiled: T,
+): T {
+   const readings = compiled.upstreamSchemas;
+   if (!readings) return compiled;
+   const findings: PackageAnnotationFinding[] = [];
+   const dropped = new Set<string>();
+   for (const [sourceID, { source }] of Object.entries(compiled.tables)) {
+      const unread = (upstreamTablesOf(source) ?? []).filter((t) => {
+         const reading = readings[upstreamTableKey(t)];
+         return reading !== undefined && "unread" in reading
+            ? reading.unread === "read_failed"
+            : false;
+      });
+      if (unread.length === 0) continue;
+      dropped.add(sourceID);
+      const tables = unread
+         .map((t) => `"${t.table}" on connection "${t.connectionName}"`)
+         .join(", ");
+      findings.push(
+         notBuiltFinding(
+            compiled,
+            sourceID,
+            "upstream_unread",
+            `the columns of ${tables}, which its build reads, could not be ` +
+               "read from the warehouse's catalog, so its table's address is " +
+               "not known; it is planned once a reload, or a plan refresh, " +
+               "reads them",
+         ),
+      );
+   }
+   return withoutSources(compiled, findings, dropped);
+}
+
+/**
+ * The `*-not-built` finding refusing the plan's source `sourceID` alone, as
+ * `reason`, under its mechanism's code: a `#(materialize)` source's, a
+ * persisted view's, a rollup's, or a `#@ persist` source's.
+ */
+function notBuiltFinding(
+   compiled: Omit<FinishedBuildPlan, "connections">,
+   sourceID: string,
+   reason: RefusedReason,
+   why: string,
+): PackageAnnotationFinding {
+   const table = compiled.tables[sourceID];
+   const source = table.source;
+   const model = table.modelPath ?? "";
+   const tier = tierOf(declaredStorage(source));
+   const refused = refusalKey(sourceID, source.name, reason, tier);
+   if (table.materialize) {
+      return materializeRefusalFinding(
+         {
+            sourceName: table.materialize.sourceName,
+            sourceID,
+            reason: why,
+            outcome: { refused: { reason, tier } },
+         },
+         model,
+      );
+   }
+   const view = persistedViewOf(source);
+   if (view) {
+      return {
+         ...persistedViewRefusalFinding(
+            { ...view, sourceID, reason: why, outcome: { refused: reason } },
+            model,
+         ),
+         // Keyed by the source the plan holds.
+         refused,
+      };
+   }
+   return {
+      route: "@",
+      tier: "unservable",
+      ...(table.kind === "rollup"
+         ? {
+              code: ROLLUP_NOT_BUILT_CODE,
+              message: `Rollup "${source.name}" is not built, so its measures are answered live: ${why}.`,
+           }
+         : {
+              code: PERSIST_NOT_BUILT_CODE,
+              message: `#@ persist source "${source.name}" is not built, so it is answered live: ${why}.`,
+           }),
+      subject: source.name,
+      model,
+      refused,
+   };
 }
 
 /** A persisted view's generated build source, read back to the author's names. */
