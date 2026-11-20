@@ -329,6 +329,10 @@ export interface FieldLike {
    name?: unknown;
    as?: unknown;
    type?: unknown;
+   /** A `sql native` field's warehouse type. */
+   rawType?: unknown;
+   /** An array's element type. */
+   elementTypeDef?: unknown;
    e?: unknown;
    expressionType?: unknown;
    accessModifier?: unknown;

@@ -17,6 +17,7 @@ import type {
    MalloyConfig,
 } from "@malloydata/malloy";
 import type { components } from "../../../api";
+import type { UpstreamSchemaReadings, UpstreamTable } from "./upstream_schemas";
 
 type WirePackageMaterialization =
    components["schemas"]["PackageMaterializationConfig"];
@@ -48,4 +49,16 @@ export interface BuildPlanPackage {
     * scope.
     */
    getVersionId(): string | undefined;
+   /**
+    * The native column types of `tables` (the tables its persist sources
+    * read), for the plan's addresses to fold in. `load`: as this load reads
+    * them (again, under an explicit reload or publish). `run`: as the plan
+    * in force read them, so a run addresses each source as its load did.
+    * Absent (a spec's package), none is read and every address is its SQL's
+    * alone.
+    */
+   readUpstreamSchemas?(
+      tables: UpstreamTable[],
+      use: "load" | "run",
+   ): Promise<UpstreamSchemaReadings>;
 }

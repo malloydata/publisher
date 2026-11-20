@@ -784,6 +784,11 @@ async function buildAll(
                      }[]
                   ).map((r) => ({ name: r.column_name, type: r.column_type })),
                   ...(await leafKeys(entry.sourceID, warehouse)),
+                  // What the plan read of its upstream tables, as a build
+                  // records it on its entry (instructed_build.ts).
+                  ...(entry.upstreamSchemas
+                     ? { upstreamSchemas: entry.upstreamSchemas }
+                     : {}),
                };
                built.push({ name: entry.name, tier: "storage" });
             } else {

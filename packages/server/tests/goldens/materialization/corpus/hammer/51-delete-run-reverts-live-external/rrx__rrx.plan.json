@@ -71,6 +71,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.rrx_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "0c270e50a9800488e1de0e5139be478ba0f595223cdd0c91379d41d529d062e0",
         "sourceID": "daily@<hammer>/rrx/rrx.malloy",

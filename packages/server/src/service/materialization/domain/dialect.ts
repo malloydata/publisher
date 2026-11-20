@@ -181,6 +181,29 @@ export interface Capabilities {
     * cannot be read, which keeps no gate over a string column there.
     */
    stringCollation: "binary" | "instance" | "column" | undefined;
+   /**
+    * The column types its `GROUP BY` refuses. `malloy`: Malloy types
+    * (`json`, `array`, `record`). `native`: a `sql native` field's raw type
+    * in lower case (BigQuery's `geography`, Postgres's `json`, which Malloy
+    * reads as native beside `jsonb`, which groups), and an array of one. A
+    * pair table's build groups by every stored column, so a pair table
+    * holding one is refused at plan. Undefined: none is known.
+    */
+   ungroupableTypes:
+      | { malloy: readonly string[]; native: readonly string[] }
+      | undefined;
+   /**
+    * Its native type names (as its catalog spells them, compared whole,
+    * trimmed and case-blind) that are an IEEE 754 binary64 whose comparisons are
+    * DuckDB's: NaN equal to itself and above every other value. A
+    * `storage=` copy holds such a column as a DuckDB DOUBLE bit for bit, so a
+    * gate or a scope compares the copy as live compares the column
+    * (`domain/gate_policy.ts`). Not BigQuery's FLOAT64, whose comparisons
+    * with NaN are false, nor a 4-byte float (Postgres's and DuckDB's
+    * `real`), whose comparison with a decimal literal rounds the literal to
+    * a 4-byte float live and not on the copy. Undefined: none.
+    */
+   binary64Types: readonly string[] | undefined;
 }
 
 const NONE: Capabilities = Object.freeze({
@@ -206,6 +229,8 @@ const NONE: Capabilities = Object.freeze({
    passthroughNumericAsDouble: false,
    catalogHidesTables: false,
    stringCollation: undefined,
+   ungroupableTypes: undefined,
+   binary64Types: undefined,
 });
 
 /** Each dialect's capabilities. */
@@ -225,6 +250,7 @@ export const CAPABILITIES: Record<DialectName, Capabilities> = {
       utcSessions: true,
       leafBudget: 120,
       stringCollation: "instance",
+      binary64Types: ["DOUBLE", "FLOAT8"],
    }),
    postgres: Object.freeze({
       ...NONE,
@@ -241,6 +267,26 @@ export const CAPABILITIES: Record<DialectName, Capabilities> = {
       castsToIntegerType: true,
       liveRoundsBigIntegersMeasured: true,
       liveWritesFloat4Shortest: true,
+      // `format_type` spells float8 and float(25..53) so.
+      binary64Types: ["DOUBLE PRECISION"],
+      // No equality operator: "could not identify an equality operator for
+      // type json" (and its arrays). `jsonb` groups.
+      ungroupableTypes: {
+         malloy: [],
+         native: [
+            "json",
+            "xml",
+            "point",
+            "line",
+            "lseg",
+            "box",
+            "path",
+            "polygon",
+            "circle",
+            "txid_snapshot",
+            "pg_snapshot",
+         ],
+      },
    }),
    standardsql: Object.freeze({
       ...NONE,
@@ -254,6 +300,10 @@ export const CAPABILITIES: Record<DialectName, Capabilities> = {
       onlyBigIntegerType: "INT64",
       leafBudget: 120,
       stringCollation: "binary",
+      ungroupableTypes: {
+         malloy: ["json", "array", "record"],
+         native: ["geography"],
+      },
    }),
    snowflake: Object.freeze({
       ...NONE,
@@ -265,6 +315,16 @@ export const CAPABILITIES: Record<DialectName, Capabilities> = {
       tableOwnership: true,
       castsToIntegerType: true,
       leafBudget: 120,
+      // Every Snowflake float type is a double; its catalog names each
+      // `FLOAT`.
+      binary64Types: [
+         "FLOAT",
+         "FLOAT4",
+         "FLOAT8",
+         "DOUBLE",
+         "DOUBLE PRECISION",
+         "REAL",
+      ],
    }),
    databricks: Object.freeze({
       ...NONE,
@@ -301,6 +361,15 @@ export const CAPABILITIES: Record<DialectName, Capabilities> = {
       leafBudget: 115,
    }),
 };
+
+/**
+ * Whether `nativeType`, a column's type as `dialect`'s catalog names it, is
+ * one of its {@link Capabilities.binary64Types}.
+ */
+export function isBinary64Type(dialect: unknown, nativeType: string): boolean {
+   const named = nativeType.trim().replace(/\s+/g, " ").toUpperCase();
+   return capabilitiesOf(dialect).binary64Types?.includes(named) === true;
+}
 
 /** A dialect's capabilities; none for a dialect the table does not name. */
 export function capabilitiesOf(dialect: unknown): Capabilities {

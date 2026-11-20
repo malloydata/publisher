@@ -83,14 +83,43 @@ function answer(outcome: Outcome): { ids: number[]; servedBy: string } {
    };
 }
 
+/** The ungated routes' queries, each answered live before the bind. */
+const SERVED = [
+   { query: "run: recent -> { group_by: id }", servedBy: "materialized" },
+   { query: "run: recent_q", servedBy: "query" },
+   { query: "run: ev_views -> last7", servedBy: "view" },
+];
+
+/** Rows with every value as a string (never through a double), sorted. */
+function exactRows(outcome: Outcome): string[] {
+   if ("error" in outcome) throw new Error(outcome.error);
+   return outcome.answer.rows
+      .map((r) =>
+         JSON.stringify(
+            Object.fromEntries(
+               Object.entries(r).map(([k, v]) => [k, String(v)]),
+            ),
+         ),
+      )
+      .sort();
+}
+
 describe("stored relations that read the current time, by route", () => {
    let fixture: LoadedFixture;
+   const live = new Map<string, Outcome>();
    useMaterializationOn();
    beforeAll(async () => {
       await freshLoadPool();
-      fixture = await (
-         await loadFixture({ "data/ev.csv": ROWS, "m.malloy": MODEL })
-      ).bind();
+      const loader = await loadFixture({
+         "data/ev.csv": ROWS,
+         "m.malloy": MODEL,
+      });
+      // The rows sit days inside the window, so a table built now holds
+      // live's answer.
+      for (const { query } of SERVED) {
+         live.set(query, await loader.run("m.malloy", query));
+      }
+      fixture = await loader.bind();
    }, 300_000);
    afterAll(async () => {
       await fixture?.dispose();
@@ -130,19 +159,23 @@ describe("stored relations that read the current time, by route", () => {
       );
    });
 
-   it("serves each from its table", async () => {
+   it("serves each from its table, equal to live", async () => {
       expect(
          answer(
             await fixture.run("m.malloy", "run: recent -> { group_by: id }"),
          ),
       ).toEqual({ ids: [1, 2], servedBy: "materialized" });
-      expect(
-         answer(await fixture.run("m.malloy", "run: recent_q")).servedBy,
-      ).toBe("query");
-      expect(
-         answer(await fixture.run("m.malloy", "run: ev_views -> last7"))
-            .servedBy,
-      ).toBe("view");
+      for (const { query, servedBy } of SERVED) {
+         const l = live.get(query)!;
+         const s = await fixture.run("m.malloy", query);
+         expect({ query, servedBy: answer(s).servedBy }).toEqual({
+            query,
+            servedBy,
+         });
+         expect(answer(l).servedBy).toBe("live");
+         expect(exactRows(l).length).toBeGreaterThan(0);
+         expect(exactRows(s)).toEqual(exactRows(l));
+      }
    });
 
    it("says so in the serve verdict", () => {

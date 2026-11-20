@@ -4,7 +4,13 @@
 import { quotedIdentifier, quotedPath, stringLiteral } from "./malloy_text";
 import { INCREMENTAL_NO_MERGE_KEY_CODE } from "./materialization/plan/incremental_policy";
 import { recordConnectionType } from "./connection_type";
-import { withNameProblems } from "./materialization";
+import { readUpstreamSchemas, withNameProblems } from "./materialization";
+import {
+   type UpstreamSchemaReadings,
+   type UpstreamTable,
+   upstreamSchemaFold,
+   upstreamTableKey,
+} from "./materialization/domain/upstream_schemas";
 import * as fs from "fs/promises";
 import * as path from "path";
 import { pathToFileURL } from "url";
@@ -106,6 +112,7 @@ import type {
    ChainBuildText,
 } from "./materialization/domain/chain_build";
 import type { KeptTable, LateRows } from "./materialization/domain/types";
+import { underCompilerKeys } from "./materialization/domain/binding";
 import {
    confinedPackagePath,
    errMessage,
@@ -396,6 +403,12 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
     * per-package or deprecated-usage metrics. See {@link Package.create}.
     */
    private dryRun = false;
+   /**
+    * This load is an explicit refresh (a reload, a publish): it reads its
+    * upstream tables' column types from their catalogs again rather than
+    * keep this process's readings (readUpstreamSchemas).
+    */
+   private refreshesUpstreamSchemas = false;
    /**
     * The package's materialization state: build plan, eligibility, bound
     * manifest, serve routing and persistence-policy findings.
@@ -1435,6 +1448,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       // Wrapped on its own so the 503 mapping never touches readDatabases' errors.
       const workerOutcome = loadOutcomeOrThrow(
          pool.loadPackage({
+            upstreamSchemas: readUpstreamSchemas,
             packagePath,
             packageName,
             environmentName,
@@ -1482,8 +1496,14 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             ),
          };
       }
+      // As Malloy reads it: each entry also under its compiler key.
       const buildManifest = compiledFor
-         ? toTableNameManifest(compiledFor.quoted)
+         ? underCompilerKeys(
+              { entries: toTableNameManifest(compiledFor.quoted) },
+              outcome.buildPlan?.ok
+                 ? outcome.buildPlan.packagePlan.compilerKeys
+                 : undefined,
+           ).entries
          : undefined;
       logger.info("Package load via worker pool completed", {
          packageName,
@@ -1572,6 +1592,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          modelPolicy,
       );
       pkg.dryRun = dryRun;
+      pkg.refreshesUpstreamSchemas = refreshSchemas;
       pkg.persistNameProblems = nameProblems;
       let reportTimings: Awaited<ReturnType<Package["discoverReports"]>>;
       let buildPlanMs: Awaited<
@@ -2238,6 +2259,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       return this.mz.refreshBuildPlan(async () => {
          const outcome = await loadOutcomeOrThrow(
             getPackageLoadPool().loadPackage({
+               upstreamSchemas: readUpstreamSchemas,
                packagePath: this.packagePath,
                packageName: this.packageName,
                environmentName: this.environmentName,
@@ -2702,6 +2724,88 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    }
 
    /**
+    * After a reload or publish of this package failed to compile, so this
+    * copy keeps serving: read again the tables its plan's sources read, and
+    * stop serving the stored tables of every source a column of whose
+    * tables that its build SQL names changed or is gone (its address would
+    * move), so they answer live as the warehouse now stands. A source whose tables did not change, or whose
+    * tables cannot be known (no `reads`), keeps serving. A read that fails
+    * keeps the table's last reading, so it changes nothing. Returns the
+    * names of the sources it stopped serving, with the tables that changed.
+    */
+   public async withdrawChangedUpstreams(): Promise<{
+      sources: string[];
+      tables: string[];
+   }> {
+      const known = this.mz.plan.upstreamSchemas;
+      const tables = Object.keys(known).map((key) => {
+         const [connectionName, table] = JSON.parse(key) as [string, string];
+         return { connectionName, table };
+      });
+      if (tables.length === 0) return { sources: [], tables: [] };
+      const now = await readUpstreamSchemas({
+         tables,
+         connection: (name) => this.getMalloyConnection(name),
+         refresh: true,
+      });
+      // A source moves when a column its build SQL names changed or is
+      // gone, as its address would (upstreamSchemaFold).
+      const moved = (reads: UpstreamTable[], sql: string) =>
+         upstreamSchemaFold(reads, known, sql) !==
+         upstreamSchemaFold(reads, now, sql);
+      const withdrawn = Object.entries(
+         this.mz.plan.servingPlan()?.sources ?? {},
+      ).filter(
+         ([, source]) =>
+            source.reads !== undefined && moved(source.reads, source.sql),
+      );
+      const names = [...new Set(withdrawn.map(([, s]) => s.name))].sort();
+      const tableNames = [
+         ...new Set(
+            withdrawn.flatMap(([, source]) =>
+               (source.reads ?? [])
+                  .filter((r) => moved([r], source.sql))
+                  .map((r) => r.table),
+            ),
+         ),
+      ].sort();
+      this.mz.plan.withdraw(withdrawn.map(([sourceID]) => sourceID));
+      return { sources: names, tables: tableNames };
+   }
+
+   /** See {@link BuildPlanPackage.readUpstreamSchemas}. */
+   public async readUpstreamSchemas(
+      tables: UpstreamTable[],
+      use: "load" | "run",
+   ): Promise<UpstreamSchemaReadings> {
+      const connection = (name: string) => this.getMalloyConnection(name);
+      if (use === "load") {
+         return readUpstreamSchemas({
+            tables,
+            connection,
+            refresh: this.refreshesUpstreamSchemas,
+         });
+      }
+      // A run addresses each source as the plan in force does: its load's
+      // readings, and a reading only of a table that plan did not read.
+      const known = this.mz.plan.upstreamSchemas;
+      const unknown = tables.filter((t) => !(upstreamTableKey(t) in known));
+      const read = unknown.length
+         ? await readUpstreamSchemas({
+              tables: unknown,
+              connection,
+              refresh: false,
+           })
+         : {};
+      return Object.fromEntries(
+         tables.map((t) => {
+            const key = upstreamTableKey(t);
+            return [key, known[key] ?? read[key]];
+         }),
+      );
+   }
+
+   /**
     * Quote each manifest table path for its connection's dialect, mirroring how
     * the builder CREATEs it: Malloy pastes `tableName` into `FROM` verbatim, so
     * on a case-folding engine the case-preserved name is reachable only quoted.
@@ -2891,7 +2995,11 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       // Each table's columns as its warehouse holds them now, read once for
       // this bind (one schema read per table), before the models move.
       const observed = await this.mz.readDatabaseColumns(entries);
-      const buildManifest = toTableNameManifest(entries);
+      // As Malloy reads it: each entry also under its compiler key.
+      const buildManifest = underCompilerKeys(
+         { entries: toTableNameManifest(entries) },
+         this.mz.plan.compilerKeys,
+      ).entries;
       const modelPaths = Array.from(this.models.keys());
       logger.info("Reloading all models with build manifest", {
          packageName: this.packageName,
@@ -2901,6 +3009,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
 
       const outcome = await loadOutcomeOrThrow(
          getPackageLoadPool().loadPackage({
+            upstreamSchemas: readUpstreamSchemas,
             packagePath: this.packagePath,
             packageName: this.packageName,
             environmentName: this.environmentName,

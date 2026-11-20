@@ -5,8 +5,8 @@
 -- ==== source order_summary
 -- sourceID: order_summary@<pkg>/persist_test.malloy
 -- connection: duckdb
--- sourceEntityId: 218fa4ffa546f2a111269e08a2004f00e5f76922c05e984890204e4a53107cb9
--- compiler key: 218fa4ffa546f2a111269e08a2004f00e5f76922c05e984890204e4a53107cb9 (the sourceEntityId)
+-- sourceEntityId: 4ab942004fa34a997237fa2e6b732c6b53cf7454f079c4345dea24a95d653bc6
+-- compiler key: 218fa4ffa546f2a111269e08a2004f00e5f76922c05e984890204e4a53107cb9
 -- build SQL:
 SELECT 
    base."category" as "category",

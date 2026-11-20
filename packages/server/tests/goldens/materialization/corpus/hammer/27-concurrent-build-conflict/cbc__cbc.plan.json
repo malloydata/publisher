@@ -71,6 +71,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.cbc_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "d5c5e31419d48ef5cffcad7a3d8deb0ba643457e57ded41ef7ac6650f7340c4d",
         "sourceID": "daily@<hammer>/cbc/cbc.malloy",

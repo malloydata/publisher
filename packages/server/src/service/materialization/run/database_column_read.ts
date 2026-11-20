@@ -25,7 +25,7 @@
 import { runAsInternalStatement } from "../../duckdb_lockdown";
 import { getDialect, type Connection } from "@malloydata/malloy";
 import { errMessage } from "../../../utils";
-import { tablePathParts } from "../../quoting";
+import { foldedTablePathParts, tablePathParts } from "../../quoting";
 import { connectionTypeOf } from "../../connection_type";
 import {
    ducklakeStoresAsDouble,
@@ -64,10 +64,48 @@ export async function observedDatabaseColumns(args: {
    /** Overrides {@link BIND_READ_TIMEOUT_MS} (a test's). */
    timeoutMs?: number;
 }): Promise<Map<string, ObservedColumns>> {
+   return readTableColumns({
+      tables: Object.entries(args.entries).map(([id, entry]) => ({
+         key: id,
+         connectionName: args.connectionNameOf(id),
+         tableName: entry.tableName,
+      })),
+      connection: args.connection,
+      ...(args.timeoutMs !== undefined ? { timeoutMs: args.timeoutMs } : {}),
+   });
+}
+
+/**
+ * Each table's columns as its warehouse's catalog holds them now, by the
+ * caller's key, or why they could not be read: the read
+ * {@link observedDatabaseColumns} makes, for any tables (the bind's bound
+ * tables, a load's upstream tables). Every key gets an answer; never throws.
+ */
+export async function readTableColumns(args: {
+   tables: readonly {
+      key: string;
+      /** Undefined: the table's connection is not known. */
+      connectionName: string | undefined;
+      /** Its path, unquoted and dot-separated. */
+      tableName: string;
+   }[];
+   connection: (connectionName: string) => Promise<ReadConnection>;
+   /**
+    * The names are a model's (`connection.table('...')`), which the
+    * warehouse resolves as SQL: each unquoted part is folded as the dialect
+    * folds it ({@link foldedTablePathParts}; Postgres lower-cases, Snowflake
+    * upper-cases). Otherwise the names are ones Publisher wrote, each part
+    * created quoted, so read with its case kept.
+    */
+   foldUnquoted?: boolean;
+   /** Overrides {@link BIND_READ_TIMEOUT_MS} (a test's). */
+   timeoutMs?: number;
+}): Promise<Map<string, ObservedColumns>> {
+   const pathParts = args.foldUnquoted ? foldedTablePathParts : tablePathParts;
    const out = new Map<string, ObservedColumns>();
    const byConnection = new Map<string, string[]>();
-   for (const id of Object.keys(args.entries)) {
-      const name = args.connectionNameOf(id);
+   const tableNameOf = new Map(args.tables.map((t) => [t.key, t.tableName]));
+   for (const { key: id, connectionName: name } of args.tables) {
       if (!name) {
          out.set(id, {
             unread: "connection_failed",
@@ -92,7 +130,7 @@ export async function observedDatabaseColumns(args: {
       const dialect = connection.dialectName;
       const tables: CatalogTable[] = [];
       for (const id of ids) {
-         const parts = tablePathParts(args.entries[id].tableName, dialect);
+         const parts = pathParts(tableNameOf.get(id)!, dialect);
          if (parts) tables.push({ key: id, parts });
          else out.set(id, { unread: "unparseable" });
       }

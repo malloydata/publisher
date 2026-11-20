@@ -31,6 +31,7 @@ const executeQueryModel = mock(
       _modelPath: string,
       _request: { versionId?: string },
       _includeHidden?: boolean,
+      _versionId?: string,
       _options?: { signal?: AbortSignal },
    ) => pending(),
 );
@@ -138,7 +139,7 @@ it("puts the filter warning under the heading and above the result", () => {
 
 // The request's own signal, as react-query handed it to `executeQueryModel`.
 const signalOf = (call: number) =>
-   executeQueryModel.mock.calls[call][5]?.signal as AbortSignal;
+   executeQueryModel.mock.calls[call][6]?.signal as AbortSignal;
 
 it("cancels a tile's request when the tile goes away", async () => {
    const { unmount } = render(tileAt("v1"), { wrapper: serverWrapper });

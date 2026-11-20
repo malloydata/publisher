@@ -71,6 +71,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.sk_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "7f47528f5b330add23b1b0e559e0011707575766a7e67fd9b384c23c4657831b",
         "sourceID": "daily@<hammer>/sk/sk.malloy",

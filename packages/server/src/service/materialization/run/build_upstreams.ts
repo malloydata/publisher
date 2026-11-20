@@ -16,6 +16,7 @@
  */
 
 import { declaredDestination, storageWritable } from "../domain/placement";
+import { underCompilerKeys } from "../domain/binding";
 import {
    buildSQLOf,
    compilerBuildId,
@@ -36,6 +37,7 @@ import { getPersistStorageMode } from "../../../config";
 import { groupAliasesByName, planSourceIds } from "../domain/source_aliases";
 import type { ApiConnection } from "../../model";
 import { packageRelativeText } from "../../../package_relative_text";
+import type { UpstreamSchemaReadings } from "../domain/upstream_schemas";
 
 /**
  * What a build needs from the plan about stored tables: which reached sources
@@ -174,24 +176,21 @@ export function manifestForCompiler(
          }
       }
    }
-   for (const [sourceID, address] of Object.entries(
-      planFacts.addressBySourceId,
-   )) {
-      const key = planFacts.compilerKeyBySourceId[sourceID];
-      if (
-         address === undefined ||
-         key === undefined ||
-         key === address ||
-         claimed.has(key) ||
-         !(address in entries) ||
-         key in entries
-      ) {
-         continue;
-      }
-      entries[key] = entries[address];
-      changed = true;
-   }
-   return changed ? { ...full, entries } : full;
+   const keyed = changed ? { ...full, entries } : full;
+   // Every other key: the first source with an entry fills it, as every
+   // manifest handed to Malloy is filed (underCompilerKeys).
+   return underCompilerKeys(
+      keyed,
+      Object.entries(planFacts.addressBySourceId).flatMap(
+         ([sourceID, address]) => {
+            const key = planFacts.compilerKeyBySourceId[sourceID];
+            return address === undefined || key === undefined
+               ? []
+               : [[address, key] as const];
+         },
+      ),
+      claimed,
+   );
 }
 
 /**
@@ -396,6 +395,8 @@ export function chainedPlanFacts(
    connectionDigests: Record<string, string>,
    /** The plan's table folds (RunPlan.tableFolds). */
    tableFolds: TableFolds | undefined,
+   /** The plan's upstream readings (RunPlan.upstreamSchemas). */
+   upstreamSchemas: UpstreamSchemaReadings | undefined,
    /**
     * The run's instruction for a source, when it has one: its `destination`
     * decides the source's current tier over the `storage=` annotation, since a
@@ -425,6 +426,7 @@ export function chainedPlanFacts(
             connectionDigests,
             undefined,
             tableFolds,
+            upstreamSchemas,
          );
          compilerKeyBySourceId[sourceID] = compilerBuildId(source);
       } catch {

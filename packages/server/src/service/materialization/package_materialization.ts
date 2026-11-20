@@ -60,6 +60,7 @@ import {
    makeSnapshot,
    pin,
    type Snapshot,
+   underCompilerKeys,
 } from "./domain/binding";
 import { observedDatabaseColumns } from "./run/database_column_read";
 import {
@@ -340,9 +341,17 @@ export class PackageMaterialization {
       };
    }
 
-   /** The bound manifest entries, or undefined when serving live; reused by /compile. */
+   /**
+    * The bound manifest entries as Malloy reads them (each also under its
+    * compiler key, underCompilerKeys), or undefined when serving live;
+    * reused by /compile.
+    */
    getBuildManifestEntries(): BuildManifest["entries"] | undefined {
-      return this.buildManifestEntries;
+      if (!this.buildManifestEntries) return undefined;
+      return underCompilerKeys(
+         { entries: this.buildManifestEntries },
+         this.plan.compilerKeys,
+      ).entries;
    }
 
    /**
@@ -373,6 +382,19 @@ export class PackageMaterialization {
       return pin(this.snapshot(), new Date(now)).compilerManifest.entries;
    }
 
+   /**
+    * {@link getFreshBuildManifest} as Malloy reads it: each entry also under
+    * its compiler key (underCompilerKeys). What a compile is handed.
+    */
+   getFreshCompilerManifest(
+      now: number = Date.now(),
+   ): BuildManifest["entries"] | undefined {
+      const fresh = this.getFreshBuildManifest(now);
+      if (!fresh) return undefined;
+      return underCompilerKeys({ entries: fresh }, this.plan.compilerKeys)
+         .entries;
+   }
+
    /** Point every model's policy at this package's snapshot; idempotent. */
    wireServingResolvers(): void {
       this.owner.modelPolicy().setServingResolvers({
@@ -400,6 +422,8 @@ export class PackageMaterialization {
          plan.materializePlans,
          plan.databaseSourceEligibility,
          plan.asOfBuild,
+         plan.withdrawn,
+         plan.compilerKeys,
          this.owner.models(),
          getMaterializeEnabled(),
       ];
@@ -443,6 +467,8 @@ export class PackageMaterialization {
                     addresses.has(id) ? { ...e, asOfBuild: true } : e,
                  ]),
               ),
+         plan.withdrawn,
+         plan.compilerKeys,
       );
       this.snapshotMemo = { key, snapshot, signature };
       return snapshot;

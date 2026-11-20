@@ -50,6 +50,7 @@ import { reachableSourceIDs, SourceMap } from "./text/source_map";
 import {
    entryPointGateExprs,
    gateColumnTypesOf,
+   gateColumnUpstreamTypesOf,
    gateReads,
 } from "./serve/gate_reads";
 import { ownLevelNotes, type AnnotationsDef } from "../annotations";
@@ -902,7 +903,10 @@ function storageGateRead(
    storageBindings: readonly Binding[],
    buildPlan: BuildPlan | undefined,
    models: Map<string, Model>,
-): Pick<TableRead, "gateColumnTypes" | "gatesReadNoColumn"> {
+): Pick<
+   TableRead,
+   "gateColumnTypes" | "gateColumnUpstreamTypes" | "gatesReadNoColumn"
+> {
    const bound = storageBindings.filter((b) => b.sourceIDs?.includes(sourceID));
    if (bound.length === 0) return { gateColumnTypes: [] };
    const found = gatedDefOf(sourceID, buildPlan, models);
@@ -922,10 +926,18 @@ function storageGateRead(
       !reads.unresolved &&
       reads.columns.length === 0 &&
       reads.names.size === 0;
+   // What each stored gate column copies, aligned with the types.
+   const upstream = gateColumnUpstreamTypesOf(
+      reads,
+      bound.map((b) => b.schema),
+      bound.map((b) => b.upstreamSchemas),
+   );
+   const listed = !types.some((t) => t === undefined);
    return {
-      gateColumnTypes: types.some((t) => t === undefined)
-         ? undefined
-         : types.flatMap((t) => t ?? []),
+      gateColumnTypes: listed ? types.flatMap((t) => t ?? []) : undefined,
+      ...(listed
+         ? { gateColumnUpstreamTypes: upstream.flatMap((u) => u ?? []) }
+         : {}),
       ...(readsNoColumn ? { gatesReadNoColumn: true } : {}),
    };
 }

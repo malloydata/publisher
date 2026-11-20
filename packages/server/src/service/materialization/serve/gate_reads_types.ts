@@ -12,6 +12,16 @@ import type { QueryMaterializer } from "@malloydata/malloy";
 import type { TableRead } from "../domain/gate_policy";
 
 /** What an entry point's row-level gates read. */
+/** A column of a warehouse table, as a model names it. */
+export interface ColumnOrigin {
+   /** The `.table()` source's connection. */
+   readonly connectionName: string;
+   /** Its table path, as `PersistSourcePlan.reads` names it. */
+   readonly table: string;
+   /** The column's name in that table. */
+   readonly column: string;
+}
+
 export interface GateReads {
    /**
     * Every name the gates read, and every field those are computed from,
@@ -25,6 +35,15 @@ export interface GateReads {
     * base column's), any of which a stored table may hold it under.
     */
    readonly columns: readonly (readonly string[])[];
+   /**
+    * For each of {@link columns}, by position, the warehouse table column it
+    * is a plain read of (a field of a `.table()` source with no expression,
+    * through renames and joins), or undefined when anything computes it on
+    * the way (an expression, a query stage). What a stored copy's gate
+    * column holds a copy of, which the gate policy reads its upstream type
+    * by. Absent: none known.
+    */
+   readonly columnOrigins?: readonly (ColumnOrigin | undefined)[];
    /**
     * A name the gates read that could not be followed to a column: a reader
     * that judges the columns must fail closed.

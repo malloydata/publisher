@@ -83,6 +83,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.sdn_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "a8702976689f31731c0c2904586ca9bb0390bd723fd0813d853bbb3bfd497663",
         "sourceID": "alpha@<hammer>/sdn/sdn.malloy",
@@ -111,6 +117,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.sdn_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "0dcc17e646267ab8d386e6c77720e6540a83bc187e56d0e37f0e12754b6dd654",
         "sourceID": "beta@<hammer>/sdn/sdn.malloy",

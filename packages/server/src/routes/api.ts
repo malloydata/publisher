@@ -27,6 +27,7 @@ import {
    assertListingTakesNoVersionId,
    booleanParam,
    optionalBooleanParam,
+   createBodyWithVersionId,
    queryVersionRefOf,
    assertNoCollectionReload,
    assertNoDropTables,
@@ -907,7 +908,7 @@ function registerMaterializationRoutes(
             materializationController.createMaterialization(
                req.params.environmentName,
                req.params.packageName,
-               req.body || {},
+               createBodyWithVersionId(req),
             ),
          { status: 201 },
       ),

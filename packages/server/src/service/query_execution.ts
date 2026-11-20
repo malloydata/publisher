@@ -20,7 +20,9 @@ import * as Malloy from "@malloydata/malloy-interfaces";
 import { getDefaultQueryRowLimit } from "../config";
 import {
    BadRequestError,
+   ConnectionError,
    databaseAccessFailure,
+   ResultShapeError,
    storageAccessFailure,
 } from "../errors";
 import { redactStorageUrls } from "../pg_helpers";
@@ -28,6 +30,7 @@ import { logger } from "../logger";
 import { type QueryCapSource } from "../query_cap_metrics";
 import { bigIntReplacer } from "../json_utils";
 import { wrapWithCorrectDrillMetadata } from "./drill_metadata";
+import { fillDeclaredRecordKeys } from "./result_records";
 import {
    assertWithinModelByteLimit,
    assertWithinModelRowLimit,
@@ -173,7 +176,8 @@ export function serializeWithinCaps(
    },
 ): { wrapped: Malloy.Result; serialized: string } {
    assertWithinModelRowLimit(result.totalRows, caps.maxRows, caps.source);
-   const wrapped = wrapWithCorrectDrillMetadata(result);
+   fillDeclaredRecordKeys(result);
+   const wrapped = wrapResultShape(result);
    const serialized = stringifyQueryResponse(
       caps.compact ? result.data.value : wrapped,
       result.totalRows,
@@ -183,6 +187,64 @@ export function serializeWithinCaps(
    );
    assertWithinModelByteLimit(serialized, caps.maxBytes, caps.source);
    return { wrapped, serialized };
+}
+
+/**
+ * Wrap the result, reading a value Malloy cannot convert as a row the
+ * database returned that does not fit the result's schema
+ * ({@link ResultShapeError}, a 502), not as a server crash or the caller's
+ * bad query. Any other throw (a bug in Publisher's own drill-metadata code,
+ * say) is rethrown unchanged.
+ */
+function wrapResultShape(result: Result): Malloy.Result {
+   try {
+      return wrapWithCorrectDrillMetadata(result);
+   } catch (err) {
+      if (!isValueConversionFailure(err)) throw err;
+      logger.error("Query result does not fit its schema", {
+         error: err instanceof Error ? err.message : String(err),
+         connection: result.connectionName,
+      });
+      throw new ResultShapeError({ cause: err });
+   }
+}
+
+/**
+ * The messages Malloy's result wrapper (`API.util.wrapResult`, its
+ * `mapValue` and `rowDataToNumber`) throws on a value its field's type
+ * cannot hold.
+ */
+const VALUE_CONVERSION_MESSAGE =
+   /^(?:Invalid (?:boolean|string|array) |Invalid record in result |Cannot convert \w+ to number: )/;
+
+/**
+ * The functions of Malloy's row mapping (`api/util.js`'s `mapData`,
+ * `mapValue`, `mapRow`, and `row_data_utils.js`'s `rowDataTo*`), as a stack
+ * frame names them.
+ */
+const ROW_MAPPING_FRAME = /\bat (?:mapData|mapValue|mapRow|rowDataTo\w+) /;
+
+/**
+ * Whether `err` is Malloy's wrapper refusing a value: one of its own
+ * messages, the `RangeError` a date or timestamp no date parses raises
+ * (`rowDataToDate(value).toISOString()`: "Invalid time value" in V8,
+ * "Invalid Date" in Bun), or a `TypeError` its row mapping raised on a
+ * value, told by the throwing frame rather than by the engine's wording.
+ */
+function isValueConversionFailure(err: unknown): boolean {
+   if (!(err instanceof Error)) return false;
+   if (err instanceof RangeError) {
+      return /^Invalid (?:time value|Date)$/.test(err.message);
+   }
+   if (err instanceof TypeError) {
+      return ROW_MAPPING_FRAME.test(throwingFrameOf(err));
+   }
+   return VALUE_CONVERSION_MESSAGE.test(err.message);
+}
+
+/** The first stack frame of `err`: the function that threw. */
+function throwingFrameOf(err: Error): string {
+   return (err.stack ?? "").split("\n").find((l) => /^\s*at /.test(l)) ?? "";
 }
 
 type ErrorClass = abstract new (...args: never[]) => Error;
@@ -211,9 +273,10 @@ interface RunErrorContext {
 /**
  * Map a failure from preparing or running a query onto the error the caller
  * sees. Bad client-supplied givens surface as a Malloy `runtime-given-*` error
- * and become a 400 carrying Malloy's message; a `MalloyError` (and any
- * `passThrough` class) keeps its own mapping; a database that could not be
- * reached or refused the credentials is a 502/424; anything else is a 400.
+ * and become a 400 carrying Malloy's message; a `MalloyError`, a
+ * {@link ConnectionError} (a truncated page, a misshapen row, an exhausted
+ * pool) and any `passThrough` class keeps its own mapping; a database that could not be reached or refused the credentials is
+ * a 502/424; anything else is a 400.
  */
 export function mapRunError(
    err: unknown,
@@ -241,6 +304,9 @@ export function mapRunError(err: unknown, ctx: RunErrorContext): void {
    }
 
    if (err instanceof MalloyError) throw err;
+   // A classified database failure (truncated page, misshapen row, exhausted
+   // pool, unreachable database) keeps its own status on every run path.
+   if (err instanceof ConnectionError) throw err;
    for (const passThrough of ctx.passThrough) {
       if (err instanceof passThrough) throw err;
    }

@@ -87,6 +87,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.sim_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "bca6f544d948e815fb8e735b47787915a4b52dbcc87e7d257e951af41ab7e5d3",
         "sourceID": "daily@<hammer>/sim/orders.malloy",
@@ -111,6 +117,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.sim_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "cc7a8093a2fc454e407e504b031e3bf381b1d4004d6bc8b76e9e95f6898cf179",
         "sourceID": "weekly@<hammer>/sim/orders.malloy",

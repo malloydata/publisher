@@ -87,6 +87,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.chsh_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "14cd99945cf6383c589b20d1da469f2fb6dd934a468e023a6c8e0e821cbfc97e",
         "sourceID": "daily@<hammer>/chsh/report.malloy",
@@ -111,6 +117,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.chsh_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "baeb6cb10acd9d2b5f362b3a0c0bd0288018046d5aa7b6becf25ba279a848f1c",
         "sourceID": "rollup@<hammer>/chsh/report.malloy",

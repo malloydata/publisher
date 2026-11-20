@@ -25,6 +25,7 @@ import type {
    SourceBuild,
 } from "./package_plan";
 import type { MaterializePlan, TablePlan } from "./table_plans";
+import type { UpstreamSchemaReadings } from "./upstream_schemas";
 
 export type { SourceBuild } from "./package_plan";
 
@@ -47,6 +48,14 @@ export interface CompiledBuildPlan<Finding = unknown> {
    tables: Record<string, TablePlan>;
    connectionDigests: Record<string, string>;
    /**
+    * Each table the plan's sources read, with its columns' native types as
+    * the load read them from the warehouse's catalog, by `upstreamTableKey`
+    * (`domain/upstream_schemas.ts`). Every address folds the readings of the
+    * tables its source reads. Pass it to every address computation of a plan
+    * source, with `tableFolds`. Absent: none read (a spec's plan).
+    */
+   upstreamSchemas?: UpstreamSchemaReadings;
+   /**
     * Each connection's configured type, by name (`postgres`, `duckdb`,
     * `ducklake`, ...), resolved through the package, so the package's DuckDB
     * sandbox reads `duckdb`. Data, like the digests, so the plan derives the
@@ -54,6 +63,12 @@ export interface CompiledBuildPlan<Finding = unknown> {
     * (materialization_eligibility.ts). Absent: none recorded.
     */
    connectionTypes?: Record<string, string>;
+   /**
+    * The connections configured `managed` (a catalog an orchestrator
+    * provisions, whose tables are built inside the catalog by SQL Malloy
+    * generates), by name, sorted. Data, as `connectionTypes` is. Absent: none.
+    */
+   managedConnections?: string[];
    connections: Map<string, MalloyConnection>;
    /**
     * The package is a published version of a `scope: "version"` package:

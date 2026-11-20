@@ -71,6 +71,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.rmc_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "722f756bd9cf5de205e4b9a4471bb23b9c071d1a95a7bc6f4bb92916fac5a95e",
         "sourceID": "daily@<hammer>/rmc/rmc.malloy",

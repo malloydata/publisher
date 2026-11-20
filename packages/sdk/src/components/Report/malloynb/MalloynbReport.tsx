@@ -55,6 +55,8 @@ export function MalloynbReport({
                ...(Object.keys(request).length > 0 ? { givens: request } : {}),
             },
             undefined,
+            // versionId: carried in the body.
+            undefined,
             { signal },
          );
          return { result: response.data.result };

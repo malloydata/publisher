@@ -1680,7 +1680,7 @@ paths:
         DEPRECATED. In-place mutation of a package contradicts immutable versions, so this
         operation will be removed. On a package that has published versions it changes only
         what is not content: a `manifestLocation` URI is bound to the package's `latest` version
-        (as `PUT .../packages/{packageName}/versions/{version}/manifest` does for any version),
+        (as `PUT .../packages/{packageName}/versions/{versionId}/manifest` does for any version),
         while a null or empty one leaves the binding as it is (clear it with that route), and
         `description` is the package's. `name` and the `location` the version was published from
         may be sent back unchanged. Any other change is refused with 409 (`reason`
@@ -1780,8 +1780,8 @@ paths:
         background, cleans up each version as deleting it alone does: its own auto-runs still
         running are stopped and its own `scope: version` tables reclaimed. To take one
         version out of service while keeping the rest, archive it with
-        `PATCH .../packages/{packageName}/versions/{version}`; to remove one version for good,
-        delete it with `DELETE .../packages/{packageName}/versions/{version}`.
+        `PATCH .../packages/{packageName}/versions/{versionId}`; to remove one version for good,
+        delete it with `DELETE .../packages/{packageName}/versions/{versionId}`.
       parameters:
         - name: environmentName
           in: path
@@ -1846,7 +1846,7 @@ paths:
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
-  /environments/{environmentName}/packages/{packageName}/versions/{version}:
+  /environments/{environmentName}/packages/{packageName}/versions/{versionId}:
     get:
       tags:
         - versions
@@ -1893,7 +1893,7 @@ paths:
           table is tried once: one that cannot be dropped is left, and its run record goes all
           the same. Its
           files stay on disk, so it can be unarchived. To remove them, delete the version with
-          `DELETE .../versions/{version}`.
+          `DELETE .../versions/{versionId}`.
         - `unarchive` puts it back in service. It loads again on its next read, and serves live
           until it is built again.
 
@@ -1996,7 +1996,7 @@ paths:
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
-  /environments/{environmentName}/packages/{packageName}/versions/{version}/manifest:
+  /environments/{environmentName}/packages/{packageName}/versions/{versionId}/manifest:
     put:
       tags:
         - versions
@@ -2407,6 +2407,10 @@ paths:
         fails only at the grammar and names no source to run (for example `run` with no colon) is also
         a 400, because a grammar error says nothing about the model, unless the model carries any
         `#(authorize)` or `#(access_filter)`, or the text joins a source off the surface.
+
+        The version queried may be named in the body (`QueryRequest.versionId`), in the URL
+        (`?versionId=`), or both. When both name a version and they differ, the request answers
+        400 with `reason` VERSION_ID_INVALID; an empty value in either names none.
       parameters:
         - name: environmentName
           in: path
@@ -2427,6 +2431,7 @@ paths:
           schema:
             $ref: "#/components/schemas/PathPattern"
         - $ref: "#/components/parameters/includeHiddenFilesAndSources"
+        - $ref: "#/components/parameters/versionId"
       requestBody:
         required: true
         content:
@@ -3561,6 +3566,12 @@ paths:
             plan (read off `Package.buildPlan`). Returns the materialization already building.
           * Auto-run (standalone, default) — omit `buildInstructions`; the publisher
             self-assigns names and runs all phases in one pass.
+
+        The version to build is named in the body (`versionId`). A `?versionId=` in the URL,
+        as every other materialization operation takes, is read too; when both name a version
+        and they differ, the request answers 400 with `reason` VERSION_ID_INVALID, and an empty
+        value in either names none. It is not declared as a parameter here: an optional query
+        parameter would move the optional body argument of every generated client.
       parameters:
         - $ref: "#/components/parameters/environmentName"
         - $ref: "#/components/parameters/packageName"
@@ -4196,6 +4207,13 @@ components:
         succeed. That reason is what marks the customer's database being down
         rather than this server failing. The body carries a fixed message,
         because the driver's text can name an internal host; it is logged.
+        With `reason: RESULT_TRUNCATED` the database answered, but with fewer
+        rows than it reported and no row limit cut them (a BigQuery answer past
+        one results page of about 10 MB); the query is refused rather than
+        answered short, and a retry fails the same way. With
+        `reason: RESULT_SHAPE_MISMATCH` the database answered, but a row does
+        not fit the schema Malloy declared for the result, so the result could
+        not be built; the message is fixed and the cause is logged.
       content:
         application/json:
           schema:
@@ -4378,7 +4396,7 @@ components:
           description: >-
             The build manifest this version is bound to (see
             `Package.manifestLocation`); null when it serves live. Set with
-            `PUT .../versions/{version}/manifest`.
+            `PUT .../versions/{versionId}/manifest`.
         gitCommitSha:
           type: ["string", "null"]
           readOnly: true
@@ -8124,10 +8142,9 @@ components:
             empty, the query runs against the package's `latest` version. An unknown version
             answers 404 (`reason` VERSION_NOT_FOUND) and an archived one 410
             (`reason` VERSION_ARCHIVED). A `versionId` in the request's query
-            string, as a proxy forwarding a page's URL sends, is read the same way;
-            when both name a version they must agree, or the request answers 400.
-            It is not declared as a query parameter, so generated clients keep
-            their argument order.
+            string (the operation's `versionId` parameter) is read the same way;
+            when both name a version they must agree, or the request answers 400
+            with `reason` VERSION_ID_INVALID.
         filterParams:
           type: object
           deprecated: true
@@ -9827,6 +9844,19 @@ components:
             are fine; retrying elsewhere will not help, and neither will
             rewriting the query.
 
+            RESULT_TRUNCATED, on a 502, means the database returned fewer rows
+            than it reported and no row limit cut them: a BigQuery answer
+            larger than one results page (about 10 MB) whose later pages were
+            not read. The query is refused rather than answered short.
+            Retrying returns the same page; select fewer columns, aggregate,
+            or return fewer rows.
+
+            RESULT_SHAPE_MISMATCH, on a 502, means the database answered but a
+            row does not fit the schema Malloy declared for the result (a value
+            of another type than its column's), so the result could not be
+            built. The query is not the caller's to fix; the server logs the
+            cause.
+
             CONNECTION_AUTH_FAILED, on a 424, means the database rejected the
             connection's credentials (a wrong password, an invalid key, an
             expired token), so the query never ran. Whoever configures the
@@ -9936,8 +9966,8 @@ components:
               * VERSION_ARCHIVED (410): the version is archived.
 
             Known values: TABLE_NOT_FOUND, CONNECTION_FAILED,
-            CONNECTION_AUTH_FAILED, CONNECTION_NOT_FOUND,
-            STORAGE_ACCESS_DENIED, PATH_ACCESS_DENIED, ACCESS_DENIED,
+            CONNECTION_AUTH_FAILED, CONNECTION_NOT_FOUND, RESULT_TRUNCATED,
+            RESULT_SHAPE_MISMATCH, STORAGE_ACCESS_DENIED, PATH_ACCESS_DENIED, ACCESS_DENIED,
             MATERIALIZATION_REFUSED, TABLE_OWNED_ELSEWHERE,
             TABLE_OWNERSHIP_UNVERIFIED, TABLE_IN_USE, BUILD_INSTRUCTIONS_INVALID,
             MATERIALIZATION_CONFLICT, MANIFEST_VERSION_MISSING, MANIFEST_VERSION_INVALID,
@@ -10282,9 +10312,12 @@ components:
             The published version of the package to build. `latest`, omitted or
             empty, the package's `latest` version is built. An unknown version answers 404
             (`reason` VERSION_NOT_FOUND) and an archived one 410 (`reason`
-            VERSION_ARCHIVED). Carried in the body rather than the query string
-            because the body is optional: a new optional query parameter ahead
-            of it would move the body argument of every generated client.
+            VERSION_ARCHIVED). Carried in the body rather than a declared query
+            parameter because the body is optional: a new optional query
+            parameter ahead of it would move the body argument of every
+            generated client. A `?versionId=` in the URL is read too, and must
+            agree with this one when both name a version (400
+            VERSION_ID_INVALID otherwise).
 
             The run records the version it built in `metadata.versionId`, with
             the package's materialization scope in `metadata.scope`, which
@@ -10790,6 +10823,7 @@ components:
               partial_name_collision,
               given_where_over_unstored_field,
               unreadable_grain,
+              upstream_unread,
             ]
           description: >-
             The bounded refusal reason; `message` says the specifics.
@@ -10829,7 +10863,12 @@ components:
             give no container; refused at plan, before any warehouse work);
             `storage_source_unsupported` (`storage=` on a
             source whose connection the build cannot pass through to a
-            destination, e.g. the package's DuckDB sandbox);
+            destination, e.g. the package's DuckDB sandbox; or a source that
+            carries author SQL, an `.sql()` source, a `sql_*` expression or a
+            file or URL read as a table, whose table would be built inside a
+            catalog, which runs only SQL Malloy generated: a `storage=` source
+            on a DuckLake connection, or a source of any tier on a connection
+            configured `managed`);
             `table_name_collision` (under `PERSIST_COLLISION_ENFORCE=false`, a
             declaration whose `name=` puts it on one table with another, so
             neither is built; by default such a package does not load; a run
@@ -10841,7 +10880,13 @@ components:
             source's own extend block is applied at every read and is
             admitted); `incremental_unsupported` (a valid incremental
             declaration this deployment's dialect or destination cannot
-            honour).
+            honour); `upstream_unread` (a table its build reads could not be
+            read from its warehouse's catalog when the package loaded, after
+            retrying, and this process has no earlier reading of it, so its
+            content address is not known: it is not built, no run builds it,
+            and a host's instruction for it is refused, until a reload or a
+            plan refresh reads the catalog and plans it at its address; the
+            `*-not-built` warning names the table).
 
 
             A persisted view or named query: `materialization_off` (persisted
@@ -10920,6 +10965,15 @@ components:
             declaration's `*-not-built` warning. For a `#@ persist` gate
             refusal it is the same text a build attempting the source would
             422 with.
+        freshness:
+          $ref: "#/components/schemas/Freshness"
+          description: >-
+            The freshness the refused source declares, resolved as a planned
+            source's is (source, then model file, then package). A package
+            `materialization.schedule` beside it is refused at publish as
+            beside a planned source's: a refused source declares its window
+            all the same. Absent when it declares none, or when the refusal
+            comes from an annotation finding rather than the plan.
 
     BuildGraph:
       type: object
@@ -11196,6 +11250,41 @@ components:
           description: Output schema of the source.
           items:
             $ref: "#/components/schemas/Column"
+        reads:
+          type: array
+          items:
+            $ref: "#/components/schemas/TableRead"
+          description: >-
+            The warehouse tables this entry's build reads, distinct and sorted
+            by connection then table: each `connection.table('...')` in the
+            source's lineage, read off the same fully inlined definition `sql`
+            and `sourceEntityId` are computed from. A table a persisted
+            upstream reads is therefore listed here too, since this source's
+            rows derive from it. A join is listed only when the build reads it
+            (a field, filter or nest of the build reaches it); a join the
+            source declares and the build never uses is not.
+
+
+            Absent when the tables cannot be known: the lineage holds an
+            `.sql()` source (its SQL text names tables Malloy does not parse)
+            or a raw SQL expression such as `sql_number()` (which may hold a
+            subquery). A host that rebuilds only the entries reading a replaced
+            table MUST treat an absent `reads` as possibly reading any table on
+            its connection, and an empty one as reading none. Not part of
+            `sourceEntityId`.
+        upstreamSchemas:
+          type: array
+          items:
+            $ref: "#/components/schemas/UpstreamTableSchema"
+          description: >-
+            Each table in `reads` with its columns' types as its warehouse's
+            catalog named them when this package was loaded (or why it could
+            not be read). Part of `sourceEntityId`: a table whose columns or
+            types change re-addresses every source that reads it, so its table
+            is rebuilt rather than carried or reused. Read at the package's
+            first load in a process and again on every explicit reload or
+            publish. Absent when `reads` is absent: such a source's address is
+            its SQL's alone.
         annotationFields:
           type: object
           additionalProperties:
@@ -11267,6 +11356,68 @@ components:
             `#@ preaggregate` annotations it was synthesized from, which is where
             an author would go to change it.
 
+    UpstreamTableSchema:
+      type: object
+      required: [connectionName, table]
+      description: >-
+        One warehouse table a persist source's build reads, with its columns'
+        types as the warehouse's own catalog names them (`NUMERIC(12,4)`,
+        `FLOAT64`, `DOUBLE`), read when the package was loaded. Exactly one of
+        `columns` and `unread` is present.
+      properties:
+        connectionName:
+          type: string
+          description: The Malloy connection the table is read through, as in `TableRead`.
+        table:
+          type: string
+          description: The table path exactly as the model wrote it, as in `TableRead`.
+        dialect:
+          type: string
+          description: >-
+            The dialect of the connection the types are named in (`snowflake`,
+            `postgres`, `standardsql`, `duckdb`, ...): one type name means
+            different types on different dialects (Snowflake's `FLOAT` is a
+            double, DuckDB's a 4-byte float). Present with `columns`.
+        columns:
+          type: array
+          description: Each column, in catalog order, with its native type.
+          items:
+            type: object
+            required: [name, nativeType]
+            properties:
+              name:
+                type: string
+              nativeType:
+                type: string
+        unread:
+          type: string
+          enum: [no_catalog, not_found, ambiguous, read_failed]
+          description: >-
+            Why the table has no columns here. `no_catalog`: its dialect gives
+            this table no catalog to read (an unqualified BigQuery name, a path
+            the catalog cannot parse). `not_found`: the catalog holds no such
+            table (a BigQuery wildcard table, a table not created yet).
+            `ambiguous`: an unqualified name the catalog holds in more than one
+            schema. These three are stable and fold into the address.
+            `read_failed`: the catalog read failed and no earlier reading of
+            the table was known in this process; the plan refuses each source
+            that reads it (`upstream_unread`), so no address folds it.
+    TableRead:
+      type: object
+      required: [connectionName, table]
+      description: One warehouse table a persist source's build reads.
+      properties:
+        connectionName:
+          type: string
+          description: >-
+            The Malloy connection the table is read through, as the model names
+            it (the `lake` of `lake.table('orders')`).
+        table:
+          type: string
+          description: >-
+            The table path exactly as the model wrote it inside `.table('...')`
+            (e.g. `analytics.orders`), unquoted and unqualified by anything the
+            connection adds; on DuckDB it may be a file path or URL.
     PreaggregatePlan:
       type: object
       description: >-
@@ -11935,6 +12086,18 @@ components:
             producer did not record it.
           items:
             $ref: "#/components/schemas/Column"
+        upstreamSchemas:
+          type: array
+          description: >-
+            The warehouse tables this table's build read, each with its columns'
+            native types as the build's plan read them from the catalog (the
+            plan's `PersistSourcePlan.upstreamSchemas`), on both tiers. The
+            `sourceEntityId` folds them in, so an entry whose upstream was
+            retyped since is never the current address's. A host that stores
+            entries keeps this field as written. Absent on an entry built
+            before 0.17.0, and for a source whose tables cannot be known.
+          items:
+            $ref: "#/components/schemas/UpstreamTableSchema"
         realization:
           allOf:
             - $ref: "#/components/schemas/Realization"
@@ -12240,10 +12403,14 @@ components:
 
         Build metadata must be percent-encoded: send `1.2.0+build.5` as
         `1.2.0%2Bbuild.5`, since a bare `+` in a query string decodes to a space.
+
+        Accepted: `latest`, empty, or a semantic version. The schema carries no
+        pattern on purpose: a validator generated from one would refuse `latest`
+        and the empty value.
       schema:
         type: string
     versionPath:
-      name: version
+      name: versionId
       in: path
       required: true
       description: |

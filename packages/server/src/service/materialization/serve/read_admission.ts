@@ -44,6 +44,7 @@ import type { GateSwitches, TableRead } from "../domain/gate_policy";
 import { LegDecline } from "../domain/leg_decline";
 import {
    gateColumnTypesOf,
+   gateColumnUpstreamTypesOf,
    gateReadsOfQuery,
    queryFilterReadsOfQuery,
 } from "./gate_reads";
@@ -535,6 +536,17 @@ async function withGateColumnTypes(
       storage.map((t) => (t as Partial<Pick<Binding, "schema">>).schema),
    );
    const typeOf = new Map(storage.map((t, i) => [t, types[i]]));
+   // What each stored gate column copies, for a float the policy may read as
+   // exact (`gateColumnUpstreamTypes`).
+   const upstreamTypes = gateColumnUpstreamTypesOf(
+      reads,
+      storage.map((t) => (t as Partial<Pick<Binding, "schema">>).schema),
+      storage.map(
+         (t) =>
+            (t as Partial<Pick<Binding, "upstreamSchemas">>).upstreamSchemas,
+      ),
+   );
+   const upstreamTypeOf = new Map(storage.map((t, i) => [t, upstreamTypes[i]]));
    const held = new Set((reads?.columns ?? []).flat());
    // Locks only: the gates name no field at all, so no stored row can change
    // their outcome (the gate policy's `gatesReadNoColumn`).
@@ -545,9 +557,11 @@ async function withGateColumnTypes(
       reads.names.size === 0;
    return tables.map((t) => {
       if (t.tier === "storage") {
+         const upstream = upstreamTypeOf.get(t);
          return {
             ...t,
             gateColumnTypes: typeOf.get(t),
+            ...(upstream ? { gateColumnUpstreamTypes: upstream } : {}),
             ...(readsNoColumn ? { gatesReadNoColumn: true } : {}),
          };
       }

@@ -1763,7 +1763,7 @@ source: stored is base -> { group_by: region; aggregate: c is count() }`;
 
    it("decides by the recorded type, not the connection's name", async () => {
       const source = (await persistSources(model)).stored;
-      for (const type of ["postgres", "bigquery", "snowflake", "ducklake"]) {
+      for (const type of ["postgres", "bigquery", "snowflake"]) {
          expect(() =>
             assertTierEligible(source, true, {
                connectionTypes: { duckdb: type },
@@ -1779,6 +1779,52 @@ source: stored is base -> { group_by: region; aggregate: c is count() }`;
             ).reason,
          ).toBe("storage_source_unsupported");
       }
+   });
+
+   it("refuses a DuckLake source that carries author SQL, which its catalog's build never runs", async () => {
+      const source = (await persistSources(model)).stored;
+      const err = refusalOf(() =>
+         assertTierEligible(source, true, {
+            connectionTypes: { duckdb: "ducklake" },
+         }),
+      );
+      expect(err.reason).toBe("storage_source_unsupported");
+      expect(err.message).toContain(
+         "connection 'duckdb' is a DuckLake catalog",
+      );
+      expect(err.message).toContain("carries SQL its author wrote");
+   });
+
+   it("admits a DuckLake source over the catalog's own tables", async () => {
+      const duckdb = connections.lookupConnection("duckdb");
+      await (
+         await duckdb
+      ).runSQL(
+         "CREATE TABLE IF NOT EXISTS lake_orders AS SELECT 1 AS amount, 'US' AS region",
+      );
+      const source = (
+         await persistSources(`##! experimental.persistence
+source: base is duckdb.table('lake_orders')
+#@ persist storage="lake"
+source: stored is base -> { group_by: region; aggregate: c is count() }`)
+      ).stored;
+      expect(() =>
+         assertTierEligible(source, true, {
+            connectionTypes: { duckdb: "ducklake" },
+         }),
+      ).not.toThrow();
+   });
+
+   it("refuses a database-tier source over author SQL on a managed connection only", async () => {
+      const source = (await persistSources(model)).stored;
+      const err = refusalOf(() =>
+         assertTierEligible(source, false, { managedConnections: ["duckdb"] }),
+      );
+      expect(err.reason).toBe("storage_source_unsupported");
+      expect(err.message).toContain("is a managed database");
+      expect(() =>
+         assertTierEligible(source, false, { managedConnections: ["other"] }),
+      ).not.toThrow();
    });
 
    it("leaves a connection with no recorded type to the build", async () => {

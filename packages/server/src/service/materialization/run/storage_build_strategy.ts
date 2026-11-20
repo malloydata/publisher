@@ -110,7 +110,7 @@ import {
    wrongTierDetail,
 } from "./build_upstreams";
 import { redactConnectionSecrets } from "./connection_redaction";
-import { carriesAuthorSql, isSameCatalog } from "./same_catalog_build";
+import { carriesAuthorSql, isSameCatalog } from "../domain/same_catalog_build";
 import { compiledTextReader } from "../../../utils";
 import {
    destinationSchemaOf,

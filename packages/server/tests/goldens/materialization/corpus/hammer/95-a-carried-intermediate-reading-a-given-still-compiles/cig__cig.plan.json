@@ -91,6 +91,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.cig_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "e27cb5498cfa910170634ba0b5bbc714d81aedb8abb90539cae65d24835f62b0",
         "sourceID": "daily@<hammer>/cig/cig.malloy",
@@ -115,6 +121,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.cig_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "31679b00e56acf24b4de3827230b7b7847a807b8f7a444f69684202a4af92fc3",
         "sourceID": "rollup@<hammer>/cig/cig.malloy",

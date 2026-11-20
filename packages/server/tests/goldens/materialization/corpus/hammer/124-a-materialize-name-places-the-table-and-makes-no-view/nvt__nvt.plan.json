@@ -104,6 +104,12 @@
         "origin": "materialize",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.nvt_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "8bd0cc6964fd5e4945612e1bb0b75d4c154cbc3742504b806d548b466f2cfda6",
         "sourceID": "daily_orders@<hammer>/nvt/nvt.malloy",

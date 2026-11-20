@@ -47,9 +47,9 @@ import { getMaxQueryRows, getMaxResponseBytes } from "../config";
 import {
    AccessDeniedError,
    BadRequestError,
-   ConnectionError,
    InvalidQueryRequestError,
    ModelCompilationError,
+   PayloadTooLargeError,
 } from "../errors";
 import { logger } from "../logger";
 import {
@@ -58,8 +58,12 @@ import {
    type QueryAudit,
 } from "./access_record";
 import {
+   manifestUnderCompilerKey,
+   readsUnderCompilerKeys,
+   underCompilerKeys,
    pin,
    type Pinned,
+   readsByAddress,
    type Snapshot,
 } from "./materialization/domain/binding";
 import type { BuildManifest } from "./materialization/domain/types";
@@ -838,7 +842,7 @@ export class ModelServing {
       const { prepared, governed, admitted } = args;
       let answer = args.answer;
       const buildManifest = pinnedManifest(args.pinned);
-      const effectiveBuildManifest = runManifestOf(answer, {
+      const runManifest = runManifestOf(answer, {
          pinned: buildManifest,
          withoutRollups: args.viewManifest,
          // The live compile reads no table at all: an explicit empty
@@ -847,6 +851,22 @@ export class ModelServing {
          // filters and no path report names.
          live: EMPTY_BUILD_MANIFEST,
       });
+      // A stored answer's table that Malloy files under a key not its address
+      // is read under that key, as the leg compiled it; a read of the key is
+      // a read of that table.
+      const keyed =
+         answer.leg !== "live" && !answer.runFailed
+            ? answer.answer.keyedTable
+            : undefined;
+      const keyedTable =
+         keyed && runManifest?.entries[keyed.tableId] ? keyed : undefined;
+      // As Malloy reads it: each entry also under its compiler key, and the
+      // answer's own table under its key over any sibling's.
+      const compilerKeys = args.pinned.snapshot.compilerKeys;
+      const effectiveBuildManifest = manifestUnderCompilerKey(
+         underCompilerKeys(runManifest, compilerKeys),
+         keyedTable,
+      );
       const maxRows = getMaxQueryRows();
       const maxBytes = getMaxResponseBytes();
       let executionTime = 0;
@@ -889,7 +909,14 @@ export class ModelServing {
          );
          // AFTER run(), so it includes the warehouse round trip.
          executionTime = performance.now() - ctx.startTime;
-         answer = answeredWith(answer, runRead);
+         answer = answeredWith(
+            answer,
+            readsUnderCompilerKeys(
+               readsByAddress(runRead, keyedTable),
+               runManifest,
+               compilerKeys,
+            ),
+         );
       } catch (error) {
          // `freshnessFallback=live` marks the tier as an optimisation, not a
          // dependency, so a store failing UNDER a routed query degrades to
@@ -1056,9 +1083,7 @@ export class ModelServing {
          modelPath: this.host.modelPath,
          failurePrefix: "Query execution failed",
          subject: governed.compiledSource ?? sourceName ?? undefined,
-         // A connection-classified failure (exhausted pool) keeps its own
-         // status rather than reading as a bad query.
-         passThrough: [ConnectionError],
+         passThrough: [],
          logFailure: (errorMessage) =>
             logger.error("Query execution error", {
                error: err,
@@ -1116,13 +1141,22 @@ export class ModelServing {
       // 413), not OOM prevention; the row cap is. Known gap: MCP's own
       // envelope (mcp/query_envelope.ts) re-stringifies the compact rows
       // unguarded.
-      const { wrapped: wrappedResult, serialized: serializedResult } =
-         serializeWithinCaps(queryResults, {
+      // A wrap failure is mapped as a run failure is (error metric, status);
+      // a cap's 413 keeps its own answer.
+      let serializedWithinCaps: ReturnType<typeof serializeWithinCaps>;
+      try {
+         serializedWithinCaps = serializeWithinCaps(queryResults, {
             maxRows: ran.maxRows,
             maxBytes: ran.maxBytes,
             source: "model_query",
             compact: (request.responseShape ?? "full") === "compact",
          });
+      } catch (err) {
+         if (err instanceof PayloadTooLargeError) throw err;
+         return this.failQuery(ctx, governed, answer, err);
+      }
+      const { wrapped: wrappedResult, serialized: serializedResult } =
+         serializedWithinCaps;
       // Emitted with this size just before report() returns, once nothing left
       // can fail the answer; runQuery's finally covers every earlier throw.
       const servedBytes = responseBytes(serializedResult);

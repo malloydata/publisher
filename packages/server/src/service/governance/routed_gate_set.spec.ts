@@ -229,11 +229,16 @@ describe("govern(): the routed gate-set comparison cannot be fooled", () => {
       });
    });
 
-   it("counts a gate both own and inherited once, and answers as live", async () => {
+   it("denies a routed compile whose live entry point inherits a row filter through `->`, even one it also declares", async () => {
+      // `derived_same` declares `org_id = $ORG` and inherits the same filter
+      // from `filter_only` through `->`. The inherited one filters
+      // `filter_only`'s rows before the derivation runs, which a routed form
+      // grafting at its own output cannot stand for (the router never routes
+      // such an entry point: its veto is `derivation_base`).
       await withAuthorizeModel(ADVERSARIAL, async (loaded) => {
-         expect(
-            await governRouted(loaded, "filter_only", "derived_same", ORG2),
-         ).toEqual([4, 5, 6]);
+         await expectDenied(
+            governRouted(loaded, "filter_only", "derived_same", ORG2),
+         );
       });
    });
 
