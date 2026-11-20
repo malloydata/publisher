@@ -40,10 +40,61 @@ const MANIFEST = {
    ],
 };
 
+/** A legacy `.malloynb`, as `GET …/reports/{path}` serves one: its cells, no tiles. */
+const NOTEBOOK = {
+   resource:
+      "/environments/examples/packages/storefront/reports/notebooks/old.malloynb",
+   packageName: "storefront",
+   path: "notebooks/old.malloynb",
+   name: "old",
+   layout: "linear",
+   title: "Old",
+   editable: false,
+   notebook: {
+      type: "notebook",
+      format: "malloynb",
+      notebookCells: [
+         { type: "markdown", text: "# Old" },
+         { type: "code", text: 'import "orders.malloy"' },
+         {
+            type: "code",
+            text: "run: orders -> by_month",
+            runQuery: "run: orders -> by_month",
+         },
+         {
+            type: "code",
+            text: "source: west is orders extend { where: region = 'West' }\n# bar_chart\nrun: west -> by_state",
+            runQuery: "# bar_chart\nrun: west -> by_state",
+         },
+      ],
+      // Every source carries the model's givens; one control per name.
+      sources: [
+         { name: "orders", givens: [{ name: "REGION", label: "Region" }] },
+         { name: "returns", givens: [{ name: "REGION", label: "Region" }] },
+      ],
+   },
+};
+
+/** A `.malloynb` that failed to load: its error, and no cells. */
+const BROKEN_NOTEBOOK = {
+   path: "notebooks/broken.malloynb",
+   name: "broken",
+   layout: "linear",
+   title: "Broken",
+   editable: false,
+   error: "Cell 2 does not compile.",
+};
+
 function stubStore(): EnvironmentStore {
    const pkg = {
       getReport: async (p: string) =>
-         p === MANIFEST.path ? MANIFEST : undefined,
+         p === MANIFEST.path
+            ? MANIFEST
+            : p === NOTEBOOK.path
+              ? NOTEBOOK
+              : p === BROKEN_NOTEBOOK.path
+                ? BROKEN_NOTEBOOK
+                : undefined,
       listReports: async () => [
          {
             path: MANIFEST.path,
@@ -84,7 +135,8 @@ function stubStore(): EnvironmentStore {
       getStatus: async () => ({
          operationalState: "serving",
          frozenConfig: false,
-         modelPage: "viewer",
+         // The server default: the Console offers the Explorer.
+         modelPage: "explorer",
          environments: [{ name: "secret-env" }],
       }),
       storageManager: { isInitialized: () => false },
@@ -144,7 +196,7 @@ describe("report panel tools over the MCP protocol", () => {
       expect(content.text.length).toBeLessThan(2000);
    });
 
-   it("lists a package's reports by path, leaving out the notebooks the panel cannot run", async () => {
+   it("lists a package's reports by path, a legacy .malloynb among them", async () => {
       const result = await client.callTool({
          name: "list_reports",
          arguments: { environmentName: "examples", packageName: "storefront" },
@@ -160,6 +212,7 @@ describe("report panel tools over the MCP protocol", () => {
             description: "Quarterly",
          },
          { path: "story.malloy", layout: "linear", title: "Story" },
+         { path: "notebooks/old.malloynb", layout: "linear", title: "Old" },
       ]);
    });
 
@@ -211,26 +264,55 @@ describe("report panel tools over the MCP protocol", () => {
       expect(text).not.toContain("Try the request again later");
    });
 
-   it("refuses a .malloynb notebook and points at the Console", async () => {
+   it("shows a .malloynb in the panel: says what it holds, and hands the panel which one", async () => {
       const result = await client.callTool({
          name: "show_report",
          arguments: {
             environmentName: "examples",
             packageName: "storefront",
             path: "notebooks/old.malloynb",
+            givens: { REGION: "West" },
          },
       });
-      expect(result.isError).toBe(true);
-      const text = (result.content as { type: string; text?: string }[])
-         .filter((c) => c.type === "text")
-         .map((c) => c.text)
-         .join("\n");
+      expect(result.isError).toBeFalsy();
+      const text = (result.content as { text: string }[])[0].text;
       expect(text).toContain(
-         "notebooks/old.malloynb is a .malloynb notebook, a deprecated format the report panel does not show.",
+         'Showing "Old" (a linear report, a .malloynb notebook, 2 query cells, 1 text).',
       );
+      expect(text).toContain("Its filters: Region.");
       expect(text).toContain(
-         `${reportAppOrigin()}/examples/storefront/notebooks/old.malloynb`,
+         "A .malloynb is a deprecated format: execute_query does not take its path. To run a query yourself, use execute_query on the model_path get_context returns for the sources it reads, which is index.malloy when the package has one, and declare in your query text any source its cells derive from those.",
       );
+      const url = `${reportAppOrigin()}/examples/storefront/notebooks/old.malloynb?REGION=West`;
+      expect(text).toContain(`Open it in Publisher: ${url}`);
+      expect(result.structuredContent).toEqual({
+         environmentName: "examples",
+         packageName: "storefront",
+         path: "notebooks/old.malloynb",
+         title: "Old",
+         layout: "linear",
+         givens: { REGION: "West" },
+         url,
+      });
+   });
+
+   it("shows a .malloynb that failed to load with its problem, and no count of cells it could not read", async () => {
+      const result = await client.callTool({
+         name: "show_report",
+         arguments: {
+            environmentName: "examples",
+            packageName: "storefront",
+            path: "notebooks/broken.malloynb",
+         },
+      });
+      expect(result.isError).toBeFalsy();
+      const text = (result.content as { text: string }[])[0].text;
+      expect(text).toContain(
+         'Showing "Broken" (a linear report, a .malloynb notebook).',
+      );
+      expect(text).toContain("It has a problem: Cell 2 does not compile.");
+      expect(text).not.toContain("0 query cells");
+      expect(text).not.toContain("It has no filters.");
    });
 
    it("answers the panel's reads through report_api with the REST status", async () => {
@@ -278,7 +360,7 @@ describe("answerReportApi", () => {
       },
    } as unknown as ThemeStore;
 
-   it("status carries only what the provider reads, never the environments", async () => {
+   it("status carries only what the provider reads, never the environments, and keeps the Explorer out of the panel", async () => {
       const answer = await answerReportApi(
          { operation: "status" },
          {
@@ -290,6 +372,8 @@ describe("answerReportApi", () => {
       );
       expect(answer).toEqual({
          status: 200,
+         // `viewer` whatever the server says: the panel builds no query of
+         // its own, so a notebook's cells do not offer the Explorer.
          data: { frozenConfig: false, modelPage: "viewer", theme: {} },
       });
    });

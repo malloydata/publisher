@@ -977,8 +977,8 @@ everywhere else. A tile's `query` is an expression, so send it as `{"query": "ru
 opens: a file that is there opens at its path, and otherwise a unique basename redirects to the report's
 path. It is removed in a later release. The `…/dashboards` and `…/notebooks` API routes are removed: list
 with `GET …/reports`, read one by its path with `GET …/reports/{path}`, and run a `.malloynb`'s code cell
-as a tile is run, its `run:` statement as `query` and the `.malloynb`'s path as the model. That is REST only: MCP
-`execute_query` does not take a `.malloynb` path.
+as a tile is run, its `run:` statement as `query` and the `.malloynb`'s path as the model. That works over REST and
+in the `show_report` panel; MCP `execute_query` does not take a `.malloynb` path.
 
 After editing a report file in a watched environment (`--watch-env`), `GET …/packages/<pkg>?reload=true`
 recompiles the package in place, and a reload that fails to compile leaves the previously compiled model
@@ -1297,7 +1297,8 @@ A host that supports [MCP Apps](https://github.com/modelcontextprotocol/ext-apps
 claude.ai among them) draws the report in the conversation, as the Console's reader draws it: the filter row,
 every tile, the click menu with Show rows, and `# drill` click-through, where a drill to another report opens it
 in the same panel with Back to return. "Open in Publisher" takes the report and its current filter values to the
-Console. A host that draws no panel shows the tool's text, which names the report, its tiles and filters, and
+Console. A legacy `.malloynb` opens there too. On a notebook's cells the panel also never offers the
+Explorer, which the Console offers unless the server runs with `PUBLISHER_MODEL_PAGE=viewer`. A host that draws no panel shows the tool's text, which names the report, its tiles and filters, and
 its Console address.
 
 The panel holds no credentials and fetches nothing itself. Its reads (the report, its tiles' queries, the

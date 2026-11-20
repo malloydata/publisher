@@ -21,6 +21,7 @@
 import type { GivenValue } from "@malloydata/malloy";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod/v3";
+import type { components } from "../../api";
 import type { McpServices } from "../../app_services";
 import {
    BadRequestError,
@@ -106,12 +107,58 @@ export function reportPanelHtml(origin: string, version = SERVER_VERSION) {
 }
 
 /**
- * A legacy `.malloynb` notebook. The report index lists one, and the SDK's
- * `Report` the panel mounts can run it, but the format is deprecated and the
- * panel is not offered for it, so the report tools leave it to the Console.
+ * A legacy `.malloynb` notebook. The report tools list and show one, since
+ * the SDK's `Report` the panel mounts runs its cells through the query route.
+ * `execute_query` still refuses its path. `report_api` does not: on a host
+ * without MCP Apps it is listed to the model like any tool, and it runs a
+ * query on a notebook's path under the REST route's rules.
  */
 export const isLegacyNotebook = (reportPath: string) =>
    reportPath.endsWith(".malloynb");
+
+type ReportManifest = components["schemas"]["ReportManifest"];
+
+/**
+ * A report's query and text counts, and its filters by label, as the panel
+ * draws it. A `.malloynb` has cells, not tiles: a query cell is a code cell
+ * the reports read serves a `runQuery` on, the text the SDK's `Report` sends
+ * to run it. Its givens ride on every source of its model, so each name is
+ * counted once, as the SDK does.
+ * Undefined for a `.malloynb` that failed to load, whose cells are unread.
+ */
+function reportContents(
+   report: ReportManifest,
+   notebook: boolean,
+): { queries: number; text: number; filters: string[] } | undefined {
+   const label = (g: components["schemas"]["Given"]) => g.label ?? g.name;
+   if (notebook) {
+      if (!report.notebook) return undefined;
+      const cells = report.notebook.notebookCells ?? [];
+      const queries = cells.filter(
+         (c) => c.type === "code" && c.runQuery !== undefined,
+      ).length;
+      const byName = new Map<string, string | undefined>();
+      for (const source of report.notebook.sources ?? []) {
+         for (const g of source.givens ?? []) {
+            if (g.name && !byName.has(g.name)) byName.set(g.name, label(g));
+         }
+      }
+      return {
+         queries,
+         text: cells.filter((c) => c.type === "markdown").length,
+         filters: [...byName.values()].filter((f): f is string => Boolean(f)),
+      };
+   }
+   const tiles = report.tiles ?? [];
+   const queries = tiles.filter((t) => t.kind !== "text").length;
+   return {
+      queries,
+      text: tiles.length - queries,
+      filters: (report.givens ?? [])
+         .map(label)
+         .filter((f): f is string => Boolean(f)),
+   };
+}
 
 /** The Console address of a report: `/<env>/<pkg>/sales/q3` for `sales/q3.malloy`, as the SDK's `reportRoute`. */
 export function consoleReportUrl(
@@ -144,7 +191,7 @@ const showReportShape = {
    path: z
       .string()
       .describe(
-         "The report's path in the package, including `.malloy`, exactly as list_reports gives it: `sales/q3.malloy`.",
+         "The report's path in the package, with its extension, exactly as list_reports gives it: `sales/q3.malloy`.",
       ),
    givens: z
       .record(z.string())
@@ -252,7 +299,10 @@ export async function answerReportApi(
                status: 200,
                data: {
                   frozenConfig: s.frozenConfig,
-                  modelPage: s.modelPage,
+                  // The panel builds no query of its own: a `.malloy` report
+                  // has no query builder in it, and `viewer` keeps the
+                  // Explorer off a `.malloynb`'s cells too.
+                  modelPage: "viewer",
                   theme: theme ?? {},
                },
             };
@@ -333,7 +383,7 @@ export async function answerReportApi(
    }
 }
 
-const LIST_REPORTS_DESCRIPTION = `List the reports in one package: each one's path (its identity, for show_report), layout (grid, a dashboard; linear, a story read top to bottom), title and description. A report is a .malloy file with an ## artifact tag, wherever it lives in the package. Takes the environment and package names list_packages gives.`;
+const LIST_REPORTS_DESCRIPTION = `List the reports in one package: each one's path (its identity, for show_report), layout (grid, a dashboard; linear, a story read top to bottom), title and description. A report is a .malloy file with an ## artifact tag, wherever it lives in the package, or a legacy .malloynb notebook, which is linear. Takes the environment and package names list_packages gives.`;
 
 const SHOW_REPORT_DESCRIPTION = `Show a report to the user: its tiles, charts and filter controls, drawn in a panel in the conversation by a host that supports MCP Apps (Claude Desktop and claude.ai among them), and runnable there. Use it when the user wants to see a dashboard or report, not to answer a question yourself: for numbers, run execute_query. Takes the report's path from list_reports and, optionally, starting filter values. The text result says what the report holds and gives its address in the Publisher Console, which works in any client, including one that draws no panel.`;
 
@@ -400,18 +450,13 @@ export function registerReportAppTools(
             return jsonResource(
                uri,
                {
-                  reports: reports
-                     // The panel is not offered for one; see isLegacyNotebook.
-                     .filter((r) => !isLegacyNotebook(r.path))
-                     .map((r) => ({
-                        path: r.path,
-                        layout: r.layout,
-                        title: r.title,
-                        ...(r.description
-                           ? { description: r.description }
-                           : {}),
-                        ...(r.error ? { error: r.error } : {}),
-                     })),
+                  reports: reports.map((r) => ({
+                     path: r.path,
+                     layout: r.layout,
+                     title: r.title,
+                     ...(r.description ? { description: r.description } : {}),
+                     ...(r.error ? { error: r.error } : {}),
+                  })),
                },
                { space: 2 },
             );
@@ -453,14 +498,6 @@ export function registerReportAppTools(
             path: string;
             givens?: Record<string, string>;
          };
-         if (isLegacyNotebook(reportPath)) {
-            return jsonToolError("error://showReport/notebook", {
-               message: `${reportPath} is a .malloynb notebook, a deprecated format the report panel does not show.`,
-               suggestions: [
-                  `Give the user its Console address instead: ${consoleReportUrl(reportAppOrigin(), environmentName, packageName, reportPath, givens)}`,
-               ],
-            });
-         }
          try {
             const report = await reportController.getReport(
                environmentName,
@@ -474,17 +511,29 @@ export function registerReportAppTools(
                report.path,
                givens,
             );
-            const tiles = report.tiles ?? [];
-            const queryTiles = tiles.filter((t) => t.kind !== "text").length;
-            const filters = (report.givens ?? [])
-               .map((g) => g.label ?? g.name)
-               .filter(Boolean);
+            const notebook = isLegacyNotebook(report.path);
+            const contents = reportContents(report, notebook);
+            const kind = [
+               report.layout === "linear" ? "a linear report" : "a grid report",
+               notebook ? "a .malloynb notebook" : undefined,
+               contents
+                  ? `${contents.queries} ${notebook ? "query cell" : "query tile"}${contents.queries === 1 ? "" : "s"}`
+                  : undefined,
+               contents && contents.text > 0
+                  ? `${contents.text} text`
+                  : undefined,
+            ].filter(Boolean);
             const lines = [
-               `Showing "${report.title}" (${report.layout === "linear" ? "a linear report" : "a grid report"}, ${queryTiles} ${queryTiles === 1 ? "query tile" : "query tiles"}${tiles.length > queryTiles ? `, ${tiles.length - queryTiles} text` : ""}).`,
-               filters.length > 0
-                  ? `Its filters: ${filters.join(", ")}.`
-                  : "It has no filters.",
+               `Showing "${report.title}" (${kind.join(", ")}).`,
+               contents === undefined
+                  ? undefined
+                  : contents.filters.length > 0
+                    ? `Its filters: ${contents.filters.join(", ")}.`
+                    : "It has no filters.",
                report.error ? `It has a problem: ${report.error}` : undefined,
+               notebook
+                  ? "A .malloynb is a deprecated format: execute_query does not take its path. To run a query yourself, use execute_query on the model_path get_context returns for the sources it reads, which is index.malloy when the package has one, and declare in your query text any source its cells derive from those."
+                  : undefined,
                `Open it in Publisher: ${url}`,
             ].filter(Boolean);
             return {
@@ -505,7 +554,7 @@ export function registerReportAppTools(
                return jsonToolError("error://showReport/notFound", {
                   message: error.message,
                   suggestions: [
-                     `Call list_reports for ${environmentName}/${packageName}: it gives each report's path, including \`.malloy\` and any directory, which show_report takes verbatim.`,
+                     `Call list_reports for ${environmentName}/${packageName}: it gives each report's path, including its extension and any directory, which show_report takes verbatim.`,
                   ],
                });
             }
