@@ -5731,7 +5731,21 @@ components:
                   acts on it rather than only showing it; absent for a family that
                   has none yet. `deprecated-malloynb-notebook`: a `.malloynb`
                   notebook, the deprecated cell format (one per file, `model`
-                  naming it). `deprecated-filter-annotation`: a source declaring
+                  naming it). `malloynb-cell-refused`: a `.malloynb` code cell
+                  whose `run:` statement the query route refuses for every
+                  reader, so the cell never runs. One per cell, `model` naming
+                  the notebook, severity `warn`. The message names the cell by
+                  its 1-based position among the notebook's cells, markdown
+                  cells included, and the fix. `reason` names the rule:
+                  `off_surface` is the 404 for a source the package surface
+                  does not publish, which a source the notebook declares never
+                  is on a package with an `index.malloy`; `restricted_mode` is
+                  the 400 for a `sql_*` call or a direct table read, which the
+                  query route's restricted mode refuses; `compile_error` is the
+                  400 for any other failure of the statement to compile on its
+                  own. A cell that only a reader's givens refuse, by
+                  `#(authorize)` or a row-level gate, is not reported.
+                  `deprecated-filter-annotation`: a source declaring
                   deprecated `#(filter)` annotations (one per declaring source,
                   `model` naming its file and `subject` the source).
                   `deprecated-preaggregate-annotation`: a measure declaring
@@ -6002,7 +6016,9 @@ components:
                   `database-table-unread`; the kept table's reason on
                   `table-kept`; the serve verdict's reason on a
                   `materialization-*` verdict warning; `storage_mode` on
-                  `materialization-storage-mode`. Always snake_case. An open
+                  `materialization-storage-mode`; the rule a cell breaks on
+                  `malloynb-cell-refused` (`off_surface`, `restricted_mode`,
+                  `compile_error`). Always snake_case. An open
                   string; absent on a finding that has none.
               severity:
                 type: string

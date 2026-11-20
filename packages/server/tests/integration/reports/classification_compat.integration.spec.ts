@@ -63,6 +63,9 @@ const NEW_CODES = new Set([
    "report-cells-removed",
    "report-on-surface",
    "index-is-not-a-report",
+   // A `.malloynb` cell the query route refuses for every reader, such as
+   // `notebooks-malloyyo-surface`'s run of a source index.malloy hides.
+   "malloynb-cell-refused",
 ]);
 
 /** The fixture notebooks written as `run:` cells, the retired format. */

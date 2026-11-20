@@ -166,7 +166,7 @@ import {
 } from "./join_bypass";
 import { type ReportViewPackage } from "./legacy_report_views";
 import { recordDeprecatedManifestKeys } from "./deprecated/manifest_keys";
-import { isMalloynbPath } from "./deprecated/malloynb";
+import { isMalloynbPath, MALLOYNB_CELL_REFUSED } from "./deprecated/malloynb";
 import {
    EXPLORES_IMPORTER,
    exploresSurfaceFiles,
@@ -3607,6 +3607,88 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    }
 
    /**
+    * How a surface refusal is explained, and its fix, under the surface this
+    * package declares: `index.malloy`, or the deprecated `explores`. `source`
+    * is absent when the refusal would not name it (a gated model).
+    */
+   private surfaceFix(): {
+      unexported: string;
+      fixFor: (source: string | undefined) => string;
+   } {
+      return this.surfaceIsIndexModel()
+         ? {
+              unexported: `which ${INDEX_MODEL_NAME} doesn't export`,
+              fixFor: (source: string | undefined) =>
+                 `Fix: add ${source ?? "the source it reads"} to the ` +
+                 `export { ... } in ${INDEX_MODEL_NAME}.`,
+           }
+         : exploresSurfaceFix(this.packageMetadata.explores, (entry) =>
+              this.isServedReport(entry),
+           );
+   }
+
+   /**
+    * DEPRECATED (`.malloynb` only; deleted with the format). One finding per
+    * `.malloynb` code cell the query route refuses for every reader
+    * ({@link Model.malloynbCellRefusals}, which runs the route's own checks),
+    * since a cell's errors otherwise show only when a reader opens it. A cell
+    * only a reader's givens refuse (`#(authorize)`, a row-level gate) is not
+    * reported.
+    */
+   private async lintMalloynbCells(): Promise<ApiPackageWarning[]> {
+      const findings: ApiPackageWarning[] = [];
+      const curated = this.queryBoundaryActive();
+      const { unexported, fixFor } = this.surfaceFix();
+      const home = !curated
+         ? "a source the notebook declares"
+         : this.surfaceIsIndexModel()
+           ? `a model file that ${INDEX_MODEL_NAME} exports`
+           : "a source the package surface publishes";
+      for (const [modelPath, model] of this.models) {
+         if (!isMalloynbPath(modelPath)) continue;
+         for (const refusal of await model.malloynbCellRefusals()) {
+            const { source, problem } = refusal;
+            let why: string;
+            if (refusal.reason === "off_surface") {
+               why =
+                  source === undefined
+                     ? `it reads a source the package surface does not ` +
+                       `publish, or one the notebook declares (404). ` +
+                       `${fixFor(undefined).replace(/\.$/, "")}, declaring ` +
+                       `it in a model file first if the notebook declares it.`
+                     : refusal.declared
+                       ? `it reads ${source}, a source the notebook ` +
+                         `declares, and the query route takes only a source ` +
+                         `the package surface publishes (404). Declare ` +
+                         `${source} in a model file instead. ${fixFor(source)}`
+                       : `it reads ${source}, ${unexported} (404). ` +
+                         fixFor(source);
+               if (problem)
+                  why += ` Restricted mode also refuses it: ${problem}`;
+            } else if (refusal.reason === "restricted_mode") {
+               why =
+                  `the query route runs its run: statement in restricted ` +
+                  `mode, which refuses it (400): ${problem} Fix: declare ` +
+                  `the table, or a dimension over the sql_* expression, in ` +
+                  `${home}, and run that source.`;
+            } else {
+               why =
+                  `its run: statement does not compile on its own (400): ` +
+                  `${problem}`;
+            }
+            findings.push({
+               model: modelPath,
+               code: MALLOYNB_CELL_REFUSED,
+               reason: refusal.reason,
+               severity: "warn",
+               message: `Cell ${refusal.cell} of ${modelPath} won't run for any reader: ${why}`,
+            });
+         }
+      }
+      return findings;
+   }
+
+   /**
     * One finding per tile or filter suggest the query route will refuse as
     * off-surface (/compile is exempt, so nothing else would say so). Uses the
     * query route's own check ({@link Model.surfaceRefusal}), so they cannot
@@ -3618,17 +3700,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    ): Promise<ApiPackageWarning[]> {
       const model = this.models.get(modelPath);
       if (!model || !this.queryBoundaryActive()) return [];
-      // `source` is absent when the refusal would not name it (a gated model).
-      const { unexported, fixFor } = this.surfaceIsIndexModel()
-         ? {
-              unexported: `which ${INDEX_MODEL_NAME} doesn't export`,
-              fixFor: (source: string | undefined) =>
-                 `Fix: add ${source ?? "the source it reads"} to the ` +
-                 `export { ... } in ${INDEX_MODEL_NAME}.`,
-           }
-         : exploresSurfaceFix(this.packageMetadata.explores, (entry) =>
-              this.isServedReport(entry),
-           );
+      const { unexported, fixFor } = this.surfaceFix();
       const checks: {
          request: { queryName?: string; query?: string };
          describe: (source: string) => string;
@@ -3749,6 +3821,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
                });
             }
          }
+         warnings.push(...(await this.lintMalloynbCells()));
          // Drill tags live on model dimensions, so every model is scanned. A
          // dropped report still counts as a drill target; its own finding
          // states the cause.
@@ -3781,8 +3854,8 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          warnings.push({
             message:
                `Report lint stopped early, so this list is incomplete: an ` +
-               `unknown subset of the tile, report, drill, given and curation ` +
-               `checks did not run. Treat a missing ` +
+               `unknown subset of the tile, report, notebook cell, drill, ` +
+               `given and curation checks did not run. Treat a missing ` +
                `finding of any of those kinds as unknown rather than clean. ` +
                `Reload the package to run the lint again. The ` +
                `reports themselves are unaffected, because they are ` +

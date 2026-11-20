@@ -18,7 +18,8 @@
  * join the cell's query writes, and the restricted mode every query's text
  * runs in. It also pins that the
  * notebook read lists a source with its schema only where that path may
- * query it.
+ * query it, and that the load warns about exactly the cells that path
+ * refuses for every reader.
  */
 
 import { rm } from "fs/promises";
@@ -28,6 +29,7 @@ import {
    fixture,
    lf,
    startPackageEnv,
+   warningsByCode,
    type PackageEnv,
 } from "../../harness/reports";
 
@@ -449,5 +451,81 @@ describe(".malloynb cells through the query route (E2E)", () => {
             ["US", 3],
          ],
       });
+   });
+
+   it("warns at load about each cell the query route refuses for every reader, and only those", async () => {
+      // Every gate the fixture declares, satisfied, sent to a notebook that
+      // declares them: an unknown given is itself a 400.
+      const allGates: Record<string, unknown> = {
+         ROLES: ["admin"],
+         GROUPS: [1, 2],
+      };
+      const notebooks = [
+         "authorize.malloynb",
+         "import_cell.malloynb",
+         "later_given.malloynb",
+         "raw_sql.malloynb",
+         "restricted.malloynb",
+         "row_level.malloynb",
+         "surface.malloynb",
+      ];
+      const seen = { warned: 0, clean: 0 };
+      const disagreements: unknown[] = [];
+      for (const pkg of [CURATED, OPEN]) {
+         const warned = new Map(
+            warningsByCode(
+               await env.warnings(pkg),
+               "malloynb-cell-refused",
+            ).map((w) => [
+               `${w.model} ${/^Cell (\d+) /.exec(w.message ?? "")?.[1]}`,
+               w,
+            ]),
+         );
+         for (const nb of notebooks) {
+            const cells = await cellsOf(pkg, nb);
+            // secured.malloy declares both gate givens; no other file declares one.
+            const gates = cells.some((c) => c.text.includes("secured.malloy"))
+               ? allGates
+               : {};
+            for (let i = 0; i < cells.length; i++) {
+               if (malloynbCellQuery(cells[i]) === undefined) continue;
+               const warning = warned.get(`notebooks/${nb} ${i + 1}`);
+               const answered = await run(pkg, nb, i, gates);
+               const status = "rows" in answered ? 200 : answered.refused;
+               const expected =
+                  warning === undefined
+                     ? 200
+                     : warning.reason === "off_surface"
+                       ? 404
+                       : 400;
+               if (status !== expected) {
+                  disagreements.push({
+                     pkg,
+                     nb,
+                     cell: i + 1,
+                     warning,
+                     answered,
+                  });
+               }
+               // With no givens, a gate may answer 403 first; never a 200
+               // for a cell warned about, never a 400 or 404 for one not.
+               const bare = await run(pkg, nb, i);
+               const bareStatus = "rows" in bare ? 200 : bare.refused;
+               if (
+                  warning === undefined
+                     ? bareStatus === 400 || bareStatus === 404
+                     : bareStatus !== expected && bareStatus !== 403
+               ) {
+                  disagreements.push({ pkg, nb, cell: i + 1, warning, bare });
+               }
+               if (warning) seen.warned++;
+               else seen.clean++;
+            }
+         }
+      }
+      expect(disagreements).toEqual([]);
+      // Both outcomes were exercised, on both packages.
+      expect(seen.warned).toBe(13);
+      expect(seen.clean).toBeGreaterThan(15);
    });
 });

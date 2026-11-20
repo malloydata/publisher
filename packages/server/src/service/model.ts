@@ -110,7 +110,10 @@ import {
    readStartingGivens,
    tagText,
 } from "./motly";
-import { onlyParseFailures } from "./compile_restriction";
+import { onlyParseFailures, restrictedRejections } from "./compile_restriction";
+import { malloynbCellQuery } from "./deprecated/malloynb";
+import { compileErrorOf } from "./model_query_compile";
+import { isGivenBindingFailure } from "./query_execution";
 import { createEventLoopYielder } from "./event_loop_yield";
 import {
    buildDerivationBaseMap,
@@ -214,6 +217,23 @@ type ApiReportCells = components["schemas"]["ReportCells"];
 type ApiSource = components["schemas"]["Source"];
 type ApiGiven = components["schemas"]["Given"];
 type ApiQuery = components["schemas"]["Query"];
+/**
+ * Why the query route refuses a query for every caller
+ * ({@link Model.refusalForEveryCaller}): `off_surface` is the boundary's 404,
+ * `restricted_mode` a construct restricted mode refuses (400), and
+ * `compile_error` any other compile failure of the text on its own (400).
+ */
+export interface QueryTextRefusal {
+   status: 400 | 404;
+   reason: "off_surface" | "restricted_mode" | "compile_error";
+   /** The compiler's message; on a 404, restricted mode's, when it also refused the text. */
+   problem?: string;
+   /** The refused source, only where the query route's refusal names it. */
+   source?: string;
+   /** Whether a `.malloynb`'s own cells declare {@link source}. */
+   declared?: boolean;
+}
+
 export type ApiConnection = components["schemas"]["Connection"];
 export type SnowflakeConnection = components["schemas"]["SnowflakeConnection"];
 export type PostgresConnection = components["schemas"]["PostgresConnection"];
@@ -2062,6 +2082,122 @@ export class Model {
          if (error instanceof NotQueryableError) return {};
          throw error;
       }
+   }
+
+   /**
+    * DEPRECATED (`.malloynb` only; deleted with the format). Each code cell
+    * the query route refuses for every reader, sent as the SDK's `Report`
+    * sends it ({@link malloynbCellQuery}): its 1-based position among the
+    * notebook's cells, markdown included, and the refusal
+    * ({@link refusalForEveryCaller}). Empty for any other file, and for a
+    * notebook that does not compile, whose error every cell answers with.
+    */
+   public async malloynbCellRefusals(): Promise<
+      ({ cell: number } & QueryTextRefusal)[]
+   > {
+      if (this.notebookFormat() !== "malloynb" || !this.isNotebook()) return [];
+      const refusals: ({ cell: number } & QueryTextRefusal)[] = [];
+      for (const [index, cell] of (
+         this.runnableNotebookCells ?? []
+      ).entries()) {
+         if (cell.type !== "code") continue;
+         const query = malloynbCellQuery(cell.text);
+         if (query === undefined) continue;
+         const refusal = await this.refusalForEveryCaller(query);
+         if (refusal) refusals.push({ cell: index + 1, ...refusal });
+      }
+      return refusals;
+   }
+
+   /**
+    * How the query route answers ad-hoc `query` on this file for every
+    * caller, or undefined when some caller could get rows. It runs the
+    * route's checks that read only the text and the model, in the route's
+    * order (`ModelServing.run`): the boundary on the text and on its joins
+    * (404), the restricted compile (400, or the boundary's 404 for text that
+    * names a source off the surface), then the boundary on the compiled run
+    * target and joins (404). The checks that read a caller's givens
+    * (`#(authorize)`, row-level gates, a given left unbound) are left out:
+    * their answer is the caller's. Undefined, too, for a file that does not
+    * compile.
+    */
+   public async refusalForEveryCaller(
+      query: string,
+   ): Promise<QueryTextRefusal | undefined> {
+      const materializer = this.modelMaterializer;
+      if (this.compilationError || !materializer || !this.modelDef) {
+         return undefined;
+      }
+      let boundary: "cleared" | "deferred";
+      try {
+         boundary = this.assertQueryBoundaryEarly(undefined, undefined, query);
+         await this.governor.assertDocumentJoinsQueryable(query);
+      } catch (error) {
+         return this.offSurfaceRefusal(error, query);
+      }
+      await this.ensureSharedQueryModel(materializer);
+      const runnable = materializer.loadRestrictedQuery("\n" + query);
+      const compileError = await compileErrorOf(runnable);
+      if (compileError) {
+         if (isGivenBindingFailure(compileError)) return undefined;
+         const errors = compileError.problems.filter(
+            (problem) => problem.severity === "error",
+         );
+         const restricted = restrictedRejections(errors);
+         const problem = (restricted[0] ?? errors[0])?.message ?? "";
+         const unqueryable =
+            boundary === "deferred"
+               ? this.unqueryableTextRefusal(query, compileError)
+               : undefined;
+         if (unqueryable) {
+            return {
+               ...this.offSurfaceRefusal(unqueryable, query),
+               ...(restricted.length > 0 ? { problem } : {}),
+            };
+         }
+         return {
+            status: 400,
+            reason: restricted.length > 0 ? "restricted_mode" : "compile_error",
+            problem: problem || firstLine(compileError.message),
+         };
+      }
+      if (boundary === "deferred") {
+         try {
+            this.assertQueryBoundaryCompiled(
+               await this.governor.resolveAuthorizeSourceFromRunnable(runnable),
+               query,
+            );
+            await this.governor.assertDocumentJoinsQueryable(query, runnable);
+         } catch (error) {
+            return this.offSurfaceRefusal(error, query);
+         }
+      }
+      return undefined;
+   }
+
+   /**
+    * A boundary refusal as a {@link QueryTextRefusal}, naming the source only
+    * where the query route's own refusal does (an {@link OffSurfaceError}),
+    * so a gated model's 404 gives nothing away here either. Rethrows anything
+    * else.
+    */
+   private offSurfaceRefusal(error: unknown, query: string): QueryTextRefusal {
+      if (!(error instanceof NotQueryableError)) throw error;
+      if (!(error instanceof OffSurfaceError)) {
+         return { status: 404, reason: "off_surface" };
+      }
+      const source = extractRunTargetSourceNames(query).find(
+         (name) =>
+            !this.isCuratedSource(name) &&
+            !this.derivesFromCurated(name, query),
+      );
+      if (source === undefined) return { status: 404, reason: "off_surface" };
+      const declared = (this.runnableNotebookCells ?? []).some(
+         (cell) =>
+            cell.type === "code" &&
+            buildDerivationBaseMap(cell.text).has(source),
+      );
+      return { status: 404, reason: "off_surface", source, declared };
    }
 
    /**
