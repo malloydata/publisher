@@ -1616,6 +1616,7 @@ function gateFieldNames(
             exprs: ["false"],
             route: "authorize",
             selfContained: true,
+            baseHops: 0,
          },
       ];
       unkeepable.add("(an unreadable gate)");
@@ -1623,6 +1624,15 @@ function gateFieldNames(
    for (const entry of entries) {
       // The walk's fail-closed deny: no entry point to graft on.
       if (!entry.struct) unkeepable.add("(an unreadable gate)");
+      // A row filter read through a `->` derivation filters the derivation's
+      // base before the derivation runs; the rollup's rows are the
+      // derivation's output, so no grain proves it exact there.
+      if (
+         entry.baseHops > 0 &&
+         canonicalAuthorizeRoute(entry.route) !== AUTHORIZE_ROUTE
+      ) {
+         unkeepable.add("(a row filter on a derivation's base)");
+      }
       for (const expr of entry.exprs) {
          for (const id of malloyIdentifiers(expr)) {
             const f = byName.get(id);
