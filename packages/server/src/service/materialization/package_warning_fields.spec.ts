@@ -55,6 +55,38 @@ describe("a materialization warning's reason", () => {
       ]);
    });
 
+   it("names the database table, not live, as what answers a storage= source bound fresh there too", () => {
+      const plan = {
+         graphs: [],
+         sources: {
+            "orders@file:///m.malloy": {
+               name: "orders",
+               modelPath: "m.malloy",
+               sourceEntityId: "abc",
+               annotationFields: { storage: "lake" },
+            },
+            "daily@file:///m.malloy": {
+               name: "daily",
+               modelPath: "m.malloy",
+               sourceEntityId: "def",
+               annotationFields: { storage: "lake" },
+            },
+         },
+      } as unknown as BuildPlan;
+      for (const mode of ["write-only", "off"]) {
+         const [orders, daily] = storageWarnings(
+            plan,
+            mode,
+            (id) => id === "abc",
+         ).map((w) => w.message);
+         expect(orders).toContain(
+            "answered from its table in the source's own database",
+         );
+         expect(orders).not.toContain("live");
+         expect(daily).toContain("live");
+      }
+   });
+
    it("is table_name_collision on a collision refused alone under the opt-out", () => {
       const relaxed = relaxedCollision(
          {

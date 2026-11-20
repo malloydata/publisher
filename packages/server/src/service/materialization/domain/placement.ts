@@ -60,26 +60,15 @@ export function servedCopyReadsTier(tier: Tier, others: readonly Tier[]) {
 }
 
 /**
- * Whether a leg falls back to a database table bound beside a storage one
- * when the mode does not let it read the storage table (`write-only`,
- * `off`): the served copy does, re-rooting the source on its database
- * binding; the rollup, persisted view and persisted query legs, whose
- * storage binding decides their tier (`storageLookupOf`), answer live. The
- * one place the serve verdict reads that rule from, so a leg that starts
- * falling back changes its verdict with it.
- */
-function readsDatabaseWhenStorageUnread(leg: { servedCopy: boolean }): boolean {
-   return leg.servedCopy;
-}
-
-/**
  * The tier a query reads a planned source's table in, as the serve verdict
  * judges it: a storage binding storing the source decides it
  * (`storageLookupOf`), since a host may place a source with no `storage=` in
  * a storage destination; with none, a declared `storage=` does. Where the
- * mode lets no query read the storage table, a database table bound beside
- * it, whatever its freshness (which the verdict then judges), for a leg
- * that falls back to it ({@link readsDatabaseWhenStorageUnread}). Under
+ * mode lets no query read the storage table (`write-only`, `off`), a
+ * database table bound beside it, whatever its freshness (which the verdict
+ * then judges): every leg falls back to it, the served copy by re-rooting
+ * the source on it and the rollup, persisted view and persisted query legs
+ * through their own lookups. Under
  * `on`, the served copy (every source but a rollup, persisted view or
  * persisted query, which read their storage binding through their own leg)
  * reads the storage table while it is fresh ({@link servedCopyReadsTier}),
@@ -105,9 +94,7 @@ export function readTier(facts: {
       return facts.declaredStorage ? "storage" : "database";
    }
    if (!facts.storageServed) {
-      return facts.databaseBound && readsDatabaseWhenStorageUnread(facts)
-         ? "database"
-         : "storage";
+      return facts.databaseBound ? "database" : "storage";
    }
    if (!facts.servedCopy) return "storage";
    return (!facts.storageFresh || facts.servedCopyOnDatabase) &&

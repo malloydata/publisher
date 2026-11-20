@@ -621,6 +621,7 @@ describe("buildQueryPath", () => {
             kind: "materialized",
             outcome: "skipped",
             reason: "NOT_SERVED",
+            code: "storage_mode",
          },
          { tableId: "id_daily", kind: "materialized", outcome: "used" },
       ]);
@@ -1223,7 +1224,8 @@ describe("buildQueryPath, reading the serve verdicts", () => {
             catalog: {
                ...catalog([planned("daily")]),
                // Only the database copy is refused; the storage copy is
-               // merely unrouted, which this verdict does not explain.
+               // merely unrouted: it carries the storage mode's code, never
+               // its twin's.
                liveVerdicts: verdicts({
                   "database:id_daily": {
                      reason: "refused",
@@ -1241,6 +1243,7 @@ describe("buildQueryPath, reading the serve verdicts", () => {
             kind: "materialized",
             outcome: "skipped",
             reason: "NOT_SERVED",
+            code: "storage_mode",
          },
       ]);
       expect(report.warnings).toEqual([]);

@@ -381,16 +381,12 @@ describe("admission and the serve verdict agree with the frozen gate policy", ()
       const wrong: string[] = [];
       for (const mode of ["on", "write-only", "off"] as const) {
          // Written out: the rollup leg reads its storage table under `on`,
-         // and answers live under the other modes (until it falls back to a
-         // database table there, when this and the verdict change together).
+         // and its fresh database table under the other modes, which read no
+         // storage table.
          const expected = {
             on: { tier: "storage", verdict: "serves" },
-            "write-only": {
-               tier: "storage",
-               verdict: "live",
-               reason: "storage_mode",
-            },
-            off: { tier: "storage", verdict: "live", reason: "storage_mode" },
+            "write-only": { tier: "database", verdict: "serves" },
+            off: { tier: "database", verdict: "serves" },
          }[mode];
          const [verdict] = computeServeVerdicts({
             plan: plan as never,
