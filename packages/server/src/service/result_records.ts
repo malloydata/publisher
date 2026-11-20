@@ -18,8 +18,9 @@ import type { Result } from "@malloydata/malloy";
  * never sees it, so this runs on the result, for every dialect.
  *
  * Records nested in records, records in arrays and arrays of arrays are all
- * walked. The rows are changed in place, so the full and the compact answer
- * both carry the keys.
+ * walked, and a value where a record is declared that is not one is null.
+ * The rows are changed in place, so the full and the compact answer both
+ * carry the keys.
  */
 export function fillDeclaredRecordKeys(result: Result): void {
    const structs = result._queryResult?.structs as unknown as
@@ -59,22 +60,35 @@ function fillFields(
          if (fill) values[key] = null;
          continue;
       }
-      fillValue(values[key], field);
+      values[key] = fillValue(values[key], field);
    }
 }
 
-function fillValue(value: unknown, type: ResultType): void {
-   if (value === null || value === undefined) return;
+/**
+ * `value` with its records' keys filled, as `type` declares it. A value
+ * where a record is declared that is not one (a scalar a Snowflake VARIANT
+ * holds in some rows) is null: Malloy's wrapper would read each declared
+ * key of it as `undefined` and throw on a date or a number.
+ */
+function fillValue(value: unknown, type: ResultType): unknown {
+   if (value === null || value === undefined) return value;
    if (type.type === "record" && type.fields) {
+      if (!isPlainObject(value)) return null;
       fillFields(value, type.fields, true);
    } else if (type.type === "array" && Array.isArray(value)) {
       const element = type.elementTypeDef;
-      if (element?.type === "record_element" && type.fields) {
-         for (const item of value) fillFields(item, type.fields, true);
-      } else if (element) {
-         for (const item of value) fillValue(item, element);
+      for (let i = 0; i < value.length; i++) {
+         if (element?.type === "record_element" && type.fields) {
+            if (isPlainObject(value[i]))
+               fillFields(value[i], type.fields, true);
+            else if (value[i] !== null && value[i] !== undefined)
+               value[i] = null;
+         } else if (element) {
+            value[i] = fillValue(value[i], element);
+         }
       }
    }
+   return value;
 }
 
 function isPlainObject(value: unknown): boolean {

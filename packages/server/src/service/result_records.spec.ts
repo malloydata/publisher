@@ -123,6 +123,37 @@ describe("a row the result cannot hold", () => {
    });
 });
 
+describe("a record column whose row holds no record", () => {
+   it("answers a scalar where a record with a timestamp key is declared as null", async () => {
+      const result = await model
+         .loadQuery(
+            `run: duckdb.sql("""select {'ts': TIMESTAMP '2024-01-01 00:00:00', 'n': 1} as rec""") -> { select: rec }`,
+         )
+         .run();
+      (result.data.rawData[0] as unknown as Record<string, unknown>).rec = 5;
+      const { serialized } = serializeWithinCaps(result, {
+         ...CAPS,
+         compact: true,
+      });
+      expect(JSON.parse(serialized)[0].rec).toBeNull();
+   });
+
+   it("is a 502 when Malloy's row mapping throws a TypeError on a value, whatever the engine's wording", async () => {
+      const result = await model
+         .loadQuery(
+            `run: duckdb.sql("""select {'ts': TIMESTAMP '2024-01-01 00:00:00', 'n': 1} as rec""") -> { select: rec }`,
+         )
+         .run();
+      // A key present with no value: Malloy's date conversion reads
+      // `value.value` and throws a TypeError, worded per engine.
+      (result.data.rawData[0] as unknown as Record<string, unknown>).rec = {
+         ts: undefined,
+         n: 1,
+      };
+      expect(() => serializeWithinCaps(result, CAPS)).toThrow(ResultShapeError);
+   });
+});
+
 describe("a throw while the result is wrapped", () => {
    it("is a 502 for a value Malloy cannot convert: a timestamp no date parses", async () => {
       const result = await model

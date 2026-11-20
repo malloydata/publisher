@@ -206,17 +206,33 @@ const VALUE_CONVERSION_MESSAGE =
    /^(?:Invalid (?:boolean|string|array) |Invalid record in result |Cannot convert \w+ to number: )/;
 
 /**
+ * The functions of Malloy's row mapping (`api/util.js`'s `mapData`,
+ * `mapValue`, `mapRow`, and `row_data_utils.js`'s `rowDataTo*`), as a stack
+ * frame names them.
+ */
+const ROW_MAPPING_FRAME = /\bat (?:mapData|mapValue|mapRow|rowDataTo\w+) /;
+
+/**
  * Whether `err` is Malloy's wrapper refusing a value: one of its own
- * messages, or the `RangeError` a date or timestamp no date parses raises
+ * messages, the `RangeError` a date or timestamp no date parses raises
  * (`rowDataToDate(value).toISOString()`: "Invalid time value" in V8,
- * "Invalid Date" in Bun).
+ * "Invalid Date" in Bun), or a `TypeError` its row mapping raised on a
+ * value, told by the throwing frame rather than by the engine's wording.
  */
 function isValueConversionFailure(err: unknown): boolean {
    if (!(err instanceof Error)) return false;
    if (err instanceof RangeError) {
       return /^Invalid (?:time value|Date)$/.test(err.message);
    }
+   if (err instanceof TypeError) {
+      return ROW_MAPPING_FRAME.test(throwingFrameOf(err));
+   }
    return VALUE_CONVERSION_MESSAGE.test(err.message);
+}
+
+/** The first stack frame of `err`: the function that threw. */
+function throwingFrameOf(err: Error): string {
+   return (err.stack ?? "").split("\n").find((l) => /^\s*at /.test(l)) ?? "";
 }
 
 type ErrorClass = abstract new (...args: never[]) => Error;
