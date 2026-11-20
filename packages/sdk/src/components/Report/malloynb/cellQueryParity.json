@@ -51,6 +51,11 @@
          "query": "run: s -> v"
       },
       {
+         "name": "ends at a type: after the run:",
+         "text": "run: orders -> by_region\ntype: Foo is { a :: string }",
+         "query": "run: orders -> by_region"
+      },
+      {
          "name": "a run: that shares a line with a declaration",
          "text": "source: s is orders extend {}; run: s -> { aggregate: n is count() }",
          "query": "run: s -> { aggregate: n is count() }"

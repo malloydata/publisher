@@ -80,7 +80,7 @@ type CellToken =
    | { kind: "code"; at: number; end: number };
 
 const STATEMENT =
-   /(?:(run|source|query|given|sql)\s*:|(?:import|export)(?![A-Za-z0-9_]))/iy;
+   /(?:(run|source|query|given|sql|type)\s*:|(?:import|export)(?![A-Za-z0-9_]))/iy;
 const IDENTIFIER_CHAR = /[A-Za-z0-9_]/;
 
 function topLevelTokens(text: string): CellToken[] {

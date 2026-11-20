@@ -462,6 +462,7 @@ describe(".malloynb cells through the query route (E2E)", () => {
       };
       const notebooks = [
          "authorize.malloynb",
+         "caller_join.malloynb",
          "import_cell.malloynb",
          "later_given.malloynb",
          "raw_sql.malloynb",
@@ -526,7 +527,7 @@ describe(".malloynb cells through the query route (E2E)", () => {
       }
       expect(disagreements).toEqual([]);
       // Both outcomes were exercised, on both packages.
-      expect(seen.warned).toBe(18);
+      expect(seen.warned).toBe(21);
       expect(seen.clean).toBeGreaterThan(15);
    });
 

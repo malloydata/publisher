@@ -119,6 +119,7 @@ import {
    assertNoCallerClassificationAnnotation,
 } from "./authorize";
 import { buildFilterClause, FilterValidationError } from "./filter";
+import { compileErrorOf } from "./model_query_compile";
 import {
    createEventLoopYielder,
    type EventLoopYielder,
@@ -2007,7 +2008,8 @@ export class Model {
     * compiled run target and those joins again. So a source the cells declare
     * is not on the surface, and neither is a run that joins a hidden source,
     * in its source or in its own `-> { … }`. A run that does not compile there
-    * is refused, since the route does not run it either.
+    * is refused, since the route does not run it either. The stages are
+    * {@link malloynbRunStages}, which the load-time cell check shares.
     */
    private async assertMalloynbRunOnSurface(
       query: string | undefined,
@@ -2015,26 +2017,89 @@ export class Model {
       const refusal = () =>
          this.notQueryable("Query target is not queryable.", true, "source");
       if (!query || !this.modelMaterializer) throw refusal();
-      const early = this.assertQueryBoundaryEarly(undefined, undefined, query);
-      await this.governor.assertDocumentJoinsQueryable(query);
-      const runnable = this.modelMaterializer.loadRestrictedQuery("\n" + query);
-      try {
-         await runnable.getPreparedQuery();
-      } catch (error) {
+      const outcome = await this.malloynbRunStages(
+         this.modelMaterializer,
+         query,
+      );
+      if (outcome.stage === "boundary") throw outcome.error;
+      if (outcome.stage === "compile") {
          if (
-            error instanceof MalloyError ||
-            error instanceof ModelCompilationError
+            outcome.error instanceof MalloyError ||
+            outcome.error instanceof ModelCompilationError
          ) {
             throw refusal();
          }
+         throw outcome.error;
+      }
+   }
+
+   /**
+    * DEPRECATED (`.malloynb` only; deleted with the format). The query
+    * route's stages for a `.malloynb` cell's `run:` sent as `query` on this
+    * file, in the route's order (`ModelServing.run`), stopping at the first
+    * that refuses: the boundary on the text and the joins it writes; then
+    * `beforeCompile`, the route's prepare-stage checks for a caller that wants
+    * them; then the restricted compile; then, when the early check deferred,
+    * the boundary on the compiled run target and those joins again. A
+    * boundary refusal comes back as its error, with the compiled run target
+    * when that check refused it. Shared by the reports read
+    * ({@link assertMalloynbRunOnSurface}) and the load-time cell check
+    * ({@link consoleCellRefusal}), so the two ask in one order.
+    */
+   private async malloynbRunStages<T>(
+      materializer: ModelMaterializer,
+      query: string,
+      beforeCompile?: () => T | undefined,
+   ): Promise<
+      | { stage: "boundary"; error: NotQueryableError; compiledSource?: string }
+      | { stage: "prepare"; value: T }
+      | {
+           stage: "compile";
+           error: unknown;
+           runnable: QueryMaterializer;
+           boundary: "cleared" | "deferred";
+        }
+      | { stage: "admitted" }
+   > {
+      let boundary: "cleared" | "deferred";
+      try {
+         boundary = this.assertQueryBoundaryEarly(undefined, undefined, query);
+         await this.governor.assertDocumentJoinsQueryable(query);
+      } catch (error) {
+         if (error instanceof NotQueryableError) {
+            return { stage: "boundary", error };
+         }
          throw error;
       }
-      if (early !== "deferred") return;
-      this.assertQueryBoundaryCompiled(
-         await this.governor.resolveAuthorizeSourceFromRunnable(runnable),
-         query,
-      );
-      await this.governor.assertDocumentJoinsQueryable(query, runnable);
+      const prepared = beforeCompile?.();
+      if (prepared !== undefined) return { stage: "prepare", value: prepared };
+      await this.ensureSharedQueryModel(materializer);
+      const runnable = materializer.loadRestrictedQuery("\n" + query);
+      try {
+         await runnable.getPreparedQuery();
+      } catch (error) {
+         return { stage: "compile", error, runnable, boundary };
+      }
+      if (boundary !== "deferred") return { stage: "admitted" };
+      const compiledSource =
+         await this.governor.resolveAuthorizeSourceFromRunnable(runnable);
+      try {
+         this.assertQueryBoundaryCompiled(compiledSource, query);
+      } catch (error) {
+         if (error instanceof NotQueryableError) {
+            return { stage: "boundary", error, compiledSource };
+         }
+         throw error;
+      }
+      try {
+         await this.governor.assertDocumentJoinsQueryable(query, runnable);
+      } catch (error) {
+         if (error instanceof NotQueryableError) {
+            return { stage: "boundary", error };
+         }
+         throw error;
+      }
+      return { stage: "admitted" };
    }
 
    /**
@@ -2134,7 +2199,8 @@ export class Model {
     * that sends it as the Console sends a `.malloynb` cell: no privilege such
     * as `includeHiddenFilesAndSources`, and no `filterParams`. Undefined when
     * some such caller could get rows. It runs the route's checks that read
-    * only the text and the model, in the route's order (`ModelServing.run`):
+    * only the text and the model, in the route's order (`ModelServing.run`),
+    * through the stages the reports read shares ({@link malloynbRunStages}):
     * the boundary on the text and its joins (404); the caller-annotation
     * guards (400); a required `#(filter)` left without a value (400); the
     * restricted compile, settled by the route's own
@@ -2151,15 +2217,58 @@ export class Model {
       if (this.compilationError || !materializer || !this.modelDef) {
          return undefined;
       }
-      let boundary: "cleared" | "deferred";
-      try {
-         boundary = this.assertQueryBoundaryEarly(undefined, undefined, query);
-         await this.governor.assertDocumentJoinsQueryable(query);
-      } catch (error) {
-         return this.offSurfaceRefusal(error, query);
+      const outcome = await this.malloynbRunStages(materializer, query, () =>
+         this.preparedRefusal(query),
+      );
+      if (outcome.stage === "boundary") {
+         return this.offSurfaceRefusal(
+            outcome.error,
+            query,
+            outcome.compiledSource,
+         );
       }
-      // `ModelServing.prepare`: the guards `assertNoCallerAnnotations` runs on
-      // query text, then `#(filter)` injection with no `filterParams`.
+      if (outcome.stage === "prepare") return outcome.value;
+      if (outcome.stage === "admitted") return undefined;
+      const settled = await settledCompileError(
+         outcome.runnable,
+         query,
+         outcome.boundary,
+         (text, compileError) =>
+            this.unqueryableTextRefusal(text, compileError),
+      );
+      if (!settled) {
+         // An unbound given is the run path's, and so the reader's. Anything
+         // that is not a compile failure at all is not this check's to judge.
+         if (await compileErrorOf(outcome.runnable)) return undefined;
+         throw outcome.error;
+      }
+      const errors = settled.compileError.problems.filter(
+         (problem) => problem.severity === "error",
+      );
+      const restricted = restrictedRejections(errors);
+      if (settled.offSurface) {
+         return {
+            ...this.offSurfaceRefusal(settled.refusal, query),
+            ...(restricted.length > 0
+               ? { problem: restricted[0].message }
+               : {}),
+         };
+      }
+      return {
+         status: 400,
+         reason: restricted.length > 0 ? "restricted_mode" : "compile_error",
+         problem:
+            (restricted[0] ?? errors[0])?.message ??
+            firstLine(settled.compileError.message),
+      };
+   }
+
+   /**
+    * `ModelServing.prepare`'s refusals of `query` before it compiles: the
+    * guards `assertNoCallerAnnotations` runs on query text, then `#(filter)`
+    * injection with no `filterParams`, as the Console sends a cell.
+    */
+   private preparedRefusal(query: string): QueryTextRefusal | undefined {
       try {
          assertNoCallerAuthorizeAnnotation(query);
          assertNoCallerClassificationAnnotation(query);
@@ -2172,61 +2281,16 @@ export class Model {
          };
       }
       const filterSource = this.governor.resolveFilterSource(query);
-      if (filterSource) {
-         try {
-            buildFilterClause(this.getFilters(filterSource), {});
-         } catch (error) {
-            if (!(error instanceof FilterValidationError)) throw error;
-            return {
-               status: 400,
-               reason: "required_filter",
-               problem: error.message,
-            };
-         }
-      }
-      await this.ensureSharedQueryModel(materializer);
-      const runnable = materializer.loadRestrictedQuery("\n" + query);
-      const settled = await settledCompileError(
-         runnable,
-         query,
-         boundary,
-         (text, compileError) =>
-            this.unqueryableTextRefusal(text, compileError),
-      );
-      if (settled) {
-         const errors = settled.compileError.problems.filter(
-            (problem) => problem.severity === "error",
-         );
-         const restricted = restrictedRejections(errors);
-         if (settled.offSurface) {
-            return {
-               ...this.offSurfaceRefusal(settled.refusal, query),
-               ...(restricted.length > 0
-                  ? { problem: restricted[0].message }
-                  : {}),
-            };
-         }
+      if (!filterSource) return undefined;
+      try {
+         buildFilterClause(this.getFilters(filterSource), {});
+      } catch (error) {
+         if (!(error instanceof FilterValidationError)) throw error;
          return {
             status: 400,
-            reason: restricted.length > 0 ? "restricted_mode" : "compile_error",
-            problem:
-               (restricted[0] ?? errors[0])?.message ??
-               firstLine(settled.compileError.message),
+            reason: "required_filter",
+            problem: error.message,
          };
-      }
-      if (boundary === "deferred") {
-         const compiledSource =
-            await this.governor.resolveAuthorizeSourceFromRunnable(runnable);
-         try {
-            this.assertQueryBoundaryCompiled(compiledSource, query);
-         } catch (error) {
-            return this.offSurfaceRefusal(error, query, compiledSource);
-         }
-         try {
-            await this.governor.assertDocumentJoinsQueryable(query, runnable);
-         } catch (error) {
-            return this.offSurfaceRefusal(error, query);
-         }
       }
       return undefined;
    }
