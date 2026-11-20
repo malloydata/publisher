@@ -532,11 +532,15 @@ export function asOfBuildWarnings(
 /**
  * Warnings for `storage=` sources the serve path is not honoring, per
  * PERSIST_STORAGE_MODE: `off` ignores the annotation, `write-only` builds but
- * does not route. `on` warns nothing.
+ * does not route. `on` warns nothing. A source whose table is also bound,
+ * and fresh, in its own database is answered from that table, and the
+ * warning says so.
  */
 export function storageWarnings(
    plan: BuildPlan | null,
    mode: string,
+   /** Whether a table of this content address is bound and fresh in its own database. */
+   databaseFresh: (sourceEntityId: string) => boolean = () => false,
 ): ApiPackageWarning[] {
    if (mode === "on" || !plan?.sources) return [];
    const warnings: ApiPackageWarning[] = [];
@@ -551,23 +555,30 @@ export function storageWarnings(
          ? `Measures of \`${rollup.baseSourceName}\` pre-aggregated at grain ` +
            `(${rollup.grainDimensions.join(", ")}) declare `
          : "";
-      const message = rollup
-         ? mode === "off"
-            ? `${at}storage="${storage}", but PERSIST_STORAGE_MODE is off, so ` +
-              `the rollup is not built. Queries that would have used it are ` +
-              `answered from \`${rollup.baseSourceName}\` instead — correct, ` +
-              `but unaccelerated.`
-            : `${at}storage="${storage}", and the rollup is built, but ` +
-              `PERSIST_STORAGE_MODE is write-only, so the serve path does not ` +
-              `route to it. Queries are answered from ` +
-              `\`${rollup.baseSourceName}\` — correct, but unaccelerated.`
-         : mode === "off"
-           ? `declares storage="${storage}" but PERSIST_STORAGE_MODE is off; ` +
-             `the annotation is ignored and the source is served live from ` +
-             `its own warehouse.`
-           : `is materialized into storage "${storage}" but ` +
-             `PERSIST_STORAGE_MODE is write-only; the serve path is not ` +
-             `routed to the materialized table (served live).`;
+      const fromDatabase =
+         !!source.sourceEntityId && databaseFresh(source.sourceEntityId);
+      const message = fromDatabase
+         ? `${rollup ? at : "declares "}storage="${storage}", but ` +
+           `PERSIST_STORAGE_MODE is ${mode}, so no query reads the storage ` +
+           `table. Queries are answered from its table in the source's own ` +
+           `database, which is bound and fresh.`
+         : rollup
+           ? mode === "off"
+              ? `${at}storage="${storage}", but PERSIST_STORAGE_MODE is off, so ` +
+                `the rollup is not built. Queries that would have used it are ` +
+                `answered from \`${rollup.baseSourceName}\` instead — correct, ` +
+                `but unaccelerated.`
+              : `${at}storage="${storage}", and the rollup is built, but ` +
+                `PERSIST_STORAGE_MODE is write-only, so the serve path does not ` +
+                `route to it. Queries are answered from ` +
+                `\`${rollup.baseSourceName}\` — correct, but unaccelerated.`
+           : mode === "off"
+             ? `declares storage="${storage}" but PERSIST_STORAGE_MODE is off; ` +
+               `the annotation is ignored and the source is served live from ` +
+               `its own warehouse.`
+             : `is materialized into storage "${storage}" but ` +
+               `PERSIST_STORAGE_MODE is write-only; the serve path is not ` +
+               `routed to the materialized table (served live).`;
       warnings.push({
          model: source.modelPath ?? "",
          subject: rollup ? rollup.baseSourceName : source.name,

@@ -68,7 +68,7 @@ describe("the tier a query reads a source bound in both tiers in", () => {
       });
    });
 
-   it("follows a database table where the mode reads no storage table, for the served copy alone", () => {
+   it("follows a database table where the mode reads no storage table, on every leg", () => {
       const read = (servedCopy: boolean, storageServed: boolean) =>
          readTier({
             storageBound: true,
@@ -88,7 +88,7 @@ describe("the tier a query reads a source bound in both tiers in", () => {
          "served copy, on": "storage",
          "served copy, not on": "database",
          "other leg, on": "storage",
-         "other leg, not on": "storage",
+         "other leg, not on": "database",
       });
    });
 
