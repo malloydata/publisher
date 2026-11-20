@@ -14,6 +14,7 @@ import {
    definitionTextAt,
    extractRunTargetSourceName,
    extractRunTargetSourceNames,
+   lastRunStatementText,
    locateProblemsInCallerText,
    scanIdentifiers,
    stripMalloyCommentsAndLiterals,
@@ -21,6 +22,38 @@ import {
 } from "./query_text";
 
 describe("service/query_text", () => {
+   describe("lastRunStatementText", () => {
+      it("reads the last top-level run: up to the next statement", () => {
+         const cell = [
+            'import "../models/orders.malloy"',
+            "source: mine is orders extend { where: id > 2 }",
+            "# bar_chart",
+            "run: orders -> { join_one: h is hidden on h.id = id; aggregate: n is count() }",
+            "type: Foo is { a :: string }",
+         ].join("\n");
+         expect(lastRunStatementText(cell)).toBe(
+            "run: orders -> { join_one: h is hidden on h.id = id; aggregate: n is count() }",
+         );
+      });
+
+      it("takes the last of two runs, and stops at a top-level ;", () => {
+         expect(
+            lastRunStatementText(
+               "run: a -> x\nrun: b -> { limit: 1 }; query: q is a -> x",
+            ),
+         ).toBe("run: b -> { limit: 1 }");
+      });
+
+      it("ignores a run: in a comment or a string, and a cell with none", () => {
+         expect(
+            lastRunStatementText("// run: hidden -> x\nsource: s is orders"),
+         ).toBe(undefined);
+         expect(
+            lastRunStatementText("run: orders -> { where: note = 'run: x' }"),
+         ).toBe("run: orders -> { where: note = 'run: x' }");
+      });
+   });
+
    describe("extractRunTargetSourceName", () => {
       it("returns undefined for empty/absent text", () => {
          expect(extractRunTargetSourceName(undefined)).toBeUndefined();

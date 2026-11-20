@@ -132,7 +132,7 @@ describe(".malloynb cells through the query route (E2E)", () => {
       expect(await sent("surface.malloynb")).toEqual([2, 3, 5, 6]);
       expect(await sent("authorize.malloynb")).toEqual([1, 2]);
       expect(await sent("import_cell.malloynb")).toEqual([1, 2, 3]);
-      expect(await sent("caller_join.malloynb")).toEqual([2, 3, 4, 5, 6]);
+      expect(await sent("caller_join.malloynb")).toEqual([2, 3, 4, 5, 6, 7]);
       // The render tag goes with the run, the selective import does not.
       const cells = await cellsOf(CURATED, "import_cell.malloynb");
       expect(malloynbCellQuery(cells[3])).toBe(
@@ -194,6 +194,15 @@ describe(".malloynb cells through the query route (E2E)", () => {
          runSchema: true,
          publishedSchema: true,
       });
+      // A cell whose run: joins a hidden source, in its source or in its own
+      // `-> { … }`, answers 404 on the curated package, so its schema is not
+      // shown there either. A join to a published source keeps its own.
+      const withSchema = async (pkg: string) =>
+         (await cellsOf(pkg, "caller_join.malloynb")).flatMap((cell, i) =>
+            cell.queryInfo !== undefined ? [i] : [],
+         );
+      expect(await withSchema(CURATED)).toEqual([2, 3, 5]);
+      expect(await withSchema(OPEN)).toEqual([2, 3, 4, 5, 6, 7]);
    });
 
    it("runs every cell's query in restricted mode, and the way to keep each shape runs", async () => {
@@ -225,6 +234,14 @@ describe(".malloynb cells through the query route (E2E)", () => {
       for (const pkg of [OPEN, CURATED]) {
          expect(await run(pkg, nb, 6)).toEqual({ rows: [[1, 6]] });
       }
+      // On the curated package the notebook read gives no schema for a cell
+      // its restricted compile refuses, as for one the surface refuses.
+      const withSchema = async (pkg: string) =>
+         (await cellsOf(pkg, nb)).flatMap((cell, i) =>
+            cell.queryInfo !== undefined ? [i] : [],
+         );
+      expect(await withSchema(CURATED)).toEqual([6]);
+      expect(await withSchema(OPEN)).toEqual([2, 3, 4, 5, 6]);
    });
 
    it("applies #(authorize), on the source and on one a cell derives from it", async () => {
@@ -318,6 +335,11 @@ describe(".malloynb cells through the query route (E2E)", () => {
       expect(hidden?.refused).toBe(404);
       expect(hidden?.message).toMatch(NOT_QUERYABLE);
       expect(await run(OPEN, nb, 4)).toEqual({ rows: [[6, 1550]] });
+      // The same for a join inside the query's own `-> { … }`.
+      const hiddenInStage = refusal(await run(CURATED, nb, 7));
+      expect(hiddenInStage?.refused).toBe(404);
+      expect(hiddenInStage?.message).toMatch(NOT_QUERYABLE);
+      expect(await run(OPEN, nb, 7)).toEqual({ rows: [[6, 1550]] });
       // A join a cell's `source:` declares is the author's, which a gate does
       // not follow; on the curated package that source is off the surface, so
       // there the join goes in a source of a model file that index.malloy

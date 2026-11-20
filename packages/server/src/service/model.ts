@@ -116,6 +116,7 @@ import {
    buildDerivationBaseMap,
    buildJoinBaseMap,
    extractRunTargetSourceNames,
+   lastRunStatementText,
    malloyIdentifiers,
    stripMalloyCommentsAndLiterals,
 } from "./query_text";
@@ -1913,14 +1914,15 @@ export class Model {
    }
 
    /**
-    * The query boundary for one notebook cell: the same two checks as the
-    * query route. A served notebook's cell has every code cell up to this one
+    * The query boundary for one notebook cell, as the query route would
+    * decide it. A served notebook's cell has every code cell up to this one
     * as derivation context, so `source: big is orders extend {...}` in an
     * earlier cell still counts as derived from `orders`, as the file's own
-    * text makes it on the query route. A `.malloynb` cell runs as its `run:`
-    * statement alone, so it gets no cell text and no context: only its
-    * compiled run target is asked, and a source the cells declare is not on
-    * the surface. Inert with no surface and under `"all"`.
+    * text makes it on the query route. A `.malloynb` cell runs as its last
+    * `run:` statement alone, the text the SDK sends, so that text is put
+    * through the route's boundary checks: see
+    * {@link assertMalloynbRunOnSurface}. Inert with no surface and under
+    * `"all"`.
     */
    private async assertNotebookCellOnSurface(
       cellIndex: number,
@@ -1928,16 +1930,19 @@ export class Model {
    ): Promise<void> {
       const { mode, exploresDeclared } = this.queryBoundary;
       if (mode === "all" || !exploresDeclared) return;
-      const served = this.notebookFormat() === "malloy";
       const cells = this.runnableNotebookCells ?? [];
-      const cellText = served ? (cells[cellIndex]?.text ?? "") : undefined;
-      const context = served
-         ? cells
-              .slice(0, cellIndex + 1)
-              .filter((c) => c.type === "code")
-              .map((c) => c.text)
-              .join("\n")
-         : undefined;
+      if (this.notebookFormat() !== "malloy") {
+         await this.assertMalloynbRunOnSurface(
+            lastRunStatementText(cells[cellIndex]?.text ?? ""),
+         );
+         return;
+      }
+      const cellText = cells[cellIndex]?.text ?? "";
+      const context = cells
+         .slice(0, cellIndex + 1)
+         .filter((c) => c.type === "code")
+         .map((c) => c.text)
+         .join("\n");
       const early = this.assertQueryBoundaryEarly(
          undefined,
          undefined,
@@ -1951,6 +1956,43 @@ export class Model {
             context,
          );
       }
+   }
+
+   /**
+    * The boundary checks the query route runs on a `.malloynb` cell's `run:`
+    * sent as `query` on the notebook's path: the early check on its text, the
+    * boundary for the joins it writes, then, on its restricted compile, the
+    * compiled run target and those joins again. So a source the cells declare
+    * is not on the surface, and neither is a run that joins a hidden source,
+    * in its source or in its own `-> { … }`. A run that does not compile there
+    * is refused, since the route does not run it either.
+    */
+   private async assertMalloynbRunOnSurface(
+      query: string | undefined,
+   ): Promise<void> {
+      const refusal = () =>
+         this.notQueryable("Query target is not queryable.", true, "source");
+      if (!query || !this.modelMaterializer) throw refusal();
+      const early = this.assertQueryBoundaryEarly(undefined, undefined, query);
+      await this.governor.assertDocumentJoinsQueryable(query);
+      const runnable = this.modelMaterializer.loadRestrictedQuery("\n" + query);
+      try {
+         await runnable.getPreparedQuery();
+      } catch (error) {
+         if (
+            error instanceof MalloyError ||
+            error instanceof ModelCompilationError
+         ) {
+            throw refusal();
+         }
+         throw error;
+      }
+      if (early !== "deferred") return;
+      this.assertQueryBoundaryCompiled(
+         await this.governor.resolveAuthorizeSourceFromRunnable(runnable),
+         query,
+      );
+      await this.governor.assertDocumentJoinsQueryable(query, runnable);
    }
 
    /**
@@ -3561,8 +3603,9 @@ export class Model {
     * Whether the notebook GET may show a cell's `queryInfo`. Its schema lists
     * every column the cell's query returns, so a cell the query route would
     * refuse (`run: secret -> { select: * }`) would otherwise describe the
-    * hidden source here. Asks the check the query route asks of the cell's
-    * query.
+    * hidden source here. Asks {@link assertNotebookCellOnSurface}, which for a
+    * `.malloynb` runs the query route's own boundary checks on the cell's
+    * `run:`, its joins included.
     */
    private async showsCellQueryInfo(
       cellIndex: number,

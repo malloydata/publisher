@@ -15,3 +15,5 @@ run: orders -> { join_one: g is gated on g.id = id; aggregate: order_count, gn i
 >>>malloy
 source: with_gated is orders extend { join_one: g is gated on g.id = id }
 run: with_gated -> { group_by: id, gid is g.id; order_by: id }
+>>>malloy
+run: orders -> { join_one: h is hidden on h.id = id; aggregate: order_count, s is h.secret_total }

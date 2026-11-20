@@ -92,6 +92,49 @@ export function extractRunTargetSourceNames(query?: string): string[] {
    return [];
 }
 
+/** The words that open a top-level statement when a `:` follows them. */
+const COLON_STATEMENTS = ["run", "source", "query", "given", "sql", "type"];
+
+/**
+ * The last top-level `run:` statement of `text`, as written, up to the next
+ * top-level statement or `;`, or undefined when there is none. It is what the
+ * SDK's `Report` sends as `query` for a `.malloynb` code cell, less the render
+ * tags above it, which no check here reads.
+ */
+export function lastRunStatementText(text: string): string | undefined {
+   const tokens = tokenize(stripMalloyCommentsAndLiterals(text));
+   const colonStatement = (k: number, words: readonly string[]): boolean =>
+      words.some((word) => isWord(tokens, k, word)) &&
+      textIs(tokens, k + 1, ":");
+   let depth = 0;
+   let open = -1;
+   let last = -1;
+   let found: [number, number] | undefined;
+   for (let k = 0; k < tokens.count; k++) {
+      const opens =
+         depth === 0 &&
+         (textIs(tokens, k, ";") ||
+            isWord(tokens, k, "import") ||
+            isWord(tokens, k, "export") ||
+            colonStatement(k, COLON_STATEMENTS));
+      if (opens) {
+         if (open >= 0) found = [open, last];
+         open = colonStatement(k, ["run"]) ? k : -1;
+         last = k + 1;
+         if (open >= 0) k++;
+         continue;
+      }
+      last = k;
+      if (tokens.kind[k] !== PUNCT) continue;
+      const code = tokens.source.charCodeAt(tokens.start[k]);
+      if (code === 40 || code === 91 || code === 123) depth++;
+      else if (code === 41 || code === 93 || code === 125)
+         depth = Math.max(0, depth - 1);
+   }
+   if (open >= 0) found = [open, last];
+   return found && text.slice(tokens.start[found[0]], tokens.end[found[1]]);
+}
+
 /**
  * A query that starts from a named view, read from its text: `run: ops ->
  * by_carrier`, refined (`ops -> by_carrier + { limit: 3 }`), or with later
