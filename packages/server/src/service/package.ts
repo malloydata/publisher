@@ -3457,9 +3457,9 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    }
 
    /**
-    * Read each linear report's definition cells, for the deprecated notebook
-    * route. A reader refusal is returned as a finding, since the model still
-    * compiles and nothing else would say so.
+    * Read each linear report's definition cells. A reader refusal is returned
+    * as a finding, since the model still compiles and nothing else would say
+    * so.
     */
    private attachNotebookCells(
       models: ReadonlyMap<string, Model>,

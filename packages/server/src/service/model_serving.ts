@@ -433,8 +433,8 @@ export class ModelServing {
 
       // Restricted mode keeps untrusted text inside the model's surface: it
       // rejects `import`, raw `connection.table(...)`/`.sql(...)`, raw-SQL
-      // functions, and `##!` flags. Only author notebook cells use the
-      // unrestricted `loadQuery`.
+      // functions, and `##!` flags. Only author text, never a caller's, uses
+      // the unrestricted `loadQuery`.
       const materializer = this.host.modelMaterializer()!;
       await this.host.ensureSharedQueryModel(materializer);
       const runnable = materializer.loadRestrictedQuery(queryString);
@@ -1229,7 +1229,6 @@ export class ModelServing {
     * in environment.ts). But a grafted gate's givens bind in the same
     * prepare, before any SQL runs, and Malloy's message names the missing
     * one, which `docs/authorize.md` promises a denied caller never sees.
-    * Shared by the query path and a notebook cell.
     */
    private unboundGateGivenDenial(
       err: unknown,
@@ -1313,8 +1312,7 @@ function statementUsage(
 }
 
 /**
- * The one request `govern()` judges, for a routed query and a notebook cell
- * alike: the caller's givens, the ceiling over the audit, and how a graft
+ * The one request `govern()` judges: the caller's givens, the ceiling over the audit, and how a graft
  * recompiles on the scope it lands on. A subject with nothing to recompile
  * gives up the bypass, so a row-level gate denies; a query adds its boundary,
  * its caller's text and region, and whether it was routed past a gate.

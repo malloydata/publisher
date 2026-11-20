@@ -214,9 +214,8 @@ One resource replaces two.
 | `PUT …/models/{path}`                              | Any location; one rule for both layouts (§7).                                                                                                                                                                                                                                                                                                                   |
 | `GET …/models`                                     | Unchanged rule, by discovery: served reports are excluded under a curated surface, linear reports always (as served notebooks are today). Open to simplifying to "reports are never models" in a follow-up.                                                                                                                                                     |
 
-The deprecated routes are removed in a later release (Delivery step 5; the dashboards routes and
-their basename alias are already gone); they live behind one registration (`routes/deprecated.ts`)
-over projections of the report API (`service/legacy_report_views.ts`), which synthesize `kind`.
+The deprecated routes are removed (Delivery step 5). What is left of `service/legacy_report_views.ts`
+serves the Console alias and the compile response's `kind`.
 `api-doc.yaml` gains a `Report` and a `ReportManifest` schema, marks the old
 schemas and routes deprecated, rewrites every description that states the folder rule or the
 dashboard/notebook split, and the clients are regenerated.

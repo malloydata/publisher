@@ -689,8 +689,6 @@ A version no host has bound or built, as on a standalone server, serves what its
 
 **The server log masks secrets on every line.** The full error text is logged, with a signed URL's signature, credential and token, and a Postgres password, masked in values and keys, nested errors and cycles included, however the URL's separators are escaped or encoded. Masking never alters a logged object, and a call to the server's logger never throws.
 
-## [Unreleased] — the v1 cutover conformance script runs again without NODE_ENV=test
-
 ## [0.15.0] — security fix: a stored table could answer a caller with rows live would not
 
 Several cases let a stored table answer a caller with rows that live would not return to that caller, mostly past a source's own row-level gate (`#(access_filter)`, which Publisher reads past with the gated-sources switch off for a source's own gate, or with `PUBLISHER_MATERIALIZE_GATED_SOURCES` on). Each is fixed by answering such queries live, or by reading the right column. Upgrade if any applies to you. As with every gate, these hold only behind the gateway that sets the givens from a verified identity ([operating model](docs/security-posture.md#operating-model-a-microservice-behind-your-gateway)).
