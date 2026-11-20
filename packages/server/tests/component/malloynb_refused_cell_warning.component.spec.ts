@@ -229,6 +229,15 @@ describe("a .malloynb cell the query route refuses warns at load", () => {
       }
    });
 
+   it("checks the runQuery the reports read serves: a block render tag above or after a run: is not a compile error", async () => {
+      // Cells 3 to 5 carry `#|` blocks; cell 6 runs a source the notebook
+      // declares, under a name that starts with a keyword.
+      expect(reasons(open.pkg, "render_tags.malloynb")).toEqual([]);
+      expect(reasons(curated.pkg, "render_tags.malloynb")).toEqual([
+         [6, "off_surface"],
+      ]);
+   });
+
    it("follows the route's order: an #(authorize) spelling is refused before any join is read", () => {
       // Cell 6 carries the spelling in a comment and joins a hidden source.
       // The route skips the caller-join boundary for such text and answers

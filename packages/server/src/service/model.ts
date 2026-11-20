@@ -113,7 +113,7 @@ import {
    tagText,
 } from "./motly";
 import { onlyParseFailures, restrictedRejections } from "./compile_restriction";
-import { isMalloynbPath, malloynbCellQuery } from "./deprecated/malloynb";
+import { isMalloynbPath } from "./deprecated/malloynb";
 import {
    assertNoCallerAuthorizeAnnotation,
    assertNoCallerClassificationAnnotation,
@@ -2179,7 +2179,8 @@ export class Model {
    /**
     * DEPRECATED (`.malloynb` only; deleted with the format). Each code cell
     * the query route refuses for every reader in the Console, sent as the
-    * SDK's `Report` sends it ({@link malloynbCellQuery}): its 1-based
+    * SDK's `Report` sends it, the `runQuery` the reports read serves
+    * ({@link malloynbRunQuery}): its 1-based
     * position among the notebook's cells, markdown included, and the refusal
     * ({@link consoleCellRefusal}). Empty for any other file, and for a
     * notebook with no compiled model. Hands the event loop a turn between
@@ -2195,9 +2196,8 @@ export class Model {
          this.runnableNotebookCells ?? []
       ).entries()) {
          // The Console runs code cells only (the SDK's `cellRuns`); a markdown
-         // cell keeps its place in the count.
-         if (cell.type !== "code") continue;
-         const query = malloynbCellQuery(cell.text);
+         // cell keeps its place in the count, and has no `runQuery`.
+         const query = malloynbRunQuery(cell);
          if (query === undefined) continue;
          await yielder.maybeYield();
          const refusal = await this.consoleCellRefusal(query);
@@ -4142,8 +4142,9 @@ function compileErrorLine(message: string): string {
 /**
  * What a `.malloynb` code cell runs: the `runQuery` the reports read serves,
  * which the SDK sends as `query` on the notebook's path, and the text the
- * cell's `queryInfo` screen checks. Undefined for a markdown cell and for a
- * code cell with no `run:`.
+ * cell's `queryInfo` screen and the load-time cell check
+ * ({@link Model.malloynbCellRefusals}) check. Undefined for a markdown cell
+ * and for a code cell with no `run:`.
  */
 function malloynbRunQuery(
    cell: Pick<RunnableNotebookCell, "type" | "text"> | undefined,

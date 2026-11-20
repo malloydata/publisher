@@ -466,6 +466,7 @@ describe(".malloynb cells through the query route (E2E)", () => {
          "import_cell.malloynb",
          "later_given.malloynb",
          "raw_sql.malloynb",
+         "render_tags.malloynb",
          "restricted.malloynb",
          "route_text.malloynb",
          "row_level.malloynb",
@@ -490,9 +491,10 @@ describe(".malloynb cells through the query route (E2E)", () => {
                ? allGates
                : {};
             for (let i = 0; i < cells.length; i++) {
-               // The Console runs code cells only (the SDK's `cellRuns`).
+               // The Console runs code cells only (the SDK's `cellRuns`), and
+               // sends a cell's served `runQuery`.
                if (cells[i].type !== "code") continue;
-               if (malloynbCellQuery(cells[i]) === undefined) continue;
+               if (cells[i].runQuery === undefined) continue;
                const warning = warned.get(`notebooks/${nb} ${i + 1}`);
                const answered = await run(pkg, nb, i, gates);
                const status = "rows" in answered ? 200 : answered.refused;
@@ -529,13 +531,13 @@ describe(".malloynb cells through the query route (E2E)", () => {
       }
       expect(disagreements).toEqual([]);
       // Both outcomes were exercised, on both packages.
-      expect(seen.warned).toBe(28);
+      expect(seen.warned).toBe(29);
       expect(seen.clean).toBeGreaterThan(15);
    });
 
    it("the warning is for a reader in the Console: an editor's surface lift still runs an off-surface cell", async () => {
       const lifted = async (nb: string, i: number) => {
-         const query = malloynbCellQuery((await cellsOf(CURATED, nb))[i]);
+         const query = (await cellsOf(CURATED, nb))[i].runQuery;
          const res = await env.post(
             env.api(
                `/models/notebooks/${nb}/query?includeHiddenFilesAndSources=true`,
