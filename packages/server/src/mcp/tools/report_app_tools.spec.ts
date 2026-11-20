@@ -57,7 +57,10 @@ const NOTEBOOK = {
          { type: "markdown", text: "# Old" },
          { type: "code", text: 'import "orders.malloy"' },
          { type: "code", text: "run: orders -> by_month" },
-         { type: "code", text: "run: orders -> by_state" },
+         {
+            type: "code",
+            text: "source: west is orders extend { where: region = 'West' }\n# bar_chart\nrun: west -> by_state",
+         },
       ],
       // Every source carries the model's givens; one control per name.
       sources: [
@@ -67,6 +70,16 @@ const NOTEBOOK = {
    },
 };
 
+/** A `.malloynb` that failed to load: its error, and no cells. */
+const BROKEN_NOTEBOOK = {
+   path: "notebooks/broken.malloynb",
+   name: "broken",
+   layout: "linear",
+   title: "Broken",
+   editable: false,
+   error: "Cell 2 does not compile.",
+};
+
 function stubStore(): EnvironmentStore {
    const pkg = {
       getReport: async (p: string) =>
@@ -74,7 +87,9 @@ function stubStore(): EnvironmentStore {
             ? MANIFEST
             : p === NOTEBOOK.path
               ? NOTEBOOK
-              : undefined,
+              : p === BROKEN_NOTEBOOK.path
+                ? BROKEN_NOTEBOOK
+                : undefined,
       listReports: async () => [
          {
             path: MANIFEST.path,
@@ -115,7 +130,8 @@ function stubStore(): EnvironmentStore {
       getStatus: async () => ({
          operationalState: "serving",
          frozenConfig: false,
-         modelPage: "viewer",
+         // The server default: the Console offers the Explorer.
+         modelPage: "explorer",
          environments: [{ name: "secret-env" }],
       }),
       storageManager: { isInitialized: () => false },
@@ -256,11 +272,11 @@ describe("report panel tools over the MCP protocol", () => {
       expect(result.isError).toBeFalsy();
       const text = (result.content as { text: string }[])[0].text;
       expect(text).toContain(
-         'Showing "Old" (a linear report, a .malloynb notebook, 3 code cells, 1 text).',
+         'Showing "Old" (a linear report, a .malloynb notebook, 2 query cells, 1 text).',
       );
       expect(text).toContain("Its filters: Region.");
       expect(text).toContain(
-         "A .malloynb is a deprecated format: execute_query does not take its path.",
+         "A .malloynb is a deprecated format: execute_query does not take its path. To run a query yourself, use execute_query on the .malloy models it imports, and declare in your query text any source its cells derive from theirs.",
       );
       const url = `${reportAppOrigin()}/examples/storefront/notebooks/old.malloynb?REGION=West`;
       expect(text).toContain(`Open it in Publisher: ${url}`);
@@ -273,6 +289,25 @@ describe("report panel tools over the MCP protocol", () => {
          givens: { REGION: "West" },
          url,
       });
+   });
+
+   it("shows a .malloynb that failed to load with its problem, and no count of cells it could not read", async () => {
+      const result = await client.callTool({
+         name: "show_report",
+         arguments: {
+            environmentName: "examples",
+            packageName: "storefront",
+            path: "notebooks/broken.malloynb",
+         },
+      });
+      expect(result.isError).toBeFalsy();
+      const text = (result.content as { text: string }[])[0].text;
+      expect(text).toContain(
+         'Showing "Broken" (a linear report, a .malloynb notebook).',
+      );
+      expect(text).toContain("It has a problem: Cell 2 does not compile.");
+      expect(text).not.toContain("0 query cells");
+      expect(text).not.toContain("It has no filters.");
    });
 
    it("answers the panel's reads through report_api with the REST status", async () => {
@@ -320,7 +355,7 @@ describe("answerReportApi", () => {
       },
    } as unknown as ThemeStore;
 
-   it("status carries only what the provider reads, never the environments", async () => {
+   it("status carries only what the provider reads, never the environments, and keeps the Explorer out of the panel", async () => {
       const answer = await answerReportApi(
          { operation: "status" },
          {
@@ -332,6 +367,8 @@ describe("answerReportApi", () => {
       );
       expect(answer).toEqual({
          status: 200,
+         // `viewer` whatever the server says: the panel builds no query of
+         // its own, so a notebook's cells do not offer the Explorer.
          data: { frozenConfig: false, modelPage: "viewer", theme: {} },
       });
    });

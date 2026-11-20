@@ -213,6 +213,49 @@ describe(".malloynb through the MCP report tools (E2E)", () => {
       expect(allowed.panel).toEqual(allowed.rest);
    });
 
+   it("report_api filters rows by #(access_filter) as REST does, and denies a gate given left unsupplied", async () => {
+      const cases: [number, object, Outcome][] = [
+         [
+            1,
+            {},
+            { refused: 403, message: 'Access denied for source "gated".' },
+         ],
+         [1, { GROUPS: [1, 2] }, { rows: [[2]] }],
+         [1, { GROUPS: [] }, { rows: [[0]] }],
+         [3, { GROUPS: [4, 5] }, { rows: [[4], [5]] }],
+      ];
+      for (const [i, givens, expected] of cases) {
+         const { rest, panel } = await both("row_level.malloynb", i, givens);
+         expect(rest).toEqual(expected);
+         expect(panel).toEqual(rest);
+      }
+   });
+
+   it("report_api takes a given a later cell declares as REST does, and refuses an unknown one", async () => {
+      const cases: [number, object, Outcome][] = [
+         [0, { REGION: "EU" }, { rows: [[6]] }],
+         [1, {}, { rows: [[350]] }],
+         [1, { REGION: "EU" }, { rows: [[1200]] }],
+         [2, { REGION: "EU", GROUPS: [1] }, { rows: [[1]] }],
+         [
+            2,
+            { REGION: "EU" },
+            { refused: 403, message: 'Access denied for source "gated".' },
+         ],
+      ];
+      for (const [i, givens, expected] of cases) {
+         const { rest, panel } = await both("later_given.malloynb", i, givens);
+         expect(rest).toEqual(expected);
+         expect(panel).toEqual(rest);
+      }
+      const typo = await both("later_given.malloynb", 0, { NOtaGiven: 1 });
+      expect(typo.rest).toMatchObject({ refused: 400 });
+      expect((typo.rest as { message?: string }).message).toContain(
+         "unknown given 'NOtaGiven'",
+      );
+      expect(typo.panel).toEqual(typo.rest);
+   });
+
    it("execute_query still refuses a .malloynb's path, with a surface or without one", async () => {
       for (const pkg of [PKG, OPEN]) {
          const result = await client.callTool({

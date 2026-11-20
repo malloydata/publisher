@@ -30,6 +30,7 @@ import {
 import { queryVersionRefOf } from "../../route_params";
 import { accessIdentityOf } from "../../service/access_record";
 import { VersionRef } from "../../service/identity";
+import { lastRunStatementText } from "../../service/query_text";
 import { settings } from "../../settings";
 import { SERVER_VERSION } from "../../version";
 import { buildMalloyUri, classifyToolError } from "../handler_utils";
@@ -107,33 +108,44 @@ export function reportPanelHtml(origin: string, version = SERVER_VERSION) {
 
 /**
  * A legacy `.malloynb` notebook. The report tools list and show one, since
- * the SDK's `Report` the panel mounts runs its cells through the query route;
- * `execute_query` still refuses its path, so an agent builds nothing new on
- * the deprecated format.
+ * the SDK's `Report` the panel mounts runs its cells through the query route.
+ * `execute_query` still refuses its path. `report_api` does not: on a host
+ * without MCP Apps it is listed to the model like any tool, and it runs a
+ * query on a notebook's path under the REST route's rules.
  */
 export const isLegacyNotebook = (reportPath: string) =>
    reportPath.endsWith(".malloynb");
 
 /** What a `.malloynb`'s manifest carries in place of tiles and givens: its cells, and its sources with their givens. */
 interface NotebookContent {
-   notebookCells?: { type?: string }[];
+   notebookCells?: { type?: string; text?: string }[];
    sources?: { givens?: { name?: string; label?: string }[] }[];
 }
 
 /**
  * A report's query and text counts, and its filters by label, as the panel
- * draws it. A `.malloynb` has cells, not tiles, and its givens ride on every
- * source of its model, so each name is counted once, as the SDK does.
+ * draws it. A `.malloynb` has cells, not tiles: a query cell is a code cell
+ * with a `run:`, the cells the SDK's `Report` sends, and its givens ride on
+ * every source of its model, so each name is counted once, as the SDK does.
+ * Undefined for a `.malloynb` that failed to load, whose cells are unread.
  */
-function reportContents(report: {
-   tiles?: { kind?: string }[];
-   givens?: { name?: string; label?: string }[];
-   notebook?: NotebookContent;
-}): { queries: number; text: number; filters: string[] } {
+function reportContents(
+   report: {
+      tiles?: { kind?: string }[];
+      givens?: { name?: string; label?: string }[];
+      notebook?: NotebookContent;
+   },
+   notebook: boolean,
+): { queries: number; text: number; filters: string[] } | undefined {
    const label = (g: { name?: string; label?: string }) => g.label ?? g.name;
-   if (report.notebook) {
+   if (notebook) {
+      if (!report.notebook) return undefined;
       const cells = report.notebook.notebookCells ?? [];
-      const queries = cells.filter((c) => c.type === "code").length;
+      const queries = cells.filter(
+         (c) =>
+            c.type === "code" &&
+            lastRunStatementText(c.text ?? "") !== undefined,
+      ).length;
       const byName = new Map<string, string | undefined>();
       for (const source of report.notebook.sources ?? []) {
          for (const g of source.givens ?? []) {
@@ -142,7 +154,7 @@ function reportContents(report: {
       }
       return {
          queries,
-         text: cells.length - queries,
+         text: cells.filter((c) => c.type === "markdown").length,
          filters: [...byName.values()].filter((f): f is string => Boolean(f)),
       };
    }
@@ -296,7 +308,10 @@ export async function answerReportApi(
                status: 200,
                data: {
                   frozenConfig: s.frozenConfig,
-                  modelPage: s.modelPage,
+                  // The panel builds no query of its own: a `.malloy` report
+                  // has no query builder in it, and `viewer` keeps the
+                  // Explorer off a `.malloynb`'s cells too.
+                  modelPage: "viewer",
                   theme: theme ?? {},
                },
             };
@@ -506,18 +521,27 @@ export function registerReportAppTools(
                givens,
             );
             const notebook = isLegacyNotebook(report.path);
-            const { queries, text, filters } = reportContents(report);
-            const counted = notebook
-               ? `a .malloynb notebook, ${queries} ${queries === 1 ? "code cell" : "code cells"}`
-               : `${queries} ${queries === 1 ? "query tile" : "query tiles"}`;
+            const contents = reportContents(report, notebook);
+            const kind = [
+               report.layout === "linear" ? "a linear report" : "a grid report",
+               notebook ? "a .malloynb notebook" : undefined,
+               contents
+                  ? `${contents.queries} ${notebook ? "query cell" : "query tile"}${contents.queries === 1 ? "" : "s"}`
+                  : undefined,
+               contents && contents.text > 0
+                  ? `${contents.text} text`
+                  : undefined,
+            ].filter(Boolean);
             const lines = [
-               `Showing "${report.title}" (${report.layout === "linear" ? "a linear report" : "a grid report"}, ${counted}${text > 0 ? `, ${text} text` : ""}).`,
-               filters.length > 0
-                  ? `Its filters: ${filters.join(", ")}.`
-                  : "It has no filters.",
+               `Showing "${report.title}" (${kind.join(", ")}).`,
+               contents === undefined
+                  ? undefined
+                  : contents.filters.length > 0
+                    ? `Its filters: ${contents.filters.join(", ")}.`
+                    : "It has no filters.",
                report.error ? `It has a problem: ${report.error}` : undefined,
                notebook
-                  ? "A .malloynb is a deprecated format: execute_query does not take its path. To run a query yourself, use the models it imports."
+                  ? "A .malloynb is a deprecated format: execute_query does not take its path. To run a query yourself, use execute_query on the .malloy models it imports, and declare in your query text any source its cells derive from theirs."
                   : undefined,
                `Open it in Publisher: ${url}`,
             ].filter(Boolean);
