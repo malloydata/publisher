@@ -16,7 +16,9 @@
  * tiers on both tables, spliced its declaration twice and refused both, so
  * its queries were answered live under `on` while the verdict said
  * `storage/serves`; under `write-only` and `off` they were served from the
- * database table while the verdict said `storage/live/storage_mode`. A
+ * database table while the verdict said `storage/live/storage_mode`. Under
+ * those modes every leg now reads a database table bound beside a storage
+ * one, and its verdict judges it on the database tier. A
  * storage table the served copy then dropped (one missing a column) left
  * the source live too, though its database table was complete: it now falls
  * back to the database table. A column the storage table holds but cannot
@@ -332,10 +334,6 @@ const SERVES_DATABASE: Expected = {
    read: "database",
    verdict: { tier: "database", verdict: "serves" },
 };
-const LIVE_STORAGE_MODE: Expected = {
-   read: "live",
-   verdict: { tier: "storage", verdict: "live", reason: "storage_mode" },
-};
 const LIVE_STORAGE_STALE: Expected = {
    read: "live",
    verdict: { tier: "storage", verdict: "live", reason: "stale" },
@@ -361,19 +359,19 @@ const MATRIX: Record<
       "database stale": { copy: SERVES_STORAGE, legs: SERVES_STORAGE },
    },
    "write-only": {
-      "both fresh": { copy: SERVES_DATABASE, legs: LIVE_STORAGE_MODE },
-      "storage stale": { copy: SERVES_DATABASE, legs: LIVE_STORAGE_MODE },
+      "both fresh": { copy: SERVES_DATABASE, legs: SERVES_DATABASE },
+      "storage stale": { copy: SERVES_DATABASE, legs: SERVES_DATABASE },
       "database stale": {
          copy: LIVE_DATABASE_STALE,
-         legs: LIVE_STORAGE_MODE,
+         legs: LIVE_DATABASE_STALE,
       },
    },
    off: {
-      "both fresh": { copy: SERVES_DATABASE, legs: LIVE_STORAGE_MODE },
-      "storage stale": { copy: SERVES_DATABASE, legs: LIVE_STORAGE_MODE },
+      "both fresh": { copy: SERVES_DATABASE, legs: SERVES_DATABASE },
+      "storage stale": { copy: SERVES_DATABASE, legs: SERVES_DATABASE },
       "database stale": {
          copy: LIVE_DATABASE_STALE,
-         legs: LIVE_STORAGE_MODE,
+         legs: LIVE_DATABASE_STALE,
       },
    },
 };

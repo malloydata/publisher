@@ -160,6 +160,18 @@ export interface ViewTable {
    built: boolean;
    /** Bound, but past its freshness window. */
    stale: boolean;
+   /**
+    * A storage table bound, but no storage destination is read
+    * (`PERSIST_STORAGE_MODE` write-only or off), and no database table is
+    * bound beside it: the serve verdict's `storage_mode`.
+    */
+   storageNotServed?: true;
+   /**
+    * A database table read because the storage mode reads no destination,
+    * while a storage table is bound beside it: the path report names that
+    * one `NOT_SERVED` (`storage_mode`).
+    */
+   storageTwinNotServed?: true;
    dataAsOf?: string;
 }
 
@@ -356,6 +368,9 @@ export class PersistedViewServe {
       if (!table.built) {
          throw new LegDecline("view_not_built");
       }
+      if (table.storageNotServed) {
+         throw new LegDecline("view_storage_mode");
+      }
       if (table.stale || (!table.virtualMap && !table.databaseTable)) {
          throw new LegDecline("view_stale");
       }
@@ -401,12 +416,24 @@ export class PersistedViewServe {
       const planned = this.host.catalog()?.planned.get(plan.buildSourceID);
       const tableId = planned?.sourceEntityId;
       const withId = tableId !== undefined ? { tableId } : {};
-      const lookup = storageLookupOf(
+      const bound =
+         tableId !== undefined ? pinned.snapshot.entries[tableId] : undefined;
+      const storageServes = !!this.host.serveDestinationConfig();
+      const stored = storageLookupOf(
          pinned,
          plan.buildSourceID,
          isPersistedQuerySourceID(plan.buildSourceID) ? "query" : "view",
          plan.storage !== undefined,
       );
+      // No storage destination is read (PERSIST_STORAGE_MODE write-only or
+      // off): a database table bound beside the storage one answers, as
+      // `on`'s rules would with the storage tier removed.
+      const lookup = !storageServes && bound ? undefined : stored;
+      // The storage table read in its place, named by the path report.
+      const databaseId =
+         !lookup && stored && stored.state !== "not_built"
+            ? { ...withId, storageTwinNotServed: true as const }
+            : withId;
       if (lookup) {
          if (lookup.state === "not_built") {
             return { ...withId, tier: "storage", built: false, stale: false };
@@ -415,7 +442,18 @@ export class PersistedViewServe {
          const dataAsOf = binding.freshAsOf
             ? { dataAsOf: binding.freshAsOf }
             : {};
-         if (lookup.state === "stale" || !this.host.serveDestinationConfig()) {
+         if (!storageServes) {
+            // Not read whatever its freshness: the storage mode decides.
+            return {
+               ...withId,
+               ...dataAsOf,
+               tier: "storage",
+               built: true,
+               stale: false,
+               storageNotServed: true,
+            };
+         }
+         if (lookup.state === "stale") {
             return {
                ...withId,
                ...dataAsOf,
@@ -444,10 +482,8 @@ export class PersistedViewServe {
             ]),
          };
       }
-      const bound =
-         tableId !== undefined ? pinned.snapshot.entries[tableId] : undefined;
       if (!bound || tableId === undefined) {
-         return { ...withId, tier: "database", built: false, stale: false };
+         return { ...databaseId, tier: "database", built: false, stale: false };
       }
       const dataAsOf = bound.dataAsOf ? { dataAsOf: bound.dataAsOf } : {};
       const asOfBuild = bound.asOfBuild ? { asOfBuild: true as const } : {};
@@ -469,7 +505,7 @@ export class PersistedViewServe {
             : undefined;
       if (held) {
          return {
-            ...withId,
+            ...databaseId,
             ...dataAsOf,
             tier: "database",
             built: true,
@@ -485,7 +521,7 @@ export class PersistedViewServe {
       }
       return fresh
          ? {
-              ...withId,
+              ...databaseId,
               ...dataAsOf,
               tier: "database",
               built: true,
@@ -495,7 +531,7 @@ export class PersistedViewServe {
               ...asOfBuild,
            }
          : {
-              ...withId,
+              ...databaseId,
               ...dataAsOf,
               tier: "database",
               built: true,
