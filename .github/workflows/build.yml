@@ -41,8 +41,11 @@ jobs:
         # Building the SDK is necessary to generate the .d.ts files used for type checking.
         with:
           bun-version: ${{ env.BUN_VERSION }}
+      # GitHub's runners only: on Credible's, `bun install` reads the npm mirror
+      # (see .github/actions/setup-workspace).
       - name: Cache Bun dependencies
         id: bun-cache
+        if: runner.environment == 'github-hosted'
         uses: actions/cache@v4
         with:
           path: ~/.bun/install/cache
@@ -69,8 +72,11 @@ jobs:
       - uses: actions/checkout@v4
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
+      # GitHub's runners only: on Credible's, `bun install` reads the npm mirror
+      # (see .github/actions/setup-workspace).
       - name: Cache Bun dependencies
         id: bun-cache
+        if: runner.environment == 'github-hosted'
         uses: actions/cache@v4
         with:
           path: ~/.bun/install/cache
@@ -176,8 +182,11 @@ jobs:
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: ${{ env.BUN_VERSION }}
+      # GitHub's runners only: on Credible's, `bun install` reads the npm mirror
+      # (see .github/actions/setup-workspace).
       - name: Cache Bun dependencies
         id: bun-cache
+        if: runner.environment == 'github-hosted'
         uses: actions/cache@v4
         with:
           path: ~/.bun/install/cache
