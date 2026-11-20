@@ -525,7 +525,9 @@ directly, such as `run: duckdb.table('data/orders.csv') -> …`, on a package wi
 one, the surface refuses that read first, with `404`. To keep such a cell, declare the table, or a dimension
 over the `sql_*` expression, in a source the notebook declares, and run that source. On a
 package with an `index.malloy`, a source the cells declare is not queryable, so declare it in a model file
-and export it from `index.malloy`.
+and export it from `index.malloy`. A join written in a cell's `run:` is the caller's join, gated as a run
+target is, as [authorize.md](authorize.md#the-entry-point-and-only-the-entry-point) describes. To keep a
+join the author's, declare it in a source in a model file.
 
 ## Filter controls
 

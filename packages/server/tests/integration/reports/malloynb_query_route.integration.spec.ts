@@ -14,8 +14,9 @@
  *
  * It pins the governance answers on that path: the package surface,
  * `#(authorize)`, a row-level `#(access_filter)` with and without its given, a
- * given declared only in a later cell, an import in the cell that runs, and
- * the restricted mode every query's text runs in. It also pins that the
+ * given declared only in a later cell, an import in the cell that runs, a
+ * join the cell's query writes, and the restricted mode every query's text
+ * runs in. It also pins that the
  * notebook read lists a source with its schema only where that path may
  * query it.
  */
@@ -131,6 +132,7 @@ describe(".malloynb cells through the query route (E2E)", () => {
       expect(await sent("surface.malloynb")).toEqual([2, 3, 5, 6]);
       expect(await sent("authorize.malloynb")).toEqual([1, 2]);
       expect(await sent("import_cell.malloynb")).toEqual([1, 2, 3]);
+      expect(await sent("caller_join.malloynb")).toEqual([2, 3, 4, 5, 6]);
       // The render tag goes with the run, the selective import does not.
       const cells = await cellsOf(CURATED, "import_cell.malloynb");
       expect(malloynbCellQuery(cells[3])).toBe(
@@ -274,6 +276,63 @@ describe(".malloynb cells through the query route (E2E)", () => {
          refused: 403,
          message: 'Access denied for source "derived".',
       });
+   });
+
+   it("gates a join the cell's query writes as the caller's join, and keeps a join a cell's source declares the author's", async () => {
+      const nb = "caller_join.malloynb";
+      for (const pkg of [CURATED, OPEN]) {
+         // An #(access_filter) on the joined source: denied with no value for
+         // its given, and grafted into the join with one, so an order whose
+         // joined row the caller may not see comes back with nulls there.
+         const gatedDenied = {
+            refused: 403,
+            message: 'Access denied for source "g".',
+         };
+         expect(await run(pkg, nb, 2)).toEqual(gatedDenied);
+         expect(await run(pkg, nb, 2, { GROUPS: [1, 2] })).toEqual({
+            rows: [
+               [1, 1],
+               [2, 2],
+               [3, null],
+               [4, null],
+               [5, null],
+               [6, null],
+            ],
+         });
+         // The same for a join inside the query's own `-> { … }`.
+         expect(await run(pkg, nb, 5)).toEqual(gatedDenied);
+         expect(await run(pkg, nb, 5, { GROUPS: [1, 2] })).toEqual({
+            rows: [[6, 2]],
+         });
+         // An #(authorize) on the joined source.
+         expect(await run(pkg, nb, 3, { ROLES: ["viewer"] })).toEqual({
+            refused: 403,
+            message: 'Access denied for source "l".',
+         });
+         expect(await run(pkg, nb, 3, { ROLES: ["admin"] })).toEqual({
+            rows: [[6, 6]],
+         });
+      }
+      // A join into a source the surface hides.
+      const hidden = refusal(await run(CURATED, nb, 4));
+      expect(hidden?.refused).toBe(404);
+      expect(hidden?.message).toMatch(NOT_QUERYABLE);
+      expect(await run(OPEN, nb, 4)).toEqual({ rows: [[6, 1550]] });
+      // A join a cell's `source:` declares is the author's, which a gate does
+      // not follow; on the curated package that source is off the surface, so
+      // there the join goes in a source of a model file that index.malloy
+      // exports.
+      expect(await run(OPEN, nb, 6)).toEqual({
+         rows: [
+            [1, 1],
+            [2, 2],
+            [3, 3],
+            [4, 4],
+            [5, 5],
+            [6, 6],
+         ],
+      });
+      expect(refusal(await run(CURATED, nb, 6))?.refused).toBe(404);
    });
 
    it("takes a given an earlier cell does not declare, and leaves that cell's answer alone", async () => {

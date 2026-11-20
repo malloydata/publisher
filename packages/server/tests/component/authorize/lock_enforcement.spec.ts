@@ -3648,6 +3648,34 @@ source: dm_mixed is duckdb.table('customers') extend {
          expect(countOf(result.compactResult)).toBe(2);
       });
 
+      // A `.malloynb` cell runs as a query on the notebook's path, so the
+      // header reaches it as it reaches any query. The removed cell route
+      // accepted no bypass.
+      it("honours the bypass on a .malloynb cell sent to the notebook's path", async () => {
+         await writeModel(
+            "dm_gated_nb.malloynb",
+            `>>>malloy
+${GATED}
+>>>malloy
+run: dm_gated -> { aggregate: c }
+`,
+         );
+         const cell = "run: dm_gated -> { aggregate: c }";
+         await expect(
+            runGated("dm_gated_nb.malloynb", cell, {}),
+         ).rejects.toThrow();
+         const result = await runGated(
+            "dm_gated_nb.malloynb",
+            cell,
+            {},
+            undefined,
+            readBypassAuthorize({
+               headers: { [BYPASS_AUTHORIZE_HEADER]: BYPASS_SECRET },
+            }),
+         );
+         expect(countOf(result.compactResult)).toBe(2);
+      });
+
       // The gate stays enforced when no secret is configured, which is the
       // fail-closed half: the header alone can no longer disable it.
       it("leaves gates enforced when no secret is configured", async () => {
