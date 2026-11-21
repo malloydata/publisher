@@ -733,12 +733,11 @@ export function applyObservedColumns(args: {
       const movedColumns: { name: string; type: string }[] = [];
       // The binding's decision for each drifted column.
       const decided = new Map<string, ObservedDrift["columns"][number]>();
-      const captured = b.nativeSchema ?? entry?.nativeSchema;
-      const observedNative = observedIntegerNatives(b.schema, read, captured);
       const schema = b.schema.flatMap((c) => {
-         const builtNative =
-            nativeTypeOf(captured, c.name) ??
-            nativeTypeOf(observedNative, c.name);
+         const builtNative = nativeTypeOf(
+            b.nativeSchema ?? entry?.nativeSchema,
+            c.name,
+         );
          const d = columnDrift(built.get(c.name) ?? c, builtNative, read);
          if (d.kind === "none") {
             // The table is as built, but its source now declares a type the
@@ -805,19 +804,17 @@ export function applyObservedColumns(args: {
       movedColumns.push(
          ...uncapturedTypes(b, entry, schema, read, movedColumns),
       );
-      if (!moved && movedColumns.length === 0 && observedNative.length === 0) {
-         return [b];
-      }
+      if (!moved && movedColumns.length === 0) return [b];
       // A big-integer column is cast to its native type at read: the type
       // the warehouse holds now, never the one it was built with.
-      const nativeSchema = [...(captured ?? []), ...observedNative].map((n) =>
+      const nativeSchema = b.nativeSchema?.map((n) =>
          retyped.has(n.name) ? { ...n, type: retyped.get(n.name)! } : n,
       );
       return [
          {
             ...b,
             schema,
-            ...(nativeSchema.length > 0 ? { nativeSchema } : {}),
+            ...(nativeSchema ? { nativeSchema } : {}),
             ...(movedColumns.length > 0
                ? { retypedColumns: movedColumns }
                : {}),
@@ -1169,37 +1166,6 @@ function uncapturedTypes(
          : [{ name: c.name, type: now.nativeType ?? now.type }];
    });
 }
-
-/**
- * The columns the build captured no native type for (its capture failed, or
- * predates it) that the bind's read sees as an integer type holding every
- * value exactly (64 bits or fewer, not a DuckLake DOUBLE): each is read
- * through that type. Any other is left as the build left it.
- */
-function observedIntegerNatives(
-   schema: readonly { name: string }[],
-   read: Extract<ObservedColumns, { columns: unknown }>,
-   captured: readonly { name: string; type: string }[] | undefined,
-): { name: string; type: string }[] {
-   return schema.flatMap((c) => {
-      if (nativeTypeOf(captured, c.name) !== undefined) return [];
-      const now = columnNamed(read.columns, c.name);
-      return now?.nativeType !== undefined &&
-         !now.storedAsDouble &&
-         EXACT_INTEGER_NATIVE.test(now.nativeType.trim())
-         ? [{ name: c.name, type: now.nativeType }]
-         : [];
-   });
-}
-
-/**
- * A warehouse integer type of 64 bits or fewer, as a catalog names it
- * (DuckDB, Postgres, MySQL, Snowflake, BigQuery spellings): every value it
- * holds is read exactly through a cast to it. Not a 128-bit integer, an
- * unsigned 64-bit one, or a decimal.
- */
-const EXACT_INTEGER_NATIVE =
-   /^(tinyint|smallint|integer|int|bigint|int1|int2|int4|int8|int64|utinyint|usmallint|uinteger)$/i;
 
 /**
  * The columns the read marks `storedAsDouble` that `reported` does not name:
