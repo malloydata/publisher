@@ -5,7 +5,7 @@
  * A publisher.config.json the server cannot parse fails startup, with the
  * cause and PUBLISHER_INIT_FAILED on stderr, before anything binds: no
  * setting may fall back to its default because the file could not be read
- * (docs/configuration-design.md, Validation). The Docker smoke script checks
+ * (docs/publisher-v1.md, Appendix C, Validation). The Docker smoke script checks
  * the unreadable-file case (S7); this runs the real entry point with a
  * malformed file so the same contract is held without Docker.
  *

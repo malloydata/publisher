@@ -8,6 +8,7 @@ SPDX-License-Identifier: MIT
 > What this is: the shape of Publisher's programmatic surfaces — the resource hierarchy, the REST and
 > MCP APIs, and where to find the live, interactive API explorer. For connecting an AI agent, see
 > [ai-agents.md](ai-agents.md); for the Console, see [console.md](console.md).
+> The planned `/api/v1`, which no release serves yet, is described in [api-v1-overview.md](api-v1-overview.md).
 
 ## Two surfaces
 
