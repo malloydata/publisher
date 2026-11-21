@@ -1106,6 +1106,16 @@ live in the other (an importer whose own copy is off). Its verdict is `serves`, 
 through the first model read its table, and `notServedIn` names the second. A consumer must read
 `notServedIn` on every verdict, not only on a `live` one.
 
+**Pending after a bind.** A bind returns before each model's served copy recompiles over the tables
+it bound, and that compile is what `notServedIn` and a `served_copy` reason are read from. Until it
+lands, a verdict on a source the served copy reads (`#(materialize)` or `#@ persist`), held by a
+model whose copy is not yet compiled over the tables bound now, carries `servedCopyPending: true`
+and no served-copy judgement: a bound, fresh table reads `serves`, even one the compile will leave
+unread. **A host that reads `GET …/packages/{pkg}/status` after a bind must re-read it while any
+verdict carries `servedCopyPending`**; once it is absent, that verdict is final for the bind. The
+compile usually lands well under a second after the bind. A query never waits on it: each compiles
+or reuses the copy over the tables bound when it starts.
+
 For example, a model whose copy fails across connections reports every table it holds, either
 kind, as:
 

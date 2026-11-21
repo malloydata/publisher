@@ -4999,6 +4999,18 @@ components:
             while a served copy has yet to compile. Read from the same compile
             of record as the `served-copy-not-served` warnings, never by
             running a query.
+        servedCopyPending:
+          type: boolean
+          enum: [true]
+          description: >-
+            Present (always `true`) while some model that holds this source,
+            which its served copy reads (`#(materialize)` or `#@ persist`), has
+            yet to compile its served copy over the tables bound now. A bind
+            returns before that compile, so the verdict carries no served-copy
+            judgement yet: it may read `serves` for a table the compile will
+            leave unread. A host must re-read the verdict while it is present;
+            it is absent once every such model's copy is current, and then
+            `notServedIn` and a `served_copy` reason are final for the bind.
         message:
           type: string
           description: What the verdict means for this source, in a sentence.

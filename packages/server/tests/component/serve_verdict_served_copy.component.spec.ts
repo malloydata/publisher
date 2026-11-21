@@ -576,6 +576,14 @@ describe("verdicts read between a bind and the served copy's compile at bind", (
       );
    }
 
+   /** The tables whose verdict carries the pending marker, sorted. */
+   function pendingMarked(): string[] {
+      return verdictsOf(s.fixture)
+         .filter((v) => v.servedCopyPending === true)
+         .map((v) => v.sourceName)
+         .sort();
+   }
+
    const SERVING = {
       acc_db: "serves",
       acc_lake: "serves",
@@ -613,9 +621,11 @@ describe("verdicts read between a bind and the served copy's compile at bind", (
          ]);
          expect(v.notServedIn).toBeUndefined();
       }
+      expect(pendingMarked()).toEqual(AFTER_BIND_TABLES);
       await model.prepareServedCopy();
       expect(model.servedCopySourceIDs()).not.toBe("pending");
       expect(shapes()).toEqual(SERVING);
+      expect(pendingMarked()).toEqual([]);
       await expectServedEqualLive();
    });
 
@@ -632,8 +642,10 @@ describe("verdicts read between a bind and the served copy's compile at bind", (
       expect(model.servedCopySourceIDs()).toBe("pending");
       expect(verdict(s.fixture, "acc_db").reason).not.toBe("served_copy");
       expect(verdict(s.fixture, "acc_db").notServedIn).toBeUndefined();
+      expect(verdict(s.fixture, "acc_db").servedCopyPending).toBe(true);
       await model.prepareServedCopy();
       expect(shapes()).toEqual(SERVING);
+      expect(pendingMarked()).toEqual([]);
       await expectServedEqualLive();
    });
 
@@ -656,6 +668,53 @@ describe("verdicts read between a bind and the served copy's compile at bind", (
       await new Promise((r) => setTimeout(r, 200));
       expect(model.servedCopySourceIDs()).not.toBe("pending");
       expect(shapes()).toEqual(SERVING);
+      expect(pendingMarked()).toEqual([]);
       await expectServedEqualLive();
+   });
+});
+
+describe("a rebind whose served copy ends up off", () => {
+   const s = scenario({ "m.malloy": WHOLE_COPY_OFF }, WHOLE_QUERIES);
+   const STORED = ["carriers_m", "carriers_s", "deals_s"];
+
+   it("marks every table it will judge pending, then live/served_copy, with no marker", async () => {
+      const pkg = s.fixture?.pkg;
+      if (!pkg) throw new Error("not loaded");
+      const mz = pkg.materialization();
+      const database = mz.boundDatabaseEntries() ?? {};
+      const stored = s.fixture!.stored;
+      const model = pkg.getModel("m.malloy")!;
+      mz.bind({ database: {} });
+      mz.bind({ storage: {} });
+      await model.prepareServedCopy();
+      mz.bind({ database: database as never });
+      mz.bind({ storage: stored as never });
+      // Read at once: the copy that will turn off has not compiled yet.
+      for (const name of STORED) {
+         const v = verdict(s.fixture, name);
+         expect([name, v.servedCopyPending, v.reason]).toEqual([
+            name,
+            true,
+            undefined,
+         ]);
+      }
+      // A persisted view and a rollup are never judged by the served copy.
+      for (const v of verdictsOf(s.fixture)) {
+         if (v.origin === "view" || v.origin === "rollup") {
+            expect(v.servedCopyPending).toBeUndefined();
+         }
+      }
+      await model.prepareServedCopy();
+      for (const name of STORED) {
+         const v = verdict(s.fixture, name);
+         expect(v).toMatchObject({ verdict: "live", reason: "served_copy" });
+         expect(v.servedCopyPending).toBeUndefined();
+      }
+      expectAgreement(s, WHOLE_QUERIES);
+      for (const [name, q] of Object.entries(WHOLE_QUERIES)) {
+         const again = await s.fixture?.run(q.model, q.query);
+         expect([name, answer(again).servedBy]).toEqual([name, "live"]);
+         expect(answer(again).rows).toBe(answer(s.live[name]).rows);
+      }
    });
 });
