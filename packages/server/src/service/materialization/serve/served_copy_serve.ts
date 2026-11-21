@@ -2548,12 +2548,7 @@ export class ServedCopyServe {
          optOutIDs,
          unsafeIDs,
          rerooted,
-         // Each re-rooted author source, and each extension left as written
-         // that reads its base's table by name, its query unchanged.
-         rerootedSourceIDs: new Set([
-            ...candidates.map((c) => c.reroot.sourceID),
-            ...throughBase.map((t) => t.sourceID),
-         ]),
+         rerootedSourceIDs: rerootedSourceIDsOf(candidates, throughBase),
          ...(throughBase.length > 0 ? { throughBase } : {}),
          aliased,
          problems,
@@ -2602,6 +2597,26 @@ interface LoadedCopy {
    servedRuntime: GraftRuntime;
    leftOut: LeftOutDefinition[];
    files: ReadonlyMap<string, string>;
+}
+
+/**
+ * The author sources a compiled copy reads from a stored table: each one
+ * still re-rooted past the passes, and each extension left as written whose
+ * base is one of those (by its chain, or the base name its text declares).
+ * An extension whose base a pass dropped reads that base as written.
+ */
+export function rerootedSourceIDsOf(
+   candidates: readonly { reroot: { sourceID: string; sourceName: string } }[],
+   throughBase: NonNullable<Compiled["throughBase"]>,
+): ReadonlySet<string> {
+   const ids = new Set(candidates.map((c) => c.reroot.sourceID));
+   const names = new Set(candidates.map((c) => c.reroot.sourceName));
+   const kept = throughBase.filter(
+      (t) =>
+         t.chain.some((id) => ids.has(id)) ||
+         (t.baseName !== undefined && names.has(t.baseName)),
+   );
+   return new Set([...ids, ...kept.map((t) => t.sourceID)]);
 }
 
 /** What a compiled copy is built from, past its last pass. */
