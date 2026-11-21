@@ -7,7 +7,7 @@ info:
   description: |
     The operator's surface. It holds two kinds of thing, neither of which a user
     of a running server should call: the DuckLake catalogs in one Postgres
-    database, as resources (a catalog, the tables in its schemas, and its
+    database, as resources (a catalog, its schemas, the tables in them, and its
     snapshots), and controls of this server's own process that only an operator
     or a local developer uses (watch mode).
 
@@ -47,6 +47,8 @@ servers:
 tags:
   - name: catalogs
     description: DuckLake catalogs and their settings
+  - name: schemas
+    description: The schemas of a catalog
   - name: tables
     description: The tables in a catalog's schemas
   - name: snapshots
@@ -156,6 +158,107 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Catalog"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/NotConfigured"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /catalogs/{catalogName}/schemas/{schemaName}:
+    parameters:
+      - $ref: "#/components/parameters/catalogName"
+      - $ref: "#/components/parameters/schemaName"
+    put:
+      tags: [schemas]
+      operationId: put-schema
+      summary: Create a schema
+      description: |
+        Creates the schema, and records that tables written into it never keep
+        rows inline in the catalog database. The name is lowercase
+        (`[a-z_][a-z0-9_]*`) and not reserved (`main`, `information_schema`,
+        `pg_catalog`, `temp`, `system`: `400 SCHEMA_RESERVED`). The request has
+        no body; a body is `400 INVALID_REQUEST`. `201` when the schema is new,
+        `200` when it already existed; with `If-None-Match: *` an existing
+        schema, including one a concurrent request created first, is refused
+        with `412 SCHEMA_EXISTS`.
+      parameters:
+        - name: If-None-Match
+          in: header
+          required: false
+          description: "`*` to create only, refusing a schema that exists."
+          schema:
+            type: string
+            enum: ["*"]
+      responses:
+        "200":
+          description: The schema already existed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Schema"
+        "201":
+          description: The schema, created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Schema"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "412":
+          description: "`If-None-Match: *` and the schema exists (`SCHEMA_EXISTS`)"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          $ref: "#/components/responses/NotConfigured"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+    delete:
+      tags: [schemas]
+      operationId: delete-schema
+      summary: Drop a schema and its tables
+      description: |
+        Drops the schema and every table in it. A schema that does not exist
+        answers 204 as well, so a retried drop is free. A reserved name is `400
+        SCHEMA_RESERVED`. Data files stay until a snapshot delete reclaims
+        them, as for a dropped table.
+      responses:
+        "204":
+          description: The schema is dropped, or did not exist
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/NotConfigured"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /catalogs/{catalogName}/tables:
+    parameters:
+      - $ref: "#/components/parameters/catalogName"
+    get:
+      tags: [tables]
+      operationId: list-catalog-tables
+      summary: List the tables in every schema of a catalog
+      description: |
+        Every table of the catalog's schemas, in schema then name order, each
+        with the bytes its live files hold. The engine's own schemas are left out.
+      responses:
+        "200":
+          description: The tables
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/CatalogTableSummary"
         "400":
           $ref: "#/components/responses/BadRequest"
         "404":
@@ -579,6 +682,26 @@ components:
           type: string
           description: An interval like `1 day` or `12 hours`
 
+    Schema:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+
+    CatalogTableSummary:
+      type: object
+      required: [schema, name, sizeBytes]
+      properties:
+        schema:
+          type: string
+        name:
+          type: string
+        sizeBytes:
+          type: integer
+          format: int64
+          description: Bytes its live files hold
+
     TableSummary:
       type: object
       required: [name, sizeBytes]
@@ -745,5 +868,7 @@ components:
             CATALOG_DATABASE_NOT_CONFIGURED, CATALOG_OWNER_UNSUPPORTED,
             CATALOG_SETTING_UNREADABLE, SCHEMA_NOT_FOUND, TABLE_NOT_FOUND,
             SOURCE_NOT_FOUND, TABLE_EXISTS, OBJECT_OUTSIDE_DATA_PATH,
-            INVALID_REQUEST. Treat an
+            INVALID_REQUEST, SCHEMA_EXISTS, SCHEMA_RESERVED. `SCHEMA_EXISTS`: a
+            create-only schema PUT found the schema. `SCHEMA_RESERVED`: the
+            schema name is one the engine owns, or `main`. Treat an
             unrecognized value as absent.

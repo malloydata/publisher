@@ -209,9 +209,18 @@ curl -s -X PUT $A/catalogs/sales/schemas/main/tables/orders -H 'Content-Type: ap
 curl -s -X PUT $A/catalogs/sales/schemas/main/tables/orders_2025 -H 'Content-Type: application/json' \
   -d '{"source": {"catalog": "sales_2025", "schema": "main", "table": "orders"}}'
 
-# What it holds.
+# Create a schema (201 created, 200 existed; `If-None-Match: *` refuses one that exists with
+# 412 SCHEMA_EXISTS). Lowercase names only; `main`, `information_schema`, `pg_catalog`, `temp`
+# and `system` answer 400 SCHEMA_RESERVED.
+curl -s -X PUT $A/catalogs/sales/schemas/staging
+
+# What it holds: the catalog, one schema's tables, or every table of every schema.
 curl -s $A/catalogs/sales
 curl -s $A/catalogs/sales/schemas/main/tables
+curl -s $A/catalogs/sales/tables
+
+# Drop a schema and every table in it (204, also when it does not exist).
+curl -s -X DELETE $A/catalogs/sales/schemas/staging
 
 # Drop a table, then reclaim history from before a date, and the files only it held.
 curl -s -X DELETE $A/catalogs/sales/schemas/main/tables/orders

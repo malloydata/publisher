@@ -32,6 +32,7 @@ import {
    tablePartitionKeys,
    type PartitionKey,
 } from "./connection";
+import { READABLE_SCHEMA_NAME } from "./connection_config";
 import { createIsolatedBuildSession } from "./materialization/run/materialization_build_session";
 import {
    cleanupStorageFiles,
@@ -39,6 +40,7 @@ import {
 } from "./materialization/run/storage_admin";
 import { parseS3Endpoint } from "./gcs_s3_utils";
 import { redactPgSecrets } from "../pg_helpers";
+import { errMessage } from "../utils";
 import { quoteIdentifier } from "./quoting";
 import { withStatementUsage } from "./statement_usage";
 import {
@@ -56,6 +58,10 @@ type DucklakeStorage = NonNullable<
 const IDENT = /^[A-Za-z_][A-Za-z0-9_]*$/;
 /** A role name safe in a libpq `options=-crole=` value, hyphens included (`<prefix>-ducklake`). */
 const ROLE = /^[A-Za-z_][A-Za-z0-9_-]*$/;
+/** Schemas the engine owns: never created, dropped or listed through the API. */
+const SYSTEM_SCHEMAS = ["information_schema", "pg_catalog", "temp", "system"];
+/** Reserved on a schema create or drop; `main` is DuckLake's default and cannot be dropped. */
+const RESERVED_SCHEMAS = ["main", ...SYSTEM_SCHEMAS];
 /** DuckLake's interval spelling for `delete_older_than`, e.g. `1 day`, `12 hours`. */
 const INTERVAL = /^(\d+) (second|minute|hour|day|week)s?$/;
 /** Used by a snapshot delete when the catalog records no file-deletion grace. */
@@ -175,6 +181,11 @@ export interface Catalog {
 export interface CatalogTableSummary {
    name: string;
    sizeBytes: number;
+}
+
+/** A table of a catalog-wide listing, which names each table's schema. */
+export interface CatalogTableListing extends CatalogTableSummary {
+   schema: string;
 }
 
 export interface CatalogTable {
@@ -356,34 +367,128 @@ export class CatalogAdmin {
       return this.getCatalog(name);
    }
 
+   /**
+    * Creates a schema, and sets its inlining off so a sync table written into it
+    * never stays rows in the catalog database. Returns whether it is new: a
+    * schema that exists, or one another request created first, is not an error.
+    */
+   async createSchema(
+      name: string,
+      schema: string,
+      request: unknown,
+      ifAbsent: boolean,
+   ): Promise<{ schema: { name: string }; created: boolean }> {
+      if (request && Object.keys(request).length > 0) {
+         throw badRequest("The request takes no body.");
+      }
+      if (!READABLE_SCHEMA_NAME.test(schema)) {
+         throw badRequest(
+            "'schema' must be a lowercase name ([a-z_][a-z0-9_]*).",
+         );
+      }
+      refuseReserved(schema);
+      const created = await this.withAttached(name, "write", async (s) => {
+         if (await schemaExists(s, name, schema)) return false;
+         try {
+            await s.runSQL(`CREATE SCHEMA ${q(name)}.${q(schema)}`);
+         } catch (error) {
+            // Another create of this schema won: in one session it is "already
+            // exists", across sessions DuckLake's "Transaction conflict ... created".
+            const message = errMessage(error);
+            if (
+               /already exists/i.test(message) ||
+               (/Transaction conflict/i.test(message) &&
+                  /created/i.test(message))
+            ) {
+               return false;
+            }
+            throw error;
+         }
+         try {
+            await s.runSQL(
+               `CALL ${q(name)}.set_option('data_inlining_row_limit', 0, schema => '${escapeSQL(schema)}')`,
+            );
+         } catch (error) {
+            // The schema exists by now; the post-load flush still keeps rows out.
+            logger.warn("Could not turn inlining off for a new schema", {
+               catalog: name,
+               schema,
+               error: redactPgSecrets(errMessage(error)),
+            });
+         }
+         return true;
+      });
+      if (!created && ifAbsent) {
+         throw new CatalogAdminError(
+            412,
+            "SCHEMA_EXISTS",
+            `Schema '${schema}' already exists in catalog '${name}'.`,
+         );
+      }
+      logger.info("Created a schema in a DuckLake catalog", {
+         catalog: name,
+         schema,
+         created,
+      });
+      return { schema: { name: schema }, created };
+   }
+
+   /** Drops a schema and every table in it. A schema that does not exist is not an error. */
+   async deleteSchema(name: string, schema: string): Promise<void> {
+      identifier(schema, "schema");
+      refuseReserved(schema);
+      await this.withAttached(name, "write", (s) =>
+         s.runSQL(`DROP SCHEMA IF EXISTS ${q(name)}.${q(schema)} CASCADE`),
+      );
+      logger.info("Dropped a schema from a DuckLake catalog", {
+         catalog: name,
+         schema,
+      });
+   }
+
+   /** A schema's tables, or with no schema every table of the catalog's schemas. */
    async listTables(
       name: string,
       schema: string,
-   ): Promise<CatalogTableSummary[]> {
-      identifier(schema, "schema");
+   ): Promise<CatalogTableSummary[]>;
+   async listTables(name: string): Promise<CatalogTableListing[]>;
+   async listTables(
+      name: string,
+      schema?: string,
+   ): Promise<(CatalogTableSummary | CatalogTableListing)[]> {
+      if (schema !== undefined) identifier(schema, "schema");
       return this.withAttached(name, "read", async (s) => {
-         await requireSchema(s, name, schema);
+         if (schema !== undefined) await requireSchema(s, name, schema);
          const tables = (await rows(
             s,
-            `SELECT table_name FROM duckdb_tables() WHERE database_name = '${escapeSQL(name)}' ` +
-               `AND schema_name = '${escapeSQL(schema)}' ORDER BY 1`,
-         )) as { table_name: string }[];
+            `SELECT schema_name, table_name FROM duckdb_tables() WHERE database_name = '${escapeSQL(name)}' AND ` +
+               (schema === undefined
+                  ? `schema_name NOT IN (${sqlList(SYSTEM_SCHEMAS)}) ORDER BY 1, 2`
+                  : `schema_name = '${escapeSQL(schema)}' ORDER BY 2`),
+         )) as { schema_name: string; table_name: string }[];
          // ducklake_table_info names a table's schema by id; the catalog's own
          // schema table maps the name to it (the live row, end_snapshot null).
          const meta = `${q(`__ducklake_metadata_${name}`)}.${q(name)}`;
          const sizes = new Map<string, number>();
          for (const r of (await rows(
             s,
-            `SELECT i.table_name, i.file_size_bytes + i.delete_file_size_bytes AS bytes ` +
+            `SELECT m.schema_name, i.table_name, i.file_size_bytes + i.delete_file_size_bytes AS bytes ` +
                `FROM ducklake_table_info('${escapeSQL(name)}') i ` +
                `JOIN ${meta}.ducklake_schema m ON m.schema_id = CAST(i.schema_id AS BIGINT) ` +
-               `AND m.end_snapshot IS NULL WHERE m.schema_name = '${escapeSQL(schema)}'`,
-         )) as { table_name: string; bytes: unknown }[]) {
-            sizes.set(r.table_name, Number(r.bytes ?? 0));
+               `AND m.end_snapshot IS NULL` +
+               (schema === undefined
+                  ? ""
+                  : ` WHERE m.schema_name = '${escapeSQL(schema)}'`),
+         )) as { schema_name: string; table_name: string; bytes: unknown }[]) {
+            sizes.set(
+               `${r.schema_name}\u0000${r.table_name}`,
+               Number(r.bytes ?? 0),
+            );
          }
          return tables.map((t) => ({
+            ...(schema === undefined ? { schema: t.schema_name } : {}),
             name: t.table_name,
-            sizeBytes: sizes.get(t.table_name) ?? 0,
+            sizeBytes: sizes.get(`${t.schema_name}\u0000${t.table_name}`) ?? 0,
          }));
       });
    }
@@ -1021,17 +1126,39 @@ function identifier(value: unknown, what: string): string {
    return value;
 }
 
-async function requireSchema(
+const sqlList = (values: string[]) =>
+   values.map((v) => `'${escapeSQL(v)}'`).join(", ");
+
+/** Refuses a name the engine owns or DuckLake needs, whatever its case. */
+function refuseReserved(schema: string): void {
+   if (RESERVED_SCHEMAS.includes(schema.toLowerCase())) {
+      throw new CatalogAdminError(
+         400,
+         "SCHEMA_RESERVED",
+         `'${schema}' is a reserved schema name.`,
+      );
+   }
+}
+
+async function schemaExists(
    session: DuckDBConnection,
    catalog: string,
    schema: string,
-): Promise<void> {
+): Promise<boolean> {
    const found = await rows(
       session,
       `SELECT 1 FROM duckdb_schemas() WHERE database_name = '${escapeSQL(catalog)}' ` +
          `AND schema_name = '${escapeSQL(schema)}'`,
    );
-   if (found.length === 0) {
+   return found.length > 0;
+}
+
+async function requireSchema(
+   session: DuckDBConnection,
+   catalog: string,
+   schema: string,
+): Promise<void> {
+   if (!(await schemaExists(session, catalog, schema))) {
       throw new CatalogAdminError(
          404,
          "SCHEMA_NOT_FOUND",

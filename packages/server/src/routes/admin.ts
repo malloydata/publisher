@@ -72,7 +72,8 @@ export function registerAdminRoutes(
    catalogs: CatalogAdmin | null,
 ): void {
    const catalog = `${apiPrefix}/catalogs/:catalogName`;
-   const table = `${catalog}/schemas/:schemaName/tables/:tableName`;
+   const schema = `${catalog}/schemas/:schemaName`;
+   const table = `${schema}/tables/:tableName`;
 
    app.get(
       `${apiPrefix}/catalogs`,
@@ -94,8 +95,31 @@ export function registerAdminRoutes(
          c.updateCatalog(req.params.catalogName, req.body ?? {}),
       ),
    );
+   app.put(
+      schema,
+      adminRoute(catalogs, async (c, req, res) => {
+         const { schema: result, created } = await c.createSchema(
+            req.params.catalogName,
+            req.params.schemaName,
+            req.body,
+            req.get("If-None-Match") === "*",
+         );
+         res.status(created ? 201 : 200).json(result);
+      }),
+   );
+   app.delete(
+      schema,
+      adminRoute(catalogs, async (c, req, res) => {
+         await c.deleteSchema(req.params.catalogName, req.params.schemaName);
+         res.status(204).send();
+      }),
+   );
    app.get(
-      `${catalog}/schemas/:schemaName/tables`,
+      `${catalog}/tables`,
+      adminRoute(catalogs, (c, req) => c.listTables(req.params.catalogName)),
+   );
+   app.get(
+      `${schema}/tables`,
       adminRoute(catalogs, (c, req) =>
          c.listTables(req.params.catalogName, req.params.schemaName),
       ),

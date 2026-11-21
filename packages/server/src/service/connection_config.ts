@@ -728,8 +728,8 @@ function validateMotherDuckShape(connection: ApiConnection): void {
 /** A plain identifier: what metadataSchema and destinationSchema allow. */
 const PLAIN_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
-/** A schema name `readableSchemas` accepts: lowercase only. */
-const READABLE_SCHEMA_NAME = /^[a-z_][a-z0-9_]*$/;
+/** A lowercase schema name: what `readableSchemas` and the admin API's schema create accept. */
+export const READABLE_SCHEMA_NAME = /^[a-z_][a-z0-9_]*$/;
 
 /**
  * The schemas a managed read-only DuckLake view may read besides `main`, as one

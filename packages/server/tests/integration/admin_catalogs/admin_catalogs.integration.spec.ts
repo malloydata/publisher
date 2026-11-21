@@ -815,6 +815,191 @@ describe.skipIf(!SUPERUSER)(
          ]);
       });
 
+      describe("schemas", () => {
+         const catalog = "ds_schemas";
+         const csv = (dir: string, file: string, rowCount: number) => {
+            mkdirSync(join(root, dir), { recursive: true });
+            const body = Array.from({ length: rowCount }, (_, i) => i + 1)
+               .map((i) => `${i},${"x".repeat(50)}`)
+               .join("\n");
+            writeFileSync(join(root, dir, file), `id,note\n${body}\n`);
+            return { uri: join(root, dir, file), format: "csv" };
+         };
+
+         beforeAll(async () => {
+            await admin.createCatalog({
+               name: catalog,
+               dataPath: join(root, catalog),
+            });
+         });
+
+         it("lists no tables across the schemas of an empty catalog", async () => {
+            expect(await admin.listTables(catalog)).toEqual([]);
+         });
+
+         it("creates a schema with 201, answers 200 for one that exists, and records inlining off for it", async () => {
+            const first = keep(
+               await admin.createSchema(catalog, "s_one", {}, false),
+            );
+            expect(first).toEqual({ schema: { name: "s_one" }, created: true });
+            const again = await admin.createSchema(catalog, "s_one", {}, false);
+            expect(again.created).toBe(false);
+            expect((await admin.getCatalog(catalog)).schemas).toEqual(
+               expect.arrayContaining(["main", "s_one"]),
+            );
+            const scoped = await superuserQuery(
+               `select m.value from ${catalog}.ducklake_metadata m ` +
+                  `join ${catalog}.ducklake_schema s on s.schema_id = m.scope_id ` +
+                  `where m.key = 'data_inlining_row_limit' and m.scope = 'schema' ` +
+                  `and s.schema_name = 's_one' and s.end_snapshot is null`,
+            );
+            expect(scoped).toEqual([{ value: "0" }]);
+         });
+
+         it("refuses a create-only PUT of a schema that exists with SCHEMA_EXISTS", async () => {
+            const error = await refusal(
+               admin.createSchema(catalog, "s_one", {}, true),
+            );
+            expect([error.status, error.reason]).toEqual([
+               412,
+               "SCHEMA_EXISTS",
+            ]);
+         });
+
+         it("refuses a body, an uppercase name, a reserved name and an unknown catalog", async () => {
+            const body = await refusal(
+               admin.createSchema(catalog, "s_body", { x: 1 }, false),
+            );
+            expect([body.status, body.reason]).toEqual([
+               400,
+               "INVALID_REQUEST",
+            ]);
+            for (const bad of ["S_Upper", "9lives", "a-b"]) {
+               const error = await refusal(
+                  admin.createSchema(catalog, bad, {}, false),
+               );
+               expect([bad, error.status, error.reason]).toEqual([
+                  bad,
+                  400,
+                  "INVALID_REQUEST",
+               ]);
+            }
+            for (const reserved of [
+               "main",
+               "information_schema",
+               "pg_catalog",
+               "temp",
+               "system",
+            ]) {
+               const put = await refusal(
+                  admin.createSchema(catalog, reserved, {}, false),
+               );
+               const del = await refusal(admin.deleteSchema(catalog, reserved));
+               expect([reserved, put.status, put.reason]).toEqual([
+                  reserved,
+                  400,
+                  "SCHEMA_RESERVED",
+               ]);
+               expect([reserved, del.status, del.reason]).toEqual([
+                  reserved,
+                  400,
+                  "SCHEMA_RESERVED",
+               ]);
+            }
+            expect(
+               (
+                  await refusal(
+                     admin.createSchema("ds_nowhere", "s_x", {}, false),
+                  )
+               ).reason,
+            ).toBe("CATALOG_NOT_FOUND");
+            expect(
+               (await refusal(admin.deleteSchema("ds_nowhere", "s_x"))).reason,
+            ).toBe("CATALOG_NOT_FOUND");
+            expect((await admin.getCatalog(catalog)).schemas).not.toContain(
+               "s_body",
+            );
+         });
+
+         it("lets exactly one of two concurrent create-only PUTs create the schema", async () => {
+            const results = await Promise.allSettled(
+               [0, 1].map(() =>
+                  admin.createSchema(catalog, "s_race", {}, true),
+               ),
+            );
+            const made = results.filter((r) => r.status === "fulfilled");
+            const refused = results.flatMap((r) =>
+               r.status === "rejected" ? [r.reason] : [],
+            );
+            expect(made.length).toBe(1);
+            expect(refused.length).toBe(1);
+            expect(refused[0]).toBeInstanceOf(CatalogAdminError);
+            expect([refused[0].status, refused[0].reason]).toEqual([
+               412,
+               "SCHEMA_EXISTS",
+            ]);
+         });
+
+         it("answers 200 to the loser of two concurrent PUTs without If-None-Match", async () => {
+            const results = await Promise.all(
+               [0, 1].map(() =>
+                  admin.createSchema(catalog, "s_race2", {}, false),
+               ),
+            );
+            expect(results.map((r) => r.created).sort()).toEqual([false, true]);
+         });
+
+         it("lists the same table name in two schemas as two rows with their own sizes", async () => {
+            await admin.createSchema(catalog, "s_two", {}, false);
+            await admin.putTable(
+               catalog,
+               "s_one",
+               "t",
+               { source: csv("ds_schemas", "small.csv", 3) },
+               true,
+            );
+            await admin.putTable(
+               catalog,
+               "s_two",
+               "t",
+               { source: csv("ds_schemas", "big.csv", 3000) },
+               true,
+            );
+            const all = keep(await admin.listTables(catalog));
+            expect(all.map((t) => [t.schema, t.name])).toEqual([
+               ["s_one", "t"],
+               ["s_two", "t"],
+            ]);
+            const [small, big] = all;
+            expect(small.sizeBytes).toBeGreaterThan(0);
+            expect(big.sizeBytes).toBeGreaterThan(small.sizeBytes);
+            expect(
+               (await admin.listTables(catalog, "s_one")).map(
+                  (t) => t.sizeBytes,
+               ),
+            ).toEqual([small.sizeBytes]);
+            expect(
+               all.filter((t) =>
+                  ["information_schema", "pg_catalog"].includes(t.schema),
+               ),
+            ).toEqual([]);
+         });
+
+         it("drops a schema with its tables, idempotently, and lets it be created again", async () => {
+            await admin.deleteSchema(catalog, "s_two");
+            expect(
+               (await admin.listTables(catalog)).map((t) => t.schema),
+            ).toEqual(["s_one"]);
+            expect((await admin.getCatalog(catalog)).schemas).not.toContain(
+               "s_two",
+            );
+            await admin.deleteSchema(catalog, "s_two");
+            const again = await admin.createSchema(catalog, "s_two", {}, true);
+            expect(again.created).toBe(true);
+            expect(await admin.listTables(catalog, "s_two")).toEqual([]);
+         });
+      });
+
       it("never returns a credential", () => {
          const all = JSON.stringify(responses);
          expect(all).not.toContain(PASSWORD);
