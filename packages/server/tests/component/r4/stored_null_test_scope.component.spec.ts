@@ -10,7 +10,8 @@
  * compare as its source does"). Anything else on the string is still judged:
  * an equality on the nondeterministic column, an ordering under `en_US`, and
  * a null test of a function of the column (`nullif`) each answer live, equal
- * to live.
+ * to live, as does a `having:` on a measure that compares a string in its
+ * filter or what it aggregates, its null test included.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -32,7 +33,11 @@ const SEED = [
 const MODEL = `##! experimental.persistence
 
 #@ persist name="t_accounts" storage="lake"
-source: accounts is warehouse.table('public.accounts') -> { select: * }
+source: accounts is warehouse.table('public.accounts') -> { select: * } extend {
+  measure:
+    mf is max(account_id) { where: account_id > 'B' }
+    np is sum(pick 1 when account_id > 'B' else 0)
+}
 `;
 
 interface Case {
@@ -77,6 +82,16 @@ const CASES: Case[] = [
    {
       name: "a scope's ordering under en_US",
       query: `run: accounts extend { where: account_id > 'B' } -> { ${total} }`,
+      served: false,
+   },
+   {
+      name: "a having: null test of a measure filtered by an ordering",
+      query: "run: accounts -> { group_by: seats; aggregate: n is count(); having: mf is null }",
+      served: false,
+   },
+   {
+      name: "a having: on a measure that sums an ordering",
+      query: "run: accounts -> { group_by: seats; aggregate: n is count(); having: np > 0 }",
       served: false,
    },
    {

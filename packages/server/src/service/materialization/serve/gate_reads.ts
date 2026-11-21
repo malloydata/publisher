@@ -1059,9 +1059,103 @@ class GateReadWalk {
       this.comparesNoString = false;
       if (!this.equalityOrNotString(e, owner)) this.equalityOnly = false;
       for (const p of paths) {
-         if (measure(p)) continue;
+         // A measure whose value compares no string has its filters followed
+         // as terms of their own; any other is read as a field is.
+         if (
+            measure(p) &&
+            this.valueComparesNoString(
+               fieldAt(ctx.entry, p)?.e,
+               p.length === 1 ? ctx.entry : fieldAt(ctx.entry, p.slice(0, -1)),
+            )
+         ) {
+            continue;
+         }
          this.entryPaths.push(p);
          this.resolve(ctx.entry, p, [], [], true);
+      }
+   }
+
+   /**
+    * Whether a measure's value compares no string: each filter it applies
+    * and what it aggregates and combines ({@link valueComparesNoString}).
+    */
+   private measureComparesNoString(
+      e: unknown,
+      source: unknown,
+      depth = 0,
+   ): boolean {
+      if (depth > 32) return false;
+      return (
+         filteredTerms(e).every((t) =>
+            this.comparesNoStringThroughScalars(t, source, depth + 1),
+         ) && this.valueComparesNoString(e, source, depth + 1)
+      );
+   }
+
+   /**
+    * Whether a measure's expression, its filters aside, compares no string:
+    * an aggregate of a field read as it is, or of an expression comparing no
+    * string (`sum(pick 1 when category > 'M' else 0)` compares one), and
+    * arithmetic over those and over other measures, each read through its
+    * own definition, filters included. Anything else reads false.
+    */
+   private valueComparesNoString(
+      e: unknown,
+      source: unknown,
+      depth = 0,
+   ): boolean {
+      if (depth > 32 || e === null || typeof e !== "object") return false;
+      const n = e as {
+         node?: unknown;
+         path?: unknown;
+         e?: unknown;
+         kids?: Record<string, unknown>;
+      };
+      switch (n.node) {
+         case "numberLiteral":
+         case "null":
+            return true;
+         case "aggregate": {
+            const arg = n.e as { node?: unknown } | undefined;
+            // `count()` aggregates no field.
+            if (arg === undefined || arg.node === "") return true;
+            return this.valueComparesNoString(arg, source, depth + 1);
+         }
+         case "filteredExpr":
+            return this.valueComparesNoString(n.kids?.e, source, depth + 1);
+         case "field": {
+            const path = n.path as string[];
+            const f = Array.isArray(path) ? fieldAt(source, path) : undefined;
+            if (f === undefined) return false;
+            if (f.expressionType === "aggregate" && f.e !== undefined) {
+               const owner =
+                  path.length === 1
+                     ? source
+                     : fieldAt(source, path.slice(0, -1));
+               return this.measureComparesNoString(f.e, owner, depth + 1);
+            }
+            // A value read as it is: its nulls and its value, as a null test
+            // of it reads them (a computed one through what computes it).
+            return this.comparesNoStringThroughScalars(
+               { node: "is-null", e },
+               source,
+               depth + 1,
+            );
+         }
+         case "+":
+         case "-":
+         case "*":
+         case "/":
+         case "%":
+            return (
+               this.valueComparesNoString(n.kids?.left, source, depth + 1) &&
+               this.valueComparesNoString(n.kids?.right, source, depth + 1)
+            );
+         case "unary-":
+         case "()":
+            return this.valueComparesNoString(n.e, source, depth + 1);
+         default:
+            return this.comparesNoStringThroughScalars(e, source, depth + 1);
       }
    }
 
@@ -1072,8 +1166,8 @@ class GateReadWalk {
     * through the stage that computes it. A field's type says what it yields,
     * not what it compares (`is_books is category = 'books'` and `select: sb
     * is category = 'books'` are booleans), and `leavesNotString` reads only
-    * the type. A measure's value is a number; its own filters are followed
-    * as terms of their own.
+    * the type. A measure is read through its definition
+    * ({@link measureComparesNoString}).
     */
    private comparesNoStringThroughScalars(
       e: unknown,
@@ -1087,10 +1181,10 @@ class GateReadWalk {
          const owner =
             p.length === 1 ? source : fieldAt(source, p.slice(0, -1));
          if (f.e !== undefined) {
-            return (
-               f.expressionType === "aggregate" ||
-               this.comparesNoStringThroughScalars(f.e, owner, depth + 1)
-            );
+            // A measure is judged at its definition, never taken on trust.
+            return f.expressionType === "aggregate"
+               ? this.measureComparesNoString(f.e, owner, depth + 1)
+               : this.comparesNoStringThroughScalars(f.e, owner, depth + 1);
          }
          const query = (owner as { query?: QueryLike } | undefined)?.query;
          if (query === undefined || this.isStored(owner)) return true;
