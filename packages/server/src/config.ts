@@ -171,11 +171,8 @@ export type PackageVersioningMode = "off" | "on";
  * `PUBLISHER_MODEL_PAGE`: which page the Console shows for a model, `explorer`
  * (the default) or `viewer`. Read from the environment only, and reported on
  * `/status` as `modelPage`, where the Console reads it; the Console keeps both
- * pages. The Explorer writes the queries it builds back to Malloy text through
- * `@malloydata/malloy-interfaces`, which puts a string value in unescaped
- * (`escapeString` is a TODO), so a drilled value holding a double quote
- * rewrites the query. `viewer` shows a page that builds no query, and takes
- * the Explorer out of the legacy notebook too.
+ * pages. `viewer` shows a page that builds no query, and takes the Explorer out
+ * of the legacy notebook too.
  */
 export type ModelPageMode = "explorer" | "viewer";
 

@@ -156,14 +156,24 @@ export function probeFilterList<T>(view: PreparedQueryView): T[] | undefined {
 }
 
 /**
+ * Whether a field usage entry's `uniqueKeyRequirement` may name an aggregate:
+ * Malloy writes `true` there, and `false` or nothing means none. Any other
+ * value is a shape this does not know, so a caller reads it as unreadable
+ * rather than as no aggregate.
+ */
+function requiresUniqueKey(requirement: unknown): boolean {
+   return requirement !== undefined && requirement !== false;
+}
+
+/**
  * The join paths a prepared query aggregates at a join's own grain: each
  * `expandedFieldUsage` entry (in every segment of its pipeline, nested ones
  * included) that carries a `uniqueKeyRequirement`, which Malloy records where
  * it needs a symmetric aggregate (`j.x.sum()`, `j.count()`, a measure that
  * reads one) and nowhere else. A path is relative to the segment's source;
  * the empty path is the source's own grain. `unreadable` is set when an entry
- * carries a requirement on a path that is not a list of names, so a caller
- * fails closed.
+ * carries a requirement that is not a boolean, or one on a path that is not a
+ * list of names, so a caller fails closed.
  */
 export function joinGrainAggregatePaths(view: PreparedQueryView): {
    paths: string[][];
@@ -184,8 +194,9 @@ export function joinGrainAggregatePaths(view: PreparedQueryView): {
             path?: unknown;
             uniqueKeyRequirement?: unknown;
          }[]) {
-            if (!u || u.uniqueKeyRequirement === undefined) continue;
+            if (!u || !requiresUniqueKey(u.uniqueKeyRequirement)) continue;
             if (
+               u.uniqueKeyRequirement !== true ||
                !Array.isArray(u.path) ||
                u.path.some((p) => typeof p !== "string")
             ) {
@@ -750,8 +761,8 @@ export function aggregateOutsideJoin(
          path?: unknown;
          uniqueKeyRequirement?: unknown;
       }[]) {
-         if (!u || u.uniqueKeyRequirement === undefined) continue;
-         if (!Array.isArray(u.path)) {
+         if (!u || !requiresUniqueKey(u.uniqueKeyRequirement)) continue;
+         if (u.uniqueKeyRequirement !== true || !Array.isArray(u.path)) {
             unreadable = true;
             continue;
          }
