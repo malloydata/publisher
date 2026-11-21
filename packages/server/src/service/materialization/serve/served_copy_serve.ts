@@ -963,9 +963,33 @@ export class ServedCopyServe {
             if (zonedOnly) {
                decline(ZONED_TRUNCATION_REASON, "served_copy_time_zone");
             }
+            // The tables read that leave a column out, and why for each
+            // column live's result has and the copy's lacks: a column of the
+            // caller's own result, named as a query naming it would be.
+            const leaving = tablesRead.filter((b) =>
+               compiled.leftOutTables?.has(b.tablePath),
+            );
+            const lacking =
+               live === undefined ? [] : namesLacking(live, served);
+            const why = [
+               ...new Set(
+                  leaving.flatMap((b) =>
+                     lacking.flatMap((n) => {
+                        const phrase = compiled.leftOutWhy
+                           ?.get(b.sourceIDs?.[0] ?? "")
+                           ?.get(n);
+                        return phrase === undefined ? [] : [phrase];
+                     }),
+                  ),
+               ),
+            ];
             decline(
                "the query's result includes a column the served copy leaves out of a stored table's type",
                "served_copy_not_served",
+               why.length > 0
+                  ? `the stored table cannot answer with live's columns: ${why.join("; ")}`
+                  : "the query's result includes a column the stored table leaves out",
+               leaving.map((b) => b.virtualHandle),
             );
          }
       }
@@ -4494,6 +4518,32 @@ export function refinesUnfilteredBase(
  * place, in order. Two compiles of one query that agree on it return the
  * same columns.
  */
+/**
+ * The top-level field names of one result shape ({@link resultShapeOf}) the
+ * other lacks: `live`'s names not in `served`. Empty when either does not
+ * parse.
+ */
+function namesLacking(live: string, served: string): string[] {
+   const names = (shape: string): string[] | undefined => {
+      try {
+         const parsed: unknown = JSON.parse(shape);
+         if (!Array.isArray(parsed)) return undefined;
+         return parsed.flatMap((f) =>
+            typeof f === "string"
+               ? [f]
+               : f !== null && typeof f === "object"
+                 ? Object.keys(f)
+                 : [],
+         );
+      } catch {
+         return undefined;
+      }
+   };
+   const had = names(served);
+   if (had === undefined) return [];
+   return (names(live) ?? []).filter((n) => !had.includes(n));
+}
+
 export function resultShapeOf(prepared: { resultExplore: unknown }): string {
    type Field = {
       name: string;

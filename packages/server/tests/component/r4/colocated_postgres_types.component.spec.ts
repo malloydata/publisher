@@ -37,12 +37,11 @@
  *   a query reading it answers live (`MISSING_FIELD`, naming `jsonb`), and
  *   every other query is served.
  *
- * A bug (equal to live, but never served), held as `it.todo` below:
- *
- * - Bug C: the database `#@ persist` it does serve answers `select: *` (whose
- *   arrays the served copy leaves out) live with no reason in its path
- *   report either, where the `#(materialize)` one reports `NOT_SERVED` and a
- *   query naming an array column reports `MISSING_FIELD`.
+ * - The database `#@ persist` answered `select: *` (whose arrays the served
+ *   copy leaves out) live with no reason in its path report, where the
+ *   `#(materialize)` one reported `NOT_SERVED`: the served copy's decline
+ *   named no table. It now names the table `NOT_SERVED`, with the columns
+ *   the result would lack.
  *
  * Opt-in: set PUBLISHER_TEST_POSTGRES_URL to a server the test may create and
  * drop databases on, e.g. `postgresql://postgres:pw@127.0.0.1:5432/postgres`.
@@ -243,10 +242,6 @@ const QUERIES: Query[] = [
    },
    { name: "select: *", body: "select: *; order_by: id", reads: ["id"] },
 ];
-
-/** Bug C: a declined query the path report gives no reason for. */
-const silentDecline = (s: Source, q: Query) =>
-   (s.source === "per" || s.source === "per_jb") && q.name === "select: *";
 
 const queriesOf = (s: Source) =>
    QUERIES.filter((q) => q.reads.every((c) => s.columns.includes(c)));
@@ -497,19 +492,15 @@ describe.skipIf(!POSTGRES_URL)(
                   );
                });
 
-               // Bug C: answered live with nothing considered.
-               (silentDecline(s, q) ? it.todo : it)(
-                  `${q.name}: from its table, or live with a coded reason`,
-                  () => {
-                     const { v } = answers(s, q);
-                     if (v.servedBy === "live") {
-                        expect(v.declined.length).toBeGreaterThan(0);
-                     } else {
-                        expect(v.servedBy).toBe("materialized");
-                        expect(v.servedFrom).toBe("database");
-                     }
-                  },
-               );
+               it(`${q.name}: from its table, or live with a coded reason`, () => {
+                  const { v } = answers(s, q);
+                  if (v.servedBy === "live") {
+                     expect(v.declined.length).toBeGreaterThan(0);
+                  } else {
+                     expect(v.servedBy).toBe("materialized");
+                     expect(v.servedFrom).toBe("database");
+                  }
+               });
             }
 
             it("serves a query reading only integer and numeric columns from its table", () => {
@@ -535,6 +526,20 @@ describe.skipIf(!POSTGRES_URL)(
             .map((q) => `${q.name}: ${answers(s, q).v.servedBy}`);
          expect(rest.length).toBeGreaterThan(4);
          expect(rest.filter((r) => !r.endsWith(": materialized"))).toEqual([]);
+      });
+
+      it("answers select: * on each #@ persist live, naming its table NOT_SERVED and the columns its result would lack", () => {
+         for (const name of ["per", "per_jb"]) {
+            const s = SOURCES.find((x) => x.source === name)!;
+            const star = answers(
+               s,
+               QUERIES.find((q) => q.name === "select: *")!,
+            );
+            expect(star.v.servedBy).toBe("live");
+            expect(star.v.declined).toEqual(["materialized:NOT_SERVED"]);
+            expect(star.v.details.join(" ")).toContain("column `ia`");
+            expect(star.v.details.join(" ")).toContain("column `ta`");
+         }
       });
 
       it("serves every query on the zoned timestamp from its table, in every query time zone", () => {

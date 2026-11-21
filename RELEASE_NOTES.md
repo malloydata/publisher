@@ -51,6 +51,12 @@ Two consequences worth knowing. A section merged to `main` ships in the **next**
 
 ## [Unreleased] — a `statement_usage` record carries `bytes_out`, and a notebook cell on a metered connection is recorded
 
+## [Unreleased] — `select: *` answered live for a column a stored table leaves out names why
+
+**Fixed: `select: *` on a served `#@ persist` source whose table leaves a column out answered live with no reason in its path report (0.17.0 known issue).** A star that expands to a column the stored table cannot carry (a Postgres array, a `jsonb`, a DuckDB `MAP`) must be answered live, or the answer would lack a column live returns; but the served copy's decline named no table, so a database table was not reported at all. The path report now names each such table `NOT_SERVED`, with a `detail` naming the columns the result would lack and why, for `#(materialize)` and `storage=` tables too. A star that expands only to columns the table carries is served, as before.
+
+**Who is affected:** a client that reads the path report. **What to do:** nothing.
+
 ## [Unreleased] — a database `#@ persist` table holding a column no stored type spells serves every query that does not read it
 
 **Fixed: a database `#@ persist` source whose table holds a column Malloy types as `json` or `sql native` answered every query live (0.17.0 known issue).** Such a column (a Postgres `jsonb`; a DuckDB `MAP`, `BLOB`, `INTERVAL`, `UUID` or `JSON`) has no stored type the served copy can declare, so the table's columns left it out, and the served copy then left the whole source as written (`served-copy-not-served`, `fields_not_carried`), though nothing the table holds was wrong. The column is now left out per query: a query that reads it answers live, its path report naming the table `MISSING_FIELD` with the column and the type the warehouse holds it as, and every other query is served from the table, equal to live.
