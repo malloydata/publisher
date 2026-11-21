@@ -28,7 +28,7 @@
  * answer equals live's, compared as text.
  */
 
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
 import { installSettings } from "../../src/test_helpers/settings_env";
 import {
    freshLoadPool,
@@ -717,4 +717,124 @@ describe("a rebind whose served copy ends up off", () => {
          expect(answer(again).rows).toBe(answer(s.live[name]).rows);
       }
    });
+});
+
+describe("a pending served copy a status poll compiles, with no query and no bind", () => {
+   const s = scenario({ "m.malloy": SERVED }, SERVED_QUERIES);
+
+   function parts() {
+      const pkg = s.fixture?.pkg;
+      if (!pkg) throw new Error("not loaded");
+      const mz = pkg.materialization();
+      const model = pkg.getModel("m.malloy");
+      if (!model) throw new Error("no model");
+      const entry = Object.values(pkg.getBuildPlan()?.sources ?? {}).find(
+         (e) => e.name === "acc_db",
+      );
+      if (!entry) throw new Error("acc_db is not planned");
+      const database = mz.boundDatabaseEntries() ?? {};
+      // The model's served copy, whose compile a spec may watch or fail.
+      const copy = (model as unknown as { servedCopy: object }).servedCopy as {
+         compileWithFallbacks(...args: unknown[]): Promise<unknown>;
+      };
+      return { pkg, mz, model, entry, database, copy };
+   }
+
+   const marked = () =>
+      verdictsOf(s.fixture)
+         .filter((v) => v.servedCopyPending === true)
+         .map((v) => v.sourceName)
+         .sort();
+
+   /** Poll the verdicts, as a host re-reads /status, until none is marked. */
+   async function pollUntilClear(limitMs: number): Promise<number> {
+      const start = Date.now();
+      let polls = 0;
+      while (Date.now() - start < limitMs) {
+         polls++;
+         if (marked().length === 0) return polls;
+         await new Promise((r) => setTimeout(r, 20));
+      }
+      return -1;
+   }
+
+   it("a freshness window that lapses: polls clear the marker without a query", async () => {
+      const { mz, model, entry, database } = parts();
+      mz.bind({
+         database: {
+            ...database,
+            [entry.sourceEntityId]: {
+               ...(database as Record<string, object>)[entry.sourceEntityId],
+               dataAsOf: new Date().toISOString(),
+               freshnessWindowSeconds: 1,
+               freshnessFallback: "live",
+            },
+         } as never,
+      });
+      await model.prepareServedCopy();
+      expect(marked()).toEqual([]);
+      expect(verdict(s.fixture, "acc_db").verdict).toBe("serves");
+      // The window lapses: the tables a query reads change, with no bind.
+      await new Promise((r) => setTimeout(r, 1_500));
+      expect(await pollUntilClear(10_000)).toBeGreaterThan(0);
+      expect(verdict(s.fixture, "acc_db")).toMatchObject({
+         verdict: "live",
+         reason: "stale",
+      });
+      expect(verdict(s.fixture, "acc_lake").verdict).toBe("serves");
+      expect(verdict(s.fixture, "acc_lake").servedCopyPending).toBeUndefined();
+      // Rebound fresh for the next case.
+      mz.bind({ database: database as never });
+      await model.prepareServedCopy();
+   }, 30_000);
+
+   it("polling a pending copy compiles it once", async () => {
+      const { mz, model, database, copy } = parts();
+      mz.bind({ database: {} });
+      await model.prepareServedCopy();
+      const compiles = spyOn(copy, "compileWithFallbacks");
+      try {
+         mz.bind({ database: database as never });
+         for (let i = 0; i < 25; i++) marked();
+         expect(await pollUntilClear(10_000)).toBeGreaterThan(0);
+         for (let i = 0; i < 25; i++) expect(marked()).toEqual([]);
+         // The bind's compile, which every poll joined.
+         expect(compiles).toHaveBeenCalledTimes(1);
+      } finally {
+         compiles.mockRestore();
+      }
+   }, 30_000);
+
+   it("a compile that throws clears the marker with compile_failed, and every query answers live", async () => {
+      const { mz, model, database, copy } = parts();
+      mz.bind({ database: {} });
+      await model.prepareServedCopy();
+      const thrown = spyOn(copy, "compileWithFallbacks").mockImplementation(
+         () => Promise.reject(new Error("an escaped failure")),
+      );
+      try {
+         mz.bind({ database: database as never });
+         expect(marked()).toContain("acc_db");
+         expect(await pollUntilClear(10_000)).toBeGreaterThan(0);
+         expect(model.servedCopyProblems().map((p) => p.reason)).toEqual([
+            "compile_failed",
+         ]);
+         for (const name of ["acc_db", "acc_lake"]) {
+            expect(verdict(s.fixture, name)).toMatchObject({
+               verdict: "live",
+               reason: "served_copy",
+               notServedIn: [
+                  { model: "m.malloy", reasons: ["compile_failed"] },
+               ],
+            });
+         }
+         for (const [name, q] of Object.entries(SERVED_QUERIES)) {
+            const o = await s.fixture?.run(q.model, q.query);
+            expect([name, answer(o).servedBy]).toEqual([name, "live"]);
+            expect(answer(o).rows).toBe(answer(s.live[name]).rows);
+         }
+      } finally {
+         thrown.mockRestore();
+      }
+   }, 30_000);
 });

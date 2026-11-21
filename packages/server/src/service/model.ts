@@ -3100,7 +3100,34 @@ export class Model {
    public servedCopySourceIDs(): ReadonlySet<string> | "pending" | undefined {
       if (!this.servedCopyEnabled()) return undefined;
       const ids = this.servedCopy.rerootedSourceIDs();
-      return ids && this.servedCopy.isCurrent() ? ids : "pending";
+      if (ids && this.servedCopy.isCurrent()) return ids;
+      // Nothing else may compile it: a freshness window that lapses changes
+      // the bindings a query reads with no bind, and a model nobody queries
+      // would stay pending until the next bind.
+      this.refreshServedCopy();
+      return "pending";
+   }
+
+   /** The compile {@link refreshServedCopy} started, while it runs. */
+   private servedCopyRefresh?: Promise<void>;
+
+   /**
+    * Compile the served copy over the bindings fresh now, in the background,
+    * once at a time: a status poll that finds it pending asks again only
+    * after the compile it started has landed (and then finds it current).
+    */
+   private refreshServedCopy(): void {
+      if (this.servedCopyRefresh) return;
+      const refresh = this.prepareServedCopy()
+         .catch(() => {
+            // The compile records its own failure; nothing escapes a poll.
+         })
+         .finally(() => {
+            if (this.servedCopyRefresh === refresh) {
+               this.servedCopyRefresh = undefined;
+            }
+         });
+      this.servedCopyRefresh = refresh;
    }
 
    /**

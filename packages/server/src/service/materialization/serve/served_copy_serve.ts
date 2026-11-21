@@ -1914,6 +1914,43 @@ export class ServedCopyServe {
       /** The pin's time, which a remembered failure is held against. */
       asOf = 0,
    ): Promise<Compiled> {
+      try {
+         return await this.compileWithFallbacks(
+            key,
+            generation,
+            bindings,
+            lane,
+            asOf,
+         );
+      } catch (error) {
+         // A failure the passes did not catch is the copy failing to compile,
+         // recorded like any other: kept, so a verdict reads it as current
+         // and judged (every source answers live), never pending forever.
+         return {
+            key,
+            generation,
+            over: bindings,
+            lane,
+            rerooted: [],
+            aliased: [],
+            problems: [
+               {
+                  reason: "compile_failed",
+                  detail:
+                     error instanceof Error ? error.message : String(error),
+               },
+            ],
+         };
+      }
+   }
+
+   private async compileWithFallbacks(
+      key: string,
+      generation: number,
+      bindings: Binding[],
+      lane: number,
+      asOf: number,
+   ): Promise<Compiled> {
       const passedOver = new Set<Binding>();
       // Why each storage table passed over was dropped, from the compile
       // that dropped it: still warned, as served from the database instead.

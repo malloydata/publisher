@@ -1123,7 +1123,11 @@ and no served-copy judgement: a bound, fresh table reads `serves`, even one the 
 unread. **A host that reads `GET …/packages/{pkg}/status` after a bind must re-read it while any
 verdict carries `servedCopyPending`**; once it is absent, that verdict is final for the bind. The
 compile usually lands well under a second after the bind. A query never waits on it: each compiles
-or reuses the copy over the tables bound when it starts.
+or reuses the copy over the tables bound when it starts. A read that finds a copy pending starts its
+compile if nothing else has, one at a time per model, so polling clears the marker on its own: a
+freshness window that lapses changes the tables a query reads with no bind, and a model nobody
+queries would otherwise stay pending. A copy whose compile fails outright is recorded as
+`compile_failed`, not left pending.
 
 For example, a model whose copy fails across connections reports every table it holds, either
 kind, as:
