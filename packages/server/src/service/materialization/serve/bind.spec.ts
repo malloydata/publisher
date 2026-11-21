@@ -960,6 +960,54 @@ describe("applyObservedColumns", () => {
       ]);
    });
 
+   // Strict-origin mode: a rollup whose build captured neither its columns
+   // nor their native types (a capture that failed) was served from a
+   // DuckLake DOUBLE as exact; the read's `storedAsDouble` was ignored.
+   it("leaves out a DuckLake 128-bit integer held as a DOUBLE when the build captured no schema", () => {
+      const out = applyObservedColumns({
+         entries: {
+            rollup1: { tableName: "orders_by_g", connectionName: "lake" },
+         },
+         bindings: [],
+         observed: new Map([
+            [
+               "rollup1",
+               {
+                  columns: [
+                     { name: "g", type: "VARCHAR", nativeType: "VARCHAR" },
+                     {
+                        name: "big_sum",
+                        type: "DOUBLE",
+                        nativeType: "DOUBLE",
+                        storedAsDouble: true as const,
+                     },
+                  ],
+               },
+            ],
+         ]),
+      });
+      expect(out.entries.rollup1).toEqual({
+         tableName: "orders_by_g",
+         connectionName: "lake",
+         heldRead: {
+            connectionName: "lake",
+            columns: [{ name: "g", type: "VARCHAR", nativeType: "VARCHAR" }],
+         },
+         leftOutColumns: ["big_sum"],
+      });
+      expect(out.drifted.map((d) => d.columns)).toEqual([
+         [
+            {
+               column: "big_sum",
+               builtType: "DOUBLE",
+               observedType: "DOUBLE",
+               storedAsDouble: true,
+               leftOut: true,
+            },
+         ],
+      ]);
+   });
+
    it("keeps a substituted table (a rollup) whose column no cast reads, with that column left out", () => {
       const out = applyObservedColumns({
          entries,

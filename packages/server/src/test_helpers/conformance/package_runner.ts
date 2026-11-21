@@ -306,6 +306,11 @@ export interface BindOptions {
     * to the declared types, as a build does).
     */
    storeUncast?: boolean;
+   /**
+    * Capture no database table's native types, as a build whose catalog
+    * read failed records none (default false; always under strict mode).
+    */
+   captureNoNativeSchema?: boolean;
 }
 
 /**
@@ -900,15 +905,16 @@ async function buildAll(
                );
                // The warehouse's own column types, captured as a database
                // build captures them (database_native_types.ts).
-               const nativeSchema = STRICT_ORIGIN
-                  ? undefined
-                  : await capturedNativeSchema({
-                       run: (sql) =>
-                          warehouse.runSQL(sql, { rowLimit: 10_000 }),
-                       physicalTableName: table,
-                       dialect: warehouse.dialectName,
-                       sourceName: entry.name,
-                    });
+               const nativeSchema =
+                  STRICT_ORIGIN || options.captureNoNativeSchema
+                     ? undefined
+                     : await capturedNativeSchema({
+                          run: (sql) =>
+                             warehouse.runSQL(sql, { rowLimit: 10_000 }),
+                          physicalTableName: table,
+                          dialect: warehouse.dialectName,
+                          sourceName: entry.name,
+                       });
                database[entry.sourceEntityId] = {
                   tableName: table,
                   connectionName: entry.connectionName ?? "duckdb",

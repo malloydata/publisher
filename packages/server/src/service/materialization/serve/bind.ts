@@ -693,6 +693,10 @@ export function applyObservedColumns(args: {
          : // A build that captured only native types (a warehouse whose
            // schema reader refused the name): those are what moved or not.
            nativeDriftOf(entry.nativeSchema ?? [], read);
+      // A DuckLake 128-bit integer held as a DOUBLE is never exact, whatever
+      // the build captured, or failed to capture: a column the read marks so
+      // and no capture named is reported too, so it is left out.
+      columns.push(...unreportedDoubles(read, columns));
       // Read by Malloy's manifest substitution alone, a table no compile
       // re-types: a column whose source now declares a type the table's
       // value does not read as (a warehouse column retyped upstream since the
@@ -1129,6 +1133,29 @@ function roundsBigInteger(c: ObservedDrift["columns"][number]): boolean {
          c.builtType.trim(),
       ) &&
       /^(DOUBLE|FLOAT|REAL|FLOAT4|FLOAT8)$/i.test((c.observedType ?? "").trim())
+   );
+}
+
+/**
+ * The columns the read marks `storedAsDouble` that `reported` does not name:
+ * ones no build capture listed, which would otherwise be read as exact.
+ */
+function unreportedDoubles(
+   read: Extract<ObservedColumns, { columns: unknown }>,
+   reported: ObservedDrift["columns"],
+): ObservedDrift["columns"] {
+   const named = new Set(reported.map((c) => c.column.toLowerCase()));
+   return read.columns.flatMap((c) =>
+      c.storedAsDouble && !named.has(c.name.toLowerCase())
+         ? [
+              {
+                 column: c.name,
+                 builtType: c.nativeType ?? c.type ?? "DOUBLE",
+                 ...(c.type !== undefined ? { observedType: c.type } : {}),
+                 storedAsDouble: true as const,
+              },
+           ]
+         : [],
    );
 }
 
