@@ -127,6 +127,75 @@ describe.skipIf(!SUPERUSER)(
          expect(rows).toBe(1);
       });
 
+      /** A transaction on `a` that deletes and inserts a row of `table` after another instance replaced it. */
+      async function writeAfterReplace(
+         table: string,
+         readFirst: boolean,
+      ): Promise<string> {
+         const a = await instance(`conflict_${table}_a`, DEFAULT_RETRIES);
+         const b = await instance(`conflict_${table}_b`, DEFAULT_RETRIES);
+         await a.runSQL("BEGIN");
+         if (readFirst) {
+            await count(a, `SELECT count(*) AS n FROM ${CATALOG}.s1.${table}`);
+         }
+         await b.runSQL(
+            `CREATE OR REPLACE TABLE ${CATALOG}.s1.${table} AS SELECT 1 AS id, 'replaced' AS v`,
+         );
+         if (!readFirst) {
+            await count(a, `SELECT count(*) AS n FROM ${CATALOG}.s1.${table}`);
+         }
+         await a.runSQL(`DELETE FROM ${CATALOG}.s1.${table} WHERE id IN (1)`);
+         await a.runSQL(
+            `INSERT INTO ${CATALOG}.s1.${table} VALUES (1, 'from_a')`,
+         );
+         return commitOutcome(a);
+      }
+
+      it("fails a delete and insert into a table another instance replaced after the transaction read it", async () => {
+         await (
+            await instance("conflict_replace_setup", DEFAULT_RETRIES)
+         ).runSQL(
+            `CREATE TABLE ${CATALOG}.s1.replaced (id INTEGER, v VARCHAR)`,
+         );
+         // Observed: the commit-time check sees the replace, which is why a load reads the table inside its transaction.
+         expect(await writeAfterReplace("replaced", true)).toContain(
+            "Transaction conflict",
+         );
+      });
+
+      it("commits over a replaced table that the transaction first read after the replace", async () => {
+         await (
+            await instance("conflict_late_setup", DEFAULT_RETRIES)
+         ).runSQL(`CREATE TABLE ${CATALOG}.s1.late (id INTEGER, v VARCHAR)`);
+         // Observed: a transaction that begins reading after the replace plans against the new table, so there is nothing to conflict.
+         expect(await writeAfterReplace("late", false)).toBe("committed");
+      });
+
+      it("fails a create of a table another instance created after the transaction found it absent", async () => {
+         const a = await instance("conflict_create_a", DEFAULT_RETRIES);
+         const b = await instance("conflict_create_b", DEFAULT_RETRIES);
+         await a.runSQL("BEGIN");
+         expect(
+            await count(
+               a,
+               `SELECT count(*) AS n FROM duckdb_tables() WHERE database_name = '${CATALOG}' AND table_name = 'born'`,
+            ),
+         ).toBe(0);
+         await b.runSQL(`CREATE TABLE ${CATALOG}.s1.born (id INTEGER)`);
+         const created = await a
+            .runSQL(`CREATE TABLE ${CATALOG}.s1.born AS SELECT 1 AS id`)
+            .then(
+               () => "created",
+               (error: Error) => error.message,
+            );
+         // Observed: the create fails at commit with a conflict, the text a load maps to a 409.
+         expect(
+            created === "created" ? await commitOutcome(a) : created,
+         ).toContain(
+            "this table has been created by another transaction already",
+         );
+      });
+
       it("fails an insert into a table whose schema another instance dropped", async () => {
          const inserter = await instance("conflict_drop_b", DEFAULT_RETRIES);
          const dropper = await instance("conflict_drop_a", DEFAULT_RETRIES);

@@ -20,6 +20,7 @@ import {
    readerRefusal,
    readerSql,
    sourceColumns,
+   typeVariants,
    writeTableAs,
 } from "./storage_table_load";
 
@@ -416,7 +417,13 @@ describe("loadLayout: the objects' columns against the table's", () => {
       ["FLOAT", "DOUBLE", true],
       ["DOUBLE", "FLOAT", false],
       ["DECIMAL(18,3)", "DECIMAL(18,3)", true],
-      ["DECIMAL(10,2)", "DECIMAL(18,3)", false],
+      ["DECIMAL(3,2)", "DECIMAL(7,2)", true],
+      ["DECIMAL(10,2)", "DECIMAL(18,3)", true],
+      ["DECIMAL(7,2)", "DECIMAL(3,2)", false],
+      ["DECIMAL(10,2)", "DECIMAL(10,3)", false],
+      ["INTEGER", "DOUBLE", true],
+      ["BIGINT", "DOUBLE", false],
+      ["UTINYINT", "INTEGER", true],
       ["DOUBLE", "INTEGER", false],
       ["INTEGER", "VARCHAR", false],
       ["TIMESTAMP WITH TIME ZONE", "TIMESTAMP", false],
@@ -515,20 +522,35 @@ describe("loadLayout: the objects' columns against the table's", () => {
       ).toMatchObject({ detail: "missing_cursor" });
    });
 
-   it("refuses objects with no column", () => {
-      expect(
-         contract(() => loadLayout({ key: [] }, [], null)).detail,
-      ).toMatchObject({ detail: "no_columns" });
+   it("refuses a table column named like the load's own helper columns, whatever its case", () => {
+      for (const name of ["__publisher_present", "__PUBLISHER_present"]) {
+         expect(
+            contract(() =>
+               loadLayout({ key: ["id"] }, stage, [
+                  ...table,
+                  { name, type: "INTEGER" },
+               ]),
+            ).detail,
+         ).toMatchObject({ column: name, detail: "reserved_name" });
+      }
    });
 });
 
+/** A schema of the object at `uri` from `[name, childCount, logicalType?, physicalType?]` rows, root first. */
+const shapeAt = (
+   uri: string,
+   ...elements: [string, number, string?, string?][]
+) => ({
+   names: elements.map(([name]) => name),
+   kids: elements.map(([, kids]) => kids),
+   kinds: elements.map(([, , kind]) => kind ?? null),
+   types: elements.map(([, , , type]) => type ?? ""),
+   uri,
+});
+
 describe("sourceColumns: the columns the objects' schemas hold", () => {
-   /** A schema from `[name, childCount, logicalType?]` rows, root first. */
-   const shape = (...elements: [string, number, string?][]) => ({
-      names: elements.map(([name]) => name),
-      kids: elements.map(([, kids]) => kids),
-      kinds: elements.map(([, , kind]) => kind ?? null),
-   });
+   const shape = (...elements: [string, number, string?, string?][]) =>
+      shapeAt("o.parquet", ...elements);
    const contract = (run: () => unknown) => {
       try {
          run();
@@ -559,24 +581,42 @@ describe("sourceColumns: the columns the objects' schemas hold", () => {
       ).toEqual(["id", "st", "l", "last"]);
    });
 
-   it("joins the columns of every schema, and drops one typed NULL in all of them", () => {
-      expect(
-         sourceColumns([
-            shape(["root", 2], ["id", 0], ["gone", 0, "UNKNOWN"]),
-            shape(["root", 3], ["id", 0], ["gone", 0, "UNKNOWN"], ["v", 0]),
-         ]),
-      ).toEqual(["id", "v"]);
-      // Typed in one object, NULL in another: the column stays.
-      expect(
-         sourceColumns([
-            shape(["root", 1], ["x", 0, "UNKNOWN"]),
-            shape(["root", 1], ["x", 0]),
-         ]),
-      ).toEqual(["x"]);
-   });
+   // DuckDB spells a column of no type `UNKNOWN`; pyarrow's `null()` is
+   // written as a NullType() logical type, which `parquet_schema` reports so.
+   it.each(["UNKNOWN", "NullType()"])(
+      "joins the columns of every schema, and drops one typed NULL (%s) in all of them",
+      (nullType) => {
+         expect(
+            sourceColumns([
+               shape(["root", 2], ["id", 0], ["gone", 0, nullType]),
+               shape(["root", 3], ["id", 0], ["gone", 0, nullType], ["v", 0]),
+            ]),
+         ).toEqual(["id", "v"]);
+         // Typed in one object, NULL in another: the column stays.
+         expect(
+            sourceColumns([
+               shape(["root", 2], ["id", 0], ["x", 0, nullType]),
+               shape(["root", 2], ["id", 0], ["x", 0]),
+            ]),
+         ).toEqual(["id", "x"]);
+      },
+   );
 
-   it("reads a schema with no column", () => {
-      expect(sourceColumns([shape(["root", 0])])).toEqual([]);
+   it("refuses objects that leave no column: none at all, or only ones typed NULL", () => {
+      expect(contract(() => sourceColumns([shape(["root", 0])]))).toEqual({
+         column: "",
+         tableType: null,
+         loadType: null,
+         detail: "no_columns",
+      });
+      expect(
+         contract(() =>
+            sourceColumns([shape(["root", 1], ["x", 0, "NullType()"])]),
+         ),
+      ).toMatchObject({ detail: "no_columns" });
+      expect(contract(() => sourceColumns([]))).toMatchObject({
+         detail: "no_columns",
+      });
    });
 
    it("refuses names the load reserves, a NUL, and names that differ only by case", () => {
@@ -617,6 +657,56 @@ describe("sourceColumns: the columns the objects' schemas hold", () => {
       expect(
          sourceColumns([shape(["root", 2], ["id", 0], ["st", 1], ["ID", 0])]),
       ).toEqual(["id", "st"]);
+   });
+});
+
+describe("typeVariants: the columns the objects type in more than one way", () => {
+   const objects = (type: string | undefined, uri: string, kind?: string) =>
+      shapeAt(
+         uri,
+         ["root", 2],
+         ["id", 0, undefined, "INT64"],
+         ["k", 0, kind, type],
+      );
+
+   it("names one object of each distinct type of a column", () => {
+      expect(
+         typeVariants([
+            objects("INT64", "a.parquet"),
+            objects("DOUBLE", "b.parquet"),
+            objects("DOUBLE", "c.parquet"),
+         ]),
+      ).toEqual(new Map([["k", ["a.parquet", "b.parquet"]]]));
+   });
+
+   it("names nothing when every object types its columns alike", () => {
+      expect(
+         typeVariants([
+            objects("INT64", "a.parquet"),
+            objects("INT64", "b.parquet"),
+         ]),
+      ).toEqual(new Map());
+   });
+
+   it("does not count a column typed NULL as a type of its own", () => {
+      expect(
+         typeVariants([
+            objects("INT64", "a.parquet"),
+            objects("INT32", "b.parquet", "NullType()"),
+            objects(undefined, "c.parquet", "UNKNOWN"),
+         ]),
+      ).toEqual(new Map());
+   });
+
+   it("tells a nested column's types apart by what is inside it", () => {
+      const nested = (inner: string, uri: string) =>
+         shapeAt(uri, ["root", 1], ["st", 1], ["x", 0, undefined, inner]);
+      expect(
+         typeVariants([
+            nested("INT32", "a.parquet"),
+            nested("INT64", "b.parquet"),
+         ]),
+      ).toEqual(new Map([["st", ["a.parquet", "b.parquet"]]]));
    });
 });
 

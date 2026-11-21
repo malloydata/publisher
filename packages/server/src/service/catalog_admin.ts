@@ -22,7 +22,7 @@ import { Client } from "pg";
 import type { components } from "../api";
 import { BadRequestError, ConflictError } from "../errors";
 import { logger } from "../logger";
-import { loadSlots } from "../query_concurrency";
+import { countLoadRejection, loadSlots } from "../query_concurrency";
 import {
    applySessionResourceLimits,
    attachDuckLakeForCreate,
@@ -32,10 +32,15 @@ import {
    escapeSQL,
    isDuckLakeInitRace,
    connectPgClient,
+   pgClientConfig,
    tablePartitionKeys,
    type PartitionKey,
 } from "./connection";
-import { READABLE_SCHEMA_NAME } from "./connection_config";
+import {
+   READABLE_SCHEMA_NAME,
+   RESERVED_SCHEMA_NAMES,
+   SYSTEM_SCHEMAS,
+} from "./connection_config";
 import { createIsolatedBuildSession } from "./materialization/run/materialization_build_session";
 import {
    cleanupStorageFiles,
@@ -54,6 +59,7 @@ import {
    copyStorageTable,
    loadStorageTable,
    mergeStorageTable,
+   quotedList,
 } from "./materialization/run/storage_table_load";
 
 type ApiConnection = components["schemas"]["Connection"];
@@ -64,13 +70,8 @@ type DucklakeStorage = NonNullable<
 const IDENT = /^[A-Za-z_][A-Za-z0-9_]*$/;
 /** A role name safe in a libpq `options=-crole=` value, hyphens included (`<prefix>-ducklake`). */
 const ROLE = /^[A-Za-z_][A-Za-z0-9_-]*$/;
-/** Schemas the engine owns: never created, dropped or listed through the API. */
-const SYSTEM_SCHEMAS = ["information_schema", "pg_catalog", "temp", "system"];
-/**
- * Reserved on a schema create or drop; `main` is DuckLake's default and cannot be dropped,
- * and `memory` would make `memory.t` ambiguous with DuckDB's built-in catalog.
- */
-const RESERVED_SCHEMAS = ["main", "memory", ...SYSTEM_SCHEMAS];
+/** Reserved on a schema create or drop; `main` is DuckLake's default and cannot be dropped. */
+const RESERVED_SCHEMAS = ["main", ...RESERVED_SCHEMA_NAMES];
 /** DuckLake's interval spelling for `delete_older_than`, e.g. `1 day`, `12 hours`. */
 const INTERVAL = /^(\d+) (second|minute|hour|day|week)s?$/;
 /** Used by a snapshot delete when the catalog records no file-deletion grace. */
@@ -96,8 +97,11 @@ const notFound = (name: string) =>
    );
 const badRequest = (message: string) =>
    new CatalogAdminError(400, "INVALID_REQUEST", message);
-const loadBusy = (message: string) =>
-   new CatalogAdminError(503, "LOAD_BUSY", message);
+/** A refusal to start or finish a load (503 `LOAD_BUSY`), counted by what was busy. */
+const loadBusy = (cause: "slot" | "lock" | "lost", message: string) => {
+   countLoadRejection(cause);
+   return new CatalogAdminError(503, "LOAD_BUSY", message);
+};
 
 /**
  * Runs one heavy load or copy: this process holds one slot for them, and a busy
@@ -107,7 +111,10 @@ const loadBusy = (message: string) =>
 export async function withLoadSlot<T>(fn: () => Promise<T>): Promise<T> {
    const slot = loadSlots.tryAcquire();
    if (!slot) {
-      throw loadBusy("This server is already running a load; retry shortly.");
+      throw loadBusy(
+         "slot",
+         "This server is already running a load; retry shortly.",
+      );
    }
    try {
       return await fn();
@@ -130,8 +137,12 @@ export interface TableLock {
    assertLockHeld: () => Promise<void>;
 }
 
-/** Postgres's advisory-lock key for a table: its name, folded as the engine folds it. */
-const TABLE_LOCK_KEY = "hashtextextended(lower($1), 0)";
+/** Postgres's advisory-lock key for a table's name, as {@link tableLockName} spells it. */
+const TABLE_LOCK_KEY = "hashtextextended($1, 0)";
+
+/** A table's lock name: the schema and table folded as the engine folds them, the catalog as given. */
+const tableLockName = (catalog: string, schema: string, table: string) =>
+   `${catalog}.${schema.toLowerCase()}.${table.toLowerCase()}`;
 
 export interface CatalogAdminConfig {
    /** A libpq connection string (keyword or URI form) for the catalog database. */
@@ -156,6 +167,8 @@ export function catalogAdminConfig(): CatalogAdminConfig | null {
          "PUBLISHER_ADMIN_CATALOG_DATABASE must not set `options`: the admin API sets the session role per catalog. Set server parameters on the role or database instead (ALTER ROLE … SET).",
       );
    }
+   // The load lock's client reads this string too; a form it cannot use fails startup, not every load.
+   pgClientConfig("PUBLISHER_ADMIN_CATALOG_DATABASE", catalogDatabase);
    const provider = settings.get("admin.storage.provider");
    const keyId = settings.get("admin.storage.keyId");
    const secret = settings.get("admin.storage.secret");
@@ -509,7 +522,7 @@ export class CatalogAdmin {
             s,
             `SELECT schema_name, table_name FROM duckdb_tables() WHERE database_name = '${escapeSQL(name)}' AND ` +
                (schema === undefined
-                  ? `schema_name NOT IN (${sqlList(SYSTEM_SCHEMAS)}) ORDER BY 1, 2`
+                  ? `schema_name NOT IN (${quotedList(SYSTEM_SCHEMAS)}) ORDER BY 1, 2`
                   : `schema_name = '${escapeSQL(schema)}' ORDER BY 2`),
          )) as { schema_name: string; table_name: string }[];
          // ducklake_table_info names a table's schema by id; the catalog's own
@@ -811,7 +824,7 @@ export class CatalogAdmin {
       table: string,
       fn: (lock: TableLock) => Promise<T>,
    ): Promise<T> {
-      const key = `${catalog}.${schema}.${table}`;
+      const key = tableLockName(catalog, schema, table);
       let lost = false;
       let client: Client;
       try {
@@ -825,23 +838,33 @@ export class CatalogAdmin {
       } catch (error) {
          throw this.redacted(error);
       }
+      const query = async (sql: string, values?: string[]) => {
+         try {
+            return (await client.query(sql, values)).rows;
+         } catch (error) {
+            // A query that gets no answer leaves the connection in doubt: it is dropped, not used again.
+            if (/Query read timeout/i.test(errMessage(error))) lost = true;
+            throw error;
+         }
+      };
       try {
-         const { rows } = await client.query(
+         const locked = await query(
             `SELECT pg_try_advisory_lock(${TABLE_LOCK_KEY}) AS locked`,
             [key],
          );
-         if (rows[0]?.locked !== true) {
-            throw loadBusy(`A load of '${key}' is already running.`);
+         if (locked[0]?.locked !== true) {
+            throw loadBusy("lock", `A load of '${key}' is already running.`);
          }
          try {
             return await fn({
                pg: async (sql) => {
                   try {
-                     return (await client.query(sql)).rows;
+                     return await query(sql);
                   } catch (error) {
                      // A read cut off by the lock's connection dying is a lost lock.
                      if (!lost) throw error;
                      throw loadBusy(
+                        "lost",
                         `The lock on '${key}' was lost; retry the load.`,
                      );
                   }
@@ -849,9 +872,11 @@ export class CatalogAdmin {
                assertLockHeld: async () => {
                   try {
                      if (lost) throw new Error("connection lost");
-                     await client.query("SELECT 1");
+                     await query("SELECT 1");
                   } catch {
+                     lost = true;
                      throw loadBusy(
+                        "lost",
                         `The lock on '${key}' was lost; retry the load.`,
                      );
                   }
@@ -859,22 +884,27 @@ export class CatalogAdmin {
             });
          } finally {
             if (!lost) {
-               await client
-                  .query(`SELECT pg_advisory_unlock(${TABLE_LOCK_KEY})`, [key])
-                  .catch(() => undefined);
+               await query(`SELECT pg_advisory_unlock(${TABLE_LOCK_KEY})`, [
+                  key,
+               ]).catch(() => {
+                  lost = true;
+               });
             }
          }
       } finally {
-         // end() on a connection already dead never settles.
-         if (!lost) await client.end().catch(() => undefined);
+         // end() on a connection that has stopped answering never settles: its socket is destroyed instead.
+         if (lost) destroyConnection(client);
+         else await client.end().catch(() => undefined);
       }
    }
 
    /**
     * Applies Parquet objects under the catalog's data path to a table by key
     * (see {@link mergeStorageTable}), creating the table when it does not
-    * exist. Holds the table's lock for the whole load, then this process's
-    * load slot: either busy is refused (503 `LOAD_BUSY`), not waited on.
+    * exist. Takes this process's load slot, then holds the table's lock for the
+    * whole load: either busy is refused (503 `LOAD_BUSY`), not waited on, so
+    * neither order can deadlock, and a refusal by a busy slot opens no
+    * connection to the catalog database.
     */
    async loadTable(
       name: string,
@@ -886,18 +916,18 @@ export class CatalogAdmin {
       identifier(schema, "schema");
       identifier(table, "table");
       const request = loadRequest(body);
-      return this.withTableLock(
-         name,
-         schema,
-         table,
-         async ({ pg, assertLockHeld }) => {
-            await this.requireCatalog(pg, name);
-            await requireRecordedSchema(pg, name, schema);
-            const owner = await this.schemaOwner(pg, name);
-            let result: LoadResult;
-            try {
-               result = await withLoadSlot(() =>
-                  withStatementUsage(
+      return withLoadSlot(() =>
+         this.withTableLock(
+            name,
+            schema,
+            table,
+            async ({ pg, assertLockHeld }) => {
+               await this.requireCatalog(pg, name);
+               await requireRecordedSchema(pg, name, schema);
+               const owner = await this.schemaOwner(pg, name);
+               let result: LoadResult;
+               try {
+                  result = await withStatementUsage(
                      {
                         environment: "",
                         connection: name,
@@ -914,30 +944,30 @@ export class CatalogAdmin {
                            assertLockHeld,
                         }),
                      (r) => r.rowsInserted + r.rowsReplaced,
-                  ),
-               );
-            } catch (error) {
-               throw this.loadFailure(error);
-            }
-            logger.info("Loaded rows into a DuckLake table", {
-               catalog: name,
-               schema,
-               table,
-               loadId: request.loadId,
-               mode: request.mode,
-               objects: request.objects.length,
-               rowsInserted: result.rowsInserted,
-               rowsReplaced: result.rowsReplaced,
-               rowsDeleted: result.rowsDeleted,
-            });
-            return result;
-         },
+                  );
+               } catch (error) {
+                  throw this.loadFailure(error);
+               }
+               logger.info("Loaded rows into a DuckLake table", {
+                  catalog: name,
+                  schema,
+                  table,
+                  loadId: request.loadId,
+                  mode: request.mode,
+                  objects: request.objects.length,
+                  rowsInserted: result.rowsInserted,
+                  rowsReplaced: result.rowsReplaced,
+                  rowsDeleted: result.rowsDeleted,
+               });
+               return result;
+            },
+         ),
       );
    }
 
    // ---- internals ----
 
-   /** A load's failure as an admin refusal: the load's own 422s, and DuckLake's commit conflict as a 409. */
+   /** A load's failure as an admin refusal: the load's own 422s, and DuckLake's commit conflict, or a table another request created first, as a 409. */
    private loadFailure(error: unknown): unknown {
       if (error instanceof LoadRefusalError) {
          return new CatalogAdminError(
@@ -951,7 +981,9 @@ export class CatalogAdmin {
       if (
          mapped instanceof Error &&
          !(mapped instanceof CatalogAdminError) &&
-         /Transaction conflict/i.test(mapped.message)
+         /Transaction conflict|Table with name .* already exists/i.test(
+            mapped.message,
+         )
       ) {
          return new CatalogAdminError(409, "LOAD_CONFLICT", mapped.message);
       }
@@ -1448,6 +1480,13 @@ async function requireRecordedSchema(
    }
 }
 
+/** Drops a connection that has stopped answering: its socket is destroyed, since an orderly `end()` waits for a reply that never comes. */
+function destroyConnection(client: Client): void {
+   (
+      client as unknown as { connection?: { stream?: { destroy(): void } } }
+   ).connection?.stream?.destroy();
+}
+
 function sourceNotFound(message: string): CatalogAdminError {
    return new CatalogAdminError(404, "SOURCE_NOT_FOUND", message);
 }
@@ -1460,9 +1499,6 @@ function identifier(value: unknown, what: string): string {
    }
    return value;
 }
-
-const sqlList = (values: string[]) =>
-   values.map((v) => `'${escapeSQL(v)}'`).join(", ");
 
 /** Refuses a name the engine owns or DuckLake needs, whatever its case. */
 function refuseReserved(schema: string): void {

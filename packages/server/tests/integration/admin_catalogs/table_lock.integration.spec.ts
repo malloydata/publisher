@@ -15,6 +15,8 @@ import {
    CatalogAdmin,
    CatalogAdminError,
 } from "../../../src/service/catalog_admin";
+import { resetInstrumentsForTesting } from "../../../src/telemetry";
+import { startMetricsHarness } from "../../../src/test_helpers/metrics_harness";
 import { SUPERUSER, superuser } from "./superuser";
 
 const DB = `table_lock_${process.pid}`;
@@ -51,14 +53,18 @@ describe.skipIf(!SUPERUSER)("table load admission", () => {
             admin.withTableLock("c", "s", "t", async () => "never"),
          );
          expect([error.status, error.reason]).toEqual([503, "LOAD_BUSY"]);
-         // The key is folded as the engine folds it.
+         // The schema and table are folded as the engine folds them.
          expect(
             (
                await refusal(
-                  admin.withTableLock("C", "S", "T", async () => "never"),
+                  admin.withTableLock("c", "S", "T", async () => "never"),
                )
             ).reason,
          ).toBe("LOAD_BUSY");
+         // The catalog is not: another catalog's table of the same name is free.
+         expect(
+            await admin.withTableLock("C", "s", "t", async () => "ran"),
+         ).toBe("ran");
       });
    });
 
@@ -104,6 +110,73 @@ describe.skipIf(!SUPERUSER)("table load admission", () => {
       expect(await admin.withTableLock("c", "s", "t", async () => "free")).toBe(
          "free",
       );
+   });
+
+   it("refuses by the process's load slot before it asks for the table's lock", async () => {
+      const harness = await startMetricsHarness();
+      resetInstrumentsForTesting();
+      try {
+         await admin.withTableLock("c", "s", "t", async () => {
+            const slot = loadSlots.tryAcquire()!;
+            try {
+               // Both are held; the slot answers first.
+               const error = await refusal(
+                  admin.loadTable("c", "s", "t", {
+                     loadId: "x",
+                     mode: "merge",
+                     key: ["id"],
+                     objects: ["o"],
+                  }),
+               );
+               expect([error.status, error.reason]).toEqual([503, "LOAD_BUSY"]);
+            } finally {
+               slot.release();
+            }
+         });
+         expect(
+            await harness.collectCounter("publisher_load_rejections_total", {
+               cause: "slot",
+            }),
+         ).toBe(1);
+         expect(
+            await harness.collectCounter("publisher_load_rejections_total", {
+               cause: "lock",
+            }),
+         ).toBe(0);
+      } finally {
+         resetInstrumentsForTesting();
+         await harness.shutdown();
+      }
+   });
+
+   it("counts a refusal by the table's lock, and one by a lost lock", async () => {
+      const harness = await startMetricsHarness();
+      resetInstrumentsForTesting();
+      try {
+         await admin.withTableLock("c", "s", "t", async () => {
+            await refusal(admin.withTableLock("c", "s", "t", async () => 0));
+         });
+         await admin.withTableLock(
+            "c",
+            "s",
+            "t",
+            async ({ pg, assertLockHeld }) => {
+               const [{ pid }] = await pg("SELECT pg_backend_pid() AS pid");
+               await superuser(`SELECT pg_terminate_backend(${Number(pid)})`);
+               await refusal(assertLockHeld());
+            },
+         );
+         for (const cause of ["lock", "lost"]) {
+            expect(
+               await harness.collectCounter("publisher_load_rejections_total", {
+                  cause,
+               }),
+            ).toBe(1);
+         }
+      } finally {
+         resetInstrumentsForTesting();
+         await harness.shutdown();
+      }
    });
 
    it("refuses a PUT load while the process's load slot is held", async () => {

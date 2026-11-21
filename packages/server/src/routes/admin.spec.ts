@@ -448,4 +448,25 @@ describe("the admin listener's configuration", () => {
          ).toThrow(/must not set `options`/);
       }
    });
+
+   it("fails startup on a connection string the load lock cannot use, without repeating its password", () => {
+      for (const db of [
+         "service=prod password=hunter2",
+         "host=a,b password=hunter2",
+         "host=h hostaddr=10.0.0.1 password=hunter2",
+      ]) {
+         const error = (() => {
+            try {
+               catalogConfigFrom({ PUBLISHER_ADMIN_CATALOG_DATABASE: db });
+            } catch (e) {
+               return String(e);
+            }
+            return "";
+         })();
+         expect(error).toContain(
+            "PUBLISHER_ADMIN_CATALOG_DATABASE: the connection string sets",
+         );
+         expect(error).not.toContain("hunter2");
+      }
+   });
 });

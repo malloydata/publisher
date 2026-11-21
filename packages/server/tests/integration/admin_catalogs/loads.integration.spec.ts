@@ -9,7 +9,13 @@
  */
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
+import {
+   copyFileSync,
+   mkdirSync,
+   mkdtempSync,
+   rmSync,
+   writeFileSync,
+} from "fs";
 import { tmpdir } from "os";
 import { dirname, join } from "path";
 import { logger } from "../../../src/logger";
@@ -93,6 +99,14 @@ describe.skipIf(!SUPERUSER)("loads", () => {
       const file = join(base, "staging", `${name}.parquet`);
       mkdirSync(dirname(file), { recursive: true });
       await fixtures.runSQL(`COPY (${select}) TO '${file}' (FORMAT parquet)`);
+      return file;
+   }
+
+   /** Copies a fixture Parquet object under the data path and returns its URI. */
+   function fixture(name: string): string {
+      const file = join(dataPath, "staging", `f${counter++}_${name}`);
+      mkdirSync(dirname(file), { recursive: true });
+      copyFileSync(join(__dirname, "fixtures", name), file);
       return file;
    }
 
@@ -689,6 +703,85 @@ describe.skipIf(!SUPERUSER)("loads", () => {
          ).toBe("type_change");
       });
 
+      it("accepts a load that widens without loss, and refuses one that narrows", async () => {
+         await seed(
+            "c_lossless",
+            "SELECT 1 AS id, 1.50::DECIMAL(7,2) AS d, 5::INTEGER AS i, 5::INTEGER AS u",
+         );
+         const widened = await parquet(
+            "SELECT 1 AS id, 1.50::DECIMAL(3,2) AS d, 5::TINYINT AS i, 5::UTINYINT AS u",
+         );
+         expect(await merge("c_lossless", [widened])).toMatchObject({
+            rowsUnchanged: 1,
+            rowsReplaced: 0,
+         });
+         await seed("c_float", "SELECT 1 AS id, 5::DOUBLE AS x");
+         expect(
+            await merge("c_float", [
+               await parquet("SELECT 1 AS id, 5::INTEGER AS x"),
+            ]),
+         ).toMatchObject({ rowsUnchanged: 1 });
+         expect(
+            await contract(
+               merge("c_lossless", [
+                  await parquet("SELECT 1 AS id, 1.50::DECIMAL(10,2) AS d"),
+               ]),
+            ),
+         ).toMatchObject({ column: "d", detail: "type_change" });
+         expect(
+            await contract(
+               merge("c_float", [
+                  await parquet("SELECT 1 AS id, 5::BIGINT AS x"),
+               ]),
+            ),
+         ).toMatchObject({ column: "x", detail: "type_change" });
+      });
+
+      it("refuses a table that has a column named like the load's own helper", async () => {
+         await sql(
+            writer,
+            `CREATE TABLE ${CATALOG}.s.c_shadow (id INTEGER, v VARCHAR, __publisher_present INTEGER)`,
+         );
+         expect(
+            await contract(
+               merge("c_shadow", [await parquet("SELECT 1 AS id, 'a' AS v")]),
+            ),
+         ).toMatchObject({
+            column: "__publisher_present",
+            detail: "reserved_name",
+         });
+      });
+
+      it("refuses a column the objects type differently when they do not widen into one, and takes one that does", async () => {
+         const mixed = async (a: string, b: string) => [
+            await parquet(`SELECT 1 AS id, 1::${a} AS k`),
+            await parquet(`SELECT 2 AS id, 2::${b} AS k`),
+         ];
+         // Read together BIGINT and DOUBLE would be DOUBLE: past 2^53 distinct keys collapse.
+         expect(
+            await contract(merge("c_mixed", await mixed("BIGINT", "DOUBLE"))),
+         ).toEqual({
+            column: "k",
+            tableType: null,
+            loadType: "BIGINT",
+            detail: "type_change",
+         });
+         expect(
+            await refusal(
+               merge("c_mixed", await mixed("INTEGER", "VARCHAR")),
+            ).then((error) => error.detail),
+         ).toMatchObject({ column: "k", detail: "type_change" });
+         expect(
+            (await admin.listTables(CATALOG, "s")).map((t) => t.name),
+         ).not.toContain("c_mixed");
+         expect(
+            await merge("c_widened", await mixed("INTEGER", "BIGINT")),
+         ).toMatchObject({ rowsInserted: 2 });
+         expect(
+            (await admin.getTable(CATALOG, "s", "c_widened")).columns[1].type,
+         ).toBe("BIGINT");
+      });
+
       it("refuses a key the objects lack, and a NULL key", async () => {
          await seed("c_key", "SELECT 1 AS id, 'a' AS v");
          expect(
@@ -758,6 +851,128 @@ describe.skipIf(!SUPERUSER)("loads", () => {
          expect(
             await contract(merge("c_cursor", [object], { cursor: "nope" })),
          ).toMatchObject({ detail: "missing_cursor" });
+      });
+   });
+
+   describe("a column its writer typed NULL", () => {
+      // fixtures/*_null_column.parquet: pyarrow 26.0.1, pq.write_table(pa.table({"id": [1, 2, 3], "v": ["a", "b", "c"], "junk": pa.nulls(3)}))
+      // and, for only_null_column, pa.table({"junk": pa.nulls(3)}). DuckDB reads `junk` as INTEGER; parquet_schema calls it NullType().
+      const columnsOf = async (table: string) =>
+         (await admin.getTable(CATALOG, "s", table)).columns.map(
+            (c) => `${c.name} ${c.type}`,
+         );
+
+      it("is ignored against a table that has the column typed otherwise", async () => {
+         await merge("nulls_existing", [
+            await parquet(
+               "SELECT * FROM (VALUES (1::BIGINT, 'a', NULL::VARCHAR), (2::BIGINT, 'b', NULL::VARCHAR), (3::BIGINT, 'c', NULL::VARCHAR)) t(id, v, junk)",
+            ),
+         ]);
+         expect(
+            await merge("nulls_existing", [fixture("all_null_column.parquet")]),
+         ).toMatchObject({
+            rowsInserted: 0,
+            rowsReplaced: 0,
+            rowsUnchanged: 3,
+         });
+         expect(await columnsOf("nulls_existing")).toEqual([
+            "id BIGINT",
+            "v VARCHAR",
+            "junk VARCHAR",
+         ]);
+      });
+
+      it("is not created as INTEGER on a first load, and a later batch with values for it adds it", async () => {
+         expect(
+            await merge("nulls_first", [fixture("all_null_column.parquet")]),
+         ).toMatchObject({ rowsInserted: 3, rowCount: 3 });
+         expect(await columnsOf("nulls_first")).toEqual([
+            "id BIGINT",
+            "v VARCHAR",
+         ]);
+         const later = await parquet(
+            "SELECT * FROM (VALUES (1::BIGINT, 'a', 'real'), (4::BIGINT, 'd', 'x')) t(id, v, junk)",
+         );
+         expect(await merge("nulls_first", [later])).toMatchObject({
+            rowsInserted: 1,
+            rowsReplaced: 1,
+            rowsUnchanged: 0,
+         });
+         expect(await columnsOf("nulls_first")).toEqual([
+            "id BIGINT",
+            "v VARCHAR",
+            "junk VARCHAR",
+         ]);
+         expect(
+            await rowsOf("nulls_first", "id::INTEGER AS id, junk AS v"),
+         ).toEqual([
+            { id: 1, v: "real" },
+            { id: 2, v: null },
+            { id: 3, v: null },
+            { id: 4, v: "x" },
+         ]);
+      });
+
+      it("takes the type of another object that has values for it", async () => {
+         const typed = await parquet(
+            "SELECT * FROM (VALUES (4::BIGINT, 'd', 7::BIGINT)) t(id, v, junk)",
+         );
+         expect(
+            await merge("nulls_mixed", [
+               fixture("all_null_column.parquet"),
+               typed,
+            ]),
+         ).toMatchObject({ rowsInserted: 4 });
+         expect(await columnsOf("nulls_mixed")).toEqual([
+            "id BIGINT",
+            "v VARCHAR",
+            "junk BIGINT",
+         ]);
+      });
+
+      it("refuses objects whose every column is typed NULL, as having no column", async () => {
+         const error = await refusal(
+            merge("nulls_only", [fixture("only_null_column.parquet")]),
+         );
+         expect([error.status, error.reason, error.detail]).toEqual([
+            422,
+            "LOAD_SCHEMA_CONTRACT",
+            {
+               column: "",
+               tableType: null,
+               loadType: null,
+               detail: "no_columns",
+            },
+         ]);
+      });
+
+      it("adds a typed column whose every value is NULL, though no row changed", async () => {
+         await merge("nulls_added", [
+            await parquet("SELECT 1 AS id, 'a' AS v"),
+         ]);
+         const before = await snapshotId();
+         expect(
+            await merge("nulls_added", [
+               await parquet(
+                  "SELECT 1 AS id, 'a' AS v, NULL::VARCHAR AS extra",
+               ),
+            ]),
+         ).toMatchObject({
+            rowsInserted: 0,
+            rowsReplaced: 0,
+            rowsUnchanged: 1,
+         });
+         expect(await columnsOf("nulls_added")).toEqual([
+            "id INTEGER",
+            "v VARCHAR",
+            "extra VARCHAR",
+         ]);
+         expect(await snapshotId()).toBeGreaterThan(before);
+         const settled = await snapshotId();
+         await merge("nulls_added", [
+            await parquet("SELECT 1 AS id, 'a' AS v, NULL::VARCHAR AS extra"),
+         ]);
+         expect(await snapshotId()).toBe(settled);
       });
    });
 
@@ -934,6 +1149,55 @@ describe.skipIf(!SUPERUSER)("loads", () => {
          );
          // The lock went with its connection: the retry loads.
          expect((await merge("killed", [object])).rowsInserted).toBe(200000);
+      });
+
+      it("rolls back and answers 409 when another replica replaces the table before the commit", async () => {
+         const first = await parquet(
+            "SELECT i AS id, 'v' || i AS v FROM range(1, 4) t(i)",
+         );
+         await merge("raced", [first]);
+         const replacer = await attached("loads_replacer", "write");
+         const lock = spyOn(admin, "withTableLock");
+         lock.mockImplementation((catalog, schema, table, fn) =>
+            CatalogAdmin.prototype.withTableLock.call(
+               admin,
+               catalog,
+               schema,
+               table,
+               (held) =>
+                  fn({
+                     ...held,
+                     // The table is replaced after the load planned against it and before it commits.
+                     assertLockHeld: async () => {
+                        await sql(
+                           replacer,
+                           `CREATE OR REPLACE TABLE ${CATALOG}.s.raced AS SELECT 99 AS id, 'replaced' AS v`,
+                        );
+                        await held.assertLockHeld();
+                     },
+                  }),
+            ),
+         );
+         try {
+            const changed = await parquet(
+               "SELECT * FROM (VALUES (1, 'changed'), (7, 'new')) t(id, v)",
+            );
+            const error = await refusal(merge("raced", [changed]));
+            expect([error.status, error.reason]).toEqual([
+               409,
+               "LOAD_CONFLICT",
+            ]);
+         } finally {
+            lock.mockRestore();
+         }
+         // Only the replace landed; the load's rows did not.
+         expect(await rowsOf("raced")).toEqual([{ id: 99, v: "replaced" }]);
+         // The retry loads against the new table.
+         expect(
+            await merge("raced", [
+               await parquet("SELECT 99 AS id, 'replaced' AS v"),
+            ]),
+         ).toMatchObject({ rowsUnchanged: 1 });
       });
 
       it("refuses a load while this process's load slot is held, and releases the table's lock", async () => {

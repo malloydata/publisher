@@ -1,12 +1,18 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { readFileSync } from "fs";
 import { resolve } from "path";
 import { parse } from "yaml";
 import { BadRequestError } from "../errors";
-import { CatalogAdmin, CatalogAdminError } from "./catalog_admin";
+import { loadSlots } from "../query_concurrency";
+import { resetInstrumentsForTesting } from "../telemetry";
+import {
+   startMetricsHarness,
+   type MetricsHarness,
+} from "../test_helpers/metrics_harness";
+import { CatalogAdmin, CatalogAdminError, withLoadSlot } from "./catalog_admin";
 import { LoadRefusalError } from "./materialization/run/storage_table_load";
 
 const SERVER_SRC = resolve(__dirname, "..");
@@ -200,6 +206,13 @@ describe("a load's failure as an admin refusal", () => {
       expect([mapped.status, mapped.reason]).toEqual([409, "LOAD_CONFLICT"]);
    });
 
+   it("answers a table another request created first as a retryable 409", () => {
+      const mapped = failure(
+         new Error('Catalog Error: Table with name "t" already exists!'),
+      ) as CatalogAdminError;
+      expect([mapped.status, mapped.reason]).toEqual([409, "LOAD_CONFLICT"]);
+   });
+
    it("keeps the admin refusals a load can meet, and leaves any other failure to answer 500", () => {
       const busy = new CatalogAdminError(503, "LOAD_BUSY", "busy");
       expect(failure(busy)).toBe(busy);
@@ -214,6 +227,40 @@ describe("a load's failure as an admin refusal", () => {
       ]);
       const other = new Error("Out of Memory Error: x");
       expect(failure(other)).toBe(other);
+   });
+});
+
+describe("a load refused as busy", () => {
+   let harness: MetricsHarness;
+   beforeEach(async () => {
+      harness = await startMetricsHarness();
+      resetInstrumentsForTesting();
+   });
+   afterEach(async () => {
+      resetInstrumentsForTesting();
+      await harness.shutdown();
+   });
+
+   it("answers 503 LOAD_BUSY while this process's slot is held, and counts the refusal", async () => {
+      const held = loadSlots.tryAcquire()!;
+      try {
+         const error = await withLoadSlot(async () => "ran").then(
+            () => undefined,
+            (e) => e,
+         );
+         expect([error.status, error.reason]).toEqual([503, "LOAD_BUSY"]);
+      } finally {
+         held.release();
+      }
+      expect(
+         await harness.collectCounter("publisher_load_rejections_total", {
+            cause: "slot",
+         }),
+      ).toBe(1);
+      expect(await withLoadSlot(async () => "ran")).toBe("ran");
+      expect(
+         await harness.collectCounter("publisher_load_rejections_total"),
+      ).toBe(1);
    });
 });
 
