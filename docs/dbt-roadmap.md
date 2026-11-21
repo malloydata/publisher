@@ -88,8 +88,8 @@ ICU collation equality, joins and `count(x)` answer live too.
 Serving an ICU collation's order from the copy by emulating it may come later; a libc collation has
 no exact equivalent outside Postgres. On a database-tier table, a query's filters, scopes, gates,
 and string grouping and ordering are re-checked after someone alters a stored column's collation,
-and a DuckDB `default_collation` set on a storage destination out of band (Publisher never sets
-one) is checked for each of them too. On Postgres, each answer from a database-tier table that
+while a DuckDB `default_collation` set on a storage destination out of band (Publisher never sets
+one) is checked for filters, scopes and gates but not for a query's grouping and ordering. On Postgres, each answer from a database-tier table that
 compares, orders or groups a string costs a few catalog probes, read once per answer. Some answers are known to differ: a `sum` of a Postgres `real` served from a `storage=` table can differ from live in its last digit;
 and `freshness.fallback="stale_ok"` serves a table past its window by design
 ([freshness](materialization.md#freshness-a-window-and-a-fallback)). The executed

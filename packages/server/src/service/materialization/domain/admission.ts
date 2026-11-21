@@ -240,6 +240,8 @@ function comparisonRefusal(
    comparison: Comparison,
    tables: readonly TableRead[],
    facts: ReadFacts,
+   /** The tables the stored side judges; absent, every one. */
+   storedTables: readonly TableRead[] = tables,
 ): ComparisonOutcome {
    const stored = tables.filter((t) => t.tier === "storage");
    if (storesGateColumnZoned(tables)) {
@@ -252,6 +254,7 @@ function comparisonRefusal(
       }
       if (probes.source.refusal !== undefined) return probes.source;
    }
+   if (storedTables.length === 0) return { refusal: undefined };
    if (probes?.stored === undefined) {
       return { probe: { comparison, side: "stored" } };
    }
@@ -332,9 +335,9 @@ function queryFilterVerdict(facts: ReadFacts): AdmissionVerdict | undefined {
  * The result rule: a string the result orders by must compare bytes at the
  * source (a binary collation) when a `storage=` table is read, and one it
  * groups or compares by must at least compare equal as bytes do; and every
- * stored table, a database one included, must hold those strings under the
- * collation the source compares them by (the stored side, as the gates'
- * and filters' are judged). Fails closed when the result cannot be read.
+ * database table must hold those strings under the collation the source
+ * compares them by (the stored side, as the gates' and filters' are
+ * judged). Fails closed when the result cannot be read.
  */
 function resultOrderVerdict(facts: ReadFacts): AdmissionVerdict | undefined {
    const result = facts.resultOrder;
@@ -346,7 +349,16 @@ function resultOrderVerdict(facts: ReadFacts): AdmissionVerdict | undefined {
       ["result_ordered", "orders"],
       ["result_grouped", "groups or compares"],
    ] as const) {
-      const outcome = comparisonRefusal(comparison, result.tables, facts);
+      // The stored side judges database tables: a `storage=` table's own
+      // collation is judged where its gates, scopes and filters compare, and
+      // a result over one by its source's alone (the read of a table its
+      // catalog does not list then fails, and its fallback decides).
+      const outcome = comparisonRefusal(
+         comparison,
+         result.tables,
+         facts,
+         result.tables.filter((t) => t.tier === "database"),
+      );
       if ("probe" in outcome) return needs(outcome.probe);
       if (outcome.refusal !== undefined) {
          return decline(

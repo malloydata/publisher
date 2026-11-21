@@ -342,7 +342,11 @@ export class ReadAdmission {
               ...(answer.resultTableRead ? [answer.resultTableRead] : []),
            ]
          : (answer.gateTablesRead ?? answer.tablesRead ?? []);
-      const tables = read;
+      // A stored table, of either tier: what a result is judged on, as the
+      // `storage=`-only rule before it was (a read naming no tier is not one).
+      const tables = read.filter(
+         (t) => t.tier === "storage" || t.tier === "database",
+      );
       if (tables.length === 0) return { facts: { applies: false }, tables };
       let fromStage = 0;
       let orderOnly: number | undefined;
@@ -408,7 +412,7 @@ export class ReadAdmission {
             ? g.tables
             : request.comparison === "filters"
               ? g.filterTables
-              : g.resultTables;
+              : g.resultTables.filter((t) => t.tier === "database");
       const givens = {
          ...(this.givens ? { givens: this.givens } : {}),
          ...(this.bind ? { bind: this.bind } : {}),
