@@ -152,6 +152,54 @@ source: child is mid extend {
 `,
 };
 
+/**
+ * A `#@ persist` query source (joining another stored source) and an `extend`
+ * of it that adds only a `where:` (gtm-funnel's `deals`): the extension runs
+ * the base's query, so it builds the base's rows. With a `name=` of each
+ * (`names`), the two are folded onto two tables and the extension is built
+ * from the base's; without, they are one table.
+ */
+const extendOnlyModel = (names: boolean) => {
+   const name = (n: string) => (names ? ` name="${n}"` : "");
+   return `##! experimental.persistence
+source: raw is ${RAW}
+source: rates_raw is warehouse.sql("""
+  SELECT * FROM (VALUES ('a', 10.0), ('b', 20.0), ('c', 30.0)) AS t(cat, rate)
+""")
+
+#@ persist storage="${LAKE}"${name("rates_t")}
+source: rates is rates_raw -> { group_by: cat; aggregate: rate is rate.max() }
+
+source: d_raw is raw extend {
+  join_one: rates on rates.cat = cat
+}
+
+#@ persist storage="${LAKE}"${name("d_incl_t")}
+source: d_incl is d_raw -> {
+  group_by: cat, sub, is_deleted is amt < 0, cur_rate is rates.rate
+  aggregate: total is amt.sum()
+}
+
+#@ persist storage="${LAKE}"${name("deals2_t")}
+source: deals2 is d_incl extend { where: not is_deleted }
+`;
+};
+const EXTEND_ONLY_QUERY =
+   "run: deals2 -> { group_by: cat, cur_rate; aggregate: t is total.sum() }";
+
+/** Rows with every value as a string, sorted, to compare across engines. */
+const asStrings = (rows: Record<string, unknown>[]) =>
+   rows
+      .map((r) =>
+         Object.fromEntries(
+            Object.entries(r).map(([k, v]) => [
+               k,
+               v === null ? null : String(v),
+            ]),
+         ),
+      )
+      .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
+
 type Entry = {
    sourceName: string;
    sourceEntityId: string;
@@ -805,6 +853,43 @@ source: mid is parent extend {
                expect(e.upstreamReuse).toBeUndefined();
             }
          }
+      });
+
+      it("builds an extend-only #@ persist source named apart from its base as a projection of the base's table, strict, equal to live", async () => {
+         await setUp({ "m.malloy": extendOnlyModel(true) });
+         const live = await answer("m.malloy", EXTEND_ONLY_QUERY);
+         expect(live.servedBy).toBe("live");
+         // Strict: a recompute from the warehouse is refused, so the
+         // extension builds over the base's table or not at all.
+         const m = await build({ strictUpstreams: true });
+         expect([m.status, m.error]).toEqual(["MANIFEST_FILE_READY", null]);
+         const base = entryOf(m, "d_incl");
+         const deals = entryOf(m, "deals2");
+         expect(deals.physicalTableName).not.toBe(base.physicalTableName);
+         expect(deals.upstreamReuse).toBe("reused");
+         expect(createdBy(deals.physicalTableName)).not.toContain(RAW_MARK);
+         expect(createdBy(deals.physicalTableName)).toContain(
+            base.physicalTableName,
+         );
+         // The rows a recompute writes: the base's query, its `where:`
+         // applied at read, not at build.
+         expect(asStrings(await storedRows(deals.physicalTableName))).toEqual(
+            asStrings(await plannedRows(deals)),
+         );
+         const served = await answer("m.malloy", EXTEND_ONLY_QUERY);
+         expect(served.servedBy).toBe("materialized");
+         expect(asStrings(served.rows)).toEqual(asStrings(live.rows));
+      });
+
+      it("builds an extend-only #@ persist source on its base's one table when neither names one", async () => {
+         await setUp({ "m.malloy": extendOnlyModel(false) });
+         const live = await answer("m.malloy", EXTEND_ONLY_QUERY);
+         const m = await build({ strictUpstreams: true });
+         expect([m.status, m.error]).toEqual(["MANIFEST_FILE_READY", null]);
+         expect(entryOf(m, /^(d_incl|deals2)$/).physicalTableName).toBeTruthy();
+         const served = await answer("m.malloy", EXTEND_ONLY_QUERY);
+         expect(served.servedBy).toBe("materialized");
+         expect(asStrings(served.rows)).toEqual(asStrings(live.rows));
       });
 
       it("builds a windowed storage= rollup from the warehouse over a #(materialize) base's table of unknown age", async () => {
