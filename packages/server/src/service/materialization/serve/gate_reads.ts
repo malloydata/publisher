@@ -95,6 +95,8 @@ export type { GateReads } from "./gate_reads_types";
  * count both operands), `trunc` (`created_at.month`) and `extract`
  * (`day(now)`) each make a time or a number of their operands alone, so they
  * compare a string only when an operand is one, which the walk still reads.
+ * So do `timeDiff` (`hours(ts to now)`) and arithmetic (`+ - * / %`, a unary
+ * minus), whose operands Malloy types as numbers or times.
  */
 const NON_STRING_OPERATORS = new Set([
    "=",
@@ -113,6 +115,13 @@ const NON_STRING_OPERATORS = new Set([
    "delta",
    "trunc",
    "extract",
+   "timeDiff",
+   "+",
+   "-",
+   "*",
+   "/",
+   "%",
+   "unary-",
 ]);
 
 /** A known type that is not a string. Unknown is not. */

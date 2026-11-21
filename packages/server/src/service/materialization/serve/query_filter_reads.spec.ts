@@ -69,6 +69,10 @@ source: vgb is t -> { group_by: amt; aggregate: nb } extend {
   dimension: many is nb > 2
 }
 
+source: te is duckdb.sql("SELECT TIMESTAMP '2026-01-01 00:00:00' AS ts, 2 AS amt") extend {
+  dimension: age_hours is hours(ts to now)
+}
+
 source: vr is t -> { group_by: category; order_by: category; calculate: rn is row_number() } extend {
   dimension: first is rn = 1
 }
@@ -184,6 +188,19 @@ describe("queryFilterReadsOfQuery: the caller's own filters", () => {
             )
          ).comparesNoString,
       ).toBe(false);
+   });
+
+   // Strict-origin mode: a time difference and arithmetic were read as
+   // possibly comparing a string, so a non-binary origin declined them.
+   it("compares no string for a time difference or arithmetic", async () => {
+      for (const q of [
+         "run: te -> { where: age_hours > 700; aggregate: n is count() }",
+         "run: te -> { where: hours(ts to now) > 700; aggregate: n is count() }",
+         "run: te -> { where: amt * 2 > 3, amt / 2 > 0, amt % 2 = 0; aggregate: n is count() }",
+         "run: te -> { where: amt + 1 > amt - 1, -amt < 0; aggregate: n is count() }",
+      ]) {
+         expect((await reads(q)).comparesNoString, q).toBe(true);
+      }
    });
 
    it("reads a view's filter and a nest's filter", async () => {
