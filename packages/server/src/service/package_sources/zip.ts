@@ -9,6 +9,29 @@ import { formatDuration, logger } from "../../logger";
 import { assertSafeEnvironmentPath } from "../../path_safety";
 
 /**
+ * Run `download`, which writes the archive at `archivePath`, then extract it
+ * as unzipEnvironment does, and remove the archive whether either succeeded
+ * or failed: the extracted folder is all a publish uses, and an archive left
+ * in `.staging/` would stay until the next restart sweeps it.
+ */
+export async function downloadAndUnzip(
+   archivePath: string,
+   download: () => Promise<void>,
+): Promise<string> {
+   try {
+      await download();
+      return await unzipEnvironment(archivePath);
+   } finally {
+      await fs.promises.rm(archivePath, { force: true }).catch((error) =>
+         logger.warn("Could not remove a downloaded package archive", {
+            archivePath,
+            error,
+         }),
+      );
+   }
+}
+
+/**
  * Extract a downloaded archive into a sibling directory named for it
  * (`<dir>/pkg.zip` -> `<dir>/pkg`), replacing whatever is there, and return
  * that directory. Only for an archive the server downloaded itself.

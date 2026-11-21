@@ -12,7 +12,7 @@ import {
    safeJoinUnderRoot,
 } from "../../path_safety";
 import type { PackageFetchOptions, PackageSource } from "./types";
-import { unzipEnvironment } from "./zip";
+import { downloadAndUnzip } from "./zip";
 
 /** An `s3://bucket/prefix` location (a `.zip` key is one archive). */
 export function isS3URL(location: string): boolean {
@@ -50,24 +50,24 @@ export class S3PackageSource implements PackageSource {
       const s3Client = this.client();
 
       if (isCompressedFile) {
+         // One archive, extracted beside itself into the target, then removed.
          const zipFilePath = `${absoluteDirPath}.zip`;
-         await fs.promises.mkdir(path.dirname(zipFilePath), {
-            recursive: true,
+         await downloadAndUnzip(zipFilePath, async () => {
+            await fs.promises.mkdir(path.dirname(zipFilePath), {
+               recursive: true,
+            });
+            const command = new GetObjectCommand({
+               Bucket: bucketName,
+               Key: prefix,
+            });
+            const item = await s3Client.send(command);
+            if (!item.Body) {
+               throw new EnvironmentNotFoundError(
+                  `Environment ${environmentName} not found in ${s3Path}`,
+               );
+            }
+            await writeBody(item.Body, zipFilePath);
          });
-
-         const command = new GetObjectCommand({
-            Bucket: bucketName,
-            Key: prefix,
-         });
-         const item = await s3Client.send(command);
-         if (!item.Body) {
-            throw new EnvironmentNotFoundError(
-               `Environment ${environmentName} not found in ${s3Path}`,
-            );
-         }
-         await writeBody(item.Body, zipFilePath);
-
-         await unzipEnvironment(zipFilePath);
          logger.info(`Downloaded S3 zip file ${s3Path} to ${absoluteDirPath}`);
          return;
       }

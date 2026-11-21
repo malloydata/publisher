@@ -21,6 +21,10 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — a `gs://` or `s3://` `.zip` publish no longer leaves its archive on disk
+
+**Fixed: every publish from a `gs://` or `s3://` `.zip` left the downloaded archive in the environment's `.staging/` folder until the next restart.** Each archive was the size of the package, and one was left per publish, whether the publish succeeded or was refused, so a long-running server's disk grew with every load from a bucket. The archive is now removed once it is extracted, and when the download or the extract fails. A folder location (a `gs://` or `s3://` prefix) and a local `.zip` never left one.
+
 ## [Unreleased] — deleting a package is one transaction
 
 **Fixed: with package versions on, deleting a package while a further version of it published could leave that version's row with no package.** The delete removed the package's runs, ledger, versions and row as four separate statements, and a publish committing between the last two left a version no package owned: the package read as versioned but answered 404, a second `DELETE` could not remove it, and an unversioned publish of the name answered 409 `PACKAGE_IS_VERSIONED`. A crash during the delete left the same state. The delete is now one transaction: a publish that commits first is deleted with the package, and one that commits after is refused.

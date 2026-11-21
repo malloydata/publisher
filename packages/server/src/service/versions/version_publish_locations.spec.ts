@@ -215,6 +215,12 @@ const modelFile = () => path.join(envPath, PKG, "1.0.0", "model.malloy");
  * placement that leaves the placed files as they were, and `changed` is 409
  * with the first publish's content still in place.
  */
+/** What is left in the environment's `.staging/`: none once a publish ends. */
+function stagingLeft(): string[] {
+   const staging = path.join(envPath, ".staging");
+   return fs.existsSync(staging) ? fs.readdirSync(staging) : [];
+}
+
 async function expectTheRule(
    first: string,
    same: string[],
@@ -242,6 +248,8 @@ async function expectTheRule(
    expect(conflict).toBeInstanceOf(PackageVersionError);
    expect((conflict as PackageVersionError).reason).toBe("VERSION_CONFLICT");
    expect(fs.readFileSync(modelFile(), "utf8")).toBe("source: s is x");
+   // Published, placed again and refused: none leaves a download behind.
+   expect(stagingLeft()).toEqual([]);
 }
 
 beforeEach(async () => {
@@ -366,6 +374,16 @@ describe("publishing a version again, by location kind", () => {
          );
       },
    );
+
+   for (const scheme of ["gs", "s3"]) {
+      it(`a ${scheme}:// .zip that does not extract: refused, leaving no archive behind`, async () => {
+         objects.set("bucket/zips/broken.zip", Buffer.from("not a zip"));
+         await expect(
+            publish(`${scheme}://bucket/zips/broken.zip`),
+         ).rejects.toThrow();
+         await expectNothingPublished();
+      });
+   }
 
    it("a Git repository: a fresh clone of the same files is placement; a changed file is 409", async () => {
       // A repository-root location keeps the clone's .git in the staged tree,
@@ -511,20 +529,12 @@ describe("what a publish fetches, by location kind", () => {
 
 /**
  * What a publish leaves behind when it refuses a tree: nothing at the
- * package's path, no staged folder, and no version recorded. (A bucket `.zip`
- * download also leaves its archive beside the staged folder, as it does on
- * every publish on main; the boot sweep of `.staging/` removes it. #1390
- * removes it at once, after which this can check `.staging/` is empty.)
+ * package's path, nothing in `.staging/` (no staged folder, and no bucket
+ * `.zip` archive beside one), and no version recorded.
  */
 async function expectNothingPublished(): Promise<void> {
    expect(fs.existsSync(path.join(envPath, PKG))).toBe(false);
-   const staging = path.join(envPath, ".staging");
-   const stagedFolders = fs.existsSync(staging)
-      ? fs
-           .readdirSync(staging, { withFileTypes: true })
-           .filter((entry) => entry.isDirectory())
-      : [];
-   expect(stagedFolders).toEqual([]);
+   expect(stagingLeft()).toEqual([]);
    expect(await svc.isVersioned(PKG)).toBe(false);
 }
 
