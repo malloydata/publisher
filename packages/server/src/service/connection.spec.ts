@@ -4927,3 +4927,34 @@ describe("attached database ATTACH and SECRET SQL quotes the name", () => {
       }
    });
 });
+
+describe("buildCloudStorageSecretSQL — region", () => {
+   // Built as if validation had been bypassed: a quote in the region must stay
+   // inside its string literal, on both S3 arms.
+   const hostile = "us-east-1'); SET threads=1; --";
+
+   for (const provider of ["config", "credential_chain"] as const) {
+      it(`escapes the region on the ${provider} arm`, async () => {
+         const sql = buildCloudStorageSecretSQL("secret_s3_x", {
+            type: "s3",
+            accessKeyId: "AK",
+            secretAccessKey: "SK",
+            region: hostile,
+            provider,
+         });
+         expect(sql).toContain(`REGION '${hostile.replace(/'/g, "''")}'`);
+         expect(await countStatements(sql)).toBe(1);
+      });
+   }
+
+   it("keeps a valid region as it was", () => {
+      expect(
+         buildCloudStorageSecretSQL("secret_s3_x", {
+            type: "s3",
+            accessKeyId: "AK",
+            secretAccessKey: "SK",
+            region: "eu-west-2",
+         }),
+      ).toContain("REGION 'eu-west-2'");
+   });
+});

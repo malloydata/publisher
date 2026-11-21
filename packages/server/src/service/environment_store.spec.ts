@@ -2459,6 +2459,32 @@ describe("EnvironmentStore path-injection guards", () => {
          await expect(refused).rejects.toThrow("attachedDatabases[0].name");
       });
 
+      it("is a 400 for an S3 region off its shape when an environment is created", async () => {
+         await expect(
+            environmentStore.addEnvironment(
+               {
+                  name: "ok-env",
+                  connections: [
+                     {
+                        name: "lake",
+                        type: "duckdb",
+                        duckdbConnection: {
+                           attachedDatabases: [
+                              {
+                                 name: "bucket",
+                                 type: "s3",
+                                 s3Connection: { region: "x'y" },
+                              },
+                           ],
+                        },
+                     },
+                  ],
+               } as never,
+               true,
+            ),
+         ).rejects.toBeInstanceOf(BadRequestError);
+      });
+
       it("is a 400 when an environment is updated", async () => {
          await expect(
             environmentStore.updateEnvironment(environment as never),

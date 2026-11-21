@@ -44,7 +44,7 @@ import {
    toPublicConnections,
 } from "../service/connection_public_view";
 import {
-   validateAttachedDatabaseNames,
+   validateAttachedDatabaseFields,
    validateDuckdbApiSurface,
 } from "../service/connection_config";
 import { assertSingleSelect } from "../service/single_select";
@@ -1314,10 +1314,11 @@ export class ConnectionController {
          assertSafePackageName(connectionConfig.name);
       }
 
-      // An attached database's name becomes a DuckDB alias: one off the
-      // documented pattern is a 400, before any ATTACH is tried.
+      // An attached database's name becomes a DuckDB alias and its S3 region
+      // a secret literal: either off its documented pattern is a 400, before
+      // any ATTACH is tried.
       try {
-         validateAttachedDatabaseNames(connectionConfig);
+         validateAttachedDatabaseFields(connectionConfig);
       } catch (error) {
          throw new BadRequestError((error as Error).message);
       }

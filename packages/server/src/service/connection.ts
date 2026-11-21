@@ -2651,14 +2651,14 @@ export function buildCloudStorageSecretSQL(
             "PROVIDER credential_chain",
             `CHAIN '${chain}'`,
             "REFRESH 'auto'",
-            `REGION '${region}'`,
+            `REGION '${escapeSQL(region)}'`,
          ];
       } else {
          clauses = [
             "TYPE s3",
             `KEY_ID '${escapedKeyId}'`,
             `SECRET '${escapedSecret}'`,
-            `REGION '${region}'`,
+            `REGION '${escapeSQL(region)}'`,
          ];
       }
       // Additive on both arms: an S3-compatible endpoint behind a host role is a

@@ -226,31 +226,59 @@ export function normalizeSnowflakePrivateKey(privateKey: string): string {
 export const ATTACHED_DATABASE_NAME_PATTERN = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
 
 /**
- * Throws unless every `attachedDatabases[].name` on `connection` that is set
- * matches {@link ATTACHED_DATABASE_NAME_PATTERN}. An absent name is left to
- * the attach that reads it. The message names the entry by position, not by
- * the rejected text.
+ * The shape an S3 region takes (`us-east-1`, an S3-compatible store's own
+ * name). The region becomes a string literal in the attach's secret, so it is
+ * held to it wherever a connection's config is accepted, as the name is.
  */
-export function validateAttachedDatabaseNames(
+export const S3_REGION_PATTERN = /^[a-zA-Z0-9_-]+$/;
+
+/**
+ * Throws unless every `attachedDatabases[]` entry on `connection` that sets a
+ * name matches {@link ATTACHED_DATABASE_NAME_PATTERN} and every S3 region set
+ * matches {@link S3_REGION_PATTERN}. An absent name or region is left to the
+ * attach that reads it. The message names the entry by position, not by the
+ * rejected text.
+ */
+export function validateAttachedDatabaseFields(
    connection: Partial<ApiConnection>,
 ): void {
    const attached = connection.duckdbConnection?.attachedDatabases;
    if (!Array.isArray(attached)) return;
    attached.forEach((attachedDb, index) => {
-      const name = (attachedDb as { name?: unknown } | null)?.name;
-      if (name === undefined || name === null) return;
+      const entry = attachedDb as {
+         name?: unknown;
+         s3Connection?: { region?: unknown } | null;
+      } | null;
+      const name = entry?.name;
       if (
-         typeof name === "string" &&
-         ATTACHED_DATABASE_NAME_PATTERN.test(name)
+         name !== undefined &&
+         name !== null &&
+         !(
+            typeof name === "string" &&
+            ATTACHED_DATABASE_NAME_PATTERN.test(name)
+         )
       ) {
-         return;
+         throw new Error(
+            `attachedDatabases[${index}].name on connection "${connection.name}" ` +
+               `is invalid: an attached database name must match ` +
+               `${ATTACHED_DATABASE_NAME_PATTERN.source} (a letter or underscore, ` +
+               `then letters, digits or underscores).`,
+         );
       }
-      throw new Error(
-         `attachedDatabases[${index}].name on connection "${connection.name}" ` +
-            `is invalid: an attached database name must match ` +
-            `${ATTACHED_DATABASE_NAME_PATTERN.source} (a letter or underscore, ` +
-            `then letters, digits or underscores).`,
-      );
+      const region = entry?.s3Connection?.region;
+      if (
+         region !== undefined &&
+         region !== null &&
+         region !== "" &&
+         !(typeof region === "string" && S3_REGION_PATTERN.test(region))
+      ) {
+         throw new Error(
+            `attachedDatabases[${index}].s3Connection.region on connection ` +
+               `"${connection.name}" is invalid: an S3 region must match ` +
+               `${S3_REGION_PATTERN.source} (letters, digits, hyphens or ` +
+               `underscores, such as us-east-1).`,
+         );
+      }
    });
 }
 
@@ -262,7 +290,7 @@ export function validateAttachedDatabaseNames(
 // (path-traversal checks, an allowlist) is not provided.
 export function validateDuckdbApiSurface(connection: ApiConnection): void {
    // Before the type test: a PATCH may send attachedDatabases without a type.
-   validateAttachedDatabaseNames(connection);
+   validateAttachedDatabaseFields(connection);
    if (connection.type !== "duckdb" || !connection.duckdbConnection) return;
 
    const unsupportedFields = Object.keys(connection.duckdbConnection).filter(
