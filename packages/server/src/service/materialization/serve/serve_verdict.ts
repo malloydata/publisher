@@ -51,6 +51,14 @@ const MATERIALIZATION_CONNECTION_CANNOT_HOLD_TABLE_CODE =
    "materialization-connection-cannot-hold-table";
 
 /**
+ * The `code` of the package warning for a database table whose build
+ * recorded no column types: the bind leaves it out, so the source serves
+ * live until it is rebuilt.
+ */
+export const MATERIALIZATION_TYPES_UNRECORDED_CODE =
+   "materialization-types-unrecorded";
+
+/**
  * The live verdict reasons that carry a publish warning of their own, with its
  * code. The other live reasons are warned where their cause is found (storage
  * mode, refusals).
@@ -62,6 +70,7 @@ export const VERDICT_WARNING_CODES: Readonly<
    destination_missing: MATERIALIZATION_DESTINATION_MISSING_CODE,
    connection_cannot_hold_table:
       MATERIALIZATION_CONNECTION_CANNOT_HOLD_TABLE_CODE,
+   types_unrecorded: MATERIALIZATION_TYPES_UNRECORDED_CODE,
 };
 
 /** Why a materialized source's table answers no query. Open: see the module doc. */
@@ -88,6 +97,13 @@ type ServeVerdictReason =
     * `storage=` table): the same name `RefusedSource.reason` gives the setting.
     */
    | "materialization_off"
+   /**
+    * A database table whose build recorded no column types (neither `schema`
+    * nor `nativeSchema` on its manifest entry): a change to its columns since
+    * the build cannot be ruled out, so the bind leaves it out until it is
+    * rebuilt with its types recorded.
+    */
+   | "types_unrecorded"
    /**
     * A source the served copy reads (a `#(materialize)` one, or a `#@ persist`
     * one), bound, but no model's compiled served copy reads its table;
@@ -237,6 +253,11 @@ export interface ServeVerdictFacts {
     * (or whose fallback serves stale). Absent: every bound one is.
     */
    freshEntityIds?: ReadonlySet<string>;
+   /**
+    * Database: the bound sourceEntityIds the bind left out because their
+    * build recorded no column types (`types_unrecorded`). Absent: none.
+    */
+   typesUnrecordedEntityIds?: ReadonlySet<string>;
    /** Storage: the source names the package holds a serve binding for. */
    boundStorageNames: ReadonlySet<string>;
    /**
@@ -765,6 +786,18 @@ function boundVerdict(
          verdict: "awaiting_build",
          message: `${subject} will serve from its table once a build binds it.`,
       };
+   }
+   if (facts.typesUnrecordedEntityIds?.has(source.sourceEntityId)) {
+      return live(
+         "types_unrecorded",
+         `${subject}'s table is bound, but its build recorded no column types, ` +
+            `so a change to its columns since the build cannot be ruled out; ` +
+            `queries on it are answered live until it is rebuilt.`,
+         [
+            "Rebuild the table, so its build records its column types.",
+            "A host binding its own manifest sends each database entry's `nativeSchema` (or its `schema`).",
+         ],
+      );
    }
    if (
       facts.freshEntityIds &&
