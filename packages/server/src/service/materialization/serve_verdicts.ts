@@ -42,11 +42,13 @@ import {
 import {
    computeServeVerdicts,
    type PersistedResultOf,
+   type NotServedIn,
    type ServedCopyOutcome,
    type ServeVerdict,
    type ViewServeVerdict,
 } from "./serve/serve_verdict";
 import type { ServedCopyProblem } from "./serve/served_copy_types";
+import { byActionability } from "./domain/source_decline";
 import { previewNativeSchema } from "./stored_column_types";
 import { reachableSourceIDs, SourceMap } from "./text/source_map";
 import {
@@ -421,10 +423,7 @@ export class ServeVerdicts {
          ),
          materialize: (sourceID) => {
             if (!materializeIDs.has(sourceID)) return undefined;
-            if (!servedCopy.on) return "off";
-            return servedCopy.ids.has(sourceID) || servedCopy.pending
-               ? "serves"
-               : "not_served";
+            return servedCopy.on ? "serves" : "off";
          },
          servedCopyOnDatabaseOnly: (sourceID) =>
             servedCopy.on && !servedCopy.pending
@@ -436,6 +435,7 @@ export class ServeVerdicts {
                     sourceID,
                     buildPlan?.sources?.[sourceID]?.modelPath,
                     servedCopy.compiled,
+                    (id) => buildPlan?.sources?.[id]?.sourceEntityId,
                  )
                : undefined,
          persistedViewOf: (sourceID) => persistedViews.get(sourceID),
@@ -888,45 +888,54 @@ interface CompiledServedCopy {
 }
 
 /**
- * How the compiled served copies left one source they read: whether any
- * answers it from a table (re-rooted on its own, or, an extension sharing
- * its base's table, read through that base), and every model that holds it
- * (its compiled model declares or imports it) but does not, with the reason
- * the first of them gives, the declaring model first. The reason is the
- * `served-copy-not-served` warning's: one naming the source, else one
- * naming the model's whole copy.
+ * How the compiled served copies left one source they read, the same for a
+ * `#(materialize)` source and a `#@ persist` one. A model reads its table
+ * when its copy re-roots it, or reads it through a re-rooted base whose
+ * table it shares (an extension inheriting `#@ persist`, one content
+ * address); an extension with a table of its own read through its base does
+ * not read that table. Every model that holds it (its compiled model
+ * declares or imports it, or a warning names it) and does not read it is
+ * listed, with every `served-copy-not-served` reason it gives for the source
+ * (its own, and its whole copy's), most actionable first. When no model
+ * holds it and none reads it, the declaring model is listed, `not_rerooted`.
  */
 function servedCopyOutcomeOf(
    sourceID: string,
    declaredIn: string | undefined,
    compiled: readonly CompiledServedCopy[],
+   entityOf: (sourceID: string) => string | undefined,
 ): ServedCopyOutcome {
+   const entity = entityOf(sourceID);
    let serves = false;
-   const leaving: CompiledServedCopy[] = [];
+   const notServedIn: NotServedIn[] = [];
    for (const copy of compiled) {
-      if (copy.rerooted.has(sourceID) || copy.throughBase.has(sourceID)) {
+      const sharesRerootedTable =
+         copy.throughBase.has(sourceID) &&
+         entity !== undefined &&
+         [...copy.rerooted].some((id) => entityOf(id) === entity);
+      if (copy.rerooted.has(sourceID) || sharesRerootedTable) {
          serves = true;
          continue;
       }
+      const own = copy.problems.filter(
+         (p) => p.sourceID === sourceID && !p.servedFromDatabase,
+      );
       const holds =
-         copy.problems.some((p) => p.sourceID === sourceID) ||
+         own.length > 0 ||
          SourceMap.of(copy.modelDef).node(sourceID) !== undefined;
-      if (holds) leaving.push(copy);
+      if (!holds) continue;
+      const whole = copy.problems.filter((p) => p.sourceID === undefined);
+      const reasons = byActionability([...own, ...whole].map((p) => p.reason));
+      notServedIn.push({
+         model: copy.modelPath,
+         reasons: reasons.length > 0 ? reasons : ["not_rerooted"],
+      });
    }
-   if (leaving.length === 0) return { serves, notServedIn: [] };
-   const first =
-      leaving.find((c) => c.modelPath === declaredIn) ??
-      [...leaving].sort((a, b) => a.modelPath.localeCompare(b.modelPath))[0];
-   const own = first.problems.find(
-      (p) => p.sourceID === sourceID && !p.servedFromDatabase,
-   );
-   const whole = first.problems.find((p) => p.sourceID === undefined);
-   const reason = own?.reason ?? whole?.reason ?? "not_rerooted";
-   return {
-      serves,
-      notServedIn: leaving.map((c) => c.modelPath).sort(),
-      reason,
-   };
+   if (!serves && notServedIn.length === 0 && declaredIn !== undefined) {
+      notServedIn.push({ model: declaredIn, reasons: ["not_rerooted"] });
+   }
+   notServedIn.sort((a, b) => a.model.localeCompare(b.model));
+   return { serves, notServedIn };
 }
 
 /** A plan source's wire columns with both a name and a type. */

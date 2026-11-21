@@ -38,20 +38,35 @@ describe("the serveVerdicts contract", () => {
       }
    });
 
-   // Whether a built table is served: the served copy's own reason, and the
-   // models it is not served in, on every verdict (not a parallel object).
+   // Whether a built table is served: one field on every verdict, each model
+   // with every reason, the same for `#(materialize)` and `#@ persist`.
    it("declares where and why the served copy does not read a table", () => {
       const verdict = schemas.ServeVerdict.properties ?? {};
-      expect(verdict.servedCopyReason?.type).toBe("string");
+      expect(verdict.servedCopyReason).toBeUndefined();
       expect(verdict.notServedIn?.type).toBe("array");
-      expect(verdict.notServedIn?.items?.type).toBe("string");
-      // The reasons are the package warning's, named in the contract.
+      expect(verdict.notServedIn?.items?.$ref).toBe(
+         "#/components/schemas/NotServedIn",
+      );
+      // Consumers are told that `serves` alone is not every model.
+      expect(verdict.notServedIn?.description).toContain("must read it");
+      const entry = schemas.NotServedIn as {
+         required?: string[];
+         properties?: Record<
+            string,
+            { type?: string; description?: string; items?: { type?: string } }
+         >;
+      };
+      expect(entry.required).toEqual(["model", "reasons"]);
+      expect(entry.properties?.model?.type).toBe("string");
+      expect(entry.properties?.reasons?.type).toBe("array");
+      expect(entry.properties?.reasons?.items?.type).toBe("string");
       for (const code of [
          "cross_connection_join",
          "cross_connection_unbuilt",
          "not_rerooted",
+         "most actionable first",
       ]) {
-         expect(verdict.servedCopyReason?.description).toContain(code);
+         expect(entry.properties?.reasons?.description).toContain(code);
       }
       // `served_copy` covers `#@ persist` sources, not only `#(materialize)`.
       expect(verdict.reason?.description).toMatch(

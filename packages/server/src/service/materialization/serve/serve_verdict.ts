@@ -90,9 +90,9 @@ type ServeVerdictReason =
    | "materialization_off"
    /**
     * A source the served copy reads (a `#(materialize)` one, or a `#@ persist`
-    * one), bound, but no model's compiled served copy re-roots it on its
-    * table; `servedCopyReason` names the `served-copy-not-served` warning's
-    * reason.
+    * one), bound, but no model's compiled served copy reads its table;
+    * `notServedIn` names each model and its `served-copy-not-served`
+    * reasons.
     */
    | "served_copy";
 
@@ -118,29 +118,35 @@ export interface ViewServeVerdict {
    detail?: string;
 }
 
+/** One model whose served copy holds a source but does not read its table, and why. */
+export interface NotServedIn {
+   /** The model file. */
+   model: string;
+   /**
+    * Every `served-copy-not-served` reason for the source in that model (on
+    * the source, or on the model's whole copy), most actionable first;
+    * `not_rerooted` alone when no warning names one.
+    */
+   reasons: string[];
+}
+
 /**
  * Where, and why, a source the served copy reads is not answered from its
  * table, as each model's compiled served copy left it: the one fact the
- * `served-copy-not-served` warnings and the verdicts both read.
+ * `served-copy-not-served` warnings and the verdicts both read, the same for
+ * a `#(materialize)` source and a `#@ persist` one.
  */
 export interface ServedCopyOutcome {
    /**
-    * Some model's compiled served copy answers it from a table: re-rooted on
-    * its own, or read through a re-rooted base whose table it shares.
+    * Some model's compiled served copy reads its table: re-roots it, or, an
+    * extension sharing a re-rooted base's table, reads it through that base.
     */
    serves: boolean;
    /**
-    * The model files whose compiled served copy holds the source and does not
-    * re-root it, sorted.
+    * Each model that holds the source and does not read its table, sorted by
+    * model; the declaring model when none holds it and none serves it.
     */
-   notServedIn: string[];
-   /**
-    * Why, in the first of {@link notServedIn}: the `reason` of the
-    * `served-copy-not-served` warning that names it (or names that model's
-    * whole copy), else `not_rerooted`. Present when `notServedIn` is not
-    * empty.
-    */
-   reason?: string;
+   notServedIn: NotServedIn[];
 }
 
 /** One materialized source's serve verdict. */
@@ -165,16 +171,11 @@ export interface ServeVerdict {
    verdict: "serves" | "awaiting_build" | "live";
    reason?: ServeVerdictReason;
    /**
-    * The served copy's own reason its table is not read
-    * ({@link ServedCopyOutcome.reason}). Present with `notServedIn`.
+    * Each model that holds the source but does not read its table, with its
+    * reasons: every such model on a `served_copy` verdict, and on a `serves`
+    * verdict the models that answer it live while another serves it.
     */
-   servedCopyReason?: string;
-   /**
-    * The model files whose served copy does not read its table: with a
-    * `served_copy` reason, every model that holds it; on a `serves` verdict,
-    * the models that hold it but answer its queries live.
-    */
-   notServedIn?: string[];
+   notServedIn?: NotServedIn[];
    /** What the verdict means for this source, in a sentence. */
    message: string;
    /** For a `live` verdict, the changes that would let it serve. */
@@ -247,13 +248,12 @@ export interface ServeVerdictFacts {
    /** Storage: the bound source names still fresh. Absent: every bound one is. */
    freshStorageNames?: ReadonlySet<string>;
    /**
-    * The plan's `#(materialize)` sources, by sourceID, and whether the served
-    * copy answers each from its table: `serves` when some model's compiled
-    * served copy re-roots it (or a served copy has yet to compile), `off` when
-    * the served copy is off, `not_served` otherwise. Absent: no source is a
-    * `#(materialize)` source.
+    * The plan's `#(materialize)` sources, by sourceID: `off` when the served
+    * copy is off, else `serves` (whether it reads the table is
+    * {@link servedCopyOutcome}'s, as for every source it reads). Undefined:
+    * not a `#(materialize)` source.
     */
-   materialize(sourceID: string): "serves" | "off" | "not_served" | undefined;
+   materialize(sourceID: string): "serves" | "off" | undefined;
    /**
     * Whether the compiled served copy re-rooted this source on its database
     * table and on no storage table (it dropped the storage table: a field
@@ -653,15 +653,14 @@ function boundVerdict(
    materialized: ReturnType<NonNullable<ServeVerdictFacts["materialize"]>>,
 ): ServeVerdict {
    const { sourceID, source, facts, origin, tier, subject, live } = s;
-   // Every source the served copy reads is judged by what its compile did,
-   // the same fact its `served-copy-not-served` warnings are read from.
+   // Every source the served copy reads, `#(materialize)` or `#@ persist`,
+   // is judged by what its compile did, the same fact its
+   // `served-copy-not-served` warnings are read from; a compile still
+   // pending judges nothing.
    const copy = s.servedCopy ? facts.servedCopyOutcome?.(sourceID) : undefined;
    const where =
       copy && copy.notServedIn.length > 0
-         ? {
-              servedCopyReason: copy.reason ?? "not_rerooted",
-              notServedIn: copy.notServedIn,
-           }
+         ? { notServedIn: copy.notServedIn }
          : {};
    const base = { ...s.base, ...where };
    const notServed = (): ServeVerdict => ({
@@ -669,13 +668,12 @@ function boundVerdict(
          "served_copy",
          `${subject}'s table is bound, but no model's served copy reads ` +
             `it, so no query is answered from it` +
-            (where.servedCopyReason
-               ? ` (\`${where.servedCopyReason}\` in ` +
-                 `${where.notServedIn.join(", ")})`
+            (copy && copy.notServedIn.length > 0
+               ? ` (${copy.notServedIn
+                    .map((n) => `${n.model}: ${n.reasons.join(", ")}`)
+                    .join("; ")})`
                : "") +
-            `: the served copy reads a source it is built on from that ` +
-            `source's table instead, or leaves it as written for the reason ` +
-            `a served-copy-not-served warning gives.`,
+            `. The served-copy-not-served warning on each model says why.`,
          origin === "materialize"
             ? [
                  "Fix what the served-copy-not-served warning names, if there is one.",
@@ -687,12 +685,7 @@ function boundVerdict(
       ),
       ...where,
    });
-   // A source materialized with `#(materialize)` is judged by `materialized`
-   // (which counts a compile still pending as serving); any other source the
-   // served copy reads, by its compile once there is one.
-   const copyLeavesIt =
-      materialized === "not_served" ||
-      (materialized === undefined && copy !== undefined && !copy.serves);
+   const copyLeavesIt = copy !== undefined && !copy.serves;
 
    const stale = (): ServeVerdict =>
       live(
@@ -715,7 +708,6 @@ function boundVerdict(
             message: `${subject} will serve from storage once a build binds its table.`,
          };
       }
-      if (materialized === "not_served") return notServed();
       if (
          materialized === undefined &&
          origin !== "rollup" &&
