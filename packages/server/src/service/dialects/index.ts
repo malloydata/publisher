@@ -24,13 +24,22 @@ import { PUBLISHER } from "./publisher";
 import { SNOWFLAKE } from "./snowflake";
 import { SQLSERVER } from "./sqlserver";
 import { TRINO } from "./trino";
-import type { ConnectionDialect, ConnectionType } from "./types";
+import type { DuckDBConnection } from "@malloydata/db-duckdb";
+import type {
+   ConnectionDialect,
+   ConnectionType,
+   FederatedHandle,
+   FederatedSourceType,
+   FederationConfig,
+   FederationDeps,
+} from "./types";
 
 export type {
    ConnectionAttributes,
    ConnectionDialect,
    ConnectionType,
    CoreConnectionEntry,
+   FederatedSourceType,
 } from "./types";
 
 /** Every connection type's entry. */
@@ -67,4 +76,31 @@ export function connectionDialectOf(
    return registered === undefined
       ? undefined
       : CONNECTION_DIALECTS[registered];
+}
+
+/**
+ * Establish a source warehouse's credentials on a build-scoped DuckDB session so
+ * a native passthrough (`bigquery_query`/`snowflake_query`/`postgres_query`)
+ * can push the compiled SELECT to it. Runs only on the transient build session:
+ * source credentials are never set on the serve connection nor persisted.
+ * BigQuery and Snowflake need only a SECRET; Postgres needs an ATTACH whose
+ * alias the function references.
+ *
+ * @returns the {@link FederatedHandle} the caller passes to `wrapPassthrough`.
+ * @throws for a source type without a native passthrough, or missing/invalid
+ *   credentials, so a build fails loud rather than producing a wrong table.
+ */
+export async function federateSourceForPassthrough(
+   connection: DuckDBConnection,
+   sourceType: FederatedSourceType,
+   config: FederationConfig,
+   deps: FederationDeps = {},
+): Promise<FederatedHandle> {
+   const passthrough = connectionDialectOf(sourceType)?.passthrough;
+   if (passthrough === undefined) {
+      throw new Error(
+         `No native query-passthrough for source type '${String(sourceType)}'`,
+      );
+   }
+   return passthrough.federate(connection, config, deps);
 }

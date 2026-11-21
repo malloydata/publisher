@@ -163,7 +163,7 @@ export const RATCHET_DIALECT_LITERALS = {
    // Connection types (FederatedSourceType, the storage destination types),
    // whose `postgres`, `snowflake` and `duckdb` share a dialect's spelling.
    "service/materialization/run/materialization_build_session.ts": {
-      count: 4,
+      count: 2,
       step: "table",
    },
    // FederatedSourceType's `snowflake`, the one engine whose session the
@@ -211,9 +211,9 @@ export const RATCHET_CONNECTION_TYPE_LITERALS = {
    "service/materialization/run/storage_admin.ts": { count: 3, step: "D4" },
    // DECODED_PATH_DIALECTS and the server-version probe's dialect.
    "service/materialization/run/incremental_apply.ts": { count: 4, step: "D4" },
-   // the passthrough's source types and the destination's.
+   // the BigQuery job reads, the source and destination types' own rules.
    "service/materialization/run/materialization_build_session.ts": {
-      count: 14,
+      count: 11,
       step: "D4",
    },
    // the read-cost record's engine label.
@@ -279,9 +279,9 @@ export const RATCHET_CONNECTION_TYPE_LITERALS = {
       count: 7,
       step: "table",
    },
-   // the DuckLake attach, the passthrough federation, the object-storage
-   // attachments and the connection test.
-   "service/connection.ts": { count: 39, step: "D3" },
+   // the DuckLake attach, the object-storage attachments and the connection
+   // test.
+   "service/connection.ts": { count: 27, step: "D3" },
    // the DuckDB API surface, the proxy's postgres-only rule, the declarable
    // destination types and the package sandbox's name.
    "service/connection_config.ts": { count: 11, step: "D3" },

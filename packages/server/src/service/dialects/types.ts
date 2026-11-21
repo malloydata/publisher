@@ -16,6 +16,7 @@
 import type { DuckDBConnection } from "@malloydata/db-duckdb";
 import type { components } from "../../api";
 import type { ConnectionOrigin } from "../../config";
+import type { openProxy } from "../proxy";
 
 /** A connection's configured type, as the API spells it. */
 export type ConnectionType = NonNullable<
@@ -63,6 +64,71 @@ export interface AttachedDatabaseDialect {
    secretName?(name: string): string;
 }
 
+/** A source warehouse type that exposes a native DuckDB query-passthrough. */
+export type FederatedSourceType = "bigquery" | "snowflake" | "postgres";
+
+/**
+ * The result of federating a source connection onto a build session: the
+ * `handle` a passthrough table function needs to reach it —
+ *  - bigquery: the resolved project id (`bigquery_query('<project>', '<sql>')`),
+ *  - snowflake: the created secret name (`snowflake_query('<sql>', '<secret>')`),
+ *  - postgres: the ATTACH alias (`postgres_query('<alias>', '<sql>')`).
+ */
+export interface FederatedHandle {
+   handle: string;
+   sourceType: FederatedSourceType;
+   /**
+    * Releases what the federation holds outside the DuckDB session (the SSH
+    * tunnel of a proxied Postgres source), which disposing the session does not
+    * close. The build session calls this in its `finally`.
+    */
+   close?: () => Promise<void>;
+}
+
+/**
+ * The source connection's configuration needed to federate it onto a build
+ * session. `name` is a caller-supplied, already-safe base for the secret/alias
+ * identifiers; the type-specific config carries the credentials.
+ */
+export interface FederationConfig {
+   name: string;
+   bigqueryConnection?: components["schemas"]["BigqueryConnection"];
+   snowflakeConnection?: components["schemas"]["SnowflakeConnection"];
+   postgresConnection?: components["schemas"]["PostgresConnection"];
+   /**
+    * The connection's proxy. A build must tunnel a proxied Postgres source as
+    * the query path does, or the passthrough dials the database host the
+    * bastion exists to keep unreachable.
+    */
+   proxy?: components["schemas"]["ConnectionProxy"];
+}
+
+/** Injection seam for tests: how a proxied federation opens its tunnel. */
+export interface FederationDeps {
+   openProxy?: typeof openProxy;
+}
+
+/**
+ * How a build reads a source of this type through its warehouse's native
+ * query-passthrough, so the warehouse computes the rows.
+ */
+export interface PassthroughDialect {
+   /**
+    * Establish the source's credentials on a build-scoped DuckDB session
+    * (federateSourceForPassthrough).
+    */
+   federate(
+      connection: DuckDBConnection,
+      config: FederationConfig,
+      deps: FederationDeps,
+   ): Promise<FederatedHandle>;
+   /**
+    * `innerSQL` as the passthrough call that runs it through `handle`, as
+    * {@link federate} returned it (wrapPassthrough).
+    */
+   wrap(handle: string, innerSQL: string): string;
+}
+
 /** One connection type's entry in the registry. */
 export interface ConnectionDialect {
    /** The type this entry is for, as its registry key. */
@@ -94,4 +160,6 @@ export interface ConnectionDialect {
    ) => CoreConnectionEntry;
    /** How a database of this type is attached; absent when it cannot be. */
    readonly attached?: AttachedDatabaseDialect;
+   /** How a build reads a source of this type; absent when it cannot. */
+   readonly passthrough?: PassthroughDialect;
 }

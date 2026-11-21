@@ -87,10 +87,13 @@ import type { QueryMetadata } from "../../query_metadata";
 import {
    attachDuckLakeReadWrite,
    managedSearchPathSql,
-   federateSourceForPassthrough,
-   type FederatedSourceType,
    type PartitionKey,
 } from "../../connection";
+import {
+   connectionDialectOf,
+   federateSourceForPassthrough,
+   type FederatedSourceType,
+} from "../../dialects";
 import {
    applySessionResourceLimits,
    escapeSQL,
@@ -141,26 +144,13 @@ export function wrapPassthrough(
    handle: string,
    innerSQL: string,
 ): string {
-   const sql = `'${escapeSQL(innerSQL)}'`;
-   const h = `'${escapeSQL(handle)}'`;
-   switch (sourceType) {
-      case "bigquery":
-         // bigquery_query(<project/db>, <sql>) — secret resolved by bq:// scope.
-         return `SELECT * FROM bigquery_query(${h}, ${sql})`;
-      case "postgres":
-         // postgres_query(<attached-db alias>, <sql>).
-         return `SELECT * FROM postgres_query(${h}, ${sql})`;
-      case "snowflake":
-         // snowflake_query(<sql>, <secret name>) — SQL FIRST for this engine.
-         return `SELECT * FROM snowflake_query(${sql}, ${h})`;
-      default: {
-         // Exhaustiveness: a new FederatedSourceType must add a case above.
-         const exhaustive: never = sourceType;
-         throw new BadRequestError(
-            `Unsupported passthrough source type: ${String(exhaustive)}`,
-         );
-      }
+   const passthrough = connectionDialectOf(sourceType)?.passthrough;
+   if (passthrough === undefined) {
+      throw new BadRequestError(
+         `Unsupported passthrough source type: ${String(sourceType)}`,
+      );
    }
+   return passthrough.wrap(handle, innerSQL);
 }
 
 /**

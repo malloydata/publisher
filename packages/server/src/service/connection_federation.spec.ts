@@ -15,10 +15,8 @@ import { join } from "path";
 import * as sinon from "sinon";
 import tls from "tls";
 import type { components } from "../api";
-import {
-   attachDuckLakeReadWrite,
-   federateSourceForPassthrough,
-} from "./connection";
+import { attachDuckLakeReadWrite } from "./connection";
+import { federateSourceForPassthrough } from "./dialects";
 import {
    ambientTrustBundlePath,
    buildProxiedPgAttachString,

@@ -29,7 +29,7 @@ import {
 } from "./materialization_build_session";
 import type { BuildReadCost } from "./build_read_cost";
 import { markBigQueryRead } from "./bigquery_job_cancel";
-import type { FederatedSourceType } from "../../connection";
+import type { FederatedSourceType } from "../../dialects";
 import type { QueryMetadata } from "../../query_metadata";
 import { quoteIdentifier } from "../../quoting";
 import { errMessage } from "../../../utils";

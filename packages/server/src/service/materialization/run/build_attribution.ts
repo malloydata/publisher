@@ -17,7 +17,7 @@ import { errorCodeOf } from "../../../error_code";
 import type { DuckDBConnection } from "@malloydata/db-duckdb";
 import { logger } from "../../../logger";
 import { recordAttributionSkipped } from "../../../materialization_metrics";
-import { type FederatedSourceType } from "../../connection";
+import type { FederatedSourceType } from "../../dialects";
 import { escapeSQL } from "../../duckdb_session_setup";
 import type { QueryMetadata } from "../../query_metadata";
 import {

@@ -19,6 +19,8 @@ import type {
    AttachedDatabase,
    ConnectionDialect,
    CoreConnectionEntry,
+   FederatedHandle,
+   FederationConfig,
    NamedConnection,
 } from "./types";
 
@@ -37,6 +39,10 @@ export const BIGQUERY: ConnectionDialect = Object.freeze({
       test: testAttachedBigQuery,
       secretName: bigQueryDetachSecret,
    }),
+   passthrough: Object.freeze({
+      federate: federateBigQuery,
+      wrap: wrapBigQuery,
+   }),
 });
 
 // Field names follow Google's service-account key file format, so they are
@@ -49,9 +55,7 @@ type ServiceAccountKey = {
    [key: string]: unknown;
 };
 
-export function parseServiceAccountKey(
-   json?: string,
-): ServiceAccountKey | undefined {
+function parseServiceAccountKey(json?: string): ServiceAccountKey | undefined {
    if (!json) return undefined;
    const keyData = JSON.parse(json) as ServiceAccountKey;
    const requiredFields = ["type", "project_id", "private_key", "client_email"];
@@ -164,7 +168,7 @@ export function configBoolean(
    );
 }
 
-export interface BigQueryServiceAccount {
+interface BigQueryServiceAccount {
    projectId: string;
    serviceAccountJson: string;
    clientEmail: string;
@@ -175,7 +179,7 @@ export interface BigQueryServiceAccount {
  * project. The DuckDB BIGQUERY secret authenticates only with a key, so the
  * read-only attach and the build-time federation both require one.
  */
-export function parseBigQueryServiceAccount(
+function parseBigQueryServiceAccount(
    name: string | undefined,
    config: components["schemas"]["BigqueryConnection"],
 ): BigQueryServiceAccount {
@@ -193,7 +197,7 @@ export function parseBigQueryServiceAccount(
 }
 
 /** Load the bigquery extension and create the secret scoped to the project. */
-export async function createBigQuerySecret(
+async function createBigQuerySecret(
    connection: DuckDBConnection,
    name: string | undefined,
    { projectId, serviceAccountJson }: BigQueryServiceAccount,
@@ -265,4 +269,46 @@ async function testAttachedBigQuery(
 /** The secret a BigQuery attachment creates, as its detach drops it. */
 function bigQueryDetachSecret(name: string): string {
    return sanitizeSecretName(`bigquery_${name}`);
+}
+
+async function federateBigQuery(
+   connection: DuckDBConnection,
+   config: FederationConfig,
+): Promise<FederatedHandle> {
+   const bq = config.bigqueryConnection;
+   if (!bq) {
+      throw new Error(
+         `BigQuery connection configuration missing for: ${config.name}`,
+      );
+   }
+
+   // A build federating from a BigQuery source connection may carry
+   // impersonation legitimately (for the serve path). The DuckDB BIGQUERY secret
+   // takes a key, not a token, so name that limitation rather than fall through
+   // to the generic "service account key required".
+   if (bq.impersonateServiceAccount) {
+      throw new Error(
+         `BigQuery connection '${config.name}' uses impersonateServiceAccount, ` +
+            `which cannot federate through DuckDB: the DuckDB BIGQUERY secret ` +
+            `authenticates with a service account key, not a token. Federated ` +
+            `builds from this source require serviceAccountKeyJson.`,
+      );
+   }
+   const key = parseBigQueryServiceAccount(config.name, bq);
+   const { projectId } = key;
+   await createBigQuerySecret(connection, config.name, key);
+   logger.info(
+      `Federated BigQuery source for passthrough: project ${projectId}`,
+   );
+   // bigquery_query finds the secret scoped to bq://<project>, so the project id
+   // is the handle.
+   return { handle: projectId, sourceType: "bigquery" };
+}
+
+/** A SELECT as a bigquery_query call: the project, then the SQL. */
+function wrapBigQuery(handle: string, innerSQL: string): string {
+   const sql = `'${escapeSQL(innerSQL)}'`;
+   const h = `'${escapeSQL(handle)}'`;
+   // bigquery_query(<project/db>, <sql>) — secret resolved by bq:// scope.
+   return `SELECT * FROM bigquery_query(${h}, ${sql})`;
 }

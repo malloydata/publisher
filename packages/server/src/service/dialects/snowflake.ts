@@ -8,13 +8,19 @@ import type { DuckDBConnection } from "@malloydata/db-duckdb";
 import type { components } from "../../api";
 import { logger } from "../../logger";
 import { runInternalSQL } from "../duckdb_lockdown";
-import { escapeSQL, installAndLoadExtension } from "../duckdb_session_setup";
+import {
+   escapeSQL,
+   installAndLoadExtension,
+   sanitizeSecretName,
+} from "../duckdb_session_setup";
 import { quoteIdentifier } from "../quoting";
 import type {
    ApiConnection,
    AttachedDatabase,
    ConnectionDialect,
    CoreConnectionEntry,
+   FederatedHandle,
+   FederationConfig,
    NamedConnection,
 } from "./types";
 
@@ -32,6 +38,10 @@ export const SNOWFLAKE: ConnectionDialect = Object.freeze({
       attach: attachSnowflake,
       test: testAttachedSnowflake,
       secretName: snowflakeDetachSecret,
+   }),
+   passthrough: Object.freeze({
+      federate: federateSnowflake,
+      wrap: wrapSnowflake,
    }),
 });
 
@@ -169,7 +179,7 @@ function buildSnowflakeEntry(connection: NamedConnection): CoreConnectionEntry {
 }
 
 /** Each named Snowflake field must be non-empty. */
-export function assertSnowflakeFieldsPresent(
+function assertSnowflakeFieldsPresent(
    name: string | undefined,
    fields: Record<string, string | null | undefined>,
 ): void {
@@ -181,7 +191,7 @@ export function assertSnowflakeFieldsPresent(
 }
 
 /** The SQL-escaped identity fields every Snowflake secret is built from. */
-export function escapeSnowflakeIdentity(
+function escapeSnowflakeIdentity(
    config: components["schemas"]["SnowflakeConnection"],
 ) {
    return {
@@ -293,4 +303,88 @@ async function testAttachedSnowflake(
 /** The secret a Snowflake attachment creates, as its detach drops it. */
 function snowflakeDetachSecret(name: string): string {
    return quoteIdentifier(snowflakeSecretName(name), "duckdb");
+}
+
+async function federateSnowflake(
+   connection: DuckDBConnection,
+   config: FederationConfig,
+): Promise<FederatedHandle> {
+   const sf = config.snowflakeConnection;
+   if (!sf) {
+      throw new Error(
+         `Snowflake connection configuration missing for: ${config.name}`,
+      );
+   }
+   assertSnowflakeFieldsPresent(config.name, {
+      account: sf.account,
+      username: sf.username,
+   });
+   // Key pair or password, as a live Snowflake connection accepts; requiring a
+   // password would make key-pair connections (Snowflake's preferred
+   // programmatic auth) unbuildable.
+   const usesKeyPair = !!sf.privateKey;
+   if (!usesKeyPair && !sf.password) {
+      throw new Error(
+         `Snowflake privateKey or password is required for: ${config.name}`,
+      );
+   }
+
+   await installAndLoadExtension(connection, "snowflake", true);
+
+   const params = {
+      ...escapeSnowflakeIdentity(sf),
+      password: sf.password ? escapeSQL(sf.password) : undefined,
+      // Normalized here because this config is an unnormalized clone (the live
+      // path normalizes at its own call site): a single-line PEM makes Go's
+      // pem.Decode return nil, and the extension wants PKCS#8 where a user may
+      // have pasted PKCS#1.
+      privateKey: sf.privateKey
+         ? escapeSQL(normalizeSnowflakePrivateKey(sf.privateKey))
+         : undefined,
+      privateKeyPass: sf.privateKeyPass
+         ? escapeSQL(sf.privateKeyPass)
+         : undefined,
+   };
+   const secretName = sanitizeSecretName(`snowflake_${config.name}`);
+   // Optional fields are emitted only when supplied, or the literal 'undefined'
+   // would be used as a db/warehouse name.
+   //
+   // ROLE and SCHEMA are part of the connection's identity (its digest).
+   // Dropping them would run the build under the user's default role while live
+   // queries use the configured one: a build that fails on permissions, or
+   // reads under wider ones.
+   const secretLines = [
+      `   TYPE snowflake`,
+      `   ACCOUNT '${params.account}'`,
+      `   USER '${params.user}'`,
+      // PRIVATE_KEY_PASSWORD, not the documented PRIVATE_KEY_PASSPHRASE, which
+      // is only a backward-compatible alias for it.
+      ...(usesKeyPair
+         ? [
+              `   AUTH_TYPE 'key_pair'`,
+              `   PRIVATE_KEY '${params.privateKey}'`,
+              ...(params.privateKeyPass
+                 ? [`   PRIVATE_KEY_PASSWORD '${params.privateKeyPass}'`]
+                 : []),
+           ]
+         : [`   PASSWORD '${params.password}'`]),
+      ...(params.database ? [`   DATABASE '${params.database}'`] : []),
+      ...(params.warehouse ? [`   WAREHOUSE '${params.warehouse}'`] : []),
+      ...(params.schema ? [`   SCHEMA '${params.schema}'`] : []),
+      ...(params.role ? [`   ROLE '${params.role}'`] : []),
+   ];
+   await connection.runSQL(
+      `CREATE OR REPLACE SECRET ${secretName} (\n${secretLines.join(",\n")}\n);`,
+   );
+   logger.info(`Federated Snowflake source for passthrough: ${secretName}`);
+   // snowflake_query(sql, secret): the secret name is the handle.
+   return { handle: secretName, sourceType: "snowflake" };
+}
+
+/** A SELECT as a snowflake_query call: the SQL, then the secret. */
+function wrapSnowflake(handle: string, innerSQL: string): string {
+   const sql = `'${escapeSQL(innerSQL)}'`;
+   const h = `'${escapeSQL(handle)}'`;
+   // snowflake_query(<sql>, <secret name>) — SQL FIRST for this engine.
+   return `SELECT * FROM snowflake_query(${sql}, ${h})`;
 }

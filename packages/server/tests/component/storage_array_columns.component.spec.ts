@@ -39,6 +39,7 @@ import * as os from "os";
 import * as path from "path";
 import { unrecordedAudit } from "../../src/service/access_record";
 import * as connection from "../../src/service/connection";
+import * as dialects from "../../src/service/dialects";
 import { recordConnectionsAsForTests } from "../../src/service/connection_type";
 import { Environment } from "../../src/service/environment";
 import { parsePackageName } from "../../src/service/identity";
@@ -342,18 +343,17 @@ describe.skipIf(process.platform === "win32")(
             }),
             // Each engine's passthrough read runs the build SQL in DuckDB;
             // BigQuery's quotes names with backticks.
-            spyOn(
-               connection,
-               "federateSourceForPassthrough",
-            ).mockImplementation(async (session, sourceType) => {
-               await session.runSQL(
-                  "CREATE OR REPLACE TEMP MACRO postgres_query(alias, q) AS TABLE SELECT * FROM query(q)",
-               );
-               await session.runSQL(
-                  "CREATE OR REPLACE TEMP MACRO bigquery_query(project, q) AS TABLE SELECT * FROM query(replace(q, chr(96), chr(34)))",
-               );
-               return { handle: sourceType, sourceType };
-            }),
+            spyOn(dialects, "federateSourceForPassthrough").mockImplementation(
+               async (session, sourceType) => {
+                  await session.runSQL(
+                     "CREATE OR REPLACE TEMP MACRO postgres_query(alias, q) AS TABLE SELECT * FROM query(q)",
+                  );
+                  await session.runSQL(
+                     "CREATE OR REPLACE TEMP MACRO bigquery_query(project, q) AS TABLE SELECT * FROM query(replace(q, chr(96), chr(34)))",
+                  );
+                  return { handle: sourceType, sourceType };
+               },
+            ),
          );
 
          env = await Environment.create(
