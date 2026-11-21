@@ -116,13 +116,12 @@ export async function stringGateCollationRefusal(args: {
       return "no author compile";
    }
    const modelDef = prepared.modelDef as ModelDef | undefined;
-   const entryName =
-      typeof prepared.structRef === "string" ? prepared.structRef : undefined;
    if (!modelDef) return "no author compile";
    const struct = resolveStructRefSource(
       prepared.structRef as never,
       modelDef as never,
    ) as { dialect?: unknown; connection?: unknown } | undefined;
+   const entryName = namedEntryOf(prepared.structRef, struct, modelDef);
    const named = struct?.dialect;
    const dialect = typeof named === "string" ? named : "";
    const connectionName =
@@ -170,7 +169,10 @@ export async function stringGateCollationRefusal(args: {
    }
    // Per column: only a named entry point's own paths can be probed (a
    // caller's inline `extend` or `include` has no name to compile a probe
-   // over; the instance-wide check above needs none).
+   // over; the instance-wide check above needs none). A source imported from
+   // another file is named too: Malloy hands its query the source's struct,
+   // not its name, and `namedEntryOf` resolves it to the name only when it
+   // is that source unchanged.
    if (entryName === undefined) return "no named entry point";
    if (!reads.entryPathsComplete) return "a scope from elsewhere";
    // A comparison of a string the query makes (a given, a literal, a cast,

@@ -166,6 +166,7 @@ interface FieldLike {
    type?: unknown;
    path?: unknown;
    fields?: unknown;
+   expressionType?: unknown;
 }
 
 function activeName(f: FieldLike): string {
@@ -186,6 +187,7 @@ interface QueryStage {
    filterList?: unknown;
    queryFields?: unknown[];
    outputStruct?: unknown;
+   orderBy?: unknown;
 }
 
 /** What the query-filter walk carries through one query. */
@@ -202,6 +204,22 @@ interface FilterContext {
     */
    readonly fromStage: number;
    readonly base: unknown;
+}
+
+/** The path `e` names when it is only a field reference, else undefined. */
+function bareFieldPath(e: unknown): string[] | undefined {
+   const n = e as { node?: unknown; path?: unknown } | undefined;
+   return n?.node === "field" &&
+      Array.isArray(n.path) &&
+      n.path.length > 0 &&
+      n.path.every((p) => typeof p === "string")
+      ? (n.path as string[])
+      : undefined;
+}
+
+/** Whether an expression type is a window function's. */
+function isAnalyticKind(t: unknown): boolean {
+   return typeof t === "string" && t.includes("analytic");
 }
 
 function asArray(x: unknown): unknown[] {
@@ -710,10 +728,16 @@ class GateReadWalk {
       return byName;
    }
 
-   /** One stage's step back: what each wanted output reads in its input. */
+   /**
+    * One stage's step back: what each wanted output reads in its input.
+    * `own`: the stage is the caller's own query's, so a window function's
+    * output is read through what orders and partitions it, and a rename
+    * (`value is category`) as the field it names.
+    */
    private stepBack(
       byName: Map<string, FieldLike>,
       wanted: Wanted[],
+      own?: QueryStage,
    ): Wanted[] {
       const next: Wanted[] = [];
       for (const w of wanted) {
@@ -728,6 +752,17 @@ class GateReadWalk {
             this.unresolved = true;
          } else if (qf.type === "fieldref" && Array.isArray(qf.path)) {
             next.push({ path: qf.path as string[], chain });
+         } else if (own !== undefined && bareFieldPath(qf.e) !== undefined) {
+            next.push({ path: bareFieldPath(qf.e)!, chain });
+         } else if (own !== undefined && isAnalyticKind(qf.expressionType)) {
+            // Its value follows the order of the strings it is ordered and
+            // partitioned by (`row_number()` over `order_by: value`), so it
+            // compares them as an ordering does.
+            this.equalityOnly = false;
+            this.comparesNoString = false;
+            const read = this.windowReads(qf, own, byName);
+            if (read === undefined) this.unresolved = true;
+            else for (const p of read) next.push({ path: p, chain });
          } else if (qf.e !== undefined) {
             if (!equalityOnlyExpr(qf.e)) this.equalityOnly = false;
             // A stage's expression reads the stage's input, not typed here,
@@ -744,6 +779,88 @@ class GateReadWalk {
          }
       }
       return next;
+   }
+
+   /**
+    * What a window function's output (`scalar_analytic`) reads in its
+    * stage's input: the fields its arguments name, and through the stage's
+    * own outputs, what it is partitioned and ordered by (its own `order_by:`
+    * and the stage's, which a window without one follows). Undefined when it
+    * reads anything else: an aggregate, another window function, an output
+    * the stage does not hold.
+    */
+   private windowReads(
+      qf: FieldLike,
+      stage: QueryStage,
+      byName: Map<string, FieldLike>,
+   ): string[][] | undefined {
+      if (qf.expressionType !== "scalar_analytic") return undefined;
+      const paths: string[][] = [];
+      const outputs = new Set<string>();
+      let readable = true;
+      const visit = (x: unknown, depth: number): void => {
+         if (depth > 64) readable = false;
+         if (!readable || x === null || typeof x !== "object") return;
+         if (Array.isArray(x)) {
+            for (const y of x) visit(y, depth + 1);
+            return;
+         }
+         const n = x as {
+            node?: unknown;
+            path?: unknown;
+            name?: unknown;
+            expressionType?: unknown;
+            partitionBy?: unknown;
+         };
+         if (n.node === "aggregate" || n.expressionType === "aggregate") {
+            readable = false;
+            return;
+         }
+         if (n.node === "field" && Array.isArray(n.path)) {
+            paths.push(n.path as string[]);
+         } else if (n.node === "outputField" && typeof n.name === "string") {
+            outputs.add(n.name);
+         }
+         for (const p of asArray(n.partitionBy)) outputs.add(String(p));
+         for (const [k, v] of Object.entries(x)) {
+            // A function's overload holds its SQL per dialect, no field.
+            if (k !== "overload") visit(v, depth + 1);
+         }
+      };
+      visit(qf.e, 0);
+      const order = asArray(stage.queryFields).map((f) => {
+         const g = f as FieldLike;
+         return g.type === "fieldref" && Array.isArray(g.path)
+            ? String((g.path as unknown[])[(g.path as unknown[]).length - 1])
+            : activeName(g);
+      });
+      for (const o of asArray(stage.orderBy)) {
+         const key = (o as { field?: unknown }).field;
+         const name = typeof key === "number" ? order[key - 1] : key;
+         if (typeof name !== "string") return undefined;
+         outputs.add(name);
+      }
+      if (!readable) return undefined;
+      for (const name of outputs) {
+         const out = byName.get(name);
+         this.names.add(name);
+         if (out === undefined || out === qf) return undefined;
+         if (out.type === "fieldref" && Array.isArray(out.path)) {
+            paths.push(out.path as string[]);
+            continue;
+         }
+         const kind = out.expressionType ?? "scalar";
+         if (out.e === undefined || kind !== "scalar") return undefined;
+         const bare = bareFieldPath(out.e);
+         if (bare !== undefined) {
+            paths.push(bare);
+            continue;
+         }
+         // A computed string has no path from the entry point.
+         this.entryPathsComplete = false;
+         paths.push(...fieldPathsIn(out.e));
+      }
+      return paths;
    }
 
    /** Follow an output field of a query-shaped source back to its base. */
@@ -770,7 +887,11 @@ class GateReadWalk {
       }
       let wanted: Wanted[] = [{ path: [output], chain: [...chain] }];
       for (let i = fromStage ?? stages.length - 1; i >= 0; i--) {
-         wanted = this.stepBack(this.stageFields(stages[i]), wanted);
+         wanted = this.stepBack(
+            this.stageFields(stages[i]),
+            wanted,
+            entry ? (stages[i] as QueryStage) : undefined,
+         );
          // An earlier stage's output is one name; only the first stage reads
          // the source, through a join path or a name.
          if (i > 0 && wanted.some((n) => n.path.length !== 1)) {

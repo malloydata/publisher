@@ -33,6 +33,7 @@ import {
    PUBLISHER_DATA_DIR,
 } from "../constants";
 import {
+   BadRequestError,
    ConnectionSaveError,
    EnvironmentNotFoundError,
    FrozenConfigError,
@@ -50,6 +51,7 @@ import {
    type ResourceRepository,
 } from "../storage/DatabaseInterface";
 import { StorageConfig, StorageManager } from "../storage/StorageManager";
+import { validateConnectionSqlFields } from "./connection_config";
 import { extractErrorDataFromError, validateAzureUrl } from "./db_utils";
 import {
    Environment,
@@ -166,6 +168,19 @@ const connectionSaveFailureCounter = lazyCounter(
    "publisher_connection_save_failures_total",
    "Environment syncs to the database whose connection rows did not all save, so the connections in memory will differ after a restart. Label: path ('request'|'boot'|'load'|'reload').",
 );
+
+/** Each connection's attached database names and S3 regions, as a 400 (connection_config.ts). */
+function validateEnvironmentConnectionSqlFields(
+   environment: ApiEnvironment,
+): void {
+   for (const conn of environment.connections || []) {
+      try {
+         validateConnectionSqlFields(conn);
+      } catch (error) {
+         throw new BadRequestError((error as Error).message);
+      }
+   }
+}
 
 function validateEnvironmentAzureUrls(environment: ApiEnvironment): void {
    for (const conn of environment.connections || []) {
@@ -2110,6 +2125,7 @@ export class EnvironmentStore
       if (!skipInitialization && this.publisherConfigIsFrozen) {
          throw new FrozenConfigError();
       }
+      validateEnvironmentConnectionSqlFields(environment);
       assertSafePackageName(environment.name);
       const environmentName = environment.name;
       for (const _package of environment.packages || []) {
@@ -2202,6 +2218,7 @@ export class EnvironmentStore
          throw new FrozenConfigError();
       }
       validateEnvironmentAzureUrls(environment);
+      validateEnvironmentConnectionSqlFields(environment);
       assertSafePackageName(environment.name);
       const environmentName = environment.name;
       for (const _package of environment.packages || []) {

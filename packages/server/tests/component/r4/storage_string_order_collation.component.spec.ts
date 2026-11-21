@@ -269,6 +269,29 @@ const SHAPES: Shape[] = [
       query: "run: m -> { group_by: s is concat(cc, cu) }",
       want: { error: true },
    },
+   // A later stage's filter on a row number over a string's order (the
+   // dimensional indexer's shard-boundary query) compares that string as an
+   // ordering does: declined over the `en_US` column. Over the `C` one too
+   // for now: the query-filter rule does not yet tell a comparison of
+   // columns only from one that falls back to this database's `en_US`
+   // default (the DuckDB spec, later_stage_computed_filter, serves it). A
+   // later stage's string comparison over a value computed from a
+   // case-insensitive column is still declined.
+   {
+      name: "C: a later stage's filter on a row number over the column's order",
+      query: "run: m -> { group_by: value is cc order_by: value calculate: rn is row_number() } -> { where: rn = 1 or rn = 2 select: rn, value order_by: rn }",
+      want: { live: DECLINED },
+   },
+   {
+      name: "en_US: a later stage's filter on a row number over the column's order",
+      query: "run: m -> { group_by: value is cat order_by: value calculate: rn is row_number() } -> { where: rn = 1 or rn = 2 select: rn, value order_by: rn }",
+      want: { live: DECLINED },
+   },
+   {
+      name: "case-insensitive: a later stage's string comparison on a value computed from the column",
+      query: "run: m -> { group_by: k is ci } -> { where: k = 'APPLE' select: k }",
+      want: { live: DECLINED },
+   },
    // ...and what still serves under en_US: equality is byte equality.
    {
       name: "C: a C column with a literal, ordered by the column's collation",

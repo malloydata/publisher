@@ -25,6 +25,21 @@ import {
  */
 let parser: Promise<DuckDBInstance> | undefined;
 
+/**
+ * The statement separator `@malloydata/db-duckdb` splits raw SQL on before it
+ * runs any of it (its DuckDB dialect's `hackSplitComment`). The connector
+ * splits with `String.prototype.split` on this exact, case-sensitive text,
+ * wherever it appears: inside a comment or a string literal too. So DuckDB's
+ * parser reads the text after it as part of a comment, while the connector
+ * runs it as a statement of its own.
+ */
+export const DUCKDB_STATEMENT_SEPARATOR = "-- hack: split on this";
+
+/** Whether the connector would split `sql` into more than one statement. */
+export function containsStatementSeparator(sql: string): boolean {
+   return sql.includes(DUCKDB_STATEMENT_SEPARATOR);
+}
+
 async function parserInstance(): Promise<DuckDBInstance> {
    if (!parser) {
       parser = DuckDBInstance.create(":memory:", {
@@ -120,6 +135,11 @@ export async function classifySelect(
  * (duckdb_introspection.ts): an introspection function or view, a DuckLake
  * metadata catalog, a name the lockdown gate refuses, or an attached
  * database's Postgres system schema.
+ *
+ * The text is judged as the connector will run it: SQL that spells the
+ * connector's statement separator ({@link DUCKDB_STATEMENT_SEPARATOR}) is
+ * refused outright, because the connector would run what follows it as a
+ * separate statement that DuckDB's parser, here, reads as a comment.
  */
 export async function assertSingleSelect(
    connectionName: string,
@@ -128,6 +148,14 @@ export async function assertSingleSelect(
       | "managed database"
       | "locked-down DuckDB connection" = "managed database",
 ): Promise<void> {
+   if (containsStatementSeparator(sql)) {
+      throw new BadRequestError(
+         `'${connectionName}' is a ${kind}: raw SQL on it runs only as a single SELECT, ` +
+            `and it contains the DuckDB connector's statement separator comment, ` +
+            `which the connector splits into separate statements wherever it appears ` +
+            `(in a comment or a string literal too).`,
+      );
+   }
    const verdict = await classifySelect(sql);
    if ("selects" in verdict && verdict.selects === 1) {
       const name =

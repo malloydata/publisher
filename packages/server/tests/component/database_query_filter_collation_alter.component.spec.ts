@@ -17,7 +17,9 @@
  * whose string comparison is made in a stage (an output of a query-shaped
  * source the answer recomputes, a dimension or a join over one, a count
  * grouped by a string, or the query's own earlier stage) is read through
- * that stage, and answers live once the column is altered. Postgres under a
+ * that stage, and answers live once the column is altered. So is a later
+ * stage's filter on a row number an earlier stage computes over a string's
+ * order, which is served as built on Postgres too. Postgres under a
  * `C` and an `en_US` default; DuckDB by its tables' definitions.
  */
 
@@ -222,6 +224,15 @@ const CASES: {
       leg: "materialized",
       strings: true,
       throughStage: true,
+   },
+   {
+      // The dimensional indexer's shard-boundary query: its later stage
+      // compares a window function's number, which follows the order of the
+      // strings the earlier stage orders by.
+      name: "a later stage's filter on a row number over a string's order",
+      query: "run: m_tab -> { group_by: value is category order_by: value calculate: rn is row_number() } -> { where: rn = 1 or rn = 2 select: rn, value order_by: rn }",
+      leg: "materialized",
+      strings: true,
    },
    {
       // Over `vn`, whose stage compares no string: one that does (`v`'s
