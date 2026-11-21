@@ -13,9 +13,13 @@ import {
 import type { components } from "../../../api";
 import { BadRequestError, ConflictError } from "../../../errors";
 import {
+   LoadRefusalError,
+   loadLayout,
    loadStorageTable,
+   mergeStatements,
    readerRefusal,
    readerSql,
+   sourceColumns,
    writeTableAs,
 } from "./storage_table_load";
 
@@ -351,5 +355,304 @@ describe("writeTableAs: the load's and the copy's write", () => {
          )
          .sort();
       expect(dirs).toEqual(["label=a", "label=b"]);
+   });
+});
+
+describe("loadLayout: the objects' columns against the table's", () => {
+   const stage = [
+      { name: "id", type: "BIGINT" },
+      { name: "v", type: "VARCHAR" },
+   ];
+   const table = [
+      { name: "ID", type: "BIGINT" },
+      { name: "v", type: "VARCHAR" },
+      { name: "extra", type: "INTEGER" },
+   ];
+   const contract = (run: () => unknown): LoadRefusalError => {
+      try {
+         run();
+      } catch (error) {
+         expect(error).toBeInstanceOf(LoadRefusalError);
+         expect((error as LoadRefusalError).reason).toBe(
+            "LOAD_SCHEMA_CONTRACT",
+         );
+         return error as LoadRefusalError;
+      }
+      throw new Error("expected a refusal");
+   };
+
+   it("matches columns and keys by case, and keeps the table's spelling", () => {
+      const layout = loadLayout({ key: ["id"] }, stage, table);
+      expect(layout.keys).toEqual(["ID"]);
+      expect(layout.columns).toEqual([
+         { name: "v", inStage: true, inTable: true },
+         { name: "extra", inStage: false, inTable: true },
+      ]);
+      expect(layout.added).toEqual([]);
+   });
+
+   it("creates every column of a table that does not exist, and adds a column an existing one lacks", () => {
+      expect(loadLayout({ key: ["id"] }, stage, null).added).toEqual([]);
+      const wider = [...stage, { name: "w", type: 'STRUCT("a b" INTEGER)' }];
+      const layout = loadLayout({ key: ["id"] }, wider, table);
+      expect(layout.added).toEqual([
+         { name: "w", type: 'STRUCT("a b" INTEGER)' },
+      ]);
+      expect(layout.columns).toContainEqual({
+         name: "w",
+         inStage: true,
+         inTable: false,
+      });
+   });
+
+   it.each([
+      ["TINYINT", "INTEGER", true],
+      ["INTEGER", "INTEGER", true],
+      ["BIGINT", "INTEGER", false],
+      ["UTINYINT", "UBIGINT", true],
+      ["UBIGINT", "UTINYINT", false],
+      ["UBIGINT", "INTEGER", false],
+      ["BIGINT", "UINTEGER", false],
+      ["FLOAT", "DOUBLE", true],
+      ["DOUBLE", "FLOAT", false],
+      ["DECIMAL(18,3)", "DECIMAL(18,3)", true],
+      ["DECIMAL(10,2)", "DECIMAL(18,3)", false],
+      ["DOUBLE", "INTEGER", false],
+      ["INTEGER", "VARCHAR", false],
+      ["TIMESTAMP WITH TIME ZONE", "TIMESTAMP", false],
+      ["struct(A INTEGER)", "STRUCT(a INTEGER)", true],
+      ["STRUCT(a BIGINT)", "STRUCT(a INTEGER)", false],
+   ])("takes a %s load into a %s column: %s", (load, tableType, accepted) => {
+      const run = () =>
+         loadLayout(
+            { key: ["id"] },
+            [
+               { name: "id", type: "BIGINT" },
+               { name: "x", type: load },
+            ],
+            [
+               { name: "id", type: "BIGINT" },
+               { name: "x", type: tableType },
+            ],
+         );
+      if (accepted) return expect(run).not.toThrow();
+      expect(contract(run).detail).toEqual({
+         column: "x",
+         tableType,
+         loadType: load,
+         detail: "type_change",
+      });
+   });
+
+   it("refuses a key that is not a column of both sides", () => {
+      expect(
+         contract(() => loadLayout({ key: ["nope"] }, stage, table)).detail,
+      ).toMatchObject({ column: "nope", detail: "missing_key" });
+      expect(
+         contract(() => loadLayout({ key: ["extra"] }, stage, table)).detail,
+      ).toMatchObject({
+         column: "extra",
+         detail: "missing_key",
+         tableType: "INTEGER",
+      });
+      expect(
+         contract(() =>
+            loadLayout(
+               { key: ["w"] },
+               [...stage, { name: "w", type: "INTEGER" }],
+               table,
+            ),
+         ).detail,
+      ).toMatchObject({
+         column: "w",
+         detail: "missing_key",
+         loadType: "INTEGER",
+      });
+   });
+
+   it("takes an integer, DATE or TIMESTAMP column as the cursor, and refuses anything else", () => {
+      for (const [type, sql] of [
+         ["BIGINT", 'max("c")::VARCHAR'],
+         ["UBIGINT", 'max("c")::VARCHAR'],
+         ["DATE", `strftime(max("c"), '%Y-%m-%d')`],
+         ["TIMESTAMP", "%S.%f'"],
+         ["TIMESTAMP_MS", "%S.%f'"],
+         ["TIMESTAMP_NS", "%S.%n'"],
+         ["TIMESTAMP WITH TIME ZONE", "AT TIME ZONE 'UTC'"],
+      ]) {
+         const layout = loadLayout(
+            { key: ["id"], cursor: "c" },
+            [...stage, { name: "c", type }],
+            null,
+         );
+         expect(layout.cursor).toMatchObject({ name: "c", type });
+         expect(layout.cursor!.maxSql).toContain(sql);
+      }
+      for (const type of [
+         "VARCHAR",
+         "DOUBLE",
+         "DECIMAL(18,3)",
+         "TIME",
+         "BOOLEAN",
+      ]) {
+         expect(
+            contract(() =>
+               loadLayout(
+                  { key: ["id"], cursor: "c" },
+                  [...stage, { name: "c", type }],
+                  null,
+               ),
+            ).detail,
+         ).toMatchObject({
+            column: "c",
+            loadType: type,
+            detail: "cursor_type",
+         });
+      }
+      expect(
+         contract(() => loadLayout({ key: ["id"], cursor: "c" }, stage, null))
+            .detail,
+      ).toMatchObject({ detail: "missing_cursor" });
+   });
+
+   it("refuses objects with no column", () => {
+      expect(
+         contract(() => loadLayout({ key: [] }, [], null)).detail,
+      ).toMatchObject({ detail: "no_columns" });
+   });
+});
+
+describe("sourceColumns: the columns the objects' schemas hold", () => {
+   /** A schema from `[name, childCount, logicalType?]` rows, root first. */
+   const shape = (...elements: [string, number, string?][]) => ({
+      names: elements.map(([name]) => name),
+      kids: elements.map(([, kids]) => kids),
+      kinds: elements.map(([, , kind]) => kind ?? null),
+   });
+   const contract = (run: () => unknown) => {
+      try {
+         run();
+      } catch (error) {
+         expect(error).toBeInstanceOf(LoadRefusalError);
+         return (error as LoadRefusalError).detail;
+      }
+      throw new Error("expected a refusal");
+   };
+
+   it("skips the fields of a struct and the elements of a list", () => {
+      // root, id, st { x, y { z } }, l [ element ], last
+      expect(
+         sourceColumns([
+            shape(
+               ["root", 4],
+               ["id", 0],
+               ["st", 2],
+               ["x", 0],
+               ["y", 1],
+               ["z", 0],
+               ["l", 1],
+               ["list", 1],
+               ["element", 0],
+               ["last", 0],
+            ),
+         ]),
+      ).toEqual(["id", "st", "l", "last"]);
+   });
+
+   it("joins the columns of every schema, and drops one typed NULL in all of them", () => {
+      expect(
+         sourceColumns([
+            shape(["root", 2], ["id", 0], ["gone", 0, "UNKNOWN"]),
+            shape(["root", 3], ["id", 0], ["gone", 0, "UNKNOWN"], ["v", 0]),
+         ]),
+      ).toEqual(["id", "v"]);
+      // Typed in one object, NULL in another: the column stays.
+      expect(
+         sourceColumns([
+            shape(["root", 1], ["x", 0, "UNKNOWN"]),
+            shape(["root", 1], ["x", 0]),
+         ]),
+      ).toEqual(["x"]);
+   });
+
+   it("reads a schema with no column", () => {
+      expect(sourceColumns([shape(["root", 0])])).toEqual([]);
+   });
+
+   it("refuses names the load reserves, a NUL, and names that differ only by case", () => {
+      for (const name of [
+         "__publisher_x",
+         "__PUBLISHER_x",
+         "file_row_number",
+         "ROWID",
+         "a\0b",
+      ]) {
+         expect(
+            contract(() => sourceColumns([shape(["root", 1], [name, 0])])),
+         ).toMatchObject({ column: name, detail: "reserved_name" });
+      }
+      // Within one schema, and across two.
+      expect(
+         contract(() =>
+            sourceColumns([shape(["root", 2], ["a", 0], ["A", 0])]),
+         ),
+      ).toMatchObject({ column: "a", detail: "case_collision" });
+      expect(
+         contract(() =>
+            sourceColumns([
+               shape(["root", 1], ["Id", 0]),
+               shape(["root", 1], ["id", 0]),
+            ]),
+         ),
+      ).toMatchObject({ column: "id", detail: "case_collision" });
+      // A name repeated within one schema.
+      expect(
+         contract(() =>
+            sourceColumns([shape(["root", 2], ["a", 0], ["a", 0])]),
+         ),
+      ).toMatchObject({ detail: "case_collision" });
+   });
+
+   it("does not take a nested field's name for a column's", () => {
+      expect(
+         sourceColumns([shape(["root", 2], ["id", 0], ["st", 1], ["ID", 0])]),
+      ).toEqual(["id", "st"]);
+   });
+});
+
+describe("mergeStatements: the plan joins on plain equality", () => {
+   const columns = [{ name: "v", inStage: true, inTable: true }];
+   const statements = (mode: "merge" | "replace") =>
+      mergeStatements({ target: "t", mode, keys: ["id"], columns });
+
+   it("joins the stage to the table with `=` alone, and matches NULLs only in the delete", () => {
+      for (const mode of ["merge", "replace"] as const) {
+         const { changes, delete: del, insert } = statements(mode);
+         expect(changes).toContain('__s."id" = __t."id"');
+         expect(changes).not.toMatch(/IS NULL/);
+         expect(insert).not.toMatch(/IS NULL/);
+         expect(del).toContain('__t."id" IS NULL AND __s."id" IS NULL');
+      }
+   });
+
+   it("plans a merge from the stage's side and a replace over both sides", () => {
+      expect(statements("merge").changes).toContain("LEFT JOIN");
+      expect(statements("merge").changes).not.toContain("'deleted'");
+      expect(statements("replace").changes).toContain("FULL JOIN");
+      expect(statements("replace").changes).toContain("'deleted'");
+   });
+
+   it("compares a column the objects lack, and one the table lacks, as NULL", () => {
+      const { changes } = mergeStatements({
+         target: "t",
+         mode: "merge",
+         keys: ["id"],
+         columns: [
+            { name: "old", inStage: false, inTable: true },
+            { name: "new", inStage: true, inTable: false },
+         ],
+      });
+      expect(changes).toContain('__t."old" IS DISTINCT FROM NULL');
+      expect(changes).toContain('NULL IS DISTINCT FROM __s."new"');
    });
 });

@@ -49,8 +49,11 @@ import { withStatementUsage } from "./statement_usage";
 import {
    type LoadFormat,
    type LoadOptions,
+   type LoadResult,
+   LoadRefusalError,
    copyStorageTable,
    loadStorageTable,
+   mergeStorageTable,
 } from "./materialization/run/storage_table_load";
 
 type ApiConnection = components["schemas"]["Connection"];
@@ -70,12 +73,13 @@ const INTERVAL = /^(\d+) (second|minute|hour|day|week)s?$/;
 /** Used by a snapshot delete when the catalog records no file-deletion grace. */
 const DEFAULT_FILE_DELETION_GRACE = "1 day";
 
-/** An admin refusal: its HTTP status and the machine-readable `reason`. */
+/** An admin refusal: its HTTP status, the machine-readable `reason`, and the `detail` a caller can act on. */
 export class CatalogAdminError extends Error {
    constructor(
       readonly status: number,
       readonly reason: string,
       message: string,
+      readonly detail?: Record<string, unknown>,
    ) {
       super(message);
    }
@@ -828,7 +832,17 @@ export class CatalogAdmin {
          }
          try {
             return await fn({
-               pg: async (sql) => (await client.query(sql)).rows,
+               pg: async (sql) => {
+                  try {
+                     return (await client.query(sql)).rows;
+                  } catch (error) {
+                     // A read cut off by the lock's connection dying is a lost lock.
+                     if (!lost) throw error;
+                     throw loadBusy(
+                        `The lock on '${key}' was lost; retry the load.`,
+                     );
+                  }
+               },
                assertLockHeld: async () => {
                   try {
                      if (lost) throw new Error("connection lost");
@@ -853,7 +867,93 @@ export class CatalogAdmin {
       }
    }
 
+   /**
+    * Applies Parquet objects under the catalog's data path to a table by key
+    * (see {@link mergeStorageTable}), creating the table when it does not
+    * exist. Holds the table's lock for the whole load, then this process's
+    * load slot: either busy is refused (503 `LOAD_BUSY`), not waited on.
+    */
+   async loadTable(
+      name: string,
+      schema: string,
+      table: string,
+      body: unknown,
+   ): Promise<LoadResult> {
+      identifier(name, "catalog");
+      identifier(schema, "schema");
+      identifier(table, "table");
+      const request = loadRequest(body);
+      return this.withTableLock(
+         name,
+         schema,
+         table,
+         async ({ pg, assertLockHeld }) => {
+            await this.requireCatalog(pg, name);
+            await requireRecordedSchema(pg, name, schema);
+            const owner = await this.schemaOwner(pg, name);
+            let result: LoadResult;
+            try {
+               result = await withLoadSlot(() =>
+                  withStatementUsage(
+                     {
+                        environment: "",
+                        connection: name,
+                        catalog: name,
+                        surface: "load",
+                     },
+                     () =>
+                        mergeStorageTable({
+                           ...request,
+                           destinationName: name,
+                           destinationConnection: this.connection(name, owner),
+                           schemaName: schema,
+                           tableName: table,
+                           assertLockHeld,
+                        }),
+                     (r) => r.rowsInserted + r.rowsReplaced,
+                  ),
+               );
+            } catch (error) {
+               throw this.loadFailure(error);
+            }
+            logger.info("Loaded rows into a DuckLake table", {
+               catalog: name,
+               schema,
+               table,
+               loadId: request.loadId,
+               mode: request.mode,
+               objects: request.objects.length,
+               rowsInserted: result.rowsInserted,
+               rowsReplaced: result.rowsReplaced,
+               rowsDeleted: result.rowsDeleted,
+            });
+            return result;
+         },
+      );
+   }
+
    // ---- internals ----
+
+   /** A load's failure as an admin refusal: the load's own 422s, and DuckLake's commit conflict as a 409. */
+   private loadFailure(error: unknown): unknown {
+      if (error instanceof LoadRefusalError) {
+         return new CatalogAdminError(
+            422,
+            error.reason,
+            error.message,
+            error.detail,
+         );
+      }
+      const mapped = this.redacted(error);
+      if (
+         mapped instanceof Error &&
+         !(mapped instanceof CatalogAdminError) &&
+         /Transaction conflict/i.test(mapped.message)
+      ) {
+         return new CatalogAdminError(409, "LOAD_CONFLICT", mapped.message);
+      }
+      return mapped;
+   }
 
    /** The catalog as a DuckLake config with no data path: its recorded one is used. */
    private ducklake(
@@ -1208,12 +1308,140 @@ function tableSource(value: unknown): TableSource {
    };
 }
 
-/** A source may carry only its own shape's keys, as the spec's `additionalProperties: false` says. */
-function onlyKeys(source: Record<string, unknown>, allowed: string[]): void {
+/** An object may carry only its own shape's keys, as the spec's `additionalProperties: false` says; `prefix` is the path the refusal names them under. */
+function onlyKeys(
+   source: Record<string, unknown>,
+   allowed: string[],
+   prefix = "source.",
+): void {
    for (const key of Object.keys(source)) {
       if (!allowed.includes(key)) {
-         throw badRequest(`Unknown key 'source.${key}'.`);
+         throw badRequest(`Unknown key '${prefix}${key}'.`);
       }
+   }
+}
+
+/** A load's `loadId`: provenance only, so the alphabet is one a commit message and a log line carry as they are. */
+const LOAD_ID = /^[A-Za-z0-9._:-]{1,128}$/;
+/** Key and cursor columns are lowercase identifiers; the load matches them to the objects' columns by name, ignoring case. */
+const LOAD_COLUMN = /^[a-z_][a-z0-9_]*$/;
+const MAX_LOAD_OBJECTS = 1000;
+const MAX_LOAD_KEYS = 16;
+
+interface LoadRequest {
+   loadId: string;
+   mode: "merge" | "replace";
+   /** Empty for a keyless replace. */
+   key: string[];
+   objects: string[];
+   cursor?: string;
+   maxDeletedRows?: number;
+}
+
+/** A load's request body, validated: every key allowed, a `merge` keyed and never guarded, a `replace` guarded. */
+function loadRequest(value: unknown): LoadRequest {
+   const body = value as Record<string, unknown> | undefined;
+   if (!body || typeof body !== "object" || Array.isArray(body)) {
+      throw badRequest("The request body must be a JSON object.");
+   }
+   onlyKeys(
+      body,
+      ["loadId", "mode", "key", "objects", "cursor", "maxDeletedRows"],
+      "",
+   );
+   const { loadId, mode, cursor, maxDeletedRows } = body;
+   if (typeof loadId !== "string" || !LOAD_ID.test(loadId)) {
+      throw badRequest(
+         "'loadId' must be 1 to 128 characters of letters, digits, '.', '_', ':' and '-'.",
+      );
+   }
+   if (mode !== "merge" && mode !== "replace") {
+      throw badRequest("'mode' must be 'merge' or 'replace'.");
+   }
+   const key = stringList(body.key, "key", MAX_LOAD_KEYS, LOAD_COLUMN) ?? [];
+   if (body.key !== undefined && key.length === 0) {
+      throw badRequest("'key' must list at least one column.");
+   }
+   if (mode === "merge" && key.length === 0) {
+      throw badRequest("A merge needs a 'key'.");
+   }
+   if (mode === "merge" && maxDeletedRows !== undefined) {
+      throw badRequest("'maxDeletedRows' applies only to a replace.");
+   }
+   if (mode === "replace" && maxDeletedRows === undefined) {
+      throw badRequest("A replace needs 'maxDeletedRows'.");
+   }
+   if (
+      maxDeletedRows !== undefined &&
+      (typeof maxDeletedRows !== "number" ||
+         !Number.isSafeInteger(maxDeletedRows) ||
+         maxDeletedRows < 0)
+   ) {
+      throw badRequest("'maxDeletedRows' must be a non-negative integer.");
+   }
+   if (
+      cursor !== undefined &&
+      (typeof cursor !== "string" || !LOAD_COLUMN.test(cursor))
+   ) {
+      throw badRequest(
+         "'cursor' must be a lowercase column name ([a-z_][a-z0-9_]*).",
+      );
+   }
+   const objects = stringList(body.objects, "objects", MAX_LOAD_OBJECTS);
+   if (!objects || objects.length === 0) {
+      throw badRequest("'objects' must list at least one object.");
+   }
+   return {
+      loadId,
+      mode,
+      key,
+      objects,
+      ...(cursor !== undefined ? { cursor: cursor as string } : {}),
+      ...(maxDeletedRows !== undefined
+         ? { maxDeletedRows: maxDeletedRows as number }
+         : {}),
+   };
+}
+
+/** An optional list of distinct strings, at most `max` long, each matching `pattern` when given. */
+function stringList(
+   value: unknown,
+   what: string,
+   max: number,
+   pattern?: RegExp,
+): string[] | undefined {
+   if (value === undefined) return undefined;
+   if (
+      !Array.isArray(value) ||
+      value.length > max ||
+      value.some(
+         (v) =>
+            typeof v !== "string" || v === "" || (pattern && !pattern.test(v)),
+      ) ||
+      new Set(value).size !== value.length
+   ) {
+      throw badRequest(
+         `'${what}' must be a list of at most ${max} distinct ${pattern ? "lowercase column names ([a-z_][a-z0-9_]*)" : "object URIs"}.`,
+      );
+   }
+   return value as string[];
+}
+
+/** Refuses a schema the catalog does not record, read on the catalog database itself. */
+async function requireRecordedSchema(
+   pg: CatalogQuery,
+   catalog: string,
+   schema: string,
+): Promise<void> {
+   const found = await pg(
+      `SELECT 1 FROM ${pgIdent(catalog)}.ducklake_schema WHERE schema_name = ${pgLiteral(schema)} AND end_snapshot IS NULL`,
+   );
+   if (found.length === 0) {
+      throw new CatalogAdminError(
+         404,
+         "SCHEMA_NOT_FOUND",
+         `No schema '${schema}' in catalog '${catalog}'.`,
+      );
    }
 }
 

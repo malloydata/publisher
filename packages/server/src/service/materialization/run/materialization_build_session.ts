@@ -1971,13 +1971,14 @@ export async function writePartitionedTable(
 /**
  * Run a build's statements as one transaction: COMMIT when `body` returns,
  * ROLLBACK when it throws, which restores the previous generation of the
- * table. A failed rollback is logged, never raised over the error that caused
- * it.
+ * table. A failed rollback is logged as `rollbackFailure`, never raised over
+ * the error that caused it.
  */
-async function inTransaction<T>(
+export async function inTransaction<T>(
    session: DuckDBConnection,
    quotedTablePath: string,
    body: () => Promise<T>,
+   rollbackFailure = "Failed to roll back a storage build; the served generation may have been replaced",
 ): Promise<T> {
    await session.runSQL("BEGIN TRANSACTION");
    let result: T;
@@ -1988,17 +1989,13 @@ async function inTransaction<T>(
       try {
          await session.runSQL("ROLLBACK");
       } catch (rollbackErr) {
-         logger.warn(
-            "Failed to roll back a storage build; the served generation may " +
-               "have been replaced",
-            {
-               table: quotedTablePath,
-               code: errorCodeOf(rollbackErr),
-               // The build's error can quote its SQL or a value; it is
-               // rethrown to the run's record.
-               causeCode: errorCodeOf(buildErr),
-            },
-         );
+         logger.warn(rollbackFailure, {
+            table: quotedTablePath,
+            code: errorCodeOf(rollbackErr),
+            // The build's error can quote its SQL or a value; it is
+            // rethrown to the run's record.
+            causeCode: errorCodeOf(buildErr),
+         });
       }
       throw buildErr;
    }

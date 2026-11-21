@@ -58,6 +58,7 @@ function adminRoute(
                code: error.status,
                message: error.message,
                reason: error.reason,
+               ...(error.detail ? { detail: error.detail } : {}),
             });
             return;
          }
@@ -146,6 +147,20 @@ export function registerAdminRoutes(
          );
          res.status(created ? 201 : 200).json(result);
       }),
+   );
+   app.post(
+      `${table}/loads`,
+      adminRoute(
+         catalogs,
+         (c, req) =>
+            c.loadTable(
+               req.params.catalogName,
+               req.params.schemaName,
+               req.params.tableName,
+               req.body,
+            ),
+         { status: 201 },
+      ),
    );
    app.delete(
       table,

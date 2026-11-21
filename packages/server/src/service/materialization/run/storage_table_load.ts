@@ -3,9 +3,10 @@
 
 /**
  * Loading a file into a DuckLake destination as a table
- * ({@link loadStorageTable}), and copying a table between catalogs for a
- * migration ({@link copyStorageTable}), with the reader SQL and the refusals
- * around them. Read by catalog_admin.ts.
+ * ({@link loadStorageTable}), copying a table between catalogs for a
+ * migration ({@link copyStorageTable}), and applying Parquet objects to a table
+ * by key under a schema contract ({@link mergeStorageTable}), with the reader
+ * SQL and the refusals around them. Read by catalog_admin.ts.
  *
  * Effects: one DuckLake transaction per table on a transient read-write
  * session. A load reads only under the destination's data path, and renders
@@ -30,13 +31,17 @@ import {
    tablePartitionKeys,
    type PartitionKey,
 } from "../../connection";
+import { runInternalSQL } from "../../duckdb_lockdown";
 import {
    applyLoadSessionSettings,
    createLocalDataPaths,
+   inTransaction,
    lockDownDestinationSession,
+   pinSessionToUTC,
    withIsolatedSession,
    writePartitionedTable,
 } from "./materialization_build_session";
+import { nullSafeKeyMatch } from "./incremental_apply";
 import { quoteIdentifier } from "../../quoting";
 import { STORAGE_DIALECT } from "../domain/dialect";
 
@@ -169,6 +174,7 @@ export async function loadStorageTable(params: {
       {
          ...params,
          purpose: "load",
+         uris: [params.uri],
          extensions: params.format === "xlsx" ? ["excel"] : [],
       },
       (session) =>
@@ -179,8 +185,8 @@ export async function loadStorageTable(params: {
 }
 
 /**
- * The session an admin table write that reads one object runs on: an isolated
- * session with the load settings, the destination attached read-write, the
+ * The session an admin table write that reads objects runs on: an isolated
+ * session with the load settings, the destination attached read-write, every
  * object checked against the destination's data path (configured, or recorded by
  * the attach), `extensions` loaded, and the session confined to that path
  * (duckdb_lockdown.ts) before `fn` runs. The reader takes caller options, so
@@ -193,7 +199,7 @@ async function withLoadSession<T>(
       destinationConnection: ApiConnection;
       schemaName: string;
       tableName: string;
-      uri: string;
+      uris: readonly string[];
       extensions?: string[];
    },
    fn: (session: DuckDBConnection) => Promise<T>,
@@ -218,7 +224,7 @@ async function withLoadSession<T>(
    const ducklake = destinationConnection.ducklakeConnection;
    const configuredPath = ducklake.storage?.bucketUrl;
    if (configuredPath) {
-      assertUnderDataPath(params.uri, configuredPath);
+      for (const uri of params.uris) assertUnderDataPath(uri, configuredPath);
    }
 
    return withIsolatedSession(
@@ -232,7 +238,9 @@ async function withLoadSession<T>(
                destinationName,
                ducklake.catalog?.metadataSchema,
             );
-            assertUnderDataPath(params.uri, recorded.data_path ?? "");
+            for (const uri of params.uris) {
+               assertUnderDataPath(uri, recorded.data_path ?? "");
+            }
          }
          for (const extension of params.extensions ?? []) {
             await installAndLoadExtension(session, extension);
@@ -492,20 +500,37 @@ export async function writeTableAs(
    // data_inlining_row_limit (dataInliningRowLimit on POST/PATCH) keeps it, so a
    // table under that limit would sit as rows in the catalog database,
    // unencrypted whatever the catalog's encryption. Flush them to its Parquet.
-   await session.runSQL(
-      `CALL ducklake_flush_inlined_data('${escapeSQL(destinationName)}', schema_name => '${escapeSQL(schemaName)}', table_name => '${escapeSQL(tableName)}')`,
-   );
+   await flushInlinedRows(session, destinationName, schemaName, tableName);
    const counted = rows(
       await session.runSQL(`SELECT count(*) AS n FROM ${target}`),
    );
-   const described = rows(await session.runSQL(`DESCRIBE ${target}`));
    return {
       rowCount: Number(counted[0]?.n ?? 0),
-      columns: described.map((r) => ({
-         name: String(r.column_name),
-         type: String(r.column_type),
-      })),
+      columns: await describeColumns(session, target),
    };
+}
+
+/** Moves the rows a table holds inlined in the catalog database into Parquet; a table with none is untouched. */
+async function flushInlinedRows(
+   session: DuckDBConnection,
+   destinationName: string,
+   schemaName: string,
+   tableName: string,
+): Promise<void> {
+   await session.runSQL(
+      `CALL ducklake_flush_inlined_data('${escapeSQL(destinationName)}', schema_name => '${escapeSQL(schemaName)}', table_name => '${escapeSQL(tableName)}')`,
+   );
+}
+
+/** The columns of a table or temporary table, as DuckDB names and types them. */
+async function describeColumns(
+   session: DuckDBConnection,
+   relation: string,
+): Promise<{ name: string; type: string }[]> {
+   return rows(await session.runSQL(`DESCRIBE ${relation}`)).map((r) => ({
+      name: String(r.column_name),
+      type: String(r.column_type),
+   }));
 }
 
 function rows(result: unknown): Record<string, unknown>[] {
@@ -513,4 +538,738 @@ function rows(result: unknown): Record<string, unknown>[] {
       | { rows?: Record<string, unknown>[] }
       | Record<string, unknown>[];
    return Array.isArray(r) ? r : (r?.rows ?? []);
+}
+
+/** What a keyed load answers: counts of rows, with the cursor column's greatest value. */
+export interface LoadResult {
+   rowsInserted: number;
+   rowsReplaced: number;
+   rowsUnchanged: number;
+   rowsDeleted: number;
+   rowCount: number;
+   cursorMax: string | null;
+   cursorType?: string;
+}
+
+type LoadRefusalReason =
+   | "LOAD_SCHEMA_CONTRACT"
+   | "LOAD_ROW_DROP_GUARD"
+   | "LOAD_OBJECT_UNREADABLE";
+
+/** A keyed load the request's objects or the table's contract refuse: 422 with `reason`, and `detail` for the caller to act on. */
+export class LoadRefusalError extends Error {
+   constructor(
+      readonly reason: LoadRefusalReason,
+      message: string,
+      readonly detail?: Record<string, unknown>,
+   ) {
+      super(message);
+   }
+}
+
+interface Column {
+   name: string;
+   type: string;
+}
+
+/** A column of the table a load writes, as the load's statements read it. */
+interface LoadColumn {
+   /** The table's spelling when it has the column, else the objects'. */
+   name: string;
+   inStage: boolean;
+   inTable: boolean;
+}
+
+/** The columns a load settles on once the objects are checked against the table. */
+interface LoadLayout {
+   keys: string[];
+   /** Every non-key column of the table after the load. */
+   columns: LoadColumn[];
+   /** Columns of the objects the table lacks, added before the rows are written. */
+   added: Column[];
+   cursor?: { name: string; type: string; maxSql: string };
+}
+
+const STAGE = quoteIdentifier("__publisher_stage", STORAGE_DIALECT);
+const CHANGES = quoteIdentifier("__publisher_changes", STORAGE_DIALECT);
+/** Reserved for the load's own columns; a column of the objects may not start with it. */
+const HELPER_PREFIX = "__publisher_";
+
+const q = (name: string) => quoteIdentifier(name, STORAGE_DIALECT);
+const quotedList = (values: readonly string[]) =>
+   values.map((v) => `'${escapeSQL(v)}'`).join(", ");
+/** DuckDB matches names by ASCII case, so a collision is judged the same way. */
+const fold = (name: string) => name.replace(/[A-Z]/g, (c) => c.toLowerCase());
+
+const SIGNED_INTEGERS = ["TINYINT", "SMALLINT", "INTEGER", "BIGINT", "HUGEINT"];
+const UNSIGNED_INTEGERS = [
+   "UTINYINT",
+   "USMALLINT",
+   "UINTEGER",
+   "UBIGINT",
+   "UHUGEINT",
+];
+
+/** Whether a value of `fromType` goes into an `intoType` column without loss: the same type, a wider integer of the same signedness, or FLOAT into DOUBLE. */
+function compatible(intoType: string, fromType: string): boolean {
+   if (fold(intoType) === fold(fromType)) return true;
+   const [into, from] = [intoType.toUpperCase(), fromType.toUpperCase()];
+   if (into === "DOUBLE" && from === "FLOAT") return true;
+   return [SIGNED_INTEGERS, UNSIGNED_INTEGERS].some(
+      (family) =>
+         family.includes(into) &&
+         family.includes(from) &&
+         family.indexOf(from) <= family.indexOf(into),
+   );
+}
+
+type CursorKind =
+   | "integer"
+   | "date"
+   | "timestamp"
+   | "timestamp_ns"
+   | "timestamptz";
+
+function cursorKind(type: string): CursorKind | undefined {
+   const t = type.toUpperCase();
+   if (SIGNED_INTEGERS.includes(t) || UNSIGNED_INTEGERS.includes(t)) {
+      return "integer";
+   }
+   if (t === "DATE") return "date";
+   if (["TIMESTAMP", "TIMESTAMP_S", "TIMESTAMP_MS"].includes(t)) {
+      return "timestamp";
+   }
+   if (t === "TIMESTAMP_NS") return "timestamp_ns";
+   if (t === "TIMESTAMP WITH TIME ZONE") return "timestamptz";
+   return undefined;
+}
+
+/** The cursor's greatest value as text: an integer exactly, a date or time as ISO 8601 (UTC for a zoned one). */
+function cursorMaxSql(name: string, kind: CursorKind): string {
+   const max = `max(${q(name)})`;
+   switch (kind) {
+      case "integer":
+         return `${max}::VARCHAR`;
+      case "date":
+         return `strftime(${max}, '%Y-%m-%d')`;
+      case "timestamp":
+         return `strftime(${max}, '%Y-%m-%dT%H:%M:%S.%f')`;
+      case "timestamp_ns":
+         return `strftime(${max}, '%Y-%m-%dT%H:%M:%S.%n')`;
+      case "timestamptz":
+         return `strftime(${max} AT TIME ZONE 'UTC', '%Y-%m-%dT%H:%M:%S.%fZ')`;
+   }
+}
+
+function contractRefusal(
+   detail: string,
+   column: string,
+   message: string,
+   types: { tableType?: string; loadType?: string } = {},
+): LoadRefusalError {
+   return new LoadRefusalError("LOAD_SCHEMA_CONTRACT", message, {
+      column,
+      tableType: types.tableType ?? null,
+      loadType: types.loadType ?? null,
+      detail,
+   });
+}
+
+/**
+ * Settles a load's columns against the table's, or refuses it: a column the
+ * table lacks is added; one it has must take the objects' type unchanged or
+ * widened (an integer to a wider one of its signedness, FLOAT to DOUBLE),
+ * because a narrowing insert casts without error. Every key must be a column
+ * of both, and the cursor a column of the objects the cursor kinds cover.
+ * `table` is null for a table that does not exist yet.
+ */
+export function loadLayout(
+   params: { key: readonly string[]; cursor?: string },
+   stage: readonly Column[],
+   table: readonly Column[] | null,
+): LoadLayout {
+   if (stage.length === 0) {
+      throw contractRefusal(
+         "no_columns",
+         "",
+         "The objects have no column to load.",
+      );
+   }
+   const stageByName = new Map(stage.map((c) => [fold(c.name), c]));
+   const tableByName = new Map((table ?? []).map((c) => [fold(c.name), c]));
+   const columns: LoadColumn[] = [];
+   const added: Column[] = [];
+   for (const s of stage) {
+      const t = tableByName.get(fold(s.name));
+      if (t && !compatible(t.type, s.type)) {
+         throw contractRefusal(
+            "type_change",
+            t.name,
+            `Column '${t.name}' is ${t.type} in the table and ${s.type} in the objects.`,
+            { tableType: t.type, loadType: s.type },
+         );
+      }
+      if (!t && table) added.push(s);
+      columns.push({ name: t?.name ?? s.name, inStage: true, inTable: !!t });
+   }
+   for (const t of table ?? []) {
+      if (!stageByName.has(fold(t.name))) {
+         columns.push({ name: t.name, inStage: false, inTable: true });
+      }
+   }
+   const keys = params.key.map((key) => {
+      const s = stageByName.get(fold(key));
+      const t = tableByName.get(fold(key));
+      if (!s || (table && !t)) {
+         throw contractRefusal(
+            "missing_key",
+            key,
+            `Key column '${key}' is not a column of ${s ? "the table" : "the objects"}.`,
+            { tableType: t?.type, loadType: s?.type },
+         );
+      }
+      return t?.name ?? s.name;
+   });
+   const keyNames = new Set(keys.map(fold));
+   return {
+      keys,
+      columns: columns.filter((c) => !keyNames.has(fold(c.name))),
+      added,
+      cursor: cursorLayout(params.cursor, stageByName, tableByName),
+   };
+}
+
+function cursorLayout(
+   cursor: string | undefined,
+   stageByName: Map<string, Column>,
+   tableByName: Map<string, Column>,
+): LoadLayout["cursor"] {
+   if (cursor === undefined) return undefined;
+   const s = stageByName.get(fold(cursor));
+   if (!s) {
+      throw contractRefusal(
+         "missing_cursor",
+         cursor,
+         `Cursor column '${cursor}' is not a column of the objects.`,
+      );
+   }
+   const t = tableByName.get(fold(cursor));
+   const kind = cursorKind(s.type);
+   if (!kind || (t && !cursorKind(t.type))) {
+      throw contractRefusal(
+         "cursor_type",
+         cursor,
+         `Cursor column '${cursor}' must be an integer, DATE or TIMESTAMP column.`,
+         { tableType: t?.type, loadType: s.type },
+      );
+   }
+   return { name: s.name, type: s.type, maxSql: cursorMaxSql(s.name, kind) };
+}
+
+/** One Parquet schema as `parquet_schema` lists it: flattened pre-order, the root first, each element with its child count and logical type. */
+interface SchemaShape {
+   names: readonly string[];
+   kids: readonly number[];
+   kinds: readonly (string | null)[];
+}
+
+/** The names a load's own statements use for the stage's rows, besides `__publisher_…`. */
+const RESERVED_NAMES = ["file_row_number", "rowid"];
+
+/**
+ * The columns the objects hold, from their schemas alone (see
+ * {@link SchemaShape}; one per distinct schema, not one per object): the
+ * columns at the top of each, shape by shape. A column typed NULL in every
+ * object is absent. A name the load reserves, one DuckDB cannot tell from
+ * another by case (it renames the second `A_1`), or one holding a NUL is
+ * refused.
+ */
+export function sourceColumns(shapes: readonly SchemaShape[]): string[] {
+   const nullTyped = new Map<string, boolean>();
+   for (const { names, kids, kinds } of shapes) {
+      const end = (i: number): number => {
+         let next = i + 1;
+         for (let child = 0; child < (kids[i] ?? 0); child++) next = end(next);
+         return next;
+      };
+      const seen = new Set<string>();
+      let i = 1;
+      for (let n = 0; n < (kids[0] ?? 0) && i < names.length; n++) {
+         const name = names[i];
+         if (seen.has(name)) {
+            throw contractRefusal(
+               "case_collision",
+               fold(name),
+               `Column '${name}' appears twice in an object.`,
+            );
+         }
+         seen.add(name);
+         nullTyped.set(
+            name,
+            (nullTyped.get(name) ?? true) && kinds[i] === "UNKNOWN",
+         );
+         i = end(i);
+      }
+   }
+   const present = [...nullTyped].filter(([, absent]) => !absent);
+   const byFold = new Map<string, string[]>();
+   for (const [name] of present) {
+      byFold.set(fold(name), [...(byFold.get(fold(name)) ?? []), name]);
+      if (
+         name.includes("\0") ||
+         fold(name).startsWith(HELPER_PREFIX) ||
+         RESERVED_NAMES.includes(fold(name))
+      ) {
+         throw contractRefusal(
+            "reserved_name",
+            name,
+            "A column name of the objects is reserved by the load or cannot be written.",
+         );
+      }
+   }
+   for (const [folded, spellings] of byFold) {
+      if (spellings.length > 1) {
+         throw contractRefusal(
+            "case_collision",
+            folded,
+            `Columns ${spellings.map((s) => `'${s}'`).join(" and ")} differ only by case.`,
+         );
+      }
+   }
+   return present.map(([name]) => name);
+}
+
+/** The schemas of the objects, one row per distinct schema rather than one per object, in a fixed order. */
+async function readSchemaShapes(
+   session: DuckDBConnection,
+   uris: readonly string[],
+): Promise<SchemaShape[]> {
+   const shapes = rows(
+      await session.runSQL(
+         "SELECT names, kids, kinds FROM (SELECT list(name) AS names, list(coalesce(num_children, 0)) AS kids, " +
+            `list(logical_type) AS kinds FROM parquet_schema([${quotedList(uris)}]) GROUP BY file_name) ` +
+            "GROUP BY names, kids, kinds ORDER BY names, kids, kinds",
+      ),
+   );
+   return shapes.map((shape) => ({
+      names: shape.names as string[],
+      kids: (shape.kids as unknown[]).map(Number),
+      kinds: shape.kinds as (string | null)[],
+   }));
+}
+
+/** A failure to read an object (missing, not Parquet, a storage error), as a refusal that names no URI. */
+function objectUnreadable(
+   error: unknown,
+   uris: readonly string[],
+): LoadRefusalError | null {
+   if (
+      !(error instanceof Error) ||
+      !/^(IO|HTTP|Invalid Input|Conversion|Invalid) Error:|Failed to read Parquet file/.test(
+         error.message,
+      )
+   ) {
+      return null;
+   }
+   logInternalFailure("Load could not read an object", error, "warn");
+   const object = uris.findIndex((uri) => error.message.includes(uri));
+   return new LoadRefusalError(
+      "LOAD_OBJECT_UNREADABLE",
+      object < 0
+         ? "An object of the load could not be read."
+         : `objects[${object}] could not be read.`,
+      object < 0 ? undefined : { object },
+   );
+}
+
+/**
+ * Reads the objects into a temporary stage keyed by their position in the
+ * request, which decides which of two rows of one key is later, and returns
+ * its columns. Each row also carries its place in its own object. The join to
+ * the positions is one hash join, where a per-row search of the list costs
+ * seconds per million rows.
+ */
+async function createStage(
+   session: DuckDBConnection,
+   uris: readonly string[],
+): Promise<Column[]> {
+   try {
+      const columns = sourceColumns(await readSchemaShapes(session, uris));
+      const positions = uris
+         .map((uri, i) => `('${escapeSQL(uri)}', ${i})`)
+         .join(", ");
+      // Remote objects wait on storage, not the CPU: more threads for the read alone.
+      await session.runSQL("SET threads = 4");
+      try {
+         await session.runSQL(
+            `CREATE TEMP TABLE ${STAGE} AS SELECT ${columns.map((c) => `__r.${q(c)}`).join(", ")}, ` +
+               "__u.pos AS __publisher_pos, __r.file_row_number AS __publisher_row " +
+               `FROM read_parquet([${quotedList(uris)}], union_by_name = true, filename = '__publisher_file', file_row_number = true) AS __r ` +
+               `LEFT JOIN (VALUES ${positions}) AS __u(uri, pos) ON __r.__publisher_file = __u.uri`,
+         );
+      } finally {
+         try {
+            await session.runSQL("RESET threads");
+         } catch {
+            // The session is this load's own and is disposed with it.
+         }
+      }
+   } catch (error) {
+      throw objectUnreadable(error, uris) ?? error;
+   }
+   return (await describeColumns(session, STAGE)).filter(
+      (c) => !c.name.startsWith(HELPER_PREFIX),
+   );
+}
+
+/**
+ * The stage's row count and, when it can hold two rows of one key, the later
+ * row of each (by object position, then place in the object). Refuses an
+ * object whose name is not the URI it was given and a NULL key. Returns the
+ * rows left and the cursor's greatest value over them.
+ */
+async function settleStage(
+   session: DuckDBConnection,
+   layout: LoadLayout,
+): Promise<{ rows: number; cursorMax: string | null }> {
+   const keys = layout.keys.map(q);
+   const measure = async () => {
+      const [r] = rows(
+         await session.runSQL(
+            "SELECT count(*) AS n, count(*) FILTER (WHERE __publisher_pos IS NULL) AS strays, " +
+               (keys.length > 0
+                  ? `count(*) FILTER (WHERE ${keys.map((k) => `${k} IS NULL`).join(" OR ")}) AS null_keys, ` +
+                    `count(DISTINCT ${keys.length === 1 ? keys[0] : `(${keys.join(", ")})`}) AS distinct_keys, `
+                  : "0 AS null_keys, 0 AS distinct_keys, ") +
+               `${layout.cursor?.maxSql ?? "NULL"} AS cursor_max FROM ${STAGE}`,
+         ),
+      );
+      return {
+         rows: Number(r.n),
+         strays: Number(r.strays),
+         nullKeys: Number(r.null_keys),
+         distinctKeys: Number(r.distinct_keys),
+         cursorMax: r.cursor_max == null ? null : String(r.cursor_max),
+      };
+   };
+   const stats = await measure();
+   if (stats.strays > 0) {
+      throw new BadRequestError(
+         "An object's name is not the URI it was given in 'objects'.",
+      );
+   }
+   if (stats.nullKeys > 0) {
+      throw contractRefusal(
+         "null_key",
+         layout.keys.join(", "),
+         "The objects hold a row with a NULL key.",
+      );
+   }
+   if (keys.length === 0 || stats.rows === stats.distinctKeys) return stats;
+   await session.runSQL(
+      `DELETE FROM ${STAGE} WHERE rowid IN (SELECT rowid FROM (SELECT rowid, row_number() OVER ` +
+         `(PARTITION BY ${keys.join(", ")} ORDER BY __publisher_pos DESC, __publisher_row DESC) AS n ` +
+         `FROM ${STAGE}) WHERE n > 1)`,
+   );
+   const { rows: kept, cursorMax } = await measure();
+   return { rows: kept, cursorMax };
+}
+
+/**
+ * The statements that plan and apply a keyed load of the stage onto `target`.
+ * `changes` holds one row per key the load touches (new, changed, and for a
+ * replace deleted), joined from the stage on plain `=`: a NULL-safe join
+ * condition plans as a nested loop. A key with several stored rows is
+ * changed, which collapses the copies. The stage's keys are never NULL; only
+ * the delete, which must reach stored rows of a NULL key, matches NULLs.
+ */
+export function mergeStatements(plan: {
+   target: string;
+   mode: "merge" | "replace";
+   keys: readonly string[];
+   columns: readonly LoadColumn[];
+}): { changes: string; delete: string; insert: string } {
+   const { target, keys } = plan;
+   const on = keys.map((k) => `__s.${q(k)} = __t.${q(k)}`).join(" AND ");
+   const differs =
+      plan.columns
+         .map(
+            (c) =>
+               `${c.inTable ? `__t.${q(c.name)}` : "NULL"} IS DISTINCT FROM ${c.inStage ? `__s.${q(c.name)}` : "NULL"}`,
+         )
+         .join(" OR ") || "FALSE";
+   const stored = `(SELECT *, TRUE AS __publisher_present FROM ${target}) AS __t`;
+   // A replace also sees the stored keys the stage lacks.
+   const replace = plan.mode === "replace";
+   const key = (k: string) =>
+      replace ? `coalesce(__s.${q(k)}, __t.${q(k)})` : `__s.${q(k)}`;
+   const status = replace
+      ? "CASE WHEN count(__s.__publisher_pos) = 0 THEN 'deleted' WHEN count(__t.__publisher_present) = 0 THEN 'new' ELSE 'changed' END"
+      : "CASE WHEN count(__t.__publisher_present) = 0 THEN 'new' ELSE 'changed' END";
+   const touched = [
+      replace ? "count(__s.__publisher_pos) = 0" : undefined,
+      "count(__t.__publisher_present) <> 1",
+      `bool_or(${differs})`,
+   ]
+      .filter(Boolean)
+      .join(" OR ");
+   const columns = [
+      ...keys,
+      ...plan.columns.filter((c) => c.inStage).map((c) => c.name),
+   ];
+   return {
+      changes:
+         `CREATE TEMP TABLE ${CHANGES} AS SELECT ${keys.map((k) => `${key(k)} AS ${q(k)}`).join(", ")}, ` +
+         `${status} AS __publisher_status, count(__t.__publisher_present) AS __publisher_stored ` +
+         `FROM ${STAGE} AS __s ${replace ? "FULL" : "LEFT"} JOIN ${stored} ON ${on} ` +
+         `GROUP BY ${keys.map(key).join(", ")} HAVING ${touched}`,
+      delete:
+         `DELETE FROM ${target} AS __t WHERE EXISTS (SELECT 1 FROM ${CHANGES} AS __s WHERE ` +
+         `__s.__publisher_status <> 'new' AND ${nullSafeKeyMatch(keys.map(q), "__t", "__s")})`,
+      insert:
+         `INSERT INTO ${target} (${columns.map(q).join(", ")}) SELECT ${columns.map((c) => `__s.${q(c)}`).join(", ")} ` +
+         `FROM ${STAGE} AS __s WHERE EXISTS (SELECT 1 FROM ${CHANGES} AS __c WHERE ` +
+         `__c.__publisher_status <> 'deleted' AND ${keys.map((k) => `__s.${q(k)} = __c.${q(k)}`).join(" AND ")})`,
+   };
+}
+
+/** What a load will do, counted in rows before anything is written. */
+interface LoadPlan {
+   inserted: number;
+   replaced: number;
+   deleted: number;
+   unchanged: number;
+}
+
+async function planKeyedLoad(
+   session: DuckDBConnection,
+   params: KeyedLoadParams,
+   layout: LoadLayout,
+   target: string,
+   stageRows: number,
+): Promise<LoadPlan> {
+   await session.runSQL(
+      mergeStatements({
+         target,
+         mode: params.mode,
+         keys: layout.keys,
+         columns: layout.columns,
+      }).changes,
+   );
+   const [r] = rows(
+      await session.runSQL(
+         "SELECT count(*) FILTER (WHERE __publisher_status = 'new') AS inserted, " +
+            "count(*) FILTER (WHERE __publisher_status = 'changed') AS replaced, " +
+            "coalesce(sum(__publisher_stored) FILTER (WHERE __publisher_status = 'changed'), 0) AS changed_stored, " +
+            "coalesce(sum(__publisher_stored) FILTER (WHERE __publisher_status = 'deleted'), 0) AS deleted_stored " +
+            `FROM ${CHANGES}`,
+      ),
+   );
+   const [inserted, replaced] = [Number(r.inserted), Number(r.replaced)];
+   return {
+      inserted,
+      replaced,
+      // Stored rows that leave: absent keys, and the copies beyond one of a key rewritten.
+      deleted: Number(r.changed_stored) - replaced + Number(r.deleted_stored),
+      unchanged: stageRows - inserted - replaced,
+   };
+}
+
+/** A keyless replace: the table's rows and the stage's compared as bags, and every row replaced when they differ. */
+async function planKeylessLoad(
+   session: DuckDBConnection,
+   layout: LoadLayout,
+   target: string,
+   stageRows: number,
+   rowsBefore: number,
+): Promise<LoadPlan> {
+   const side = (from: string, has: (c: LoadColumn) => boolean, sign: number) =>
+      `SELECT ${layout.columns.map((c) => (has(c) ? q(c.name) : `NULL AS ${q(c.name)}`)).join(", ")}, ${sign} AS __publisher_side FROM ${from}`;
+   const [r] = rows(
+      await session.runSQL(
+         `SELECT count(*) AS n FROM (SELECT ${layout.columns.map((c) => q(c.name)).join(", ")}, sum(__publisher_side) AS net FROM (` +
+            `${side(STAGE, (c) => c.inStage, 1)} UNION ALL ${side(target, (c) => c.inTable, -1)}` +
+            ") GROUP BY ALL HAVING sum(__publisher_side) <> 0)",
+      ),
+   );
+   if (Number(r.n) === 0) {
+      return { inserted: 0, replaced: 0, deleted: 0, unchanged: stageRows };
+   }
+   return {
+      inserted: Math.max(0, stageRows - rowsBefore),
+      replaced: Math.min(rowsBefore, stageRows),
+      deleted: Math.max(0, rowsBefore - stageRows),
+      unchanged: 0,
+   };
+}
+
+interface KeyedLoadParams {
+   destinationName: string;
+   destinationConnection: ApiConnection;
+   schemaName: string;
+   tableName: string;
+   loadId: string;
+   mode: "merge" | "replace";
+   /** Empty for a keyless replace. */
+   key: string[];
+   objects: string[];
+   cursor?: string;
+   maxDeletedRows?: number;
+   /** Throws when the caller's exclusion on the table is gone; called right before the commit. */
+   assertLockHeld: () => Promise<void>;
+}
+
+/**
+ * Applies Parquet objects to a table of a DuckLake destination by key,
+ * leaving every row they do not change as it is: a retry after a commit finds
+ * nothing to do and writes nothing.
+ *
+ * - `merge` upserts by `key`; `replace` makes the table equal to the objects,
+ *   by `key`, or as a whole table when it has none, and is refused when it
+ *   would delete more rows than `maxDeletedRows`.
+ * - The objects are read once into a stage that keeps the latest row of a
+ *   key; they are checked against the table's columns (see {@link loadLayout}).
+ * - Only a load that changes something opens a transaction (one snapshot): the
+ *   rows are written, and the caller's lock confirmed, before the commit.
+ * - The caller holds the table's exclusion and the load slot: DuckLake checks
+ *   a commit's conflicts per table, not per key, so it would let two loads of
+ *   one new key both commit.
+ */
+export async function mergeStorageTable(
+   params: KeyedLoadParams,
+): Promise<LoadResult> {
+   const { destinationName, schemaName, tableName } = params;
+   return withLoadSession(
+      { ...params, purpose: "load", uris: params.objects },
+      async (session) => {
+         await session.runSQL(
+            "SET ducklake_default_data_inlining_row_limit = 0",
+         );
+         await pinSessionToUTC(session);
+         const target = [destinationName, schemaName, tableName]
+            .map(q)
+            .join(".");
+         const stageColumns = await createStage(session, params.objects);
+         const exists =
+            rows(
+               await session.runSQL(
+                  `SELECT 1 FROM duckdb_tables() WHERE database_name = '${escapeSQL(destinationName)}' ` +
+                     `AND lower(schema_name) = lower('${escapeSQL(schemaName)}') AND lower(table_name) = lower('${escapeSQL(tableName)}')`,
+               ),
+            ).length > 0;
+         const layout = loadLayout(
+            params,
+            stageColumns,
+            exists ? await describeColumns(session, target) : null,
+         );
+         const stats = await settleStage(session, layout);
+         const rowsBefore = exists
+            ? Number(
+                 rows(
+                    await session.runSQL(`SELECT count(*) AS n FROM ${target}`),
+                 )[0].n,
+              )
+            : 0;
+         const plan: LoadPlan = !exists
+            ? { inserted: stats.rows, replaced: 0, deleted: 0, unchanged: 0 }
+            : params.key.length > 0
+              ? await planKeyedLoad(session, params, layout, target, stats.rows)
+              : await planKeylessLoad(
+                   session,
+                   layout,
+                   target,
+                   stats.rows,
+                   rowsBefore,
+                );
+         if (
+            params.mode === "replace" &&
+            plan.deleted > (params.maxDeletedRows ?? 0)
+         ) {
+            throw new LoadRefusalError(
+               "LOAD_ROW_DROP_GUARD",
+               `The load would delete ${plan.deleted} of the table's ${rowsBefore} rows, more than maxDeletedRows (${params.maxDeletedRows ?? 0}).`,
+               {
+                  wouldDelete: plan.deleted,
+                  rowsBefore,
+                  maxDeletedRows: params.maxDeletedRows ?? 0,
+               },
+            );
+         }
+         if (!exists || plan.inserted + plan.replaced + plan.deleted > 0) {
+            await applyLoad(session, params, layout, target, exists);
+         }
+         await flushInlinedRows(
+            session,
+            destinationName,
+            schemaName,
+            tableName,
+         );
+         return {
+            rowsInserted: plan.inserted,
+            rowsReplaced: plan.replaced,
+            rowsUnchanged: plan.unchanged,
+            rowsDeleted: plan.deleted,
+            rowCount: rowsBefore + plan.inserted - plan.deleted,
+            cursorMax: stats.cursorMax,
+            ...(layout.cursor ? { cursorType: layout.cursor.type } : {}),
+         };
+      },
+   );
+}
+
+/** Writes the stage to the table in one transaction: the new columns, the stale rows deleted, the new and changed rows inserted, the commit message set. */
+async function applyLoad(
+   session: DuckDBConnection,
+   params: KeyedLoadParams,
+   layout: LoadLayout,
+   target: string,
+   exists: boolean,
+): Promise<void> {
+   const written = [
+      ...layout.keys,
+      ...layout.columns.filter((c) => c.inStage).map((c) => c.name),
+   ];
+   const keyed = params.key.length > 0;
+   const statements = keyed
+      ? mergeStatements({
+           target,
+           mode: params.mode,
+           keys: layout.keys,
+           columns: layout.columns,
+        })
+      : {
+           delete: `DELETE FROM ${target}`,
+           insert: `INSERT INTO ${target} (${written.map(q).join(", ")}) SELECT ${written.map(q).join(", ")} FROM ${STAGE}`,
+        };
+   const message = [
+      "load",
+      `${params.schemaName}.${params.tableName}`,
+      params.loadId,
+   ].join(":");
+   await inTransaction(
+      session,
+      target,
+      async () => {
+         if (!exists) {
+            await session.runSQL(
+               `CREATE TABLE ${target} AS SELECT ${written.map(q).join(", ")} FROM ${STAGE}`,
+            );
+         } else {
+            for (const column of layout.added) {
+               await session.runSQL(
+                  `ALTER TABLE ${target} ADD COLUMN ${q(column.name)} ${column.type}`,
+               );
+            }
+            await session.runSQL(statements.delete);
+            await session.runSQL(statements.insert);
+         }
+         await runInternalSQL(
+            session,
+            `CALL ${q(params.destinationName)}.set_commit_message('publisher-admin', ` +
+               `'${escapeSQL(message)}')`,
+         );
+         await params.assertLockHeld();
+      },
+      "Failed to roll back a table load; the load was not committed",
+   );
 }

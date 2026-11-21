@@ -148,6 +148,52 @@ describe("the admin listener", () => {
       expect(ifAbsent).toBe(true);
    });
 
+   it("routes a load POST to 201 with the body as given, and answers a refusal's detail", async () => {
+      const seen: unknown[] = [];
+      let refuse: CatalogAdminError | undefined = undefined;
+      const app = createAdminApp(
+         catalogs({
+            loadTable: async (c, s, t, body) => {
+               seen.push([c, s, t, body]);
+               if (refuse) throw refuse;
+               return {
+                  rowsInserted: 1,
+                  rowsReplaced: 0,
+                  rowsUnchanged: 0,
+                  rowsDeleted: 0,
+                  rowCount: 1,
+                  cursorMax: null,
+               };
+            },
+         }),
+         watch,
+      );
+      const path = "/api/v0/catalogs/ds_x/schemas/main/tables/t/loads";
+      const body = {
+         loadId: "r:1",
+         mode: "merge",
+         key: ["id"],
+         objects: ["o"],
+      };
+      const ok = await request(app).post(path).send(body);
+      expect(ok.status).toBe(201);
+      expect(ok.body.rowsInserted).toBe(1);
+      expect(seen).toEqual([["ds_x", "main", "t", body]]);
+      refuse = new CatalogAdminError(422, "LOAD_ROW_DROP_GUARD", "too many", {
+         wouldDelete: 4,
+         rowsBefore: 5,
+         maxDeletedRows: 3,
+      });
+      const refused = await request(app).post(path).send(body);
+      expect(refused.status).toBe(422);
+      expect(refused.body).toEqual({
+         code: 422,
+         message: "too many",
+         reason: "LOAD_ROW_DROP_GUARD",
+         detail: { wouldDelete: 4, rowsBefore: 5, maxDeletedRows: 3 },
+      });
+   });
+
    it("routes a schema PUT to 201 or 200, passes If-None-Match, and maps a refusal to its reason", async () => {
       let created = true;
       const seen: unknown[][] = [];
