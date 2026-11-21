@@ -154,6 +154,44 @@ describe("gateReads: the row scope", () => {
       expect(gateReads(scopedJoin, [], undefined, STORED).scoped).toBe(true);
    });
 
+   it("leaves out the query of a joined source the answer's compile re-rooted, read or not", () => {
+      const root = {
+         ...ACCOUNTS,
+         sourceID: "root@m",
+         fields: [...ACCOUNTS.fields, { ...stored, name: "s", join: "one" }],
+      };
+      const ON_TABLES = new Set(["stored@m"]);
+      // Unread and not re-rooted: its query is walked, to `amount`.
+      expect(gateReads(root, []).columns).toEqual([["amount"]]);
+      const reads = gateReads(root, [], undefined, new Set(), [], ON_TABLES);
+      expect(reads.scoped).toBe(false);
+      expect(reads.columns).toEqual([]);
+      // Its own `where:`, applied on read, is still judged.
+      const scopedJoin = {
+         ...root,
+         fields: [
+            ...ACCOUNTS.fields,
+            { ...stored, name: "s", join: "one", filterList: [termOn("acct")] },
+         ],
+      };
+      const own = gateReads(
+         scopedJoin,
+         [],
+         undefined,
+         new Set(),
+         [],
+         ON_TABLES,
+      );
+      expect(own.scoped).toBe(true);
+      expect(own.columns.flat()).toContain("s__acct");
+      expect(own.columns.flat()).not.toContain("amount");
+      // The entry point itself is not a join: re-rooted but unread, its own
+      // query is still walked.
+      expect(
+         gateReads(stored, [], undefined, new Set(), [], ON_TABLES).columns,
+      ).toEqual([["amount"]]);
+   });
+
    it("walks the whole query of a source extending a stored one", () => {
       const extended = { ...stored, sourceID: "extended@m" };
       const reads = gateReads(extended, [], undefined, STORED);

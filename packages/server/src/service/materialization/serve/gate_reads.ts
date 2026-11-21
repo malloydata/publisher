@@ -342,6 +342,11 @@ class GateReadWalk {
    constructor(
       private readonly modelDef: unknown,
       private readonly stored: ReadonlySet<string>,
+      /**
+       * The sources the answer's compile re-rooted on their stored tables,
+       * by `sourceID`, read or not ({@link scopeJoins}).
+       */
+      private readonly rerooted: ReadonlySet<string> = new Set(),
    ) {}
 
    /** A given's declared type, by its id in the model, or undefined. */
@@ -799,6 +804,8 @@ class GateReadWalk {
       at: (path: readonly string[]) => void,
       /** `at` resolves from `source` itself, through no join. */
       own: boolean,
+      /** `source` is joined, and the answer's compile re-rooted it on its table. */
+      onTable = false,
    ): void {
       if (depth > 32 || source === null || typeof source !== "object") return;
       const s = source as {
@@ -819,7 +826,7 @@ class GateReadWalk {
       }
       this.scopeMembers(source, depth, at, own);
       this.scopeJoins(source, depth, at);
-      if (s.query !== undefined && !this.isStored(source)) {
+      if (s.query !== undefined && !onTable && !this.isStored(source)) {
          this.scopeQuery(source, s.query, depth);
       }
    }
@@ -845,7 +852,14 @@ class GateReadWalk {
       }
    }
 
-   /** Each joined source's own `where:`, which filters the rows the join reaches. */
+   /**
+    * Each joined source's own `where:`, which filters the rows the join
+    * reaches. A joined source the answer's compile re-rooted on its table is
+    * read, if at all, from that table, whose build applied its query, as an
+    * answer that reads it already holds ({@link isStored}); one the answer
+    * does not read is in no SQL it runs. Either way its own query is not
+    * walked; what is applied on read (its `where:`, its joins') still is.
+    */
    private scopeJoins(
       source: unknown,
       depth: number,
@@ -855,7 +869,9 @@ class GateReadWalk {
       for (const f of (Array.isArray(fields) ? fields : []) as FieldLike[]) {
          if (f.join === undefined) continue;
          const name = activeName(f);
-         this.scope(f, depth + 1, (p) => at([name, ...p]), false);
+         const id = (f as { sourceID?: unknown }).sourceID;
+         const onTable = typeof id === "string" && this.rerooted.has(id);
+         this.scope(f, depth + 1, (p) => at([name, ...p]), false, onTable);
       }
    }
 
@@ -1259,8 +1275,10 @@ export function gateReads(
     * decided in Publisher. Absent, every text is taken as one.
     */
    rowFilterExprs: readonly string[] = exprs,
+   /** The sources the answer's compile re-rooted on their tables, read or not. */
+   rerooted: ReadonlySet<string> = new Set(),
 ): GateReads {
-   const walk = new GateReadWalk(modelDef, stored);
+   const walk = new GateReadWalk(modelDef, stored, rerooted);
    const read = gatePaths(exprs);
    if (read.unresolved) walk.unresolved = true;
    // A row filter is `field = $GIVEN` or `field in $GIVEN`: its field and
@@ -1472,6 +1490,11 @@ export async function gateReadsOfQuery(
    runnable: QueryMaterializer,
    /** The sources whose tables the answer reads, by `sourceID`. */
    stored: ReadonlySet<string> = new Set(),
+   /**
+    * The sources the answer's compile re-rooted on their tables, read or
+    * not, by `sourceID`: a join to one never re-applies its own query.
+    */
+   rerooted: ReadonlySet<string> = new Set(),
 ): Promise<GateReads | undefined> {
    try {
       const prepared = await readPreparedQuery(runnable);
@@ -1488,7 +1511,14 @@ export async function gateReadsOfQuery(
       );
       return exprs === undefined || rowFilters === undefined
          ? undefined
-         : gateReads(struct, exprs, prepared.modelDef, stored, rowFilters);
+         : gateReads(
+              struct,
+              exprs,
+              prepared.modelDef,
+              stored,
+              rowFilters,
+              rerooted,
+           );
    } catch {
       return undefined;
    }
