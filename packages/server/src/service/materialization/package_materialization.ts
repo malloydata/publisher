@@ -74,7 +74,11 @@ import {
    kindFromPlan,
    v1StoredColumnsOf,
 } from "./serve/bind";
-import type { ServeVerdict, ViewServeVerdict } from "./serve/serve_verdict";
+import {
+   MATERIALIZATION_TYPES_UNRECORDED_CODE,
+   type ServeVerdict,
+   type ViewServeVerdict,
+} from "./serve/serve_verdict";
 import {
    type BoundTableTypeFinding,
    boundTableTypeFindings,
@@ -259,6 +263,10 @@ export class PackageMaterialization {
          snapshot: () => this.snapshot(),
          storageBindings: () => this.storageBindings,
          databaseEntries: () => this.databaseEntries,
+         typesUnrecorded: () => {
+            this.snapshot();
+            return this.observedOutcome.uncaptured;
+         },
          deploymentFacts: () => this.deploymentFacts,
          destinationSchema: (name) => this.serveDestinationSchema?.(name),
          declarationOf: this.declarationLookup,
@@ -812,8 +820,12 @@ export class PackageMaterialization {
       for (const id of this.observedOutcome.uncaptured) {
          if (!read(id)) continue;
          logger.warn(
-            "A database table's build captured none of its column types, so a change to them since cannot be seen; its sources answer live until it is rebuilt",
-            { packageName: this.owner.packageName(), sourceEntityId: id },
+            "A database table's build recorded no column types, so a change since the build cannot be ruled out; its sources answer live until it is rebuilt",
+            {
+               code: MATERIALIZATION_TYPES_UNRECORDED_CODE,
+               packageName: this.owner.packageName(),
+               sourceEntityId: id,
+            },
          );
       }
       for (const miss of this.observedOutcome.unread) {

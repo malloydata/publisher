@@ -10,10 +10,15 @@
  * DECIMAL(20,0) rounds 1.4 to 1), reads as unmoved. A gate re-applied to the
  * rows then admits another caller's, and an ungated read returns the altered
  * values. Such a table now answers live on every leg: served copy, rollup,
- * persisted view. Each answer equals live, compared as strings, per caller.
+ * persisted view. Each answer equals live, compared as strings, per caller,
+ * and every surface names why: the serve verdict and the path report say
+ * `types_unrecorded`, and the package warns `materialization-types-unrecorded`.
+ * This is how a host's typeless manifest entry is read too.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { unrecordedAudit } from "../../../src/service/access_record";
+import { QueryPrivileges } from "../../../src/service/model_query_request";
 import {
    freshLoadPool,
    type LoadedFixture,
@@ -139,6 +144,42 @@ describe("a database table whose build captured nothing, altered after its build
          Object.values(fixture.tables).some((t) => /rollup|gated_big/i.test(t)),
       ).toBe(true);
    });
+
+   it("gives each table the types_unrecorded verdict and warning, on every leg", () => {
+      const verdicts = fixture.pkg
+         .materialization()
+         .serveVerdicts()
+         .filter((v) => /tenths|gated_big|rollup/i.test(v.sourceName));
+      const byOrigin = new Map(verdicts.map((v) => [v.origin, v]));
+      for (const origin of ["materialize", "rollup", "view"]) {
+         expect(byOrigin.get(origin as never), origin).toMatchObject({
+            verdict: "live",
+            reason: "types_unrecorded",
+         });
+      }
+      const codes = (fixture.pkg.getPackageMetadata().warnings ?? []).map(
+         (w) => (w as { code?: string }).code,
+      );
+      expect(codes).toContain("materialization-types-unrecorded");
+   });
+
+   for (const c of CASES) {
+      it(`${c.name}: the path report says types_unrecorded`, async () => {
+         const result = await fixture.pkg.getModel("m.malloy")!.runQuery(
+            unrecordedAudit(),
+            {
+               query: c.query,
+               ...(c.givens ? { givens: c.givens } : {}),
+            } as never,
+            QueryPrivileges.of({ includeHiddenFilesAndSources: true }),
+         );
+         expect(result.path?.servedBy?.kind).toBe("live");
+         const codes = (result.path?.considered ?? []).map(
+            (x) => (x as { code?: string }).code,
+         );
+         expect(codes).toContain("types_unrecorded");
+      });
+   }
 
    for (const c of CASES) {
       it(`${c.name}: answers live's rows`, async () => {
