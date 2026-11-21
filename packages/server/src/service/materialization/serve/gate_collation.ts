@@ -326,6 +326,42 @@ function bqName(connection: Connection, segment: string): string {
    return quoteIdentifier(segment, connection.dialectName);
 }
 
+/**
+ * A BigQuery catalog predicate: `collation_name` names a collation. BigQuery
+ * reports an uncollated column's as the string `'NULL'`, not as NULL, so
+ * that (and NULL and `''`) reads as none.
+ */
+const BQ_COLLATED = "NULLIF(NULLIF(collation_name, 'NULL'), '') IS NOT NULL";
+
+/** Most rows one BigQuery catalog read takes; a read that fills it proves nothing. */
+const BIGQUERY_CATALOG_ROW_LIMIT = 100_000;
+
+/**
+ * Every row of a BigQuery catalog read, or a throw (the check then answers
+ * live). Malloy's BigQuery connection reads one results page: 10 rows unless
+ * a `rowLimit` asks for more, and BigQuery ends a page at about 10 MB
+ * whatever it asks for. So an answer counts only when it is provably whole:
+ * fewer rows than the limit, and every row its `totalRows` reports.
+ */
+async function bqRows(
+   connection: Connection,
+   sql: string,
+): Promise<Rows["rows"]> {
+   const result = await catalogRead(connection, sql, {
+      rowLimit: BIGQUERY_CATALOG_ROW_LIMIT,
+   });
+   const found = result.rows ?? [];
+   if (
+      found.length >= BIGQUERY_CATALOG_ROW_LIMIT ||
+      result.totalRows === undefined ||
+      result.totalRows === null ||
+      Number(result.totalRows) !== found.length
+   ) {
+      throw new Error("a BigQuery catalog read that may be incomplete");
+   }
+   return found;
+}
+
 /** Most datasets one project-wide read lists before it proves nothing. */
 const MAX_PROJECT_DATASETS = 10000;
 
@@ -344,9 +380,9 @@ async function bigqueryCollatedDatasets(
    location: string,
 ): Promise<ReadonlySet<string> | undefined> {
    const schema = `${bqName(connection, project)}.${bqName(connection, `region-${location.toLowerCase()}`)}.INFORMATION_SCHEMA`;
-   const found = await rows(
+   const found = await bqRows(
       connection,
-      `SELECT DISTINCT table_schema FROM (SELECT table_schema FROM ${schema}.COLUMNS WHERE IFNULL(collation_name, '') != '' UNION ALL SELECT table_schema FROM ${schema}.COLUMN_FIELD_PATHS WHERE IFNULL(collation_name, '') != '') LIMIT ${MAX_PROJECT_DATASETS + 1}`,
+      `SELECT DISTINCT table_schema FROM (SELECT table_schema FROM ${schema}.COLUMNS WHERE ${BQ_COLLATED} UNION ALL SELECT table_schema FROM ${schema}.COLUMN_FIELD_PATHS WHERE ${BQ_COLLATED}) LIMIT ${MAX_PROJECT_DATASETS + 1}`,
    );
    if (found.length > MAX_PROJECT_DATASETS) return undefined;
    return new Set(found.map((r) => String(r.table_schema)));
@@ -374,7 +410,7 @@ async function bigqueryTableTypes(
    const wanted = tables
       .map((t) => bqString(`${t.dataset}.${t.name}`))
       .join(", ");
-   const found = await rows(
+   const found = await bqRows(
       connection,
       `SELECT table_schema, table_name, table_type FROM ${schema}.TABLES WHERE CONCAT(table_schema, '.', table_name) IN (${wanted})`,
    );
@@ -408,9 +444,9 @@ async function bigqueryDatasetTables(
       throw new Error("not a dataset");
    }
    const schema = `${parts.map((p) => bqName(connection, p)).join(".")}.INFORMATION_SCHEMA`;
-   const found = await rows(
+   const found = await bqRows(
       connection,
-      `SELECT table_name, table_type, '' AS path, '' AS collation_name FROM ${schema}.TABLES UNION ALL SELECT table_name, '' AS table_type, column_name AS path, collation_name FROM ${schema}.COLUMNS WHERE IFNULL(collation_name, '') != '' UNION ALL SELECT table_name, '' AS table_type, field_path AS path, collation_name FROM ${schema}.COLUMN_FIELD_PATHS WHERE IFNULL(collation_name, '') != ''`,
+      `SELECT table_name, table_type, '' AS path, '' AS collation_name FROM ${schema}.TABLES UNION ALL SELECT table_name, '' AS table_type, column_name AS path, collation_name FROM ${schema}.COLUMNS WHERE ${BQ_COLLATED} UNION ALL SELECT table_name, '' AS table_type, field_path AS path, collation_name FROM ${schema}.COLUMN_FIELD_PATHS WHERE ${BQ_COLLATED}`,
    );
    const types = new Map<string, string>();
    const collated = new Map<string, Map<string, string>>();
@@ -1071,14 +1107,22 @@ type Rows = { rows: Record<string, unknown>[] };
  * Publisher's own catalog read, admitted past a locked DuckDB instance's gate,
  * which refuses settings reads to caller and author SQL (duckdb_lockdown.ts).
  */
+async function catalogRead(
+   connection: Connection,
+   sql: string,
+   options?: { rowLimit: number },
+): Promise<Rows & { totalRows?: unknown }> {
+   return (await runAsInternalStatement(sql, () =>
+      connection.runSQL(sql, options),
+   )) as unknown as Rows & { totalRows?: unknown };
+}
+
+/** A catalog read's rows, at the connection's own default page (BigQuery's: see {@link bqRows}). */
 async function rows(
    connection: Connection,
    sql: string,
 ): Promise<Rows["rows"]> {
-   const result = (await runAsInternalStatement(sql, () =>
-      connection.runSQL(sql),
-   )) as unknown as Rows;
-   return result.rows ?? [];
+   return (await catalogRead(connection, sql)).rows ?? [];
 }
 
 /** Postgres rows, which Malloy's Postgres connection reads from a `row` column. */
