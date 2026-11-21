@@ -140,6 +140,16 @@ export interface Capabilities {
     */
    foldsTableNameCase: boolean;
    /**
+    * The incremental refresh decodes a stored table's path into the raw
+    * identifiers its catalog compares (`quoting.ts`'s `foldedTablePathParts`: a bare
+    * segment folded as the engine folds it, a quoted one kept), so it probes
+    * the target's columns (`run/incremental_apply.ts`,
+    * decodeTablePathSegments): Postgres, Snowflake, BigQuery, and DuckDB (a
+    * `storage=` destination's `<destination>.[<schema>.]<name>`). Elsewhere a
+    * refresh seeds.
+    */
+   decodedTablePath: boolean;
+   /**
     * Publisher's sessions on it run in UTC, so a stored timestamp reads alike
     * with or without its zone: a column altered from one to the other after
     * its build is no drift (DuckDB). Elsewhere the session's zone is the
@@ -228,6 +238,7 @@ const NONE: Capabilities = Object.freeze({
    castsToIntegerType: false,
    onlyBigIntegerType: undefined,
    foldsTableNameCase: false,
+   decodedTablePath: false,
    utcSessions: false,
    leafBudget: 50,
    passthroughNumericAsDouble: false,
@@ -251,6 +262,7 @@ export const CAPABILITIES: Record<DialectName, Capabilities> = {
       driverKeepsBigIntegers: true,
       castsToIntegerType: true,
       foldsTableNameCase: true,
+      decodedTablePath: true,
       utcSessions: true,
       leafBudget: 120,
       stringCollation: "instance",
@@ -264,6 +276,7 @@ export const CAPABILITIES: Record<DialectName, Capabilities> = {
       incrementalTargetDml: true,
       merge: true,
       mergeGatedByServerVersion: true,
+      decodedTablePath: true,
       transactionalSwap: true,
       dependencyGuard: true,
       relationProbe: true,
@@ -294,6 +307,7 @@ export const CAPABILITIES: Record<DialectName, Capabilities> = {
    }),
    standardsql: Object.freeze({
       ...NONE,
+      decodedTablePath: true,
       incrementalSourceRange: true,
       incrementalTargetDml: true,
       merge: true,
@@ -311,6 +325,7 @@ export const CAPABILITIES: Record<DialectName, Capabilities> = {
    }),
    snowflake: Object.freeze({
       ...NONE,
+      decodedTablePath: true,
       catalogHidesTables: true,
       incrementalSourceRange: true,
       incrementalTargetDml: true,

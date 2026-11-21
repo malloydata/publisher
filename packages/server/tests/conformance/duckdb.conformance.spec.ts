@@ -25,6 +25,7 @@ import {
    applyDeltaScript,
    deltaStatements,
    pairDeltaStatements,
+   probeTargetColumns,
 } from "../../src/service/materialization/run/incremental_apply";
 import { DUCKDB_COLLATION } from "../../src/service/materialization/serve/collation/duckdb";
 import { probeIO } from "../../src/service/materialization/serve/gate_collation";
@@ -262,6 +263,28 @@ describe("DuckDB conformance", () => {
       await duck.runSQL(`CREATE TABLE "Folded" AS SELECT 1 AS v`);
       const found = await attempt(`SELECT v FROM "FOLDED"`);
       expect(found === undefined).toBe(CAN.foldsTableNameCase);
+   });
+
+   it("decodedTablePath: a bare and a quoted path find the table's columns through the target probe", async () => {
+      // A storage destination's path: `<destination>.[<schema>.]<name>`.
+      await duck.runSQL(`CREATE TABLE "MiXed" AS SELECT 1 AS a, 2 AS "B"`);
+      await duck.runSQL(`CREATE TABLE plain AS SELECT 1 AS v`);
+      const quoted = await probeTargetColumns(
+         runner,
+         "duckdb",
+         `conformance."MiXed"`,
+      );
+      const bare = await probeTargetColumns(
+         runner,
+         "duckdb",
+         `conformance.main.plain`,
+      );
+      const found = quoted.columns.length === 2 && bare.columns.length === 1;
+      expect({ quoted, bare }).toEqual({
+         quoted: { columns: ["a", "B"] },
+         bare: { columns: ["v"] },
+      });
+      expect(found).toBe(CAN.decodedTablePath);
    });
 
    it("utcSessions: the session's TimeZone is UTC", async () => {

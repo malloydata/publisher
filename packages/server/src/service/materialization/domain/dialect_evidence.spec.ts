@@ -35,8 +35,8 @@ const END = "<!-- dialect-evidence:end -->";
 const UNVERIFIED_COUNTS: Record<DialectName, number> = {
    duckdb: 0,
    postgres: 0,
-   standardsql: 11,
-   snowflake: 9,
+   standardsql: 12,
+   snowflake: 10,
    databricks: 5,
    trino: 4,
    presto: 3,

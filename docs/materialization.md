@@ -1658,6 +1658,7 @@ Publisher decides what it may build, refresh and serve on a warehouse by one tab
 | `binary64Types`                 | **2 types**    | **1 type**   | none          | 6 types?    | none         | none    | none     | none    | none        |
 | `castsToIntegerType`            | **yes**        | **yes**      | yes?          | yes?        | yes?         | yes?    | yes?     | no      | yes?        |
 | `catalogHidesTables`            | no             | no           | no            | yes?        | no           | no      | no       | yes?    | no          |
+| `decodedTablePath`              | **yes**        | **yes**      | yes?          | yes?        | no           | no      | no       | no      | no          |
 | `dependencyGuard`               | no             | **yes**      | no            | no          | no           | no      | no       | no      | no          |
 | `driverKeepsBigIntegers`        | **yes**        | no           | no            | no          | no           | no      | no       | no      | no          |
 | `foldsTableNameCase`            | **yes**        | no           | no            | no          | yes?         | yes?    | yes?     | no      | yes?        |

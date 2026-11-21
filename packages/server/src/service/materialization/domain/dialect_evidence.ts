@@ -49,6 +49,7 @@ export const SAFE_VALUES: Readonly<Capabilities> = Object.freeze({
    castsToIntegerType: false,
    onlyBigIntegerType: undefined,
    foldsTableNameCase: false,
+   decodedTablePath: false,
    utcSessions: false,
    leafBudget: 50,
    passthroughNumericAsDouble: false,
@@ -112,6 +113,9 @@ export const EVIDENCE: Readonly<
       foldsTableNameCase: duck(
          "foldsTableNameCase: a quoted name resolves case-insensitively",
       ),
+      decodedTablePath: duck(
+         "decodedTablePath: a bare and a quoted path find the table's columns through the target probe",
+      ),
       utcSessions: duck("utcSessions: the session's TimeZone is UTC"),
       leafBudget: duck(
          "leafBudget: an identifier of the budget plus the build's suffix is kept whole",
@@ -139,6 +143,9 @@ export const EVIDENCE: Readonly<
       merge: pg("merge: MERGE INTO updates and inserts"),
       mergeGatedByServerVersion: pg(
          "mergeGatedByServerVersion: server_version_num is read, and MERGE exists from 15",
+      ),
+      decodedTablePath: pg(
+         "decodedTablePath: a bare and a quoted path find the table's columns through the target probe",
       ),
       transactionalSwap: pg(
          "transactionalSwap: the swap's drop and rename roll back together",
@@ -170,6 +177,7 @@ export const EVIDENCE: Readonly<
       ),
    },
    standardsql: {
+      decodedTablePath: NO_BIGQUERY,
       incrementalSourceRange: NO_BIGQUERY,
       incrementalTargetDml: NO_BIGQUERY,
       merge: NO_BIGQUERY,
@@ -184,6 +192,7 @@ export const EVIDENCE: Readonly<
    },
    snowflake: {
       catalogHidesTables: NO_SNOWFLAKE,
+      decodedTablePath: NO_SNOWFLAKE,
       incrementalSourceRange: NO_SNOWFLAKE,
       incrementalTargetDml: NO_SNOWFLAKE,
       merge: NO_SNOWFLAKE,

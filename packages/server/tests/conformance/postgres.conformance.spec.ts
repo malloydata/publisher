@@ -37,6 +37,7 @@ import {
    applyDeltaScript,
    deltaStatements,
    probeServerVersion,
+   probeTargetColumns,
    renderSqlBound,
 } from "../../src/service/materialization/run/incremental_apply";
 import { POSTGRES_COLLATION } from "../../src/service/materialization/serve/collation/postgres";
@@ -266,6 +267,34 @@ describe.skipIf(!url)("Postgres conformance", () => {
          true,
       ]);
       expect(CAN.dependencyGuard).toBe(true);
+   });
+
+   it("decodedTablePath: a bare and a quoted path find the table's columns through the target probe", async () => {
+      // A bare segment folds to lower case, a quoted one is kept.
+      await run(`CREATE TABLE ${t("MiXed")} AS SELECT 1 AS a, 2 AS "B"`);
+      await run(`CREATE TABLE ${t("plain")} AS SELECT 1 AS v`);
+      const runner = async (sql: string) => ({
+         rows: (await pg.runSQL(sql)).rows,
+      });
+      const quoted = await probeTargetColumns(
+         runner,
+         "postgres",
+         `"${schema}"."MiXed"`,
+      );
+      const bare = await probeTargetColumns(
+         runner,
+         "postgres",
+         `${schema}.PLAIN`,
+      );
+      const found = quoted.columns.length === 2 && bare.columns.length === 1;
+      expect({
+         quoted: { ...quoted, columns: [...quoted.columns].sort() },
+         bare,
+      }).toEqual({
+         quoted: { columns: ["B", "a"] },
+         bare: { columns: ["v"] },
+      });
+      expect(found).toBe(CAN.decodedTablePath);
    });
 
    it("relationProbe: a table's comment reads back through the relation probe", async () => {
