@@ -885,6 +885,8 @@ function verdictWarningMessage(reason: string): string {
          return "This table's storage destination is not configured on this server, so its queries are answered live.";
       case "connection_cannot_hold_table":
          return "This table's connection cannot hold a table, so its queries are answered live.";
+      case "types_unrecorded":
+         return "This table's build recorded no column types, so a change since the build cannot be ruled out; its queries are answered live until it is rebuilt.";
       default:
          return "This table carries a publish warning and serves live; the package's warnings say why.";
    }

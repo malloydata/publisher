@@ -5,6 +5,7 @@ import { describe, expect, it } from "bun:test";
 import type { components } from "../../../api";
 import { computeServeVerdicts, type ServeVerdictFacts } from "./serve_verdict";
 import { reachableSourceIDs } from "../text/source_map";
+import { verdictWarnings } from "../package_warnings";
 
 type PersistSourcePlan = components["schemas"]["PersistSourcePlan"];
 
@@ -562,6 +563,26 @@ describe("computeServeVerdicts", () => {
       expect(verdicts.map((v) => [v.sourceName, v.verdict, v.reason])).toEqual([
          ["orders", "live", "stale"],
          ["events", "live", "stale"],
+      ]);
+   });
+
+   it("says a bound database table whose build recorded no column types answers live, not stale", () => {
+      const [verdict] = computeServeVerdicts(
+         facts([plan("orders")], {
+            boundEntityIds: new Set(["entity-orders"]),
+            // Left out of the pinned manifest by the bind, as a stale one is.
+            freshEntityIds: new Set(),
+            typesUnrecordedEntityIds: new Set(["entity-orders"]),
+         }),
+      );
+      expect(verdict).toMatchObject({
+         verdict: "live",
+         reason: "types_unrecorded",
+      });
+      expect(verdict.message).toContain("recorded no column types");
+      expect(verdict.fixes?.join(" ")).toContain("Rebuild");
+      expect(verdictWarnings([verdict]).map((w) => w.code)).toEqual([
+         "materialization-types-unrecorded",
       ]);
    });
 

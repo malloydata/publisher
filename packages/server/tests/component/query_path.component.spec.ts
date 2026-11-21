@@ -5,6 +5,10 @@
 // a real bound database manifest: which table answered, which could not and
 // why, and the nearby tables the query could not use. The `storage=` tier is
 // covered over the R4 harness in r4/path_report.component.spec.ts.
+import {
+   recordedNativeSchema,
+   withNativeSchema,
+} from "../../src/test_helpers/host_manifest";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "fs/promises";
@@ -94,11 +98,10 @@ async function buildAndBind(
       await connection.runSQL(
          `CREATE OR REPLACE TABLE ${table} AS ${source.sql}`,
       );
-      bound[source.sourceEntityId] = {
-         tableName: table,
-         connectionName: "duckdb",
-         ...extra,
-      };
+      bound[source.sourceEntityId] = withNativeSchema(
+         { tableName: table, connectionName: "duckdb", ...extra },
+         await recordedNativeSchema(connection, table),
+      );
    }
    pkg.materialization().bind({ database: bound as never });
 }
@@ -440,7 +443,10 @@ describe("the path report over a database rollup", () => {
       );
       pkg.materialization().bind({
          database: {
-            [rollupId]: { tableName: "built_rollup", connectionName: "duckdb" },
+            [rollupId]: withNativeSchema(
+               { tableName: "built_rollup", connectionName: "duckdb" },
+               await recordedNativeSchema(connection, "built_rollup"),
+            ),
          } as never,
       });
       return { pkg, rollupId };
@@ -559,11 +565,10 @@ describe("a table past its freshness window, bound by a host's reload", () => {
          await connection.runSQL(
             `CREATE OR REPLACE TABLE ${t.table} AS ${t.sql}`,
          );
-         entries[t.entityId] = {
-            tableName: t.table,
-            connectionName: "duckdb",
-            ...t.extra,
-         };
+         entries[t.entityId] = withNativeSchema(
+            { tableName: t.table, connectionName: "duckdb", ...t.extra },
+            await recordedNativeSchema(connection, t.table),
+         );
       }
       await pkg.reloadAllModels(entries as never);
    }
