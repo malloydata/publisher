@@ -322,7 +322,7 @@ describe("L2: a gate over a column stored inexactly is never read from the table
       }
       // A database table altered in its warehouse after the build.
       const warehouse = (await loader.pkg.getMalloyConnection(
-         "duckdb",
+         loader.origin,
       )) as unknown as { runSQL(sql: string): Promise<unknown> };
       for (const name of DB_DRIFTED) {
          await warehouse.runSQL(
@@ -358,7 +358,7 @@ describe("L2: a gate over a column stored inexactly is never read from the table
       // A stored source whose query reads a given is never built.
       expect(built.filter((b) => b.startsWith(`${REFUSED}:`))).toEqual([]);
       const warehouse = (await loader.pkg.getMalloyConnection(
-         "duckdb",
+         loader.origin,
       )) as unknown as {
          runSQL(sql: string): Promise<{ rows: Record<string, unknown>[] }>;
       };

@@ -307,6 +307,11 @@ export interface R4Fixture {
    /** The scenario's database: its source tables and its stored ones. */
    duckdb: DuckDBConnection;
    /**
+    * The storage destination its `storage=` tables are built in: the
+    * scenario's database, or under strict-origin mode a database of its own.
+    */
+   destination: DuckDBConnection;
+   /**
     * With {@link R4Scenario.preaggregate}: each database `#(rollup)`
     * rollup built, by its generated source name, to the table it was built
     * into in the scenario's database.
@@ -1400,6 +1405,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
       builtSQL,
       checkFailures,
       duckdb,
+      destination: dest,
       model,
       viewRefusals,
       rollupRefusals: (rollups?.refused ?? []).map((r) => ({
