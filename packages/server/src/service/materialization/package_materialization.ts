@@ -74,7 +74,11 @@ import {
    kindFromPlan,
    v1StoredColumnsOf,
 } from "./serve/bind";
-import type { ServeVerdict, ViewServeVerdict } from "./serve/serve_verdict";
+import {
+   MATERIALIZATION_TYPES_UNRECORDED_CODE,
+   type ServeVerdict,
+   type ViewServeVerdict,
+} from "./serve/serve_verdict";
 import {
    type BoundTableTypeFinding,
    boundTableTypeFindings,
@@ -205,7 +209,8 @@ export class PackageMaterialization {
    private observedOutcome: {
       drifted: ObservedDrift[];
       unread: UnreadTable[];
-   } = { drifted: [], unread: [] };
+      uncaptured: string[];
+   } = { drifted: [], unread: [], uncaptured: [] };
    /** The `storage=` bindings a host's or a run's manifest made. */
    private storageBindings: readonly Binding[] = [];
    /**
@@ -258,6 +263,10 @@ export class PackageMaterialization {
          snapshot: () => this.snapshot(),
          storageBindings: () => this.storageBindings,
          databaseEntries: () => this.databaseEntries,
+         typesUnrecorded: () => {
+            this.snapshot();
+            return this.observedOutcome.uncaptured;
+         },
          deploymentFacts: () => this.deploymentFacts,
          destinationSchema: (name) => this.serveDestinationSchema?.(name),
          declarationOf: this.declarationLookup,
@@ -442,6 +451,7 @@ export class PackageMaterialization {
       this.observedOutcome = {
          drifted: observed.drifted,
          unread: observed.unread,
+         uncaptured: observed.uncaptured,
       };
       const { addresses, binding: asOfBuild } = this.asOfBuildTables();
       const bindings = [
@@ -804,6 +814,17 @@ export class PackageMaterialization {
                packageName: this.owner.packageName(),
                sourceEntityId: drift.sourceEntityId,
                columns: reported,
+            },
+         );
+      }
+      for (const id of this.observedOutcome.uncaptured) {
+         if (!read(id)) continue;
+         logger.warn(
+            "A database table's build recorded no column types, so a change since the build cannot be ruled out; its sources answer live until it is rebuilt",
+            {
+               code: MATERIALIZATION_TYPES_UNRECORDED_CODE,
+               packageName: this.owner.packageName(),
+               sourceEntityId: id,
             },
          );
       }

@@ -50,7 +50,15 @@ export function installSettings(input: SettingsInput = {}): {
    const previous = Settings.install(
       Settings.load({
          argv: input.argv ?? [],
-         env: { NODE_ENV: process.env.NODE_ENV, ...input.env },
+         env: {
+            NODE_ENV: process.env.NODE_ENV,
+            // Strict-origin mode's origin is a DuckDB connection with
+            // setupSQL (conformance/strict_origin.ts); off by default.
+            ...(process.env.PUBLISHER_TEST_STRICT_ORIGIN === "1"
+               ? { PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: "true" }
+               : {}),
+            ...input.env,
+         },
          cwd: serverRoot,
       }),
    );
