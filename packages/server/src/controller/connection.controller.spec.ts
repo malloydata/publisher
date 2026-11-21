@@ -2175,6 +2175,116 @@ describe("ConnectionController: raw SQL on a locked-down DuckDB connection is on
    });
 });
 
+describe("ConnectionController: the DuckDB connector's statement separator cannot smuggle a second statement", () => {
+   afterEach(() => sinon.restore());
+
+   // @malloydata/db-duckdb splits raw SQL on its statement separator and runs
+   // every part, while DuckDB's parser reads the separator as a comment. The
+   // gate judges the text as the connector runs it.
+   function controllerOn(apiConnection: Record<string, unknown>) {
+      const runSQL = sinon.stub().resolves({ rows: [{ n: 1 }], totalRows: 1 });
+      const manifestTemporaryTable = sinon.stub().resolves("tmp_1");
+      const fetchSelectSchema = sinon.stub().resolves({ fields: [] });
+      const fakeStore = fakeOf<ConnectionAdmin>({
+         getEnvironment: sinon.stub().resolves({
+            assertCanAdmitQuery: sinon.stub(),
+            getApiConnection: () => apiConnection,
+         }),
+      });
+      const controller = new ConnectionController(fakeStore);
+      sinon
+         .stub(
+            controller as unknown as {
+               getMalloyConnection: (...args: unknown[]) => Promise<Connection>;
+            },
+            "getMalloyConnection",
+         )
+         .resolves({
+            runSQL,
+            manifestTemporaryTable,
+            fetchSelectSchema,
+         } as unknown as Connection);
+      return { controller, runSQL, manifestTemporaryTable, fetchSelectSchema };
+   }
+
+   const query = (
+      controller: ConnectionController,
+      name: string,
+      sql: string,
+   ) =>
+      controller.getConnectionQueryData(
+         "env",
+         name,
+         sql,
+         "",
+         undefined,
+         undefined,
+         undefined,
+         {},
+      );
+
+   const smuggled = [
+      "SELECT 1 AS one -- hack: split on this SET memory_limit='256MB'",
+      "SELECT 1 AS one -- hack: split on this\nSET memory_limit='256MB'",
+      "SELECT '-- hack: split on this' AS s",
+      "SELECT 1 /* -- hack: split on this */",
+   ];
+
+   for (const [label, apiConnection, name] of [
+      [
+         "a managed database",
+         { name: "sales", type: "ducklake", managed: true },
+         "sales",
+      ],
+      [
+         "a locked-down DuckDB connection",
+         { name: "lake", type: "duckdb" },
+         "lake",
+      ],
+      ["the package sandbox", { name: "duckdb", type: "duckdb" }, "duckdb"],
+   ] as const) {
+      it(`refuses SQL that spells the separator on ${label} with a 400, before anything runs`, async () => {
+         const {
+            controller,
+            runSQL,
+            manifestTemporaryTable,
+            fetchSelectSchema,
+         } = controllerOn(apiConnection);
+         for (const sql of smuggled) {
+            const refused = query(controller, name, sql);
+            await expect(refused).rejects.toBeInstanceOf(BadRequestError);
+            await expect(refused).rejects.toThrow("statement separator");
+            await expect(
+               controller.getConnectionSqlSource("env", name, sql),
+            ).rejects.toBeInstanceOf(BadRequestError);
+            await expect(
+               controller.getConnectionTemporaryTable(
+                  "env",
+                  name,
+                  sql,
+                  undefined,
+                  undefined,
+                  {},
+               ),
+            ).rejects.toBeInstanceOf(BadRequestError);
+         }
+         expect(runSQL.called).toBe(false);
+         expect(fetchSelectSchema.called).toBe(false);
+         expect(manifestTemporaryTable.called).toBe(false);
+      });
+
+      it(`still runs a plain SELECT on ${label}, and still refuses a semicolon script`, async () => {
+         const { controller, runSQL } = controllerOn(apiConnection);
+         await query(controller, name, "SELECT 1 AS one");
+         expect(runSQL.calledOnce).toBe(true);
+         await expect(
+            query(controller, name, "SELECT 1; SET memory_limit='256MB'"),
+         ).rejects.toBeInstanceOf(BadRequestError);
+         expect(runSQL.calledOnce).toBe(true);
+      });
+   }
+});
+
 describe("ConnectionController.getConnectionQueryData statement usage", () => {
    afterEach(() => {
       sinon.restore();
