@@ -73,6 +73,8 @@ Two consequences for models:
   is always readable), so a model reads only those schemas' tables. A listed schema the catalog does not
   record, or whose path is not under the data path, is left out and logged. The narrowing gates Parquet
   files on S3 and GCS only: a local data path is not narrowed, and the catalog's metadata is not gated.
+  A read outside the scope goes out unsigned, so the bucket must not allow anonymous reads. Changing the
+  list opens the connection afresh at once; the previous instance finishes its in-flight queries.
   Tables a build wrote to a `destinationSchema` are served through the storage destination's own session,
   as before.
 
@@ -214,6 +216,13 @@ curl -s -X PUT $A/catalogs/sales/schemas/main/tables/orders_2025 -H 'Content-Typ
 # `pg_catalog`, `temp` and `system` answer 400 SCHEMA_RESERVED.
 curl -s -X PUT $A/catalogs/sales/schemas/staging
 
+# Apply Parquet objects under the data path to staging.charges, upserting by id (201, with the
+# counts of rows inserted, replaced, unchanged and deleted). `"mode": "replace"` with
+# `maxDeletedRows` makes the table equal to the objects instead.
+curl -s -X POST $A/catalogs/sales/schemas/staging/tables/charges/loads -H 'Content-Type: application/json' \
+  -d '{"loadId": "run_1:charges", "mode": "merge", "key": ["id"], "cursor": "created",
+       "objects": ["/srv/lake/sales/uploads/run_1/charges-0.parquet"]}'
+
 # What it holds: the catalog, one schema's tables, or every table of every schema.
 curl -s $A/catalogs/sales
 curl -s $A/catalogs/sales/schemas/main/tables
@@ -246,6 +255,27 @@ itself, under any spelling of its name (DuckDB matches names case-insensitively)
 rewrite would empty it before reading it. `GET …/tables/{table}` reports a
 table's spec as `partitionedBy`, empty for an unpartitioned table, so a migration can check a copy against
 its source.
+
+**Loads.** A table PUT defines a table from one file: whatever the file holds becomes the table. A load
+(`POST …/tables/{table}/loads`) applies rows to a table under a contract, for a pipeline that delivers a
+stream in batches:
+
+- `merge` upserts by `key`. `replace` makes the table equal to the call's objects, by `key` or, with no
+  key, as a whole; a replace that would delete more than `maxDeletedRows` rows writes nothing (`422
+  LOAD_ROW_DROP_GUARD`), so an empty or truncated extract cannot empty a table.
+- A row the objects do not change is not rewritten, so a load retried after it committed writes nothing,
+  takes no snapshot and answers the same counts and `cursorMax`. Of two rows with one key, the later
+  object in `objects` wins, then the later row of an object.
+- A new column is added; an existing one keeps its type or widens within its family; anything else, a
+  NULL key or a cursor that is not an integer, DATE or TIMESTAMP is `422 LOAD_SCHEMA_CONTRACT`, with a
+  `detail` naming the column. An object that cannot be read is `422 LOAD_OBJECT_UNREADABLE`.
+- One load of a table runs at a time across every replica (a Postgres advisory lock in the catalog
+  database), and one load or copy runs at a time per server. Either busy is `503 LOAD_BUSY`, never
+  queued: retry. A load whose lock connection is lost before it commits rolls back and answers the same.
+- A load runs in its own DuckDB session, bounded to 1.5 GB of memory and 6 GiB of spill under the
+  system temp directory. A server that runs both the admin listener and the serving API shares its CPU and
+  memory between a load and user queries; run the admin listener on its own (`"servingApiEnabled":
+  false`) when loads are large.
 
 **History.** Dropping or replacing a table only retires its files: they stay readable at earlier
 snapshots. `DELETE …/snapshots?olderThan=` expires older snapshots (never the latest) and deletes files

@@ -33,7 +33,15 @@ Two consequences worth knowing. A section merged to `main` ships in the **next**
 
 **Who is affected:** an environment with a DuckLake connection. An existing `<name>_ducklake.duckdb` file is no longer used and may be deleted; deleting the connection no longer removes it. Persisted-source addresses do not change on upgrade. **What to do:** nothing.
 
-**Added: `ducklakeConnection.readableSchemas`, the schemas a managed read-only DuckLake connection may read besides `main`.** The connection's storage credential was scoped to `main`'s files only; it is now scoped to `main` plus each listed schema (bare lowercase names, order and duplicates ignored). Anything else in the bucket stays unreadable. Valid only on a connection with `managed: true` and a read-only attach, never on a storage destination. **What to do:** nothing, unless a managed connection needs to read tables in another schema.
+## [Unreleased] — the admin API creates and drops schemas and loads rows into a table by key, and a managed DuckLake connection reads the schemas it lists
+
+**Added: `POST /catalogs/{catalog}/schemas/{schema}/tables/{table}/loads`.** It applies Parquet objects under the catalog's data path to a table: `merge` upserts by `key`, and `replace` makes the table equal to the objects, by key or as a whole, refusing to delete more than `maxDeletedRows` rows. Rows the objects do not change are not rewritten, so a retried load writes nothing and answers the same counts. New columns are added and types may widen; anything else is `422 LOAD_SCHEMA_CONTRACT`. One load of a table runs at a time across replicas, and a busy table or server answers `503 LOAD_BUSY`.
+
+**Added: `PUT` and `DELETE /catalogs/{catalog}/schemas/{schema}`, and `GET /catalogs/{catalog}/tables`.** Create a schema (`412 SCHEMA_EXISTS` under `If-None-Match: *`; `main`, `memory` and the system schemas are `400 SCHEMA_RESERVED`), drop one with its tables, and list every table of every schema with its size.
+
+**Added: `ducklakeConnection.readableSchemas`, the schemas a managed read-only DuckLake connection may read besides `main`.** The connection's storage credential was scoped to `main`'s files only; it is now scoped to `main` plus each listed schema (bare lowercase names, order and duplicates ignored). Anything else in the bucket stays unreadable. Valid only on a connection with `managed: true` and a read-only attach, never on a storage destination.
+
+**What to do:** nothing; all three are additive. See [admin-api-doc.yaml](admin-api-doc.yaml) and [docs/ducklake.md](docs/ducklake.md).
 
 ## [Unreleased] — a `statement_usage` record carries `bytes_out`, and a notebook cell on a metered connection is recorded
 
