@@ -14,7 +14,11 @@ import request from "supertest";
 import { logger } from "../logger";
 import { linesMentioning } from "../test_helpers/log_lines";
 import { API_PREFIX, buildRouteApp } from "../test_helpers/route_app";
-import { WatchModeController } from "./watch-mode.controller";
+import {
+   ignoredByWatch,
+   WatchModeController,
+   watchedPackageOf,
+} from "./watch-mode.controller";
 import { fakeOf } from "../test_helpers/store_fakes";
 import type { PackageLookup } from "../service/environment_ports";
 
@@ -106,5 +110,51 @@ describe("deprecated watch-mode routes", () => {
          warn.mockRestore();
          error.mockRestore();
       }
+   });
+});
+
+describe("which package a watched file belongs to", () => {
+   const env = path.join(root, "env");
+   const at = (...segments: string[]) => path.join(env, ...segments);
+
+   it("is the first folder under the environment", () => {
+      expect(watchedPackageOf(env, at("sales", "model.malloy"))).toBe("sales");
+      expect(watchedPackageOf(env, at("sales", "sub", "a.malloy"))).toBe(
+         "sales",
+      );
+   });
+
+   it("is none for a file at the environment root, or outside it", () => {
+      expect(watchedPackageOf(env, at("model.malloy"))).toBeNull();
+      expect(
+         watchedPackageOf(env, path.join(root, "x", "a.malloy")),
+      ).toBeNull();
+   });
+
+   it("is none under the server's own directories, which an install writes and removes", () => {
+      for (const dir of [
+         ".retired",
+         ".staging",
+         ".legacy",
+         ".install-records",
+         ".storage-destinations",
+      ]) {
+         expect(
+            watchedPackageOf(env, at(dir, "sales-1234", "model.malloy")),
+         ).toBeNull();
+      }
+   });
+
+   it("does not watch a dot-directory at the environment root at all", () => {
+      const dir = { isFile: () => false } as fs.Stats;
+      const file = { isFile: () => true } as fs.Stats;
+      expect(ignoredByWatch(env, at(".retired"))).toBe(true);
+      expect(ignoredByWatch(env, at(".retired"), dir)).toBe(true);
+      expect(ignoredByWatch(env, at("sales"), dir)).toBe(false);
+      // Inside a package, the extension decides, as before.
+      expect(ignoredByWatch(env, at("sales", "model.malloy"), file)).toBe(
+         false,
+      );
+      expect(ignoredByWatch(env, at("sales", "notes.bin"), file)).toBe(true);
    });
 });

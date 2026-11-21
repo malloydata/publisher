@@ -21,6 +21,10 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — watch mode no longer recompiles the server's own `.retired` folder as a package
+
+**Fixed: in watch mode (`--watch-env`), reinstalling a package logged `Watch: failed to recompile package ".retired"` at `error` several times and counted each as a failed reload.** An install moves the previous copy into the environment's `.retired/` folder and then removes it, and the watcher took any first folder under the environment for a package name. It now skips every folder at the environment root whose name starts with `.` (the server's own `.retired`, `.staging`, `.legacy`, `.install-records` and `.storage-destinations`, and an editor's or VCS's), which no package name may start with, so none is recompiled, counted or announced to open pages. Packages recompile on save as before.
+
 ## [Unreleased] — fixed: a query-shaped source's filtered measure over a stored table compares as live
 
 **Fixed (wrong answer): an unpersisted query-shaped source whose stage filters a measure on a string (`count() { where: name = 'x' }`) over a `storage=` stored upstream was answered from the upstream's table, comparing that string byte-exact, even where the origin compares it under a case-insensitive or other non-binary collation.** The filtered measure's `where:` is now judged as a stage's `where:` already was, so such a query is answered live, equal to live.
