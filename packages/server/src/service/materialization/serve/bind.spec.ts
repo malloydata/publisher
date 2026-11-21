@@ -990,6 +990,72 @@ describe("applyObservedColumns", () => {
       expect(out.drifted).toEqual([]);
    });
 
+   // Strict-origin mode: a table bound with no captured native types left
+   // every big-integer column out, though the bind's own read sees each one.
+   it("takes a 64-bit-or-narrower integer's native type from the bind's read when the build captured none, and no other", () => {
+      const cols = [
+         { name: "id", type: "BIGINT" },
+         { name: "n", type: "INTEGER" },
+         { name: "huge", type: "HUGEINT" },
+         { name: "dec", type: "DECIMAL(38,0)" },
+         { name: "lake", type: "HUGEINT" },
+      ];
+      const out = applyObservedColumns({
+         entries: { addr1: { tableName: "orders_t" } },
+         bindings: [{ ...binding, schema: cols }],
+         observed: new Map([
+            [
+               "addr1",
+               {
+                  columns: [
+                     { name: "id", type: "BIGINT", nativeType: "BIGINT" },
+                     { name: "n", type: "INTEGER", nativeType: "INTEGER" },
+                     { name: "huge", type: "HUGEINT", nativeType: "HUGEINT" },
+                     {
+                        name: "dec",
+                        type: "DECIMAL(38,0)",
+                        nativeType: "DECIMAL(38,0)",
+                     },
+                     {
+                        name: "lake",
+                        type: "DOUBLE",
+                        nativeType: "DOUBLE",
+                        storedAsDouble: true as const,
+                     },
+                  ],
+               },
+            ],
+         ]),
+      });
+      expect(out.bindings[0].nativeSchema).toEqual([
+         { name: "id", type: "BIGINT" },
+         { name: "n", type: "INTEGER" },
+      ]);
+   });
+
+   it("keeps a captured native type over the bind's read", () => {
+      const out = applyObservedColumns({
+         entries: { addr1: { tableName: "orders_t", schema: built } },
+         bindings: [
+            { ...binding, nativeSchema: [{ name: "id", type: "BIGINT" }] },
+         ],
+         observed: new Map([
+            [
+               "addr1",
+               {
+                  columns: [
+                     { name: "id", type: "BIGINT", nativeType: "BIGINT" },
+                     ...built.slice(1),
+                  ],
+               },
+            ],
+         ]),
+      });
+      expect(out.bindings[0].nativeSchema).toEqual([
+         { name: "id", type: "BIGINT" },
+      ]);
+   });
+
    // Strict-origin mode: a rollup whose build captured neither its columns
    // nor their native types (a capture that failed) was served from a
    // DuckLake DOUBLE as exact; the read's `storedAsDouble` was ignored.
