@@ -16,13 +16,24 @@
 import { describe, expect, it } from "bun:test";
 import type { Connection } from "@malloydata/malloy";
 import {
-   duckdbCollation,
-   duckdbTableCollation,
-   postgresCollation,
-   postgresTableCollation,
+   duckdbCollation as duckdbCollationOf,
+   duckdbTableCollation as duckdbTableCollationOf,
+   postgresCollation as postgresCollationOf,
+   postgresTableCollation as postgresTableCollationOf,
+   probeIO,
    unfinalizedPostgresSQL,
 } from "./gate_collation";
 import { equalityOnlyExpr, gateReads } from "./gate_reads";
+
+/** The reads over a connection, through the I/O `gate_collation.ts` builds. */
+const duckdbCollation = (c: Connection, sql: string) =>
+   duckdbCollationOf(probeIO(c), sql);
+const duckdbTableCollation = (c: Connection, path: string) =>
+   duckdbTableCollationOf(probeIO(c), path);
+const postgresCollation = (c: Connection, sql: string) =>
+   postgresCollationOf(probeIO(c), sql);
+const postgresTableCollation = (c: Connection, path: string) =>
+   postgresTableCollationOf(probeIO(c), path);
 
 /** A connection answering every query with `rows`, recording the SQL. */
 function connection(answer: (sql: string) => Record<string, unknown>[]): {

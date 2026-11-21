@@ -50,6 +50,18 @@ reads only the probes' answers.
 | `serve_verdict.ts`           | Whether each persisted source can be served, and why not                                                                                                                                                                     | `model.ts`, the facade                                                  |
 | `query_path.ts`              | The path report: which leg answered, what it read, why the others declined                                                                                                                                                   | `model.ts`, `model_policy.ts`, `query_serving.ts`, the facade, the legs |
 
+### `collation/`
+
+The collation reads behind `gate_collation.ts`, one reader per Malloy dialect
+whose strings can be read. A reader sends SQL through a `ProbeIO` that
+`gate_collation.ts` builds over a connection, and never holds one; the
+policy (which side is read, what an equality or an ordering needs, the memo
+scopes, failing closed and the refusal text) stays in `gate_collation.ts`.
+
+| Module                  | Responsibility                                                                                      |
+| ----------------------- | --------------------------------------------------------------------------------------------------- |
+| `collation/probe_io.ts` | What a read goes through (`ProbeIO`: rows, and a BigQuery driver's answers) and gives (`Collation`) |
+
 ## Dependency rule
 
 May import: `domain/`, `text/`, governance's gate collection and

@@ -71,10 +71,9 @@ import { queryTableReads } from "../../governance/ir/source_reads";
 import { capabilitiesOf } from "../domain/dialect";
 
 import type { CollationProbe, GateReads } from "./gate_reads_types";
+import type { Collation, ProbeIO } from "./collation/probe_io";
 import { fieldPathsIn } from "./gate_paths";
 import { entryGates } from "./gate_reads";
-
-type Collation = "binary" | "deterministic" | "unknown";
 
 /** What the probe reads through: the author's compile and its connections. */
 interface ProbeRuntime {
@@ -133,8 +132,8 @@ export async function stringGateCollationRefusal(args: {
       args.authorRunnable as unknown as { runtime?: ProbeRuntime }
    ).runtime;
    if (!runtime) return "no runtime";
-   const connect = (name: string | undefined = connectionName) =>
-      runtime.connections.lookupConnection(name);
+   const connect = async (name: string | undefined = connectionName) =>
+      probeIO(await runtime.connections.lookupConnection(name));
    const read = capabilitiesOf(dialect).stringCollation;
    if (read === "binary") return undefined;
    if (read === undefined) return "a dialect whose collation is not read";
@@ -321,9 +320,9 @@ function bigqueryProbeOnce<T>(
    return p;
 }
 
-/** A name segment quoted as `connection`'s dialect quotes it (BigQuery's backquotes). */
-function bqName(connection: Connection, segment: string): string {
-   return quoteIdentifier(segment, connection.dialectName);
+/** A name segment quoted as `io`'s dialect quotes it (BigQuery's backquotes). */
+function bqName(io: ProbeIO, segment: string): string {
+   return quoteIdentifier(segment, io.dialectName);
 }
 
 /** Most datasets one project-wide read lists before it proves nothing. */
@@ -339,13 +338,12 @@ const MAX_PROJECT_DATASETS = 10000;
  * each view it reads, run in that region.
  */
 async function bigqueryCollatedDatasets(
-   connection: Connection,
+   io: ProbeIO,
    project: string,
    location: string,
 ): Promise<ReadonlySet<string> | undefined> {
-   const schema = `${bqName(connection, project)}.${bqName(connection, `region-${location.toLowerCase()}`)}.INFORMATION_SCHEMA`;
-   const found = await rows(
-      connection,
+   const schema = `${bqName(io, project)}.${bqName(io, `region-${location.toLowerCase()}`)}.INFORMATION_SCHEMA`;
+   const found = await io.rows(
       `SELECT DISTINCT table_schema FROM (SELECT table_schema FROM ${schema}.COLUMNS WHERE IFNULL(collation_name, '') != '' UNION ALL SELECT table_schema FROM ${schema}.COLUMN_FIELD_PATHS WHERE IFNULL(collation_name, '') != '') LIMIT ${MAX_PROJECT_DATASETS + 1}`,
    );
    if (found.length > MAX_PROJECT_DATASETS) return undefined;
@@ -364,18 +362,17 @@ function bqString(s: string): string {
  * One query, filtered to those tables, billed at least 10 MB.
  */
 async function bigqueryTableTypes(
-   connection: Connection,
+   io: ProbeIO,
    project: string,
    location: string,
    tables: readonly { dataset: string; name: string }[],
 ): Promise<ReadonlyMap<string, string>> {
-   const schema = `${bqName(connection, project)}.${bqName(connection, `region-${location.toLowerCase()}`)}.INFORMATION_SCHEMA`;
+   const schema = `${bqName(io, project)}.${bqName(io, `region-${location.toLowerCase()}`)}.INFORMATION_SCHEMA`;
    // A dataset or table name holds no dot, so `dataset.table` names one.
    const wanted = tables
       .map((t) => bqString(`${t.dataset}.${t.name}`))
       .join(", ");
-   const found = await rows(
-      connection,
+   const found = await io.rows(
       `SELECT table_schema, table_name, table_type FROM ${schema}.TABLES WHERE CONCAT(table_schema, '.', table_name) IN (${wanted})`,
    );
    return new Map(
@@ -400,16 +397,15 @@ interface DatasetTable {
  * each.
  */
 async function bigqueryDatasetTables(
-   connection: Connection,
+   io: ProbeIO,
    dataset: string,
 ): Promise<ReadonlyMap<string, DatasetTable>> {
    const parts = dataset.split(".");
    if (parts.length > 2 || parts.some((p) => p === "")) {
       throw new Error("not a dataset");
    }
-   const schema = `${parts.map((p) => bqName(connection, p)).join(".")}.INFORMATION_SCHEMA`;
-   const found = await rows(
-      connection,
+   const schema = `${parts.map((p) => bqName(io, p)).join(".")}.INFORMATION_SCHEMA`;
+   const found = await io.rows(
       `SELECT table_name, table_type, '' AS path, '' AS collation_name FROM ${schema}.TABLES UNION ALL SELECT table_name, '' AS table_type, column_name AS path, collation_name FROM ${schema}.COLUMNS WHERE IFNULL(collation_name, '') != '' UNION ALL SELECT table_name, '' AS table_type, field_path AS path, collation_name FROM ${schema}.COLUMN_FIELD_PATHS WHERE IFNULL(collation_name, '') != ''`,
    );
    const types = new Map<string, string>();
@@ -442,41 +438,6 @@ async function bigqueryDatasetTables(
  */
 const TABLE_TYPES = new Set(["BASE TABLE", "CLONE", "SNAPSHOT"]);
 
-/**
- * The locations of BigQuery project `project`'s datasets, through the
- * client the connection holds (`datasets.list`, a metadata call, which
- * lists only the datasets the caller may get).
- */
-async function bigqueryDatasetLocations(
-   connection: Connection,
-   project: string,
-): Promise<string[]> {
-   const client = (
-      connection as unknown as {
-         bigQuery?: {
-            getDatasets(options: {
-               projectId: string;
-               autoPaginate: boolean;
-            }): Promise<[{ metadata?: { location?: unknown } }[]]>;
-         };
-      }
-   ).bigQuery;
-   if (!client || typeof client.getDatasets !== "function") {
-      throw new Error("no BigQuery client");
-   }
-   const [datasets] = await client.getDatasets({
-      projectId: project,
-      autoPaginate: true,
-   });
-   const locations = new Set<string>();
-   for (const d of datasets) {
-      const l = d.metadata?.location;
-      if (typeof l !== "string" || l === "") throw new Error("no location");
-      locations.add(l.toLowerCase());
-   }
-   return [...locations];
-}
-
 /** A string that can be a BigQuery project ID (a domain-scoped one too). */
 const PROJECT_ID = /^(?:[a-z0-9.-]+:)?[a-z][a-z0-9-]{4,28}[a-z0-9]$/;
 
@@ -497,31 +458,6 @@ function sqlProjects(sql: string): string[] {
       }
    }
    return [...out];
-}
-
-/** What a BigQuery connection runs jobs as: its projects and location. */
-function bigqueryJobContext(connection: Connection): {
-   projects: string[];
-   location: string | undefined;
-} {
-   const c = connection as unknown as {
-      projectId?: unknown;
-      billingProjectId?: unknown;
-      location?: unknown;
-   };
-   // The client's `{{projectId}}` placeholder stands for a project not
-   // resolved yet: no project to read.
-   const projects = [c.projectId, c.billingProjectId].filter(
-      (p): p is string =>
-         typeof p === "string" && p !== "" && !p.includes("{{"),
-   );
-   return {
-      projects: [...new Set(projects)],
-      location:
-         typeof c.location === "string" && c.location !== ""
-            ? c.location.toLowerCase()
-            : undefined,
-   };
 }
 
 /** A BigQuery table path placed: the projects it may be in, its dataset, its name. */
@@ -558,15 +494,15 @@ function placeTable(
  * per loaded model.
  */
 class BigQueryCatalog {
-   readonly job: ReturnType<typeof bigqueryJobContext>;
+   readonly job: ReturnType<ProbeIO["jobContext"]>;
 
    constructor(
       private readonly runtime: object,
       private readonly bind: object,
-      readonly connection: Connection,
+      readonly io: ProbeIO,
       private readonly connectionName: string | undefined,
    ) {
-      this.job = bigqueryJobContext(connection);
+      this.job = io.jobContext();
    }
 
    /**
@@ -581,7 +517,7 @@ class BigQueryCatalog {
             this.runtime,
             this.bind,
             [this.connectionName, "locations", project],
-            () => bigqueryDatasetLocations(this.connection, project),
+            () => this.io.datasetLocations(project),
          );
          return regions.length > 0 ? regions : undefined;
       } catch {
@@ -606,7 +542,7 @@ class BigQueryCatalog {
                this.runtime,
                this.bind,
                [this.connectionName, "project", project, region],
-               () => bigqueryCollatedDatasets(this.connection, project, region),
+               () => bigqueryCollatedDatasets(this.io, project, region),
             );
          } catch {
             return undefined;
@@ -653,13 +589,7 @@ class BigQueryCatalog {
                      region,
                      ...wanted.map((w) => `${w.dataset}.${w.name}`),
                   ],
-                  () =>
-                     bigqueryTableTypes(
-                        this.connection,
-                        project,
-                        region,
-                        wanted,
-                     ),
+                  () => bigqueryTableTypes(this.io, project, region, wanted),
                );
             } catch {
                return undefined;
@@ -676,7 +606,7 @@ class BigQueryCatalog {
          this.runtime,
          this.bind,
          [this.connectionName, "dataset", dataset],
-         () => bigqueryDatasetTables(this.connection, dataset),
+         () => bigqueryDatasetTables(this.io, dataset),
       );
    }
 }
@@ -746,7 +676,7 @@ async function bigquerySource(args: {
       const catalog = new BigQueryCatalog(
          runtime,
          args.bind ?? NO_BIND,
-         await runtime.connections.lookupConnection(connectionName),
+         probeIO(await runtime.connections.lookupConnection(connectionName)),
          connectionName,
       );
       const { job } = catalog;
@@ -850,7 +780,7 @@ async function bigqueryDatabaseTableCollation(
       givens?: Record<string, unknown>;
       bind?: object;
    },
-   connection: Connection,
+   io: ProbeIO,
    connectionName: string | undefined,
    memo: Map<string, Promise<unknown>>,
 ): Promise<Collation> {
@@ -887,7 +817,7 @@ async function bigqueryDatabaseTableCollation(
       await memoized(
          memo,
          ["bigquery-dataset", connectionName, placed.dataset],
-         () => bigqueryDatasetTables(connection, placed.dataset),
+         () => bigqueryDatasetTables(io, placed.dataset),
       )
    ).get(placed.name);
    if (stored === undefined || !TABLE_TYPES.has(stored.type)) return "unknown";
@@ -1052,13 +982,13 @@ async function probe(args: {
       return "unknown";
    }
    const sql = await probeSql(args);
-   const connection = await args.runtime.connections.lookupConnection(
-      args.connectionName,
+   const io = probeIO(
+      await args.runtime.connections.lookupConnection(args.connectionName),
    );
    try {
       return read === "instance"
-         ? await duckdbCollation(connection, sql)
-         : await postgresCollation(connection, unfinalizedPostgresSQL(sql));
+         ? await duckdbCollation(io, sql)
+         : await postgresCollation(io, unfinalizedPostgresSQL(sql));
    } catch {
       // Unreadable: fail closed.
       return "unknown";
@@ -1068,22 +998,74 @@ async function probe(args: {
 type Rows = { rows: Record<string, unknown>[] };
 
 /**
- * Publisher's own catalog read, admitted past a locked DuckDB instance's gate,
- * which refuses settings reads to caller and author SQL (duckdb_lockdown.ts).
+ * The I/O the collation reads go through over `connection`: its catalog
+ * reads, each admitted past a locked DuckDB instance's gate
+ * (duckdb_lockdown.ts), and, for BigQuery, what its driver holds (the
+ * client's `datasets.list`, its projects and location), read duck-typed
+ * here and nowhere else.
  */
-async function rows(
-   connection: Connection,
-   sql: string,
-): Promise<Rows["rows"]> {
-   const result = (await runAsInternalStatement(sql, () =>
-      connection.runSQL(sql),
-   )) as unknown as Rows;
-   return result.rows ?? [];
+export function probeIO(connection: Connection): ProbeIO {
+   return {
+      dialectName: connection.dialectName,
+      async rows(sql) {
+         const result = (await runAsInternalStatement(sql, () =>
+            connection.runSQL(sql),
+         )) as unknown as Rows;
+         return result.rows ?? [];
+      },
+      async datasetLocations(project) {
+         const client = (
+            connection as unknown as {
+               bigQuery?: {
+                  getDatasets(options: {
+                     projectId: string;
+                     autoPaginate: boolean;
+                  }): Promise<[{ metadata?: { location?: unknown } }[]]>;
+               };
+            }
+         ).bigQuery;
+         if (!client || typeof client.getDatasets !== "function") {
+            throw new Error("no BigQuery client");
+         }
+         const [datasets] = await client.getDatasets({
+            projectId: project,
+            autoPaginate: true,
+         });
+         const locations = new Set<string>();
+         for (const d of datasets) {
+            const l = d.metadata?.location;
+            if (typeof l !== "string" || l === "")
+               throw new Error("no location");
+            locations.add(l.toLowerCase());
+         }
+         return [...locations];
+      },
+      jobContext() {
+         const c = connection as unknown as {
+            projectId?: unknown;
+            billingProjectId?: unknown;
+            location?: unknown;
+         };
+         // The client's `{{projectId}}` placeholder stands for a project not
+         // resolved yet: no project to read.
+         const projects = [c.projectId, c.billingProjectId].filter(
+            (p): p is string =>
+               typeof p === "string" && p !== "" && !p.includes("{{"),
+         );
+         return {
+            projects: [...new Set(projects)],
+            location:
+               typeof c.location === "string" && c.location !== ""
+                  ? c.location.toLowerCase()
+                  : undefined,
+         };
+      },
+   };
 }
 
 /** Postgres rows, which Malloy's Postgres connection reads from a `row` column. */
-function pgRows(connection: Connection, sql: string): Promise<Rows["rows"]> {
-   return rows(connection, `SELECT row_to_json(t) AS row FROM (${sql}) t`);
+function pgRows(io: ProbeIO, sql: string): Promise<Rows["rows"]> {
+   return io.rows(`SELECT row_to_json(t) AS row FROM (${sql}) t`);
 }
 
 /**
@@ -1101,16 +1083,15 @@ const DUCKDB_COLLATE_DEFINITIONS =
    "SELECT (SELECT count(*) FROM duckdb_tables() WHERE NOT internal AND sql ILIKE '%collate%') + (SELECT count(*) FROM duckdb_views() WHERE NOT internal AND sql ILIKE '%collate%') + (SELECT count(*) FROM duckdb_functions() WHERE NOT internal AND function_type IN ('macro', 'table_macro') AND (macro_definition IS NULL OR macro_definition ILIKE '%collate%')) AS n";
 
 export async function duckdbCollation(
-   connection: Connection,
+   io: ProbeIO,
    sql: string,
 ): Promise<Collation> {
    if (/\bcollate\b/i.test(sql)) return "unknown";
-   const [setting] = await rows(
-      connection,
+   const [setting] = await io.rows(
       "SELECT current_setting('default_collation') AS c",
    );
    if (String(setting?.c ?? "").trim() !== "") return "unknown";
-   const [defs] = await rows(connection, DUCKDB_COLLATE_DEFINITIONS);
+   const [defs] = await io.rows(DUCKDB_COLLATE_DEFINITIONS);
    return Number(defs?.n ?? 1) === 0 ? "binary" : "unknown";
 }
 
@@ -1148,11 +1129,9 @@ const PG_COLLATION_COLUMNS =
    "c.collname AS name, c.collisdeterministic AS det, c.collcollate AS cc, c.collprovider AS prov, d.datcollate AS dbc, to_jsonb(d) ->> 'datlocprovider' AS dbp";
 
 /** The Postgres database's default collation, as {@link postgresJudged} reads it. */
-async function postgresDefaultCollation(
-   connection: Connection,
-): Promise<Collation> {
+async function postgresDefaultCollation(io: ProbeIO): Promise<Collation> {
    const [row] = await pgRows(
-      connection,
+      io,
       `SELECT ${PG_COLLATION_COLUMNS} FROM pg_collation c, pg_database d WHERE c.collname = 'default' AND d.datname = current_database()`,
    );
    return postgresJudged(row);
@@ -1179,11 +1158,11 @@ export function unfinalizedPostgresSQL(sql: string): string {
  * database default included.
  */
 export async function postgresCollation(
-   connection: Connection,
+   io: ProbeIO,
    sql: string,
 ): Promise<Collation> {
    const [row] = await pgRows(
-      connection,
+      io,
       `SELECT ${PG_COLLATION_COLUMNS} FROM pg_collation c, pg_database d WHERE c.oid = (pg_collation_for((SELECT q.probe_value FROM (${sql}) q LIMIT 1)))::regcollation AND d.datname = current_database()`,
    );
    return postgresJudged(row);
@@ -1297,11 +1276,11 @@ const PG_COLLATION_IDENTITY = `CASE WHEN c.collname = 'default' AND c.collnamesp
 
 /** The identity of the collation `sql`'s `probe_value` compares under. */
 async function postgresCollationIdentity(
-   connection: Connection,
+   io: ProbeIO,
    sql: string,
 ): Promise<string | undefined> {
    const [row] = await pgRows(
-      connection,
+      io,
       `SELECT ${PG_COLLATION_IDENTITY} AS id FROM pg_collation c, pg_database d WHERE c.oid = (pg_collation_for((SELECT q.probe_value FROM (${sql}) q LIMIT 1)))::regcollation AND d.datname = current_database()`,
    );
    return typeof row?.id === "string" ? row.id : undefined;
@@ -1309,10 +1288,10 @@ async function postgresCollationIdentity(
 
 /** The identity of the database's default collation. */
 async function postgresDefaultIdentity(
-   connection: Connection,
+   io: ProbeIO,
 ): Promise<string | undefined> {
    const [row] = await pgRows(
-      connection,
+      io,
       `SELECT ${PG_COLLATION_IDENTITY} AS id FROM pg_collation c, pg_database d WHERE c.collname = 'default' AND c.collnamespace = 'pg_catalog'::regnamespace AND d.datname = current_database()`,
    );
    return typeof row?.id === "string" ? row.id : undefined;
@@ -1323,12 +1302,12 @@ async function postgresDefaultIdentity(
  * null for a column that has none (not a string).
  */
 async function postgresColumnIdentities(
-   connection: Connection,
+   io: ProbeIO,
    tablePath: string,
 ): Promise<Map<string, string | null>> {
    const path = tablePath.replace(/'/g, "''");
    const columns = await pgRows(
-      connection,
+      io,
       `SELECT a.attname AS col, CASE WHEN a.attcollation = 0 THEN NULL ELSE (SELECT ${PG_COLLATION_IDENTITY} FROM pg_collation c, pg_database d WHERE c.oid = a.attcollation AND d.datname = current_database()) END AS id FROM pg_attribute a WHERE a.attrelid = '${path}'::regclass AND a.attnum > 0 AND NOT a.attisdropped`,
    );
    return new Map(
@@ -1446,7 +1425,9 @@ async function databaseCollationRefusal(args: {
       args.authorRunnable as unknown as { runtime?: ProbeRuntime }
    ).runtime;
    if (!runtime) return "no runtime";
-   const source = await runtime.connections.lookupConnection(connectionName);
+   const source = probeIO(
+      await runtime.connections.lookupConnection(connectionName),
+   );
    const sourceDefault = await memoized(
       memo,
       ["source-default", connectionName],
@@ -1458,8 +1439,9 @@ async function databaseCollationRefusal(args: {
    for (const t of args.tables) {
       if (t.tablePath === undefined) return "a table with no path";
       const storedName = t.destinationName ?? connectionName;
-      const connection =
-         await args.storedRuntime.connections.lookupConnection(storedName);
+      const connection = probeIO(
+         await args.storedRuntime.connections.lookupConnection(storedName),
+      );
       const storedDefault = await memoized(
          memo,
          ["stored-default", storedName],
@@ -1554,17 +1536,15 @@ function tableNameOf(path: string): string {
  * the catalog does not list is unknown.
  */
 export async function duckdbTableCollation(
-   connection: Connection,
+   io: ProbeIO,
    tablePath: string,
 ): Promise<Collation> {
-   const [setting] = await rows(
-      connection,
+   const [setting] = await io.rows(
       "SELECT current_setting('default_collation') AS c",
    );
    if (String(setting?.c ?? "").trim() !== "") return "unknown";
    const name = tableNameOf(tablePath).replace(/'/g, "''");
-   const defs = await rows(
-      connection,
+   const defs = await io.rows(
       `SELECT sql FROM duckdb_tables() WHERE table_name = '${name}'`,
    );
    if (defs.length === 0) return "unknown";
@@ -1580,12 +1560,12 @@ export async function duckdbTableCollation(
  * `C`/`POSIX`, deterministic when every one is deterministic, else unknown.
  */
 export async function postgresTableCollation(
-   connection: Connection,
+   io: ProbeIO,
    tablePath: string,
 ): Promise<Collation> {
    const path = tablePath.replace(/'/g, "''");
    const columns = await pgRows(
-      connection,
+      io,
       `SELECT ${PG_COLLATION_COLUMNS} FROM pg_attribute a JOIN pg_collation c ON c.oid = a.attcollation, pg_database d WHERE a.attrelid = '${path}'::regclass AND a.attnum > 0 AND NOT a.attisdropped AND d.datname = current_database()`,
    );
    const judged = columns.map(postgresJudged);
@@ -1648,7 +1628,9 @@ async function storedSide(
          ["duckdb-table", connectionName, tablePath],
          async () =>
             duckdbTableCollation(
-               await runtime.connections.lookupConnection(connectionName),
+               probeIO(
+                  await runtime.connections.lookupConnection(connectionName),
+               ),
                tablePath,
             ),
       );
@@ -1659,8 +1641,9 @@ async function storedSide(
    }
    const connectionName =
       t.destinationName ?? (await entryConnectionOf(args.authorRunnable));
-   const connection =
-      await runtime.connections.lookupConnection(connectionName);
+   const connection = probeIO(
+      await runtime.connections.lookupConnection(connectionName),
+   );
    if (read === "dataset") {
       return bigqueryDatabaseTableCollation(
          t,
