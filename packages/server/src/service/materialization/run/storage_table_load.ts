@@ -1216,9 +1216,10 @@ export const typeBytes = (type: string) => {
 /**
  * Packs columns into the groups of {@link mergeStatements}: the keys
  * (`keyBytes` a row) ride in every group, and a group takes columns while both
- * sides of its rows (`rows × bytes × 2`), beside the changes table's keys that
- * the anti join hashes, stay within `budget`. `rows` is the smaller side's,
- * which a hash join builds on. A column over the budget on its own gets a
+ * sides of its rows (`rows × bytes × 2`), plus one more `rows` of keys for the
+ * anti join, stay within `budget`. `rows` is the smaller side's, which a hash
+ * join builds on; the anti join builds on the smaller of its inputs, so the
+ * changes table's full size need not fit. A column over the budget on its own gets a
  * group of its own, and may spill. First fit, widest first, so the passes are
  * few; each group keeps the columns' order.
  */
