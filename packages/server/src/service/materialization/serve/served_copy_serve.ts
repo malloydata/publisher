@@ -171,6 +171,7 @@ import {
    checkSourceZone,
    checkZonedColumns,
    inlineBaseZoneOf,
+   leftAsWritten,
    readsInAnotherZone,
    readsRerootedTables,
    readZonesOf,
@@ -687,17 +688,22 @@ export class ServedCopyServe {
       givens: Record<string, unknown> | undefined,
    ): Promise<AnswerAttempt & { materializer: ModelMaterializer }> {
       if (!compiled.materializer || compiled.rerooted.length === 0) {
+         const crossConnection = compiled.problems.some(
+            (p) => p.reason === "cross_connection_unbuilt",
+         );
+         const asWritten = crossConnection
+            ? undefined
+            : leftAsWritten(compiled);
          throw new LegDecline(
-            compiled.problems.some(
-               (p) => p.reason === "cross_connection_unbuilt",
-            )
+            crossConnection
                ? "served_copy_cross_connection"
                : "served_copy_not_served",
-            undefined,
+            asWritten?.detail,
             {
                message:
                   compiled.problems[0]?.detail ??
                   "no stored table is re-rooted in this model's served copy",
+               ...(asWritten ? { tableIds: asWritten.tableIds } : {}),
             },
          );
       }
@@ -3407,6 +3413,38 @@ function v1ColumnsOf(
             leftOutPhrase(subject.columnRef(name), f, undefined),
          );
       }
+   }
+   // A column the table holds whose field live types as `json` or `sql
+   // native` (a Postgres `jsonb`, DuckDB's MAP, BLOB, INTERVAL, UUID or
+   // JSON): no stored type spells it, so the table's captured columns, and
+   // those derived from its source, leave it out. Left out like a column no
+   // type reads, so only a query reading it answers live, with the type the
+   // warehouse holds it as for the reason.
+   const nativeTypeOf = nativeTypeLookup(binding.nativeSchema);
+   for (const f of (def.fields ?? []) as {
+      name?: unknown;
+      as?: unknown;
+      join?: unknown;
+      type?: unknown;
+      e?: unknown;
+   }[]) {
+      if (
+         typeof f.name !== "string" ||
+         f.join !== undefined ||
+         f.e !== undefined ||
+         !liveTypesAsNative(f)
+      ) {
+         continue;
+      }
+      const name = typeof f.as === "string" ? f.as : f.name;
+      if (stored.has(f.name.toLowerCase()) || stored.has(name.toLowerCase())) {
+         continue;
+      }
+      columnsLeftOut.push(name);
+      subject.leftOutWhy.set(
+         name,
+         leftOutPhrase(subject.columnRef(name), f, nativeTypeOf(f.name)),
+      );
    }
    // Each with its field's annotations (`#(doc)`, `# label`, `#
    // percent` on the query's output field), as a `#(materialize)` column

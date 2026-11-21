@@ -26,16 +26,19 @@
  *   Postgres's schema reader refuses a table name with no schema, so the
  *   build captured no columns, and the zoned timestamp the plan cannot spell
  *   was "not in the stored table". The bind now reads it from the
- *   warehouse types the build captures beside its columns. The warehouse database's default
- *   TimeZone is not UTC, and the zoned timestamp is also truncated in
- *   query time zones other than UTC, so a read that took a wall-clock value
- *   in the wrong zone shows.
+ *   warehouse types the build captures beside its columns. The warehouse
+ *   database's default TimeZone is not UTC, and the zoned timestamp is also
+ *   truncated in query time zones other than UTC, so a read that took a
+ *   wall-clock value in the wrong zone shows.
+ * - A database `#@ persist` over a JSONB column was never served, and its
+ *   path report gave no reason: no stored type spells `jsonb`, so the
+ *   table's columns left it out and the served copy left the source as
+ *   written (`fields_not_carried`). The column is now left out per query:
+ *   a query reading it answers live (`MISSING_FIELD`, naming `jsonb`), and
+ *   every other query is served.
  *
- * Bugs (equal to live, but never served), held as `it.todo` below:
+ * A bug (equal to live, but never served), held as `it.todo` below:
  *
- * - Bug B: a database `#@ persist` over a JSONB column is never served, and
- *   its path report gives no reason: nothing is considered ("no stored table
- *   is re-rooted in this model's served copy").
  * - Bug C: the database `#@ persist` it does serve answers `select: *` (whose
  *   arrays the served copy leaves out) live with no reason in its path
  *   report either, where the `#(materialize)` one reports `NOT_SERVED` and a
@@ -97,7 +100,7 @@ const SEED = [
        '2024-06-30 23:00:00+00', '{}', '{z}', '{"k": [1, 2]}'),
       (3, 'b', -${ABOVE}, 123456789012345678901234567890.123, -5.5,
        NULL, NULL, NULL, NULL)`,
-   // The same rows without the column of bug A, and without that of bug B.
+   // The same rows without the zoned timestamp, and without the jsonb.
    `CREATE TABLE t_no_ts AS SELECT id, g, big, n, w, ia, ta, jb FROM t`,
    `CREATE TABLE t_no_jb AS SELECT id, g, big, n, w, ts, ia, ta FROM t`,
 ];
@@ -110,8 +113,6 @@ interface Source {
    /** The suffix its tampered table carries. */
    tag: string;
    columns: string[];
-   /** The bug that keeps it from being served on this branch, if any. */
-   bug?: "B";
 }
 
 /** Each mechanism over the whole table, and over a copy it serves. */
@@ -139,7 +140,6 @@ const SOURCES: Source[] = [
       model: "per.malloy",
       tag: "_pjb",
       columns: ALL,
-      bug: "B",
    },
 ];
 
@@ -246,7 +246,7 @@ const QUERIES: Query[] = [
 
 /** Bug C: a declined query the path report gives no reason for. */
 const silentDecline = (s: Source, q: Query) =>
-   s.source === "per" && q.name === "select: *";
+   (s.source === "per" || s.source === "per_jb") && q.name === "select: *";
 
 const queriesOf = (s: Source) =>
    QUERIES.filter((q) => q.reads.every((c) => s.columns.includes(c)));
@@ -286,6 +286,8 @@ interface Answer {
    servedFrom: string | null;
    /** The coded reasons the router gave for each candidate it declined. */
    declined: string[];
+   /** The caller's detail of each declined candidate that has one. */
+   details: string[];
 }
 
 type Outcome = { answer: Answer } | { error: string };
@@ -330,6 +332,9 @@ describe.skipIf(!POSTGRES_URL)(
                   declined: (result.path?.considered ?? [])
                      .filter((c) => c.reason || c.outcome === "skipped")
                      .map((c) => `${c.kind}:${c.reason ?? c.outcome}`),
+                  details: (result.path?.considered ?? []).flatMap((c) =>
+                     c.detail ? [c.detail] : [],
+                  ),
                },
             };
          } catch (error) {
@@ -492,8 +497,8 @@ describe.skipIf(!POSTGRES_URL)(
                   );
                });
 
-               // Bugs B and C: answered live with nothing considered.
-               (s.bug === "B" || silentDecline(s, q) ? it.todo : it)(
+               // Bug C: answered live with nothing considered.
+               (silentDecline(s, q) ? it.todo : it)(
                   `${q.name}: from its table, or live with a coded reason`,
                   () => {
                      const { v } = answers(s, q);
@@ -507,27 +512,40 @@ describe.skipIf(!POSTGRES_URL)(
                );
             }
 
-            // Bugs A and B: the whole source is answered live.
-            (s.bug ? it.todo : it)(
-               "serves a query reading only integer and numeric columns from its table",
-               () => {
-                  const { v } = answers(s, SCALARS);
-                  expect(v.servedBy).toBe("materialized");
-                  expect(v.servedFrom).toBe("database");
-               },
-            );
+            it("serves a query reading only integer and numeric columns from its table", () => {
+               const { v } = answers(s, SCALARS);
+               expect(v.servedBy).toBe("materialized");
+               expect(v.servedFrom).toBe("database");
+            });
          });
       }
 
+      it("answers a query reading the jsonb column live, naming its stored type, and serves the rest", () => {
+         const s = SOURCES.find((x) => x.source === "per_jb")!;
+         const jsonb = answers(s, QUERIES.find((q) => q.reads.includes("jb"))!);
+         expect(jsonb.v.servedBy).toBe("live");
+         expect(jsonb.v.declined).toEqual(["materialized:MISSING_FIELD"]);
+         expect(jsonb.v.details.join(" ")).toContain("stored as jsonb");
+         const rest = queriesOf(s)
+            .filter(
+               (q) =>
+                  !["jb", "ia", "ta"].some((c) => q.reads.includes(c)) &&
+                  q.name !== "select: *",
+            )
+            .map((q) => `${q.name}: ${answers(s, q).v.servedBy}`);
+         expect(rest.length).toBeGreaterThan(4);
+         expect(rest.filter((r) => !r.endsWith(": materialized"))).toEqual([]);
+      });
+
       it("serves every query on the zoned timestamp from its table, in every query time zone", () => {
-         const read = SOURCES.filter(
-            (s) => !s.bug && s.columns.includes("ts"),
-         ).flatMap((s) =>
-            queriesOf(s)
-               .filter((q) => q.reads.includes("ts"))
-               .map(
-                  (q) => `${s.source}: ${q.name}: ${answers(s, q).v.servedBy}`,
-               ),
+         const read = SOURCES.filter((s) => s.columns.includes("ts")).flatMap(
+            (s) =>
+               queriesOf(s)
+                  .filter((q) => q.reads.includes("ts"))
+                  .map(
+                     (q) =>
+                        `${s.source}: ${q.name}: ${answers(s, q).v.servedBy}`,
+                  ),
          );
          expect(read.length).toBeGreaterThan(0);
          expect(read.filter((r) => !r.endsWith(": materialized"))).toEqual([]);
@@ -543,10 +561,8 @@ describe.skipIf(!POSTGRES_URL)(
             const { l } = answers(s, SCALARS);
             const v = await ask(s.model, queryOf(s.source, SCALARS.body));
             if ("error" in v) throw new Error(`served failed: ${v.error}`);
-            // A source a bug answers live must still be live's rows, never
-            // another source's table.
             const tag = v.answer.servedBy === "live" ? "" : s.tag;
-            if (!s.bug) expect(tag).toBe(s.tag);
+            expect(tag).toBe(s.tag);
             expect(asStrings(v.answer.rows)).toEqual(
                asStrings(l.rows.map((r) => ({ ...r, g: `${r.g}${tag}` }))),
             );

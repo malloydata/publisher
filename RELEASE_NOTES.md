@@ -51,6 +51,14 @@ Two consequences worth knowing. A section merged to `main` ships in the **next**
 
 ## [Unreleased] — a `statement_usage` record carries `bytes_out`, and a notebook cell on a metered connection is recorded
 
+## [Unreleased] — a database `#@ persist` table holding a column no stored type spells serves every query that does not read it
+
+**Fixed: a database `#@ persist` source whose table holds a column Malloy types as `json` or `sql native` answered every query live (0.17.0 known issue).** Such a column (a Postgres `jsonb`; a DuckDB `MAP`, `BLOB`, `INTERVAL`, `UUID` or `JSON`) has no stored type the served copy can declare, so the table's columns left it out, and the served copy then left the whole source as written (`served-copy-not-served`, `fields_not_carried`), though nothing the table holds was wrong. The column is now left out per query: a query that reads it answers live, its path report naming the table `MISSING_FIELD` with the column and the type the warehouse holds it as, and every other query is served from the table, equal to live.
+
+**Fixed: a live answer for a database table the served copy leaves as written gave no reason.** The path report considered nothing. It now names the queried source's own table `NOT_SERVED`, with the served copy's reason code, which the package's `served-copy-not-served` warning explains.
+
+**Who is affected:** a package with such a database `#@ persist` source. **What to do:** nothing.
+
 ## [Unreleased] — a database `#(materialize)` over a Postgres `timestamptz` column serves from its table
 
 **Fixed: a database `#(materialize)` source on Postgres whose table holds a `timestamptz` column was never served (0.17.0 known issue).** A database build reads its new table's columns back to bind it, and Postgres's schema reader refuses a table name with no schema, which is how a build names its tables. The build captured no columns, and the served copy fell back to the source's compiled columns, which cannot spell a zoned timestamp. Every query on the source, one not reading that column included, answered live with `NOT_SERVED` ("column `ts` (declared `timestamptz`) is not in the stored table"). The bind now reads a zoned timestamp from the warehouse types the build captures beside its columns (`nativeSchema`), spelled as the bind's own column read spells them, when the build captured no columns. The zoned timestamp is declared and served, in any query time zone, equal to live.
