@@ -10,8 +10,35 @@ import {
    setupIdentity,
 } from "../duckdb_lockdown";
 import { validateS3ProviderShape } from "../gcs_s3_utils";
+import type { Connection } from "@malloydata/malloy";
+import type { components } from "../../api";
+import { BadRequestError, InvalidArgumentError } from "../../errors";
+import { logger } from "../../logger";
+import {
+   azureAttachmentCovers,
+   describeAzureFile,
+   withAttachmentSasToken,
+} from "../azure_introspection";
+import {
+   CloudStorageCredentials,
+   gcsConnectionToCredentials,
+   getCloudTablesWithColumns,
+   listCloudDirectorySchemas,
+   listDataFilesInDirectory,
+   parseCloudUri,
+   s3ConnectionToCredentials,
+   standardizeRunSQLResult,
+} from "../gcs_s3_utils";
+import { runIntrospectionSQL, sqlLiteral } from "../introspection_sql";
+import {
+   groupColumnRowsIntoTables,
+   sqlInFilter,
+   withIntrospectionFailure,
+} from "../introspection_helpers";
 import type {
    ApiConnection,
+   ApiSchema,
+   ApiTable,
    ConnectionDialect,
    CoreConnectionEntry,
    NamedConnection,
@@ -27,6 +54,10 @@ export const DUCKDB: ConnectionDialect = Object.freeze({
    }),
    validateShape: validateDuckDBShape,
    coreEntry: buildDuckDBEntry,
+   introspector: Object.freeze({
+      schemas: getSchemasForDuckDB,
+      tables: listTablesForDuckDB,
+   }),
 });
 
 export function buildDuckdbEntry(
@@ -129,4 +160,224 @@ function buildDuckDBEntry(
               setupIdentity({ attachedDatabases }),
            ),
         };
+}
+
+function getCloudCredentialsFromAttachedDatabases(
+   attachedDatabases: components["schemas"]["AttachedDatabase"][],
+   storageType: "gcs" | "s3",
+): CloudStorageCredentials | null {
+   for (const attachedDb of attachedDatabases) {
+      if (
+         attachedDb.type === "gcs" &&
+         storageType === "gcs" &&
+         attachedDb.gcsConnection
+      ) {
+         return gcsConnectionToCredentials(attachedDb.gcsConnection);
+      }
+      if (
+         attachedDb.type === "s3" &&
+         storageType === "s3" &&
+         attachedDb.s3Connection
+      ) {
+         return s3ConnectionToCredentials(attachedDb.s3Connection);
+      }
+   }
+   return null;
+}
+
+async function getSchemasForDuckDB(
+   connection: ApiConnection,
+   malloyConnection: Connection,
+): Promise<ApiSchema[]> {
+   const duckdb = connection.duckdbConnection;
+   if (!duckdb) {
+      throw new Error("DuckDB connection is required");
+   }
+   return withIntrospectionFailure(
+      `schemas for DuckDB connection ${connection.name}`,
+      async () => {
+         const result = await runIntrospectionSQL(
+            malloyConnection,
+            "SELECT DISTINCT schema_name,catalog_name FROM information_schema.schemata ORDER BY catalog_name,schema_name",
+         );
+
+         const rows = standardizeRunSQLResult(result);
+
+         const schemas: ApiSchema[] = rows.map((row: unknown) => {
+            const typedRow = row as Record<string, unknown>;
+            const schemaName = String(typedRow.schema_name ?? "");
+            const catalogName = String(typedRow.catalog_name ?? "");
+
+            return {
+               name: `${catalogName}.${schemaName}`,
+               isHidden:
+                  [
+                     "information_schema",
+                     "performance_schema",
+                     "pg_catalog",
+                     "pg_toast",
+                     "",
+                  ].includes(schemaName) ||
+                  ["md_information_schema", "system"].includes(catalogName),
+               isDefault: catalogName === "main",
+            };
+         });
+
+         const attachedDatabases = duckdb.attachedDatabases || [];
+
+         const cloudDatabases = attachedDatabases.filter(
+            (attachedDb) =>
+               (attachedDb.type === "gcs" || attachedDb.type === "s3") &&
+               (attachedDb.gcsConnection || attachedDb.s3Connection),
+         );
+
+         const cloudDbPromises = cloudDatabases.map(async (attachedDb) => {
+            const dbType = attachedDb.type as "gcs" | "s3";
+            const credentials =
+               dbType === "gcs"
+                  ? gcsConnectionToCredentials(attachedDb.gcsConnection!)
+                  : s3ConnectionToCredentials(attachedDb.s3Connection!);
+
+            try {
+               return await listCloudDirectorySchemas(credentials);
+            } catch (cloudError) {
+               logger.warn(
+                  `Failed to list ${dbType.toUpperCase()} directory schemas for ${attachedDb.name}`,
+                  { error: cloudError },
+               );
+               return [];
+            }
+         });
+
+         const cloudSchemaArrays = await Promise.all(cloudDbPromises);
+         for (const cloudSchemas of cloudSchemaArrays) {
+            schemas.push(...cloudSchemas);
+         }
+
+         const azureDatabases = attachedDatabases.filter(
+            (attachedDb) =>
+               attachedDb.type === "azure" && attachedDb.azureConnection,
+         );
+         for (const attachedDb of azureDatabases) {
+            if (attachedDb.name) {
+               schemas.push({
+                  name: attachedDb.name,
+                  isHidden: false,
+                  isDefault: false,
+               });
+            }
+         }
+
+         return schemas;
+      },
+   );
+}
+
+async function listTablesForDuckDB(
+   connection: ApiConnection,
+   schemaName: string,
+   malloyConnection: Connection,
+   tableNames?: string[],
+): Promise<ApiTable[]> {
+   if (!connection.duckdbConnection) {
+      throw new Error("DuckDB connection is required");
+   }
+
+   const attachedDbs = connection.duckdbConnection.attachedDatabases || [];
+
+   // Azure attached database matched by name
+   const azureDb = attachedDbs.find(
+      (db) =>
+         db.type === "azure" && db.name === schemaName && db.azureConnection,
+   );
+   if (azureDb) {
+      const azureConn = azureDb.azureConnection!;
+      const fileUrl =
+         azureConn.authType === "sas_token"
+            ? azureConn.sasUrl
+            : azureConn.fileUrl;
+      if (fileUrl) {
+         return describeAzureFile(malloyConnection, fileUrl, azureConn);
+      }
+   }
+
+   // Azure ADLS file path (abfss://, https://, az://). Read only inside an
+   // attachment's account and container, with that attachment's credentials:
+   // otherwise this would fetch any URL a caller names.
+   if (
+      schemaName.startsWith("abfss://") ||
+      schemaName.startsWith("https://") ||
+      schemaName.startsWith("az://")
+   ) {
+      const covering = attachedDbs.find(
+         (db) =>
+            db.type === "azure" &&
+            db.azureConnection &&
+            azureAttachmentCovers(db.azureConnection, schemaName),
+      )?.azureConnection;
+      if (!covering) {
+         throw new BadRequestError(
+            `"${schemaName}" is not inside an Azure attachment of connection "${connection.name}". Browse an attached Azure database by its name.`,
+         );
+      }
+      return describeAzureFile(
+         malloyConnection,
+         withAttachmentSasToken(schemaName, covering),
+         covering,
+      );
+   }
+
+   // Cloud storage (GCS/S3)
+   const parsedUri = parseCloudUri(schemaName);
+   if (parsedUri) {
+      const {
+         type: cloudType,
+         bucket: bucketName,
+         path: directoryPath,
+      } = parsedUri;
+      const credentials = getCloudCredentialsFromAttachedDatabases(
+         attachedDbs,
+         cloudType,
+      );
+      if (!credentials) {
+         throw new Error(
+            `${cloudType.toUpperCase()} credentials not found in attached databases`,
+         );
+      }
+      const fileKeys = await listDataFilesInDirectory(
+         credentials,
+         bucketName,
+         directoryPath,
+      );
+      return getCloudTablesWithColumns(
+         malloyConnection,
+         credentials,
+         bucketName,
+         fileKeys,
+      );
+   }
+
+   // Regular DuckDB schema — query information_schema.columns
+   const dotIdx = schemaName.indexOf(".");
+   if (dotIdx < 0) {
+      // InvalidArgumentError: a plain Error would classify as an internal fault
+      // ("try again later"), which an agent retries forever.
+      throw new InvalidArgumentError(
+         `DuckDB schema name must be qualified as "catalog.schema", got "${schemaName}". List this connection's schemas and use one of those names verbatim.`,
+      );
+   }
+   const catalogName = schemaName.substring(0, dotIdx);
+   const actualSchemaName = schemaName.substring(dotIdx + 1);
+
+   return withIntrospectionFailure(
+      `tables for DuckDB schema ${schemaName} in connection ${connection.name}`,
+      async () => {
+         const result = await runIntrospectionSQL(
+            malloyConnection,
+            `SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = '${sqlLiteral(actualSchemaName, connection.type)}' AND table_catalog = '${sqlLiteral(catalogName, connection.type)}' ${sqlInFilter("table_name", tableNames, connection.type)} ORDER BY table_name, ordinal_position`,
+         );
+         const rows = standardizeRunSQLResult(result);
+         return groupColumnRowsIntoTables(rows, (t) => `${schemaName}.${t}`);
+      },
+   );
 }

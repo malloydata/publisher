@@ -14,8 +14,22 @@ import {
    sanitizeSecretName,
 } from "../duckdb_session_setup";
 import { quoteIdentifier } from "../quoting";
+import { BigQuery } from "@google-cloud/bigquery";
+import { Impersonated } from "google-auth-library";
+import type { Connection, TableSourceDef } from "@malloydata/malloy";
+import { externalEnv } from "../../settings";
+import { getImpersonatedAuthClient } from "../gcp_impersonation";
+import { assertGoogleCredentialsIsNotADirectory } from "../google_credentials";
+import {
+   columnsOfSchema,
+   extractErrorDataFromError,
+   type SchemaField,
+   withIntrospectionFailure,
+} from "../introspection_helpers";
 import type {
    ApiConnection,
+   ApiSchema,
+   ApiTable,
    AttachedDatabase,
    ConnectionDialect,
    CoreConnectionEntry,
@@ -34,6 +48,10 @@ export const BIGQUERY: ConnectionDialect = Object.freeze({
    }),
    validateShape: validateBigQueryShape,
    coreEntry: buildBigQueryEntry,
+   introspector: Object.freeze({
+      schemas: getSchemasForBigQuery,
+      tables: listTablesForBigQuery,
+   }),
    attached: Object.freeze({
       attach: attachBigQuery,
       test: testAttachedBigQuery,
@@ -311,4 +329,164 @@ function wrapBigQuery(handle: string, innerSQL: string): string {
    const h = `'${escapeSQL(handle)}'`;
    // bigquery_query(<project/db>, <sql>) — secret resolved by bq:// scope.
    return `SELECT * FROM bigquery_query(${h}, ${sql})`;
+}
+
+async function createBigQueryClient(
+   connection: ApiConnection,
+): Promise<BigQuery> {
+   if (!connection.bigqueryConnection) {
+      throw new Error("BigQuery connection is required");
+   }
+
+   const config: {
+      projectId: string;
+      credentials?: object;
+      keyFilename?: string;
+      authClient?: Impersonated;
+   } = {
+      projectId: connection.bigqueryConnection.defaultProjectId || "",
+   };
+
+   // Discovery must run as the same identity as query execution: falling
+   // through to ambient ADC would read schemas as the publisher's own broad
+   // credential, the identity impersonation exists to avoid.
+   if (connection.bigqueryConnection.impersonateServiceAccount) {
+      config.authClient = await getImpersonatedAuthClient(
+         connection.bigqueryConnection.impersonateServiceAccount,
+      );
+      if (!config.projectId) {
+         throw new Error(
+            "BigQuery project ID is required. Set defaultProjectId on the connection when using impersonateServiceAccount.",
+         );
+      }
+   } else if (connection.bigqueryConnection.serviceAccountKeyJson) {
+      let credentials: Record<string, unknown>;
+      try {
+         credentials = JSON.parse(
+            connection.bigqueryConnection.serviceAccountKeyJson,
+         );
+      } catch (parseError) {
+         throw new Error(
+            `Failed to parse BigQuery service account key JSON: ${(parseError as Error).message}`,
+         );
+      }
+      config.credentials = credentials;
+
+      if (!config.projectId && credentials.project_id) {
+         config.projectId = credentials.project_id as string;
+      }
+
+      if (!config.projectId) {
+         throw new Error(
+            "BigQuery project ID is required. Either set the defaultProjectId in the connection configuration or the project_id in the service account key JSON.",
+         );
+      }
+   } else if (
+      Object.keys(connection.bigqueryConnection).length === 0 &&
+      externalEnv("GOOGLE_APPLICATION_CREDENTIALS")
+   ) {
+      // Note: The BigQuery client will infer the project ID from the ADC file.
+      assertGoogleCredentialsIsNotADirectory();
+      config.keyFilename = externalEnv("GOOGLE_APPLICATION_CREDENTIALS") || "";
+   } else {
+      throw new Error(
+         "BigQuery connection is required, either set the bigqueryConnection in the connection configuration or set the GOOGLE_APPLICATION_CREDENTIALS environment variable.",
+      );
+   }
+
+   return new BigQuery(config);
+}
+
+async function getSchemasForBigQuery(
+   connection: ApiConnection,
+): Promise<ApiSchema[]> {
+   if (!connection.bigqueryConnection) {
+      throw new Error("BigQuery connection is required");
+   }
+   return withIntrospectionFailure(
+      `schemas for BigQuery connection ${connection.name}`,
+      async () => {
+         const bigquery = await createBigQueryClient(connection);
+         const [datasets] = await bigquery.getDatasets();
+
+         return await Promise.all(
+            datasets.map(async (dataset) => {
+               const [metadata] = await dataset.getMetadata();
+               return {
+                  name: dataset.id,
+                  isHidden: false,
+                  isDefault: false,
+                  description: (metadata as { description?: string })
+                     ?.description,
+               };
+            }),
+         );
+      },
+   );
+}
+
+/**
+ * BigQuery: list tables via API client, then fetch each table's schema
+ * individually since BigQuery's INFORMATION_SCHEMA is region-scoped.
+ */
+async function listTablesForBigQuery(
+   connection: ApiConnection,
+   schemaName: string,
+   malloyConnection: Connection,
+   tableNames?: string[],
+): Promise<ApiTable[]> {
+   return withIntrospectionFailure(
+      `tables for BigQuery schema ${schemaName} in connection ${connection.name}`,
+      async () => {
+         const bigquery = await createBigQueryClient(connection);
+         // bigquery.dataset() takes a BARE dataset id, so a project-qualified
+         // schema ("project.dataset") must be split, or it resolves to a missing
+         // dataset in the default project and the orphan sweep cannot see its
+         // tables. Split on the LAST dot so "domain.com:project" ids survive.
+         const lastDot = schemaName.lastIndexOf(".");
+         const dataset =
+            lastDot === -1
+               ? bigquery.dataset(schemaName)
+               : bigquery.dataset(schemaName.slice(lastDot + 1), {
+                    projectId: schemaName.slice(0, lastDot),
+                 });
+         const [tables] = await dataset.getTables();
+
+         let names = tables
+            .map((table) => table.id)
+            .filter((id): id is string => id !== undefined);
+         if (tableNames) {
+            const allowed = new Set(tableNames);
+            names = names.filter((id) => allowed.has(id));
+         }
+
+         const results = await Promise.all(
+            names.map(async (tableName) => {
+               const tablePath = `${schemaName}.${tableName}`;
+               try {
+                  const source = await (
+                     malloyConnection as Connection & {
+                        fetchTableSchema: (
+                           tableKey: string,
+                           tablePath: string,
+                        ) => Promise<TableSourceDef | undefined>;
+                     }
+                  ).fetchTableSchema(tableName, tablePath);
+                  const columns = columnsOfSchema(
+                     source?.fields as SchemaField[] | undefined,
+                  );
+                  return { resource: tablePath, columns };
+               } catch (error) {
+                  logger.warn(`Failed to get schema for table ${tableName}`, {
+                     error: extractErrorDataFromError(error),
+                     schemaName,
+                     tableName,
+                  });
+                  return { resource: tablePath, columns: [] };
+               }
+            }),
+         );
+         return results;
+      },
+   );
 }

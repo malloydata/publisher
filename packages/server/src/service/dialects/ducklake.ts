@@ -58,8 +58,18 @@ import {
    recordedSchemaPath,
    storageSecretScope,
 } from "./ducklake_catalog";
+import type { Connection } from "@malloydata/malloy";
+import { standardizeRunSQLResult } from "../gcs_s3_utils";
+import { runIntrospectionSQL, sqlLiteral } from "../introspection_sql";
+import {
+   groupColumnRowsIntoTables,
+   sqlInFilter,
+   withIntrospectionFailure,
+} from "../introspection_helpers";
 import type {
    ApiConnection,
+   ApiSchema,
+   ApiTable,
    ConnectionDialect,
    CoreConnectionEntry,
    DestinationAttachMode,
@@ -78,6 +88,10 @@ export const DUCKLAKE: ConnectionDialect = Object.freeze({
    }),
    validateShape: validateDuckLakeShape,
    coreEntry: buildDuckLakeEntry,
+   introspector: Object.freeze({
+      schemas: getSchemasForDuckLake,
+      tables: listTablesForDuckLake,
+   }),
    destination: Object.freeze({
       attach: (
          session: DuckDBConnection,
@@ -870,4 +884,60 @@ export function firstAttachClauses(options: {
 export function managedSearchPathSql(dbName: string): string {
    const alias = `"${dbName.replace(/"/g, '""')}"`;
    return `SET search_path = '${`${alias}.main`.replace(/'/g, "''")}'`;
+}
+
+async function getSchemasForDuckLake(
+   connection: ApiConnection,
+   malloyConnection: Connection,
+): Promise<ApiSchema[]> {
+   return withIntrospectionFailure(
+      `schemas for DuckLake connection ${connection.name}`,
+      async () => {
+         // The catalog is attached with the connection name (see attachDuckLake in connection.ts)
+         const catalogName = connection.name ?? "";
+         const result = await runIntrospectionSQL(
+            malloyConnection,
+            `SELECT schema_name FROM information_schema.schemata WHERE catalog_name = '${sqlLiteral(catalogName, connection.type)}' ORDER BY schema_name`,
+         );
+         const rows = standardizeRunSQLResult(result);
+
+         return rows.map((row: unknown) => {
+            const typedRow = row as Record<string, unknown>;
+            const schemaName = typedRow.schema_name as string;
+            const shouldShow = schemaName === "main" || schemaName === "public";
+            return {
+               name: schemaName,
+               isHidden: !shouldShow,
+               isDefault: false,
+            };
+         });
+      },
+   );
+}
+
+async function listTablesForDuckLake(
+   connection: ApiConnection,
+   schemaName: string,
+   malloyConnection: Connection,
+   tableNames?: string[],
+): Promise<ApiTable[]> {
+   // Prefix bare schema names with the catalog (connection) name.
+   // Two-part names like "catalog.schema" are already qualified.
+   if (!schemaName.includes(".")) {
+      schemaName = `${connection.name}.${schemaName}`;
+   }
+
+   const catalogName = schemaName.split(".")[0];
+   const actualSchemaName = schemaName.split(".")[1];
+   return withIntrospectionFailure(
+      `tables for DuckLake schema ${schemaName} in connection ${connection.name}`,
+      async () => {
+         const result = await runIntrospectionSQL(
+            malloyConnection,
+            `SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = '${sqlLiteral(actualSchemaName, connection.type)}' AND table_catalog = '${sqlLiteral(catalogName, connection.type)}' ${sqlInFilter("table_name", tableNames, connection.type)} ORDER BY table_name, ordinal_position`,
+         );
+         const rows = standardizeRunSQLResult(result);
+         return groupColumnRowsIntoTables(rows, (t) => `${schemaName}.${t}`);
+      },
+   );
 }

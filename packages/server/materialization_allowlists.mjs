@@ -287,8 +287,9 @@ export const RATCHET_CONNECTION_TYPE_LITERALS = {
    "service/connection_config.ts": { count: 11, step: "D3" },
    // a deleted connection's file cleanup.
    "service/connection_service.ts": { count: 2, step: "D3" },
-   // the introspectors by type.
-   "service/db_utils.ts": { count: 16, step: "D3" },
+   // the listings whose record members are already read (BigQuery's, a
+   // remote Publisher's).
+   "service/db_utils.ts": { count: 2, step: "D3" },
    // a DuckLake destination's catalog overlap.
    "service/destination_overlap.ts": { count: 2, step: "D3" },
    // the collation readers' table, keyed by dialect.

@@ -14,6 +14,7 @@
  */
 
 import type { DuckDBConnection } from "@malloydata/db-duckdb";
+import type { Connection } from "@malloydata/malloy";
 import type { components } from "../../api";
 import type { ConnectionOrigin } from "../../config";
 import type { openProxy } from "../proxy";
@@ -29,6 +30,12 @@ export type ConnectionAttributes =
 
 /** A connection as the API carries it. */
 export type ApiConnection = components["schemas"]["Connection"];
+
+/** A schema a connection lists, as the API carries it. */
+export type ApiSchema = components["schemas"]["Schema"];
+
+/** A table a connection lists, as the API carries it. */
+export type ApiTable = components["schemas"]["Table"];
 
 /** A connection past assembly's name check. */
 export type NamedConnection = ApiConnection & { name: string };
@@ -180,6 +187,20 @@ export interface DestinationDialect {
    ): Promise<boolean>;
 }
 
+/** How one connection type lists its schemas and the tables in one schema. */
+export interface Introspector {
+   schemas(
+      connection: ApiConnection,
+      malloyConnection: Connection,
+   ): Promise<ApiSchema[]>;
+   tables(
+      connection: ApiConnection,
+      schemaName: string,
+      malloyConnection: Connection,
+      tableNames?: string[],
+   ): Promise<ApiTable[]>;
+}
+
 /** One connection type's entry in the registry. */
 export interface ConnectionDialect {
    /** The type this entry is for, as its registry key. */
@@ -209,6 +230,11 @@ export interface ConnectionDialect {
       connection: NamedConnection,
       environmentPath: string,
    ) => CoreConnectionEntry;
+   /**
+    * How a connection of this type lists its schemas and their tables
+    * (db_utils.ts, getSchemasForConnection and listTablesForSchema).
+    */
+   readonly introspector: Introspector;
    /** How a database of this type is attached; absent when it cannot be. */
    readonly attached?: AttachedDatabaseDialect;
    /** How a build reads a source of this type; absent when it cannot. */

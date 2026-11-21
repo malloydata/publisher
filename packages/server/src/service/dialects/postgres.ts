@@ -15,7 +15,18 @@ import { redactPgSecrets } from "../../pg_helpers";
 import { escapeSQL, installAndLoadExtension } from "../duckdb_session_setup";
 import { openProxy, type ProxyEndpoint } from "../proxy";
 import { quoteIdentifier } from "../quoting";
+import type { Connection } from "@malloydata/malloy";
+import { standardizeRunSQLResult } from "../gcs_s3_utils";
+import { runIntrospectionSQL, sqlLiteral } from "../introspection_sql";
+import {
+   groupColumnRowsIntoTables,
+   sqlInFilter,
+   withIntrospectionFailure,
+} from "../introspection_helpers";
 import type {
+   ApiConnection,
+   ApiSchema,
+   ApiTable,
    AttachedDatabase,
    ConnectionDialect,
    CoreConnectionEntry,
@@ -34,6 +45,10 @@ export const POSTGRES: ConnectionDialect = Object.freeze({
       canStream: true,
    }),
    coreEntry: buildPostgresEntry,
+   introspector: Object.freeze({
+      schemas: getSchemasForPostgres,
+      tables: listTablesForPostgres,
+   }),
    attached: Object.freeze({
       attach: attachPostgres,
       test: testAttachedPostgres,
@@ -191,4 +206,64 @@ function wrapPostgres(handle: string, innerSQL: string): string {
    const h = `'${escapeSQL(handle)}'`;
    // postgres_query(<attached-db alias>, <sql>).
    return `SELECT * FROM postgres_query(${h}, ${sql})`;
+}
+
+async function getSchemasForPostgres(
+   connection: ApiConnection,
+   malloyConnection: Connection,
+): Promise<ApiSchema[]> {
+   if (!connection.postgresConnection) {
+      throw new Error("Postgres connection is required");
+   }
+   return withIntrospectionFailure(
+      `schemas for Postgres connection ${connection.name}`,
+      async () => {
+         // Wrap in row_to_json because the Malloy Postgres driver's runSQL
+         // de-JSONs each row via row.row (matching Malloy-generated queries).
+         const result = await runIntrospectionSQL(
+            malloyConnection,
+            "SELECT row_to_json(t) as row FROM (SELECT schema_name FROM information_schema.schemata ORDER BY schema_name) t",
+         );
+         const rows = standardizeRunSQLResult(result);
+         return rows.map((row: unknown) => {
+            const typedRow = row as Record<string, unknown>;
+            const schemaName = String(
+               typedRow.schema_name ?? typedRow.SCHEMA_NAME ?? "",
+            );
+            return {
+               name: schemaName,
+               isHidden: [
+                  "information_schema",
+                  "pg_catalog",
+                  "pg_toast",
+               ].includes(schemaName),
+               isDefault: schemaName === "public",
+            };
+         });
+      },
+   );
+}
+
+async function listTablesForPostgres(
+   connection: ApiConnection,
+   schemaName: string,
+   malloyConnection: Connection,
+   tableNames?: string[],
+): Promise<ApiTable[]> {
+   if (!connection.postgresConnection) {
+      throw new Error("Postgres connection is required");
+   }
+   return withIntrospectionFailure(
+      `tables for Postgres schema ${schemaName} in connection ${connection.name}`,
+      async () => {
+         // Wrap in row_to_json because the Malloy Postgres driver's runSQL
+         // de-JSONs each row via row.row (matching Malloy-generated queries).
+         const result = await runIntrospectionSQL(
+            malloyConnection,
+            `SELECT row_to_json(t) as row FROM (SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = '${sqlLiteral(schemaName, connection.type)}' ${sqlInFilter("table_name", tableNames, connection.type)} ORDER BY table_name, ordinal_position) t`,
+         );
+         const rows = standardizeRunSQLResult(result);
+         return groupColumnRowsIntoTables(rows, (t) => `${schemaName}.${t}`);
+      },
+   );
 }

@@ -4,8 +4,17 @@
 /** The `sqlserver` connection type's registry entry. */
 
 import { logger } from "../../logger";
+import type { Connection } from "@malloydata/malloy";
+import { standardizeRunSQLResult } from "../gcs_s3_utils";
+import { runIntrospectionSQL, sqlLiteral } from "../introspection_sql";
+import {
+   groupColumnRowsIntoTables,
+   withIntrospectionFailure,
+} from "../introspection_helpers";
 import type {
    ApiConnection,
+   ApiSchema,
+   ApiTable,
    ConnectionDialect,
    CoreConnectionEntry,
    NamedConnection,
@@ -25,6 +34,10 @@ export const SQLSERVER: ConnectionDialect = Object.freeze({
    }),
    validateShape: validateSqlServerShape,
    coreEntry: buildSqlServerEntry,
+   introspector: Object.freeze({
+      schemas: getSchemasForSQLServer,
+      tables: listTablesForSQLServer,
+   }),
 });
 
 function validateSqlServerShape(connection: ApiConnection): void {
@@ -81,4 +94,81 @@ function buildSqlServerEntry(connection: NamedConnection): CoreConnectionEntry {
       hostNameInCertificate: blankAsUnset(sqlserver?.hostNameInCertificate),
       instanceName: blankAsUnset(sqlserver?.instanceName),
    };
+}
+
+/**
+ * The SQL Server schemas owning at least one table or view, as a modeler
+ * addresses one (`connection.table('schema.table')`). Read from
+ * `information_schema.tables`: `schemata` also lists fixed-role schemas
+ * (`db_owner`, ...) that never hold a table, and `sys.tables` would miss
+ * view-only schemas, which the column listing includes.
+ */
+async function getSchemasForSQLServer(
+   connection: ApiConnection,
+   malloyConnection: Connection,
+): Promise<ApiSchema[]> {
+   if (!connection.sqlserverConnection) {
+      throw new Error("SQL Server connection is required");
+   }
+   return withIntrospectionFailure(
+      `schemas for SQL Server connection ${connection.name}`,
+      async () => {
+         const result = await runIntrospectionSQL(
+            malloyConnection,
+            "SELECT DISTINCT table_schema AS schema_name FROM information_schema.tables ORDER BY table_schema",
+         );
+         const rows = standardizeRunSQLResult(result);
+         return rows.map((row: unknown) => {
+            const typedRow = row as Record<string, unknown>;
+            const schemaName = String(
+               typedRow.schema_name ?? typedRow.SCHEMA_NAME ?? "",
+            );
+            return {
+               name: schemaName,
+               isHidden: false,
+               isDefault: schemaName === "dbo",
+            };
+         });
+      },
+   );
+}
+
+/**
+ * A SQL Server Unicode string literal, `N'…'`. Here rather than in
+ * {@link sqlLiteral}, which serves dialects with no `N'…'` syntax.
+ */
+function sqlserverNLiteral(value: string): string {
+   return `N'${sqlLiteral(value, "sqlserver")}'`;
+}
+
+/** {@link sqlInFilter} for SQL Server, with each value a Unicode literal. */
+function sqlserverInFilter(columnName: string, values?: string[]): string {
+   if (!values || values.length === 0) return "";
+   return `AND ${columnName} IN (${values.map(sqlserverNLiteral).join(", ")})`;
+}
+
+async function listTablesForSQLServer(
+   connection: ApiConnection,
+   schemaName: string,
+   malloyConnection: Connection,
+   tableNames?: string[],
+): Promise<ApiTable[]> {
+   if (!connection.sqlserverConnection) {
+      throw new Error("SQL Server connection is required");
+   }
+   return withIntrospectionFailure(
+      `tables for SQL Server schema ${schemaName} in connection ${connection.name}`,
+      async () => {
+         // Rows come back as plain objects, so no row_to_json as for Postgres.
+         // Every literal is N'…': a plain '…' is converted to the database code
+         // page first, so under a Latin1 collation `Продажи` becomes question
+         // marks and matches nothing against the nvarchar catalog columns.
+         const result = await runIntrospectionSQL(
+            malloyConnection,
+            `SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = ${sqlserverNLiteral(schemaName)} ${sqlserverInFilter("table_name", tableNames)} ORDER BY table_name, ordinal_position`,
+         );
+         const rows = standardizeRunSQLResult(result);
+         return groupColumnRowsIntoTables(rows, (t) => `${schemaName}.${t}`);
+      },
+   );
 }
