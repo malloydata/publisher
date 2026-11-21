@@ -388,6 +388,12 @@ describe("gateReads: compares no string", () => {
          expect(where(byRegion).comparesNoString, what).toBe(false);
          expect(where(byAmount).comparesNoString, what).toBe(true);
       }
+      // A row filter on a joined field: whether the row is joined follows
+      // the on:, as for a where:.
+      const gate = (on: unknown) =>
+         gateReads(joined(on), ["o.big = $FLAG"], MODEL).comparesNoString;
+      expect(gate(byRegion)).toBe(false);
+      expect(gate(byAmount)).toBe(true);
    });
 
    it("does not hold for a gate over a dimension computed from a string", () => {

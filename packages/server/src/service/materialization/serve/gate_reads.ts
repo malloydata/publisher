@@ -464,7 +464,7 @@ class GateReadWalk {
     * Its `on:` is read on the source that declares the join, its leaves by
     * type alone.
     */
-   private joinsCompareNoString(source: unknown, path: readonly string[]): boolean {
+   joinsCompareNoString(source: unknown, path: readonly string[]): boolean {
       let at = source;
       for (const name of path.slice(0, -1)) {
          const f = fieldsOf(at).get(name);
@@ -1453,7 +1453,11 @@ export function gateReads(
    const compared = gatePaths(rowFilterExprs);
    if (
       compared.unresolved ||
-      compared.paths.some((p) => !nonStringType(typeAt(struct, p))) ||
+      compared.paths.some(
+         (p) =>
+            !nonStringType(typeAt(struct, p)) ||
+            !walk.joinsCompareNoString(struct, p),
+      ) ||
       rowFilterExprs.some((expr) =>
          [...expr.matchAll(/\$([A-Za-z_][A-Za-z_0-9]*)/g)].some((m) => {
             const types = walk.givenTypesNamed(m[1]);
