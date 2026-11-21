@@ -10,10 +10,10 @@
  * {@link createTableWithDeclaredTypes}), the chained build that stacks a
  * downstream on stored parents ({@link planChainedDownstream},
  * {@link buildDownstreamIntoStorage}), and the destination sessions the
- * destination's admin operations (storage_admin.ts) run on. The read's
- * attribution and cost are build_attribution.ts's. Read by the `storage=` tier,
- * incremental storage, table sites, storage admin, table loads and
- * catalog_admin.ts.
+ * destination's admin operations (storage_admin.ts) run on. Each source
+ * type's part in the read is its passthrough build's (passthrough_build.ts).
+ * Read by the `storage=` tier, incremental storage, table sites, storage
+ * admin, table loads and catalog_admin.ts.
  *
  * Effects: SQL in the source warehouse (through the passthrough) and in the
  * destination; logs and counts.
@@ -62,11 +62,6 @@ import {
    storedColumnNames,
 } from "./run_plan";
 import { resultRows, type BuildReadCost } from "./build_read_cost";
-import {
-   clearSnowflakeSessionTag,
-   snowflakeReadCostAfterBuild,
-   tagSnowflakeSession,
-} from "./build_attribution";
 import {
    passthroughBuildOf,
    type PassthroughDeps,
@@ -781,9 +776,8 @@ export async function buildSourceIntoStorage(params: {
                );
             } finally {
                await stopTrackingJobs();
-               await clearSnowflakeSessionTag(
+               await passthroughBuildOf(sourceType)?.release?.(
                   session,
-                  sourceType,
                   federated.handle,
                );
             }
@@ -822,7 +816,8 @@ async function buildOnFederatedSession(
       queryMetadata,
    } = params;
    const read = params.deps?.read ?? issuePassthroughRead;
-   await tagSnowflakeSession(session, sourceType, handle, queryMetadata);
+   const build = passthroughBuildOf(sourceType);
+   await build?.beforeRead?.(session, handle, queryMetadata);
 
    // Qualified with the destination catalog: an unqualified name would land
    // in the session's throwaway in-memory catalog and vanish with it.
@@ -926,14 +921,14 @@ async function buildOnFederatedSession(
       // after the read, while the session still holds the credentials.
       readCost:
          passthrough.cost ??
-         (await snowflakeReadCostAfterBuild(
+         (await build?.readCost?.(
             session,
-            sourceType,
             handle,
             buildSQL,
             queryMetadata,
-            sourceConnection.snowflakeConnection?.database,
-         )),
+            sourceConnection,
+         )) ??
+         null,
    };
 }
 

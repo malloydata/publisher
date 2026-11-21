@@ -6,7 +6,7 @@ import { describe, expect, it } from "bun:test";
 import {
    snowflakeQueryTagValue,
    snowflakeSetQueryTagSQL,
-} from "./build_query_tag";
+} from "./passthrough/snowflake";
 import { bigQueryQueryLabelValue } from "./passthrough/bigquery";
 
 describe("snowflakeQueryTagValue", () => {

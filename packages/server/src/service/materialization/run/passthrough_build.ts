@@ -22,6 +22,11 @@ import type { FederatedSourceType } from "../../dialects";
 import type { QueryMetadata } from "../../query_metadata";
 import type { BuildReadCost } from "./build_read_cost";
 import {
+   clearSnowflakeSessionTag,
+   snowflakeReadCostAfterBuild,
+   tagSnowflakeSession,
+} from "./passthrough/snowflake";
+import {
    prepareBigQueryRead,
    splitBigQueryRead,
    trackBigQueryBuildJobs,
@@ -75,6 +80,29 @@ interface PassthroughBuild {
       label: string,
    ): Promise<PassthroughRead>;
    /**
+    * Set up the build session before the build reads (Snowflake's session
+    * settings and query tag); may refuse the build.
+    */
+   beforeRead?(
+      session: DuckDBConnection,
+      handle: string,
+      queryMetadata: QueryMetadata | undefined,
+   ): Promise<void>;
+   /**
+    * What the build's read of `buildSQL` cost, asked after the read while the
+    * session still holds the credentials, or null when it cannot be told; for
+    * an engine whose read does not report its own cost.
+    */
+   readCost?(
+      session: DuckDBConnection,
+      handle: string,
+      buildSQL: string,
+      queryMetadata: QueryMetadata | undefined,
+      connection: ApiConnection,
+   ): Promise<BuildReadCost | null>;
+   /** Undo what the session holds for the build before it is released. */
+   release?(session: DuckDBConnection, handle: string): Promise<void>;
+   /**
     * Track the warehouse jobs the session's reads start, and cancel them when
     * `signal` aborts; the returned function stops tracking and waits for a
     * cancel in progress.
@@ -122,8 +150,13 @@ const PASSTHROUGH_BUILDS: Readonly<
          ),
       windowRows: false,
    },
+   // ONE session across the passthrough's calls, so a session tag reaches
+   // the read, and its cost is read back from the session's history.
    snowflake: {
       prepareRead: readAsWritten,
+      beforeRead: tagSnowflakeSession,
+      readCost: snowflakeReadCostAfterBuild,
+      release: clearSnowflakeSessionTag,
       windowRows: true,
    },
    postgres: {

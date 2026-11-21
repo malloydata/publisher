@@ -166,12 +166,6 @@ export const RATCHET_DIALECT_LITERALS = {
       count: 2,
       step: "table",
    },
-   // FederatedSourceType's `snowflake`, the one engine whose session the
-   // build tags, aligns and reads its cost back from.
-   "service/materialization/run/build_attribution.ts": {
-      count: 3,
-      step: "table",
-   },
    // PASSTHROUGH_SOURCE_TYPES, connection types a `storage=` build reads,
    // whose `postgres` and `snowflake` share a dialect's spelling.
    "service/materialization/domain/source_connection_type.ts": {
@@ -246,8 +240,6 @@ export const RATCHET_CONNECTION_TYPE_LITERALS = {
    },
    // the SQL half of the dialect table: comparisons on a dialect that shares a type's spelling.
    "service/materialization/run/warehouse_sql.ts": { count: 19, step: "table" },
-   // FederatedSourceType's `snowflake`.
-   "service/materialization/run/build_attribution.ts": { count: 3, step: "D4" },
    // a read option named after the destination, not a branch.
    "service/materialization/serve/storage_bindings.ts": {
       count: 1,
