@@ -2375,8 +2375,12 @@ export function splitPgAttachCredentials(
 
 /**
  * A node-pg client config for a libpq connection string, for work the DuckDB
- * attach cannot do (a session advisory lock). The first host and port of a
- * list; the TLS mapping is {@link pgClientSsl}. Exported for tests.
+ * attach cannot do (a session advisory lock). It reads the string as libpq
+ * does, the deployment's PGSSLMODE included, and refuses what it cannot
+ * follow: a `service`, a `hostaddr`, or a list of hosts, none of which a
+ * single node-pg connection can take. The TLS mapping is {@link pgClientSsl}.
+ * A dead connection is noticed by keepalive, and a query that stops
+ * answering by its timeout. Exported for tests.
  */
 export function pgClientConfig(
    subject: string,
@@ -2386,19 +2390,32 @@ export function pgClientConfig(
    for (const { key, value } of pgConninfoKeyValues(subject, conninfo)) {
       params.set(key, value);
    }
-   const first = (key: string) => params.get(key)?.split(",")[0] || undefined;
-   const host = first("host");
-   const port = first("port");
-   const sslmode = params.get("sslmode");
+   const unsupported = ["service", "hostaddr"].find((key) => params.has(key));
+   const listed = ["host", "port"].find((key) =>
+      params.get(key)?.includes(","),
+   );
+   if (unsupported || listed) {
+      throw new Error(
+         `${subject}: the connection string sets ${unsupported ? `'${unsupported}'` : `more than one '${listed}'`}, which loads cannot use; spell host, port and dbname.`,
+      );
+   }
+   const port = params.get("port") || undefined;
+   const requested =
+      params.get("sslmode") ?? externalEnv("PGSSLMODE")?.toLowerCase();
+   const sslmode =
+      requested === "no-verify" ? LIBPQ_NO_VERIFY_SSLMODE : requested;
    return {
-      host,
+      host: params.get("host") || undefined,
       port: port === undefined ? undefined : Number(port),
       database: params.get("dbname"),
       user: params.get("user"),
       password: params.get("password"),
-      ssl: pgClientSsl(subject, sslmode, host, params.get("sslrootcert")),
+      ssl: pgClientSsl(subject, sslmode, params),
       plaintextFallback: TLS_OPTIONAL_SSLMODES.has(sslmode),
       connectionTimeoutMillis: 10_000,
+      keepAlive: true,
+      keepAliveInitialDelayMillis: 10_000,
+      query_timeout: 30_000,
    };
 }
 
@@ -2437,24 +2454,37 @@ const TLS_OPTIONAL_SSLMODES = new Set<string | undefined>([
 ]);
 
 /**
- * libpq's `sslmode` as a node-pg `ssl` option. node-pg cannot fall back from TLS
- * to plaintext itself, so the TLS-optional modes ask for TLS and the caller
- * retries in plaintext only on the server's refusal (`plaintextFallback`).
- * `require` with an `sslrootcert` verifies the chain, as libpq does. `verify-*`
- * trust `sslrootcert`, else the runtime's ambient anchors.
+ * libpq's `sslmode` as a node-pg `ssl` option, with the connection string's
+ * client certificate (`sslcert`, `sslkey`, and `sslpassword` as the key's
+ * passphrase). node-pg cannot fall back from TLS to plaintext itself, so the
+ * TLS-optional modes ask for TLS and the caller retries in plaintext only on
+ * the server's refusal (`plaintextFallback`). `require` with an `sslrootcert`
+ * verifies the chain, as libpq does. `verify-*` trust `sslrootcert`, else the
+ * runtime's ambient anchors.
  */
 export function pgClientSsl(
    subject: string,
    sslmode: string | undefined,
-   host: string | undefined,
-   sslrootcert: string | undefined,
+   params: ReadonlyMap<string, string>,
 ): ClientConfig["ssl"] {
+   const sslrootcert = params.get("sslrootcert");
    const ca = () =>
       readFileSync(sslrootcert ?? ambientTrustBundlePath(), "utf8");
+   const [sslcert, sslkey, passphrase] = [
+      params.get("sslcert"),
+      params.get("sslkey"),
+      params.get("sslpassword"),
+   ];
+   const clientAuth = () => ({
+      ...(sslcert ? { cert: readFileSync(sslcert, "utf8") } : {}),
+      ...(sslkey ? { key: readFileSync(sslkey, "utf8") } : {}),
+      ...(passphrase ? { passphrase } : {}),
+   });
    const verifyChain = () => ({
       rejectUnauthorized: true,
       ca: ca(),
       checkServerIdentity: () => undefined,
+      ...clientAuth(),
    });
    switch (sslmode) {
       case "disable":
@@ -2462,14 +2492,15 @@ export function pgClientSsl(
       case undefined:
       case "allow":
       case "prefer":
-      case "no-verify":
-         return { rejectUnauthorized: false };
+         return { rejectUnauthorized: false, ...clientAuth() };
       case "require":
-         return sslrootcert ? verifyChain() : { rejectUnauthorized: false };
+         return sslrootcert
+            ? verifyChain()
+            : { rejectUnauthorized: false, ...clientAuth() };
       case "verify-ca":
          return verifyChain();
       case "verify-full":
-         return { rejectUnauthorized: true, ca: ca(), servername: host };
+         return { rejectUnauthorized: true, ca: ca(), ...clientAuth() };
       default:
          throw new Error(`${subject} has unsupported sslmode '${sslmode}'.`);
    }

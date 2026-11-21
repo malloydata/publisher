@@ -36,6 +36,20 @@ const queryConcurrencyRejections = lazyCounter(
    "Queries rejected with 503 because the per-pod PUBLISHER_MAX_CONCURRENT_QUERIES cap was reached",
 );
 
+const loadRejections = lazyCounter(
+   "publisher_load_rejections_total",
+   "Admin table loads and copies refused with 503 LOAD_BUSY, by what was busy",
+);
+
+/**
+ * Counts a load refused with 503 `LOAD_BUSY`, by what was busy: this pod's
+ * load slot (`slot`), the table's lock held by another replica (`lock`), or
+ * the lock's connection gone (`lost`).
+ */
+export function countLoadRejection(cause: "slot" | "lock" | "lost"): void {
+   loadRejections().add(1, { cause });
+}
+
 const queryConcurrencyGauges = lazyInstrument(() => {
    const meter = publisherMeter();
    const activeSlots = meter.createObservableGauge(
