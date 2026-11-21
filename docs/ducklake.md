@@ -263,17 +263,32 @@ stream in batches:
 - `merge` upserts by `key`. `replace` makes the table equal to the call's objects, by `key` or, with no
   key, as a whole; a replace that would delete more than `maxDeletedRows` rows writes nothing (`422
   LOAD_ROW_DROP_GUARD`), so an empty or truncated extract cannot empty a table.
-- A row the objects do not change is not rewritten, so a load retried after it committed writes nothing,
-  takes no snapshot and answers the same counts and `cursorMax`. Of two rows with one key, the later
-  object in `objects` wins, then the later row of an object.
-- A new column is added; an existing one keeps its type or widens within its family; anything else, a
-  NULL key or a cursor that is not an integer, DATE or TIMESTAMP is `422 LOAD_SCHEMA_CONTRACT`, with a
-  `detail` naming the column. An object that cannot be read is `422 LOAD_OBJECT_UNREADABLE`.
+- A row the objects do not change is not rewritten, so a load retried after it committed writes nothing
+  and takes no snapshot. It reports the same `rowCount` and `cursorMax` as the first call, with every row
+  counted in `rowsUnchanged` and none inserted, replaced or deleted, and it still answers `201`. `loadId` is
+  provenance only (the commit message and the logs): the server does not recognize a repeated one, so a
+  retry is safe because it finds nothing to change. Of two rows with one key, the later object in
+  `objects` wins, then the later row of an object.
+- A new column is added, even when no row changes. An existing one keeps its type or takes a lossless
+  widening of it: a wider integer, a decimal with no fewer integer or fraction digits, an integer into a
+  decimal or `DOUBLE` that holds all its digits, `FLOAT` into `DOUBLE`, a longer varying text. Objects that
+  type one column differently (`BIGINT` in one, `DOUBLE` in another) must each widen losslessly into the
+  type they are read together as. A column that every object types NULL, as a Parquet writer writes an
+  all-NULL column, is ignored; objects with no other column are refused. Anything else, a column of the
+  table named `__publisher_…`, a NULL key, or a cursor that is not an integer, DATE or TIMESTAMP is `422
+  LOAD_SCHEMA_CONTRACT`, with a `detail` naming the column. An object that cannot be read is `422
+  LOAD_OBJECT_UNREADABLE`.
 - One load of a table runs at a time across every replica (a Postgres advisory lock in the catalog
   database), and one load or copy runs at a time per server. Either busy is `503 LOAD_BUSY`, never
   queued: retry. A load whose lock connection is lost before it commits rolls back and answers the same.
-- A load runs in its own DuckDB session, bounded to 1.5 GB of memory and 6 GiB of spill under the
-  system temp directory. A server that runs both the admin listener and the serving API shares its CPU and
+  The lock is a session advisory lock, so the catalog database connection must be a session-mode one: a
+  transaction-mode pooler such as PgBouncer does not hold it, and two loads of a table could then run
+  together.
+- The load reads the table inside the transaction that writes it, so a load that races a table PUT or
+  DELETE of the same table (or a schema drop) on another replica is refused when it commits, `409
+  LOAD_CONFLICT`: nothing is written, retry.
+- A load runs in its own DuckDB session, bounded to 1.5 GB of memory (or `PUBLISHER_DUCKDB_MEMORY_LIMIT`
+  when that is lower) and 6 GiB of spill under the system temp directory. A server that runs both the admin listener and the serving API shares its CPU and
   memory between a load and user queries; run the admin listener on its own (`"servingApiEnabled":
   false`) when loads are large.
 

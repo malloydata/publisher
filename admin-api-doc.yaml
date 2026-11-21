@@ -439,28 +439,41 @@ paths:
 
         Rows the objects do not change are left as they are, so a load repeated
         after it committed finds nothing to do, writes nothing and takes no
-        snapshot, and answers the same counts. Of two rows of one key, the
-        later one wins: the later object in `objects`, then the later row of an
-        object. A key stored more than once is rewritten once.
+        snapshot. It reports the same `rowCount` and `cursorMax` as the first
+        call, with every row counted in `rowsUnchanged` and none inserted,
+        replaced or deleted, and still answers `201`. `loadId` is provenance
+        only (it goes in the commit message and the logs): a repeated one is
+        not detected, so a retry is safe because it finds nothing to change.
+        Of two rows of one key, the later one wins: the later object in
+        `objects`, then the later row of an object. A key stored more than once
+        is rewritten once.
 
         The objects are checked against the table's columns before anything is
-        written. A column the table lacks is added; one it has must keep its
-        type, or take a wider one of the same family (an integer into a wider
-        integer of its signedness, FLOAT into DOUBLE); every `key` column must
-        be a column of both; no key may be NULL; and `cursor`, when given, must
-        be an integer, DATE or TIMESTAMP column. A column of the table the
-        objects lack is written NULL. A column typed NULL in every object is
-        ignored. Refusals are `422 LOAD_SCHEMA_CONTRACT`, whose `detail` names
-        the column and why.
+        written. A column the table lacks is added, even when no row changes;
+        one it has must keep its type, or take a lossless widening of it: a
+        wider integer, a decimal with no fewer integer or fraction digits, an
+        integer into a decimal or DOUBLE that holds all its digits, FLOAT into
+        DOUBLE, a longer varying text. Objects that type one column differently
+        (BIGINT in one, DOUBLE in another) must each widen losslessly into the
+        type they are read together as. Every `key` column must be a column of
+        both; no key may be NULL; and `cursor`, when given, must be an integer,
+        DATE or TIMESTAMP column. A column of the table the objects lack is
+        written NULL. A column typed NULL in every object (as a Parquet writer
+        writes an all-NULL column) is ignored, and objects that leave no column
+        are refused. A column of the table named `__publisher_…` is refused.
+        Refusals are `422 LOAD_SCHEMA_CONTRACT`, whose `detail` names the column
+        and why.
 
         One table loads at a time, across every replica of this server (a
         Postgres advisory lock in the catalog database), and one load runs at a
         time on this server (the same slot a table PUT's load or copy takes). A
         load that finds either busy is refused with `503 LOAD_BUSY` and nothing
         written, never queued: retry it. A load whose lock is lost before it
-        commits rolls back and answers the same. A commit DuckLake refuses for a
-        conflicting change (a schema dropped meanwhile, say) is `409
-        LOAD_CONFLICT`, and a retry is safe.
+        commits rolls back and answers the same. The load reads the table inside
+        the transaction that writes it, so one that races a table PUT or DELETE
+        of the same table, or a schema drop, on another replica is refused by
+        DuckLake at its commit and answers `409 LOAD_CONFLICT`: nothing was
+        written, and a retry is safe.
 
         Synchronous: it answers `201` once the rows are committed, with the
         counts of what changed.
@@ -482,7 +495,7 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
-          description: DuckLake refused the commit for a conflicting change (`LOAD_CONFLICT`); nothing was written, retry
+          description: DuckLake refused the commit because another request changed the table (replaced, dropped or created it) while the load ran (`LOAD_CONFLICT`); nothing was written, retry
           content:
             application/json:
               schema:
@@ -1061,17 +1074,21 @@ components:
             `SCHEMA_RESERVED`: the schema name is one the engine owns, or
             `main`. `LOAD_BUSY` (503): another load of the table, or another
             load on this server, is running; nothing was written, retry.
-            `LOAD_CONFLICT` (409): DuckLake refused the commit for a
-            conflicting change; nothing was written, retry.
+            `LOAD_CONFLICT` (409): DuckLake refused the commit because
+            another request (a table PUT or DELETE, a schema drop) changed
+            the table while the load ran; nothing was written, retry.
             `LOAD_SCHEMA_CONTRACT` (422): the objects break the table's
             contract; `detail` is `{column, tableType, loadType, detail}`, where
             the inner `detail` is one of `null_key`, `missing_key`,
             `missing_cursor`, `cursor_type`, `type_change`, `reserved_name`,
             `case_collision` or `no_columns` (`tableType` and `loadType` are
-            null when a side has no such column). `reserved_name` is a column
-            name starting `__publisher_`, or `file_row_number`, `rowid` or one
-            holding a NUL; `case_collision` is two names, in one object or two,
-            that differ only by case, or one name twice in an object.
+            null when a side has no such column). `type_change` is a type
+            that does not widen losslessly, against the table's column, or
+            between two objects (`tableType` is then null). `reserved_name` is
+            a column name starting `__publisher_` (in the objects, or in the
+            table), or `file_row_number`, `rowid` or one holding a NUL;
+            `case_collision` is two names, in one object or two, that differ
+            only by case, or one name twice in an object.
             `LOAD_ROW_DROP_GUARD` (422): a replace would delete more rows than
             `maxDeletedRows`; `detail` is `{wouldDelete, rowsBefore,
             maxDeletedRows}`.
