@@ -77,6 +77,25 @@ interface Case {
 }
 
 const CASES: Case[] = [
+   // A window ordered by a column that does not compare bytes keeps the query live.
+   {
+      name: "the indexer query over a NOCASE source",
+      query: indexer("nocase_s"),
+      expected: "live",
+      declined: /./,
+   },
+   {
+      name: "a window under the default order over a NOCASE source",
+      query: "run: nocase_s -> { group_by: value is category calculate: rn is row_number() } -> { where: rn = 1 select: rn, value }",
+      expected: "live",
+      declined: /./,
+   },
+   {
+      name: "a later filter on lag() of a NOCASE column",
+      query: "run: nocase_s -> { group_by: value is category, id order_by: id calculate: p is lag(value) } -> { where: p = 'toys' select: id, p }",
+      expected: "live",
+      declined: /./,
+   },
    {
       name: "the indexer query over a storage= table",
       query: indexer("stored_s"),
