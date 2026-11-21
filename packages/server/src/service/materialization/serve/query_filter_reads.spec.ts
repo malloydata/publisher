@@ -68,6 +68,10 @@ source: vgn is t -> { group_by: amt; aggregate: n is count(), s is amt.sum() } e
 source: vgb is t -> { group_by: amt; aggregate: nb } extend {
   dimension: many is nb > 2
 }
+
+source: vr is t -> { group_by: category; order_by: category; calculate: rn is row_number() } extend {
+  dimension: first is rn = 1
+}
 `;
 
 let conn: DuckDBConnection;
@@ -299,6 +303,53 @@ describe("queryFilterReadsOfQuery: the caller's own filters", () => {
          expect(r.comparesNoString, q).toBe(true);
          expect(r.scoped, q).toBe(false);
       }
+   });
+
+   it("reads a later stage's filter on a window function through what orders and partitions it", async () => {
+      // The dimensional indexer's shard-boundary query: `rn` is a number, but
+      // which row is 1 follows the order of `category`.
+      for (const q of [
+         "run: t -> { group_by: value is category order_by: value calculate: rn is row_number() } -> { where: rn = 1 or rn = 2 select: rn, value order_by: rn }",
+         "run: t -> { group_by: category order_by: category calculate: rn is row_number() } -> { where: rn = 1 select: category }",
+         "run: t -> { group_by: value is category, id calculate: r is rank() { partition_by: value order_by: id } } -> { where: r = 1 select: value }",
+         "run: t -> { group_by: value is category order_by: value calculate: p is lag(value) } -> { where: p = 'books' select: value }",
+      ]) {
+         const r = await reads(q);
+         expect(r.unresolved, q).toBe(false);
+         expect(r.comparesNoString, q).toBe(false);
+         expect(r.equalityOnly, q).toBe(false);
+         expect(r.entryPaths, q).toContainEqual(["category"]);
+         expect(r.entryPathsComplete, q).toBe(true);
+      }
+      // Ordered by a number alone, it compares no string.
+      const byNumber = await reads(
+         "run: t -> { group_by: id order_by: id calculate: rn is row_number() } -> { where: rn = 1 select: id }",
+      );
+      expect(byNumber.unresolved).toBe(false);
+      expect(byNumber.entryPaths).toEqual([["id"]]);
+      // Ordered by a string computed in the stage: no path from the entry point.
+      const computed = await reads(
+         "run: t -> { group_by: k is concat(category, '-x') order_by: k calculate: rn is row_number() } -> { where: rn = 1 select: k }",
+      );
+      expect(computed.unresolved).toBe(false);
+      expect(computed.comparesNoString).toBe(false);
+      expect(computed.entryPathsComplete).toBe(false);
+   });
+
+   it("still reads a window function it cannot follow as unread", async () => {
+      // Ordered by an aggregate: what the count groups by is not followed.
+      const r = await reads(
+         "run: t -> { group_by: category; aggregate: n is count() order_by: n desc calculate: rn is row_number() } -> { where: rn = 1 select: category }",
+      );
+      expect(r.unresolved).toBe(true);
+      expect(r.comparesNoString).toBe(false);
+   });
+
+   it("leaves a query-shaped source's own window function unread, as a gate reads it", async () => {
+      // Only the caller's own stages are followed through a window function.
+      const r = await reads("run: vr -> { where: first; select: category }");
+      expect(r.unresolved).toBe(true);
+      expect(r.comparesNoString).toBe(false);
    });
 
    it("reads no filter at all as comparing no string", async () => {
