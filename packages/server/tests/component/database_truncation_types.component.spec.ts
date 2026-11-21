@@ -12,6 +12,11 @@
  * live's, in UTC and under a caller `timezone:`. A truncation column altered
  * after its build is still drift, and still warns.
  *
+ * A timestamp truncation a query-shaped source's query computed in a zone
+ * (`raw extend { timezone: … } -> { … }`) is served to a query that reads it
+ * in that same zone, which truncates the stored value again to itself, and
+ * answered live in any other, across daylight-saving changes in two zones.
+ *
  * On DuckDB, on a DuckLake a DuckDB connection attached and USEd, and on
  * Postgres when `PUBLISHER_TEST_POSTGRES_URL` names one (whose build reads no
  * schema back from an unqualified table, so only native types are captured:
@@ -57,7 +62,7 @@ const OUTPUT = `{
   group_by:
     d_day is d.day, d_week is d.week, d_month is d.month,
     d_quarter is d.quarter, d_year is d.year,
-    t_day is ts.day, t_week is ts.week, t_month is ts.month,
+    t_hour is ts.hour, t_day is ts.day, t_week is ts.week, t_month is ts.month,
     t_quarter is ts.quarter, t_year is ts.year
   aggregate: total is n.sum()
 }`;
@@ -75,7 +80,17 @@ source: raw is warehouse.sql("""
   SELECT * FROM (VALUES
     (CAST('2024-01-15' AS DATE), CAST('2024-01-15 23:30:00' AS TIMESTAMP), 1),
     (CAST('2024-02-29' AS DATE), CAST('2024-02-29 00:30:00' AS TIMESTAMP), 2),
-    (CAST('2024-12-31' AS DATE), CAST('2024-12-31 23:59:00' AS TIMESTAMP), 3)
+    (CAST('2024-12-31' AS DATE), CAST('2024-12-31 23:59:00' AS TIMESTAMP), 4),
+    -- Either side of each daylight-saving change in Denver (UTC instants)...
+    (CAST('2024-03-10' AS DATE), CAST('2024-03-10 08:30:00' AS TIMESTAMP), 8),
+    (CAST('2024-03-10' AS DATE), CAST('2024-03-10 09:30:00' AS TIMESTAMP), 16),
+    (CAST('2024-11-03' AS DATE), CAST('2024-11-03 07:30:00' AS TIMESTAMP), 32),
+    (CAST('2024-11-03' AS DATE), CAST('2024-11-03 08:30:00' AS TIMESTAMP), 64),
+    -- ...and in Sydney.
+    (CAST('2024-04-06' AS DATE), CAST('2024-04-06 15:30:00' AS TIMESTAMP), 128),
+    (CAST('2024-04-06' AS DATE), CAST('2024-04-06 16:30:00' AS TIMESTAMP), 256),
+    (CAST('2024-10-05' AS DATE), CAST('2024-10-05 15:30:00' AS TIMESTAMP), 512),
+    (CAST('2024-10-05' AS DATE), CAST('2024-10-05 16:30:00' AS TIMESTAMP), 1024)
   ) AS t(d, ts, n)
 """)${timezone ? ` extend { timezone: '${timezone}' }` : ""}
 
@@ -90,7 +105,11 @@ source: live is raw -> ${OUTPUT}
 
 const COLUMNS =
    "d_day, d_week, d_month, d_quarter, d_year, " +
-   "t_day, t_week, t_month, t_quarter, t_year, total";
+   "t_hour, t_day, t_week, t_month, t_quarter, t_year, total";
+
+/** The timestamp truncations alone, with the measure. */
+const TIMESTAMP_COLUMNS =
+   "t_hour, t_day, t_week, t_month, t_quarter, t_year, total";
 
 interface Fixture {
    env: Environment;
@@ -153,13 +172,13 @@ async function build(f: Fixture): Promise<Materialization> {
    }
 }
 
-/** The answer to `source`'s columns, with what served it. */
+/** The answer to `source`'s columns, with what served it, and why not a table. */
 async function ask(
    f: Fixture,
    source: string,
    timezone?: string,
    columns = COLUMNS,
-): Promise<{ rows: unknown[]; kind?: string }> {
+): Promise<{ rows: unknown[]; kind?: string; reasons: unknown[] }> {
    const tz = timezone ? `timezone: '${timezone}'\n` : "";
    const result = await f.pkg.getModel("m.malloy")!.runQuery(
       unrecordedAudit(),
@@ -171,6 +190,7 @@ async function ask(
    return {
       rows: asStrings(result.compactResult as Record<string, unknown>[]),
       kind: result.path?.servedBy?.kind,
+      reasons: (result.path?.considered ?? []).map((c) => c.reason),
    };
 }
 
@@ -203,8 +223,9 @@ const tiers: {
    /** Changes `column`'s type (or removes it) after the build. */
    alter: (table: string, column: string) => string;
 }[] = [
-   {
-      label: "DuckDB",
+   ...[undefined, "America/Denver"].map((timezone) => ({
+      label: timezone ? `DuckDB, rows in ${timezone}` : "DuckDB",
+      timezone,
       warehouse: async () => ({
          config: {
             name: "warehouse",
@@ -212,39 +233,38 @@ const tiers: {
             duckdbConnection: { setupSQL: "SELECT 1" },
          },
       }),
-      alter: (table, column) =>
+      alter: (table: string, column: string) =>
          `ALTER TABLE ${table} ALTER "${column}" TYPE VARCHAR`,
-   },
+   })),
    ...(process.platform === "win32"
       ? []
-      : [
-           {
-              label: "DuckLake",
-              warehouse: async (root: string) => {
-                 // Inside the environment directory, the only place an env
-                 // connection's setupSQL reaches (duckdb_lockdown.ts).
-                 const lake = path.join(root, "env", "lake");
-                 fs.mkdirSync(path.join(lake, "data"), { recursive: true });
-                 const setupSQL = [
-                    // No INSTALL: setupSQL runs confined (duckdb_lockdown.ts),
-                    // with `ducklake` loaded beforehand.
-                    "LOAD ducklake",
-                    `ATTACH IF NOT EXISTS 'ducklake:${path.join(lake, "origin.ducklake")}' AS origin_lake (DATA_PATH '${path.join(lake, "data")}/')`,
-                    "USE origin_lake",
-                 ].join(";\n");
-                 return {
-                    config: {
-                       name: "warehouse",
-                       type: "duckdb",
-                       duckdbConnection: { setupSQL },
-                    },
-                 };
-              },
-              // DuckLake alters a type only to a wider one: drop it instead.
-              alter: (table: string, column: string) =>
-                 `ALTER TABLE ${table} DROP COLUMN "${column}"`,
+      : [undefined, "Australia/Sydney"].map((timezone) => ({
+           label: timezone ? `DuckLake, rows in ${timezone}` : "DuckLake",
+           timezone,
+           warehouse: async (root: string) => {
+              // Inside the environment directory, the only place an env
+              // connection's setupSQL reaches (duckdb_lockdown.ts).
+              const lake = path.join(root, "env", "lake");
+              fs.mkdirSync(path.join(lake, "data"), { recursive: true });
+              const setupSQL = [
+                 // No INSTALL: setupSQL runs confined (duckdb_lockdown.ts),
+                 // with `ducklake` loaded beforehand.
+                 "LOAD ducklake",
+                 `ATTACH IF NOT EXISTS 'ducklake:${path.join(lake, "origin.ducklake")}' AS origin_lake (DATA_PATH '${path.join(lake, "data")}/')`,
+                 "USE origin_lake",
+              ].join(";\n");
+              return {
+                 config: {
+                    name: "warehouse",
+                    type: "duckdb",
+                    duckdbConnection: { setupSQL },
+                 },
+              };
            },
-        ]),
+           // DuckLake alters a type only to a wider one: drop it instead.
+           alter: (table: string, column: string) =>
+              `ALTER TABLE ${table} DROP COLUMN "${column}"`,
+        }))),
    ...(POSTGRES_URL
       ? (
            [
@@ -258,6 +278,11 @@ const tiers: {
                  "Postgres, a schema-qualified name=, rows in a query time zone",
                  "public.",
                  "America/Denver",
+              ],
+              [
+                 "Postgres, a schema-qualified name=, rows in another query time zone",
+                 "public.",
+                 "Australia/Sydney",
               ],
            ] as const
         ).map(([label, prefix, timezone]) => ({
@@ -346,26 +371,46 @@ for (const tier of tiers) {
          const live = await ask(f, "live");
          for (const source of ["mat", "v1"]) {
             const served = await ask(f, source);
-            // Under a query time zone, a date Postgres stored as a timestamptz
-            // has no exact cast back, so a query reading one answers live.
-            expect(served.kind).toBe(
-               tier.timezone && tier.prefix ? "live" : "materialized",
-            );
+            // Rows computed in a zone and read in UTC: a timestamp truncation
+            // truncated again in UTC is not the stored value (and, on
+            // Postgres, a date stored as a timestamptz has no exact cast back),
+            // so the query answers live.
+            expect(served.kind).toBe(tier.timezone ? "live" : "materialized");
             expect(served.rows).toEqual(live.rows);
          }
       });
 
       it("serves a query reading none of the date truncations from its table", async () => {
-         // Under a query time zone a timestamp truncation is declined for
-         // its zone (TIME_ZONE) whatever its type: only the measure is read.
-         const columns = tier.timezone
-            ? "total"
-            : "t_day, t_month, t_year, total";
-         const live = await ask(f, "live", undefined, columns);
+         // Read in the zone the rows were computed in, which truncates each
+         // stored timestamp truncation again to itself.
+         const live = await ask(f, "live", tier.timezone, TIMESTAMP_COLUMNS);
          for (const source of ["mat", "v1"]) {
-            const served = await ask(f, source, undefined, columns);
+            const served = await ask(
+               f,
+               source,
+               tier.timezone,
+               TIMESTAMP_COLUMNS,
+            );
             expect(served.kind).toBe("materialized");
             expect(served.rows).toEqual(live.rows);
+         }
+      });
+
+      it("answers a timestamp truncation live in another zone than its rows were computed in", async () => {
+         const others = tier.timezone
+            ? [undefined, "UTC", "America/Los_Angeles", "Asia/Kolkata"].filter(
+                 (z) => z !== tier.timezone,
+              )
+            : ["America/Los_Angeles", "Asia/Kolkata"];
+         for (const tz of others) {
+            const live = await ask(f, "live", tz, TIMESTAMP_COLUMNS);
+            for (const source of ["mat", "v1"]) {
+               const served = await ask(f, source, tz, TIMESTAMP_COLUMNS);
+               expect(served.kind, `${source} in ${tz}`).toBe("live");
+               expect(served.rows, `${source} in ${tz}`).toEqual(live.rows);
+            }
+            const mat = await ask(f, "mat", tz, TIMESTAMP_COLUMNS);
+            expect(mat.reasons, `mat in ${tz}`).toEqual(["TIME_ZONE"]);
          }
       });
 

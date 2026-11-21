@@ -200,13 +200,18 @@ export async function checkSourceZone(attempt: AnswerAttempt): Promise<void> {
  * default); `set`, every zone its text sets, a later stage's or a nest's
  * included; and `chain`, the `sourceID`s the source derives from. A joined
  * source's own `timezone:` is not applied through the join, so a table read
- * through one is read in `read` too. Undefined when the source cannot be
- * resolved.
+ * through one is read in `read` too. `stage`: the zone the query's first
+ * stage computes in on the served copy, as Malloy resolves it (its own
+ * `timezone:`, else the zone the source it runs on carries, inherited
+ * through each `extend`), only when that source is not query-shaped (whose
+ * stage would read the tables in its own query's zone instead). Undefined
+ * when the source cannot be resolved.
  */
 interface ReadZones {
    read: string | undefined;
    set: string[];
    chain: ReadonlySet<string>;
+   stage?: { zone: string | undefined };
 }
 
 export function readZonesOf(
@@ -247,6 +252,18 @@ export function readZonesOf(
                : undefined),
          set: queryTimezones(view.query),
          chain: new Set(chain),
+         ...((struct as { query?: unknown }).query === undefined
+            ? {
+                 stage: {
+                    zone:
+                       own ??
+                       queryTimezoneOf({
+                          queryTimezone: (struct as { queryTimezone?: unknown })
+                             .queryTimezone,
+                       }),
+                 },
+              }
+            : {}),
       };
    } catch {
       return undefined;
@@ -448,16 +465,52 @@ export async function checkZonedColumns(
    attempt: AnswerAttempt,
    tablesRead: readonly Binding[],
 ): Promise<void> {
-   const { compiled, decline, prepared } = attempt;
+   const { compiled, prepared } = attempt;
    const zonedOf = (b: Binding) =>
       compiled.zonedColumns?.get(b.sourceIDs?.[0] ?? "");
+   const stagedOf = (b: Binding) =>
+      compiled.stageZonedTruncations?.get(b.sourceIDs?.[0] ?? "");
    const zoned = tablesRead.filter((b) => zonedOf(b) !== undefined);
-   if (zoned.length === 0) return;
+   const staged = tablesRead.filter((b) => stagedOf(b) !== undefined);
+   if (zoned.length === 0 && staged.length === 0) return;
    const view = await prepared();
    const zones = readZonesOf(compiled, view);
-   const elsewhere = zoned.filter((b) =>
-      readsInAnotherZone(compiled, zones, b),
-   );
+   // A query-shaped re-root's zoned truncation is truncated again in the
+   // zone the query's first stage computes in: the identity only in the one
+   // its query truncated it in, and only when every zone the query sets is
+   // that one too.
+   const stagedElsewhere = staged.flatMap((b) => {
+      const { zone, names } = stagedOf(b)!;
+      return zones?.stage === undefined ||
+         !sameZone(zones.stage.zone, zone) ||
+         zones.set.some((z) => !sameZone(z, zone))
+         ? [{ binding: b, names }]
+         : [];
+   });
+   const elsewhere = zoned
+      .filter((b) => readsInAnotherZone(compiled, zones, b))
+      .map((b) => ({ binding: b, names: zonedOf(b) ?? new Set<string>() }));
+   await declineZonedReads(attempt, view, zones, [
+      ...elsewhere,
+      ...stagedElsewhere,
+   ]);
+}
+
+/**
+ * Declines a query that reads, or whose gates read, any of `elsewhere`'s
+ * columns: each a table's zone-dependent columns read in another zone than
+ * it was built in ({@link checkZonedColumns}).
+ */
+async function declineZonedReads(
+   attempt: AnswerAttempt,
+   view: Awaited<ReturnType<AnswerAttempt["prepared"]>>,
+   zones: ReadZones | undefined,
+   elsewhere: readonly {
+      binding: Binding;
+      names: ReadonlySet<string>;
+   }[],
+): Promise<void> {
+   const { compiled, decline } = attempt;
    if (elsewhere.length === 0) return;
    const usage = queryFieldUsagePaths(view);
    if (usage === undefined) {
@@ -467,8 +520,7 @@ export async function checkZonedColumns(
    if (gates === undefined) {
       decline(ZONED_COLUMN_REASON, "served_copy_time_zone");
    }
-   for (const b of elsewhere) {
-      const names = zonedOf(b) ?? new Set<string>();
+   for (const { names } of elsewhere) {
       if ([...gates!].some((n) => readsColumn(names, n))) {
          decline(ZONED_COLUMN_REASON, "served_copy_time_zone");
       }
@@ -478,8 +530,7 @@ export async function checkZonedColumns(
    // other table may be the query's own (an extension of a table-backed or
    // query-shaped source names no base to tell), so any path may read it.
    const joinedOnly = joinedOnlyIDs(compiled, view, zones);
-   for (const b of elsewhere) {
-      const names = zonedOf(b) ?? new Set<string>();
+   for (const { binding: b, names } of elsewhere) {
       const joined = joinedOnly.has(b.sourceIDs?.[0] ?? "");
       if (
          usage!.some(
@@ -610,7 +661,10 @@ function readsColumn(
  * `'Etc/UTC'` is another zone, since a dialect may not know it (MySQL without
  * its time zone tables converts it to NULL).
  */
-function sameZone(a: string | undefined, b: string | undefined): boolean {
+export function sameZone(
+   a: string | undefined,
+   b: string | undefined,
+): boolean {
    const utc = (z: string | undefined) => (z === "UTC" ? undefined : z);
    return utc(a) === utc(b);
 }
