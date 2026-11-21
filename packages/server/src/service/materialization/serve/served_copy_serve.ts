@@ -2436,13 +2436,19 @@ export class ServedCopyServe {
             optOutIDs.add(node.sourceID);
          }
       }
+      // The sources stored at all: a binding the copy was compiled over.
+      const storedNames = new Set(over.map((b) => b.sourceName));
       for (const l of leftOut) {
          if (!l.crossConnection) continue;
+         const sourceName = l.declaration ?? l.name;
          problems.push({
-            sourceName: l.declaration ?? l.name,
+            sourceName,
             reason: "cross_connection_join",
             join: l.join ?? l.name,
             ...(l.join !== undefined ? { leftOutWhole: true as const } : {}),
+            ...(storedNames.has(sourceName)
+               ? {}
+               : { declarerNotStored: true as const }),
          });
       }
       const unsafeIDs = classificationCeiling(

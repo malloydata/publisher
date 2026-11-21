@@ -71,6 +71,12 @@ export interface ServedCopyProblem {
     * query of that source is answered live.
     */
    leftOutWhole?: true;
+   /**
+    * For `cross_connection_join`: the source declaring the join is not
+    * stored itself (the copy reads no table of it); only the joined source
+    * is, in a destination the source's own connection cannot reach.
+    */
+   declarerNotStored?: true;
 }
 
 export interface Compiled {
