@@ -86,7 +86,9 @@ still build and serve.
    does not compile over its parent's table builds over the chain from the warehouse instead.
 6. **Read the serve verdicts.** `GET …/packages/{pkg}/status` reports `serveVerdicts`. Each migrated
    source should read `serves`. `live` with reason `served_copy` means its table is built but no
-   query will read it; the package's `served-copy-not-served` warning names why.
+   query will read it; its `notServedIn` names each model and its reasons, the same as the package's
+   `served-copy-not-served` warnings. Read `notServedIn` on a `serves` verdict too: it names a model
+   that answers the source live while another serves it.
 7. **Read the path report.** Every query result carries `path`
    ([the path report](materialization.md#which-table-answered-a-query-the-path-report)). A
    `#(materialize)` answer reads `servedBy.kind: "materialized"` with `via: "served_copy"`, a

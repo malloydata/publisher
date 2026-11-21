@@ -3110,6 +3110,16 @@ export class Model {
       return this.servedCopy.rerootedOnDatabaseOnly();
    }
 
+   /**
+    * The sources this model's served copy leaves as written because they
+    * extend a source it re-rooted, by author `sourceID` (empty when off or
+    * not yet compiled).
+    */
+   public servedCopyThroughBaseIDs(): ReadonlySet<string> {
+      if (!this.servedCopyEnabled()) return new Set();
+      return this.servedCopy.servedThroughBaseSourceIDs();
+   }
+
    /** Why this model's served copy leaves sources unserved (empty when off). */
    public servedCopyProblems(): readonly ServedCopyProblem[] {
       if (!this.servedCopyEnabled()) return [];
