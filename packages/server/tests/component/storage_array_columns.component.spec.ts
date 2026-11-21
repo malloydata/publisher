@@ -29,6 +29,7 @@
  *   does not, are served from the table, equal to live.
  */
 
+import { BigQuery } from "@google-cloud/bigquery";
 import { BigQueryConnection } from "@malloydata/db-bigquery";
 import { DuckDBConnection as MalloyDuckDBConnection } from "@malloydata/db-duckdb";
 import { MalloyConfig } from "@malloydata/malloy";
@@ -307,6 +308,11 @@ describe.skipIf(process.platform === "win32")(
                },
                "getSQLBlockSchema",
             ).mockImplementation(async () => BIGQUERY_SCHEMA),
+            // The collation probe's datasets.list, which names each region
+            // its project-wide read runs in.
+            spyOn(BigQuery.prototype, "getDatasets").mockImplementation(
+               (async () => [[{ metadata: { location: "US" } }]]) as never,
+            ),
             // Live BigQuery answers nothing, and counts that it was asked.
             // The collation probe's catalog reads answer no collated
             // column, and are not live reads of the source.
@@ -362,12 +368,7 @@ describe.skipIf(process.platform === "win32")(
                {
                   name: "bq",
                   type: "bigquery",
-                  // A location, so the collation probe can read the project
-                  // an `.sql()` source reads.
-                  bigqueryConnection: {
-                     defaultProjectId: "proj",
-                     location: "US",
-                  },
+                  bigqueryConnection: { defaultProjectId: "proj" },
                } as never,
             ],
             [

@@ -40,10 +40,12 @@ function standInBigQuery(name: string): Connection {
    const connection = new BigQueryConnection({
       name,
       projectId: "stand-in",
-      // A location, so the collation probe can read the project an
-      // `.sql()` source reads.
-      location: "US",
    } as never);
+   // The collation probe's datasets.list, which names the region its
+   // project-wide read runs in.
+   Object.assign((connection as unknown as { bigQuery: object }).bigQuery, {
+      getDatasets: async () => [[{ metadata: { location: "US" } }]],
+   });
    Object.assign(connection, {
       getSQLBlockSchema: async () => ({
          fields: [

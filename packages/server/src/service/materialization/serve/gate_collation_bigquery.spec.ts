@@ -32,20 +32,36 @@ import { resultReadsOfQuery } from "./result_reads";
 /** What the stub's catalog answers. */
 interface Catalog {
    location?: string;
+   /**
+    * The location `datasets.list` names for every dataset of a project;
+    * absent, the client cannot be reached.
+    */
+   listed?: string;
    /** Each project's datasets that hold a collated column, or a failure. */
    projects?: Record<string, string[] | "fail">;
+   /** Datasets a project-wide read does not see (no permission, say). */
+   unseen?: string[];
    /** Each dataset's collated columns, by table, then path; or a failure. */
    datasets?: Record<string, Record<string, Record<string, string>> | "fail">;
+   /** Tables a dataset's read does not see. */
+   unseenTables?: string[];
 }
+
+/** Every dataset and table the model names, as the stub's catalog holds them. */
+const TABLES: Record<string, string[]> = {
+   "proj.ds": ["plain_t", "ci_t", "copy_t"],
+   ds2: ["other_t"],
+};
 
 /**
  * A BigQuery connection (project `proj`) whose table schemas are
  * `(id, region)`, and whose `INFORMATION_SCHEMA` reads answer `catalog`,
- * recording each SQL it was sent.
+ * recording each SQL it was sent and each region read.
  */
 function stubBigQuery(catalog: Catalog): {
    connection: Connection;
    sent: string[];
+   regions: string[];
 } {
    const connection = new BigQueryConnection({
       name: "bq",
@@ -54,7 +70,14 @@ function stubBigQuery(catalog: Catalog): {
       ...(catalog.location ? { location: catalog.location } : {}),
    });
    const sent: string[] = [];
+   const regions: string[] = [];
    const stub = connection as unknown as Record<string, unknown>;
+   stub.bigQuery = {
+      getDatasets: async () => {
+         if (catalog.listed === undefined) throw new Error("no credentials");
+         return [[{ metadata: { location: catalog.listed } }]];
+      },
+   };
    const fields = [
       { name: "id", type: "number" },
       { name: "region", type: "string" },
@@ -80,11 +103,19 @@ function stubBigQuery(catalog: Catalog): {
       const region =
          /FROM `([^`]+)`\.`region-([^`]+)`\.INFORMATION_SCHEMA/.exec(sql);
       if (region) {
-         expect(region[2]).toBe((catalog.location ?? "").toLowerCase());
-         const datasets = catalog.projects?.[region[1]] ?? [];
-         if (datasets === "fail") throw new Error("Access Denied");
+         regions.push(region[2]);
+         const collated = catalog.projects?.[region[1]] ?? [];
+         if (collated === "fail") throw new Error("Access Denied");
+         const seen = new Set([
+            ...(region[1] === "proj" ? ["ds", "ds2"] : ["ds"]),
+            ...collated,
+         ]);
+         for (const d of catalog.unseen ?? []) seen.delete(d);
          return {
-            rows: datasets.map((d) => ({ table_schema: d })),
+            rows: [...seen].map((d) => ({
+               table_schema: d,
+               collated: collated.includes(d),
+            })),
             totalRows: 0,
          };
       }
@@ -95,18 +126,21 @@ function stubBigQuery(catalog: Catalog): {
       const name = dataset[2] ? `${dataset[1]}.${dataset[2]}` : dataset[1];
       const tables = catalog.datasets?.[name] ?? {};
       if (tables === "fail") throw new Error("Access Denied");
+      const names = new Set([...(TABLES[name] ?? []), ...Object.keys(tables)]);
+      for (const t of catalog.unseenTables ?? []) names.delete(t);
       return {
-         rows: Object.entries(tables).flatMap(([table, cols]) =>
-            Object.entries(cols).map(([path, c]) => ({
+         rows: [...names].flatMap((table) => [
+            { table_name: table, path: "", collation_name: "" },
+            ...Object.entries(tables[table] ?? {}).map(([path, c]) => ({
                table_name: table,
                path,
                collation_name: c,
             })),
-         ),
+         ]),
          totalRows: 0,
       };
    };
-   return { connection: connection as unknown as Connection, sent };
+   return { connection: connection as unknown as Connection, sent, regions };
 }
 
 const MODEL = `##! experimental { sql_functions }
@@ -151,13 +185,13 @@ function runnable(connection: Connection, query: string): QueryMaterializer {
 async function refusal(
    catalog: Catalog,
    query: string,
-): Promise<{ why: string | undefined; sent: string[] }> {
-   const { connection, sent } = stubBigQuery(catalog);
+): Promise<{ why: string | undefined; sent: string[]; regions: string[] }> {
+   const { connection, sent, regions } = stubBigQuery(catalog);
    const why = await stringGateCollationRefusal({
       authorRunnable: runnable(connection, query),
       reads: STRING_READS,
    });
-   return { why, sent };
+   return { why, sent, regions };
 }
 
 describe("a BigQuery source's string comparison, with a location", () => {
@@ -290,7 +324,49 @@ describe("a BigQuery source's string comparison, with a location", () => {
    });
 });
 
-describe("a BigQuery source's string comparison, with no location", () => {
+describe("a BigQuery source's coverage", () => {
+   it("answers live when no project-wide read saw the table's dataset", async () => {
+      const { why } = await refusal(
+         { location: "US", unseen: ["ds"] },
+         "run: plain -> { group_by: region }",
+      );
+      expect(why).toBe(LIVE);
+   });
+
+   it("answers live when the dataset's read did not see the table", async () => {
+      const { why } = await refusal(
+         {
+            location: "US",
+            projects: { proj: ["ds"] },
+            datasets: { "proj.ds": CI_DS },
+            unseenTables: ["plain_t"],
+         },
+         "run: plain -> { group_by: region }",
+      );
+      expect(why).toBe(LIVE);
+   });
+});
+
+describe("a BigQuery source's string comparison, with no location set", () => {
+   it("reads each region datasets.list names, an .sql() source served", async () => {
+      const { why, regions } = await refusal(
+         { listed: "EU" },
+         "run: authored -> { group_by: region }",
+      );
+      expect(why).toBeUndefined();
+      expect(regions).toEqual(["eu"]);
+   });
+
+   it("answers an .sql() source live when a derived region lists a collated dataset", async () => {
+      const { why } = await refusal(
+         { listed: "EU", projects: { proj: ["ds"] } },
+         "run: authored -> { group_by: region }",
+      );
+      expect(why).toBe(LIVE);
+   });
+});
+
+describe("a BigQuery source's string comparison, with no location and no client", () => {
    it("reads each dataset a .table() source reads", async () => {
       const catalog: Catalog = { datasets: { "proj.ds": CI_DS } };
       const plain = await refusal(
