@@ -72,6 +72,17 @@ source: ev_tz is duckdb.sql("SELECT * FROM ev") extend {
 #@ persist ${at("inh2_t")}
 source: inh2 is ev_tz extend { measure: total is amt.sum() }
 
+source: q1 is duckdb.table('ev') -> {
+  timezone: 'America/Los_Angeles'
+  group_by: id, ts, d is ts.day
+}
+
+#@ persist ${at("q2_t")}
+source: q2 is q1 -> { group_by: id, d, w is ts.week }
+
+#@ persist ${at("q3_t")}
+source: q3 is q1 extend { timezone: 'America/Chicago' } -> { group_by: id, d, w is ts.week }
+
 source: jb is duckdb.table('ev') extend {
   primary_key: id
   join_one: pq on id = pq.id
@@ -171,6 +182,21 @@ const CASES: [string, string, Outcome][] = [
       "inherited, query-shaped: its stored day, read in its base's zone",
       "run: pqi -> { timezone: 'America/New_York'; group_by: d; aggregate: n is count() }",
       "served",
+   ],
+   [
+      "over a query-shaped base: a truncation its base computed in its own zone",
+      "run: q2 -> { group_by: d; aggregate: n is count() }",
+      "TIME_ZONE",
+   ],
+   [
+      "over a query-shaped base: its own truncation, read in UTC",
+      "run: q2 -> { group_by: w; aggregate: n is count() }",
+      "TIME_ZONE",
+   ],
+   [
+      "over a query-shaped base given another zone: the base's truncation, read in that zone",
+      "run: q3 -> { timezone: 'America/Chicago'; group_by: d; aggregate: n is count() }",
+      "TIME_ZONE",
    ],
    [
       "inherited, query-shaped: hour(ts) over the stored instant",
