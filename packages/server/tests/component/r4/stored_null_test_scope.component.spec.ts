@@ -11,7 +11,9 @@
  * an equality on the nondeterministic column, an ordering under `en_US`, and
  * a null test of a function of the column (`nullif`) each answer live, equal
  * to live, as does a `having:` on a measure that compares a string in its
- * filter or what it aggregates, its null test included.
+ * filter or what it aggregates, its null test included, and a null test of
+ * a field read through a join whose `on:` compares the nondeterministic
+ * column (whether the joined row is there follows that string match).
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -28,6 +30,8 @@ const SEED = [
    `INSERT INTO accounts VALUES
       ('a1', 'Acme', 3), ('A1', 'acme', 1), (NULL, 'globex', 2),
       ('b2', NULL, 4), ('', 'Initech', 5), (NULL, NULL, 6)`,
+   `CREATE TABLE labels (label_name text COLLATE ci_l2, tier int)`,
+   `INSERT INTO labels VALUES ('ACME', 1), ('Globex', 2)`,
 ];
 
 const MODEL = `##! experimental.persistence
@@ -37,6 +41,13 @@ source: accounts is warehouse.table('public.accounts') -> { select: * } extend {
   measure:
     mf is max(account_id) { where: account_id > 'B' }
     np is sum(pick 1 when account_id > 'B' else 0)
+}
+
+#@ persist name="t_labels" storage="lake"
+source: labels is warehouse.table('public.labels') -> { select: * }
+
+source: labeled is accounts extend {
+  join_one: ln is labels on label = ln.label_name
 }
 `;
 
@@ -92,6 +103,11 @@ const CASES: Case[] = [
    {
       name: "a having: on a measure that sums an ordering",
       query: "run: accounts -> { group_by: seats; aggregate: n is count(); having: np > 0 }",
+      served: false,
+   },
+   {
+      name: "a null test through a join on the nondeterministic column",
+      query: `run: labeled -> { where: ln.tier is null; ${total} }`,
       served: false,
    },
    {

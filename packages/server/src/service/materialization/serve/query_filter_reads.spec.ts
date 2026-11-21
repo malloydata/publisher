@@ -77,6 +77,11 @@ source: tm is t extend {
   measure: np_ok is amt.sum() * 2 + c
 }
 
+source: tj is duckdb.sql("SELECT 1 AS oid, 'Books' AS cat") extend {
+  join_one: tt is t on cat = tt.category
+  join_one: tn is t on oid = tn.id
+}
+
 source: vr is t -> { group_by: category; order_by: category; calculate: rn is row_number() } extend {
   dimension: first is rn = 1
 }
@@ -403,6 +408,22 @@ describe("queryFilterReadsOfQuery: the caller's own filters", () => {
       for (const q of [
          "run: tm -> { group_by: id; aggregate: n is count(); having: mx_ok is null }",
          "run: tm -> { group_by: id; aggregate: n is count(); having: np_ok > 0 }",
+      ]) {
+         expect((await reads(q)).comparesNoString, q).toBe(true);
+      }
+   });
+
+   it("reads a field through a join whose on: compares strings as comparing one, a null test included", async () => {
+      for (const q of [
+         "run: tj -> { where: tt.category is null; select: oid }",
+         "run: tj -> { where: tt.id is null; select: oid }",
+         "run: tj -> { where: tt.amt > 1; select: oid }",
+      ]) {
+         expect((await reads(q)).comparesNoString, q).toBe(false);
+      }
+      for (const q of [
+         "run: tj -> { where: tn.category is null; select: oid }",
+         "run: tj -> { where: tn.amt > 1; select: oid }",
       ]) {
          expect((await reads(q)).comparesNoString, q).toBe(true);
       }

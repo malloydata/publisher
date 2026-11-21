@@ -381,14 +381,22 @@ class GateReadWalk {
     * Whether every leaf of `e` is a non-string value ({@link GateReads}'s
     * `comparesNoString`), its fields typed on `source`.
     */
-   leavesNotString(e: unknown, source: unknown, depth = 0): boolean {
+   leavesNotString(
+      e: unknown,
+      source: unknown,
+      depth = 0,
+      /** Judge the joins a field is read through ({@link joinsCompareNoString}). */
+      throughJoins = true,
+   ): boolean {
       if (depth > 64 || e === null || typeof e !== "object") return false;
       const n = e as { node?: unknown; path?: unknown; id?: unknown };
       switch (n.node) {
          case "field":
             return (
                Array.isArray(n.path) &&
-               nonStringType(typeAt(source, n.path as string[]))
+               nonStringType(typeAt(source, n.path as string[])) &&
+               (!throughJoins ||
+                  this.joinsCompareNoString(source, n.path as string[]))
             );
          case "given":
             return nonStringType(this.givenType(n.id));
@@ -404,10 +412,18 @@ class GateReadWalk {
          case "is-null":
          case "is-not-null":
             // A null test of a field compares no value: a stored copy holds
-            // its nulls where live does, under any collation. Of anything
-            // else (`nullif(name, 'x') is null`), its operand is judged.
-            if (bareFieldPath((e as { e?: unknown }).e) !== undefined) {
-               return true;
+            // its nulls where live does, under any collation, as long as
+            // the joins it is read through match rows comparing no string.
+            // Of anything else (`nullif(name, 'x') is null`), its operand is
+            // judged. A computed field is judged where it is followed.
+            {
+               const path = bareFieldPath((e as { e?: unknown }).e);
+               if (
+                  path !== undefined &&
+                  (!throughJoins || this.joinsCompareNoString(source, path))
+               ) {
+                  return true;
+               }
             }
             break;
          default:
@@ -431,9 +447,38 @@ class GateReadWalk {
                   ? Object.values(kid as object)
                   : [kid];
             for (const o of operands) {
-               if (!this.leavesNotString(o, source, depth + 1)) return false;
+               if (!this.leavesNotString(o, source, depth + 1, throughJoins)) {
+                  return false;
+               }
             }
          }
+      }
+      return true;
+   }
+
+   /**
+    * Whether each join `path` is read through (all but its last name)
+    * matches its rows comparing no string: whether a joined row is there at
+    * all, so whether its fields are null, follows its `on:`, which a
+    * collation decides when it compares strings (`on: cat = tt.category`).
+    * Its `on:` is read on the source that declares the join, its leaves by
+    * type alone.
+    */
+   private joinsCompareNoString(
+      source: unknown,
+      path: readonly string[],
+   ): boolean {
+      let at = source;
+      for (const name of path.slice(0, -1)) {
+         const f = fieldsOf(at).get(name);
+         if (f === undefined) return false;
+         if (f.join !== undefined) {
+            const on = (f as { onExpression?: unknown }).onExpression;
+            if (on !== undefined && !this.leavesNotString(on, at, 0, false)) {
+               return false;
+            }
+         }
+         at = f;
       }
       return true;
    }

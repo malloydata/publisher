@@ -354,6 +354,42 @@ describe("gateReads: compares no string", () => {
       }
    });
 
+   it("does not hold for a where: on a field read through a join whose on: compares strings", () => {
+      const joined = (on: unknown) => ({
+         ...ORDERS,
+         fields: [
+            ...ORDERS.fields,
+            { ...ORDERS, name: "o", join: "one", onExpression: on },
+         ],
+      });
+      const byRegion = {
+         node: "=",
+         kids: { left: field(["region"]), right: field(["o", "region"]) },
+      };
+      const byAmount = {
+         node: "=",
+         kids: { left: field(["amount"]), right: field(["o", "amount"]) },
+      };
+      for (const [what, e] of [
+         ["a null test", { node: "is-null", e: field(["o", "amount"]) }],
+         [
+            "a number compared",
+            {
+               node: ">",
+               kids: {
+                  left: field(["o", "amount"]),
+                  right: { node: "numberLiteral" },
+               },
+            },
+         ],
+      ] as const) {
+         const where = (on: unknown) =>
+            gateReads({ ...joined(on), filterList: [{ e }] }, [], MODEL);
+         expect(where(byRegion).comparesNoString, what).toBe(false);
+         expect(where(byAmount).comparesNoString, what).toBe(true);
+      }
+   });
+
    it("does not hold for a gate over a dimension computed from a string", () => {
       for (const name of ["late", "is_m", "late_n"]) {
          expect(
