@@ -26,6 +26,8 @@ on:
       # The admin API's catalog routes, whose tests (tests/integration/admin_catalogs)
       # run against this job's Postgres.
       - "packages/server/src/service/catalog_admin.ts"
+      - "packages/server/src/routes/admin.ts"
+      - "packages/server/src/query_concurrency.ts"
       - "packages/server/src/service/statement_usage.ts"
       - "packages/server/tests/integration/admin_catalogs/**"
       # statement_usage records on a real server, against this job's Postgres.
@@ -77,6 +79,8 @@ on:
       # The admin API's catalog routes, whose tests (tests/integration/admin_catalogs)
       # run against this job's Postgres.
       - "packages/server/src/service/catalog_admin.ts"
+      - "packages/server/src/routes/admin.ts"
+      - "packages/server/src/query_concurrency.ts"
       - "packages/server/src/service/statement_usage.ts"
       - "packages/server/tests/integration/admin_catalogs/**"
       # statement_usage records on a real server, against this job's Postgres.

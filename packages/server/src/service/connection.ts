@@ -35,6 +35,7 @@ import type { TrinoConnection } from "@malloydata/db-trino";
 import {
    Connection,
    contextOverlay,
+   makeDigest,
    MalloyConfig,
    type QueryRecord,
    TableSourceDef,
@@ -47,7 +48,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from "fs";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
-import type { PoolConfig } from "pg";
+import { Client, type ClientConfig, type PoolConfig } from "pg";
 import tls from "tls";
 import { components } from "../api";
 import {
@@ -72,16 +73,13 @@ import {
 } from "../errors";
 import { logAxiosError, logger } from "../logger";
 import { redactConnectionSecretShapes, redactPgSecrets } from "../pg_helpers";
-import {
-   assertSafeEnvironmentPath,
-   assertSafePackageName,
-   safeJoinUnderRoot,
-} from "../path_safety";
+import { assertSafePackageName } from "../path_safety";
 import {
    assembleEnvironmentConnections,
    buildPostgresConnectionString,
    CoreConnectionEntry,
    EnvironmentConnectionMetadata,
+   normalizeReadableSchemas,
    normalizeSnowflakePrivateKey,
    parseServiceAccountKey,
    removeUndefined,
@@ -1264,7 +1262,8 @@ async function attachDuckLakeWithMode(
       origin?: ConnectionOrigin;
       /**
        * A catalog served as its own tables (the connection's `managed`). Attached
-       * read-only, its storage secret reaches only the `main` schema's files.
+       * read-only, its storage secret reaches only the files of `main` and of the
+       * config's `readableSchemas`.
        */
       managed?: boolean;
       /**
@@ -1464,6 +1463,9 @@ async function attachDuckLakeWithMode(
          const scope = await attachedDuckLakeScope(connection, dbName, {
             configuredDataPath: dataPath,
             metadataSchema,
+            readableSchemas: normalizeReadableSchemas(
+               ducklakeConfig.readableSchemas,
+            ),
             readOnly: options.readOnly,
             // Only a connection view is narrowed: an operator's destination
             // serves every schema, whatever flags its entry carries.
@@ -1481,7 +1483,7 @@ async function attachDuckLakeWithMode(
          }
          await attachCloudStorage(connection, storage, options.origin, scope);
          // The lock allows exactly what the secret is scoped to.
-         allowForLockdown(connection, scope);
+         for (const prefix of scope) allowForLockdown(connection, prefix);
       } catch (error) {
          // Once the instance is locked the catalog is the locker's, attached
          // and scoped, and nothing could ATTACH it again: detaching it would
@@ -1519,9 +1521,9 @@ async function attachDuckLakeWithMode(
 /**
  * The scope of an attached catalog's storage secret ({@link storageSecretScope}),
  * reading from the catalog's metadata whatever the config does not state: the
- * recorded data path when the config has none, and the `main` schema's path for
- * a managed read-only view. Runs on the attached catalog, so nothing here is a
- * guess the preflight could fail softly on.
+ * recorded data path when the config has none, and the paths of `main` and the
+ * readable schemas for a managed read-only view. Runs on the attached catalog,
+ * so nothing here is a guess the preflight could fail softly on.
  */
 async function attachedDuckLakeScope(
    connection: DuckDBConnection,
@@ -1529,10 +1531,11 @@ async function attachedDuckLakeScope(
    input: {
       configuredDataPath?: string;
       metadataSchema?: string;
+      readableSchemas?: string[];
       readOnly: boolean;
       managed: boolean;
    },
-): Promise<string | undefined> {
+): Promise<string[] | undefined> {
    const recordedDataPath = input.configuredDataPath
       ? undefined
       : (
@@ -1542,19 +1545,19 @@ async function attachedDuckLakeScope(
               input.metadataSchema,
            )
         ).data_path;
-   const mainSchemaPath =
+   const schemaPaths =
       input.managed && input.readOnly
-         ? await recordedSchemaPath(
-              connection,
-              dbName,
-              input.metadataSchema,
+         ? await recordedSchemaPaths(connection, dbName, input.metadataSchema, [
               "main",
-           )
+              ...(input.readableSchemas ?? []),
+           ])
          : undefined;
    return storageSecretScope({
+      catalog: dbName,
       configuredDataPath: input.configuredDataPath,
       recordedDataPath,
-      mainSchemaPath,
+      schemaPaths,
+      readableSchemas: input.readableSchemas,
       readOnly: input.readOnly,
       managed: input.managed,
    });
@@ -1605,28 +1608,43 @@ export async function recordedCatalogSettings(
    return settings;
 }
 
+/** The path a catalog records for a schema, and whether it is relative to the data path. */
+export interface RecordedSchemaPath {
+   path: string;
+   relative: boolean;
+}
+
 /**
- * The path a catalog attached as `alias` records for one of its schemas in
- * `ducklake_schema`, and whether it is relative to the data path, or undefined
- * when the schema is not recorded. A path of `''` is what a catalog migrated
- * from DuckLake 0.2 records for `main`: its files sit directly under the data
- * path. A NULL `path_is_relative` reads as relative, the recorded default.
+ * The paths a catalog attached as `alias` records in `ducklake_schema` for the
+ * named schemas, in one query, keyed by schema name; a schema the catalog does
+ * not record is absent. A path of `''` is what a catalog migrated from DuckLake
+ * 0.2 records for `main`: its files sit directly under the data path. A NULL
+ * `path_is_relative` reads as relative, the recorded default.
  */
-export async function recordedSchemaPath(
+export async function recordedSchemaPaths(
    connection: DuckDBConnection,
    alias: string,
    metadataSchema: string | undefined,
-   schemaName: string,
-): Promise<{ path: string; relative: boolean } | undefined> {
-   const row = runSQLRows(
+   schemaNames: string[],
+): Promise<Map<string, RecordedSchemaPath>> {
+   const names = schemaNames.map((name) => `'${escapeSQL(name)}'`).join(", ");
+   const rows = runSQLRows(
       await runInternalSQL(
          connection,
-         `SELECT path, path_is_relative FROM ${metadataCatalogRef(alias, metadataSchema)}.ducklake_schema ` +
-            `WHERE schema_name = '${escapeSQL(schemaName)}' AND end_snapshot IS NULL LIMIT 1`,
+         `SELECT schema_name, path, path_is_relative FROM ${metadataCatalogRef(alias, metadataSchema)}.ducklake_schema ` +
+            `WHERE schema_name IN (${names}) AND end_snapshot IS NULL`,
       ),
-   )[0];
-   if (!row || typeof row.path !== "string") return undefined;
-   return { path: row.path, relative: row.path_is_relative !== false };
+   );
+   const recorded = new Map<string, RecordedSchemaPath>();
+   for (const row of rows) {
+      if (typeof row.schema_name === "string" && typeof row.path === "string") {
+         recorded.set(row.schema_name, {
+            path: row.path,
+            relative: row.path_is_relative !== false,
+         });
+      }
+   }
+   return recorded;
 }
 
 /**
@@ -1701,42 +1719,89 @@ function isBucketlessUrl(url: string): boolean {
 }
 
 /**
- * The URL prefix a DuckLake catalog's storage secret is scoped to, with exactly
- * one trailing slash so `…/org_a/` never matches `…/org_ab`. The configured data
- * path when the config states one, else the data path the catalog recorded,
- * which the preflight read. A managed catalog attached read-only is the
- * user-facing view of its own tables, so its secret reaches only the `main`
- * schema's files: the schema path the catalog recorded, under the data path when
- * relative. Undefined when nothing states a path, when a managed view's main
- * path is unknown, or when the root names no bucket: the caller then refuses
- * the attach rather than creating an unscoped secret.
+ * The scope prefix of a readable schema other than `main`: its recorded path,
+ * which must resolve strictly under `rootSlash` (the data path, one trailing
+ * slash) as plain segments. Undefined for anything else (the data path itself,
+ * a `..`, `.` or empty segment, an absolute path elsewhere), because the
+ * prefix would then reach files outside the schema's own directory.
+ */
+function readableSchemaScope(
+   rootSlash: string,
+   recorded: RecordedSchemaPath,
+): string | undefined {
+   let rest = recorded.path;
+   if (!recorded.relative) {
+      if (!rest.startsWith(rootSlash)) return undefined;
+      rest = rest.slice(rootSlash.length);
+   }
+   const trimmed = stripTrailingSlashes(rest);
+   if (
+      trimmed === "" ||
+      trimmed
+         .split("/")
+         .some((part) => part === "" || part === "." || part === "..")
+   ) {
+      return undefined;
+   }
+   return `${rootSlash}${trimmed}/`;
+}
+
+/**
+ * The URL prefixes a DuckLake catalog's storage secret is scoped to, each with
+ * exactly one trailing slash so `…/org_a/` never matches `…/org_ab`. The
+ * configured data path when the config states one, else the data path the
+ * catalog recorded, which the preflight read. A managed catalog attached
+ * read-only is the user-facing view of its own tables, so its secret reaches
+ * only the files of `main` and of `readableSchemas`: the schema paths the
+ * catalog recorded, under the data path when relative. `main` keeps the
+ * leniency of catalogs migrated from DuckLake 0.2 (an absolute path, an empty
+ * path for the data path itself); every other schema must resolve strictly under
+ * the data path, and one that does not, or that the catalog does not record, is
+ * left out and logged, so a bad entry narrows the view rather than widening it.
+ * Undefined when nothing states a path, when a managed view's main path is
+ * unknown, or when the root names no bucket: the caller then refuses the attach
+ * rather than creating an unscoped secret.
  */
 export function storageSecretScope(input: {
+   catalog: string;
    configuredDataPath?: string;
    recordedDataPath?: string;
-   mainSchemaPath?: { path: string; relative: boolean };
+   schemaPaths?: ReadonlyMap<string, RecordedSchemaPath>;
+   readableSchemas?: string[];
    readOnly: boolean;
    managed: boolean;
-}): string | undefined {
+}): string[] | undefined {
    const root = input.configuredDataPath || input.recordedDataPath;
    if (!root || isBucketlessUrl(root)) return undefined;
-   if (input.managed && input.readOnly) {
-      const main = input.mainSchemaPath;
-      if (!main) return undefined;
-      if (!main.relative) {
-         return isBucketlessUrl(main.path)
-            ? undefined
-            : oneTrailingSlash(main.path);
-      }
-      // An empty relative path is the data path itself (a catalog migrated from
-      // DuckLake 0.2 records it for `main`).
+   const rootSlash = oneTrailingSlash(root);
+   if (!(input.managed && input.readOnly)) return [rootSlash];
+   const main = input.schemaPaths?.get("main");
+   if (!main) return undefined;
+   let mainScope: string;
+   if (!main.relative) {
+      if (isBucketlessUrl(main.path)) return undefined;
+      mainScope = oneTrailingSlash(main.path);
+   } else {
+      // An empty relative path is the data path itself.
       let start = 0;
       while (start < main.path.length && main.path[start] === "/") start++;
-      return oneTrailingSlash(
-         `${oneTrailingSlash(root)}${main.path.slice(start)}`,
-      );
+      mainScope = oneTrailingSlash(`${rootSlash}${main.path.slice(start)}`);
    }
-   return oneTrailingSlash(root);
+   const scope = [mainScope];
+   for (const schema of input.readableSchemas ?? []) {
+      const recorded = input.schemaPaths?.get(schema);
+      const prefix = recorded && readableSchemaScope(rootSlash, recorded);
+      if (prefix) {
+         scope.push(prefix);
+      } else {
+         logger.error(
+            "A readable schema is left out of the managed view's storage scope: " +
+               "the catalog does not record it, or its path is not strictly under the data path",
+            { catalog: input.catalog, schema },
+         );
+      }
+   }
+   return [...new Set(scope)];
 }
 
 /**
@@ -2309,6 +2374,182 @@ export function splitPgAttachCredentials(
 }
 
 /**
+ * A node-pg client config for a libpq connection string, for work the DuckDB
+ * attach cannot do (a session advisory lock). It reads the string as libpq
+ * does, the deployment's PGSSLMODE and certificate files included (the string
+ * wins), and refuses what it cannot follow: a `service`, a `hostaddr` (in the
+ * string or as PGSERVICE / PGHOSTADDR), or a list of hosts, none of which a
+ * single node-pg connection can take. The TLS mapping is {@link pgClientSsl}.
+ * A dead connection is noticed by keepalive, and a query that stops
+ * answering by its timeout. Exported for tests.
+ */
+export function pgClientConfig(
+   subject: string,
+   conninfo: string,
+): ClientConfig & { plaintextFallback: boolean } {
+   const params = new Map<string, string>();
+   for (const { key, value } of pgConninfoKeyValues(subject, conninfo)) {
+      params.set(key, value);
+   }
+   const unsupported = ["service", "hostaddr"].find((key) => params.has(key));
+   const ambient = (["PGSERVICE", "PGHOSTADDR"] as const).find((name) =>
+      externalEnv(name),
+   );
+   const listed = ["host", "port"].find((key) =>
+      params.get(key)?.includes(","),
+   );
+   if (ambient) {
+      throw new Error(
+         `${subject}: ${ambient} is set in the environment, which loads cannot use; unset it and spell host, port and dbname.`,
+      );
+   }
+   if (unsupported || listed) {
+      throw new Error(
+         `${subject}: the connection string sets ${unsupported ? `'${unsupported}'` : `more than one '${listed}'`}, which loads cannot use; spell host, port and dbname.`,
+      );
+   }
+   const port = params.get("port") || undefined;
+   for (const [key, name] of [
+      ["sslrootcert", "PGSSLROOTCERT"],
+      ["sslcert", "PGSSLCERT"],
+      ["sslkey", "PGSSLKEY"],
+   ] as const) {
+      const file = externalEnv(name);
+      if (!params.has(key) && file) params.set(key, file);
+   }
+   const requested = params.get("sslmode") ?? externalEnv("PGSSLMODE");
+   const systemRoots = params.get("sslrootcert") === "system";
+   // libpq 16: public roots vouch for any hostname, so `sslrootcert=system` allows only verify-full.
+   const sslmode =
+      requested === "no-verify"
+         ? LIBPQ_NO_VERIFY_SSLMODE
+         : (requested ?? (systemRoots ? "verify-full" : undefined));
+   if (systemRoots && sslmode !== "verify-full") {
+      throw new Error(
+         `${subject}: weak sslmode '${sslmode}' may not be used with sslrootcert=system (use 'verify-full').`,
+      );
+   }
+   return {
+      host: params.get("host") || undefined,
+      port: port === undefined ? undefined : Number(port),
+      database: params.get("dbname"),
+      user: params.get("user"),
+      password: params.get("password"),
+      ssl: pgClientSsl(subject, sslmode, params),
+      plaintextFallback: TLS_OPTIONAL_SSLMODES.has(sslmode),
+      connectionTimeoutMillis: 10_000,
+      keepAlive: true,
+      keepAliveInitialDelayMillis: 10_000,
+      query_timeout: 30_000,
+   };
+}
+
+/**
+ * A connected node-pg client for a libpq connection string. `onError` hears a
+ * dropped idle connection, which unhandled would end the process.
+ * `queryTimeoutMillis` replaces the default bound on a query's answer.
+ */
+export async function connectPgClient(
+   subject: string,
+   conninfo: string,
+   onError: (error: Error) => void = () => undefined,
+   queryTimeoutMillis?: number,
+): Promise<Client> {
+   const { plaintextFallback, ...config } = pgClientConfig(subject, conninfo);
+   const connect = async (ssl: ClientConfig["ssl"]) => {
+      const client = new Client({
+         ...config,
+         ssl,
+         ...(queryTimeoutMillis ? { query_timeout: queryTimeoutMillis } : {}),
+      });
+      client.on("error", onError);
+      await client.connect();
+      return client;
+   };
+   try {
+      return await connect(config.ssl);
+   } catch (error) {
+      // libpq's `prefer`: plaintext only when the server refuses TLS.
+      if (plaintextFallback && /does not support SSL/i.test(String(error))) {
+         return connect(false);
+      }
+      throw error;
+   }
+}
+
+/** The sslmodes under which libpq tries TLS but accepts a server without it. */
+const TLS_OPTIONAL_SSLMODES = new Set<string | undefined>([
+   undefined,
+   "allow",
+   "prefer",
+]);
+
+/**
+ * libpq's `sslmode` as a node-pg `ssl` option, with the connection string's
+ * client certificate (`sslcert`, `sslkey`, and `sslpassword` as the key's
+ * passphrase). node-pg cannot fall back from TLS to plaintext itself, so the
+ * TLS-optional modes ask for TLS and the caller retries in plaintext only on
+ * the server's refusal (`plaintextFallback`). `require` with an `sslrootcert`
+ * verifies the chain, as libpq does. `verify-*` trust `sslrootcert`, else the
+ * runtime's ambient anchors.
+ */
+export function pgClientSsl(
+   subject: string,
+   sslmode: string | undefined,
+   params: ReadonlyMap<string, string>,
+): ClientConfig["ssl"] {
+   const sslrootcert = params.get("sslrootcert");
+   const pem = (key: string, file: string) => {
+      try {
+         return readFileSync(file, "utf8");
+      } catch (error) {
+         throw new Error(
+            `${subject}: cannot read the ${key} file '${file}' (${(error as NodeJS.ErrnoException).code ?? "unreadable"}).`,
+         );
+      }
+   };
+   // `system` reads Node's roots plus NODE_EXTRA_CA_CERTS, not OpenSSL's store as libpq does.
+   const ca = () =>
+      sslrootcert && sslrootcert !== "system"
+         ? pem("sslrootcert", sslrootcert)
+         : readFileSync(ambientTrustBundlePath(), "utf8");
+   const [sslcert, sslkey, passphrase] = [
+      params.get("sslcert"),
+      params.get("sslkey"),
+      params.get("sslpassword"),
+   ];
+   const clientAuth = () => ({
+      ...(sslcert ? { cert: pem("sslcert", sslcert) } : {}),
+      ...(sslkey ? { key: pem("sslkey", sslkey) } : {}),
+      ...(passphrase ? { passphrase } : {}),
+   });
+   const verifyChain = () => ({
+      rejectUnauthorized: true,
+      ca: ca(),
+      checkServerIdentity: () => undefined,
+      ...clientAuth(),
+   });
+   switch (sslmode) {
+      case "disable":
+         return false;
+      case undefined:
+      case "allow":
+      case "prefer":
+         return { rejectUnauthorized: false, ...clientAuth() };
+      case "require":
+         return sslrootcert
+            ? verifyChain()
+            : { rejectUnauthorized: false, ...clientAuth() };
+      case "verify-ca":
+         return verifyChain();
+      case "verify-full":
+         return { rejectUnauthorized: true, ca: ca(), ...clientAuth() };
+      default:
+         throw new Error(`${subject} has unsupported sslmode '${sslmode}'.`);
+   }
+}
+
+/**
  * The name of the DuckDB secret a Postgres attach under `handle` reads its
  * credentials from: one per handle, unique however two handles sanitize.
  */
@@ -2576,8 +2817,8 @@ export function buildCloudStorageSecretSQL(
    const isGCS = credentials.type === "gcs";
    const escapedKeyId = escapeSQL(credentials.accessKeyId);
    const escapedSecret = escapeSQL(credentials.secretAccessKey);
-   const scopeClause = credentials.scope
-      ? `SCOPE '${escapeSQL(credentials.scope)}'`
+   const scopeClause = credentials.scope?.length
+      ? `SCOPE [${credentials.scope.map((prefix) => `'${escapeSQL(prefix)}'`).join(", ")}]`
       : "";
 
    let createSecretCommand: string;
@@ -2671,7 +2912,7 @@ async function attachCloudStorage(
    connection: DuckDBConnection,
    attachedDb: AttachedDatabase,
    origin: ConnectionOrigin = "connection",
-   scope?: string,
+   scope?: string[],
 ): Promise<void> {
    const storageType = attachedDb.type?.toUpperCase() || "";
    // The scope rides on the credentials so the renewer re-emits it.
@@ -3102,6 +3343,7 @@ const renewingStorageSecretOf = new AsyncLocalStorage<object>();
 
 class DuckLakeConnection extends DuckDBConnection {
    private connectionName: string;
+   private legacyDigest: string;
    private storageSecretRenewer?: () => Promise<void>;
    /**
     * The renewal in flight, shared by every statement that failed on the
@@ -3291,15 +3533,25 @@ class DuckLakeConnection extends DuckDBConnection {
 
    constructor(options: PublisherDuckDBOptions) {
       super(options);
-
-      if (!options.databasePath?.endsWith("_ducklake.duckdb")) {
-         throw new Error(
-            `DuckLakeConnection should only be used for DuckLake connections. ` +
-               `Expected database path ending with '_ducklake.duckdb', got: ${options.databasePath}`,
-         );
-      }
-
       this.connectionName = options.name;
+      this.legacyDigest = makeDigest(
+         "duckdb",
+         path.join(
+            options.workingDirectory ?? "",
+            `${options.name}_ducklake.duckdb`,
+         ),
+         options.workingDirectory,
+         undefined,
+      );
+   }
+
+   /**
+    * The digest Malloy computed when this connection opened a
+    * `<env>/<name>_ducklake.duckdb` file, which persisted-source addresses
+    * already embed and which, unlike an in-memory path, differs per lake.
+    */
+   getDigest(): string {
+      return this.legacyDigest;
    }
 
    /**
@@ -3362,36 +3614,6 @@ class DuckLakeConnection extends DuckDBConnection {
          );
       }
       return result;
-   }
-}
-
-export async function deleteDuckLakeConnectionFile(
-   connectionName: string,
-   environmentPath: string,
-): Promise<void> {
-   assertSafePackageName(connectionName);
-   assertSafeEnvironmentPath(environmentPath);
-   const ducklakePath = safeJoinUnderRoot(
-      environmentPath,
-      `${connectionName}_ducklake.duckdb`,
-   );
-   try {
-      await fs.access(ducklakePath);
-      await fs.rm(ducklakePath);
-      logger.info(
-         `Removed DuckLake connection file ${connectionName}_ducklake.duckdb from ${environmentPath}`,
-      );
-   } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-         logger.debug(
-            `DuckLake connection file ${connectionName}_ducklake.duckdb does not exist, skipping deletion`,
-         );
-      } else {
-         logger.error(
-            `Failed to remove DuckLake connection file ${connectionName}_ducklake.duckdb from ${environmentPath}`,
-            { error },
-         );
-      }
    }
 }
 
@@ -3683,7 +3905,7 @@ function statementTimeoutSetupSQL(
    return ms === undefined ? undefined : `SET statement_timeout = ${ms}`;
 }
 
-function buildDuckLakeConnection(
+export function buildDuckLakeConnection(
    metadata: EnvironmentConnectionMetadata,
    entry: CoreConnectionEntry,
 ): DuckLakeConnection {
@@ -3730,7 +3952,7 @@ function getMetadataForLookup(
  * application would risk divergence and a silent live-serving fallback. The
  * value is an opaque token: never re-hashed, logged or parsed.
  */
-function applyConnectionFingerprint(
+export function applyConnectionFingerprint(
    connection: Connection,
    metadata: EnvironmentConnectionMetadata | undefined,
 ): Connection {

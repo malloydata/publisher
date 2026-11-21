@@ -775,6 +775,24 @@ export function isPairGuardFailure(err: unknown): boolean {
 }
 
 /**
+ * The predicate matching `left` to `right` on every key (already quoted),
+ * where a key NULL on both sides is a match: a delete by key must reach the
+ * rows of the NULL key as one group.
+ */
+export function nullSafeKeyMatch(
+   keys: readonly string[],
+   left: string,
+   right: string,
+): string {
+   return keys
+      .map(
+         (key) =>
+            `(${left}.${key} = ${right}.${key} OR (${left}.${key} IS NULL AND ${right}.${key} IS NULL))`,
+      )
+      .join(" AND ");
+}
+
+/**
  * A pair table's delta (an inlined join_many, `#(materialize)`): replace every
  * row of each parent the delta holds, by the parent key, so the parent-row
  * flag stays exactly one row per parent.
@@ -825,8 +843,7 @@ export function pairDeltaStatements(params: {
       `CREATE OR REPLACE TEMP TABLE ${staged} AS ${params.deltaSQL}`,
       transaction.begin,
       `DELETE FROM ${quotedTablePath} AS __t WHERE EXISTS (` +
-         `SELECT 1 FROM ${staged} AS __s WHERE ` +
-         `(__t.${key} = __s.${key} OR (__t.${key} IS NULL AND __s.${key} IS NULL)))`,
+         `SELECT 1 FROM ${staged} AS __s WHERE ${nullSafeKeyMatch([key], "__t", "__s")})`,
       `INSERT INTO ${quotedTablePath} (${columnList}) ` +
          `SELECT ${columnList} FROM ${staged}`,
       ...(params.windowDeletes ?? []).map(

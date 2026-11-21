@@ -725,6 +725,38 @@ function validateMotherDuckShape(connection: ApiConnection): void {
    }
 }
 
+/** A plain identifier: what metadataSchema and destinationSchema allow. */
+const PLAIN_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/** A lowercase schema name: what `readableSchemas` and the admin API's schema create accept. */
+export const READABLE_SCHEMA_NAME = /^[a-z_][a-z0-9_]*$/;
+
+/** Schemas the engine owns: never created, dropped, listed or read through the API. */
+export const SYSTEM_SCHEMAS = [
+   "information_schema",
+   "pg_catalog",
+   "temp",
+   "system",
+];
+
+/** Names no catalog schema may take: the engine's own, and `memory`, which would make `memory.t` ambiguous with DuckDB's built-in catalog. */
+export const RESERVED_SCHEMA_NAMES = ["memory", ...SYSTEM_SCHEMAS];
+
+/**
+ * The schemas a managed read-only DuckLake view may read besides `main`, as one
+ * canonical list: sorted, deduplicated, `main` dropped, undefined when empty. The
+ * one place that decides which lists mean the same, so a reordering never
+ * reopens the connection and the attach scopes what the identity names.
+ */
+export function normalizeReadableSchemas(
+   list?: string[],
+): string[] | undefined {
+   const names = [...new Set(list ?? [])]
+      .filter((name) => name !== "main")
+      .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+   return names.length > 0 ? names : undefined;
+}
+
 function validateDuckLakeShape(
    connection: ApiConnection,
    origin: ConnectionOrigin,
@@ -772,10 +804,7 @@ function validateDuckLakeShape(
    // reach escapeSQL as a non-string, a TypeError at the first attach.
    if (connection.ducklakeConnection.catalog.metadataSchema !== undefined) {
       const schema = connection.ducklakeConnection.catalog.metadataSchema;
-      if (
-         typeof schema !== "string" ||
-         !/^[A-Za-z_][A-Za-z0-9_]*$/.test(schema)
-      ) {
+      if (typeof schema !== "string" || !PLAIN_IDENTIFIER.test(schema)) {
          throw new Error(
             `DuckLake catalog metadataSchema must be a plain identifier ` +
                `([A-Za-z_][A-Za-z0-9_]*), got '${schema}' for connection: ` +
@@ -789,12 +818,53 @@ function validateDuckLakeShape(
    if (destinationSchema !== undefined && destinationSchema !== null) {
       if (
          typeof destinationSchema !== "string" ||
-         !/^[A-Za-z_][A-Za-z0-9_]*$/.test(destinationSchema)
+         !PLAIN_IDENTIFIER.test(destinationSchema)
       ) {
          throw new Error(
             `DuckLake destinationSchema must be a plain identifier ` +
                `([A-Za-z_][A-Za-z0-9_]*), got '${destinationSchema}' for connection: ` +
                `${connection.name}`,
+         );
+      }
+   }
+   // Each name becomes a prefix of the view's storage secret scope, so anything
+   // but a plain lowercase identifier would widen or break it.
+   const readable = connection.ducklakeConnection.readableSchemas;
+   if (readable !== undefined && readable !== null) {
+      if (origin === "storage-destination") {
+         throw new Error(
+            `DuckLake readableSchemas applies to a managed connection view, not a ` +
+               `storage destination: ${connection.name}`,
+         );
+      }
+      if (
+         connection.managed !== true ||
+         connection.ducklakeConnection.readOnly === false
+      ) {
+         throw new Error(
+            `DuckLake readableSchemas requires a managed, read-only connection: ` +
+               `${connection.name}`,
+         );
+      }
+      if (
+         !Array.isArray(readable) ||
+         readable.some(
+            (name) =>
+               typeof name !== "string" || !READABLE_SCHEMA_NAME.test(name),
+         )
+      ) {
+         throw new Error(
+            `DuckLake readableSchemas must be a list of lowercase schema names ` +
+               `([a-z_][a-z0-9_]*) for connection: ${connection.name}`,
+         );
+      }
+      const reserved = readable.find((name) =>
+         RESERVED_SCHEMA_NAMES.includes(name),
+      );
+      if (reserved !== undefined) {
+         throw new Error(
+            `DuckLake readableSchemas names '${reserved}', a reserved schema name, ` +
+               `for connection: ${connection.name}`,
          );
       }
    }
@@ -975,15 +1045,13 @@ export const DECLARABLE_STORAGE_DESTINATION_TYPES: ReadonlySet<string> =
    new Set(["ducklake"]);
 
 /**
- * Subdirectory of the environment root holding the local DuckDB files of
- * storage destinations, keeping them out of the directory connection
- * files derive into.
+ * Subdirectory of the environment root that storage destinations use as their
+ * working directory, apart from the directory connections use.
  *
- * Not cosmetic. A DuckDB instance is pooled by `databasePath` +
- * `workingDirectory`; the share key excludes the connection name
- * (`buildDuckDBShareKey`), and both lists derive the path as
- * `<root>/<name>…duckdb`. A connection and a destination may share a name, so
- * without separate roots they would share one pooled instance, and
+ * Not cosmetic. A DuckDB instance is pooled by its share key
+ * (`buildDuckDBShareKey`), which includes `workingDirectory` but excludes the
+ * connection name. A connection and a destination may share a name and a
+ * config, so without separate roots they would share one pooled instance, and
  * `ATTACH OR REPLACE … AS <name>` would let one replace the other's attach and
  * a query read across the two. (If malloydata/malloy#3006 changes the share
  * key, re-check that it still excludes the name.)
@@ -1504,24 +1572,29 @@ function buildMotherDuckEntry(
    };
 }
 
-function buildDuckLakeEntry(
-   connection: NamedConnection,
-   environmentPath: string,
-): CoreConnectionEntry {
+function buildDuckLakeEntry(connection: NamedConnection): CoreConnectionEntry {
    // Shape is validated up front by validateConnectionShape.
    return {
-      ...buildDuckdbEntry(
-         connection.name,
-         environmentPath,
-         `${connection.name}_ducklake.duckdb`,
-      ),
+      // The catalog is Postgres and the data remote, so the primary holds
+      // nothing: in memory, so a changed generation never waits on a file.
+      is: "duckdb",
+      databasePath: ":memory:",
       // Attached, then locked to its data path (duckdb_lockdown.ts). The key
       // digests the catalog config, so an edit opens a fresh instance rather
-      // than re-attaching on a locked one.
+      // than re-attaching on a locked one. The name keeps two lakes with
+      // identical config off one locked instance.
       ...networkedDuckDBOptions(
          "ducklake",
          setupIdentity({
-            ducklakeConnection: connection.ducklakeConnection ?? null,
+            name: connection.name,
+            ducklakeConnection: connection.ducklakeConnection
+               ? {
+                    ...connection.ducklakeConnection,
+                    readableSchemas: normalizeReadableSchemas(
+                       connection.ducklakeConnection.readableSchemas,
+                    ),
+                 }
+               : null,
             managed: connection.managed === true,
          }),
       ),
@@ -1573,7 +1646,7 @@ function buildCoreEntry(
       case "motherduck":
          return buildMotherDuckEntry(connection);
       case "ducklake":
-         return buildDuckLakeEntry(connection, environmentPath);
+         return buildDuckLakeEntry(connection);
       case "publisher":
          return buildPublisherEntry(connection);
       default:
@@ -1617,11 +1690,9 @@ export function assembleEnvironmentConnections(
          connection.duckdbConnection?.attachedDatabases ?? [];
       const isDuckLake = connection.type === "ducklake";
       const isDuckdb = connection.type === "duckdb";
-      const databasePath = isDuckLake
-         ? path.join(environmentPath, `${connection.name}_ducklake.duckdb`)
-         : isDuckdb
-           ? path.join(environmentPath, `${connection.name}.duckdb`)
-           : undefined;
+      const databasePath = isDuckdb
+         ? path.join(environmentPath, `${connection.name}.duckdb`)
+         : undefined;
 
       metadata.set(connection.name, {
          apiConnection,

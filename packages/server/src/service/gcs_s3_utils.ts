@@ -114,9 +114,9 @@ export interface CloudStorageCredentials {
    // with; `chain` is the provider order to try.
    provider?: "config" | "credential_chain";
    chain?: string;
-   // The URL prefix the secret is restricted to (`SCOPE`); unset keeps DuckDB's
+   // The URL prefixes the secret is restricted to (`SCOPE`); unset keeps DuckDB's
    // default scope, the whole scheme.
-   scope?: string;
+   scope?: string[];
 }
 
 interface CloudStorageBucket {

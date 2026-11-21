@@ -16,7 +16,6 @@ import path from "path";
 import { components } from "../../../src/api";
 import {
    createEnvironmentConnections,
-   deleteDuckLakeConnectionFile,
    testConnectionConfig,
 } from "../../../src/service/connection";
 import {
@@ -46,6 +45,9 @@ const hasS3Credentials = () =>
 const hasGCSCredentials = () =>
    !!(process.env.GCS_TEST_KEY_ID && process.env.GCS_TEST_SECRET);
 
+const duckdbFilesIn = async (directory: string) =>
+   (await fs.readdir(directory)).filter((file) => file.endsWith(".duckdb"));
+
 describe("DuckLake Connection Tests", () => {
    const testProjectPath = path.join(process.cwd(), "test-project-ducklake");
    let createdConnections: DuckDBConnection[] = [];
@@ -64,36 +66,6 @@ describe("DuckLake Connection Tests", () => {
          }
       }
       createdConnections = [];
-
-      // Clean up DuckLake database files from testProjectPath
-      try {
-         const files = await fs.readdir(testProjectPath);
-         for (const file of files) {
-            if (file.endsWith("_ducklake.duckdb")) {
-               await fs.rm(path.join(testProjectPath, file), { force: true });
-            }
-         }
-      } catch (error) {
-         // Ignore cleanup errors
-      }
-
-      // Legacy safety net: testConnectionConfig now isolates its throwaway
-      // files in a temp directory, so it no longer leaves *_ducklake.duckdb in
-      // process.cwd(); this sweep only guards against an older/regressed path.
-      try {
-         const cwdFiles = await fs.readdir(process.cwd());
-         for (const file of cwdFiles) {
-            if (file.endsWith("_ducklake.duckdb")) {
-               const filePath = path.join(process.cwd(), file);
-               // Only delete test files, not production files
-               if (file.includes("_test") || file.includes("invalid")) {
-                  await fs.rm(filePath, { force: true });
-               }
-            }
-         }
-      } catch (_error) {
-         // Ignore cleanup errors (file might not exist or already deleted)
-      }
 
       // Clean up test directory
       const maxRetries = 5;
@@ -179,16 +151,8 @@ describe("DuckLake Connection Tests", () => {
             const dbNames = databases.rows.map((row) => Object.values(row)[0]);
             expect(dbNames).toContain("ducklake_s3_test");
 
-            // Verify database file was created
-            const dbPath = path.join(
-               testProjectPath,
-               "ducklake_s3_test_ducklake.duckdb",
-            );
-            const exists = await fs
-               .access(dbPath)
-               .then(() => true)
-               .catch(() => false);
-            expect(exists).toBe(true);
+            // The primary is in memory: no database file is kept
+            expect(await duckdbFilesIn(testProjectPath)).toEqual([]);
          },
          { timeout: 30000 },
       );
@@ -704,7 +668,7 @@ describe("DuckLake Connection Tests", () => {
 
    describe("Database File Management", () => {
       it(
-         "should create database file with correct naming pattern",
+         "should keep no database file",
          async () => {
             if (!hasPostgresCredentials() || !hasS3Credentials()) {
                console.log(
@@ -750,94 +714,10 @@ describe("DuckLake Connection Tests", () => {
             ) as DuckDBConnection;
             createdConnections.push(connection);
 
-            // Verify database file follows naming pattern: {connectionName}_ducklake.duckdb
-            const dbPath = path.join(
-               testProjectPath,
-               "ducklake_file_test_ducklake.duckdb",
-            );
-            const exists = await fs
-               .access(dbPath)
-               .then(() => true)
-               .catch(() => false);
-            expect(exists).toBe(true);
+            expect(await duckdbFilesIn(testProjectPath)).toEqual([]);
          },
          { timeout: 30000 },
       );
-
-      it("should delete DuckLake connection file", async () => {
-         if (!hasPostgresCredentials() || !hasS3Credentials()) {
-            console.log(
-               "Skipping: PostgreSQL and S3 credentials not configured",
-            );
-            return;
-         }
-
-         const ducklakeConnection: ApiConnection = {
-            name: "ducklake_delete_test",
-            type: "ducklake",
-            ducklakeConnection: {
-               catalog: {
-                  postgresConnection: {
-                     host: process.env.POSTGRES_TEST_HOST,
-                     port: parseInt(process.env.POSTGRES_TEST_PORT || "5432"),
-                     userName: process.env.POSTGRES_TEST_USER!,
-                     password: process.env.POSTGRES_TEST_PASSWORD!,
-                     databaseName: process.env.POSTGRES_TEST_DATABASE,
-                  },
-               },
-               storage: {
-                  bucketUrl:
-                     process.env.S3_TEST_BUCKET_URL || "s3://test-bucket",
-                  s3Connection: {
-                     accessKeyId: process.env.S3_TEST_ACCESS_KEY_ID!,
-                     secretAccessKey: process.env.S3_TEST_SECRET_ACCESS_KEY!,
-                     region: process.env.S3_TEST_REGION || "us-east-1",
-                  },
-               },
-            },
-         };
-
-         const { malloyConnections } = await createEnvironmentConnections(
-            [ducklakeConnection],
-            testProjectPath,
-         );
-
-         const connection = malloyConnections.get(
-            "ducklake_delete_test",
-         ) as DuckDBConnection;
-         await connection.close();
-         createdConnections = createdConnections.filter(
-            (c) => c !== connection,
-         );
-
-         // Delete the file
-         await deleteDuckLakeConnectionFile(
-            "ducklake_delete_test",
-            testProjectPath,
-         );
-
-         // Verify file is deleted
-         const dbPath = path.join(
-            testProjectPath,
-            "ducklake_delete_test_ducklake.duckdb",
-         );
-         const exists = await fs
-            .access(dbPath)
-            .then(() => true)
-            .catch(() => false);
-         expect(exists).toBe(false);
-      });
-
-      it("should handle deletion of non-existent file gracefully", async () => {
-         // Should not throw error if file doesn't exist
-         // The function catches ENOENT errors internally, so this should complete without throwing
-         await expect(
-            deleteDuckLakeConnectionFile(
-               "nonexistent_connection",
-               testProjectPath,
-            ),
-         ).resolves.toBeUndefined();
-      });
    });
 
    describe("Connection Testing", () => {

@@ -148,6 +148,140 @@ describe("the admin listener", () => {
       expect(ifAbsent).toBe(true);
    });
 
+   it("routes a load POST to 201 with the body as given, and answers a refusal's detail", async () => {
+      const seen: unknown[] = [];
+      let refuse: CatalogAdminError | undefined = undefined;
+      const app = createAdminApp(
+         catalogs({
+            loadTable: async (c, s, t, body) => {
+               seen.push([c, s, t, body]);
+               if (refuse) throw refuse;
+               return {
+                  rowsInserted: 1,
+                  rowsReplaced: 0,
+                  rowsUnchanged: 0,
+                  rowsDeleted: 0,
+                  rowCount: 1,
+                  cursorMax: null,
+               };
+            },
+         }),
+         watch,
+      );
+      const path = "/api/v0/catalogs/ds_x/schemas/main/tables/t/loads";
+      const body = {
+         loadId: "r:1",
+         mode: "merge",
+         key: ["id"],
+         objects: ["o"],
+      };
+      const ok = await request(app).post(path).send(body);
+      expect(ok.status).toBe(201);
+      expect(ok.body.rowsInserted).toBe(1);
+      expect(seen).toEqual([["ds_x", "main", "t", body]]);
+      refuse = new CatalogAdminError(422, "LOAD_ROW_DROP_GUARD", "too many", {
+         wouldDelete: 4,
+         rowsBefore: 5,
+         maxDeletedRows: 3,
+      });
+      const refused = await request(app).post(path).send(body);
+      expect(refused.status).toBe(422);
+      expect(refused.body).toEqual({
+         code: 422,
+         message: "too many",
+         reason: "LOAD_ROW_DROP_GUARD",
+         detail: { wouldDelete: 4, rowsBefore: 5, maxDeletedRows: 3 },
+      });
+   });
+
+   it("routes a schema PUT to 201 or 200, passes If-None-Match, and maps a refusal to its reason", async () => {
+      let created = true;
+      const seen: unknown[][] = [];
+      const app = createAdminApp(
+         catalogs({
+            createSchema: async (...args: unknown[]) => {
+               seen.push(args);
+               if (args[1] === "taken") {
+                  throw new CatalogAdminError(412, "SCHEMA_EXISTS", "exists");
+               }
+               if (args[1] === "main") {
+                  throw new CatalogAdminError(400, "SCHEMA_RESERVED", "no");
+               }
+               return { schema: { name: args[1] as string }, created };
+            },
+         } as unknown as Partial<CatalogAdmin>),
+         watch,
+      );
+      const path = (s: string) => `/api/v0/catalogs/ds_x/schemas/${s}`;
+      const made = await request(app).put(path("staging"));
+      expect([made.status, made.body]).toEqual([201, { name: "staging" }]);
+      expect(seen[0]).toEqual(["ds_x", "staging", {}, false]);
+      created = false;
+      expect((await request(app).put(path("staging"))).status).toBe(200);
+      await request(app).put(path("staging")).set("If-None-Match", "*");
+      expect(seen[2][3]).toBe(true);
+      const taken = await request(app)
+         .put(path("taken"))
+         .set("If-None-Match", "*");
+      expect([taken.status, taken.body.reason]).toEqual([412, "SCHEMA_EXISTS"]);
+      const reserved = await request(app).put(path("main"));
+      expect([reserved.status, reserved.body.reason]).toEqual([
+         400,
+         "SCHEMA_RESERVED",
+      ]);
+   });
+
+   it("routes a schema DELETE to 204, and maps a refusal to its reason", async () => {
+      const dropped: string[][] = [];
+      const app = createAdminApp(
+         catalogs({
+            deleteSchema: async (c: string, s: string) => {
+               if (s === "main") {
+                  throw new CatalogAdminError(400, "SCHEMA_RESERVED", "no");
+               }
+               dropped.push([c, s]);
+            },
+         }),
+         watch,
+      );
+      const res = await request(app).delete(
+         "/api/v0/catalogs/ds_x/schemas/old",
+      );
+      expect([res.status, res.text, dropped]).toEqual([
+         204,
+         "",
+         [["ds_x", "old"]],
+      ]);
+      const reserved = await request(app).delete(
+         "/api/v0/catalogs/ds_x/schemas/main",
+      );
+      expect([reserved.status, reserved.body.reason]).toEqual([
+         400,
+         "SCHEMA_RESERVED",
+      ]);
+   });
+
+   it("lists a catalog's tables across schemas apart from one schema's", async () => {
+      const app = createAdminApp(
+         catalogs({
+            listTables: (async (_c: string, schema?: string) =>
+               schema === undefined
+                  ? [{ schema: "main", name: "t", sizeBytes: 1 }]
+                  : [
+                       { name: "t", sizeBytes: 1 },
+                    ]) as CatalogAdmin["listTables"],
+         }),
+         watch,
+      );
+      expect(
+         (await request(app).get("/api/v0/catalogs/ds_x/tables")).body,
+      ).toEqual([{ schema: "main", name: "t", sizeBytes: 1 }]);
+      expect(
+         (await request(app).get("/api/v0/catalogs/ds_x/schemas/main/tables"))
+            .body,
+      ).toEqual([{ name: "t", sizeBytes: 1 }]);
+   });
+
    it("refuses a snapshot delete without a valid olderThan", async () => {
       const app = createAdminApp(catalogs({}), watch);
       const res = await request(app).delete("/api/v0/catalogs/ds_x/snapshots");
@@ -312,6 +446,27 @@ describe("the admin listener's configuration", () => {
          expect(() =>
             catalogConfigFrom({ PUBLISHER_ADMIN_CATALOG_DATABASE: db }),
          ).toThrow(/must not set `options`/);
+      }
+   });
+
+   it("fails startup on a connection string the load lock cannot use, without repeating its password", () => {
+      for (const db of [
+         "service=prod password=hunter2",
+         "host=a,b password=hunter2",
+         "host=h hostaddr=10.0.0.1 password=hunter2",
+      ]) {
+         const error = (() => {
+            try {
+               catalogConfigFrom({ PUBLISHER_ADMIN_CATALOG_DATABASE: db });
+            } catch (e) {
+               return String(e);
+            }
+            return "";
+         })();
+         expect(error).toContain(
+            "PUBLISHER_ADMIN_CATALOG_DATABASE: the connection string sets",
+         );
+         expect(error).not.toContain("hunter2");
       }
    });
 });

@@ -4652,37 +4652,47 @@ describe("buildPgConnectionString", () => {
 describe("buildCloudStorageSecretSQL — scope", () => {
    const base = { accessKeyId: "AK", secretAccessKey: "SK", region: "r" };
 
-   it("adds SCOPE to the S3 chain, S3 key and GCS arms", () => {
+   it("adds SCOPE as a list to the S3 chain, S3 key and GCS arms", () => {
       const chain = buildCloudStorageSecretSQL("s", {
          type: "s3",
          ...base,
          provider: "credential_chain",
-         scope: "s3://b/p/",
+         scope: ["s3://b/p/main/", "s3://b/p/sync_a/"],
       });
       const key = buildCloudStorageSecretSQL("s", {
          type: "s3",
          ...base,
-         scope: "s3://b/p/",
+         scope: ["s3://b/p/main/", "s3://b/p/sync_a/"],
       });
       const gcs = buildCloudStorageSecretSQL("s", {
          type: "gcs",
          ...base,
-         scope: "gs://b/p/",
+         scope: ["gs://b/p/main/", "gs://b/p/sync_a/"],
       });
       expect(chain).toContain("PROVIDER credential_chain");
-      expect(chain).toContain("SCOPE 's3://b/p/'");
-      expect(key).toContain("SCOPE 's3://b/p/'");
-      expect(gcs).toContain("SCOPE 'gs://b/p/'");
+      expect(chain).toContain("SCOPE ['s3://b/p/main/', 's3://b/p/sync_a/']");
+      expect(key).toContain("SCOPE ['s3://b/p/main/', 's3://b/p/sync_a/']");
+      expect(gcs).toContain("SCOPE ['gs://b/p/main/', 'gs://b/p/sync_a/']");
    });
 
-   it("escapes the scope literal", () => {
+   it("emits the list form for a single prefix", () => {
       expect(
          buildCloudStorageSecretSQL("s", {
             type: "s3",
             ...base,
-            scope: "s3://b/o'brien/",
+            scope: ["s3://b/p/"],
          }),
-      ).toContain("SCOPE 's3://b/o''brien/'");
+      ).toContain("SCOPE ['s3://b/p/']");
+   });
+
+   it("escapes each scope literal", () => {
+      expect(
+         buildCloudStorageSecretSQL("s", {
+            type: "s3",
+            ...base,
+            scope: ["s3://b/o'brien/", "s3://b/x/"],
+         }),
+      ).toContain("SCOPE ['s3://b/o''brien/', 's3://b/x/']");
    });
 
    it("emits no SCOPE when none is set, as the generic attach does", () => {
@@ -4694,11 +4704,29 @@ describe("buildCloudStorageSecretSQL — scope", () => {
    });
 });
 
-// The prefix a DuckLake storage secret is held to. A configured data path wins;
+// The prefixes a DuckLake storage secret is held to. A configured data path wins;
 // a catalog whose config states none (an orchestrator's, which leaves the path to
 // the catalog so no attach can create one) is scoped to the path it recorded.
 describe("storageSecretScope", () => {
    const main = { path: "main/", relative: true };
+   const scopeOf = (
+      input: Omit<Parameters<typeof storageSecretScope>[0], "catalog">,
+   ) => storageSecretScope({ catalog: "lake", ...input });
+   const schemas = (
+      entries: Record<string, { path: string; relative: boolean }>,
+   ) => new Map(Object.entries(entries));
+   const view = (
+      readable: string[],
+      recorded: Record<string, { path: string; relative: boolean }>,
+      root = "s3://bucket/org_a/db_b/",
+   ) =>
+      scopeOf({
+         recordedDataPath: root,
+         schemaPaths: schemas({ main, ...recorded }),
+         readableSchemas: readable,
+         readOnly: true,
+         managed: true,
+      });
 
    it("takes the configured data path with exactly one trailing slash", () => {
       for (const [url, scope] of [
@@ -4708,82 +4736,84 @@ describe("storageSecretScope", () => {
          ["s3://bucket/prefix//", "s3://bucket/prefix/"],
       ]) {
          expect(
-            storageSecretScope({
+            scopeOf({
                configuredDataPath: url,
                readOnly: false,
                managed: false,
             }),
-         ).toBe(scope);
+         ).toEqual([scope]);
       }
    });
 
    it("falls back to the data path the catalog recorded", () => {
       expect(
-         storageSecretScope({
+         scopeOf({
             recordedDataPath: "gs://bucket/org_a/db_b/",
-            mainSchemaPath: main,
+            schemaPaths: schemas({ main }),
             readOnly: false,
             managed: false,
          }),
-      ).toBe("gs://bucket/org_a/db_b/");
+      ).toEqual(["gs://bucket/org_a/db_b/"]);
    });
 
    it("prefers a configured path over the recorded one", () => {
       expect(
-         storageSecretScope({
+         scopeOf({
             configuredDataPath: "s3://bucket/configured",
             recordedDataPath: "s3://bucket/recorded/",
             readOnly: false,
             managed: false,
          }),
-      ).toBe("s3://bucket/configured/");
+      ).toEqual(["s3://bucket/configured/"]);
    });
 
    it("narrows a managed read-only attach to the main schema's path", () => {
       expect(
-         storageSecretScope({
+         scopeOf({
             recordedDataPath: "s3://bucket/org_a/db_b",
-            mainSchemaPath: main,
+            schemaPaths: schemas({ main }),
             readOnly: true,
             managed: true,
          }),
-      ).toBe("s3://bucket/org_a/db_b/main/");
+      ).toEqual(["s3://bucket/org_a/db_b/main/"]);
+      expect(view([], { main: { path: "/main", relative: true } })).toEqual([
+         "s3://bucket/org_a/db_b/main/",
+      ]);
       expect(
-         storageSecretScope({
-            recordedDataPath: "s3://bucket/org_a/db_b/",
-            mainSchemaPath: { path: "/main", relative: true },
-            readOnly: true,
-            managed: true,
+         view([], {
+            main: { path: "s3://elsewhere/main", relative: false },
          }),
-      ).toBe("s3://bucket/org_a/db_b/main/");
-      expect(
-         storageSecretScope({
-            recordedDataPath: "s3://bucket/org_a/db_b/",
-            mainSchemaPath: { path: "s3://elsewhere/main", relative: false },
-            readOnly: true,
-            managed: true,
-         }),
-      ).toBe("s3://elsewhere/main/");
+      ).toEqual(["s3://elsewhere/main/"]);
    });
 
    it("does not narrow a managed read-write attach, which writes other schemas", () => {
       expect(
-         storageSecretScope({
+         scopeOf({
             recordedDataPath: "s3://bucket/org_a/db_b/",
-            mainSchemaPath: main,
+            schemaPaths: schemas({ main }),
+            readableSchemas: ["sync_a"],
             readOnly: false,
             managed: true,
          }),
-      ).toBe("s3://bucket/org_a/db_b/");
+      ).toEqual(["s3://bucket/org_a/db_b/"]);
    });
 
    it("fails closed: no path, or a managed view without its main path, scopes to nothing", () => {
+      expect(scopeOf({ readOnly: true, managed: false })).toBeUndefined();
       expect(
-         storageSecretScope({ readOnly: true, managed: false }),
+         scopeOf({
+            recordedDataPath: "s3://bucket/org_a/db_b/",
+            readOnly: true,
+            managed: true,
+         }),
       ).toBeUndefined();
       expect(
-         storageSecretScope({
+         scopeOf({
             recordedDataPath: "s3://bucket/org_a/db_b/",
+            schemaPaths: schemas({
+               sync_a: { path: "sync_a/", relative: true },
+            }),
+            readableSchemas: ["sync_a"],
             readOnly: true,
             managed: true,
          }),
@@ -4792,19 +4822,18 @@ describe("storageSecretScope", () => {
 
    it("reads an empty main path as the data path itself, as a catalog migrated from DuckLake 0.2 records it", () => {
       expect(
-         storageSecretScope({
-            recordedDataPath: "s3://bucket/org_a/db_b",
-            mainSchemaPath: { path: "", relative: true },
-            readOnly: true,
-            managed: true,
-         }),
-      ).toBe("s3://bucket/org_a/db_b/");
+         view(
+            [],
+            { main: { path: "", relative: true } },
+            "s3://bucket/org_a/db_b",
+         ),
+      ).toEqual(["s3://bucket/org_a/db_b/"]);
    });
 
    it("refuses a root that names no bucket, which DuckDB would match against every URL of the scheme", () => {
       for (const root of ["s3://", "s3:///", "gs://"]) {
          expect(
-            storageSecretScope({
+            scopeOf({
                configuredDataPath: root,
                readOnly: false,
                managed: false,
@@ -4812,22 +4841,103 @@ describe("storageSecretScope", () => {
          ).toBeUndefined();
       }
       expect(
-         storageSecretScope({
-            recordedDataPath: "s3://bucket/org_a/db_b/",
-            mainSchemaPath: { path: "gs://", relative: false },
-            readOnly: true,
-            managed: true,
-         }),
+         view([], { main: { path: "gs://", relative: false } }),
       ).toBeUndefined();
    });
 
    it("leaves a local data path alone", () => {
       expect(
-         storageSecretScope({
+         scopeOf({
             configuredDataPath: "/srv/lake//",
             readOnly: false,
             managed: false,
          }),
-      ).toBe("/srv/lake/");
+      ).toEqual(["/srv/lake/"]);
+   });
+
+   describe("readable schemas of a managed read-only view", () => {
+      let error: sinon.SinonStub;
+      beforeEach(() => {
+         error = sinon.stub(logger, "error");
+      });
+      afterEach(() => {
+         error.restore();
+      });
+
+      it("returns main and each listed schema, with one trailing slash apiece", () => {
+         expect(
+            view(["sync_a", "sync_b"], {
+               sync_a: { path: "sync_a/", relative: true },
+               sync_b: {
+                  path: "s3://bucket/org_a/db_b/sync_b//",
+                  relative: false,
+               },
+            }),
+         ).toEqual([
+            "s3://bucket/org_a/db_b/main/",
+            "s3://bucket/org_a/db_b/sync_a/",
+            "s3://bucket/org_a/db_b/sync_b/",
+         ]);
+         expect(error.called).toBe(false);
+      });
+
+      it("drops, and logs with catalog and schema, an entry that does not resolve strictly under the data path", () => {
+         const bad = {
+            outside: { path: "s3://other/sync/", relative: false },
+            sibling: { path: "s3://bucket/org_a/db_bx/sync/", relative: false },
+            parent: { path: "../x/", relative: true },
+            inner_parent: { path: "a/../x/", relative: true },
+            empty_segment: { path: "a//b/", relative: true },
+            leading_slash: { path: "/sync/", relative: true },
+            root_relative: { path: "", relative: true },
+            root_slashes: { path: "//", relative: true },
+            root_absolute: { path: "s3://bucket/org_a/db_b/", relative: false },
+            root_absolute_bare: {
+               path: "s3://bucket/org_a/db_b",
+               relative: false,
+            },
+            bucketless: { path: "s3://", relative: false },
+            dot: { path: "./x/", relative: true },
+         };
+         const names = Object.keys(bad);
+         expect(view(names, bad)).toEqual(["s3://bucket/org_a/db_b/main/"]);
+         expect(error.callCount).toBe(names.length);
+         expect(error.getCalls().map((call) => call.args[1])).toEqual(
+            names.map((schema) => ({ catalog: "lake", schema })),
+         );
+      });
+
+      it("skips, and logs, a listed schema the catalog does not record", () => {
+         expect(
+            view(["sync_a", "ghost"], {
+               sync_a: { path: "sync_a/", relative: true },
+            }),
+         ).toEqual([
+            "s3://bucket/org_a/db_b/main/",
+            "s3://bucket/org_a/db_b/sync_a/",
+         ]);
+         expect(error.callCount).toBe(1);
+         expect(error.firstCall.args[1]).toEqual({
+            catalog: "lake",
+            schema: "ghost",
+         });
+      });
+
+      it("keeps main's legacy handling whatever the listed schemas are", () => {
+         expect(
+            view(["sync_a"], {
+               main: { path: "s3://elsewhere/main", relative: false },
+               sync_a: { path: "sync_a/", relative: true },
+            }),
+         ).toEqual(["s3://elsewhere/main/", "s3://bucket/org_a/db_b/sync_a/"]);
+      });
+
+      it("lists a prefix once when two schemas share a path", () => {
+         expect(
+            view(["sync_a"], {
+               sync_a: { path: "main/", relative: true },
+            }),
+         ).toEqual(["s3://bucket/org_a/db_b/main/"]);
+      });
    });
 });

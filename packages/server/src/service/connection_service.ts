@@ -20,7 +20,6 @@ type ConnectionUpdateEnvironment = {
    ) => void;
    deleteConnection?: (connectionName: string) => Promise<void>;
    deleteDuckDBConnection?: (connectionName: string) => Promise<void>;
-   deleteDuckLakeConnection?: (connectionName: string) => Promise<void>;
 };
 
 async function runEnvironmentConnectionUpdate<T>(
@@ -55,13 +54,6 @@ function buildDeletedConnectionCleanup(
       typeof environment.deleteDuckDBConnection === "function"
    ) {
       return () => environment.deleteDuckDBConnection!(connectionName);
-   }
-
-   if (
-      deletedConnection.type === "ducklake" &&
-      typeof environment.deleteDuckLakeConnection === "function"
-   ) {
-      return () => environment.deleteDuckLakeConnection!(connectionName);
    }
 
    return undefined;

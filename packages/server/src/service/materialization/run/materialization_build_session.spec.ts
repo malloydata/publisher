@@ -2,12 +2,21 @@
 // SPDX-License-Identifier: MIT
 
 import { BuildCancelledError } from "../domain/build_cancelled";
-import { describe, expect, it, spyOn } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { DuckDBInstance } from "@duckdb/node-api";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import {
+   existsSync,
+   mkdirSync,
+   mkdtempSync,
+   readdirSync,
+   rmSync,
+   utimesSync,
+   writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import {
    BadRequestError,
    MaterializationEligibilityError,
@@ -23,6 +32,7 @@ import {
    partitionKeySql,
    partitionOrderSql,
    passthroughSourceType,
+   removeStaleBuildDirs,
    wrapPassthrough,
    writePartitionedTable,
    oneFileModel,
@@ -1367,5 +1377,110 @@ describe("buildSourceIntoStorage clears a Snowflake session's query tag", () => 
          runSQL.mockRestore();
          rmSync(dir, { recursive: true, force: true });
       }
+   });
+});
+
+describe("removeStaleBuildDirs", () => {
+   it("removes build directories older than the process and keeps everything else", () => {
+      const root = mkdtempSync(join(tmpdir(), "stale-sweep-"));
+      const startedAt = Date.now();
+      const at = (dir: string, offsetMs: number) => {
+         const t = new Date(startedAt + offsetMs);
+         utimesSync(dir, t, t);
+      };
+      try {
+         for (const name of [
+            "malloy-build-old",
+            "malloy-build-new",
+            "other-old",
+         ]) {
+            mkdirSync(join(root, name));
+         }
+         writeFileSync(join(root, "malloy-build-file"), "x");
+         at(join(root, "malloy-build-old"), -60_000);
+         at(join(root, "malloy-build-new"), 60_000);
+         at(join(root, "other-old"), -60_000);
+
+         expect(removeStaleBuildDirs(root, startedAt)).toBe(1);
+
+         expect(existsSync(join(root, "malloy-build-old"))).toBe(false);
+         expect(existsSync(join(root, "malloy-build-new"))).toBe(true);
+         expect(existsSync(join(root, "other-old"))).toBe(true);
+         expect(existsSync(join(root, "malloy-build-file"))).toBe(true);
+      } finally {
+         rmSync(root, { recursive: true, force: true });
+      }
+   });
+
+   it("removes nothing when there is nothing stale", () => {
+      const root = mkdtempSync(join(tmpdir(), "stale-sweep-"));
+      try {
+         expect(removeStaleBuildDirs(root, Date.now())).toBe(0);
+      } finally {
+         rmSync(root, { recursive: true, force: true });
+      }
+   });
+
+   describe("a directory named for its process", () => {
+      const startedAt = Date.now();
+      const ownPid = process.pid;
+      let root: string;
+      const dir = (name: string, offsetMs: number) => {
+         mkdirSync(join(root, name));
+         const t = new Date(startedAt + offsetMs);
+         utimesSync(join(root, name), t, t);
+      };
+      const left = () => readdirSync(root).sort();
+      beforeEach(() => {
+         root = mkdtempSync(join(tmpdir(), "stale-sweep-pid-"));
+      });
+      afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+      it("names the process that created it", () => {
+         const { dispose, workDir } = createIsolatedBuildSession("pid_name");
+         try {
+            expect(basename(workDir)).toMatch(
+               new RegExp(`^malloy-build-${process.pid}-`),
+            );
+         } finally {
+            void dispose();
+         }
+      });
+
+      it("removes one whose process is gone, however recent, and keeps one whose process is alive, however old", async () => {
+         const live = spawn(process.execPath, [
+            "-e",
+            "setTimeout(() => {}, 60000)",
+         ]);
+         const dead = spawnSync(process.execPath, ["--version"]);
+         try {
+            dir(`malloy-build-${dead.pid}-x`, 60_000);
+            dir(`malloy-build-${live.pid}-x`, -60_000);
+            expect(removeStaleBuildDirs(root, startedAt)).toBe(1);
+            expect(left()).toEqual([`malloy-build-${live.pid}-x`]);
+         } finally {
+            live.kill();
+         }
+      });
+
+      it("removes one of its own pid only when it predates the process: a restarted container reuses pid 1", () => {
+         dir(`malloy-build-${ownPid}-old`, -60_000);
+         dir(`malloy-build-${ownPid}-live`, 60_000);
+         expect(removeStaleBuildDirs(root, startedAt)).toBe(1);
+         expect(left()).toEqual([`malloy-build-${ownPid}-live`]);
+      });
+
+      it("judges one with no pid in its name by its age", () => {
+         dir("malloy-build-abc123", -60_000);
+         dir("malloy-build-7x", 60_000);
+         expect(removeStaleBuildDirs(root, startedAt)).toBe(1);
+         expect(left()).toEqual(["malloy-build-7x"]);
+      });
+   });
+
+   it("does not throw when the temp root cannot be listed", () => {
+      expect(
+         removeStaleBuildDirs(join(tmpdir(), "no-such-root-for-sweep")),
+      ).toBe(0);
    });
 });

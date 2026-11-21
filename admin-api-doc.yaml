@@ -7,7 +7,7 @@ info:
   description: |
     The operator's surface. It holds two kinds of thing, neither of which a user
     of a running server should call: the DuckLake catalogs in one Postgres
-    database, as resources (a catalog, the tables in its schemas, and its
+    database, as resources (a catalog, its schemas, the tables in them, and its
     snapshots), and controls of this server's own process that only an operator
     or a local developer uses (watch mode).
 
@@ -47,6 +47,8 @@ servers:
 tags:
   - name: catalogs
     description: DuckLake catalogs and their settings
+  - name: schemas
+    description: The schemas of a catalog
   - name: tables
     description: The tables in a catalog's schemas
   - name: snapshots
@@ -156,6 +158,108 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Catalog"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/NotConfigured"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /catalogs/{catalogName}/schemas/{schemaName}:
+    parameters:
+      - $ref: "#/components/parameters/catalogName"
+      - $ref: "#/components/parameters/schemaName"
+    put:
+      tags: [schemas]
+      operationId: put-schema
+      summary: Create a schema
+      description: |
+        Creates the schema, and records that tables written into it never keep
+        rows inline in the catalog database. The name is lowercase
+        (`[a-z_][a-z0-9_]*`) and not reserved (`main`, `memory`,
+        `information_schema`, `pg_catalog`, `temp`, `system`:
+        `400 SCHEMA_RESERVED`). The request has
+        no body; a body is `400 INVALID_REQUEST`. `201` when the schema is new,
+        `200` when it already existed; with `If-None-Match: *` an existing
+        schema, including one a concurrent request created first, is refused
+        with `412 SCHEMA_EXISTS`.
+      parameters:
+        - name: If-None-Match
+          in: header
+          required: false
+          description: "`*` to create only, refusing a schema that exists."
+          schema:
+            type: string
+            enum: ["*"]
+      responses:
+        "200":
+          description: The schema already existed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Schema"
+        "201":
+          description: The schema, created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Schema"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "412":
+          description: "`If-None-Match: *` and the schema exists (`SCHEMA_EXISTS`)"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          $ref: "#/components/responses/NotConfigured"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+    delete:
+      tags: [schemas]
+      operationId: delete-schema
+      summary: Drop a schema and its tables
+      description: |
+        Drops the schema and every table in it. A schema that does not exist
+        answers 204 as well, so a retried drop is free. A reserved name is `400
+        SCHEMA_RESERVED`. Data files stay until a snapshot delete reclaims
+        them, as for a dropped table.
+      responses:
+        "204":
+          description: The schema is dropped, or did not exist
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/NotConfigured"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /catalogs/{catalogName}/tables:
+    parameters:
+      - $ref: "#/components/parameters/catalogName"
+    get:
+      tags: [tables]
+      operationId: list-catalog-tables
+      summary: List the tables in every schema of a catalog
+      description: |
+        Every table of the catalog's schemas, in schema then name order, each
+        with the bytes its live files hold. The engine's own schemas are left out.
+      responses:
+        "200":
+          description: The tables
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/CatalogTableSummary"
         "400":
           $ref: "#/components/responses/BadRequest"
         "404":
@@ -288,7 +392,11 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "503":
-          $ref: "#/components/responses/NotConfigured"
+          description: No catalog database is configured (`CATALOG_DATABASE_NOT_CONFIGURED`), or this server is already running a load or copy (`LOAD_BUSY`); the write was refused, not queued, so retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "500":
           $ref: "#/components/responses/InternalServerError"
     delete:
@@ -309,6 +417,118 @@ paths:
           $ref: "#/components/responses/NotFound"
         "503":
           $ref: "#/components/responses/NotConfigured"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /catalogs/{catalogName}/schemas/{schemaName}/tables/{tableName}/loads:
+    parameters:
+      - $ref: "#/components/parameters/catalogName"
+      - $ref: "#/components/parameters/schemaName"
+      - $ref: "#/components/parameters/tableName"
+    post:
+      tags: [tables]
+      operationId: load-table
+      summary: Apply Parquet objects to a table by key
+      description: |
+        Applies Parquet objects under the catalog's data path to the table,
+        creating it when it does not exist. `merge` upserts the objects' rows by
+        `key`; `replace` makes the table equal to the objects, by `key` when one
+        is given and as a whole table when not (a replace is the whole stream in
+        one call). A replace that would delete more rows than `maxDeletedRows`
+        is refused and writes nothing.
+
+        Rows the objects do not change are left as they are, so a load repeated
+        after it committed finds nothing to do, writes nothing and takes no
+        snapshot. It reports the same `rowCount` and `cursorMax` as the first
+        call, with every row counted in `rowsUnchanged` and none inserted,
+        replaced or deleted, and still answers `201`. `loadId` is provenance
+        only (it goes in the commit message and the logs): a repeated one is
+        not detected, so a retry is safe because it finds nothing to change.
+        Of two rows of one key, the later one wins: the later object in
+        `objects`, then the later row of an object. A key stored more than once
+        is rewritten once.
+
+        The objects are checked against the table's columns before anything is
+        written. A column the table lacks is added, even when no row changes;
+        one it has must keep its type, or take a lossless widening of it: a
+        wider integer, a decimal with no fewer integer or fraction digits, an
+        integer into a decimal or DOUBLE that holds all its digits, FLOAT into
+        DOUBLE, a longer varying text. Objects that type one column differently
+        (BIGINT in one, DOUBLE in another) must each widen losslessly into the
+        type they are read together as. Every `key` column must be a column of
+        both; no key may be NULL; and `cursor`, when given, must be an integer,
+        DATE or TIMESTAMP column. A column of the table the objects lack is
+        written NULL. A column typed NULL in every object (as a Parquet writer
+        writes an all-NULL column) is ignored, and objects that leave no column
+        are refused. A column of the table named `__publisher_…` is refused.
+        Refusals are `422 LOAD_SCHEMA_CONTRACT`, whose `detail` names the column
+        and why.
+
+        One table loads at a time, across every replica of this server (a
+        Postgres advisory lock in the catalog database), and one load runs at a
+        time on this server (the same slot a table PUT's load or copy takes). A
+        load that finds either busy is refused with `503 LOAD_BUSY` and nothing
+        written, never queued: retry it. A load whose lock is lost before it
+        commits rolls back and answers the same. The load reads the table inside
+        the transaction that writes it, so one that races a table PUT or DELETE
+        of the same table, or a schema drop, on another replica is refused by
+        DuckLake at its commit and answers `409 LOAD_CONFLICT`: nothing was
+        written, and a retry is safe.
+
+        A load runs in a session bounded to 1.5 GB of memory, or the operator's
+        lower `PUBLISHER_DUCKDB_MEMORY_LIMIT`, and 6 GiB of spill. A keyed load
+        compares the table's columns in narrow passes, the keys first and then
+        groups of columns sized to half the session's memory. A keyed replace
+        or merge of 10 million rows by 21 columns stays within the spill limit
+        (measured); spill grows with the stage's size plus the widest single
+        column, and one column whose rows times width exceed that budget by
+        itself may still spill past it. A keyless replace has no key to narrow by: when the row
+        counts match (every retry) it compares whole rows of both sides, and a
+        table larger than the session's memory can exceed the spill limit, so
+        give a large stream a `key`. A load that outgrows either limit answers
+        `500` and nothing is written.
+
+        Synchronous: it answers `201` once the rows are committed, with the
+        counts of what changed.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoadRequest"
+      responses:
+        "201":
+          description: The load's counts
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Load"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: DuckLake refused the commit because another request changed the table (replaced, dropped or created it) while the load ran (`LOAD_CONFLICT`); nothing was written, retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: |
+            The load was refused, and nothing was written: the objects break the table's
+            contract (`LOAD_SCHEMA_CONTRACT`, with `detail`), a replace would delete more
+            rows than allowed (`LOAD_ROW_DROP_GUARD`, with `detail`), or an object could
+            not be read (`LOAD_OBJECT_UNREADABLE`, with no URI in the message)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: No catalog database is configured (`CATALOG_DATABASE_NOT_CONFIGURED`), or another load of this table or on this server is running (`LOAD_BUSY`); the load was refused, not queued, so retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "500":
           $ref: "#/components/responses/InternalServerError"
 
@@ -579,6 +799,26 @@ components:
           type: string
           description: An interval like `1 day` or `12 hours`
 
+    Schema:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+
+    CatalogTableSummary:
+      type: object
+      required: [schema, name, sizeBytes]
+      properties:
+        schema:
+          type: string
+        name:
+          type: string
+        sizeBytes:
+          type: integer
+          format: int64
+          description: Bytes its live files hold
+
     TableSummary:
       type: object
       required: [name, sizeBytes]
@@ -683,6 +923,101 @@ components:
           $ref: "#/components/schemas/Identifier"
       additionalProperties: false
 
+    LoadRequest:
+      type: object
+      required: [loadId, mode, objects]
+      description: |
+        A merge needs `key` and refuses `maxDeletedRows`; a replace needs
+        `maxDeletedRows` and is keyless when `key` is omitted.
+      properties:
+        loadId:
+          type: string
+          pattern: "^[A-Za-z0-9._:-]{1,128}$"
+          description: Provenance only. It is recorded in the commit's message and the logs, and nothing else reads it
+        mode:
+          type: string
+          enum: [merge, replace]
+          description: |
+            `merge` upserts by `key`. `replace` makes the table equal to this
+            call's rows, by `key` when given, otherwise as a whole table.
+        key:
+          type: array
+          minItems: 1
+          maxItems: 16
+          uniqueItems: true
+          items:
+            type: string
+            pattern: "^[a-z_][a-z0-9_]*$"
+          description: The columns that identify a row; they are never NULL
+        objects:
+          type: array
+          minItems: 1
+          maxItems: 1000
+          uniqueItems: true
+          items:
+            type: string
+          description: |
+            Parquet objects under the catalog's data path. Their order decides
+            which of two rows of one key is later: the later object's.
+        cursor:
+          type: string
+          pattern: "^[a-z_][a-z0-9_]*$"
+          description: An integer, DATE or TIMESTAMP column whose greatest value among the rows loaded is reported
+        maxDeletedRows:
+          type: integer
+          minimum: 0
+          description: |
+            The most stored rows a replace may delete (the net shrink, for a
+            keyless one); more is refused with `LOAD_ROW_DROP_GUARD`
+      additionalProperties: false
+
+    Load:
+      type: object
+      required:
+        [
+          rowsInserted,
+          rowsReplaced,
+          rowsUnchanged,
+          rowsDeleted,
+          rowCount,
+          cursorMax,
+        ]
+      description: |
+        What a load did, in rows. `rowCount` is the table's rows after the load,
+        which is its rows before, plus `rowsInserted`, less `rowsDeleted`.
+      properties:
+        rowsInserted:
+          type: integer
+          format: int64
+          description: Rows of keys the table did not have
+        rowsReplaced:
+          type: integer
+          format: int64
+          description: Rows written over a stored row of the same key, because a column differed
+        rowsUnchanged:
+          type: integer
+          format: int64
+          description: Rows the objects held that the table already held, left alone
+        rowsDeleted:
+          type: integer
+          format: int64
+          description: |
+            Stored rows removed: the rows of keys a replace's objects lack, and
+            the copies beyond one of a key that was stored more than once
+        rowCount:
+          type: integer
+          format: int64
+        cursorMax:
+          type: ["string", "null"]
+          description: |
+            The greatest value of the request's `cursor` over the rows the load
+            kept, as text: an integer in decimal, exact past 2^53; a DATE as
+            `YYYY-MM-DD`; a TIMESTAMP as ISO 8601, in UTC with a `Z` when it has
+            a time zone. Null when no `cursor` was given or every value is NULL.
+        cursorType:
+          type: string
+          description: The cursor column's type as DuckDB names it (`BIGINT`, `DATE`, `TIMESTAMP WITH TIME ZONE`); present when a `cursor` was given
+
     Snapshot:
       type: object
       required: [id, time, changes]
@@ -745,5 +1080,36 @@ components:
             CATALOG_DATABASE_NOT_CONFIGURED, CATALOG_OWNER_UNSUPPORTED,
             CATALOG_SETTING_UNREADABLE, SCHEMA_NOT_FOUND, TABLE_NOT_FOUND,
             SOURCE_NOT_FOUND, TABLE_EXISTS, OBJECT_OUTSIDE_DATA_PATH,
-            INVALID_REQUEST. Treat an
-            unrecognized value as absent.
+            INVALID_REQUEST, SCHEMA_EXISTS, SCHEMA_RESERVED, LOAD_BUSY,
+            LOAD_CONFLICT, LOAD_SCHEMA_CONTRACT, LOAD_ROW_DROP_GUARD,
+            LOAD_OBJECT_UNREADABLE.
+            `SCHEMA_EXISTS`: a create-only schema PUT found the schema.
+            `SCHEMA_RESERVED`: the schema name is one the engine owns, or
+            `main`. `LOAD_BUSY` (503): another load of the table, or another
+            load on this server, is running; nothing was written, retry.
+            `LOAD_CONFLICT` (409): DuckLake refused the commit because
+            another request (a table PUT or DELETE, a schema drop) changed
+            the table while the load ran; nothing was written, retry.
+            `LOAD_SCHEMA_CONTRACT` (422): the objects break the table's
+            contract; `detail` is `{column, tableType, loadType, detail}`, where
+            the inner `detail` is one of `null_key`, `missing_key`,
+            `missing_cursor`, `cursor_type`, `type_change`, `reserved_name`,
+            `case_collision` or `no_columns` (`tableType` and `loadType` are
+            null when a side has no such column). `type_change` is a type
+            that does not widen losslessly, against the table's column, or
+            between two objects (`tableType` is then null). `reserved_name` is
+            a column name starting `__publisher_` (in the objects, or in the
+            table), or `file_row_number`, `rowid` or one holding a NUL;
+            `case_collision` is two names, in one object or two, that differ
+            only by case, or one name twice in an object.
+            `LOAD_ROW_DROP_GUARD` (422): a replace would delete more rows than
+            `maxDeletedRows`; `detail` is `{wouldDelete, rowsBefore,
+            maxDeletedRows}`.
+            `LOAD_OBJECT_UNREADABLE` (422): an object is missing, not Parquet,
+            or the store refused it; the message names no URI, and `detail` is
+            `{object}`, the object's index in `objects`, when it can be told.
+            Treat an unrecognized value as absent.
+        detail:
+          type: object
+          additionalProperties: true
+          description: Present on the refusals that carry what a caller can act on (the `LOAD_*` 422s); its shape is per `reason`

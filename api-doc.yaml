@@ -8990,9 +8990,11 @@ components:
             This is a rule on statements, not on what a SELECT reads: that is
             bounded by the catalog role and by the session's storage secret,
             which on a managed connection attached read-only is scoped to the
-            `main` schema's recorded path, so a SELECT reads only that schema's
-            files; another schema's files, and any other object in the bucket,
-            are unsigned (403). Absent or false is the pre-existing behavior.
+            recorded paths of the `main` schema and of the schemas
+            `ducklakeConnection.readableSchemas` lists, so a SELECT reads only
+            those schemas' files; another schema's files, and any other object
+            in the bucket, are unsigned (403). Absent or false is the
+            pre-existing behavior.
         fingerprint:
           type: string
           description: >
@@ -9530,6 +9532,23 @@ components:
             Serving reads the schema configured now, not the one a table was
             built into, so changing it on a destination re-points every bound
             table at once: rebuild or rebind as you change it.
+        readableSchemas:
+          type: array
+          items:
+            type: string
+            pattern: "^[a-z_][a-z0-9_]*$"
+          description: >-
+            Additional schemas a managed read-only view may read. Only on a
+            connection with `managed: true` and a read-only attach (never on a
+            storage destination). `main` is always readable and may be omitted.
+            The view's storage secret is scoped to the recorded path of `main`
+            and of each schema listed here, so a SELECT reads those schemas'
+            files and nothing else in the bucket. Each name is a plain lowercase
+            identifier (`[a-z_][a-z0-9_]*`); order and duplicates are ignored. A
+            schema the catalog does not record, or whose recorded path is not
+            under the catalog's data path, is left out of the scope. Narrows
+            Parquet files on S3 and GCS only: a local data path is not narrowed,
+            and the catalog's metadata is not gated.
         readOnly:
           type: boolean
           default: true

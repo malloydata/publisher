@@ -12,6 +12,7 @@ import { PUBLISHER_CONFIG_NAME } from "../constants";
 import { logger } from "../logger";
 import {
    assembleEnvironmentConnections,
+   normalizeReadableSchemas,
    normalizeSnowflakePrivateKey,
    validateStorageDestinations,
 } from "./connection_config";
@@ -1055,6 +1056,153 @@ describe("ducklake shape validation", () => {
             assembleEnvironmentConnections([withSchema(bad)], "/tmp/env"),
          ).toThrow(/metadataSchema must be a plain identifier/i);
       }
+   });
+
+   describe("readableSchemas", () => {
+      const withReadable = (
+         readableSchemas: unknown,
+         extra: Partial<ApiConnection> = { managed: true },
+         readOnly?: boolean,
+      ): ApiConnection =>
+         ({
+            ...valid,
+            ...extra,
+            ducklakeConnection: {
+               ...valid.ducklakeConnection,
+               ...(readOnly === undefined ? {} : { readOnly }),
+               readableSchemas,
+            },
+         }) as ApiConnection;
+      const assemble = (connection: ApiConnection) =>
+         assembleEnvironmentConnections([connection], "/tmp/env");
+
+      it("accepts lowercase schema names on a managed read-only connection", () => {
+         expect(() =>
+            assemble(withReadable(["sync_a", "_b2", "main", "sync_a"])),
+         ).not.toThrow();
+         expect(() => assemble(withReadable([]))).not.toThrow();
+         expect(() =>
+            assemble(withReadable(["sync_a"], { managed: true }, true)),
+         ).not.toThrow();
+      });
+
+      it("rejects a name that is not a plain lowercase identifier", () => {
+         for (const bad of [
+            "Sync_A",
+            "sync-a",
+            "1sync",
+            "",
+            "a.b",
+            "x'; --",
+            "a b",
+            1,
+            null,
+         ]) {
+            expect(() => assemble(withReadable([bad]))).toThrow(
+               /readableSchemas must be a list of lowercase schema names/,
+            );
+         }
+         expect(() => assemble(withReadable("sync_a"))).toThrow(
+            /readableSchemas must be a list/,
+         );
+      });
+
+      it("rejects the names a schema create refuses: the engine's own, and memory", () => {
+         for (const name of [
+            "memory",
+            "information_schema",
+            "pg_catalog",
+            "temp",
+            "system",
+         ]) {
+            expect(() => assemble(withReadable(["sync_a", name]))).toThrow(
+               new RegExp(`readableSchemas names '${name}', a reserved schema`),
+            );
+         }
+         // Only the whole name is reserved.
+         expect(() =>
+            assemble(withReadable(["memory_x", "system_a"])),
+         ).not.toThrow();
+      });
+
+      it("rejects the field on a connection that is not managed", () => {
+         for (const extra of [{}, { managed: false }]) {
+            expect(() => assemble(withReadable(["sync_a"], extra))).toThrow(
+               /readableSchemas requires a managed, read-only connection/,
+            );
+         }
+      });
+
+      it("rejects the field on a read-write connection", () => {
+         expect(() =>
+            assemble(withReadable(["sync_a"], { managed: true }, false)),
+         ).toThrow(/readableSchemas requires a managed, read-only connection/);
+      });
+
+      it("rejects the field on a storage destination, even a managed one", () => {
+         const { accepted, rejected } = validateStorageDestinations([
+            withReadable(["sync_a"]),
+            valid,
+         ]);
+         expect(accepted).toHaveLength(1);
+         expect(rejected).toHaveLength(1);
+         expect(rejected[0].reason).toMatch(
+            /readableSchemas applies to a managed connection view, not a storage destination/,
+         );
+      });
+
+      it("accepts an absent or empty field without a managed connection", () => {
+         expect(() => assemble(valid)).not.toThrow();
+         expect(() => assemble(withReadable(undefined, {}))).not.toThrow();
+      });
+   });
+
+   describe("setup identity of a managed view", () => {
+      const tempDirectory = (readableSchemas?: string[]): unknown => {
+         const { pojo } = assembleEnvironmentConnections(
+            [
+               {
+                  ...valid,
+                  managed: true,
+                  ducklakeConnection: {
+                     ...valid.ducklakeConnection,
+                     readableSchemas,
+                  },
+               } as ApiConnection,
+            ],
+            "/tmp/env",
+         );
+         return (pojo.connections.lake as { tempDirectory?: string })
+            .tempDirectory;
+      };
+
+      it("is the same for absent, empty, main-only and reordered or duplicated lists", () => {
+         const same = tempDirectory(["sync_a", "sync_b"]);
+         expect(same).toBeDefined();
+         expect(tempDirectory(["sync_b", "sync_a", "sync_b"])).toBe(same);
+         expect(tempDirectory(["main", "sync_b", "sync_a"])).toBe(same);
+         const none = tempDirectory(undefined);
+         expect(tempDirectory([])).toBe(none);
+         expect(tempDirectory(["main"])).toBe(none);
+      });
+
+      it("differs when the readable set changes", () => {
+         const base = tempDirectory(["sync_a"]);
+         expect(tempDirectory(["sync_a", "sync_b"])).not.toBe(base);
+         expect(tempDirectory(undefined)).not.toBe(base);
+      });
+   });
+
+   describe("normalizeReadableSchemas", () => {
+      it("sorts, dedupes, drops main, and returns undefined for nothing", () => {
+         expect(normalizeReadableSchemas(["b", "a", "b", "main"])).toEqual([
+            "a",
+            "b",
+         ]);
+         expect(normalizeReadableSchemas([])).toBeUndefined();
+         expect(normalizeReadableSchemas(["main"])).toBeUndefined();
+         expect(normalizeReadableSchemas(undefined)).toBeUndefined();
+      });
    });
 
    // The attach applies a catalog's own sslmode and throws on one it cannot

@@ -68,9 +68,15 @@ Two consequences for models:
   `lake.table('s3://bucket/raw/x.parquet')`, now fails. Put the object under the data path, or read it
   through a `duckdb` connection whose `attachedDatabases` entry holds a credential for it; those secrets
   are not scoped.
-- A `managed: true` connection attached read-only is scoped narrower, to its `main` schema's recorded
-  path, so a model reads only the catalog's own tables. Tables a build wrote to a `destinationSchema` are
-  served through the storage destination's own session, as before.
+- A `managed: true` connection attached read-only is scoped narrower, to the recorded paths of its `main`
+  schema and of the schemas its `ducklakeConnection.readableSchemas` lists (bare lowercase names; `main`
+  is always readable), so a model reads only those schemas' tables. A listed schema the catalog does not
+  record, or whose path is not under the data path, is left out and logged. The narrowing gates Parquet
+  files on S3 and GCS only: a local data path is not narrowed, and the catalog's metadata is not gated.
+  A read outside the scope goes out unsigned, so the bucket must not allow anonymous reads. Changing the
+  list opens the connection afresh at once; the previous instance finishes its in-flight queries.
+  Tables a build wrote to a `destinationSchema` are served through the storage destination's own session,
+  as before.
 
 A catalog with nothing to scope to, a config with no `bucketUrl` whose catalog records no data path, is
 not attached: the attach fails naming the catalog, and the next lookup retries it. A `publisher` proxy
@@ -205,9 +211,25 @@ curl -s -X PUT $A/catalogs/sales/schemas/main/tables/orders -H 'Content-Type: ap
 curl -s -X PUT $A/catalogs/sales/schemas/main/tables/orders_2025 -H 'Content-Type: application/json' \
   -d '{"source": {"catalog": "sales_2025", "schema": "main", "table": "orders"}}'
 
-# What it holds.
+# Create a schema (201 created, 200 existed; `If-None-Match: *` refuses one that exists with
+# 412 SCHEMA_EXISTS). Lowercase names only; `main`, `memory`, `information_schema`,
+# `pg_catalog`, `temp` and `system` answer 400 SCHEMA_RESERVED.
+curl -s -X PUT $A/catalogs/sales/schemas/staging
+
+# Apply Parquet objects under the data path to staging.charges, upserting by id (201, with the
+# counts of rows inserted, replaced, unchanged and deleted). `"mode": "replace"` with
+# `maxDeletedRows` makes the table equal to the objects instead.
+curl -s -X POST $A/catalogs/sales/schemas/staging/tables/charges/loads -H 'Content-Type: application/json' \
+  -d '{"loadId": "run_1:charges", "mode": "merge", "key": ["id"], "cursor": "created",
+       "objects": ["/srv/lake/sales/uploads/run_1/charges-0.parquet"]}'
+
+# What it holds: the catalog, one schema's tables, or every table of every schema.
 curl -s $A/catalogs/sales
 curl -s $A/catalogs/sales/schemas/main/tables
+curl -s $A/catalogs/sales/tables
+
+# Drop a schema and every table in it (204, also when it does not exist).
+curl -s -X DELETE $A/catalogs/sales/schemas/staging
 
 # Drop a table, then reclaim history from before a date, and the files only it held.
 curl -s -X DELETE $A/catalogs/sales/schemas/main/tables/orders
@@ -233,6 +255,51 @@ itself, under any spelling of its name (DuckDB matches names case-insensitively)
 rewrite would empty it before reading it. `GET …/tables/{table}` reports a
 table's spec as `partitionedBy`, empty for an unpartitioned table, so a migration can check a copy against
 its source.
+
+**Loads.** A table PUT defines a table from one file: whatever the file holds becomes the table. A load
+(`POST …/tables/{table}/loads`) applies rows to a table under a contract, for a pipeline that delivers a
+stream in batches:
+
+- `merge` upserts by `key`. `replace` makes the table equal to the call's objects, by `key` or, with no
+  key, as a whole; a replace that would delete more than `maxDeletedRows` rows writes nothing (`422
+  LOAD_ROW_DROP_GUARD`), so an empty or truncated extract cannot empty a table.
+- A row the objects do not change is not rewritten, so a load retried after it committed writes nothing
+  and takes no snapshot. It reports the same `rowCount` and `cursorMax` as the first call, with every row
+  counted in `rowsUnchanged` and none inserted, replaced or deleted, and it still answers `201`. `loadId` is
+  provenance only (the commit message and the logs): the server does not recognize a repeated one, so a
+  retry is safe because it finds nothing to change. Of two rows with one key, the later object in
+  `objects` wins, then the later row of an object.
+- A new column is added, even when no row changes. An existing one keeps its type or takes a lossless
+  widening of it: a wider integer, a decimal with no fewer integer or fraction digits, an integer into a
+  decimal or `DOUBLE` that holds all its digits, `FLOAT` into `DOUBLE`, a longer varying text. Objects that
+  type one column differently (`BIGINT` in one, `DOUBLE` in another) must each widen losslessly into the
+  type they are read together as. A column that every object types NULL, as a Parquet writer writes an
+  all-NULL column, is ignored; objects with no other column are refused. Anything else, a column of the
+  table named `__publisher_…`, a NULL key, or a cursor that is not an integer, DATE or TIMESTAMP is `422
+  LOAD_SCHEMA_CONTRACT`, with a `detail` naming the column. An object that cannot be read is `422
+  LOAD_OBJECT_UNREADABLE`.
+- One load of a table runs at a time across every replica (a Postgres advisory lock in the catalog
+  database), and one load or copy runs at a time per server. Either busy is `503 LOAD_BUSY`, never
+  queued: retry. A load whose lock connection is lost before it commits rolls back and answers the same.
+  The lock is a session advisory lock, so the catalog database connection must be a session-mode one: a
+  transaction-mode pooler such as PgBouncer does not hold it, and two loads of a table could then run
+  together.
+- The load reads the table inside the transaction that writes it, so a load that races a table PUT or
+  DELETE of the same table (or a schema drop) on another replica is refused when it commits, `409
+  LOAD_CONFLICT`: nothing is written, retry.
+- A load runs in its own DuckDB session, bounded to 1.5 GB of memory (or `PUBLISHER_DUCKDB_MEMORY_LIMIT`
+  when that is lower) and 6 GiB of spill under the system temp directory. A server that runs both the admin listener and the serving API shares its CPU and
+  memory between a load and user queries; run the admin listener on its own (`"servingApiEnabled":
+  false`) when loads are large.
+- A keyed load compares a table's columns in narrow passes rather than one join over every column: the
+  keys first, then groups of columns sized so both sides of a group's rows fit in half the session's
+  memory. A keyed replace or merge of 10 million rows by 21 columns stays within the 6 GiB spill limit
+  (measured); spill grows with the stage's size plus the widest single column, so a column whose rows
+  times width exceed that budget on its own may still spill past it. A keyless replace has no key to
+  narrow by: when its row count matches the table's (every retry) it compares whole rows of both sides, and
+  a table larger than the session's memory can exceed the spill limit, so give a large stream a `key`. A
+  load that outgrows the memory or spill limit answers `500` and writes nothing; the server's log names
+  the cause.
 
 **History.** Dropping or replacing a table only retires its files: they stay readable at earlier
 snapshots. `DELETE …/snapshots?olderThan=` expires older snapshots (never the latest) and deletes files
