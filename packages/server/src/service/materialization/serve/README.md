@@ -58,11 +58,12 @@ whose strings can be read. A reader sends SQL through a `ProbeIO` that
 policy (which side is read, what an equality or an ordering needs, the memo
 scopes, failing closed and the refusal text) stays in `gate_collation.ts`.
 
-| Module                  | Responsibility                                                                                                                                                                                             |
-| ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `collation/probe_io.ts` | What a read goes through (`ProbeIO`: rows, and a BigQuery driver's answers), what it gives (`Collation`), and a dialect's reader (`CollationReader`)                                                       |
-| `collation/duckdb.ts`   | The DuckDB dialect's reader: a source and a stored table compare bytes unless the instance sets a `default_collation` or a `COLLATE` appears in the SQL or a definition it holds                           |
-| `collation/postgres.ts` | The Postgres dialect's reader: a column's collation through `pg_collation_for`, a table's from its catalog, the database default, and each one's resolved identity (by provider and locale, never by name) |
+| Module                  | Responsibility                                                                                                                                                                                                                                                                    |
+| ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `collation/probe_io.ts` | What a read goes through (`ProbeIO`: rows, and a BigQuery driver's answers), what it gives (`Collation`), and a dialect's reader (`CollationReader`)                                                                                                                              |
+| `collation/duckdb.ts`   | The DuckDB dialect's reader: a source and a stored table compare bytes unless the instance sets a `default_collation` or a `COLLATE` appears in the SQL or a definition it holds                                                                                                  |
+| `collation/postgres.ts` | The Postgres dialect's reader: a column's collation through `pg_collation_for`, a table's from its catalog, the database default, and each one's resolved identity (by provider and locale, never by name)                                                                        |
+| `collation/bigquery.ts` | The BigQuery dialect's catalog reads: a project's collated datasets by region, the types of the tables a query reads, a dataset's tables with their collated paths; each kept in the caller's per-runtime, per-bind map and dropped after five minutes (a minute after a failure) |
 
 ## Dependency rule
 

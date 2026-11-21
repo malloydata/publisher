@@ -100,4 +100,15 @@ describe("the collation reads' I/O adapter", () => {
       visit(__dirname);
       expect(offenders).toEqual([]);
    });
+
+   it("leaves the BigQuery reads' scope to gate_collation.ts: the reader keeps no map of its own", () => {
+      const reader = fs.readFileSync(
+         path.join(__dirname, "collation/bigquery.ts"),
+         "utf8",
+      );
+      // A top-level map would outlive the runtime and bind it was read under.
+      expect(reader).not.toMatch(
+         /^(const|let|var)\s+\w+\s*=\s*new (Weak)?Map\b/m,
+      );
+   });
 });
