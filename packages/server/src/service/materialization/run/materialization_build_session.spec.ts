@@ -5,7 +5,14 @@ import { BuildCancelledError } from "../domain/build_cancelled";
 import { describe, expect, it, spyOn } from "bun:test";
 import { DuckDBInstance } from "@duckdb/node-api";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import {
+   existsSync,
+   mkdirSync,
+   mkdtempSync,
+   rmSync,
+   utimesSync,
+   writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -23,6 +30,7 @@ import {
    partitionKeySql,
    partitionOrderSql,
    passthroughSourceType,
+   removeStaleBuildDirs,
    wrapPassthrough,
    writePartitionedTable,
    oneFileModel,
@@ -1366,6 +1374,48 @@ describe("buildSourceIntoStorage clears a Snowflake session's query tag", () => 
       } finally {
          runSQL.mockRestore();
          rmSync(dir, { recursive: true, force: true });
+      }
+   });
+});
+
+describe("removeStaleBuildDirs", () => {
+   it("removes build directories older than the process and keeps everything else", () => {
+      const root = mkdtempSync(join(tmpdir(), "stale-sweep-"));
+      const startedAt = Date.now();
+      const at = (dir: string, offsetMs: number) => {
+         const t = new Date(startedAt + offsetMs);
+         utimesSync(dir, t, t);
+      };
+      try {
+         for (const name of [
+            "malloy-build-old",
+            "malloy-build-new",
+            "other-old",
+         ]) {
+            mkdirSync(join(root, name));
+         }
+         writeFileSync(join(root, "malloy-build-file"), "x");
+         at(join(root, "malloy-build-old"), -60_000);
+         at(join(root, "malloy-build-new"), 60_000);
+         at(join(root, "other-old"), -60_000);
+
+         expect(removeStaleBuildDirs(root, startedAt)).toBe(1);
+
+         expect(existsSync(join(root, "malloy-build-old"))).toBe(false);
+         expect(existsSync(join(root, "malloy-build-new"))).toBe(true);
+         expect(existsSync(join(root, "other-old"))).toBe(true);
+         expect(existsSync(join(root, "malloy-build-file"))).toBe(true);
+      } finally {
+         rmSync(root, { recursive: true, force: true });
+      }
+   });
+
+   it("removes nothing when there is nothing stale", () => {
+      const root = mkdtempSync(join(tmpdir(), "stale-sweep-"));
+      try {
+         expect(removeStaleBuildDirs(root, Date.now())).toBe(0);
+      } finally {
+         rmSync(root, { recursive: true, force: true });
       }
    });
 });

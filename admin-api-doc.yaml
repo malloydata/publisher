@@ -391,7 +391,11 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "503":
-          $ref: "#/components/responses/NotConfigured"
+          description: No catalog database is configured (`CATALOG_DATABASE_NOT_CONFIGURED`), or this server is already running a load or copy (`LOAD_BUSY`); the write was refused, not queued, so retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "500":
           $ref: "#/components/responses/InternalServerError"
     delete:
@@ -868,7 +872,9 @@ components:
             CATALOG_DATABASE_NOT_CONFIGURED, CATALOG_OWNER_UNSUPPORTED,
             CATALOG_SETTING_UNREADABLE, SCHEMA_NOT_FOUND, TABLE_NOT_FOUND,
             SOURCE_NOT_FOUND, TABLE_EXISTS, OBJECT_OUTSIDE_DATA_PATH,
-            INVALID_REQUEST, SCHEMA_EXISTS, SCHEMA_RESERVED. `SCHEMA_EXISTS`: a
-            create-only schema PUT found the schema. `SCHEMA_RESERVED`: the
-            schema name is one the engine owns, or `main`. Treat an
-            unrecognized value as absent.
+            INVALID_REQUEST, SCHEMA_EXISTS, SCHEMA_RESERVED, LOAD_BUSY.
+            `SCHEMA_EXISTS`: a create-only schema PUT found the schema.
+            `SCHEMA_RESERVED`: the schema name is one the engine owns, or
+            `main`. `LOAD_BUSY` (503): another load of the table, or another
+            load on this server, is running; nothing was written, retry. Treat
+            an unrecognized value as absent.

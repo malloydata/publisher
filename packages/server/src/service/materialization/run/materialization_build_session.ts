@@ -30,7 +30,7 @@ import {
 } from "@malloydata/malloy";
 import { leaveOutDefinitionAt } from "../text/declarations_kept";
 import { inMemoryRuntime } from "../text/generated_files";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { components } from "../../../api";
@@ -326,6 +326,42 @@ export function passthroughSourceType(
    );
 }
 
+const BUILD_DIR_PREFIX = "malloy-build-";
+
+/**
+ * Removes the working directories of sessions an earlier process of this pod
+ * never disposed: an OOM kill restarts the container with its emptyDir, so their
+ * spill still counts against the ephemeral-storage limit. Only a build directory
+ * last modified before this process started, so a live session's is never
+ * touched. Returns how many it removed.
+ */
+export function removeStaleBuildDirs(
+   root: string = os.tmpdir(),
+   startedAtMs: number = Date.now() - process.uptime() * 1000,
+): number {
+   let removed = 0;
+   for (const entry of readdirSync(root, { withFileTypes: true })) {
+      if (!entry.isDirectory() || !entry.name.startsWith(BUILD_DIR_PREFIX)) {
+         continue;
+      }
+      const dir = path.join(root, entry.name);
+      try {
+         if (statSync(dir).mtimeMs >= startedAtMs) continue;
+         rmSync(dir, { recursive: true, force: true });
+         removed += 1;
+      } catch (err) {
+         logger.warn("Failed to remove a stale build working directory", {
+            dir,
+            code: errorCodeOf(err),
+         });
+      }
+   }
+   if (removed > 0) {
+      logger.info("Removed stale build working directories", { removed });
+   }
+   return removed;
+}
+
 /**
  * A build-scoped DuckDB session on its OWN in-memory instance, plus a disposer
  * that closes it and removes its throwaway working directory.
@@ -355,7 +391,7 @@ export function createIsolatedBuildSession(sessionName: string): {
     */
    workDir: string;
 } {
-   const workDir = mkdtempSync(path.join(os.tmpdir(), "malloy-build-"));
+   const workDir = mkdtempSync(path.join(os.tmpdir(), BUILD_DIR_PREFIX));
    // The disposer that owns removing workDir does not exist until this function
    // returns, so a throw from the constructor would strand the directory with
    // nothing left holding a reference to it.
@@ -542,6 +578,26 @@ export async function withDestinationSession<T>(
          );
       }
       return fn(session);
+   }
+}
+
+/**
+ * The bounds for an admin table load or copy, which runs beside the server's
+ * other work in a pod sized for it: a memory cap below the pod's, a spill cap
+ * under its ephemeral storage, unordered output (so the writer streams), and
+ * metadata caches for the many small reads of a Parquet scan.
+ */
+export async function applyLoadSessionSettings(
+   session: DuckDBConnection,
+): Promise<void> {
+   for (const setting of [
+      "memory_limit='1.5GB'",
+      "max_temp_directory_size='6GiB'",
+      "preserve_insertion_order=false",
+      "enable_http_metadata_cache=true",
+      "parquet_metadata_cache=true",
+   ]) {
+      await session.runSQL(`SET ${setting}`);
    }
 }
 

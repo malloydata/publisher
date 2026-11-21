@@ -48,7 +48,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from "fs";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
-import type { PoolConfig } from "pg";
+import type { ClientConfig, PoolConfig } from "pg";
 import tls from "tls";
 import { components } from "../api";
 import {
@@ -2371,6 +2371,73 @@ export function splitPgAttachCredentials(
       else if (!PG_SECRET_KEYS.has(key)) kept.push(pgConninfoPair(key, value));
    }
    return { path: kept.join(" "), user, password, sslpassword };
+}
+
+/**
+ * A node-pg client config for a libpq connection string, for work the DuckDB
+ * attach cannot do (a session advisory lock). The first host and port of a
+ * list; the TLS mapping is {@link pgClientSsl}. Exported for tests.
+ */
+export function pgClientConfig(
+   subject: string,
+   conninfo: string,
+): ClientConfig {
+   const params = new Map<string, string>();
+   for (const { key, value } of pgConninfoKeyValues(subject, conninfo)) {
+      params.set(key, value);
+   }
+   const first = (key: string) => params.get(key)?.split(",")[0] || undefined;
+   const host = first("host");
+   const port = first("port");
+   return {
+      host,
+      port: port === undefined ? undefined : Number(port),
+      database: params.get("dbname"),
+      user: params.get("user"),
+      password: params.get("password"),
+      ssl: pgClientSsl(
+         subject,
+         params.get("sslmode"),
+         host,
+         params.get("sslrootcert"),
+      ),
+      connectionTimeoutMillis: 10_000,
+   };
+}
+
+/**
+ * libpq's `sslmode` as a node-pg `ssl` option. node-pg cannot fall back from TLS
+ * to plaintext, so the modes that only try TLS (`allow`, `prefer`, unset) stay
+ * plaintext. `verify-*` trust `sslrootcert`, else the runtime's ambient anchors.
+ */
+export function pgClientSsl(
+   subject: string,
+   sslmode: string | undefined,
+   host: string | undefined,
+   sslrootcert: string | undefined,
+): ClientConfig["ssl"] {
+   const ca = () =>
+      readFileSync(sslrootcert ?? ambientTrustBundlePath(), "utf8");
+   switch (sslmode) {
+      case undefined:
+      case "disable":
+      case "allow":
+      case "prefer":
+         return false;
+      case "require":
+      case "no-verify":
+         return { rejectUnauthorized: false };
+      case "verify-ca":
+         return {
+            rejectUnauthorized: true,
+            ca: ca(),
+            checkServerIdentity: () => undefined,
+         };
+      case "verify-full":
+         return { rejectUnauthorized: true, ca: ca(), servername: host };
+      default:
+         throw new Error(`${subject} has unsupported sslmode '${sslmode}'.`);
+   }
 }
 
 /**

@@ -18,9 +18,11 @@
 
 import { settings } from "../settings";
 import type { DuckDBConnection } from "@malloydata/db-duckdb";
+import { Client } from "pg";
 import type { components } from "../api";
 import { BadRequestError, ConflictError } from "../errors";
 import { logger } from "../logger";
+import { loadSlots } from "../query_concurrency";
 import {
    applySessionResourceLimits,
    attachDuckLakeForCreate,
@@ -29,6 +31,7 @@ import {
    createPgAttachSecret,
    escapeSQL,
    isDuckLakeInitRace,
+   pgClientConfig,
    tablePartitionKeys,
    type PartitionKey,
 } from "./connection";
@@ -86,6 +89,42 @@ const notFound = (name: string) =>
    );
 const badRequest = (message: string) =>
    new CatalogAdminError(400, "INVALID_REQUEST", message);
+const loadBusy = (message: string) =>
+   new CatalogAdminError(503, "LOAD_BUSY", message);
+
+/**
+ * Runs one heavy load or copy: this process holds one slot for them, and a busy
+ * slot is refused (503 `LOAD_BUSY`), not queued, so the caller retries, possibly
+ * on another replica.
+ */
+export async function withLoadSlot<T>(fn: () => Promise<T>): Promise<T> {
+   const slot = loadSlots.tryAcquire();
+   if (!slot) {
+      throw loadBusy("This server is already running a load; retry shortly.");
+   }
+   try {
+      return await fn();
+   } finally {
+      slot.release();
+   }
+}
+
+/** A read of the catalog database, rows out. */
+type CatalogQuery = (sql: string) => Promise<Record<string, unknown>[]>;
+
+/** What {@link CatalogAdmin.withTableLock} hands its callback. */
+export interface TableLock {
+   /** Reads the catalog database on the lock's own connection. */
+   pg: CatalogQuery;
+   /**
+    * Throws 503 `LOAD_BUSY` when the lock's connection is gone. A session lock
+    * dies with its connection, so call it right before the commit it guards.
+    */
+   assertLockHeld: () => Promise<void>;
+}
+
+/** Postgres's advisory-lock key for a table: its name, folded as the engine folds it. */
+const TABLE_LOCK_KEY = "hashtextextended(lower($1), 0)";
 
 export interface CatalogAdminConfig {
    /** A libpq connection string (keyword or URI form) for the catalog database. */
@@ -580,43 +619,45 @@ export class CatalogAdmin {
       }
       const mode = ifAbsent ? "create" : "replace";
       try {
-         await withStatementUsage(
-            {
-               environment: "",
-               connection: name,
-               // The admin API addresses a catalog by its own name.
-               catalog: name,
-               surface: source.kind === "table" ? "copy" : "load",
-            },
-            () =>
-               source.kind === "table"
-                  ? copyStorageTable({
-                       destinationName: name,
-                       destinationConnection: this.connection(name, owner),
-                       schemaName: schema,
-                       tableName: table,
-                       source: {
-                          catalogName: source.catalog,
-                          connection: this.connection(
-                             source.catalog,
-                             sourceOwner,
-                          ),
-                          schemaName: source.schema,
-                          tableName: source.table,
-                       },
-                       mode,
-                    })
-                  : loadStorageTable({
-                       destinationName: name,
-                       destinationConnection: this.connection(name, owner),
-                       schemaName: schema,
-                       tableName: table,
-                       uri: source.uri,
-                       format: source.format,
-                       options: source.options,
-                       mode,
-                    }),
-            (r) => r.rowCount,
+         await withLoadSlot(() =>
+            withStatementUsage(
+               {
+                  environment: "",
+                  connection: name,
+                  // The admin API addresses a catalog by its own name.
+                  catalog: name,
+                  surface: source.kind === "table" ? "copy" : "load",
+               },
+               () =>
+                  source.kind === "table"
+                     ? copyStorageTable({
+                          destinationName: name,
+                          destinationConnection: this.connection(name, owner),
+                          schemaName: schema,
+                          tableName: table,
+                          source: {
+                             catalogName: source.catalog,
+                             connection: this.connection(
+                                source.catalog,
+                                sourceOwner,
+                             ),
+                             schemaName: source.schema,
+                             tableName: source.table,
+                          },
+                          mode,
+                       })
+                     : loadStorageTable({
+                          destinationName: name,
+                          destinationConnection: this.connection(name, owner),
+                          schemaName: schema,
+                          tableName: table,
+                          uri: source.uri,
+                          format: source.format,
+                          options: source.options,
+                          mode,
+                       }),
+               (r) => r.rowCount,
+            ),
          );
       } catch (error) {
          // Another create-only PUT won the race between the existence check
@@ -746,6 +787,70 @@ export class CatalogAdmin {
          };
       } catch (error) {
          throw this.redacted(error);
+      }
+   }
+
+   /**
+    * Runs `fn` holding a Postgres advisory lock on the table, taken in the
+    * catalog database so every replica contends for the same one. DuckLake
+    * tracks commit conflicts per table and operation, not per key, so it cannot
+    * stop two loads inserting the same new keys (see
+    * ducklake_commit_conflict.integration.spec.ts). A held lock is refused (503
+    * `LOAD_BUSY`), never waited on.
+    */
+   async withTableLock<T>(
+      catalog: string,
+      schema: string,
+      table: string,
+      fn: (lock: TableLock) => Promise<T>,
+   ): Promise<T> {
+      const key = `${catalog}.${schema}.${table}`;
+      const client = new Client(
+         pgClientConfig("The catalog database", this.config.catalogDatabase),
+      );
+      let lost = false;
+      // An idle connection the server or network drops emits `error`, which
+      // unhandled would end the process.
+      client.on("error", () => {
+         lost = true;
+      });
+      try {
+         await client.connect();
+      } catch (error) {
+         throw this.redacted(error);
+      }
+      try {
+         const { rows } = await client.query(
+            `SELECT pg_try_advisory_lock(${TABLE_LOCK_KEY}) AS locked`,
+            [key],
+         );
+         if (rows[0]?.locked !== true) {
+            throw loadBusy(`A load of '${key}' is already running.`);
+         }
+         try {
+            return await fn({
+               pg: async (sql) => (await client.query(sql)).rows,
+               assertLockHeld: async () => {
+                  try {
+                     if (lost) throw new Error("connection lost");
+                     await client.query("SELECT 1");
+                  } catch {
+                     throw loadBusy(
+                        `The lock on '${key}' was lost; retry the load.`,
+                     );
+                  }
+               },
+            });
+         } finally {
+            if (!lost) {
+               await client
+                  .query(`SELECT pg_advisory_unlock(${TABLE_LOCK_KEY})`, [key])
+                  .catch(() => undefined);
+            }
+         }
+      } finally {
+         // end() on a connection already dead never settles.
+         if (!lost) await client.end().catch(() => undefined);
       }
    }
 

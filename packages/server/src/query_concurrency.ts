@@ -195,6 +195,39 @@ export class QuerySlots {
    );
 }
 
+/**
+ * A fixed-capacity pool for the heavy admin loads (a DuckDB session each, sized
+ * to the pod's memory and spill budget), independent of the query cap. Fails
+ * fast like {@link QuerySlots}: a busy pool returns undefined, never queues.
+ */
+export class LoadSlots {
+   #active = 0;
+
+   constructor(readonly capacity: number) {}
+
+   /** Slots currently held. */
+   get active(): number {
+      return this.#active;
+   }
+
+   /** A handle to release when the load is done, or undefined when every slot is held. */
+   tryAcquire(): QuerySlotHandle | undefined {
+      if (this.#active >= this.capacity) return undefined;
+      this.#active += 1;
+      let released = false;
+      return {
+         release: () => {
+            if (released) return;
+            released = true;
+            this.#active -= 1;
+         },
+      };
+   }
+}
+
+/** One heavy load per process: each holds a DuckDB session sized to most of the pod's memory. */
+export const loadSlots = new LoadSlots(1);
+
 /** Whether `handle` is a QuerySlots middleware, i.e. the route is admission-controlled. */
 export function isQuerySlotMiddleware(handle: unknown): boolean {
    return (

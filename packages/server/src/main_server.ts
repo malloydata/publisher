@@ -67,6 +67,7 @@ import {
 } from "./mcp_config";
 import { observePackageStates } from "./package_state_metrics";
 import { EnvironmentStore } from "./service/environment_store";
+import { removeStaleBuildDirs } from "./service/materialization";
 import { MaterializationScheduler } from "./service/materialization/run/materialization_scheduler";
 import { MaterializationService } from "./service/materialization/run/materialization_service";
 import { PackageMemoryGovernor } from "./service/package_memory_governor";
@@ -439,6 +440,7 @@ export async function buildApp(settings: AppSettings): Promise<BuiltApp> {
       ADMIN_PORT === null
          ? null
          : createAdminApp(ADMIN_CATALOGS, watchModeController);
+   if (adminApp) removeStaleBuildDirs();
 
    function listen(): RunningServers {
       const mainServer = longTimeouts(

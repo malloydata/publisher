@@ -31,6 +31,7 @@ import {
    type PartitionKey,
 } from "../../connection";
 import {
+   applyLoadSessionSettings,
    createLocalDataPaths,
    lockDownDestinationSession,
    withIsolatedSession,
@@ -163,6 +164,40 @@ export async function loadStorageTable(params: {
    options?: LoadOptions;
    mode: "create" | "replace";
 }): Promise<{ rowCount: number; columns: { name: string; type: string }[] }> {
+   const reader = readerSql(params.uri, params.format, params.options);
+   return withLoadSession(
+      {
+         ...params,
+         purpose: "load",
+         extensions: params.format === "xlsx" ? ["excel"] : [],
+      },
+      (session) =>
+         writeTableAs(session, params, reader, (error) =>
+            readerRefusal(error, params.uri),
+         ),
+   );
+}
+
+/**
+ * The session an admin table write that reads one object runs on: an isolated
+ * session with the load settings, the destination attached read-write, the
+ * object checked against the destination's data path (configured, or recorded by
+ * the attach), `extensions` loaded, and the session confined to that path
+ * (duckdb_lockdown.ts) before `fn` runs. The reader takes caller options, so
+ * nothing outside the data path may be read.
+ */
+async function withLoadSession<T>(
+   params: {
+      purpose: string;
+      destinationName: string;
+      destinationConnection: ApiConnection;
+      schemaName: string;
+      tableName: string;
+      uri: string;
+      extensions?: string[];
+   },
+   fn: (session: DuckDBConnection) => Promise<T>,
+): Promise<T> {
    const { destinationName, destinationConnection, schemaName, tableName } =
       params;
    if (
@@ -185,31 +220,30 @@ export async function loadStorageTable(params: {
    if (configuredPath) {
       assertUnderDataPath(params.uri, configuredPath);
    }
-   const reader = readerSql(params.uri, params.format, params.options);
 
-   return withIsolatedSession(`load_${destinationName}`, async (session) => {
-      await attachDuckLakeReadWrite(session, destinationName, ducklake);
-      if (!configuredPath) {
-         const recorded = await recordedCatalogSettings(
-            session,
-            destinationName,
-            ducklake.catalog?.metadataSchema,
-         );
-         assertUnderDataPath(params.uri, recorded.data_path ?? "");
-      }
-      if (params.format === "xlsx") {
-         await installAndLoadExtension(session, "excel");
-      }
-      // The reader takes caller options: confine it to the catalog's data path
-      // (recorded by the attach) before it runs (duckdb_lockdown.ts).
-      const allow = configuredPath ? [configuredPath] : [];
-      // The load writes the destination's table files.
-      createLocalDataPaths(session, allow);
-      await lockDownDestinationSession(session, allow);
-      return await writeTableAs(session, params, reader, (error) =>
-         readerRefusal(error, params.uri),
-      );
-   });
+   return withIsolatedSession(
+      `${params.purpose}_${destinationName}`,
+      async (session) => {
+         await applyLoadSessionSettings(session);
+         await attachDuckLakeReadWrite(session, destinationName, ducklake);
+         if (!configuredPath) {
+            const recorded = await recordedCatalogSettings(
+               session,
+               destinationName,
+               ducklake.catalog?.metadataSchema,
+            );
+            assertUnderDataPath(params.uri, recorded.data_path ?? "");
+         }
+         for (const extension of params.extensions ?? []) {
+            await installAndLoadExtension(session, extension);
+         }
+         const allow = configuredPath ? [configuredPath] : [];
+         // The load writes the destination's table files.
+         createLocalDataPaths(session, allow);
+         await lockDownDestinationSession(session, allow);
+         return fn(session);
+      },
+   );
 }
 
 /**
@@ -316,6 +350,7 @@ export async function copyStorageTable(params: {
         : COPY_SOURCE_ALIAS;
 
    return withIsolatedSession(`copy_${destinationName}`, async (session) => {
+      await applyLoadSessionSettings(session);
       await attachDuckLakeReadWrite(
          session,
          destinationName,

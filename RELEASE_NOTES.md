@@ -21,6 +21,12 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — the admin API runs one table load or copy at a time per server, and refuses the rest with `503 LOAD_BUSY`
+
+**Changed: `PUT /catalogs/{catalog}/schemas/{schema}/tables/{table}` answers `503` with `reason: LOAD_BUSY` when this server is already running a load or copy.** Each one holds a DuckDB session sized to most of the pod's memory, so a server takes one at a time and refuses the next instead of queueing it, as it does a query past `PUBLISHER_MAX_CONCURRENT_QUERIES`. Nothing was written; retry, which behind a load balancer may reach a less busy replica. A load or copy session is now also bounded (`memory_limit` 1.5GB, `max_temp_directory_size` 6GiB).
+
+**Who is affected:** a caller that PUTs several tables to one admin server at once, which used to run them concurrently. **What to do:** retry a `503 LOAD_BUSY`, or send the tables one at a time. See [admin-api-doc.yaml](admin-api-doc.yaml).
+
 ## [Unreleased] — a DuckLake connection keeps no `<name>_ducklake.duckdb` file, and editing one no longer stalls queries
 
 **Changed: a DuckLake connection opens on an in-memory primary instead of an empty `<name>_ducklake.duckdb` file in the environment directory.** The file held nothing (the catalog is in Postgres and the data is in object storage). Because two instances of one file are not supported, an edit to a DuckLake connection made the new generation wait for the old one's fixed 30 s release, and queries on the connection stalled until it ended. The edited connection now answers at once while the old generation finishes its in-flight queries.
