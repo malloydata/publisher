@@ -19,6 +19,7 @@ import {
    isDuckdbSetupSqlAllowed,
 } from "../config";
 import { BadRequestError } from "../errors";
+import { connectionDialectOf } from "./dialects";
 import { logger } from "../logger";
 import {
    resolveCloudStorageCredentials,
@@ -363,75 +364,16 @@ function cloneApiConnection(connection: ApiConnection): ApiConnection {
    return clone;
 }
 
+/**
+ * What the API reports for a connection of `type` before it is opened: the
+ * registry entry's attributes (service/dialects), as a fresh object the
+ * caller may keep. Undefined for `publisher` and an unregistered type.
+ */
 export function getStaticConnectionAttributes(
    type: ApiConnection["type"],
 ): components["schemas"]["ConnectionAttributes"] | undefined {
-   switch (type) {
-      case "postgres":
-         return {
-            dialectName: "postgres",
-            isPool: true,
-            canPersist: true,
-            canStream: true,
-         };
-      case "bigquery":
-         return {
-            dialectName: "standardsql",
-            isPool: false,
-            canPersist: true,
-            canStream: true,
-         };
-      case "snowflake":
-         return {
-            dialectName: "snowflake",
-            isPool: true,
-            canPersist: true,
-            canStream: true,
-         };
-      case "trino":
-         return {
-            dialectName: "trino",
-            isPool: false,
-            canPersist: true,
-            canStream: false,
-         };
-      case "databricks":
-         return {
-            dialectName: "databricks",
-            isPool: false,
-            canPersist: true,
-            canStream: false,
-         };
-      case "mysql":
-         return {
-            dialectName: "mysql",
-            isPool: false,
-            canPersist: true,
-            canStream: false,
-         };
-      case "sqlserver":
-         // The connector is read-only: it creates no tables and has no
-         // PersistSQLResults, so a database `#@ persist` on a SQL Server
-         // source is refused at load (READ_ONLY_DIALECTS in
-         // materialization_eligibility.ts) rather than failing mid-build.
-         return {
-            dialectName: "sqlserver",
-            isPool: true,
-            canPersist: false,
-            canStream: true,
-         };
-      case "duckdb":
-      case "motherduck":
-      case "ducklake":
-         return {
-            dialectName: "duckdb",
-            isPool: false,
-            canPersist: true,
-            canStream: true,
-         };
-      default:
-         return undefined;
-   }
+   const attributes = connectionDialectOf(type)?.attributes;
+   return attributes === undefined ? undefined : { ...attributes };
 }
 
 // Field names follow Google's service-account key file format, so they are
