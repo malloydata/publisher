@@ -321,9 +321,11 @@ describe.skipIf(process.platform === "win32")(
                "getSQLBlockSchema",
             ).mockImplementation(async () => BIGQUERY_SCHEMA),
             // Live BigQuery answers nothing, and counts that it was asked.
+            // The collation probe's catalog reads answer no collated
+            // column, and are not live reads of the source.
             spyOn(BigQueryConnection.prototype, "runSQL").mockImplementation(
-               async () => {
-                  liveBigQueryReads++;
+               async (sql: string) => {
+                  if (!/INFORMATION_SCHEMA/.test(sql)) liveBigQueryReads++;
                   return { rows: [], totalRows: 0 } as never;
                },
             ),
@@ -373,7 +375,12 @@ describe.skipIf(process.platform === "win32")(
                {
                   name: "bq",
                   type: "bigquery",
-                  bigqueryConnection: { defaultProjectId: "proj" },
+                  // A location, so the collation probe can read the project
+                  // an `.sql()` source reads.
+                  bigqueryConnection: {
+                     defaultProjectId: "proj",
+                     location: "US",
+                  },
                } as never,
             ],
             [

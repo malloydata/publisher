@@ -40,6 +40,9 @@ function standInBigQuery(name: string): Connection {
    const connection = new BigQueryConnection({
       name,
       projectId: "stand-in",
+      // A location, so the collation probe can read the project an
+      // `.sql()` source reads.
+      location: "US",
    } as never);
    Object.assign(connection, {
       getSQLBlockSchema: async () => ({
@@ -49,9 +52,11 @@ function standInBigQuery(name: string): Connection {
          ],
       }),
       // The bind's catalog read of the stored table's columns, as BigQuery
-      // types them; every other statement returns nothing.
+      // types them; every other statement returns nothing (the collation
+      // probe's reads among them: no collated column).
       runSQL: async (sql: string) =>
-         sql.includes("INFORMATION_SCHEMA.COLUMNS")
+         sql.includes("INFORMATION_SCHEMA.COLUMNS") &&
+         !sql.includes("collation_name")
             ? {
                  rows: [
                     {

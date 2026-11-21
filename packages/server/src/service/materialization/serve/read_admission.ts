@@ -316,7 +316,7 @@ export class ReadAdmission {
    /**
     * What the query's result orders and groups strings by, over the stored
     * tables the answer reads, when the source's dialect's collation is read
-    * (Postgres per column, DuckDB per instance). A `storage=` table compares
+    * (Postgres per column, DuckDB per instance, BigQuery per project). A `storage=` table compares
     * bytes, so the source's collation is judged against that; a database
     * table sits in its source's warehouse, so its stored columns are judged
     * against the source's (an `ALTER` after the build changes them). Which stages count: every one on the served copy and a
@@ -376,7 +376,11 @@ export class ReadAdmission {
          return { facts: { applies: true, reads: "unread", tables }, tables };
       }
       const collation = reads.stringCollation;
-      if (collation !== "column" && collation !== "instance") {
+      if (
+         collation !== "column" &&
+         collation !== "instance" &&
+         collation !== "dataset"
+      ) {
          return { facts: { applies: false }, tables };
       }
       return { facts: { applies: true, reads: "read", tables }, reads, tables };
