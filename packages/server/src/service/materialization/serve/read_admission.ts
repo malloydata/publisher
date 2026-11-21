@@ -431,6 +431,10 @@ export class ReadAdmission {
                  authorRunnable: this.query.authorRunnable,
                  reads,
                  storedReads: g.storedReads,
+                 ...(request.comparison === "result_ordered" ||
+                 request.comparison === "result_grouped"
+                    ? { unlistedPasses: true }
+                    : {}),
                  ...givens,
               });
       const probes: Partial<Record<Comparison, ComparisonProbes>> = {

@@ -148,5 +148,7 @@ export interface CollationProbe {
       storedReads?: Map<string, Promise<unknown>>;
       /** The bind the query was pinned to: a probe may keep reads per bind. */
       bind?: object;
+      /** A database table its catalog does not list is passed over (a result's). */
+      unlistedPasses?: boolean;
    }): Promise<string | undefined>;
 }

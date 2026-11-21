@@ -1229,11 +1229,18 @@ export async function storedTableCollationRefusal(args: {
    storedReads?: Map<string, Promise<unknown>>;
    /** The bind the query was pinned to (BigQuery's reads are kept per bind). */
    bind?: object;
+   /**
+    * A database table its catalog does not list is passed over (its read
+    * fails, and its fallback decides), for the query's result; a gate's, a
+    * scope's and a filter's tables are judged however they are found.
+    */
+   unlistedPasses?: boolean;
 }): Promise<string | undefined> {
    if (args.tables.length === 0) return undefined;
    const memo = args.storedReads ?? new Map<string, Promise<unknown>>();
    if (await comparesNoString(args)) return undefined;
    const sourceDialect = await entryDialectOf(args.authorRunnable);
+
    const equalityOnly = args.reads?.equalityOnly === true;
    const runtime = (
       args.answerRunnable as unknown as { runtime?: ProbeRuntime }
@@ -1274,6 +1281,7 @@ export async function storedTableCollationRefusal(args: {
          reads: args.reads,
          memo,
          ...(args.givens ? { givens: args.givens } : {}),
+         ...(args.unlistedPasses ? { unlistedPasses: true } : {}),
       });
    } catch {
       why = "a collation that could not be read";
@@ -1427,6 +1435,8 @@ async function databaseCollationRefusal(args: {
    /** This answer's stored-side reads, shared across its comparisons. */
    memo: Map<string, Promise<unknown>>;
    givens?: Record<string, unknown>;
+   /** A table its catalog does not list is passed over (a result's). */
+   unlistedPasses?: boolean;
 }): Promise<string | undefined> {
    const { reads, memo } = args;
    if (reads === undefined || reads.unresolved) return "gate reads unread";
@@ -1455,11 +1465,22 @@ async function databaseCollationRefusal(args: {
    if (sourceDefault === undefined) return "the source's default unread";
    // Every column the stored tables hold, by name: its collation's identity.
    const held = new Map<string, string | null>();
+   let listedTables = 0;
    for (const t of args.tables) {
       if (t.tablePath === undefined) return "a table with no path";
       const storedName = t.destinationName ?? connectionName;
       const connection =
          await args.storedRuntime.connections.lookupConnection(storedName);
+      const path = t.tablePath;
+      if (
+         args.unlistedPasses &&
+         !(await memoized(memo, ["listed", "column", storedName, path], () =>
+            tableListed(connection, "column", path),
+         ).catch(() => true))
+      ) {
+         continue;
+      }
+      listedTables++;
       const storedDefault = await memoized(
          memo,
          ["stored-default", storedName],
@@ -1477,6 +1498,8 @@ async function databaseCollationRefusal(args: {
          held.set(col, id);
       }
    }
+   // Every table unlisted: nothing stored is read (each read fails).
+   if (listedTables === 0) return undefined;
    // A result read of a source known to be read live, which no stored table
    // holds under any name it goes by, is no stored column: it is passed
    // over, path and column both. A gate's reads never are (no `livePaths`).
@@ -1624,6 +1647,7 @@ async function storedSide(
       authorRunnable: QueryMaterializer;
       givens?: Record<string, unknown>;
       bind?: object;
+      unlistedPasses?: boolean;
    },
    runtime: ProbeRuntime,
    sourceDialect: string,
@@ -1680,11 +1704,46 @@ async function storedSide(
            )
          : "unknown";
    }
+   // A table its catalog does not list is passed over where the caller
+   // asks (a result's): its read fails, and its fallback decides.
+   if (
+      args.unlistedPasses &&
+      !(await memoized(memo, ["listed", read, connectionName, tablePath], () =>
+         tableListed(connection, read, tablePath),
+      ).catch(() => true))
+   ) {
+      return "binary";
+   }
    return memoized(memo, [read, connectionName, tablePath], () =>
       read === "instance"
          ? duckdbTableCollation(connection, tablePath)
          : postgresTableCollation(connection, tablePath),
    );
+}
+
+/**
+ * Whether a DuckDB or Postgres catalog lists the table at `tablePath`
+ * (matched without case on DuckDB, by `to_regclass` on Postgres). Any doubt
+ * reads true, so the table is judged.
+ */
+async function tableListed(
+   connection: Connection,
+   read: "instance" | "column",
+   tablePath: string,
+): Promise<boolean> {
+   if (read === "instance") {
+      const name = tableNameOf(tablePath).replace(/'/g, "''");
+      const [row] = await rows(
+         connection,
+         `SELECT count(*) AS n FROM duckdb_tables() WHERE lower(table_name) = lower('${name}')`,
+      );
+      return Number(row?.n ?? 1) !== 0;
+   }
+   const [row] = await pgRows(
+      connection,
+      `SELECT to_regclass('${tablePath.replace(/'/g, "''")}') IS NULL AS missing`,
+   );
+   return row?.missing !== true;
 }
 
 /**
