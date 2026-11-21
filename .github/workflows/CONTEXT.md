@@ -157,7 +157,10 @@ Actions cache (setup-bun's `no-cache: true`): any `main` job, here or on GitHub'
 `main`'s cache entries. Every job moved there needs a `timeout-minutes`. `credible-ubuntu-24.04` is spot
 (a reclaimed job fails "The operation was canceled." and a rerun covers it);
 `credible-ubuntu-24.04-ondemand` is the label for a job that must not be interrupted. Package
-installs go through pull-through caches whose credentials last an hour from job start.
+installs go through pull-through caches whose credentials last an hour from job start. Jobs there
+restore no Bun install cache: its steps run only where `runner.environment == 'github-hosted'`, since on
+Credible's runners that cache downloads through the farm's NAT while `bun install` reads the npm mirror
+inside GCP.
 
 **Every `bun install` runs through `scripts/ci-install-with-retry.sh`**, in the composite action and
 in each workflow that installs on its own. The npm mirror intermittently answers a tarball GET with
