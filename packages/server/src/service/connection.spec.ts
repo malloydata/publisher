@@ -22,7 +22,6 @@ import { components } from "../api";
 import {
    attachDuckLakeReadOnlyIfPresent,
    attachDuckLakeReadWrite,
-   bigQueryAttachSQL,
    buildCloudStorageSecretSQL,
    storageSecretScope,
    buildEnvironmentMalloyConfig,
@@ -33,8 +32,9 @@ import {
    testConnectionConfig,
    isExpiredCredentialError,
    redactTestFailure,
-   snowflakeAttachSQL,
 } from "./connection";
+import { bigQueryAttachSQL } from "./dialects/bigquery";
+import { snowflakeAttachSQL } from "./dialects/snowflake";
 import { buildPgConnectionString } from "./postgres_conninfo";
 import { countStatements } from "./single_select";
 import {

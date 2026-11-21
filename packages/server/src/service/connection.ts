@@ -77,9 +77,16 @@ import {
    EnvironmentConnectionMetadata,
    removeUndefined,
 } from "./connection_config";
-import type { CoreConnectionEntry } from "./dialects";
-import { parseServiceAccountKey } from "./dialects/bigquery";
-import { normalizeSnowflakePrivateKey } from "./dialects/snowflake";
+import { connectionDialectOf, type CoreConnectionEntry } from "./dialects";
+import {
+   createBigQuerySecret,
+   parseBigQueryServiceAccount,
+} from "./dialects/bigquery";
+import {
+   assertSnowflakeFieldsPresent,
+   escapeSnowflakeIdentity,
+   normalizeSnowflakePrivateKey,
+} from "./dialects/snowflake";
 import {
    applyExtensionSessionSettings,
    escapeSQL,
@@ -285,236 +292,6 @@ function handleAlreadyAttachedError(error: unknown, dbName: string): void {
    } else {
       throw error;
    }
-}
-
-interface BigQueryServiceAccount {
-   projectId: string;
-   serviceAccountJson: string;
-   clientEmail: string;
-}
-
-/**
- * Validate a BigQuery connection's service account key and resolve its
- * project. The DuckDB BIGQUERY secret authenticates only with a key, so the
- * read-only attach and the build-time federation both require one.
- */
-function parseBigQueryServiceAccount(
-   name: string | undefined,
-   config: components["schemas"]["BigqueryConnection"],
-): BigQueryServiceAccount {
-   const keyData = parseServiceAccountKey(config.serviceAccountKeyJson);
-   if (keyData) {
-      return {
-         projectId: (keyData.project_id || config.defaultProjectId) as string,
-         serviceAccountJson: config.serviceAccountKeyJson as string,
-         clientEmail: keyData.client_email as string,
-      };
-   }
-   throw new Error(
-      `BigQuery project_id and service account key required for: ${name}`,
-   );
-}
-
-/** Load the bigquery extension and create the secret scoped to the project. */
-async function createBigQuerySecret(
-   connection: DuckDBConnection,
-   name: string | undefined,
-   { projectId, serviceAccountJson }: BigQueryServiceAccount,
-): Promise<string> {
-   await installAndLoadExtension(connection, "bigquery", true);
-
-   const secretName = sanitizeSecretName(`bigquery_${name}`);
-   const escapedJson = escapeSQL(serviceAccountJson);
-   await connection.runSQL(`
-      CREATE OR REPLACE SECRET ${secretName} (
-         TYPE BIGQUERY,
-         SCOPE '${escapeSQL(`bq://${projectId}`)}',
-         SERVICE_ACCOUNT_JSON '${escapedJson}'
-      );
-   `);
-   return secretName;
-}
-
-/** Each named Snowflake field must be non-empty. */
-function assertSnowflakeFieldsPresent(
-   name: string | undefined,
-   fields: Record<string, string | null | undefined>,
-): void {
-   for (const [field, value] of Object.entries(fields)) {
-      if (!value) {
-         throw new Error(`Snowflake ${field} is required for: ${name}`);
-      }
-   }
-}
-
-/** The SQL-escaped identity fields every Snowflake secret is built from. */
-function escapeSnowflakeIdentity(
-   config: components["schemas"]["SnowflakeConnection"],
-) {
-   return {
-      account: escapeSQL(config.account || ""),
-      user: escapeSQL(config.username || ""),
-      database: config.database ? escapeSQL(config.database) : undefined,
-      warehouse: config.warehouse ? escapeSQL(config.warehouse) : undefined,
-      schema: config.schema ? escapeSQL(config.schema) : undefined,
-      role: config.role ? escapeSQL(config.role) : undefined,
-   };
-}
-
-/**
- * The ATTACH of a BigQuery project under `name`. The alias is quoted as a
- * DuckDB identifier and the project as a string literal, so neither can end
- * the statement, whatever validation the name passed.
- */
-export function bigQueryAttachSQL(name: string, projectId: string): string {
-   return `ATTACH '${escapeSQL(`project=${projectId}`)}' AS ${quoteIdentifier(name, "duckdb")} (TYPE bigquery, READ_ONLY);`;
-}
-
-/** The secret a Snowflake attachment named `name` creates. */
-function snowflakeSecretName(name: string): string {
-   return `${name}_secret`;
-}
-
-/**
- * The statements that attach a Snowflake database under `name`: its secret
- * (from the already-escaped `secretLines`), a test query through that secret,
- * and the ATTACH. Every use of the name is quoted: as a DuckDB identifier
- * (the alias, the secret) or escaped as a string literal (the database to
- * attach, the secret the test query names), so none can end its statement.
- */
-export function snowflakeAttachSQL(
-   name: string,
-   secretLines: string[],
-): { createSecret: string; test: string; attach: string } {
-   const secret = snowflakeSecretName(name);
-   const quotedSecret = quoteIdentifier(secret, "duckdb");
-   return {
-      createSecret: `CREATE OR REPLACE SECRET ${quotedSecret} (\n${secretLines.join(",\n")}\n   );`,
-      test: `SELECT * FROM snowflake_query('SELECT 1', '${escapeSQL(secret)}');`,
-      attach: `ATTACH '${escapeSQL(name)}' AS ${quoteIdentifier(name, "duckdb")} (TYPE snowflake, SECRET ${quotedSecret}, READ_ONLY);`,
-   };
-}
-
-async function attachBigQuery(
-   connection: DuckDBConnection,
-   attachedDb: AttachedDatabase,
-): Promise<void> {
-   if (!attachedDb.bigqueryConnection) {
-      throw new Error(
-         `BigQuery connection configuration missing for: ${attachedDb.name}`,
-      );
-   }
-
-   const key = parseBigQueryServiceAccount(
-      attachedDb.name,
-      attachedDb.bigqueryConnection,
-   );
-   logger.info(`Using service account: ${key.clientEmail}`);
-   const { projectId } = key;
-   const secretName = await createBigQuerySecret(
-      connection,
-      attachedDb.name,
-      key,
-   );
-   logger.info(
-      `Created BigQuery secret: ${secretName} for project: ${projectId}`,
-   );
-
-   await connection.runSQL(bigQueryAttachSQL(attachedDb.name ?? "", projectId));
-   logger.info(`Successfully attached BigQuery database: ${attachedDb.name}`);
-}
-
-async function attachSnowflake(
-   connection: DuckDBConnection,
-   attachedDb: AttachedDatabase,
-): Promise<void> {
-   if (!attachedDb.snowflakeConnection) {
-      throw new Error(
-         `Snowflake connection configuration missing for: ${attachedDb.name}`,
-      );
-   }
-
-   const config = attachedDb.snowflakeConnection;
-
-   assertSnowflakeFieldsPresent(attachedDb.name, {
-      account: config.account,
-      username: config.username,
-      password: config.password,
-   });
-
-   await installAndLoadExtension(connection, "snowflake", true);
-
-   try {
-      const version = await connection.runSQL("SELECT snowflake_version();");
-      logger.info(`Snowflake ADBC driver verified with version:`, version.rows);
-   } catch (error) {
-      throw new Error(
-         `Snowflake ADBC driver verification failed: ${error instanceof Error ? error.message : String(error)}`,
-      );
-   }
-
-   const params = {
-      ...escapeSnowflakeIdentity(config),
-      password: escapeSQL(config.password || ""),
-   };
-
-   // Optional fields are emitted only when set: an absent one would otherwise
-   // interpolate the literal 'undefined', which Snowflake reads as a real
-   // database or warehouse name. ROLE and SCHEMA are carried so the attached
-   // database queries under the configured role, as the passthrough build does.
-   const secretLines = [
-      `      TYPE snowflake`,
-      `      ACCOUNT '${params.account}'`,
-      `      USER '${params.user}'`,
-      `      PASSWORD '${params.password}'`,
-      ...(params.database ? [`      DATABASE '${params.database}'`] : []),
-      ...(params.warehouse ? [`      WAREHOUSE '${params.warehouse}'`] : []),
-      ...(params.schema ? [`      SCHEMA '${params.schema}'`] : []),
-      ...(params.role ? [`      ROLE '${params.role}'`] : []),
-   ];
-   const statements = snowflakeAttachSQL(attachedDb.name ?? "", secretLines);
-
-   await connection.runSQL(statements.createSecret);
-
-   const testresult = await connection.runSQL(statements.test);
-   logger.info(`Testing Snowflake connection:`, testresult.rows);
-
-   await connection.runSQL(statements.attach);
-   logger.info(`Successfully attached Snowflake database: ${attachedDb.name}`);
-}
-
-async function attachPostgres(
-   connection: DuckDBConnection,
-   attachedDb: AttachedDatabase,
-): Promise<void> {
-   if (!attachedDb.postgresConnection) {
-      throw new Error(
-         `PostgreSQL connection configuration missing for: ${attachedDb.name}`,
-      );
-   }
-   // Before any SQL is built: an empty alias emits `AS ""`, which DuckDB
-   // rejects at a position after the DSN literal, and that error truncates the
-   // redactor's anchor away.
-   if (!attachedDb.name) {
-      throw new Error("Attached database name is required");
-   }
-
-   await installAndLoadExtension(connection, "postgres");
-
-   const config = attachedDb.postgresConnection;
-   const attachString: string = buildPgConnectionString(config, {
-      name: attachedDb.name,
-      applyConnectionOptions: true,
-   });
-
-   const { path: attachPath, secret } = await createPgAttachSecret(
-      connection,
-      attachedDb.name,
-      attachString,
-   );
-   const attachCommand = `ATTACH '${escapeSQL(attachPath)}' AS ${quoteIdentifier(attachedDb.name, "duckdb")} (TYPE postgres, READ_ONLY${secret ? `, SECRET ${secret}` : ""});`;
-   await connection.runSQL(attachCommand);
-   logger.info(`Successfully attached PostgreSQL database: ${attachedDb.name}`);
 }
 
 /** Rows out of a DuckDBConnection.runSQL result, in either shape it returns. */
@@ -2001,10 +1778,9 @@ async function attachDatabasesToDuckDB(
    connectionName: string,
    generation: number,
 ): Promise<void> {
-   const attachHandlers = {
-      bigquery: attachBigQuery,
-      snowflake: attachSnowflake,
-      postgres: attachPostgres,
+   // The object-storage types attach here; a database type attaches by its
+   // registry entry.
+   const storageAttachHandlers = {
       gcs: attachCloudStorage,
       s3: attachCloudStorage,
       azure: attachAzureStorage,
@@ -2073,8 +1849,9 @@ async function attachDatabasesToDuckDB(
                }
 
                const handler =
-                  attachHandlers[
-                     attachedDb.type as keyof typeof attachHandlers
+                  connectionDialectOf(attachedDb.type)?.attached?.attach ??
+                  storageAttachHandlers[
+                     attachedDb.type as keyof typeof storageAttachHandlers
                   ];
                if (!handler) {
                   throw new Error(
@@ -2127,15 +1904,12 @@ async function detachAttachment(
    await duckdbConnection.runSQL(
       `DETACH DATABASE IF EXISTS ${quoteIdentifier(name, "duckdb")};`,
    );
-   const secret =
-      type === "snowflake"
-         ? quoteIdentifier(snowflakeSecretName(name), "duckdb")
-         : type === "bigquery" ||
-             type === "gcs" ||
-             type === "s3" ||
-             type === "azure"
-           ? sanitizeSecretName(`${type}_${name}`)
-           : undefined;
+   const attached = connectionDialectOf(type)?.attached;
+   const secret = attached
+      ? attached.secretName?.(name)
+      : type === "gcs" || type === "s3" || type === "azure"
+        ? sanitizeSecretName(`${type}_${name}`)
+        : undefined;
    if (secret !== undefined) {
       await duckdbConnection.runSQL(`DROP SECRET IF EXISTS ${secret};`);
    }
@@ -3690,36 +3464,12 @@ async function testDuckDBConnection(
       }
 
       try {
+         const attached = connectionDialectOf(attachedDb.type)?.attached;
+         if (attached) {
+            await attached.test(duckdbConnection, attachedDb.name);
+            continue;
+         }
          switch (attachedDb.type) {
-            case "postgres": {
-               await duckdbConnection.runSQL(
-                  `SELECT schema_name FROM information_schema.schemata WHERE catalog_name = '${escapeSQL(attachedDb.name)}' LIMIT 1`,
-               );
-               logger.info(
-                  `Attached Postgres database test passed: ${attachedDb.name}`,
-               );
-               break;
-            }
-            case "bigquery": {
-               await runInternalSQL(
-                  duckdbConnection,
-                  `SELECT database_name FROM duckdb_databases() WHERE database_name = '${escapeSQL(attachedDb.name)}'`,
-               );
-               logger.info(
-                  `Attached BigQuery database test passed: ${attachedDb.name}`,
-               );
-               break;
-            }
-            case "snowflake": {
-               await runInternalSQL(
-                  duckdbConnection,
-                  `SELECT database_name FROM duckdb_databases() WHERE database_name = '${escapeSQL(attachedDb.name)}'`,
-               );
-               logger.info(
-                  `Attached Snowflake database test passed: ${attachedDb.name}`,
-               );
-               break;
-            }
             case "gcs": {
                await runInternalSQL(
                   duckdbConnection,

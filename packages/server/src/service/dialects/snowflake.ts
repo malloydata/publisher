@@ -4,8 +4,15 @@
 /** The `snowflake` connection type's registry entry. */
 
 import { createPrivateKey } from "crypto";
+import type { DuckDBConnection } from "@malloydata/db-duckdb";
+import type { components } from "../../api";
+import { logger } from "../../logger";
+import { runInternalSQL } from "../duckdb_lockdown";
+import { escapeSQL, installAndLoadExtension } from "../duckdb_session_setup";
+import { quoteIdentifier } from "../quoting";
 import type {
    ApiConnection,
+   AttachedDatabase,
    ConnectionDialect,
    CoreConnectionEntry,
    NamedConnection,
@@ -21,6 +28,11 @@ export const SNOWFLAKE: ConnectionDialect = Object.freeze({
    }),
    validateShape: validateSnowflakeShape,
    coreEntry: buildSnowflakeEntry,
+   attached: Object.freeze({
+      attach: attachSnowflake,
+      test: testAttachedSnowflake,
+      secretName: snowflakeDetachSecret,
+   }),
 });
 
 /**
@@ -154,4 +166,131 @@ function buildSnowflakeEntry(connection: NamedConnection): CoreConnectionEntry {
       poolMin: 1,
       poolMax: 20,
    };
+}
+
+/** Each named Snowflake field must be non-empty. */
+export function assertSnowflakeFieldsPresent(
+   name: string | undefined,
+   fields: Record<string, string | null | undefined>,
+): void {
+   for (const [field, value] of Object.entries(fields)) {
+      if (!value) {
+         throw new Error(`Snowflake ${field} is required for: ${name}`);
+      }
+   }
+}
+
+/** The SQL-escaped identity fields every Snowflake secret is built from. */
+export function escapeSnowflakeIdentity(
+   config: components["schemas"]["SnowflakeConnection"],
+) {
+   return {
+      account: escapeSQL(config.account || ""),
+      user: escapeSQL(config.username || ""),
+      database: config.database ? escapeSQL(config.database) : undefined,
+      warehouse: config.warehouse ? escapeSQL(config.warehouse) : undefined,
+      schema: config.schema ? escapeSQL(config.schema) : undefined,
+      role: config.role ? escapeSQL(config.role) : undefined,
+   };
+}
+
+/** The secret a Snowflake attachment named `name` creates. */
+function snowflakeSecretName(name: string): string {
+   return `${name}_secret`;
+}
+
+/**
+ * The statements that attach a Snowflake database under `name`: its secret
+ * (from the already-escaped `secretLines`), a test query through that secret,
+ * and the ATTACH. Every use of the name is quoted: as a DuckDB identifier
+ * (the alias, the secret) or escaped as a string literal (the database to
+ * attach, the secret the test query names), so none can end its statement.
+ */
+export function snowflakeAttachSQL(
+   name: string,
+   secretLines: string[],
+): { createSecret: string; test: string; attach: string } {
+   const secret = snowflakeSecretName(name);
+   const quotedSecret = quoteIdentifier(secret, "duckdb");
+   return {
+      createSecret: `CREATE OR REPLACE SECRET ${quotedSecret} (\n${secretLines.join(",\n")}\n   );`,
+      test: `SELECT * FROM snowflake_query('SELECT 1', '${escapeSQL(secret)}');`,
+      attach: `ATTACH '${escapeSQL(name)}' AS ${quoteIdentifier(name, "duckdb")} (TYPE snowflake, SECRET ${quotedSecret}, READ_ONLY);`,
+   };
+}
+
+async function attachSnowflake(
+   connection: DuckDBConnection,
+   attachedDb: AttachedDatabase,
+): Promise<void> {
+   if (!attachedDb.snowflakeConnection) {
+      throw new Error(
+         `Snowflake connection configuration missing for: ${attachedDb.name}`,
+      );
+   }
+
+   const config = attachedDb.snowflakeConnection;
+
+   assertSnowflakeFieldsPresent(attachedDb.name, {
+      account: config.account,
+      username: config.username,
+      password: config.password,
+   });
+
+   await installAndLoadExtension(connection, "snowflake", true);
+
+   try {
+      const version = await connection.runSQL("SELECT snowflake_version();");
+      logger.info(`Snowflake ADBC driver verified with version:`, version.rows);
+   } catch (error) {
+      throw new Error(
+         `Snowflake ADBC driver verification failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+   }
+
+   const params = {
+      ...escapeSnowflakeIdentity(config),
+      password: escapeSQL(config.password || ""),
+   };
+
+   // Optional fields are emitted only when set: an absent one would otherwise
+   // interpolate the literal 'undefined', which Snowflake reads as a real
+   // database or warehouse name. ROLE and SCHEMA are carried so the attached
+   // database queries under the configured role, as the passthrough build does.
+   const secretLines = [
+      `      TYPE snowflake`,
+      `      ACCOUNT '${params.account}'`,
+      `      USER '${params.user}'`,
+      `      PASSWORD '${params.password}'`,
+      ...(params.database ? [`      DATABASE '${params.database}'`] : []),
+      ...(params.warehouse ? [`      WAREHOUSE '${params.warehouse}'`] : []),
+      ...(params.schema ? [`      SCHEMA '${params.schema}'`] : []),
+      ...(params.role ? [`      ROLE '${params.role}'`] : []),
+   ];
+   const statements = snowflakeAttachSQL(attachedDb.name ?? "", secretLines);
+
+   await connection.runSQL(statements.createSecret);
+
+   const testresult = await connection.runSQL(statements.test);
+   logger.info(`Testing Snowflake connection:`, testresult.rows);
+
+   await connection.runSQL(statements.attach);
+   logger.info(`Successfully attached Snowflake database: ${attachedDb.name}`);
+}
+
+/** The probe a connection test runs on an attached Snowflake database. */
+async function testAttachedSnowflake(
+   duckdbConnection: DuckDBConnection,
+   name: string,
+): Promise<void> {
+   await runInternalSQL(
+      duckdbConnection,
+      `SELECT database_name FROM duckdb_databases() WHERE database_name = '${escapeSQL(name)}'`,
+   );
+   logger.info(`Attached Snowflake database test passed: ${name}`);
+}
+
+/** The secret a Snowflake attachment creates, as its detach drops it. */
+function snowflakeDetachSecret(name: string): string {
+   return quoteIdentifier(snowflakeSecretName(name), "duckdb");
 }

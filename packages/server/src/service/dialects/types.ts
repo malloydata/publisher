@@ -13,6 +13,7 @@
  * reads the capability table. Neither is derived from the other at a branch.
  */
 
+import type { DuckDBConnection } from "@malloydata/db-duckdb";
 import type { components } from "../../api";
 import type { ConnectionOrigin } from "../../config";
 
@@ -36,6 +37,31 @@ export type CoreConnectionEntry = {
    is: string;
    [key: string]: unknown;
 };
+
+/** A database a DuckDB connection attaches, as the API carries it. */
+export type AttachedDatabase = components["schemas"]["AttachedDatabase"];
+
+/**
+ * How a database of this type is attached to a DuckDB connection
+ * (`duckdbConnection.attachedDatabases[]`, whose `type` names it).
+ */
+export interface AttachedDatabaseDialect {
+   /**
+    * Attach `attachedDb` read-only under its name, creating any secret it
+    * reads its credentials from before the ATTACH.
+    */
+   attach(
+      connection: DuckDBConnection,
+      attachedDb: AttachedDatabase,
+   ): Promise<void>;
+   /** A connection test's probe of the database attached under `name`. */
+   test(connection: DuckDBConnection, name: string): Promise<void>;
+   /**
+    * The secret an attach under `name` creates, as the DROP SECRET that
+    * detaches it names it; absent when the attach leaves none behind.
+    */
+   secretName?(name: string): string;
+}
 
 /** One connection type's entry in the registry. */
 export interface ConnectionDialect {
@@ -66,4 +92,6 @@ export interface ConnectionDialect {
       connection: NamedConnection,
       environmentPath: string,
    ) => CoreConnectionEntry;
+   /** How a database of this type is attached; absent when it cannot be. */
+   readonly attached?: AttachedDatabaseDialect;
 }

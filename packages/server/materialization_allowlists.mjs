@@ -279,8 +279,9 @@ export const RATCHET_CONNECTION_TYPE_LITERALS = {
       count: 7,
       step: "table",
    },
-   // attach handlers, the passthrough federation, the per-type core entries.
-   "service/connection.ts": { count: 55, step: "D3" },
+   // the DuckLake attach, the passthrough federation, the object-storage
+   // attachments and the connection test.
+   "service/connection.ts": { count: 39, step: "D3" },
    // the DuckDB API surface, the proxy's postgres-only rule, the declarable
    // destination types and the package sandbox's name.
    "service/connection_config.ts": { count: 11, step: "D3" },

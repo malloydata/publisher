@@ -4,8 +4,19 @@
 /** The `bigquery` connection type's registry entry: Malloy's dialect for it is `standardsql`. */
 
 import { boolean, Mismatch } from "../../settings/types";
+import type { DuckDBConnection } from "@malloydata/db-duckdb";
+import type { components } from "../../api";
+import { logger } from "../../logger";
+import { runInternalSQL } from "../duckdb_lockdown";
+import {
+   escapeSQL,
+   installAndLoadExtension,
+   sanitizeSecretName,
+} from "../duckdb_session_setup";
+import { quoteIdentifier } from "../quoting";
 import type {
    ApiConnection,
+   AttachedDatabase,
    ConnectionDialect,
    CoreConnectionEntry,
    NamedConnection,
@@ -21,6 +32,11 @@ export const BIGQUERY: ConnectionDialect = Object.freeze({
    }),
    validateShape: validateBigQueryShape,
    coreEntry: buildBigQueryEntry,
+   attached: Object.freeze({
+      attach: attachBigQuery,
+      test: testAttachedBigQuery,
+      secretName: bigQueryDetachSecret,
+   }),
 });
 
 // Field names follow Google's service-account key file format, so they are
@@ -146,4 +162,107 @@ export function configBoolean(
    throw new Error(
       `Invalid value for ${name}: expected ${BOOLEAN.expected}, got ${JSON.stringify(value)}`,
    );
+}
+
+export interface BigQueryServiceAccount {
+   projectId: string;
+   serviceAccountJson: string;
+   clientEmail: string;
+}
+
+/**
+ * Validate a BigQuery connection's service account key and resolve its
+ * project. The DuckDB BIGQUERY secret authenticates only with a key, so the
+ * read-only attach and the build-time federation both require one.
+ */
+export function parseBigQueryServiceAccount(
+   name: string | undefined,
+   config: components["schemas"]["BigqueryConnection"],
+): BigQueryServiceAccount {
+   const keyData = parseServiceAccountKey(config.serviceAccountKeyJson);
+   if (keyData) {
+      return {
+         projectId: (keyData.project_id || config.defaultProjectId) as string,
+         serviceAccountJson: config.serviceAccountKeyJson as string,
+         clientEmail: keyData.client_email as string,
+      };
+   }
+   throw new Error(
+      `BigQuery project_id and service account key required for: ${name}`,
+   );
+}
+
+/** Load the bigquery extension and create the secret scoped to the project. */
+export async function createBigQuerySecret(
+   connection: DuckDBConnection,
+   name: string | undefined,
+   { projectId, serviceAccountJson }: BigQueryServiceAccount,
+): Promise<string> {
+   await installAndLoadExtension(connection, "bigquery", true);
+
+   const secretName = sanitizeSecretName(`bigquery_${name}`);
+   const escapedJson = escapeSQL(serviceAccountJson);
+   await connection.runSQL(`
+      CREATE OR REPLACE SECRET ${secretName} (
+         TYPE BIGQUERY,
+         SCOPE '${escapeSQL(`bq://${projectId}`)}',
+         SERVICE_ACCOUNT_JSON '${escapedJson}'
+      );
+   `);
+   return secretName;
+}
+
+/**
+ * The ATTACH of a BigQuery project under `name`. The alias is quoted as a
+ * DuckDB identifier and the project as a string literal, so neither can end
+ * the statement, whatever validation the name passed.
+ */
+export function bigQueryAttachSQL(name: string, projectId: string): string {
+   return `ATTACH '${escapeSQL(`project=${projectId}`)}' AS ${quoteIdentifier(name, "duckdb")} (TYPE bigquery, READ_ONLY);`;
+}
+
+async function attachBigQuery(
+   connection: DuckDBConnection,
+   attachedDb: AttachedDatabase,
+): Promise<void> {
+   if (!attachedDb.bigqueryConnection) {
+      throw new Error(
+         `BigQuery connection configuration missing for: ${attachedDb.name}`,
+      );
+   }
+
+   const key = parseBigQueryServiceAccount(
+      attachedDb.name,
+      attachedDb.bigqueryConnection,
+   );
+   logger.info(`Using service account: ${key.clientEmail}`);
+   const { projectId } = key;
+   const secretName = await createBigQuerySecret(
+      connection,
+      attachedDb.name,
+      key,
+   );
+   logger.info(
+      `Created BigQuery secret: ${secretName} for project: ${projectId}`,
+   );
+
+   await connection.runSQL(bigQueryAttachSQL(attachedDb.name ?? "", projectId));
+   logger.info(`Successfully attached BigQuery database: ${attachedDb.name}`);
+}
+
+/** The probe a connection test runs on an attached BigQuery database. */
+async function testAttachedBigQuery(
+   duckdbConnection: DuckDBConnection,
+   name: string,
+): Promise<void> {
+   await runInternalSQL(
+      duckdbConnection,
+      `SELECT database_name FROM duckdb_databases() WHERE database_name = '${escapeSQL(name)}'`,
+   );
+   logger.info(`Attached BigQuery database test passed: ${name}`);
+}
+
+/** The secret a BigQuery attachment creates, as its detach drops it. */
+function bigQueryDetachSecret(name: string): string {
+   return sanitizeSecretName(`bigquery_${name}`);
 }
