@@ -66,6 +66,7 @@ import {
    resolveStructRefSource,
 } from "../../governance/ir/prepared_query";
 import { identifier } from "../../malloy_text";
+import { quoteIdentifier } from "../../quoting";
 import { queryTableReads } from "../../governance/ir/source_reads";
 import { capabilitiesOf } from "../domain/dialect";
 
@@ -320,9 +321,9 @@ function bigqueryProbeOnce<T>(
    return p;
 }
 
-/** A backquoted BigQuery name segment. */
-function bqName(segment: string): string {
-   return `\`${segment.replace(/[`\\]/g, "")}\``;
+/** A name segment quoted as `connection`'s dialect quotes it (BigQuery's backquotes). */
+function bqName(connection: Connection, segment: string): string {
+   return quoteIdentifier(segment, connection.dialectName);
 }
 
 /** Most datasets one project-wide read lists before it proves nothing. */
@@ -342,7 +343,7 @@ async function bigqueryCollatedDatasets(
    project: string,
    location: string,
 ): Promise<ReadonlySet<string> | undefined> {
-   const schema = `${bqName(project)}.${bqName(`region-${location.toLowerCase()}`)}.INFORMATION_SCHEMA`;
+   const schema = `${bqName(connection, project)}.${bqName(connection, `region-${location.toLowerCase()}`)}.INFORMATION_SCHEMA`;
    const found = await rows(
       connection,
       `SELECT DISTINCT table_schema FROM (SELECT table_schema FROM ${schema}.COLUMNS WHERE IFNULL(collation_name, '') != '' UNION ALL SELECT table_schema FROM ${schema}.COLUMN_FIELD_PATHS WHERE IFNULL(collation_name, '') != '') LIMIT ${MAX_PROJECT_DATASETS + 1}`,
@@ -368,7 +369,7 @@ async function bigqueryTableTypes(
    location: string,
    tables: readonly { dataset: string; name: string }[],
 ): Promise<ReadonlyMap<string, string>> {
-   const schema = `${bqName(project)}.${bqName(`region-${location.toLowerCase()}`)}.INFORMATION_SCHEMA`;
+   const schema = `${bqName(connection, project)}.${bqName(connection, `region-${location.toLowerCase()}`)}.INFORMATION_SCHEMA`;
    // A dataset or table name holds no dot, so `dataset.table` names one.
    const wanted = tables
       .map((t) => bqString(`${t.dataset}.${t.name}`))
@@ -406,7 +407,7 @@ async function bigqueryDatasetTables(
    if (parts.length > 2 || parts.some((p) => p === "")) {
       throw new Error("not a dataset");
    }
-   const schema = `${parts.map(bqName).join(".")}.INFORMATION_SCHEMA`;
+   const schema = `${parts.map((p) => bqName(connection, p)).join(".")}.INFORMATION_SCHEMA`;
    const found = await rows(
       connection,
       `SELECT table_name, table_type, '' AS path, '' AS collation_name FROM ${schema}.TABLES UNION ALL SELECT table_name, '' AS table_type, column_name AS path, collation_name FROM ${schema}.COLUMNS WHERE IFNULL(collation_name, '') != '' UNION ALL SELECT table_name, '' AS table_type, field_path AS path, collation_name FROM ${schema}.COLUMN_FIELD_PATHS WHERE IFNULL(collation_name, '') != ''`,
