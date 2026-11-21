@@ -30,7 +30,8 @@ import {
 } from "../../../src/service/connection";
 import { createIsolatedBuildSession } from "../../../src/service/materialization/run/materialization_build_session";
 import { mergeStatements } from "../../../src/service/materialization/run/storage_table_load";
-import { SUPERUSER, superuser, until } from "./superuser";
+import { pollFor } from "../../../src/test_helpers/poll";
+import { SUPERUSER, superuser } from "./superuser";
 
 const DB = `loads_it_${process.pid}`;
 const CATALOG = "lake";
@@ -1090,13 +1091,20 @@ describe.skipIf(!SUPERUSER)("loads", () => {
          );
          const other = new CatalogAdmin({ catalogDatabase: conninfo });
          const first = merge("overlap", [object]);
-         await until(async () => {
-            const [row] = await superuser(
-               "select count(*)::int as n from pg_locks where locktype = 'advisory' and granted and database = (select oid from pg_database where datname = current_database())",
-               DB,
-            );
-            return Number(row.n) > 0 ? true : undefined;
-         });
+         await pollFor(
+            async () =>
+               Number(
+                  (
+                     await superuser(
+                        "select count(*)::int as n from pg_locks where locktype = 'advisory' and granted and database = (select oid from pg_database where datname = current_database())",
+                        DB,
+                     )
+                  )[0].n,
+               ),
+            (n) => n > 0,
+            15_000,
+            10,
+         );
          const busy = await refusal(
             other.loadTable(CATALOG, "s", "overlap", {
                loadId: "second",
@@ -1123,13 +1131,18 @@ describe.skipIf(!SUPERUSER)("loads", () => {
          );
          const before = await snapshotId();
          const doomed = merge("killed", [object]);
-         const pid = await until(async () => {
-            const [row] = await superuser(
-               "select pid from pg_locks where locktype = 'advisory' and granted and database = (select oid from pg_database where datname = current_database()) limit 1",
-               DB,
-            );
-            return row ? Number(row.pid) : undefined;
-         });
+         const pid = await pollFor(
+            async () => {
+               const [row] = await superuser(
+                  "select pid from pg_locks where locktype = 'advisory' and granted and database = (select oid from pg_database where datname = current_database()) limit 1",
+                  DB,
+               );
+               return row ? Number(row.pid) : undefined;
+            },
+            (found) => found !== undefined,
+            15_000,
+            10,
+         );
          await superuser(`select pg_terminate_backend(${pid})`);
          const error = await refusal(doomed);
          expect([error.status, error.reason]).toEqual([503, "LOAD_BUSY"]);
@@ -1148,25 +1161,26 @@ describe.skipIf(!SUPERUSER)("loads", () => {
          await merge("raced", [first]);
          const replacer = await attached("loads_replacer", "write");
          const lock = spyOn(admin, "withTableLock");
-         lock.mockImplementation((catalog, schema, table, fn) =>
-            CatalogAdmin.prototype.withTableLock.call(
-               admin,
-               catalog,
-               schema,
-               table,
-               (held) =>
-                  fn({
-                     ...held,
-                     // The table is replaced after the load planned against it and before it commits.
-                     assertLockHeld: async () => {
-                        await sql(
-                           replacer,
-                           `CREATE OR REPLACE TABLE ${CATALOG}.s.raced AS SELECT 99 AS id, 'replaced' AS v`,
-                        );
-                        await held.assertLockHeld();
-                     },
-                  }),
-            ),
+         lock.mockImplementation(
+            (catalog, schema, table, fn) =>
+               CatalogAdmin.prototype.withTableLock.call(
+                  admin,
+                  catalog,
+                  schema,
+                  table,
+                  (held) =>
+                     fn({
+                        ...held,
+                        // The table is replaced after the load planned against it and before it commits.
+                        assertLockHeld: async () => {
+                           await sql(
+                              replacer,
+                              `CREATE OR REPLACE TABLE ${CATALOG}.s.raced AS SELECT 99 AS id, 'replaced' AS v`,
+                           );
+                           await held.assertLockHeld();
+                        },
+                     }),
+               ) as ReturnType<typeof fn>,
          );
          try {
             const changed = await parquet(

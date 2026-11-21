@@ -854,8 +854,12 @@ export class CatalogAdmin {
          const locked = await query(
             `SELECT pg_try_advisory_lock(${TABLE_LOCK_KEY}) AS locked`,
             [key],
-         ).catch(() => {
+         ).catch((error: unknown) => {
             lost = true;
+            logger.warn("Could not take a table load lock", {
+               table: key,
+               error: errMessage(error),
+            });
             throw loadBusy(
                "lost",
                `The lock on '${key}' could not be taken; retry the load.`,

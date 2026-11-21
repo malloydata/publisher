@@ -290,6 +290,33 @@ describe("pgClientConfig", () => {
       expect(ssl.ca).toContain("BEGIN CERTIFICATE");
    });
 
+   it("reads sslrootcert=system as the ambient anchors, defaulting to verify-full as libpq 16 does", () => {
+      const { ssl } = config("host=db.internal sslrootcert=system") as {
+         ssl: { ca: string; rejectUnauthorized: boolean };
+      };
+      expect(ssl.rejectUnauthorized).toBe(true);
+      expect(ssl.ca).toContain("BEGIN CERTIFICATE");
+   });
+
+   it.each(["require", "prefer"])(
+      "refuses sslmode %s with sslrootcert=system",
+      (sslmode) => {
+         expect(() =>
+            config(`host=h sslmode=${sslmode} sslrootcert=system`),
+         ).toThrow(
+            `test: sslmode '${sslmode}' may not be used with sslrootcert=system.`,
+         );
+      },
+   );
+
+   it("names the certificate file it cannot read", () => {
+      expect(() =>
+         config("host=h sslmode=verify-full sslrootcert=/nonexistent/ca.pem"),
+      ).toThrow(
+         "test: cannot read the sslrootcert file '/nonexistent/ca.pem' (ENOENT).",
+      );
+   });
+
    it("refuses an sslmode it does not know, naming the mode and not the string", () => {
       expect(() => config("host=h password=secret sslmode=bogus")).toThrow(
          "test has unsupported sslmode 'bogus'.",

@@ -122,8 +122,8 @@ Three kinds of setting are exceptions, and the registry marks them:
 
 Variables Publisher does not own keep their names and stay outside the registry: `NODE_ENV`,
 `NODE_OPTIONS`, `NODE_EXTRA_CA_CERTS` (which the Docker image sets to its RDS CA bundle), `OTEL_*`,
-`GOOGLE_APPLICATION_CREDENTIALS`, libpq's `PGSSLMODE` and `PGSERVICE` (which Publisher's Postgres
-connection setup also reads), and the `ADBC_*` variables the Docker image's driver shim reads.
+`GOOGLE_APPLICATION_CREDENTIALS`, libpq's `PGSSLMODE`, `PGSSLROOTCERT`, `PGSSLCERT`, `PGSSLKEY`, `PGSERVICE` and
+`PGHOSTADDR` (which Publisher's Postgres connection setup also reads), and the `ADBC_*` variables the Docker image's driver shim reads.
 
 ### Types, read the same way from every source
 

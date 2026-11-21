@@ -2418,8 +2418,17 @@ export function pgClientConfig(
       if (!params.has(key) && file) params.set(key, file);
    }
    const requested = params.get("sslmode") ?? externalEnv("PGSSLMODE");
+   const systemRoots = params.get("sslrootcert") === "system";
+   // libpq 16: `sslrootcert=system` defaults to verify-full and refuses a weaker mode.
    const sslmode =
-      requested === "no-verify" ? LIBPQ_NO_VERIFY_SSLMODE : requested;
+      requested === "no-verify"
+         ? LIBPQ_NO_VERIFY_SSLMODE
+         : (requested ?? (systemRoots ? "verify-full" : undefined));
+   if (systemRoots && sslmode !== "verify-ca" && sslmode !== "verify-full") {
+      throw new Error(
+         `${subject}: sslmode '${sslmode}' may not be used with sslrootcert=system.`,
+      );
+   }
    return {
       host: params.get("host") || undefined,
       port: port === undefined ? undefined : Number(port),
@@ -2490,16 +2499,27 @@ export function pgClientSsl(
    params: ReadonlyMap<string, string>,
 ): ClientConfig["ssl"] {
    const sslrootcert = params.get("sslrootcert");
+   const pem = (key: string, file: string) => {
+      try {
+         return readFileSync(file, "utf8");
+      } catch (error) {
+         throw new Error(
+            `${subject}: cannot read the ${key} file '${file}' (${(error as NodeJS.ErrnoException).code ?? "unreadable"}).`,
+         );
+      }
+   };
    const ca = () =>
-      readFileSync(sslrootcert ?? ambientTrustBundlePath(), "utf8");
+      sslrootcert && sslrootcert !== "system"
+         ? pem("sslrootcert", sslrootcert)
+         : readFileSync(ambientTrustBundlePath(), "utf8");
    const [sslcert, sslkey, passphrase] = [
       params.get("sslcert"),
       params.get("sslkey"),
       params.get("sslpassword"),
    ];
    const clientAuth = () => ({
-      ...(sslcert ? { cert: readFileSync(sslcert, "utf8") } : {}),
-      ...(sslkey ? { key: readFileSync(sslkey, "utf8") } : {}),
+      ...(sslcert ? { cert: pem("sslcert", sslcert) } : {}),
+      ...(sslkey ? { key: pem("sslkey", sslkey) } : {}),
       ...(passphrase ? { passphrase } : {}),
    });
    const verifyChain = () => ({

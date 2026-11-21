@@ -17,7 +17,8 @@ import {
 } from "../../../src/service/catalog_admin";
 import { resetInstrumentsForTesting } from "../../../src/telemetry";
 import { startMetricsHarness } from "../../../src/test_helpers/metrics_harness";
-import { SUPERUSER, superuser, until } from "./superuser";
+import { pollFor } from "../../../src/test_helpers/poll";
+import { SUPERUSER, superuser } from "./superuser";
 
 const DB = `table_lock_${process.pid}`;
 
@@ -134,9 +135,7 @@ describe.skipIf(!SUPERUSER)("table load admission", () => {
       );
       expect([error.status, error.reason]).toEqual([503, "LOAD_BUSY"]);
       // The server sees the destroyed socket once the sleeping backend next speaks.
-      await until(async () =>
-         (await advisoryLocks()) === 0 ? true : undefined,
-      );
+      await pollFor(advisoryLocks, (n) => n === 0, 15_000, 10);
    });
 
    it("refuses by the process's load slot before it asks for the table's lock", async () => {
