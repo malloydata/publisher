@@ -136,6 +136,7 @@ export function variantsOf(
       facts,
       gateSwitches(),
       args.probe ?? collationProbe,
+      pinned.snapshot,
    );
    return legs.map((leg) => ({
       kind: leg.kind,

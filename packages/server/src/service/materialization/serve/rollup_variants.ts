@@ -253,6 +253,8 @@ interface RollupAnswer {
    runnable: QueryMaterializer;
    /** The rollup that answered: its name, for the path report. */
    rollupSourceName: string;
+   /** The `sourceID` of the source that declares it. */
+   rollupBaseSourceID: string;
    /** For a `storage=` rollup: how its `virtual()` handle resolves. */
    virtualMap?: VirtualMap;
    /** For a `storage=` rollup: its binding. */
@@ -1096,6 +1098,7 @@ export class RollupVariantServe {
       return {
          runnable,
          rollupSourceName: plan.rollupSourceName,
+         rollupBaseSourceID: plan.baseSourceID,
          databaseTablePath: databaseTable,
          ...(table.keyedTable ? { keyedTable: table.keyedTable } : {}),
          ...(await this.joinGraft(q, runnable, variant)),
@@ -1309,6 +1312,7 @@ export class RollupVariantServe {
       return {
          runnable,
          rollupSourceName: plan.rollupSourceName,
+         rollupBaseSourceID: plan.baseSourceID,
          virtualMap,
          binding: table.binding,
          bindings: [...tablesRead, table.binding],
@@ -1499,6 +1503,7 @@ export class RollupVariantServe {
       return {
          runnable,
          rollupSourceName: plan.rollupSourceName,
+         rollupBaseSourceID: plan.baseSourceID,
          ...(table.virtualMap ? { virtualMap: table.virtualMap } : {}),
          ...(table.binding ? { binding: table.binding } : {}),
          ...(!table.virtualMap && databaseTable

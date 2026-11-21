@@ -292,7 +292,9 @@ describe("PersistedViewServe (database)", () => {
          reason: "as_of_build_access",
          detail: expect.any(String),
       });
-      // The query reads no given and passes no gate: it reads the table.
+      // The query reads no given and passes no gate: it reads the table (one
+      // its catalog does not list is not judged for the result: its read
+      // fails, and its fallback decides).
       expect((await admission.decide("view", answer, false)).verdict).toEqual({
          admit: true,
          pastEntryPointGate: false,
