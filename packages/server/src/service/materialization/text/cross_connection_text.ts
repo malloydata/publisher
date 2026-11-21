@@ -152,23 +152,66 @@ export async function leaveOutCrossConnectionJoins(args: {
    if (!isCrossConnectionRefusal(args.firstError)) return undefined;
    // A refused join that cannot be left out alone (what reads it sits where
    // no definition can be cut, or the text does not compile without it)
-   // costs the source or query declaring it, not every source of the model.
-   return (
-      (await leaveOut(args, "definition")) ??
-      (await leaveOut(args, "declaration"))
-   );
+   // costs the source or query declaring it, and only that one: every other
+   // refused join is still left out alone, so a source whose join can be
+   // cut keeps serving beside one that cannot. Each attempt that is blocked
+   // names the declaration that blocked it, which the next attempt leaves
+   // out whole; a block no declaration with a refused join answers falls
+   // back to leaving out every declaring source whole.
+   const escalated = new Set<string>();
+   for (let attempt = 0; attempt < 8; attempt++) {
+      const result = await leaveOut(args, escalated);
+      if ("overlay" in result) return result;
+      const key = result.blocked;
+      if (key === undefined || escalated.has(key)) break;
+      escalated.add(key);
+   }
+   const all = await leaveOut(args, "all");
+   return "overlay" in all ? all : undefined;
+}
+
+/** A top-level declaration's identity: its file and where it starts. */
+function declarationKey(url: string, start: number): string {
+   return `${url}\u0000${start}`;
 }
 
 /**
  * One attempt of {@link leaveOutCrossConnectionJoins}: each refused join cut
- * as its own definition, or as the top-level source or query declaring it.
+ * as its own definition, or, in a declaration `escalated` names (every one,
+ * for `all`), as the top-level source or query declaring it. When it does
+ * not compile, `blocked` names the declaration holding what stopped it, if
+ * that declaration declares a refused join.
  */
 async function leaveOut(
    args: Parameters<typeof leaveOutCrossConnectionJoins>[0],
-   scope: "definition" | "declaration",
+   escalated: ReadonlySet<string> | "all",
 ): Promise<
-   { overlay: Map<string, string>; leftOut: LeftOutDefinition[] } | undefined
+   | { overlay: Map<string, string>; leftOut: LeftOutDefinition[] }
+   | { blocked?: string }
 > {
+   // The declarations that declare a refused join, by key.
+   const declaring = new Set<string>();
+   // Where an attempt stopped, as the declaration around it (if it declares
+   // a refused join).
+   const blockedAt = (
+      url: string | undefined,
+      text: string | undefined,
+      offset: number,
+   ): { blocked?: string } => {
+      if (!url || text === undefined || offset < 0) return {};
+      const around = definitionCutAt(text, offset, true);
+      if (!around) return {};
+      const key = declarationKey(url, around.start);
+      return declaring.has(key) ? { blocked: key } : {};
+   };
+   const textOf = (url: string | undefined): string | undefined =>
+      url === undefined ? undefined : (overlay.get(url) ?? args.readText(url));
+   const offsetIn = (p: ProblemLike): number => {
+      const text = textOf(p.at?.url);
+      return text === undefined
+         ? -1
+         : offsetOf(text, p.at?.range?.start ?? NOWHERE);
+   };
    const overlay = new Map(args.overlay ?? []);
    const leftOut: LeftOutDefinition[] = [];
    const first = errorProblems(args.firstError) ?? [];
@@ -197,29 +240,32 @@ async function leaveOut(
          refusedJoins.length > 0
             ? refusedJoins
             : problems.filter((p) => !followOn.has(problemKey(p)));
-      if (
-         toCut.length === 0 ||
-         toCut.some(
-            (p) =>
-               p.code !== JOIN_CONNECTION_MISMATCH &&
-               (p.code === undefined || !FOLLOWS_FROM_LEFT_OUT.has(p.code)),
-         )
-      ) {
-         return undefined;
+      if (toCut.length === 0) return {};
+      const notFollowing = toCut.find(
+         (p) =>
+            p.code !== JOIN_CONNECTION_MISMATCH &&
+            (p.code === undefined || !FOLLOWS_FROM_LEFT_OUT.has(p.code)),
+      );
+      if (notFollowing) {
+         return blockedAt(
+            notFollowing.at?.url,
+            textOf(notFollowing.at?.url),
+            offsetIn(notFollowing),
+         );
       }
       // Every cut of a pass is found in the same text, before any is applied,
       // so two errors in one definition leave it out once.
       const byUrl = new Map<string, ProblemLike[]>();
       for (const p of toCut) {
          const url = p.at?.url;
-         if (!url || !p.at?.range) return undefined;
+         if (!url || !p.at?.range) return {};
          const list = byUrl.get(url) ?? [];
          list.push(p);
          byUrl.set(url, list);
       }
       for (const [url, list] of byUrl) {
          const text = overlay.get(url) ?? args.readText(url);
-         if (text === undefined) return undefined;
+         if (text === undefined) return {};
          const cuts: Cut[] = [];
          for (const p of list) {
             const offset = offsetOf(
@@ -229,14 +275,22 @@ async function leaveOut(
                   character: 0,
                },
             );
-            if (offset < 0) return undefined;
+            if (offset < 0) return {};
             const refused = p.code === JOIN_CONNECTION_MISMATCH;
             const own = definitionCutAt(text, offset);
+            const declaration = refused
+               ? definitionCutAt(text, offset, true)
+               : undefined;
+            if (declaration) {
+               declaring.add(declarationKey(url, declaration.start));
+            }
             const cut =
-               refused && scope === "declaration"
-                  ? definitionCutAt(text, offset, true)
+               declaration &&
+               (escalated === "all" ||
+                  escalated.has(declarationKey(url, declaration.start)))
+                  ? declaration
                   : own;
-            if (!cut) return undefined;
+            if (!cut) return blockedAt(url, text, offset);
             // A declaration left out whole must not take with it a problem
             // its compile reported beside the refusal: that one must be gone
             // because the join is out, not because its text is.
@@ -248,7 +302,7 @@ async function leaveOut(
                   return at >= cut.start && at < cut.end;
                })
             ) {
-               return undefined;
+               return {};
             }
             if (cuts.some((c) => c.start === cut.start && c.end === cut.end)) {
                continue;
@@ -270,11 +324,11 @@ async function leaveOut(
          return { overlay, leftOut };
       } catch (error) {
          const next = errorProblems(error);
-         if (!next || next.length === 0) return undefined;
+         if (!next || next.length === 0) return {};
          problems = next;
       }
    }
-   return undefined;
+   return {};
 }
 
 /**
