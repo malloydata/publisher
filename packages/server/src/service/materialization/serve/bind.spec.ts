@@ -960,6 +960,36 @@ describe("applyObservedColumns", () => {
       ]);
    });
 
+   // Strict-origin mode: with no capture, a binding's columns are the plan's
+   // spelling (every number a DOUBLE), so an exact gate column altered to a
+   // DOUBLE read as unmoved, and a gate over it was kept on the copy.
+   it("judges each column of a table whose build captured no schema by the type it holds", () => {
+      const planned = [
+         { name: "acct", type: "DOUBLE" },
+         { name: "region", type: "VARCHAR" },
+      ];
+      const out = applyObservedColumns({
+         entries: { addr1: { tableName: "orders_t" } },
+         bindings: [{ ...binding, schema: planned }],
+         observed: new Map([
+            [
+               "addr1",
+               {
+                  columns: [
+                     { name: "acct", type: "DOUBLE", nativeType: "DOUBLE" },
+                     { name: "region", type: "VARCHAR", nativeType: "VARCHAR" },
+                  ],
+               },
+            ],
+         ]),
+      });
+      expect(out.bindings[0].retypedColumns).toEqual([
+         { name: "acct", type: "DOUBLE" },
+         { name: "region", type: "VARCHAR" },
+      ]);
+      expect(out.drifted).toEqual([]);
+   });
+
    // Strict-origin mode: a rollup whose build captured neither its columns
    // nor their native types (a capture that failed) was served from a
    // DuckLake DOUBLE as exact; the read's `storedAsDouble` was ignored.

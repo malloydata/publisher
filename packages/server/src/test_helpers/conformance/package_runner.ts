@@ -345,6 +345,12 @@ export async function loadFixture(
    root: string;
    /** The storage destination the `storage=` tables are built in. */
    lake: DuckDBConnection;
+   /**
+    * The connection the fixture's models read and its database tables are
+    * built on: `duckdb` (the sandbox), or the origin a `parquet` fixture or
+    * strict-origin mode moves them to.
+    */
+   origin: string;
 }> {
    const root = fs.mkdtempSync(path.join(os.tmpdir(), "publisher-conform-"));
    const envPath = path.join(root, "env");
@@ -544,6 +550,11 @@ export async function loadFixture(
       pkg,
       root,
       lake,
+      origin: strict
+         ? STRICT_ORIGIN_NAME
+         : format === "parquet"
+           ? PARQUET_ORIGIN
+           : "duckdb",
       async bind(options: BindOptions = {}) {
          const { built, buildErrors, database, stored } = await buildAll(
             pkg,

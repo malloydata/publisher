@@ -800,7 +800,11 @@ export function applyObservedColumns(args: {
             drifted.push({ sourceEntityId: b.virtualHandle, columns: extra });
          }
       }
-      if (!moved) return [b];
+      // No captured schema: judged by the types it holds (uncapturedTypes).
+      movedColumns.push(
+         ...uncapturedTypes(b, entry, schema, read, movedColumns),
+      );
+      if (!moved && movedColumns.length === 0) return [b];
       // A big-integer column is cast to its native type at read: the type
       // the warehouse holds now, never the one it was built with.
       const nativeSchema = b.nativeSchema?.map((n) =>
@@ -1134,6 +1138,33 @@ function roundsBigInteger(c: ObservedDrift["columns"][number]): boolean {
       ) &&
       /^(DOUBLE|FLOAT|REAL|FLOAT4|FLOAT8)$/i.test((c.observedType ?? "").trim())
    );
+}
+
+/**
+ * A table whose build captured no schema is bound with the plan's spelling of
+ * each column (every number a DOUBLE), so an exact column altered to a float
+ * reads as unmoved. Each column with no captured type at all, and not already
+ * judged, is listed with the type it holds now, so a gate over a float is not
+ * kept on it.
+ */
+function uncapturedTypes(
+   b: Binding,
+   entry: FreshnessManifest[string] | undefined,
+   schema: readonly { name: string }[],
+   read: Extract<ObservedColumns, { columns: unknown }>,
+   judged: readonly { name: string }[],
+): { name: string; type: string }[] {
+   if (entry?.schema?.length) return [];
+   const captured = b.nativeSchema ?? entry?.nativeSchema;
+   const done = new Set(judged.map((c) => c.name));
+   return schema.flatMap((c) => {
+      const now = columnNamed(read.columns, c.name);
+      return done.has(c.name) ||
+         now?.type === undefined ||
+         nativeTypeOf(captured, c.name) !== undefined
+         ? []
+         : [{ name: c.name, type: now.nativeType ?? now.type }];
+   });
 }
 
 /**
