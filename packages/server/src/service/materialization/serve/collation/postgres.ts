@@ -161,6 +161,18 @@ async function postgresTableCollation(
    return judged.includes("deterministic") ? "deterministic" : "binary";
 }
 
+/** Whether the catalog lists the table at `tablePath` (`to_regclass`). */
+async function postgresTableListed(
+   io: ProbeIO,
+   tablePath: string,
+): Promise<boolean> {
+   const [row] = await pgRows(
+      io,
+      `SELECT to_regclass('${tablePath.replace(/'/g, "''")}') IS NULL AS missing`,
+   );
+   return row?.missing !== true;
+}
+
 /** The Postgres dialect's reads: a column's collation, and its identity. */
 export interface PostgresCollationReader extends CollationReader {
    readonly scope: "column";
@@ -186,6 +198,7 @@ export const POSTGRES_COLLATION: PostgresCollationReader = Object.freeze({
    sourceColumns: (io: ProbeIO, sql: string) =>
       postgresCollation(io, unfinalizedPostgresSQL(sql)),
    storedTable: postgresTableCollation,
+   tableListed: postgresTableListed,
    defaultCollation: postgresDefaultCollation,
    collationIdentity: (io: ProbeIO, sql: string) =>
       postgresCollationIdentity(io, unfinalizedPostgresSQL(sql)),

@@ -67,6 +67,18 @@ async function duckdbTableCollation(
       : "unknown";
 }
 
+/** Whether the instance lists the table at `tablePath`, matched without case. */
+async function duckdbTableListed(
+   io: ProbeIO,
+   tablePath: string,
+): Promise<boolean> {
+   const name = tableNameOf(tablePath).replace(/'/g, "''");
+   const [row] = await io.rows(
+      `SELECT count(*) AS n FROM duckdb_tables() WHERE lower(table_name) = lower('${name}')`,
+   );
+   return Number(row?.n ?? 1) !== 0;
+}
+
 /** The DuckDB dialect's reader. */
 export const DUCKDB_COLLATION: CollationReader & {
    readonly scope: "instance";
@@ -74,4 +86,5 @@ export const DUCKDB_COLLATION: CollationReader & {
    scope: "instance" as const,
    sourceColumns: duckdbCollation,
    storedTable: duckdbTableCollation,
+   tableListed: duckdbTableListed,
 });

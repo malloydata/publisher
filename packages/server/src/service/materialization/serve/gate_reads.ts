@@ -222,6 +222,9 @@ function isAnalyticKind(t: unknown): boolean {
    return typeof t === "string" && t.includes("analytic");
 }
 
+/** The input of a stage after the first: an earlier stage's output. */
+const LATER_STAGE = Symbol("later stage");
+
 function asArray(x: unknown): unknown[] {
    return Array.isArray(x) ? x : [];
 }
@@ -347,6 +350,11 @@ class GateReadWalk {
    constructor(
       private readonly modelDef: unknown,
       private readonly stored: ReadonlySet<string>,
+      /**
+       * The sources the answer's compile re-rooted on their stored tables,
+       * by `sourceID`, read or not ({@link scopeJoins}).
+       */
+      private readonly rerooted: ReadonlySet<string> = new Set(),
    ) {}
 
    /** A string comparison not known to compare only columns. */
@@ -503,14 +511,22 @@ class GateReadWalk {
     * Whether every leaf of `e` is a non-string value ({@link GateReads}'s
     * `comparesNoString`), its fields typed on `source`.
     */
-   leavesNotString(e: unknown, source: unknown, depth = 0): boolean {
+   leavesNotString(
+      e: unknown,
+      source: unknown,
+      depth = 0,
+      /** Judge the joins a field is read through ({@link joinsCompareNoString}). */
+      throughJoins = true,
+   ): boolean {
       if (depth > 64 || e === null || typeof e !== "object") return false;
       const n = e as { node?: unknown; path?: unknown; id?: unknown };
       switch (n.node) {
          case "field":
             return (
                Array.isArray(n.path) &&
-               nonStringType(typeAt(source, n.path as string[]))
+               nonStringType(typeAt(source, n.path as string[])) &&
+               (!throughJoins ||
+                  this.joinsCompareNoString(source, n.path as string[]))
             );
          case "given":
             return nonStringType(this.givenType(n.id));
@@ -523,6 +539,23 @@ class GateReadWalk {
          case "timestamptzLiteral":
          case "now":
             return true;
+         case "is-null":
+         case "is-not-null":
+            // A null test of a field compares no value: a stored copy holds
+            // its nulls where live does, under any collation, as long as
+            // the joins it is read through match rows comparing no string.
+            // Of anything else (`nullif(name, 'x') is null`), its operand is
+            // judged. A computed field is judged where it is followed.
+            {
+               const path = bareFieldPath((e as { e?: unknown }).e);
+               if (
+                  path !== undefined &&
+                  (!throughJoins || this.joinsCompareNoString(source, path))
+               ) {
+                  return true;
+               }
+            }
+            break;
          default:
             if (
                typeof n.node !== "string" ||
@@ -544,9 +577,35 @@ class GateReadWalk {
                   ? Object.values(kid as object)
                   : [kid];
             for (const o of operands) {
-               if (!this.leavesNotString(o, source, depth + 1)) return false;
+               if (!this.leavesNotString(o, source, depth + 1, throughJoins)) {
+                  return false;
+               }
             }
          }
+      }
+      return true;
+   }
+
+   /**
+    * Whether each join `path` is read through (all but its last name)
+    * matches its rows comparing no string: whether a joined row is there at
+    * all, so whether its fields are null, follows its `on:`, which a
+    * collation decides when it compares strings (`on: cat = tt.category`).
+    * Its `on:` is read on the source that declares the join, its leaves by
+    * type alone.
+    */
+   joinsCompareNoString(source: unknown, path: readonly string[]): boolean {
+      let at = source;
+      for (const name of path.slice(0, -1)) {
+         const f = fieldsOf(at).get(name);
+         if (f === undefined) return false;
+         if (f.join !== undefined) {
+            const on = (f as { onExpression?: unknown }).onExpression;
+            if (on !== undefined && !this.leavesNotString(on, at, 0, false)) {
+               return false;
+            }
+         }
+         at = f;
       }
       return true;
    }
@@ -926,6 +985,8 @@ class GateReadWalk {
       at: (path: readonly string[]) => void,
       /** `at` resolves from `source` itself, through no join. */
       own: boolean,
+      /** `source` is joined, and the answer's compile re-rooted it on its table. */
+      onTable = false,
    ): void {
       if (depth > 32 || source === null || typeof source !== "object") return;
       const s = source as {
@@ -946,7 +1007,7 @@ class GateReadWalk {
       }
       this.scopeMembers(source, depth, at, own);
       this.scopeJoins(source, depth, at);
-      if (s.query !== undefined && !this.isStored(source)) {
+      if (s.query !== undefined && !onTable && !this.isStored(source)) {
          this.scopeQuery(source, s.query, depth);
       }
    }
@@ -972,7 +1033,14 @@ class GateReadWalk {
       }
    }
 
-   /** Each joined source's own `where:`, which filters the rows the join reaches. */
+   /**
+    * Each joined source's own `where:`, which filters the rows the join
+    * reaches. A joined source the answer's compile re-rooted on its table is
+    * read, if at all, from that table, whose build applied its query, as an
+    * answer that reads it already holds ({@link isStored}); one the answer
+    * does not read is in no SQL it runs. Either way its own query is not
+    * walked; what is applied on read (its `where:`, its joins') still is.
+    */
    private scopeJoins(
       source: unknown,
       depth: number,
@@ -982,7 +1050,9 @@ class GateReadWalk {
       for (const f of (Array.isArray(fields) ? fields : []) as FieldLike[]) {
          if (f.join === undefined) continue;
          const name = activeName(f);
-         this.scope(f, depth + 1, (p) => at([name, ...p]), false);
+         const id = (f as { sourceID?: unknown }).sourceID;
+         const onTable = typeof id === "string" && this.rerooted.has(id);
+         this.scope(f, depth + 1, (p) => at([name, ...p]), false, onTable);
       }
    }
 
@@ -1069,7 +1139,16 @@ class GateReadWalk {
    ): void {
       const term = (raw: unknown) => {
          // A `having:` names the stage's own outputs: read each as what it is.
-         const e = this.outputsResolved(raw, stage);
+         // A later stage's input is an earlier stage's output, whose fields
+         // carry no expression of their own: an aggregate output there is
+         // read as what it reads, for `stageTerm` to follow back through
+         // the earlier stages.
+         const input = nested
+            ? undefined
+            : prior.length === 0
+              ? ctx.entry
+              : LATER_STAGE;
+         const e = this.outputsResolved(raw, stage, input);
          if (nested) this.nestTerm(ctx, e, prior);
          else if (prior.length === 0) this.entryTerm(ctx, e, []);
          else this.stageTerm(ctx, e, i);
@@ -1108,11 +1187,17 @@ class GateReadWalk {
     * `e` with each of `stage`'s outputs it names (`node: "outputField"`)
     * replaced by what that output is: the field it references, or its own
     * expression. One that is neither is left as it is, and read unresolved.
+    * `input`: what the stage reads, on which an aggregate output is judged.
     */
-   private outputsResolved(e: unknown, stage: QueryStage, depth = 0): unknown {
+   private outputsResolved(
+      e: unknown,
+      stage: QueryStage,
+      input: unknown,
+      depth = 0,
+   ): unknown {
       if (depth > 64 || e === null || typeof e !== "object") return e;
       if (Array.isArray(e)) {
-         return e.map((x) => this.outputsResolved(x, stage, depth + 1));
+         return e.map((x) => this.outputsResolved(x, stage, input, depth + 1));
       }
       const n = e as { node?: unknown; name?: unknown };
       if (n.node === "outputField") {
@@ -1120,18 +1205,27 @@ class GateReadWalk {
          if (qf?.type === "fieldref" && Array.isArray(qf.path)) {
             return { node: "field", path: qf.path };
          }
-         // An aggregate that is not a string compares as a number does (its
-         // own filters are read from the stage's fields).
-         if (
+         // An aggregate that is not a string, and whose value compares none
+         // on the stage's input (a sum of a `pick` over a string ordering
+         // compares one), compares as a number does; its own filters are
+         // read from the stage's fields. Any other is read as what it is.
+         const aggregate =
             qf?.e !== undefined &&
             (qf as { expressionType?: unknown }).expressionType ===
                "aggregate" &&
-            nonStringType(qf.type)
+            nonStringType(qf.type);
+         if (aggregate && input === LATER_STAGE) {
+            const reads = this.laterAggregateReads(qf!.e, stage);
+            if (reads !== undefined) return reads;
+         } else if (
+            aggregate &&
+            input !== undefined &&
+            this.valueComparesNoString(qf!.e, input)
          ) {
             return { node: "numberLiteral", literal: "0" };
          }
          if (qf?.e !== undefined) {
-            return this.outputsResolved(qf.e, stage, depth + 1);
+            return this.outputsResolved(qf.e, stage, input, depth + 1);
          }
          this.unresolved = true;
          return e;
@@ -1139,9 +1233,41 @@ class GateReadWalk {
       return Object.fromEntries(
          Object.entries(e).map(([k, v]) => [
             k,
-            this.outputsResolved(v, stage, depth + 1),
+            this.outputsResolved(v, stage, input, depth + 1),
          ]),
       );
+   }
+
+   /**
+    * What an aggregate output of a later stage reads, as one term the
+    * earlier stages can be followed back through: each field it aggregates,
+    * each of its filters' terms, and the stage's grouping keys (a count
+    * grouped by a string counts what that string's comparison groups), as
+    * `stageOutputsCompareNoString` reads a stage's aggregate. Undefined when
+    * a key is not a plain expression (a window function, a nest).
+    */
+   private laterAggregateReads(
+      e: unknown,
+      stage: QueryStage,
+   ): unknown | undefined {
+      const parts: unknown[] = [];
+      if (!this.aggregateReads(e, undefined, [], parts, 0)) return undefined;
+      for (const qf of asArray(stage.queryFields) as (FieldLike & {
+         expressionType?: unknown;
+      })[]) {
+         if (qf.expressionType === "aggregate") continue;
+         if (qf.type === "fieldref" && Array.isArray(qf.path)) {
+            parts.push({ node: "field", path: qf.path });
+         } else if (
+            qf.e !== undefined &&
+            (qf.expressionType === undefined || qf.expressionType === "scalar")
+         ) {
+            parts.push(qf.e);
+         } else {
+            return undefined;
+         }
+      }
+      return { node: "()", parts };
    }
 
    /** A term on the entry point's fields, read from the join at `prefix`. */
@@ -1163,9 +1289,110 @@ class GateReadWalk {
          this.comparesOnlyColumns = false;
       if (!this.equalityOrNotString(e, owner)) this.equalityOnly = false;
       for (const p of paths) {
-         if (measure(p)) continue;
+         // A measure whose value compares no string has its filters followed
+         // as terms of their own; any other is read as a field is.
+         if (
+            measure(p) &&
+            this.valueComparesNoString(
+               fieldAt(ctx.entry, p)?.e,
+               p.length === 1 ? ctx.entry : fieldAt(ctx.entry, p.slice(0, -1)),
+            )
+         ) {
+            continue;
+         }
          this.entryPaths.push(p);
          this.resolve(ctx.entry, p, [], [], true);
+      }
+   }
+
+   /**
+    * Whether a measure's value compares no string: each filter it applies
+    * and what it aggregates and combines ({@link valueComparesNoString}).
+    */
+   private measureComparesNoString(
+      e: unknown,
+      source: unknown,
+      depth = 0,
+   ): boolean {
+      if (depth > 32) return false;
+      return (
+         filteredTerms(e).every((t) =>
+            this.comparesNoStringThroughScalars(t, source, depth + 1),
+         ) && this.valueComparesNoString(e, source, depth + 1)
+      );
+   }
+
+   /**
+    * Whether a measure's expression, its filters aside, compares no string:
+    * an aggregate of a field read as it is, or of an expression comparing no
+    * string (`sum(pick 1 when category > 'M' else 0)` compares one), and
+    * arithmetic over those and over other measures, each read through its
+    * own definition, filters included. Anything else reads false.
+    */
+   private valueComparesNoString(
+      e: unknown,
+      source: unknown,
+      depth = 0,
+   ): boolean {
+      if (depth > 32 || e === null || typeof e !== "object") return false;
+      const n = e as {
+         node?: unknown;
+         path?: unknown;
+         e?: unknown;
+         kids?: Record<string, unknown>;
+      };
+      switch (n.node) {
+         case "numberLiteral":
+         case "null":
+            return true;
+         case "aggregate": {
+            const arg = n.e as { node?: unknown } | undefined;
+            // `count()` aggregates no field.
+            if (arg === undefined || arg.node === "") return true;
+            // A sum or an average adds what it aggregates; any other
+            // aggregate compares it (`count(category)` counts the distinct
+            // values a collation tells apart, `max` orders them), so that
+            // must be no string at all.
+            const fn = (n as { function?: unknown }).function;
+            return fn === "sum" || fn === "avg"
+               ? this.valueComparesNoString(arg, source, depth + 1)
+               : this.comparesNoStringThroughScalars(arg, source, depth + 1);
+         }
+         case "filteredExpr":
+            return this.valueComparesNoString(n.kids?.e, source, depth + 1);
+         case "field": {
+            const path = n.path as string[];
+            const f = Array.isArray(path) ? fieldAt(source, path) : undefined;
+            if (f === undefined) return false;
+            if (f.expressionType === "aggregate" && f.e !== undefined) {
+               const owner =
+                  path.length === 1
+                     ? source
+                     : fieldAt(source, path.slice(0, -1));
+               return this.measureComparesNoString(f.e, owner, depth + 1);
+            }
+            // A value read as it is: its nulls and its value, as a null test
+            // of it reads them (a computed one through what computes it).
+            return this.comparesNoStringThroughScalars(
+               { node: "is-null", e },
+               source,
+               depth + 1,
+            );
+         }
+         case "+":
+         case "-":
+         case "*":
+         case "/":
+         case "%":
+            return (
+               this.valueComparesNoString(n.kids?.left, source, depth + 1) &&
+               this.valueComparesNoString(n.kids?.right, source, depth + 1)
+            );
+         case "unary-":
+         case "()":
+            return this.valueComparesNoString(n.e, source, depth + 1);
+         default:
+            return this.comparesNoStringThroughScalars(e, source, depth + 1);
       }
    }
 
@@ -1176,8 +1403,8 @@ class GateReadWalk {
     * through the stage that computes it. A field's type says what it yields,
     * not what it compares (`is_books is category = 'books'` and `select: sb
     * is category = 'books'` are booleans), and `leavesNotString` reads only
-    * the type. A measure's value is a number; its own filters are followed
-    * as terms of their own.
+    * the type. A measure is read through its definition
+    * ({@link measureComparesNoString}).
     */
    private comparesNoStringThroughScalars(
       e: unknown,
@@ -1191,10 +1418,10 @@ class GateReadWalk {
          const owner =
             p.length === 1 ? source : fieldAt(source, p.slice(0, -1));
          if (f.e !== undefined) {
-            return (
-               f.expressionType === "aggregate" ||
-               this.comparesNoStringThroughScalars(f.e, owner, depth + 1)
-            );
+            // A measure is judged at its definition, never taken on trust.
+            return f.expressionType === "aggregate"
+               ? this.measureComparesNoString(f.e, owner, depth + 1)
+               : this.comparesNoStringThroughScalars(f.e, owner, depth + 1);
          }
          const query = (owner as { query?: QueryLike } | undefined)?.query;
          if (query === undefined || this.isStored(owner)) return true;
@@ -1388,8 +1615,10 @@ export function gateReads(
     * decided in Publisher. Absent, every text is taken as one.
     */
    rowFilterExprs: readonly string[] = exprs,
+   /** The sources the answer's compile re-rooted on their tables, read or not. */
+   rerooted: ReadonlySet<string> = new Set(),
 ): GateReads {
-   const walk = new GateReadWalk(modelDef, stored);
+   const walk = new GateReadWalk(modelDef, stored, rerooted);
    const read = gatePaths(exprs);
    if (read.unresolved) walk.unresolved = true;
    // A row filter is `field = $GIVEN` or `field in $GIVEN`: its field and
@@ -1397,7 +1626,11 @@ export function gateReads(
    const compared = gatePaths(rowFilterExprs);
    if (
       compared.unresolved ||
-      compared.paths.some((p) => !nonStringType(typeAt(struct, p))) ||
+      compared.paths.some(
+         (p) =>
+            !nonStringType(typeAt(struct, p)) ||
+            !walk.joinsCompareNoString(struct, p),
+      ) ||
       rowFilterExprs.some((expr) =>
          [...expr.matchAll(/\$([A-Za-z_][A-Za-z_0-9]*)/g)].some((m) => {
             const types = walk.givenTypesNamed(m[1]);
@@ -1601,6 +1834,11 @@ export async function gateReadsOfQuery(
    runnable: QueryMaterializer,
    /** The sources whose tables the answer reads, by `sourceID`. */
    stored: ReadonlySet<string> = new Set(),
+   /**
+    * The sources the answer's compile re-rooted on their tables, read or
+    * not, by `sourceID`: a join to one never re-applies its own query.
+    */
+   rerooted: ReadonlySet<string> = new Set(),
 ): Promise<GateReads | undefined> {
    try {
       const prepared = await readPreparedQuery(runnable);
@@ -1617,7 +1855,14 @@ export async function gateReadsOfQuery(
       );
       return exprs === undefined || rowFilters === undefined
          ? undefined
-         : gateReads(struct, exprs, prepared.modelDef, stored, rowFilters);
+         : gateReads(
+              struct,
+              exprs,
+              prepared.modelDef,
+              stored,
+              rowFilters,
+              rerooted,
+           );
    } catch {
       return undefined;
    }

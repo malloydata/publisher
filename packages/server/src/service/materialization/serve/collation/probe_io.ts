@@ -56,4 +56,6 @@ export interface CollationReader {
    sourceColumns(io: ProbeIO, sql: string): Promise<Collation>;
    /** What the strings of a stored table compare under, by its path. */
    storedTable(io: ProbeIO, tablePath: string): Promise<Collation>;
+   /** Whether the catalog lists the table at `tablePath`. */
+   tableListed(io: ProbeIO, tablePath: string): Promise<boolean>;
 }

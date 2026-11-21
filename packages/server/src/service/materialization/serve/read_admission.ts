@@ -181,15 +181,20 @@ export class ReadAdmission {
       }
    }
 
-   /** What the gates and row scope read, given the tables an answer read. */
+   /**
+    * What the gates and row scope read, given the tables an answer read and
+    * the sources its compile re-rooted on their tables (see
+    * `gateReadsOfQuery`).
+    */
    private gateReadsFor(
       tables: readonly TableRead[],
+      onTables: ReadonlySet<string> = new Set(),
    ): Promise<GateReads | undefined> {
       const stored = storedSourceIDs(tables);
-      const key = [...stored].sort().join("\n");
+      const key = [[...stored].sort(), [...onTables].sort()].join("\n\n");
       let r = this.reads.get(key);
       if (r === undefined) {
-         r = gateReadsOfQuery(this.query.authorRunnable, stored);
+         r = gateReadsOfQuery(this.query.authorRunnable, stored, onTables);
          this.reads.set(key, r);
       }
       return r;
@@ -217,7 +222,10 @@ export class ReadAdmission {
 
    private async gatherNow(leg: LegKind, answer: LegAnswer): Promise<Gathered> {
       const read = answer.gateTablesRead ?? answer.tablesRead ?? [];
-      const scopeReads = () => this.gateReadsFor(read);
+      // The served copy reads each source it re-rooted from its table, so a
+      // join to one never re-applies that source's own query.
+      const rerooted = leg === "served" ? answer.rerootedSourceIDs : undefined;
+      const scopeReads = () => this.gateReadsFor(read, rerooted);
       // Only the served copy and a rollup re-apply a row scope, and only
       // past a gate is the scope's reads needed otherwise; both read through
       // the one memo.
@@ -431,6 +439,10 @@ export class ReadAdmission {
                  authorRunnable: this.query.authorRunnable,
                  reads,
                  storedReads: g.storedReads,
+                 ...(request.comparison === "result_ordered" ||
+                 request.comparison === "result_grouped"
+                    ? { unlistedPasses: true }
+                    : {}),
                  ...givens,
               });
       const probes: Partial<Record<Comparison, ComparisonProbes>> = {

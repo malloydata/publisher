@@ -662,6 +662,8 @@ export class ServedCopyServe {
       tablesRead: Binding[];
       /** What the answer is judged to read for its gates (tablesReadForGates). */
       gateTablesRead: Binding[];
+      /** The author sources the copy re-rooted on their tables, by `sourceID`. */
+      rerootedSourceIDs: ReadonlySet<string>;
       /**
        * The served copy's compiled model, where a row-level gate is grafted
        * when this answer runs: the gate's text is the author's, kept in
@@ -884,6 +886,7 @@ export class ServedCopyServe {
          bindings: compiled.rerooted,
          tablesRead,
          gateTablesRead: tablesReadForGates(sql, compiled.rerooted, tablesRead),
+         rerootedSourceIDs: compiled.rerootedSourceIDs ?? new Set(),
          graftScope: {
             modelDef: compiled.modelDef as ModelDef,
             materializer: attempt.materializer,
@@ -2545,6 +2548,7 @@ export class ServedCopyServe {
          optOutIDs,
          unsafeIDs,
          rerooted,
+         rerootedSourceIDs: rerootedSourceIDsOf(candidates, throughBase),
          ...(throughBase.length > 0 ? { throughBase } : {}),
          aliased,
          problems,
@@ -2593,6 +2597,26 @@ interface LoadedCopy {
    servedRuntime: GraftRuntime;
    leftOut: LeftOutDefinition[];
    files: ReadonlyMap<string, string>;
+}
+
+/**
+ * The author sources a compiled copy reads from a stored table: each one
+ * still re-rooted past the passes, and each extension left as written whose
+ * base is one of those (by its chain, or the base name its text declares).
+ * An extension whose base a pass dropped reads that base as written.
+ */
+export function rerootedSourceIDsOf(
+   candidates: readonly { reroot: { sourceID: string; sourceName: string } }[],
+   throughBase: NonNullable<Compiled["throughBase"]>,
+): ReadonlySet<string> {
+   const ids = new Set(candidates.map((c) => c.reroot.sourceID));
+   const names = new Set(candidates.map((c) => c.reroot.sourceName));
+   const kept = throughBase.filter(
+      (t) =>
+         t.chain.some((id) => ids.has(id)) ||
+         (t.baseName !== undefined && names.has(t.baseName)),
+   );
+   return new Set([...ids, ...kept.map((t) => t.sourceID)]);
 }
 
 /** What a compiled copy is built from, past its last pass. */
