@@ -1092,7 +1092,7 @@ describe.skipIf(!SUPERUSER)("loads", () => {
          const first = merge("overlap", [object]);
          await until(async () => {
             const [row] = await superuser(
-               "select count(*)::int as n from pg_locks where locktype = 'advisory' and granted",
+               "select count(*)::int as n from pg_locks where locktype = 'advisory' and granted and database = (select oid from pg_database where datname = current_database())",
                DB,
             );
             return Number(row.n) > 0 ? true : undefined;
@@ -1125,7 +1125,7 @@ describe.skipIf(!SUPERUSER)("loads", () => {
          const doomed = merge("killed", [object]);
          const pid = await until(async () => {
             const [row] = await superuser(
-               "select pid from pg_locks where locktype = 'advisory' and granted limit 1",
+               "select pid from pg_locks where locktype = 'advisory' and granted and database = (select oid from pg_database where datname = current_database()) limit 1",
                DB,
             );
             return row ? Number(row.pid) : undefined;
