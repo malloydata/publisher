@@ -30,6 +30,7 @@ export type {
    ConnectionAttributes,
    ConnectionDialect,
    ConnectionType,
+   CoreConnectionEntry,
 } from "./types";
 
 /** Every connection type's entry. */

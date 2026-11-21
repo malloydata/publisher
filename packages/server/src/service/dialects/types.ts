@@ -14,6 +14,7 @@
  */
 
 import type { components } from "../../api";
+import type { ConnectionOrigin } from "../../config";
 
 /** A connection's configured type, as the API spells it. */
 export type ConnectionType = NonNullable<
@@ -23,6 +24,18 @@ export type ConnectionType = NonNullable<
 /** A connection type's static attributes, as the API reports them. */
 export type ConnectionAttributes =
    components["schemas"]["ConnectionAttributes"];
+
+/** A connection as the API carries it. */
+export type ApiConnection = components["schemas"]["Connection"];
+
+/** A connection past assembly's name check. */
+export type NamedConnection = ApiConnection & { name: string };
+
+/** The Malloy core connection entry a connection assembles into. */
+export type CoreConnectionEntry = {
+   is: string;
+   [key: string]: unknown;
+};
 
 /** One connection type's entry in the registry. */
 export interface ConnectionDialect {
@@ -35,4 +48,22 @@ export interface ConnectionDialect {
     * (`publisher`, which names another server's connection).
     */
    readonly attributes: Readonly<ConnectionAttributes> | undefined;
+   /**
+    * The type's own shape checks, run at config load after the checks every
+    * connection gets (connection_config.ts, validateConnectionShape). Absent
+    * for a type with none of its own (postgres, mysql).
+    */
+   readonly validateShape?: (
+      connection: ApiConnection,
+      origin: ConnectionOrigin,
+   ) => void;
+   /**
+    * The Malloy core connection entry a connection of this type assembles
+    * into; `environmentPath` resolves a relative file a DuckDB-family
+    * connection names.
+    */
+   readonly coreEntry: (
+      connection: NamedConnection,
+      environmentPath: string,
+   ) => CoreConnectionEntry;
 }

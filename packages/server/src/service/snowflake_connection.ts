@@ -12,10 +12,8 @@ import type {
    RunSQLOptions,
 } from "@malloydata/malloy";
 import type { components } from "../api";
-import {
-   normalizeSnowflakePrivateKey,
-   removeUndefined,
-} from "./connection_config";
+import { removeUndefined } from "./connection_config";
+import { normalizeSnowflakePrivateKey } from "./dialects/snowflake";
 
 type ApiSnowflakeConnection = components["schemas"]["SnowflakeConnection"];
 type SnowflakeConnOptions = NonNullable<

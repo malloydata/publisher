@@ -12,11 +12,11 @@ import { PUBLISHER_CONFIG_NAME } from "../constants";
 import { logger } from "../logger";
 import {
    assembleEnvironmentConnections,
-   normalizeSnowflakePrivateKey,
    validateConnectionSqlFields,
    validateDuckdbApiSurface,
    validateStorageDestinations,
 } from "./connection_config";
+import { normalizeSnowflakePrivateKey } from "./dialects/snowflake";
 import { installSettings } from "../test_helpers/settings_env";
 import { toPublicConnection } from "./connection_public_view";
 

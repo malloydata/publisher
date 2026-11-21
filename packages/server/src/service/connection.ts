@@ -74,12 +74,12 @@ import {
 } from "../path_safety";
 import {
    assembleEnvironmentConnections,
-   CoreConnectionEntry,
    EnvironmentConnectionMetadata,
-   normalizeSnowflakePrivateKey,
-   parseServiceAccountKey,
    removeUndefined,
 } from "./connection_config";
+import type { CoreConnectionEntry } from "./dialects";
+import { parseServiceAccountKey } from "./dialects/bigquery";
+import { normalizeSnowflakePrivateKey } from "./dialects/snowflake";
 import {
    applyExtensionSessionSettings,
    escapeSQL,
