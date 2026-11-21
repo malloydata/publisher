@@ -222,6 +222,9 @@ function isAnalyticKind(t: unknown): boolean {
    return typeof t === "string" && t.includes("analytic");
 }
 
+/** The input of a stage after the first: an earlier stage's output. */
+const LATER_STAGE = Symbol("later stage");
+
 function asArray(x: unknown): unknown[] {
    return Array.isArray(x) ? x : [];
 }
@@ -1009,11 +1012,15 @@ class GateReadWalk {
    ): void {
       const term = (raw: unknown) => {
          // A `having:` names the stage's own outputs: read each as what it is.
+         // A later stage's input is an earlier stage's output, whose fields
+         // carry no expression of their own: an aggregate output there is
+         // read as what it reads, for `stageTerm` to follow back through
+         // the earlier stages.
          const input = nested
             ? undefined
             : prior.length === 0
               ? ctx.entry
-              : ctx.pipeline[i - 1]?.outputStruct;
+              : LATER_STAGE;
          const e = this.outputsResolved(raw, stage, input);
          if (nested) this.nestTerm(ctx, e, prior);
          else if (prior.length === 0) this.entryTerm(ctx, e, []);
@@ -1075,13 +1082,18 @@ class GateReadWalk {
          // on the stage's input (a sum of a `pick` over a string ordering
          // compares one), compares as a number does; its own filters are
          // read from the stage's fields. Any other is read as what it is.
-         if (
+         const aggregate =
             qf?.e !== undefined &&
             (qf as { expressionType?: unknown }).expressionType ===
                "aggregate" &&
-            nonStringType(qf.type) &&
+            nonStringType(qf.type);
+         if (aggregate && input === LATER_STAGE) {
+            const reads = this.laterAggregateReads(qf!.e, stage);
+            if (reads !== undefined) return reads;
+         } else if (
+            aggregate &&
             input !== undefined &&
-            this.valueComparesNoString(qf.e, input)
+            this.valueComparesNoString(qf!.e, input)
          ) {
             return { node: "numberLiteral", literal: "0" };
          }
@@ -1097,6 +1109,38 @@ class GateReadWalk {
             this.outputsResolved(v, stage, input, depth + 1),
          ]),
       );
+   }
+
+   /**
+    * What an aggregate output of a later stage reads, as one term the
+    * earlier stages can be followed back through: each field it aggregates,
+    * each of its filters' terms, and the stage's grouping keys (a count
+    * grouped by a string counts what that string's comparison groups), as
+    * `stageOutputsCompareNoString` reads a stage's aggregate. Undefined when
+    * a key is not a plain expression (a window function, a nest).
+    */
+   private laterAggregateReads(
+      e: unknown,
+      stage: QueryStage,
+   ): unknown | undefined {
+      const parts: unknown[] = [];
+      if (!this.aggregateReads(e, undefined, [], parts, 0)) return undefined;
+      for (const qf of asArray(stage.queryFields) as (FieldLike & {
+         expressionType?: unknown;
+      })[]) {
+         if (qf.expressionType === "aggregate") continue;
+         if (qf.type === "fieldref" && Array.isArray(qf.path)) {
+            parts.push({ node: "field", path: qf.path });
+         } else if (
+            qf.e !== undefined &&
+            (qf.expressionType === undefined || qf.expressionType === "scalar")
+         ) {
+            parts.push(qf.e);
+         } else {
+            return undefined;
+         }
+      }
+      return { node: "()", parts };
    }
 
    /** A term on the entry point's fields, read from the join at `prefix`. */

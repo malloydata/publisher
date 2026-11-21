@@ -440,6 +440,23 @@ describe("queryFilterReadsOfQuery: the caller's own filters", () => {
       }
    });
 
+   it("reads a later stage's having: on an aggregate of an earlier stage's computed output back to it", async () => {
+      for (const q of [
+         "run: tm -> { select: id, big is pick 1 when category > 'M' else 0 } -> { group_by: id; aggregate: x is big.sum(); having: x > 0 }",
+         "run: tm -> { group_by: id; aggregate: y is np } -> { group_by: id; aggregate: x is y.sum(); having: x > 0 }",
+         "run: tm -> { select: id, big is pick 1 when category > 'M' else 0 } -> { select: id, b2 is big } -> { group_by: id; aggregate: x is b2.sum(); having: x > 0 }",
+      ]) {
+         const r = await reads(q);
+         expect(r.comparesNoString, q).toBe(false);
+         expect(r.scoped, q).toBe(true);
+      }
+      for (const q of [
+         "run: tm -> { select: id, amt } -> { select: id, a2 is amt } -> { group_by: id; aggregate: x is a2.sum(); having: x > 0 }",
+      ]) {
+         expect((await reads(q)).comparesNoString, q).toBe(true);
+      }
+   });
+
    it("reads a field through a join whose on: compares strings as comparing one, a null test included", async () => {
       for (const q of [
          "run: tj -> { where: tt.category is null; select: oid }",
