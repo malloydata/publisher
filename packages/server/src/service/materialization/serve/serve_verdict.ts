@@ -89,9 +89,10 @@ type ServeVerdictReason =
     */
    | "materialization_off"
    /**
-    * A `#(materialize)` source, which only the served copy reads, bound, but
-    * no model's served copy re-roots it (see the `served-copy-not-served`
-    * warning).
+    * A source the served copy reads (a `#(materialize)` one, or a `#@ persist`
+    * one), bound, but no model's compiled served copy re-roots it on its
+    * table; `servedCopyReason` names the `served-copy-not-served` warning's
+    * reason.
     */
    | "served_copy";
 
@@ -117,6 +118,31 @@ export interface ViewServeVerdict {
    detail?: string;
 }
 
+/**
+ * Where, and why, a source the served copy reads is not answered from its
+ * table, as each model's compiled served copy left it: the one fact the
+ * `served-copy-not-served` warnings and the verdicts both read.
+ */
+export interface ServedCopyOutcome {
+   /**
+    * Some model's compiled served copy answers it from a table: re-rooted on
+    * its own, or read through a re-rooted base whose table it shares.
+    */
+   serves: boolean;
+   /**
+    * The model files whose compiled served copy holds the source and does not
+    * re-root it, sorted.
+    */
+   notServedIn: string[];
+   /**
+    * Why, in the first of {@link notServedIn}: the `reason` of the
+    * `served-copy-not-served` warning that names it (or names that model's
+    * whole copy), else `not_rerooted`. Present when `notServedIn` is not
+    * empty.
+    */
+   reason?: string;
+}
+
 /** One materialized source's serve verdict. */
 export interface ServeVerdict {
    sourceName: string;
@@ -138,6 +164,17 @@ export interface ServeVerdict {
     */
    verdict: "serves" | "awaiting_build" | "live";
    reason?: ServeVerdictReason;
+   /**
+    * The served copy's own reason its table is not read
+    * ({@link ServedCopyOutcome.reason}). Present with `notServedIn`.
+    */
+   servedCopyReason?: string;
+   /**
+    * The model files whose served copy does not read its table: with a
+    * `served_copy` reason, every model that holds it; on a `serves` verdict,
+    * the models that hold it but answer its queries live.
+    */
+   notServedIn?: string[];
    /** What the verdict means for this source, in a sentence. */
    message: string;
    /** For a `live` verdict, the changes that would let it serve. */
@@ -224,6 +261,12 @@ export interface ServeVerdictFacts {
     * compile. Absent: never.
     */
    servedCopyOnDatabaseOnly?(sourceID: string): boolean | undefined;
+   /**
+    * How the models' compiled served copies left a source they read; undefined
+    * while any served copy is off or has yet to compile, which reports
+    * nothing. Absent: never judged.
+    */
+   servedCopyOutcome?(sourceID: string): ServedCopyOutcome | undefined;
    /**
     * A persisted view's generated build source (`#@ persist` on a view),
     * by its plan sourceID: the source and view it stores. A query reaches it
@@ -465,6 +508,8 @@ interface VerdictSubject {
    tier: "database" | "storage";
    /** Whether the package holds a storage binding for it. */
    storageBound: boolean;
+   /** Whether its table is read through the served copy (not a rollup's or persisted result's leg). */
+   servedCopy: boolean;
    base: Omit<ServeVerdict, "verdict" | "message">;
    rollupBase: string | undefined;
    view: ReturnType<NonNullable<ServeVerdictFacts["persistedViewOf"]>>;
@@ -533,6 +578,7 @@ function verdictSubjectOf(
       origin,
       tier,
       storageBound,
+      servedCopy,
       base,
       rollupBase,
       view,
@@ -606,20 +652,47 @@ function boundVerdict(
    storageBound: boolean,
    materialized: ReturnType<NonNullable<ServeVerdictFacts["materialize"]>>,
 ): ServeVerdict {
-   const { sourceID, source, facts, origin, tier, base, subject, live } = s;
-   const notServed = (): ServeVerdict =>
-      live(
+   const { sourceID, source, facts, origin, tier, subject, live } = s;
+   // Every source the served copy reads is judged by what its compile did,
+   // the same fact its `served-copy-not-served` warnings are read from.
+   const copy = s.servedCopy ? facts.servedCopyOutcome?.(sourceID) : undefined;
+   const where =
+      copy && copy.notServedIn.length > 0
+         ? {
+              servedCopyReason: copy.reason ?? "not_rerooted",
+              notServedIn: copy.notServedIn,
+           }
+         : {};
+   const base = { ...s.base, ...where };
+   const notServed = (): ServeVerdict => ({
+      ...live(
          "served_copy",
          `${subject}'s table is bound, but no model's served copy reads ` +
-            `it, so no query is answered from it: the served copy reads a ` +
-            `source it is built on from that source's table instead, or ` +
-            `leaves it as written for the reason a served-copy-not-served ` +
-            `warning gives.`,
-         [
-            "Fix what the served-copy-not-served warning names, if there is one.",
-            "Or drop #(materialize) from it if a source it is built on already answers its queries.",
-         ],
-      );
+            `it, so no query is answered from it` +
+            (where.servedCopyReason
+               ? ` (\`${where.servedCopyReason}\` in ` +
+                 `${where.notServedIn.join(", ")})`
+               : "") +
+            `: the served copy reads a source it is built on from that ` +
+            `source's table instead, or leaves it as written for the reason ` +
+            `a served-copy-not-served warning gives.`,
+         origin === "materialize"
+            ? [
+                 "Fix what the served-copy-not-served warning names, if there is one.",
+                 "Or drop #(materialize) from it if a source it is built on already answers its queries.",
+              ]
+            : [
+                 "Fix what the served-copy-not-served warning names, if there is one.",
+              ],
+      ),
+      ...where,
+   });
+   // A source materialized with `#(materialize)` is judged by `materialized`
+   // (which counts a compile still pending as serving); any other source the
+   // served copy reads, by its compile once there is one.
+   const copyLeavesIt =
+      materialized === "not_served" ||
+      (materialized === undefined && copy !== undefined && !copy.serves);
 
    const stale = (): ServeVerdict =>
       live(
@@ -636,7 +709,7 @@ function boundVerdict(
       const withViews = views && views.length > 0 ? { views } : {};
       if (!storageBound) {
          return {
-            ...base,
+            ...s.base,
             ...withViews,
             verdict: "awaiting_build",
             message: `${subject} will serve from storage once a build binds its table.`,
@@ -663,6 +736,7 @@ function boundVerdict(
       ) {
          return stale();
       }
+      if (copyLeavesIt) return notServed();
       return {
          ...base,
          ...withViews,
@@ -676,7 +750,7 @@ function boundVerdict(
 
    if (!facts.boundEntityIds.has(source.sourceEntityId)) {
       return {
-         ...base,
+         ...s.base,
          verdict: "awaiting_build",
          message: `${subject} will serve from its table once a build binds it.`,
       };
@@ -687,7 +761,7 @@ function boundVerdict(
    ) {
       return stale();
    }
-   if (materialized === "not_served") return notServed();
+   if (copyLeavesIt) return notServed();
    return {
       ...base,
       verdict: "serves",

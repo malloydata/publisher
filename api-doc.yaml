@@ -4976,9 +4976,41 @@ components:
             type creates no tables), `materialization_off` (a `#(materialize)`
             source, which only the served copy reads, and the served copy is
             off: `PUBLISHER_MATERIALIZE`, and for `storage=`
-            `PERSIST_STORAGE_MODE`), `served_copy` (a `#(materialize)` source
-            whose table is bound, but no model's served copy re-roots it; the
-            `served-copy-not-served` warning says why). An open set.
+            `PERSIST_STORAGE_MODE`), `served_copy` (a source the served copy
+            reads, `#(materialize)` or `#@ persist`, whose table is bound and
+            built, but no model's served copy re-roots it, so its queries are
+            answered live; `servedCopyReason` says why and `notServedIn`
+            where). An open set.
+        servedCopyReason:
+          type: string
+          description: >-
+            Why the served copy does not read this source's table, in the
+            models `notServedIn` names; present exactly when `notServedIn` is.
+            It is the `reason` of the `served-copy-not-served` package warning
+            on that model that names the source, or names the model's whole
+            copy (`cross_connection_unbuilt`, `compile_failed`), the same code
+            `publisher_served_copy_bind_total` counts: for example
+            `cross_connection_join`, `cross_connection_unbuilt`,
+            `compile_failed`, `column_types`, `fields_not_carried`,
+            `read_terms_not_kept`. `not_rerooted`, `servePathReason`'s value
+            for the same case, when no warning names one. An open set: treat
+            an unknown value as `not_rerooted`.
+        notServedIn:
+          type: array
+          items:
+            type: string
+          description: >-
+            The model files whose served copy holds this source (declares or
+            imports it) but does not answer its queries from a table (its
+            own, or the one it shares with a base it extends),
+            sorted. With a `served_copy` reason, every such model, so a
+            model whose whole copy is off marks every stored source it holds,
+            not only the one whose join failed it. On a `serves` verdict, the
+            models that answer its queries live while another model serves
+            it. Absent when every model that holds it reads its table, and
+            while a served copy has yet to compile. Read from the same
+            compile of record as the `served-copy-not-served` warnings, and
+            never by running a query.
         message:
           type: string
           description: What the verdict means for this source, in a sentence.
