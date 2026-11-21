@@ -126,6 +126,22 @@ export class CompiledCopyLanes<C extends LaneCompiled> {
       return this.compiled.get(lane);
    }
 
+   /**
+    * Whether `lane`'s kept copy is the one a request over `bindings` reads
+    * now ({@link ensure}'s reuse rule): compiled under this generation over
+    * the same bindings, or over ones that read alike. A copy compiled over a
+    * previous bind's bindings is not, until a compile over these replaces it.
+    */
+   keepsFor(lane: number, bindings: readonly Binding[]): boolean {
+      const current = this.compiled.get(lane);
+      return (
+         !!current &&
+         current.generation === this.generation &&
+         (sameBindings(current.over, bindings) ||
+            current.key === compileKeyOf(bindings))
+      );
+   }
+
    /** Drop every kept copy and every compile in flight. */
    invalidate(): void {
       this.generation++;

@@ -526,3 +526,136 @@ for (const mode of ["write-only", "off"] as const) {
       });
    });
 }
+
+// A database table, a storage table and a `#(materialize)` one, rebound by
+// hand so the verdicts can be read between a bind and the served copy's
+// compile at bind, which runs in the background (the bind returns first).
+const AFTER_BIND = `${SERVED}
+#(materialize) name="carriers_m" storage="${LAKE}"
+source: carriers_m is duckdb.table('carriers.csv') extend {
+  measure: carrier_count is count()
+}
+`;
+const AFTER_BIND_QUERIES = {
+   ...SERVED_QUERIES,
+   carriers_m: inM(
+      "run: carriers_m -> { group_by: region; aggregate: carrier_count; order_by: region }",
+   ),
+};
+const AFTER_BIND_TABLES = ["acc_db", "acc_lake", "carriers_m"];
+
+describe("verdicts read between a bind and the served copy's compile at bind", () => {
+   const s = scenario({ "m.malloy": AFTER_BIND }, AFTER_BIND_QUERIES);
+
+   function bound() {
+      const pkg = s.fixture?.pkg;
+      if (!pkg) throw new Error("not loaded");
+      const mz = pkg.materialization();
+      const database = mz.boundDatabaseEntries();
+      if (!database) throw new Error("no database tables bound");
+      const model = pkg.getModel("m.malloy");
+      if (!model) throw new Error("no model");
+      return { pkg, mz, database, stored: s.fixture!.stored, model };
+   }
+
+   /** Unbind every table and let the copy compile over none. */
+   async function unbindAll() {
+      const { mz, model } = bound();
+      mz.bind({ database: {} });
+      mz.bind({ storage: {} });
+      await model.prepareServedCopy();
+   }
+
+   /** Each table's verdict, `verdict[:reason]`. */
+   function shapes(): Record<string, string> {
+      return Object.fromEntries(
+         AFTER_BIND_TABLES.map((name) => {
+            const v = verdict(s.fixture, name);
+            return [name, `${v.verdict}${v.reason ? `:${v.reason}` : ""}`];
+         }),
+      );
+   }
+
+   const SERVING = {
+      acc_db: "serves",
+      acc_lake: "serves",
+      carriers_m: "serves",
+   };
+
+   async function expectServedEqualLive() {
+      for (const [name, q] of Object.entries(AFTER_BIND_QUERIES)) {
+         const served = await s.fixture?.run(q.model, q.query);
+         expect([name, answer(served).servedBy]).toEqual([
+            name,
+            "materialized",
+         ]);
+         expect(answer(served).rows).toBe(answer(s.live[name]).rows);
+      }
+   }
+
+   it("serves every table once settled, equal to live", async () => {
+      expect(s.fixture?.buildErrors).toEqual({});
+      expect(shapes()).toEqual(SERVING);
+      await expectServedEqualLive();
+   });
+
+   it("a first bind: pending, never served_copy, until the compile lands, then serves", async () => {
+      const { mz, database, stored, model } = bound();
+      await unbindAll();
+      mz.bind({ database: database as never });
+      mz.bind({ storage: stored as never });
+      // Read at once, as a control plane reads /status right after a bind.
+      expect(model.servedCopySourceIDs()).toBe("pending");
+      for (const v of verdictsOf(s.fixture)) {
+         expect([v.sourceName, v.reason]).not.toEqual([
+            v.sourceName,
+            "served_copy",
+         ]);
+         expect(v.notServedIn).toBeUndefined();
+      }
+      await model.prepareServedCopy();
+      expect(model.servedCopySourceIDs()).not.toBe("pending");
+      expect(shapes()).toEqual(SERVING);
+      await expectServedEqualLive();
+   });
+
+   it("a rebind that adds a table: pending, then correct", async () => {
+      const { mz, database, stored, model } = bound();
+      await unbindAll();
+      mz.bind({ storage: stored as never });
+      await model.prepareServedCopy();
+      expect(shapes()).toMatchObject({
+         acc_db: "awaiting_build",
+         acc_lake: "serves",
+      });
+      mz.bind({ database: database as never });
+      expect(model.servedCopySourceIDs()).toBe("pending");
+      expect(verdict(s.fixture, "acc_db").reason).not.toBe("served_copy");
+      expect(verdict(s.fixture, "acc_db").notServedIn).toBeUndefined();
+      await model.prepareServedCopy();
+      expect(shapes()).toEqual(SERVING);
+      await expectServedEqualLive();
+   });
+
+   it("two binds back to back: pending, then the later bind's verdicts", async () => {
+      const { mz, database, stored, model } = bound();
+      await unbindAll();
+      // Each bind starts its own compile; neither is awaited.
+      mz.bind({ database: database as never });
+      expect(model.servedCopySourceIDs()).toBe("pending");
+      mz.bind({ storage: stored as never });
+      expect(model.servedCopySourceIDs()).toBe("pending");
+      for (const v of verdictsOf(s.fixture)) {
+         expect([v.sourceName, v.reason]).not.toEqual([
+            v.sourceName,
+            "served_copy",
+         ]);
+      }
+      await model.prepareServedCopy();
+      // The earlier bind's compile, landing after, never replaces it.
+      await new Promise((r) => setTimeout(r, 200));
+      expect(model.servedCopySourceIDs()).not.toBe("pending");
+      expect(shapes()).toEqual(SERVING);
+      await expectServedEqualLive();
+   });
+});

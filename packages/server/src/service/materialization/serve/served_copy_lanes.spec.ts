@@ -229,6 +229,26 @@ describe("CompiledCopyLanes", () => {
       expect(kept()).toEqual(["lane 0"]);
    });
 
+   it("says the kept copy is current only for the bindings it would answer a request over", async () => {
+      const { serve, calls, compiled } = servedCopy();
+      const a = [binding("a", "2026-11-01T00:00:00Z")];
+      expect(serve.keepsFor(0, a)).toBe(false);
+      const first = compiled(pinned(a));
+      await ticks();
+      calls[0].finish("a");
+      await first;
+      expect(serve.keepsFor(0, a)).toBe(true);
+      // Freshness alone moved: the copy is reused, so it is current.
+      expect(serve.keepsFor(0, [binding("a", "2026-11-02T00:00:00Z")])).toBe(
+         true,
+      );
+      // A bind added a table: the kept copy is the previous bindings'.
+      expect(serve.keepsFor(0, [...a, binding("b")])).toBe(false);
+      expect(serve.keepsFor(0, [])).toBe(false);
+      serve.invalidate();
+      expect(serve.keepsFor(0, a)).toBe(false);
+   });
+
    it("drops a failed compile from the in-flight set, so the next request compiles again", async () => {
       const { calls, compiled } = servedCopy();
       const pin = pinned([binding("a")]);

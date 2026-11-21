@@ -3093,11 +3093,14 @@ export class Model {
    /**
     * The sources this model's served copy answers from storage, by author
     * `sourceID`: undefined when the served copy is off for this model, and
-    * `pending` before it has compiled.
+    * `pending` until it has compiled over the bindings bound now. A copy
+    * compiled over a previous bind's bindings is pending too, so a verdict
+    * read between a bind and its compile never judges the new tables by it.
     */
    public servedCopySourceIDs(): ReadonlySet<string> | "pending" | undefined {
       if (!this.servedCopyEnabled()) return undefined;
-      return this.servedCopy.rerootedSourceIDs() ?? "pending";
+      const ids = this.servedCopy.rerootedSourceIDs();
+      return ids && this.servedCopy.isCurrent() ? ids : "pending";
    }
 
    /**

@@ -513,6 +513,17 @@ export class ServedCopyServe {
    }
 
    /**
+    * Whether the compiled copy is the one a query pinned now reads: compiled
+    * over the bindings fresh at the pin. Right after a bind it is not: the
+    * compile at bind runs in the background, and until it lands the copy
+    * kept is the previous bindings' (a query compiles its own, so it never
+    * reads that one).
+    */
+   isCurrent(pinned: Pinned = this.current()): boolean {
+      return this.lanes.keepsFor(0, this.freshBindings(pinned));
+   }
+
+   /**
     * The author `sourceID`s the compiled copy re-rooted on a stored table,
     * which are the sources it answers from storage; undefined before the
     * first compile.
