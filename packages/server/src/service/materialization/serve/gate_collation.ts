@@ -72,6 +72,7 @@ import { capabilitiesOf } from "../domain/dialect";
 
 import type { CollationProbe, GateReads } from "./gate_reads_types";
 import type { Collation, ProbeIO } from "./collation/probe_io";
+import { DUCKDB_COLLATION } from "./collation/duckdb";
 import { fieldPathsIn } from "./gate_paths";
 import { entryGates } from "./gate_reads";
 
@@ -164,7 +165,7 @@ export async function stringGateCollationRefusal(args: {
       const collation = await probeOnce(
          modelDef,
          `${connectionName}\u0000instance\u0000${sql}`,
-         async () => duckdbCollation(await connect(), sql),
+         async () => DUCKDB_COLLATION.sourceColumns(await connect(), sql),
       );
       return collation === "binary"
          ? undefined
@@ -987,7 +988,7 @@ async function probe(args: {
    );
    try {
       return read === "instance"
-         ? await duckdbCollation(io, sql)
+         ? await DUCKDB_COLLATION.sourceColumns(io, sql)
          : await postgresCollation(io, unfinalizedPostgresSQL(sql));
    } catch {
       // Unreadable: fail closed.
@@ -1066,33 +1067,6 @@ export function probeIO(connection: Connection): ProbeIO {
 /** Postgres rows, which Malloy's Postgres connection reads from a `row` column. */
 function pgRows(io: ProbeIO, sql: string): Promise<Rows["rows"]> {
    return io.rows(`SELECT row_to_json(t) AS row FROM (${sql}) t`);
-}
-
-/**
- * A DuckDB-dialect source compares bytes unless the instance sets a
- * `default_collation`, or a `COLLATE` appears in the source's SQL or in the
- * definition of any table or view the instance holds (a column's collation
- * is not otherwise readable).
- */
-/**
- * How many user definitions in the instance name a `COLLATE`: tables, views,
- * and macros (a macro can return a collated value to a view or a query).
- * Attached databases' definitions are listed too.
- */
-const DUCKDB_COLLATE_DEFINITIONS =
-   "SELECT (SELECT count(*) FROM duckdb_tables() WHERE NOT internal AND sql ILIKE '%collate%') + (SELECT count(*) FROM duckdb_views() WHERE NOT internal AND sql ILIKE '%collate%') + (SELECT count(*) FROM duckdb_functions() WHERE NOT internal AND function_type IN ('macro', 'table_macro') AND (macro_definition IS NULL OR macro_definition ILIKE '%collate%')) AS n";
-
-export async function duckdbCollation(
-   io: ProbeIO,
-   sql: string,
-): Promise<Collation> {
-   if (/\bcollate\b/i.test(sql)) return "unknown";
-   const [setting] = await io.rows(
-      "SELECT current_setting('default_collation') AS c",
-   );
-   if (String(setting?.c ?? "").trim() !== "") return "unknown";
-   const [defs] = await io.rows(DUCKDB_COLLATE_DEFINITIONS);
-   return Number(defs?.n ?? 1) === 0 ? "binary" : "unknown";
 }
 
 /**
@@ -1523,38 +1497,6 @@ async function databaseCollationRefusal(args: {
    return compared.size <= 1 ? undefined : "a column under another collation";
 }
 
-/** The last name of a table path, its quotes off. */
-function tableNameOf(path: string): string {
-   const parts = path.match(/"(?:[^"]|"")*"|`[^`]*`|[^.]+/g) ?? [path];
-   const last = parts[parts.length - 1].trim();
-   return /^["`]/.test(last) ? last.slice(1, -1).replace(/""/g, '"') : last;
-}
-
-/**
- * A DuckDB or DuckLake table compares bytes unless the instance sets a
- * `default_collation` or the table's definition names a `COLLATE`; a table
- * the catalog does not list is unknown.
- */
-export async function duckdbTableCollation(
-   io: ProbeIO,
-   tablePath: string,
-): Promise<Collation> {
-   const [setting] = await io.rows(
-      "SELECT current_setting('default_collation') AS c",
-   );
-   if (String(setting?.c ?? "").trim() !== "") return "unknown";
-   const name = tableNameOf(tablePath).replace(/'/g, "''");
-   const defs = await io.rows(
-      `SELECT sql FROM duckdb_tables() WHERE table_name = '${name}'`,
-   );
-   if (defs.length === 0) return "unknown";
-   return defs.every(
-      (d) => typeof d.sql === "string" && !/\bcollate\b/i.test(d.sql),
-   )
-      ? "binary"
-      : "unknown";
-}
-
 /**
  * A Postgres table's collatable columns, together: binary when every one is
  * `C`/`POSIX`, deterministic when every one is deterministic, else unknown.
@@ -1627,7 +1569,7 @@ async function storedSide(
          memo,
          ["duckdb-table", connectionName, tablePath],
          async () =>
-            duckdbTableCollation(
+            DUCKDB_COLLATION.storedTable(
                probeIO(
                   await runtime.connections.lookupConnection(connectionName),
                ),
@@ -1659,13 +1601,13 @@ async function storedSide(
       // for DuckDB, and unknown elsewhere.
       return read === "instance"
          ? memoized(memo, ["duckdb-instance", connectionName], () =>
-              duckdbCollation(connection, ""),
+              DUCKDB_COLLATION.sourceColumns(connection, ""),
            )
          : "unknown";
    }
    return memoized(memo, [read, connectionName, tablePath], () =>
       read === "instance"
-         ? duckdbTableCollation(connection, tablePath)
+         ? DUCKDB_COLLATION.storedTable(connection, tablePath)
          : postgresTableCollation(connection, tablePath),
    );
 }

@@ -58,9 +58,10 @@ whose strings can be read. A reader sends SQL through a `ProbeIO` that
 policy (which side is read, what an equality or an ordering needs, the memo
 scopes, failing closed and the refusal text) stays in `gate_collation.ts`.
 
-| Module                  | Responsibility                                                                                      |
-| ----------------------- | --------------------------------------------------------------------------------------------------- |
-| `collation/probe_io.ts` | What a read goes through (`ProbeIO`: rows, and a BigQuery driver's answers) and gives (`Collation`) |
+| Module                  | Responsibility                                                                                                                                                                   |
+| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `collation/probe_io.ts` | What a read goes through (`ProbeIO`: rows, and a BigQuery driver's answers), what it gives (`Collation`), and a dialect's reader (`CollationReader`)                             |
+| `collation/duckdb.ts`   | The DuckDB dialect's reader: a source and a stored table compare bytes unless the instance sets a `default_collation` or a `COLLATE` appears in the SQL or a definition it holds |
 
 ## Dependency rule
 

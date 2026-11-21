@@ -16,20 +16,19 @@
 import { describe, expect, it } from "bun:test";
 import type { Connection } from "@malloydata/malloy";
 import {
-   duckdbCollation as duckdbCollationOf,
-   duckdbTableCollation as duckdbTableCollationOf,
    postgresCollation as postgresCollationOf,
    postgresTableCollation as postgresTableCollationOf,
    probeIO,
    unfinalizedPostgresSQL,
 } from "./gate_collation";
 import { equalityOnlyExpr, gateReads } from "./gate_reads";
+import { DUCKDB_COLLATION } from "./collation/duckdb";
 
 /** The reads over a connection, through the I/O `gate_collation.ts` builds. */
 const duckdbCollation = (c: Connection, sql: string) =>
-   duckdbCollationOf(probeIO(c), sql);
+   DUCKDB_COLLATION.sourceColumns(probeIO(c), sql);
 const duckdbTableCollation = (c: Connection, path: string) =>
-   duckdbTableCollationOf(probeIO(c), path);
+   DUCKDB_COLLATION.storedTable(probeIO(c), path);
 const postgresCollation = (c: Connection, sql: string) =>
    postgresCollationOf(probeIO(c), sql);
 const postgresTableCollation = (c: Connection, path: string) =>

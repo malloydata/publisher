@@ -38,3 +38,14 @@ export interface ProbeIO {
     */
    jobContext(): { projects: string[]; location: string | undefined };
 }
+
+/** One dialect's collation reads, each through a {@link ProbeIO}. */
+export interface CollationReader {
+   /**
+    * What the strings of a source compare under, read from SQL that
+    * selects them (as `probe_value`, through the author's compile).
+    */
+   sourceColumns(io: ProbeIO, sql: string): Promise<Collation>;
+   /** What the strings of a stored table compare under, by its path. */
+   storedTable(io: ProbeIO, tablePath: string): Promise<Collation>;
+}
