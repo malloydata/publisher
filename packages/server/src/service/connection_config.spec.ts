@@ -1787,6 +1787,55 @@ describe("attachedDatabases[].name is held to its documented pattern", () => {
    });
 });
 
+describe("attachedDatabases[].type is never an Object.prototype member", () => {
+   const withType = (type: string): ApiConnection =>
+      ({
+         name: "lake",
+         type: "duckdb",
+         duckdbConnection: {
+            attachedDatabases: [
+               { name: "first_ok", type: "s3" },
+               { name: "second", type },
+            ],
+         },
+      }) as unknown as ApiConnection;
+
+   it.each([
+      "constructor",
+      "toString",
+      "valueOf",
+      "hasOwnProperty",
+      "__proto__",
+      "isPrototypeOf",
+   ])("refuses %p, naming the entry by position", (type) => {
+      const refuse = () => validateConnectionSqlFields(withType(type));
+      expect(refuse).toThrow(
+         /attachedDatabases\[1\]\.type on connection "lake" is invalid/,
+      );
+   });
+
+   it.each(["bigquery", "snowflake", "postgres", "gcs", "s3", "azure"])(
+      "accepts %p",
+      (type) => {
+         expect(() =>
+            validateConnectionSqlFields(withType(type)),
+         ).not.toThrow();
+      },
+   );
+
+   it("leaves a type no attach supports to the attach, which refuses it", () => {
+      expect(() =>
+         validateConnectionSqlFields(withType("trino")),
+      ).not.toThrow();
+   });
+
+   it("refuses the type at config load, before any connection is built", () => {
+      expect(() =>
+         assembleEnvironmentConnections([withType("constructor")], "/tmp/env"),
+      ).toThrow(/attachedDatabases\[1\]\.type/);
+   });
+});
+
 describe("attachedDatabases[].s3Connection.region is held to a region's shape", () => {
    const withRegion = (region: unknown): ApiConnection =>
       ({

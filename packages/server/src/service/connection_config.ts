@@ -92,7 +92,9 @@ function assertS3Region(
 /**
  * Throws unless every connection field Publisher places in setup SQL holds
  * its shape: each `attachedDatabases[]` name that is set matches
- * {@link ATTACHED_DATABASE_NAME_PATTERN}, and each S3 region that is set (an
+ * {@link ATTACHED_DATABASE_NAME_PATTERN}, no `attachedDatabases[]` type names
+ * an `Object.prototype` member (`constructor`, `toString`), which a lookup by
+ * type would find on any plain object, and each S3 region that is set (an
  * attached database's, a DuckLake connection's storage) matches
  * {@link S3_REGION_PATTERN}. An absent value is left to the attach that reads
  * it. The message names the field by path, not by the rejected text.
@@ -115,8 +117,15 @@ export function validateConnectionSqlFields(
    attached.forEach((attachedDb, index) => {
       const entry = attachedDb as {
          name?: unknown;
+         type?: unknown;
          s3Connection?: { region?: unknown } | null;
       } | null;
+      if (typeof entry?.type === "string" && entry.type in Object.prototype) {
+         throw new Error(
+            `attachedDatabases[${index}].type on connection "${connection.name}" ` +
+               `is invalid: it is not an attached database type.`,
+         );
+      }
       const name = entry?.name;
       if (
          name !== undefined &&

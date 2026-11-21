@@ -542,11 +542,17 @@ async function attachDatabasesToDuckDB(
                   continue;
                }
 
+               // Own keys only: a type naming an Object.prototype member
+               // (`constructor`) would otherwise find a function that
+               // attaches nothing and reports success.
+               const storageType = attachedDb.type ?? "";
                const handler =
                   connectionDialectOf(attachedDb.type)?.attached?.attach ??
-                  storageAttachHandlers[
-                     attachedDb.type as keyof typeof storageAttachHandlers
-                  ];
+                  (Object.hasOwn(storageAttachHandlers, storageType)
+                     ? storageAttachHandlers[
+                          storageType as keyof typeof storageAttachHandlers
+                       ]
+                     : undefined);
                if (!handler) {
                   throw new Error(
                      `Unsupported database type: ${attachedDb.type}`,

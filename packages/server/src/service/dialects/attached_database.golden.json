@@ -76,12 +76,12 @@
     "errorMessage": "Failed to attach database att: Azure connection configuration missing for: att"
   },
   "constructor bare": {
-    "status": "ok",
-    "errorMessage": ""
+    "status": "failed",
+    "errorMessage": "attachedDatabases[0].type on connection \"probe\" is invalid: it is not an attached database type."
   },
   "toString bare": {
-    "status": "ok",
-    "errorMessage": ""
+    "status": "failed",
+    "errorMessage": "attachedDatabases[0].type on connection \"probe\" is invalid: it is not an attached database type."
   },
   "nope bare": {
     "status": "failed",
