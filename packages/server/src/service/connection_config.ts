@@ -731,6 +731,17 @@ const PLAIN_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
 /** A lowercase schema name: what `readableSchemas` and the admin API's schema create accept. */
 export const READABLE_SCHEMA_NAME = /^[a-z_][a-z0-9_]*$/;
 
+/** Schemas the engine owns: never created, dropped, listed or read through the API. */
+export const SYSTEM_SCHEMAS = [
+   "information_schema",
+   "pg_catalog",
+   "temp",
+   "system",
+];
+
+/** Names no catalog schema may take: the engine's own, and `memory`, which would make `memory.t` ambiguous with DuckDB's built-in catalog. */
+export const RESERVED_SCHEMA_NAMES = ["memory", ...SYSTEM_SCHEMAS];
+
 /**
  * The schemas a managed read-only DuckLake view may read besides `main`, as one
  * canonical list: sorted, deduplicated, `main` dropped, undefined when empty. The
@@ -845,6 +856,15 @@ function validateDuckLakeShape(
          throw new Error(
             `DuckLake readableSchemas must be a list of lowercase schema names ` +
                `([a-z_][a-z0-9_]*) for connection: ${connection.name}`,
+         );
+      }
+      const reserved = readable.find((name) =>
+         RESERVED_SCHEMA_NAMES.includes(name),
+      );
+      if (reserved !== undefined) {
+         throw new Error(
+            `DuckLake readableSchemas names '${reserved}', a reserved schema name, ` +
+               `for connection: ${connection.name}`,
          );
       }
    }

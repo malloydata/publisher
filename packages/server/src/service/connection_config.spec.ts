@@ -1107,6 +1107,24 @@ describe("ducklake shape validation", () => {
          );
       });
 
+      it("rejects the names a schema create refuses: the engine's own, and memory", () => {
+         for (const name of [
+            "memory",
+            "information_schema",
+            "pg_catalog",
+            "temp",
+            "system",
+         ]) {
+            expect(() => assemble(withReadable(["sync_a", name]))).toThrow(
+               new RegExp(`readableSchemas names '${name}', a reserved schema`),
+            );
+         }
+         // Only the whole name is reserved.
+         expect(() =>
+            assemble(withReadable(["memory_x", "system_a"])),
+         ).not.toThrow();
+      });
+
       it("rejects the field on a connection that is not managed", () => {
          for (const extra of [{}, { managed: false }]) {
             expect(() => assemble(withReadable(["sync_a"], extra))).toThrow(
