@@ -27,6 +27,20 @@ Two consequences worth knowing. A section merged to `main` ships in the **next**
 
 **Who is affected:** 0.17.1 with a BigQuery source served from a `storage=` copy or a database table, where a gate, a scope, a query's own filter, an ordering or a grouping compares a string. **Upgrade.** Nothing else is needed: the check reads the catalog afresh under the new version.
 
+## [Unreleased] — a database table whose build recorded no column types answers live (security)
+
+**Fixed (security): a leak in 0.17.0 and 0.17.1.** Before a database table (a colocated `#@ persist` or `#(materialize)` table, a database rollup, or a persisted view or query) is served, Publisher compares its columns, as the warehouse holds them now, with the types its build recorded, so a column altered after the build is read faithfully or left out. A table whose manifest entry recorded no types, neither `schema` nor `nativeSchema`, had nothing to compare against, so a column altered after the build was served as if unchanged.
+
+**Who is affected.** Database-tier tables whose entry carries no recorded types: a build whose type capture failed, an entry written before the capture existed, or a host that binds its own manifest without types. Only a column altered in the warehouse after the build is affected. For a source behind an `#(access_filter)` or `#(authorize)` gate, such an alter could let a caller see rows that belong to another account. For an ungated source, it could return values that differ from the warehouse's.
+
+**What changed.** Such a table is now left out at bind on every leg, and its queries are answered live. The serve verdict says `live` with reason `types_unrecorded`. The path report says `NOT_SERVED` with code `types_unrecorded`. The package warns `materialization-types-unrecorded`. Queries return the same answers as before, read from the warehouse.
+
+**What to do.** Rebuild the affected tables, so their builds record their column types and they serve again. A host that binds its own manifest must send the types: a database (colocated) entry its `nativeSchema` as the build reported it, and a `storage=` entry its `schema`. On a deployment with many such tables, expect them to answer live, and to cost warehouse reads, until rebuilt. See [what a host's manifest must carry](docs/materialization.md).
+
+## [Unreleased] — a filter on a time difference or arithmetic is no longer read as a string comparison
+
+**Fixed: a query filtering on a time difference or on arithmetic answered live from a non-binary origin.** Before a stored table answers a query that filters, Publisher checks that each string the filter compares compares there as live compares it, and skips the check when the filter compares no string. A `hours(ts to now)` (or any `… to …` difference) and the arithmetic operators (`+ - * / %`, a unary minus) were not on the list of operators known to make no string, so `where: age_hours > 700` was checked as a string comparison: on a DuckDB instance with a `default_collation`, or wherever the collation could not be read, it was declined (`NOT_SERVED`, "the query filters on a column a stored table does not compare as its source does") and answered live. They now count as making a number or a time of their operands, which are still checked.
+
 ## [0.17.1] — a source whose cross-connection join can be left out alone keeps serving beside one that cannot
 
 **Fixed: one source left out whole took every other source with a refused join in its model live.** When a join the served copy moves across connections cannot be left out alone (a `rename:` or `except:` reads it), the served copy leaves out the source declaring it. It did so by leaving out every source in the model that declares a refused join, so a source whose join could be left out alone, and whose other queries read its table, answered live too, under a `cross_connection_join` warning saying it was left out whole. Only the source that cannot be cut is now left out whole; each other source loses only its join, and serves the queries that do not use it.
