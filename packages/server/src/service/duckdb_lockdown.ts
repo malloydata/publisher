@@ -75,7 +75,9 @@ import {
 } from "./duckdb_introspection";
 import {
    assertSingleSelect,
+   containsStatementSeparator,
    countStatements,
+   DUCKDB_STATEMENT_SEPARATOR,
    serializeSQL,
 } from "./single_select";
 
@@ -1181,21 +1183,25 @@ export function runAsOperatorSetup<T>(fn: () => Promise<T>): Promise<T> {
 }
 
 /** Malloy's own statement separator (its DuckDB dialect's `hackSplitComment`). */
-const MALLOY_SPLIT = "-- hack: split on this";
+const MALLOY_SPLIT = DUCKDB_STATEMENT_SEPARATOR;
 
 /**
  * Refuse a Malloy-shaped SQL text (`runSQL`, `runSQLStream`) on a locked
  * instance unless every part Malloy splits off before the last is a macro
- * Malloy itself defines (`DROP MACRO` / `CREATE MACRO`): author text that
- * spells the separator cannot slip a statement of its own in front of the
- * query.
+ * Malloy itself defines (`DROP MACRO` / `CREATE MACRO`), and the last part
+ * (the query) is one the statement gate ({@link assertStatementAllowed})
+ * admits: author or caller text that spells the separator can neither slip a
+ * statement of its own in front of the query nor after it. Every check runs
+ * before any part does, so a refused text runs nothing.
  */
 async function assertMalloyParts(
    connection: unknown,
    sql: string,
 ): Promise<void> {
    if (!isConfigurationFrozen(connection) || operatorSetup.getStore()) return;
+   if (!containsStatementSeparator(sql)) return;
    const parts = sql.split(MALLOY_SPLIT);
+   await assertStatementAllowed(connection, parts[parts.length - 1]);
    for (const part of parts.slice(0, -1)) {
       const words = tokenizeDuckDBSQL(part)
          .filter((token) => token.kind === "word")
@@ -1331,8 +1337,20 @@ export async function authorSqlRefusals(
             `to SQL.`,
       );
    };
+   const separator = (what: string) => {
+      refusals.push(
+         `${modelPath}: ${what} on a DuckDB connection contains the DuckDB ` +
+            `connector's statement separator comment, which the connector ` +
+            `splits into separate statements wherever it appears (in a ` +
+            `comment or a string literal too), so author SQL may not spell it.`,
+      );
+   };
    for (const { fragments, argCount } of expressions) {
       const shown = fragments.join(" ? ");
+      if (containsStatementSeparator(fragments.join(""))) {
+         separator("a raw SQL expression");
+         continue;
+      }
       const name =
          introspectionNameIn(fragments.join(" ")) ??
          introspectionCallInParse(
@@ -1348,6 +1366,10 @@ export async function authorSqlRefusals(
       }
    }
    for (const [sql, what] of checks) {
+      if (containsStatementSeparator(sql)) {
+         separator(what);
+         continue;
+      }
       const name =
          introspectionNameIn(sql) ??
          introspectionCallInParse((await serializeSQL(sql)).statements);
@@ -1355,6 +1377,10 @@ export async function authorSqlRefusals(
       else if (!(await isOneSelect(sql))) refuse(what, sql);
    }
    for (const tablePath of tablePaths) {
+      if (containsStatementSeparator(tablePath)) {
+         separator("a .table() source");
+         continue;
+      }
       // Malloy reads a DuckDB table path as written, after FROM.
       const name =
          introspectionNameIn(tablePath) ??
