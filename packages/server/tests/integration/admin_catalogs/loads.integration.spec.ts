@@ -18,6 +18,7 @@ import {
 } from "fs";
 import { tmpdir } from "os";
 import { dirname, join } from "path";
+import type { components } from "../../../src/api";
 import { logger } from "../../../src/logger";
 import { loadSlots } from "../../../src/query_concurrency";
 import {
@@ -29,7 +30,10 @@ import {
    attachDuckLakeReadWrite,
 } from "../../../src/service/connection";
 import { createIsolatedBuildSession } from "../../../src/service/materialization/run/materialization_build_session";
-import { mergeStatements } from "../../../src/service/materialization/run/storage_table_load";
+import {
+   mergeStatements,
+   mergeStorageTable,
+} from "../../../src/service/materialization/run/storage_table_load";
 import { pollFor } from "../../../src/test_helpers/poll";
 import { SUPERUSER, superuser } from "./superuser";
 
@@ -1266,32 +1270,44 @@ describe.skipIf(!SUPERUSER)("loads", () => {
 
    describe("the plan", () => {
       it.each(["merge", "replace"] as const)(
-         "plans every %s statement as hash joins, never a nested loop",
+         "plans every %s statement as hash joins, never a nested loop, and a group pass reads only its own columns",
          async (mode) => {
             const table = `plan_${mode}`;
             await merge(table, [
                await parquet(
-                  "SELECT i AS id, 'v' || i AS v FROM range(1, 5001) t(i)",
+                  "SELECT i AS id, 'v' || i AS v, 'w' || i AS w FROM range(1, 5001) t(i)",
                ),
             ]);
             const target = `"${CATALOG}"."s"."${table}"`;
             await sql(
                writer,
-               "CREATE OR REPLACE TEMP TABLE \"__publisher_stage\" AS SELECT i AS id, 'w' || i AS v, 0 AS __publisher_pos, 0 AS __publisher_row FROM range(1, 100) t(i)",
+               "CREATE OR REPLACE TEMP TABLE \"__publisher_stage\" AS SELECT i AS id, 'x' || i AS v, 'y' || i AS w, 0 AS __publisher_pos, 0 AS __publisher_row FROM range(1, 100) t(i)",
             );
             await sql(writer, 'DROP TABLE IF EXISTS "__publisher_changes"');
+            const column = (name: string) => ({
+               name,
+               type: "VARCHAR",
+               inStage: true,
+               inTable: true,
+            });
             const statements = mergeStatements({
                target,
                mode,
                keys: ["id"],
-               columns: [{ name: "v", inStage: true, inTable: true }],
+               columns: [column("v"), column("w")],
+               groups: [[column("v")], [column("w")]],
             });
             const plan = async (statement: string) =>
                (await sql(writer, `EXPLAIN ${statement}`))
                   .map((r) => String(r.explain_value))
                   .join("\n");
-            const planned = [await plan(statements.changes)];
-            await sql(writer, statements.changes);
+            const planned: string[] = [];
+            // The keys pass, a pass per group, and the union; the drop plans no join.
+            for (const statement of statements.changes.slice(0, -1)) {
+               planned.push(await plan(statement));
+               await sql(writer, statement);
+            }
+            await sql(writer, statements.changes.at(-1)!);
             planned.push(
                await plan(statements.delete),
                await plan(statements.insert),
@@ -1301,7 +1317,458 @@ describe.skipIf(!SUPERUSER)("loads", () => {
                expect(text).not.toContain("NL_JOIN");
                expect(text).not.toContain("CROSS_PRODUCT");
             }
+            const [keysPass, vPass, wPass, union, , insert] = planned;
+            // A delim join holds every column of its left side; the delete's is over the table's row ids alone.
+            for (const text of [keysPass, vPass, wPass, union, insert]) {
+               expect(text).not.toContain("DELIM_JOIN");
+            }
+            expect(keysPass).not.toMatch(/\b[vw]\b/);
+            expect(vPass).toMatch(/\bv\b/);
+            expect(vPass).not.toMatch(/\bw\b/);
+            expect(wPass).toMatch(/\bw\b/);
+            expect(wPass).not.toMatch(/\bv\b/);
          },
       );
+   });
+
+   describe("the compare passes", () => {
+      const destination = {
+         name: CATALOG,
+         type: "ducklake",
+         ducklakeConnection: {
+            catalog: {
+               postgresConnection: { connectionString: conninfo },
+               metadataSchema: CATALOG,
+            },
+         },
+      } as components["schemas"]["Connection"];
+
+      /** A load that skips the endpoint's lock and slot, so a test can set the compare budget. */
+      const direct = (
+         table: string,
+         body: {
+            mode: "merge" | "replace";
+            key?: string[];
+            objects: string[];
+            maxDeletedRows?: number;
+         },
+         columnGroupBudget?: number,
+      ) =>
+         mergeStorageTable({
+            loadId: `run:${counter++}`,
+            destinationName: CATALOG,
+            destinationConnection: destination,
+            schemaName: "s",
+            tableName: table,
+            key: [],
+            assertLockHeld: async () => undefined,
+            columnGroupBudget,
+            ...body,
+         });
+
+      /** What `run` answers, and the statements every DuckDB session ran meanwhile. */
+      async function recorded<T>(run: () => Promise<T>) {
+         const original = DuckDBConnection.prototype.runSQL;
+         const seen: string[] = [];
+         const spy = spyOn(
+            DuckDBConnection.prototype,
+            "runSQL",
+         ).mockImplementation(function (
+            this: DuckDBConnection,
+            ...args: Parameters<typeof original>
+         ) {
+            seen.push(args[0]);
+            return original.apply(this, args);
+         });
+         try {
+            return { value: await run(), seen };
+         } finally {
+            spy.mockRestore();
+         }
+      }
+
+      const passesOf = (seen: string[]) =>
+         seen.filter((s) =>
+            /^(CREATE TEMP TABLE|INSERT INTO) "__publisher_diff"/.test(s),
+         ).length;
+
+      // A budget of one byte puts every compared column in a group of its own.
+      describe.each([
+         ["one group", undefined, 1],
+         ["a group a column", 1, 4],
+      ] as const)("%s", (_, budget, passes) => {
+         const tag = budget === undefined ? "one" : "each";
+
+         it("merges changes that land in different groups, counting a row changed in two once", async () => {
+            const table = `grp_merge_${tag}`;
+            await direct(
+               table,
+               {
+                  mode: "merge",
+                  key: ["id"],
+                  objects: [
+                     await parquet(
+                        "SELECT i AS id, i AS a, CASE WHEN i = 6 THEN NULL ELSE 'b' || i END AS b, " +
+                           "i::DOUBLE / 2 AS c, DATE '2026-01-01' + i::INTEGER AS d FROM range(1, 7) t(i)",
+                     ),
+                  ],
+               },
+               budget,
+            );
+            const object = await parquet(
+               "SELECT i AS id, CASE WHEN i IN (2, 5) THEN i + 100 ELSE i END AS a, " +
+                  "CASE WHEN i IN (3, 6) THEN NULL ELSE 'b' || i END AS b, " +
+                  "CASE WHEN i = 4 THEN 99.5 ELSE i::DOUBLE / 2 END AS c, " +
+                  "CASE WHEN i = 5 THEN DATE '2030-01-01' ELSE DATE '2026-01-01' + i::INTEGER END AS d FROM range(1, 9) t(i)",
+            );
+            const { value, seen } = await recorded(() =>
+               direct(
+                  table,
+                  { mode: "merge", key: ["id"], objects: [object] },
+                  budget,
+               ),
+            );
+            expect(value).toEqual({
+               rowsInserted: 2,
+               rowsReplaced: 4,
+               rowsUnchanged: 2,
+               rowsDeleted: 0,
+               rowCount: 8,
+               cursorMax: null,
+            });
+            expect(passesOf(seen)).toBe(passes);
+            expect(
+               await rowsOf(
+                  table,
+                  "id::INTEGER AS id, a::INTEGER AS a, b, c, d::VARCHAR AS d",
+               ),
+            ).toEqual([
+               { id: 1, a: 1, b: "b1", c: 0.5, d: "2026-01-02" },
+               { id: 2, a: 102, b: "b2", c: 1, d: "2026-01-03" },
+               { id: 3, a: 3, b: null, c: 1.5, d: "2026-01-04" },
+               { id: 4, a: 4, b: "b4", c: 99.5, d: "2026-01-05" },
+               { id: 5, a: 105, b: "b5", c: 2.5, d: "2030-01-01" },
+               { id: 6, a: 6, b: null, c: 3, d: "2026-01-07" },
+               { id: 7, a: 7, b: "b7", c: 3.5, d: "2026-01-08" },
+               { id: 8, a: 8, b: "b8", c: 4, d: "2026-01-09" },
+            ]);
+         });
+
+         it("heals a key stored twice that a column also changes, compares a column the objects lack as NULL, widens, and adds a column", async () => {
+            const table = `grp_shape_${tag}`;
+            await direct(
+               table,
+               {
+                  mode: "merge",
+                  key: ["id"],
+                  objects: [
+                     await parquet(
+                        "SELECT i AS id, i AS a, 'b' || i AS b, CASE WHEN i = 3 THEN 7.5 END AS c, " +
+                           "CASE WHEN i = 4 THEN 'x' END AS d FROM range(1, 6) t(i)",
+                     ),
+                  ],
+               },
+               budget,
+            );
+            await sql(
+               writer,
+               `INSERT INTO ${CATALOG}.s.${table} VALUES (1, 1, 'b1', NULL, NULL)`,
+            );
+            const object = await parquet(
+               "SELECT i AS id, (CASE WHEN i = 1 THEN 11 ELSE i END)::INTEGER AS a, 'b' || i AS b, " +
+                  "CASE WHEN i = 5 THEN 'new' END AS e FROM range(1, 7) t(i)",
+            );
+            expect(
+               await direct(
+                  table,
+                  { mode: "merge", key: ["id"], objects: [object] },
+                  budget,
+               ),
+            ).toEqual({
+               rowsInserted: 1,
+               rowsReplaced: 4,
+               rowsUnchanged: 1,
+               rowsDeleted: 1,
+               rowCount: 6,
+               cursorMax: null,
+            });
+            expect(
+               await rowsOf(
+                  table,
+                  "id::INTEGER AS id, a::INTEGER AS a, b, c, d, e",
+               ),
+            ).toEqual([
+               { id: 1, a: 11, b: "b1", c: null, d: null, e: null },
+               { id: 2, a: 2, b: "b2", c: null, d: null, e: null },
+               { id: 3, a: 3, b: "b3", c: null, d: null, e: null },
+               { id: 4, a: 4, b: "b4", c: null, d: null, e: null },
+               { id: 5, a: 5, b: "b5", c: null, d: null, e: "new" },
+               { id: 6, a: 6, b: "b6", c: null, d: null, e: null },
+            ]);
+         });
+
+         it("replaces by key when the absent keys and the changed columns land in different groups", async () => {
+            const table = `grp_replace_${tag}`;
+            await direct(
+               table,
+               {
+                  mode: "merge",
+                  key: ["id"],
+                  objects: [
+                     await parquet(
+                        "SELECT i AS id, i AS a, 'b' || i AS b, i::DOUBLE AS c FROM range(1, 9) t(i)",
+                     ),
+                  ],
+               },
+               budget,
+            );
+            await sql(
+               writer,
+               `INSERT INTO ${CATALOG}.s.${table} VALUES (NULL, 0, 'orphan', 0)`,
+            );
+            const object = await parquet(
+               "SELECT i AS id, CASE WHEN i = 2 THEN 200 ELSE i END AS a, 'b' || i AS b, " +
+                  "CASE WHEN i = 4 THEN 44.5 ELSE i::DOUBLE END AS c FROM range(1, 10) t(i) WHERE i IN (1, 2, 3, 4, 5, 9)",
+            );
+            expect(
+               await direct(
+                  table,
+                  {
+                     mode: "replace",
+                     key: ["id"],
+                     maxDeletedRows: 4,
+                     objects: [object],
+                  },
+                  budget,
+               ),
+            ).toEqual({
+               rowsInserted: 1,
+               rowsReplaced: 2,
+               rowsUnchanged: 3,
+               rowsDeleted: 4,
+               rowCount: 6,
+               cursorMax: null,
+            });
+            expect(
+               await rowsOf(table, "id::INTEGER AS id, a::INTEGER AS a, c"),
+            ).toEqual([
+               { id: 1, a: 1, c: 1 },
+               { id: 2, a: 200, c: 2 },
+               { id: 3, a: 3, c: 3 },
+               { id: 4, a: 4, c: 44.5 },
+               { id: 5, a: 5, c: 5 },
+               { id: 9, a: 9, c: 9 },
+            ]);
+         });
+      });
+
+      it.each(["merge", "replace"] as const)(
+         "builds the %s changes the single wide statement built, whatever the groups",
+         async (mode) => {
+            const table = `grp_equal_${mode}`;
+            await direct(table, {
+               mode: "merge",
+               key: ["id"],
+               objects: [
+                  await parquet(
+                     "SELECT i AS id, i AS a, CASE WHEN i % 3 = 0 THEN NULL ELSE 'b' || i END AS b, i::DOUBLE AS c " +
+                        "FROM range(1, 13) t(i)",
+                  ),
+               ],
+            });
+            await sql(
+               writer,
+               `INSERT INTO ${CATALOG}.s.${table} VALUES (2, 2, 'b2', 2), (3, 3, NULL, 3), (NULL, 0, 'orphan', 0)`,
+            );
+            // Against the stored rows: 1 and 6 unchanged; 4 (a), 5 and 7 (b), 8 (c) and 9 (a and c) changed; 2 and 3 stored twice; 10 to 12 and the NULL key absent; 13 and 14 new.
+            await sql(
+               writer,
+               'CREATE OR REPLACE TEMP TABLE "__publisher_stage" AS SELECT i AS id, ' +
+                  "CASE WHEN i IN (4, 9) THEN i + 100 ELSE i END AS a, " +
+                  "CASE WHEN i % 3 = 0 THEN NULL WHEN i IN (5, 7) THEN 'changed' ELSE 'b' || i END AS b, " +
+                  "CASE WHEN i IN (8, 9) THEN -1.0 ELSE i::DOUBLE END AS c, " +
+                  "0 AS __publisher_pos, 0 AS __publisher_row FROM range(1, 15) t(i) WHERE i < 10 OR i > 12",
+            );
+            const target = `"${CATALOG}"."s"."${table}"`;
+            const replace = mode === "replace";
+            const key = replace ? 'coalesce(__s."id", __t."id")' : '__s."id"';
+            const touched = [
+               replace ? "count(__s.__publisher_pos) = 0" : undefined,
+               "count(__t.__publisher_present) <> 1",
+               'bool_or(__t."a" IS DISTINCT FROM __s."a" OR __t."b" IS DISTINCT FROM __s."b" OR __t."c" IS DISTINCT FROM __s."c")',
+            ]
+               .filter(Boolean)
+               .join(" OR ");
+            await sql(writer, 'DROP TABLE IF EXISTS "__reference"');
+            await sql(
+               writer,
+               `CREATE TEMP TABLE "__reference" AS SELECT ${key} AS "id", ` +
+                  (replace
+                     ? "CASE WHEN count(__s.__publisher_pos) = 0 THEN 'deleted' WHEN count(__t.__publisher_present) = 0 THEN 'new' ELSE 'changed' END"
+                     : "CASE WHEN count(__t.__publisher_present) = 0 THEN 'new' ELSE 'changed' END") +
+                  " AS __publisher_status, count(__t.__publisher_present) AS __publisher_stored " +
+                  `FROM "__publisher_stage" AS __s ${replace ? "FULL" : "LEFT"} JOIN (SELECT *, TRUE AS __publisher_present FROM ${target}) AS __t ` +
+                  `ON __s."id" = __t."id" GROUP BY ${key} HAVING ${touched}`,
+            );
+            const kinds = (
+               await sql(
+                  writer,
+                  'SELECT __publisher_status AS status, __publisher_stored AS stored, count(*) AS n FROM "__reference" GROUP BY ALL ORDER BY ALL',
+               )
+            ).map((r) => [r.status, Number(r.stored), Number(r.n)]);
+            expect(kinds).toEqual([
+               ["changed", 1, 5],
+               ["changed", 2, 2],
+               ...(replace ? [["deleted", 1, 4]] : []),
+               ["new", 0, 2],
+            ]);
+            const column = (name: string) => ({
+               name,
+               type: "VARCHAR",
+               inStage: true,
+               inTable: true,
+            });
+            const [a, b, c] = ["a", "b", "c"].map(column);
+            for (const groups of [
+               [[a, b, c]],
+               [[a], [b], [c]],
+               [[b, c], [a]],
+            ]) {
+               await sql(writer, 'DROP TABLE IF EXISTS "__publisher_changes"');
+               for (const statement of mergeStatements({
+                  target,
+                  mode,
+                  keys: ["id"],
+                  columns: [a, b, c],
+                  groups,
+               }).changes) {
+                  await sql(writer, statement);
+               }
+               for (const [left, right] of [
+                  ['"__publisher_changes"', '"__reference"'],
+                  ['"__reference"', '"__publisher_changes"'],
+               ]) {
+                  expect(
+                     await sql(
+                        writer,
+                        `SELECT count(*)::INTEGER AS n FROM (SELECT * FROM ${left} EXCEPT SELECT * FROM ${right})`,
+                     ),
+                  ).toEqual([{ n: 0 }]);
+               }
+               expect(
+                  await sql(
+                     writer,
+                     'SELECT count(*)::INTEGER AS n FROM "__publisher_changes"',
+                  ),
+               ).toEqual([
+                  { n: kinds.reduce((sum, k) => sum + Number(k[2]), 0) },
+               ]);
+            }
+         },
+      );
+
+      it("keyless: compares the bags only when their sizes match, and still guards a shrink", async () => {
+         const replace = async (
+            rows: number,
+            maxDeletedRows: number,
+            edit = false,
+         ) =>
+            load("kl_shortcut", {
+               mode: "replace",
+               maxDeletedRows,
+               objects: [
+                  await parquet(
+                     `SELECT i AS id, CASE WHEN i = 3 AND ${edit} THEN 'edited' ELSE 'v' || i END AS v FROM range(1, ${rows + 1}) t(i)`,
+                  ),
+               ],
+            });
+         const compares = (seen: string[]) =>
+            seen.filter((s) => s.includes("__publisher_side")).length;
+         await merge("kl_shortcut", [
+            await parquet(
+               "SELECT i AS id, 'v' || i AS v FROM range(1, 6) t(i)",
+            ),
+         ]);
+         // Equal counts: the compare runs, and an identical table is left alone.
+         const snapshot = await snapshotId();
+         const same = await recorded(() => replace(5, 0));
+         expect(same.value.rowsUnchanged).toBe(5);
+         expect(compares(same.seen)).toBe(1);
+         expect(await snapshotId()).toBe(snapshot);
+         const edited = await recorded(() => replace(5, 0, true));
+         expect([edited.value.rowsReplaced, compares(edited.seen)]).toEqual([
+            5, 1,
+         ]);
+         // Counts that differ settle it with no compare.
+         const grown = await recorded(() => replace(7, 0));
+         expect(grown.value).toMatchObject({
+            rowsInserted: 2,
+            rowsReplaced: 5,
+            rowsDeleted: 0,
+            rowCount: 7,
+         });
+         expect(compares(grown.seen)).toBe(0);
+         const shrunk = await recorded(() => replace(2, 5));
+         expect(shrunk.value).toMatchObject({
+            rowsInserted: 0,
+            rowsReplaced: 2,
+            rowsDeleted: 5,
+            rowCount: 2,
+         });
+         expect(compares(shrunk.seen)).toBe(0);
+         const refused = await recorded(() => refusal(replace(1, 0)));
+         expect(refused.value.reason).toBe("LOAD_ROW_DROP_GUARD");
+         expect(refused.value.detail).toEqual({
+            wouldDelete: 1,
+            rowsBefore: 2,
+            maxDeletedRows: 0,
+         });
+         expect(compares(refused.seen)).toBe(0);
+         expect(await rowsOf("kl_shortcut")).toEqual([
+            { id: 1, v: "v1" },
+            { id: 2, v: "v2" },
+         ]);
+      });
+
+      it("answers a load that runs out of memory or spill with a 500 that says so, and writes nothing", async () => {
+         await merge("oom", [
+            await parquet(
+               "SELECT i AS id, 'v' || i AS v FROM range(1, 4) t(i)",
+            ),
+         ]);
+         const changed = await parquet("SELECT 1 AS id, 'changed' AS v");
+         const original = DuckDBConnection.prototype.runSQL;
+         const spy = spyOn(
+            DuckDBConnection.prototype,
+            "runSQL",
+         ).mockImplementation(function (
+            this: DuckDBConnection,
+            ...args: Parameters<typeof original>
+         ) {
+            return args[0].startsWith('CREATE TEMP TABLE "__publisher_diff"')
+               ? Promise.reject(
+                    new Error(
+                       "Out of Memory Error: failed to offload data block of size 256.0 KiB (5.9 GiB/6.0 GiB used).",
+                    ),
+                 )
+               : original.apply(this, args);
+         });
+         const snapshot = await snapshotId();
+         let error: unknown;
+         try {
+            await merge("oom", [changed]);
+         } catch (e) {
+            error = e;
+         } finally {
+            spy.mockRestore();
+         }
+         expect(error).toBeInstanceOf(Error);
+         expect(error).not.toBeInstanceOf(CatalogAdminError);
+         expect((error as Error).message).toMatch(
+            /^The load exceeded the load session's memory and spill limits: Out of Memory Error: failed to offload/,
+         );
+         expect(await snapshotId()).toBe(snapshot);
+         expect(await rowsOf("oom")).toHaveLength(3);
+      });
    });
 });

@@ -17,6 +17,8 @@ import {
    loadLayout,
    loadStorageTable,
    mergeStatements,
+   packColumnGroups,
+   parquetRowBytes,
    readerRefusal,
    readerSql,
    sourceColumns,
@@ -386,8 +388,8 @@ describe("loadLayout: the objects' columns against the table's", () => {
       const layout = loadLayout({ key: ["id"] }, stage, table);
       expect(layout.keys).toEqual(["ID"]);
       expect(layout.columns).toEqual([
-         { name: "v", inStage: true, inTable: true },
-         { name: "extra", inStage: false, inTable: true },
+         { name: "v", type: "VARCHAR", inStage: true, inTable: true },
+         { name: "extra", type: "INTEGER", inStage: false, inTable: true },
       ]);
       expect(layout.added).toEqual([]);
    });
@@ -401,6 +403,7 @@ describe("loadLayout: the objects' columns against the table's", () => {
       ]);
       expect(layout.columns).toContainEqual({
          name: "w",
+         type: 'STRUCT("a b" INTEGER)',
          inStage: true,
          inTable: false,
       });
@@ -724,25 +727,36 @@ describe("typeVariants: the columns the objects type in more than one way", () =
 });
 
 describe("mergeStatements: the plan joins on plain equality", () => {
-   const columns = [{ name: "v", inStage: true, inTable: true }];
+   const v = { name: "v", type: "VARCHAR", inStage: true, inTable: true };
+   const columns = [v];
    const statements = (mode: "merge" | "replace") =>
       mergeStatements({ target: "t", mode, keys: ["id"], columns });
 
    it("joins the stage to the table with `=` alone, and matches NULLs only in the delete", () => {
       for (const mode of ["merge", "replace"] as const) {
          const { changes, delete: del, insert } = statements(mode);
-         expect(changes).toContain('__s."id" = __t."id"');
-         expect(changes).not.toMatch(/IS NULL/);
+         const text = changes.join("\n");
+         expect(text).toContain('__s."id" = __t."id"');
+         expect(text).not.toMatch(/IS NULL/);
          expect(insert).not.toMatch(/IS NULL/);
          expect(del).toContain('__t."id" IS NULL AND __s."id" IS NULL');
       }
    });
 
+   it("inserts through a semi join over the changed keys, not an EXISTS that DuckDB decorrelates into a delim join", () => {
+      for (const mode of ["merge", "replace"] as const) {
+         const { insert } = statements(mode);
+         expect(insert).toContain("SEMI JOIN");
+         expect(insert).not.toContain("EXISTS");
+      }
+   });
+
    it("plans a merge from the stage's side and a replace over both sides", () => {
-      expect(statements("merge").changes).toContain("LEFT JOIN");
-      expect(statements("merge").changes).not.toContain("'deleted'");
-      expect(statements("replace").changes).toContain("FULL JOIN");
-      expect(statements("replace").changes).toContain("'deleted'");
+      const [merge, replace] = [statements("merge"), statements("replace")];
+      expect(merge.changes[0]).toContain("LEFT JOIN");
+      expect(merge.changes[0]).not.toContain("'deleted'");
+      expect(replace.changes[0]).toContain("FULL JOIN");
+      expect(replace.changes[0]).toContain("'deleted'");
    });
 
    it("compares a column the objects lack, and one the table lacks, as NULL", () => {
@@ -751,11 +765,125 @@ describe("mergeStatements: the plan joins on plain equality", () => {
          mode: "merge",
          keys: ["id"],
          columns: [
-            { name: "old", inStage: false, inTable: true },
-            { name: "new", inStage: true, inTable: false },
+            { name: "old", type: "INTEGER", inStage: false, inTable: true },
+            { name: "new", type: "INTEGER", inStage: true, inTable: false },
          ],
       });
-      expect(changes).toContain('__t."old" IS DISTINCT FROM NULL');
-      expect(changes).toContain('NULL IS DISTINCT FROM __s."new"');
+      const text = changes.join("\n");
+      expect(text).toContain('__t."old" IS DISTINCT FROM NULL');
+      expect(text).toContain('NULL IS DISTINCT FROM __s."new"');
+   });
+
+   it("settles the keys in a pass that names no compared column, and compares each group in a join of its own", () => {
+      const [a, b, c] = ["a", "b", "c"].map((name) => ({
+         ...v,
+         name,
+      }));
+      const { changes } = mergeStatements({
+         target: "t",
+         mode: "replace",
+         keys: ["id"],
+         columns: [a, b, c],
+         groups: [[a, b], [c]],
+      });
+      const [keys, first, second, union, drop] = changes;
+      expect(changes).toHaveLength(5);
+      expect(keys).toStartWith('CREATE TEMP TABLE "__publisher_changes"');
+      expect(keys).not.toMatch(/"[abc]"/);
+      expect(first).toStartWith('CREATE TEMP TABLE "__publisher_diff"');
+      expect(first).toContain('__t."a" IS DISTINCT FROM __s."a" OR __t."b"');
+      expect(first).not.toContain('"c"');
+      expect(second).toStartWith('INSERT INTO "__publisher_diff"');
+      expect(second).toContain('__t."c" IS DISTINCT FROM __s."c"');
+      expect(second).not.toMatch(/"[ab]"/);
+      expect(union).toStartWith('INSERT INTO "__publisher_changes"');
+      expect(drop).toBe('DROP TABLE "__publisher_diff"');
+   });
+
+   it("compares every column in one group by default, and none when there is no column", () => {
+      expect(statements("merge").changes).toHaveLength(4);
+      const keysOnly = mergeStatements({
+         target: "t",
+         mode: "merge",
+         keys: ["id"],
+         columns: [],
+      });
+      expect(keysOnly.changes).toHaveLength(1);
+   });
+});
+
+describe("packColumnGroups: columns into compare passes within a budget", () => {
+   const sized = (...bytes: number[]) =>
+      bytes.map((b, i) => ({ column: `c${i}`, bytes: b }));
+
+   it("keeps every column in one group when both sides of the rows fit", () => {
+      expect(packColumnGroups(sized(8, 8, 8), 8, 100, 100 * 2 * 32)).toEqual([
+         ["c0", "c1", "c2"],
+      ]);
+   });
+
+   it("counts the keys and both sides of every row against each group", () => {
+      // 100 rows × 2 sides × (8 key + 16) = 4800 bytes a group of two 8-byte columns.
+      expect(packColumnGroups(sized(8, 8, 8, 8), 8, 100, 4800)).toEqual([
+         ["c0", "c1"],
+         ["c2", "c3"],
+      ]);
+      expect(packColumnGroups(sized(8, 8, 8, 8), 8, 100, 4799)).toEqual([
+         ["c0"],
+         ["c1"],
+         ["c2"],
+         ["c3"],
+      ]);
+   });
+
+   it("fills the widest columns first, so mixed widths take few passes, and keeps each group in the columns' order", () => {
+      // Budget for a key and 24 bytes: the two 16s cannot share a group, and each takes an 8.
+      expect(packColumnGroups(sized(8, 16, 8, 16), 0, 10, 10 * 2 * 24)).toEqual(
+         [
+            ["c0", "c1"],
+            ["c2", "c3"],
+         ],
+      );
+   });
+
+   it("gives a column that exceeds the budget alone a group of its own, and packs the rest around it", () => {
+      expect(packColumnGroups(sized(8, 500, 8), 8, 100, 4800)).toEqual([
+         ["c1"],
+         ["c0", "c2"],
+      ]);
+   });
+
+   it("takes no group for no column, and one group when there are no rows", () => {
+      expect(packColumnGroups([], 8, 100, 1)).toEqual([]);
+      expect(packColumnGroups(sized(8, 8), 8, 0, 1)).toEqual([["c0", "c1"]]);
+   });
+});
+
+describe("parquetRowBytes: a column's bytes per row from the footers", () => {
+   let db: TempDuckDB | undefined;
+   afterEach(async () => {
+      await db?.dispose();
+      db = undefined;
+   });
+
+   it("sums a nested column's leaves, folds names, and does not hand a column the leaves of one whose name starts with its own", async () => {
+      db = openTempDuckDB("parquet-row-bytes-", "row_bytes");
+      const file = join(db.dir, "o.parquet");
+      await db.connection.runSQL(
+         `COPY (SELECT i AS a, 'abc' || i AS "a, b", {'x': i, 'y': i} AS st, i AS "Mixed" FROM range(1000) t(i)) TO '${file}' (FORMAT parquet)`,
+      );
+      const bytes = await parquetRowBytes(
+         db.connection,
+         [file],
+         ["a", "a, b", "st", "mixed", "absent"],
+         1000,
+      );
+      expect([...bytes.keys()].sort()).toEqual(["a", "a, b", "mixed", "st"]);
+      // A BIGINT is about 8 bytes a row, and `st` holds two of them.
+      expect(bytes.get("a")).toBeGreaterThan(7);
+      expect(bytes.get("a")).toBeLessThan(9);
+      expect(bytes.get("mixed")).toBeCloseTo(bytes.get("a")!, 0);
+      expect(bytes.get("st")).toBeGreaterThan(15);
+      expect(bytes.get("a, b")).toBeGreaterThan(9);
    });
 });

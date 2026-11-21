@@ -291,6 +291,14 @@ stream in batches:
   when that is lower) and 6 GiB of spill under the system temp directory. A server that runs both the admin listener and the serving API shares its CPU and
   memory between a load and user queries; run the admin listener on its own (`"servingApiEnabled":
   false`) when loads are large.
+- A keyed load compares a table's columns in narrow passes rather than one join over every column: the
+  keys first, then groups of columns sized so both sides of a group's rows fit in half the session's
+  memory, which keeps a replace of tens of millions of rows within the spill limit. A single column whose
+  rows times width exceed that budget on its own may still spill past it. A keyless replace has no key to
+  narrow by: when its row count matches the table's (every retry) it compares whole rows of both sides, and
+  a table larger than the session's memory can exceed the spill limit, so give a large stream a `key`. A
+  load that outgrows the memory or spill limit answers `500` and writes nothing; the server's log names
+  the cause.
 
 **History.** Dropping or replacing a table only retires its files: they stay readable at earlier
 snapshots. `DELETE …/snapshots?olderThan=` expires older snapshots (never the latest) and deletes files

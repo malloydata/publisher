@@ -1000,6 +1000,17 @@ export class CatalogAdmin {
       ) {
          return new CatalogAdminError(409, "LOAD_CONFLICT", mapped.message);
       }
+      // Unmapped, so a 500 whose log line is this message rather than DuckDB's bare "Out of Memory Error".
+      if (
+         mapped instanceof Error &&
+         !(mapped instanceof CatalogAdminError) &&
+         /Out of Memory Error/.test(mapped.message)
+      ) {
+         return new Error(
+            `The load exceeded the load session's memory and spill limits: ${mapped.message}`,
+            { cause: mapped },
+         );
+      }
       return mapped;
    }
 

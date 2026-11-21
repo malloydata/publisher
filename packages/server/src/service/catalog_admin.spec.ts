@@ -225,8 +225,24 @@ describe("a load's failure as an admin refusal", () => {
          400,
          "OBJECT_OUTSIDE_DATA_PATH",
       ]);
-      const other = new Error("Out of Memory Error: x");
+      const other = new Error("boom");
       expect(failure(other)).toBe(other);
+   });
+
+   it("leaves DuckDB's out-of-memory and spill-cap failures to answer 500, naming the session's limits in the message", () => {
+      for (const message of [
+         "Out of Memory Error: failed to pin block of size 256.0 KiB (1.3 GiB/1.3 GiB used)",
+         "Out of Memory Error: failed to offload data block of size 256.0 KiB (5.9 GiB/6.0 GiB used).",
+      ]) {
+         const original = new Error(message);
+         const mapped = failure(original);
+         expect(mapped).toBeInstanceOf(Error);
+         expect(mapped).not.toBeInstanceOf(CatalogAdminError);
+         expect((mapped as Error).message).toBe(
+            `The load exceeded the load session's memory and spill limits: ${message}`,
+         );
+         expect((mapped as Error).cause).toBe(original);
+      }
    });
 });
 

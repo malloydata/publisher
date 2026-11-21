@@ -16,6 +16,7 @@
 import type { DuckDBConnection } from "@malloydata/db-duckdb";
 import path from "path";
 import { components } from "../../../api";
+import { duckDBByteSize } from "../../../config";
 import {
    BadRequestError,
    ConflictError,
@@ -577,6 +578,8 @@ interface Column {
 interface LoadColumn {
    /** The table's spelling when it has the column, else the objects'. */
    name: string;
+   /** The table's type when it has the column, else the objects'. */
+   type: string;
    inStage: boolean;
    inTable: boolean;
 }
@@ -593,6 +596,7 @@ interface LoadLayout {
 
 const STAGE = quoteIdentifier("__publisher_stage", STORAGE_DIALECT);
 const CHANGES = quoteIdentifier("__publisher_changes", STORAGE_DIALECT);
+const DIFF = quoteIdentifier("__publisher_diff", STORAGE_DIALECT);
 /** Reserved for the load's own columns; a column of the objects may not start with it. */
 const HELPER_PREFIX = "__publisher_";
 
@@ -700,11 +704,21 @@ export function loadLayout(
          );
       }
       if (!t && table) added.push(s);
-      columns.push({ name: t?.name ?? s.name, inStage: true, inTable: !!t });
+      columns.push({
+         name: t?.name ?? s.name,
+         type: t?.type ?? s.type,
+         inStage: true,
+         inTable: !!t,
+      });
    }
    for (const t of table ?? []) {
       if (!stageByName.has(fold(t.name))) {
-         columns.push({ name: t.name, inStage: false, inTable: true });
+         columns.push({
+            name: t.name,
+            type: t.type,
+            inStage: false,
+            inTable: true,
+         });
       }
    }
    const keys = params.key.map((key) => {
@@ -1091,28 +1105,28 @@ async function settleStage(
 
 /**
  * The statements that plan and apply a keyed load of the stage onto `target`.
- * `changes` holds one row per key the load touches (new, changed, and for a
- * replace deleted), joined from the stage on plain `=`: a NULL-safe join
- * condition plans as a nested loop. A key with several stored rows is
- * changed, which collapses the copies. The stage's keys are never NULL; only
- * the delete, which must reach stored rows of a NULL key, matches NULLs.
+ * `changes`, run in order, builds one row per key the load touches (new,
+ * changed, and for a replace deleted), joined from the stage on plain `=`: a
+ * NULL-safe join condition plans as a nested loop. A key with several stored
+ * rows is changed, which collapses the copies. The stage's keys are never
+ * NULL; only the delete, which must reach stored rows of a NULL key, matches
+ * NULLs.
+ *
+ * One join over every compared column hashes a whole row of each side, so the
+ * keys are settled in a pass over the keys alone and the columns are compared
+ * in `groups`: one inner join each, carrying only the keys and that group's
+ * columns.
  */
 export function mergeStatements(plan: {
    target: string;
    mode: "merge" | "replace";
    keys: readonly string[];
    columns: readonly LoadColumn[];
-}): { changes: string; delete: string; insert: string } {
+   /** The columns each compare pass reads, together `columns` (see {@link packColumnGroups}); one pass over all of them when omitted. */
+   groups?: readonly (readonly LoadColumn[])[];
+}): { changes: string[]; delete: string; insert: string } {
    const { target, keys } = plan;
    const on = keys.map((k) => `__s.${q(k)} = __t.${q(k)}`).join(" AND ");
-   const differs =
-      plan.columns
-         .map(
-            (c) =>
-               `${c.inTable ? `__t.${q(c.name)}` : "NULL"} IS DISTINCT FROM ${c.inStage ? `__s.${q(c.name)}` : "NULL"}`,
-         )
-         .join(" OR ") || "FALSE";
-   const stored = `(SELECT *, TRUE AS __publisher_present FROM ${target}) AS __t`;
    // A replace also sees the stored keys the stage lacks.
    const replace = plan.mode === "replace";
    const key = (k: string) =>
@@ -1123,28 +1137,195 @@ export function mergeStatements(plan: {
    const touched = [
       replace ? "count(__s.__publisher_pos) = 0" : undefined,
       "count(__t.__publisher_present) <> 1",
-      `bool_or(${differs})`,
    ]
       .filter(Boolean)
       .join(" OR ");
+   const keysPass =
+      `CREATE TEMP TABLE ${CHANGES} AS SELECT ${keys.map((k) => `${key(k)} AS ${q(k)}`).join(", ")}, ` +
+      `${status} AS __publisher_status, count(__t.__publisher_present) AS __publisher_stored ` +
+      `FROM ${STAGE} AS __s ${replace ? "FULL" : "LEFT"} JOIN ` +
+      `(SELECT ${keys.map(q).join(", ")}, TRUE AS __publisher_present FROM ${target}) AS __t ON ${on} ` +
+      `GROUP BY ${keys.map(key).join(", ")} HAVING ${touched}`;
+   const groupPass = (group: readonly LoadColumn[], i: number) =>
+      `${i === 0 ? `CREATE TEMP TABLE ${DIFF} AS` : `INSERT INTO ${DIFF}`} SELECT ${keys.map((k) => `__s.${q(k)}`).join(", ")} ` +
+      `FROM ${STAGE} AS __s JOIN ${target} AS __t ON ${on} WHERE ` +
+      group
+         .map(
+            (c) =>
+               `${c.inTable ? `__t.${q(c.name)}` : "NULL"} IS DISTINCT FROM ${c.inStage ? `__s.${q(c.name)}` : "NULL"}`,
+         )
+         .join(" OR ");
+   const passes = (plan.groups ?? [plan.columns])
+      .filter((group) => group.length > 0)
+      .map(groupPass);
    const columns = [
       ...keys,
       ...plan.columns.filter((c) => c.inStage).map((c) => c.name),
    ];
    return {
-      changes:
-         `CREATE TEMP TABLE ${CHANGES} AS SELECT ${keys.map((k) => `${key(k)} AS ${q(k)}`).join(", ")}, ` +
-         `${status} AS __publisher_status, count(__t.__publisher_present) AS __publisher_stored ` +
-         `FROM ${STAGE} AS __s ${replace ? "FULL" : "LEFT"} JOIN ${stored} ON ${on} ` +
-         `GROUP BY ${keys.map(key).join(", ")} HAVING ${touched}`,
+      changes: [
+         keysPass,
+         ...passes,
+         // A key a group changes was stored once, or the keys pass already has it.
+         ...(passes.length === 0
+            ? []
+            : [
+                 `INSERT INTO ${CHANGES} SELECT DISTINCT ${keys.map((k) => `__d.${q(k)}`).join(", ")}, 'changed', 1 ` +
+                    `FROM ${DIFF} AS __d WHERE NOT EXISTS (SELECT 1 FROM ${CHANGES} AS __c WHERE ` +
+                    `${keys.map((k) => `__c.${q(k)} = __d.${q(k)}`).join(" AND ")})`,
+                 `DROP TABLE ${DIFF}`,
+              ]),
+      ],
       delete:
          `DELETE FROM ${target} AS __t WHERE EXISTS (SELECT 1 FROM ${CHANGES} AS __s WHERE ` +
          `__s.__publisher_status <> 'new' AND ${nullSafeKeyMatch(keys.map(q), "__t", "__s")})`,
+      // A SEMI JOIN, not EXISTS: with the status filter inside it DuckDB decorrelates EXISTS into a delim join that holds every column of the stage.
       insert:
          `INSERT INTO ${target} (${columns.map(q).join(", ")}) SELECT ${columns.map((c) => `__s.${q(c)}`).join(", ")} ` +
-         `FROM ${STAGE} AS __s WHERE EXISTS (SELECT 1 FROM ${CHANGES} AS __c WHERE ` +
-         `__c.__publisher_status <> 'deleted' AND ${keys.map((k) => `__s.${q(k)} = __c.${q(k)}`).join(" AND ")})`,
+         `FROM ${STAGE} AS __s SEMI JOIN (SELECT ${keys.map(q).join(", ")} FROM ${CHANGES} WHERE __publisher_status <> 'deleted') AS __c ` +
+         `ON ${keys.map((k) => `__s.${q(k)} = __c.${q(k)}`).join(" AND ")}`,
    };
+}
+
+/** A column's bytes in a join's hash table when the objects do not say: a fixed-width type's, else a generous guess for text, binary and nested values. */
+const FIXED_COLUMN_BYTES = 8;
+const VARIABLE_COLUMN_BYTES = 32;
+const FIXED_WIDTH_TYPES = new Set([
+   "BOOLEAN",
+   ...SIGNED_INTEGERS,
+   ...UNSIGNED_INTEGERS,
+   "FLOAT",
+   "DOUBLE",
+   "DATE",
+   "TIME",
+   "TIMESTAMP",
+   "TIMESTAMP_S",
+   "TIMESTAMP_MS",
+   "TIMESTAMP_NS",
+   "TIMESTAMP WITH TIME ZONE",
+   "UUID",
+   "INTERVAL",
+]);
+
+const typeBytes = (type: string) => {
+   const t = type.toUpperCase();
+   return FIXED_WIDTH_TYPES.has(t) || t.startsWith("DECIMAL(")
+      ? FIXED_COLUMN_BYTES
+      : VARIABLE_COLUMN_BYTES;
+};
+
+/**
+ * Packs columns into the groups of {@link mergeStatements}: the keys
+ * (`keyBytes` a row) ride in every group, and a group takes columns while both
+ * sides of its rows (`rows × bytes × 2`) stay within `budget`. A column over
+ * the budget on its own gets a group of its own, and may spill. First fit,
+ * widest first, so the passes are few; each group keeps the columns' order.
+ */
+export function packColumnGroups<T>(
+   columns: readonly { column: T; bytes: number }[],
+   keyBytes: number,
+   rows: number,
+   budget: number,
+): T[][] {
+   const fits = (bytes: number) => (keyBytes + bytes) * rows * 2 <= budget;
+   const groups: { bytes: number; members: { column: T; at: number }[] }[] = [];
+   const widestFirst = columns
+      .map((c, at) => ({ ...c, at }))
+      .sort((a, b) => b.bytes - a.bytes || a.at - b.at);
+   for (const { column, bytes, at } of widestFirst) {
+      const group = groups.find((g) => fits(g.bytes + bytes));
+      if (group) {
+         group.bytes += bytes;
+         group.members.push({ column, at });
+      } else {
+         groups.push({ bytes, members: [{ column, at }] });
+      }
+   }
+   return groups.map((g) =>
+      g.members.sort((a, b) => a.at - b.at).map((m) => m.column),
+   );
+}
+
+/**
+ * Each column's bytes per stage row in the objects, by case-folded top-level
+ * name, from the Parquet footers alone. A nested column sums its leaves, whose
+ * `path_in_schema` begins with its name.
+ */
+export async function parquetRowBytes(
+   session: DuckDBConnection,
+   uris: readonly string[],
+   names: readonly string[],
+   stageRows: number,
+): Promise<Map<string, number>> {
+   const longestFirst = [...names].sort((a, b) => b.length - a.length);
+   const perRow = new Map<string, number>();
+   for (const { path, bytes } of rows(
+      await session.runSQL(
+         "SELECT path_in_schema AS path, sum(total_uncompressed_size) AS bytes " +
+            `FROM parquet_metadata([${quotedList(uris)}]) GROUP BY path_in_schema`,
+      ),
+   )) {
+      const leaf = fold(String(path));
+      const name = longestFirst.find(
+         (n) => leaf === n || leaf.startsWith(`${n}, `),
+      );
+      if (name !== undefined) {
+         perRow.set(
+            name,
+            (perRow.get(name) ?? 0) + Number(bytes) / Math.max(stageRows, 1),
+         );
+      }
+   }
+   return perRow;
+}
+
+/**
+ * The compared columns split into the groups of {@link mergeStatements}, each
+ * sized to hold both sides of its rows within half the session's memory (or
+ * `columnGroupBudget`). No column is taken as narrower than its type's width,
+ * since a Parquet encoding is smaller than the row a hash join holds, and one
+ * the objects lack has only its type to go by.
+ */
+async function columnGroups(
+   session: DuckDBConnection,
+   params: KeyedLoadParams,
+   layout: LoadLayout,
+   stageRows: number,
+): Promise<LoadColumn[][]> {
+   if (layout.columns.length < 2) return [layout.columns];
+   const budget =
+      params.columnGroupBudget ??
+      duckDBByteSize(
+         String(
+            rows(
+               await session.runSQL(
+                  "SELECT current_setting('memory_limit') AS size",
+               ),
+            )[0].size,
+         ),
+      ) / 2;
+   const measured = await parquetRowBytes(
+      session,
+      params.objects,
+      [...layout.keys, ...layout.columns.map((c) => c.name)].map(fold),
+      stageRows,
+   );
+   return packColumnGroups(
+      layout.columns.map((column) => ({
+         column,
+         bytes: Math.max(
+            measured.get(fold(column.name)) ?? 0,
+            typeBytes(column.type),
+         ),
+      })),
+      layout.keys.reduce(
+         (sum, k) =>
+            sum + Math.max(measured.get(fold(k)) ?? 0, FIXED_COLUMN_BYTES),
+         0,
+      ),
+      stageRows,
+      budget,
+   );
 }
 
 /** What a load will do, counted in rows before anything is written. */
@@ -1162,14 +1343,14 @@ async function planKeyedLoad(
    target: string,
    stageRows: number,
 ): Promise<LoadPlan> {
-   await session.runSQL(
-      mergeStatements({
-         target,
-         mode: params.mode,
-         keys: layout.keys,
-         columns: layout.columns,
-      }).changes,
-   );
+   const { changes } = mergeStatements({
+      target,
+      mode: params.mode,
+      keys: layout.keys,
+      columns: layout.columns,
+      groups: await columnGroups(session, params, layout, stageRows),
+   });
+   for (const statement of changes) await session.runSQL(statement);
    const [r] = rows(
       await session.runSQL(
          "SELECT count(*) FILTER (WHERE __publisher_status = 'new') AS inserted, " +
@@ -1197,17 +1378,24 @@ async function planKeylessLoad(
    stageRows: number,
    rowsBefore: number,
 ): Promise<LoadPlan> {
-   const side = (from: string, has: (c: LoadColumn) => boolean, sign: number) =>
-      `SELECT ${layout.columns.map((c) => (has(c) ? q(c.name) : `NULL AS ${q(c.name)}`)).join(", ")}, ${sign} AS __publisher_side FROM ${from}`;
-   const [r] = rows(
-      await session.runSQL(
-         `SELECT count(*) AS n FROM (SELECT ${layout.columns.map((c) => q(c.name)).join(", ")}, sum(__publisher_side) AS net FROM (` +
-            `${side(STAGE, (c) => c.inStage, 1)} UNION ALL ${side(target, (c) => c.inTable, -1)}` +
-            ") GROUP BY ALL HAVING sum(__publisher_side) <> 0)",
-      ),
-   );
-   if (Number(r.n) === 0) {
-      return { inserted: 0, replaced: 0, deleted: 0, unchanged: stageRows };
+   // Bags of different sizes differ, so only equal counts (a retry) need the compare, which holds a row of every column of both sides.
+   if (stageRows === rowsBefore) {
+      const side = (
+         from: string,
+         has: (c: LoadColumn) => boolean,
+         sign: number,
+      ) =>
+         `SELECT ${layout.columns.map((c) => (has(c) ? q(c.name) : `NULL AS ${q(c.name)}`)).join(", ")}, ${sign} AS __publisher_side FROM ${from}`;
+      const [r] = rows(
+         await session.runSQL(
+            `SELECT count(*) AS n FROM (SELECT ${layout.columns.map((c) => q(c.name)).join(", ")}, sum(__publisher_side) AS net FROM (` +
+               `${side(STAGE, (c) => c.inStage, 1)} UNION ALL ${side(target, (c) => c.inTable, -1)}` +
+               ") GROUP BY ALL HAVING sum(__publisher_side) <> 0)",
+         ),
+      );
+      if (Number(r.n) === 0) {
+         return { inserted: 0, replaced: 0, deleted: 0, unchanged: stageRows };
+      }
    }
    return {
       inserted: Math.max(0, stageRows - rowsBefore),
@@ -1231,6 +1419,8 @@ interface KeyedLoadParams {
    maxDeletedRows?: number;
    /** Throws when the caller's exclusion on the table is gone; called right before the commit. */
    assertLockHeld: () => Promise<void>;
+   /** Internal: the bytes both sides of a compare pass may hold, in place of half the session's memory limit; tests set it small to force several passes. */
+   columnGroupBudget?: number;
 }
 
 /**
