@@ -25,9 +25,15 @@
  * A strict origin legitimately turns many served answers live, so the specs'
  * own served/live expectations are not what a strict run checks. Every query
  * either harness runs live and served is recorded ({@link recordStrictCase})
- * and the one invariant is asserted per spec file, in an `afterAll`: every
- * served answer equals live, compared as strings. A spec's own expectations
- * may fail under the switch; read the report, not the pass count.
+ * and held to the one invariant at the case itself, in whichever spec file
+ * runs it: a served answer equals live, compared as strings, and comes back
+ * in the query's order (the R4 harness records each query's ordering; the
+ * package runner's rows carry none, so a nest's tie order there is not
+ * judged); a served run never errors where live answered. A case with no
+ * live counterpart (`unpaired`: queried only after the bind, or after the
+ * spec changed the data) has nothing to compare and is recorded only. A
+ * violating case throws, failing its test. A spec's own expectations may
+ * fail under the switch too; read the report for which is which.
  *
  * The report: one JSON line per case, under `PUBLISHER_TEST_STRICT_REPORT`
  * (default `<tmpdir>/publisher-strict-origin`), one file per spec file,
@@ -38,7 +44,6 @@
  * live.
  */
 
-import { afterAll, expect } from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
@@ -78,9 +83,6 @@ export interface StrictCase {
    /** The router's skipped legs, with their reasons. */
    declines?: unknown[];
 }
-
-const violations: string[] = [];
-let registered = false;
 
 /** The spec file calling into the harness, read off the stack. */
 function specFile(): string {
@@ -122,12 +124,6 @@ function canonical(v: unknown): string {
 export function recordStrictCase(c: StrictCase): void {
    if (!STRICT_RECORD) return;
    const file = specFile();
-   if (STRICT_ORIGIN && !registered) {
-      registered = true;
-      afterAll(() => {
-         expect(violations).toEqual([]);
-      });
-   }
    let verdict: string;
    let difference: string | undefined;
    if (c.liveError !== undefined || c.servedError !== undefined) {
@@ -161,12 +157,16 @@ export function recordStrictCase(c: StrictCase): void {
       (typeof by === "string" && by !== "live")
          ? "served"
          : "live";
-   if (verdict === "WRONG" && stored === "served") {
-      violations.push(`${file}: ${c.malloy} (${difference})`);
-   }
-   if (verdict === "served_error") {
-      violations.push(`${file}: ${c.malloy} served error: ${c.servedError}`);
-   }
+   const violation =
+      stored === "served" && verdict === "WRONG"
+         ? `served differs from live (${difference})`
+         : stored === "served" &&
+             verdict === "order_differs" &&
+             c.harness === "r4"
+           ? `served comes back in another order than live (${difference})`
+           : verdict === "served_error"
+             ? `served errored where live answered: ${c.servedError}`
+             : undefined;
    fs.mkdirSync(REPORT_DIR, { recursive: true });
    fs.appendFileSync(
       path.join(REPORT_DIR, `${LABEL}__${file}.jsonl`),
@@ -182,6 +182,11 @@ export function recordStrictCase(c: StrictCase): void {
          (_k, v) => (typeof v === "bigint" ? `${v}n` : v),
       )}\n`,
    );
+   if (STRICT_ORIGIN && violation !== undefined) {
+      throw new Error(
+         `strict-origin invariant (${file}): ${violation}: ${c.malloy}`,
+      );
+   }
 }
 
 /**
