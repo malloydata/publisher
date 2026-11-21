@@ -97,6 +97,8 @@ export async function stringGateCollationRefusal(args: {
    reads: GateReads | undefined;
    /** The caller's givens: a probe of a source whose rows read one needs it. */
    givens?: Record<string, unknown>;
+   /** The bind the query was pinned to (BigQuery's reads are kept per bind). */
+   bind?: object;
 }): Promise<string | undefined> {
    const { reads } = args;
    // Nothing the gates and scopes compare is a string (an allow-list over
@@ -141,6 +143,7 @@ export async function stringGateCollationRefusal(args: {
       const source = await bigquerySource({
          authorRunnable: args.authorRunnable,
          ...(args.givens ? { givens: args.givens } : {}),
+         ...(args.bind ? { bind: args.bind } : {}),
       });
       return source.known && source.collated.size === 0
          ? undefined
@@ -248,45 +251,70 @@ export const collationProbe: CollationProbe = {
 };
 
 /**
- * The BigQuery catalog reads, by the loaded model's runtime, then what each
- * reads. Each query compiles a model of its own, so a compiled model would
- * read the catalog per query; the runtime is replaced whenever the package
- * reloads its models, which a reload does and every build's bind does
- * (`Package.reloadAllModels` hydrates new models, each with a runtime of its
- * own), so a build or a reload drops these. A failed or denied read fails
- * its askers closed and is kept for {@link BIGQUERY_FAILURE_TTL_MS}, so it is
- * not issued again on every query, then read again.
+ * The BigQuery catalog reads, by the loaded model's runtime, then the bind
+ * (the serving snapshot the query was pinned to), then what each reads.
+ * Each query compiles a model of its own, so a compiled model would read the
+ * catalog per query. A read is repeated:
+ *
+ * - under another runtime (the package reloaded its models) or another bind
+ *   (a build, a rebind, or any other change to what is served);
+ * - {@link BIGQUERY_SUCCESS_TTL_MS} after a read that answered, so a source
+ *   changed in place (a `CREATE OR REPLACE` with a collation) is seen within
+ *   that window with no rebind;
+ * - {@link BIGQUERY_FAILURE_TTL_MS} after a read that failed or was denied,
+ *   which answers live until then without being issued again.
+ *
+ * No clock is read here (the layer rules forbid it in `serve/`): an unref'd
+ * timer per entry drops it, and only if nothing has replaced it since.
  */
-const bigqueryProbes = new WeakMap<object, Map<string, Promise<unknown>>>();
+const bigqueryProbes = new WeakMap<
+   object,
+   WeakMap<object, Map<string, Promise<unknown>>>
+>();
+
+/** The bind of a caller that names none (a spec, a probe outside a query). */
+const NO_BIND = {};
+
+/** How long a catalog read that answered is kept before it is repeated. */
+const BIGQUERY_SUCCESS_TTL_MS = 5 * 60_000;
 
 /** How long a failed or denied catalog read answers live before it is retried. */
 const BIGQUERY_FAILURE_TTL_MS = 60_000;
 
 function bigqueryProbeOnce<T>(
    runtime: object,
+   bind: object,
    parts: readonly (string | undefined)[],
    run: () => Promise<T>,
 ): Promise<T> {
-   let byKey = bigqueryProbes.get(runtime);
+   let byBind = bigqueryProbes.get(runtime);
+   if (!byBind) {
+      byBind = new WeakMap();
+      bigqueryProbes.set(runtime, byBind);
+   }
+   let byKey = byBind.get(bind);
    if (!byKey) {
       byKey = new Map();
-      bigqueryProbes.set(runtime, byKey);
+      byBind.set(bind, byKey);
    }
    const key = JSON.stringify(parts);
    let p = byKey.get(key) as Promise<T> | undefined;
    if (!p) {
+      // Bounded: at most this many entries, and so timers, per bind.
       if (byKey.size >= 1000) byKey.clear();
       const held = byKey;
       const mine = run();
       p = mine;
-      // A failure is kept for the TTL (no clock is read here: a timer drops
-      // it), and only if nothing has replaced it since.
-      mine.catch(() => {
+      const expire = (ms: number) => {
          const timer = setTimeout(() => {
             if (held.get(key) === mine) held.delete(key);
-         }, BIGQUERY_FAILURE_TTL_MS);
+         }, ms);
          (timer as { unref?: () => void }).unref?.();
-      });
+      };
+      mine.then(
+         () => expire(BIGQUERY_SUCCESS_TTL_MS),
+         () => expire(BIGQUERY_FAILURE_TTL_MS),
+      );
       byKey.set(key, mine);
    }
    return p;
@@ -533,6 +561,7 @@ class BigQueryCatalog {
 
    constructor(
       private readonly runtime: object,
+      private readonly bind: object,
       readonly connection: Connection,
       private readonly connectionName: string | undefined,
    ) {
@@ -549,6 +578,7 @@ class BigQueryCatalog {
       try {
          const regions = await bigqueryProbeOnce(
             this.runtime,
+            this.bind,
             [this.connectionName, "locations", project],
             () => bigqueryDatasetLocations(this.connection, project),
          );
@@ -573,6 +603,7 @@ class BigQueryCatalog {
          try {
             r = await bigqueryProbeOnce(
                this.runtime,
+               this.bind,
                [this.connectionName, "project", project, region],
                () => bigqueryCollatedDatasets(this.connection, project, region),
             );
@@ -613,6 +644,7 @@ class BigQueryCatalog {
             try {
                types = await bigqueryProbeOnce(
                   this.runtime,
+                  this.bind,
                   [
                      this.connectionName,
                      "tables",
@@ -641,6 +673,7 @@ class BigQueryCatalog {
    datasetTables(dataset: string): Promise<ReadonlyMap<string, DatasetTable>> {
       return bigqueryProbeOnce(
          this.runtime,
+         this.bind,
          [this.connectionName, "dataset", dataset],
          () => bigqueryDatasetTables(this.connection, dataset),
       );
@@ -680,6 +713,8 @@ class BigQueryCatalog {
 async function bigquerySource(args: {
    authorRunnable: QueryMaterializer;
    givens?: Record<string, unknown>;
+   /** The bind the query was pinned to: its reads are kept per bind. */
+   bind?: object;
 }): Promise<
    | { known: false }
    | {
@@ -709,6 +744,7 @@ async function bigquerySource(args: {
          typeof struct?.connection === "string" ? struct.connection : undefined;
       const catalog = new BigQueryCatalog(
          runtime,
+         args.bind ?? NO_BIND,
          await runtime.connections.lookupConnection(connectionName),
          connectionName,
       );
@@ -811,6 +847,7 @@ async function bigqueryDatabaseTableCollation(
    args: {
       authorRunnable: QueryMaterializer;
       givens?: Record<string, unknown>;
+      bind?: object;
    },
    connection: Connection,
    connectionName: string | undefined,
@@ -1189,6 +1226,8 @@ export async function storedTableCollationRefusal(args: {
    givens?: Record<string, unknown>;
    /** This answer's stored-side reads, shared across its comparisons. */
    storedReads?: Map<string, Promise<unknown>>;
+   /** The bind the query was pinned to (BigQuery's reads are kept per bind). */
+   bind?: object;
 }): Promise<string | undefined> {
    if (args.tables.length === 0) return undefined;
    const memo = args.storedReads ?? new Map<string, Promise<unknown>>();
@@ -1583,6 +1622,7 @@ async function storedSide(
       virtualMap: ReadonlyMap<string, ReadonlyMap<string, string>> | undefined;
       authorRunnable: QueryMaterializer;
       givens?: Record<string, unknown>;
+      bind?: object;
    },
    runtime: ProbeRuntime,
    sourceDialect: string,

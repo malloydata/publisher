@@ -131,6 +131,8 @@ export interface CollationProbe {
       authorRunnable: QueryMaterializer;
       reads: GateReads | undefined;
       givens?: Record<string, unknown>;
+      /** The bind the query was pinned to: a probe may keep reads per bind. */
+      bind?: object;
    }): Promise<string | undefined>;
    storedRefusal(args: {
       tables: readonly ProbedTable[];
@@ -144,5 +146,7 @@ export interface CollationProbe {
        * every comparison asked of that answer shares them.
        */
       storedReads?: Map<string, Promise<unknown>>;
+      /** The bind the query was pinned to: a probe may keep reads per bind. */
+      bind?: object;
    }): Promise<string | undefined>;
 }

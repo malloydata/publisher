@@ -101,6 +101,8 @@ export class ReadAdmission {
       private readonly query: QueryFacts,
       private readonly switches: GateSwitches,
       private readonly probe: CollationProbe,
+      /** The bind the query was pinned to (its serving snapshot). */
+      private readonly bind?: object,
    ) {
       this.givens = query.givens as Record<string, unknown> | undefined;
    }
@@ -407,7 +409,10 @@ export class ReadAdmission {
             : request.comparison === "filters"
               ? g.filterTables
               : g.resultTables;
-      const givens = this.givens ? { givens: this.givens } : {};
+      const givens = {
+         ...(this.givens ? { givens: this.givens } : {}),
+         ...(this.bind ? { bind: this.bind } : {}),
+      };
       const refusal =
          request.side === "source"
             ? await this.probe.sourceRefusal({

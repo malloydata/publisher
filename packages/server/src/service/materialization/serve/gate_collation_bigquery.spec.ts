@@ -371,6 +371,57 @@ describe("a BigQuery catalog read's caching", () => {
       expect(sent).toHaveLength(4);
    });
 
+   it("reads again under another bind, and not under the same one", async () => {
+      const { connection, sent } = stubBigQuery({ location: "US" });
+      const model = new SingleConnectionRuntime({ connection }).loadModel(
+         MODEL,
+      );
+      const ask = (bind: object) =>
+         stringGateCollationRefusal({
+            authorRunnable: model.loadQuery(
+               "run: plain -> { group_by: region }",
+            ),
+            reads: STRING_READS,
+            bind,
+         });
+      const first = {};
+      expect(await ask(first)).toBeUndefined();
+      expect(await ask(first)).toBeUndefined();
+      expect(sent).toHaveLength(2);
+      // A rebind (a build, a storage= bind): the same runtime reads again.
+      expect(await ask({})).toBeUndefined();
+      expect(sent).toHaveLength(4);
+   });
+
+   it("repeats a read that answered after five minutes, not within them", async () => {
+      jest.useFakeTimers();
+      const catalog: Catalog = { location: "US" };
+      const { connection, sent } = stubBigQuery(catalog);
+      const model = new SingleConnectionRuntime({ connection }).loadModel(
+         MODEL,
+      );
+      const bind = {};
+      const ask = () =>
+         stringGateCollationRefusal({
+            authorRunnable: model.loadQuery(
+               "run: plain -> { group_by: region }",
+            ),
+            reads: STRING_READS,
+            bind,
+         });
+      expect(await ask()).toBeUndefined();
+      expect(sent).toHaveLength(2);
+      // The source is replaced in place with a collation, with no rebind.
+      catalog.projects = { proj: ["ds"] };
+      catalog.datasets = { "proj.ds": { plain_t: { region: "und:ci" } } };
+      jest.advanceTimersByTime(4 * 60_000);
+      expect(await ask()).toBeUndefined();
+      expect(sent).toHaveLength(2);
+      jest.advanceTimersByTime(61_000);
+      expect(await ask()).toBe(LIVE);
+      expect(sent.length).toBeGreaterThan(2);
+   });
+
    it("reads again under a new runtime, as after a build or a reload", async () => {
       const { connection, sent } = stubBigQuery({ location: "US" });
       for (let i = 0; i < 2; i++) {
