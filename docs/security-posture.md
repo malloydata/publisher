@@ -81,6 +81,13 @@ stands in front of Publisher and does all of the following:
    `PUBLISHER_CALLER_HEADER`) and a `traceparent`, so
    the [access record](access-record.md) names the caller.
 
+**Headers a gateway must strip.** `x-publisher-bypass-authorize` is the one request header that
+changes what Publisher enforces: carrying the value of `PUBLISHER_BYPASS_AUTHORIZE_SECRET`, it skips
+`#(authorize)` and `#(access_filter)` on a query or a compile check. Remove it from every inbound
+request at the gateway, so only an internal service behind the gateway (an indexer) can set it. The
+`/api/v1` spec states the same rule in its overview rather than as a parameter or a security scheme,
+so no generated client offers it.
+
 Without that tier the controls are advisory. Anyone who can reach the port can set their own givens
 and pass any gate. The rest of this page is the detail behind that rule.
 
@@ -231,8 +238,8 @@ Concretely:
   the value of `PUBLISHER_BYPASS_AUTHORIZE_SECRET` skips gate evaluation on BOTH routes outright —
   the `#(authorize)` lock as well as the `#(access_filter)` filter — for trusted data-management
   callers (indexers). With that variable unset the bypass is refused, so
-  the default is closed; a deployment that configures the secret and reaches untrusted callers
-  should still strip the header at its edge — see
+  the default is closed; a deployment that configures the secret removes the header from every
+  inbound request at its gateway (see "Headers a gateway must strip" above) — see
   [authorize-bypass-deployment.md](authorize-bypass-deployment.md). It is the one place where a
   request, not a model, decides whether governance applies.
 
