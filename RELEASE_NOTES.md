@@ -21,6 +21,12 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — the BigQuery collation check reads every catalog row, and takes `'NULL'` for no collation
+
+**Fixed: 0.17.1's BigQuery collation check could serve a stored copy of a collated string.** The check added in 0.17.1 read BigQuery's `INFORMATION_SCHEMA` through a connection that returns one page of 10 rows unless asked for more, so in a project with more than 10 datasets each read saw an arbitrary 10. It also took BigQuery's `collation_name` of `'NULL'`, the string it reports for an uncollated column, for a collation, so every dataset looked collated. Together, a collated dataset outside the 10 rows read was taken for byte-exact, and a stored copy could compare, order or group its strings differently from live; and a source over uncollated tables switched between served and live from one read to the next, held for up to 5 minutes at a time. Every catalog read now asks for all its rows and is used only when it provably holds every row BigQuery reports (otherwise the query answers live), and `'NULL'`, NULL and `''` all read as no collation.
+
+**Who is affected:** 0.17.1 with a BigQuery source served from a `storage=` copy or a database table, where a gate, a scope, a query's own filter, an ordering or a grouping compares a string. **Upgrade.** Nothing else is needed: the check reads the catalog afresh under the new version.
+
 ## [Unreleased] — a database table whose build recorded no column types answers live (security)
 
 **Fixed (security): a leak in 0.17.0 and 0.17.1.** Before a database table (a colocated `#@ persist` or `#(materialize)` table, a database rollup, or a persisted view or query) is served, Publisher compares its columns, as the warehouse holds them now, with the types its build recorded, so a column altered after the build is read faithfully or left out. A table whose manifest entry recorded no types, neither `schema` nor `nativeSchema`, had nothing to compare against, so a column altered after the build was served as if unchanged.

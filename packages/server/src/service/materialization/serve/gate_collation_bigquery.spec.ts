@@ -105,7 +105,9 @@ function stubBigQuery(catalog: Catalog): {
       fields,
    });
    const typeOf = (key: string) => catalog.types?.[key] ?? "BASE TABLE";
-   stub.runSQL = async (sql: string) => {
+   const answer = async (
+      sql: string,
+   ): Promise<{ rows: Record<string, unknown>[] }> => {
       sent.push(sql);
       const region =
          /FROM `([^`]+)`\.`region-([^`]+)`\.INFORMATION_SCHEMA/.exec(sql);
@@ -131,12 +133,10 @@ function stubBigQuery(catalog: Catalog): {
                         table_type: typeOf(w),
                      };
                   }),
-               totalRows: 0,
             };
          }
          return {
             rows: collated.map((d) => ({ table_schema: d })),
-            totalRows: 0,
          };
       }
       const dataset = /FROM `([^`]+)`(?:\.`([^`]+)`)?\.INFORMATION_SCHEMA/.exec(
@@ -167,8 +167,12 @@ function stubBigQuery(catalog: Catalog): {
                collation_name: c,
             })),
          ]),
-         totalRows: 0,
       };
+   };
+   // One whole page: every row the read holds, as many as `totalRows` says.
+   stub.runSQL = async (sql: string) => {
+      const { rows } = await answer(sql);
+      return { rows, totalRows: rows.length };
    };
    return { connection: connection as unknown as Connection, sent, regions };
 }
