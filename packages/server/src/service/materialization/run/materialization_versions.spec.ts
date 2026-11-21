@@ -138,10 +138,6 @@ async function newEnvironment(): Promise<Environment> {
          });
          return true;
       },
-      removePackageRecord: async (packageName) => {
-         const row = await repo.getPackageByName(ENV_ID, packageName);
-         if (row) await repo.deletePackage(row.id);
-      },
    });
    // As EnvironmentStore.bindVersionRegistry sets it.
    created.setStorageBindingResolver(storageBindingResolverFor(repo, ENV_ID));

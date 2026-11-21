@@ -286,10 +286,6 @@ for (const tier of TIERS)
                });
                return true;
             },
-            removePackageRecord: async (packageName) => {
-               const row = await repo.getPackageByName(ENV_ID, packageName);
-               if (row) await repo.deletePackage(row.id);
-            },
          });
          env.setStorageBindingResolver(storageBindingResolverFor(repo, ENV_ID));
          service = serviceOverEnvironment(

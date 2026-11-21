@@ -104,10 +104,6 @@ async function bootEnvironment(): Promise<Environment> {
          });
          return true;
       },
-      removePackageRecord: async (packageName) => {
-         const row = await repo.getPackageByName(ENV_ID, packageName);
-         if (row) await repo.deletePackage(row.id);
-      },
    });
    env.setStorageBindingResolver(async () => localStore);
    return env;

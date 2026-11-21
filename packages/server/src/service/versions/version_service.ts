@@ -110,8 +110,6 @@ export interface VersionHost<P> {
       packageName: string,
       description: string | null | undefined,
    ): Promise<boolean>;
-   /** Remove a package row this service created for a publish that failed. */
-   removePackageRecord(packageName: string): Promise<void>;
    /** The build manifest a loaded version is bound to now, or null. */
    boundManifestOf?(loaded: P): string | null;
    /**
@@ -655,19 +653,10 @@ export class VersionService<P = unknown> {
          // under that lock are final: a concurrent first publish of another
          // version committed before this one got it.
          const first = holdingPackageLock && versions.length === 0;
-         let createdRecord = false;
          let held: Awaited<ReturnType<VersionStore["holdLegacy"]>> = null;
          let loaded: P | undefined;
          let committed: { version: Version; promoted: boolean };
          try {
-            // The package's row, which the version's commit needs; created
-            // here only for a package new to this server, and removed again
-            // if this publish fails. The request's description is applied
-            // only once the version is committed.
-            createdRecord = await host.ensurePackageRecord(
-               packageName,
-               undefined,
-            );
             held = first ? await store.holdLegacy(packageName) : null;
             await this.withFilesLock(packageName, dirName, async () => {
                // A folder with no row is a placement whose publish never
@@ -694,6 +683,12 @@ export class VersionService<P = unknown> {
             );
             const refusal = options.validate?.(loaded);
             if (refusal) throw new BadRequestError(refusal);
+            // A package new to this server gets its row in the same
+            // transaction as its first version, so a crash before the commit
+            // leaves no package without a version. Only under the package
+            // lock, which a delete of the package takes: a further version
+            // whose package was deleted meanwhile is refused, not recreated.
+            // The request's description is applied once it is committed.
             committed = await this.registry.commitPublish(
                {
                   versionId,
@@ -709,6 +704,7 @@ export class VersionService<P = unknown> {
                   hostOwned: host.hostMarked?.(loaded) ?? false,
                },
                promoteOnPublish(versionId, options.promotion),
+               { createPackage: holdingPackageLock },
             );
          } catch (err) {
             if (loaded !== undefined) {
@@ -722,16 +718,6 @@ export class VersionService<P = unknown> {
                      logger.error(
                         "Could not put back an unversioned package tree after a failed first versioned publish; it is restored at the next startup",
                         { packageName, error: restoreErr },
-                     ),
-                  );
-            }
-            if (createdRecord) {
-               await host
-                  .removePackageRecord(packageName)
-                  .catch((error) =>
-                     logger.warn(
-                        "Could not remove the package row a failed publish created",
-                        { packageName, error },
                      ),
                   );
             }

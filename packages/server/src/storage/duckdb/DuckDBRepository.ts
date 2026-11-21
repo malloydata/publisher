@@ -60,7 +60,6 @@ export function createDuckDBRepository(
          }
          await packages.deletePackage(id);
       },
-      deletePackageRecord: (id) => packages.deletePackage(id),
 
       listVersions: (environmentId, packageName) =>
          versions.list(environmentId, packageName),
@@ -70,8 +69,8 @@ export function createDuckDBRepository(
          versions.listByEnvironment(environmentId),
       getVersion: (environmentId, packageName, versionId) =>
          versions.get(environmentId, packageName, versionId),
-      commitPublish: (version, promote) =>
-         versions.commitPublish(version, promote),
+      commitPublish: (version, promote, options) =>
+         versions.commitPublish(version, promote, options),
       setLatestVersion: (environmentId, packageName, versionId, onlyIf) =>
          versions.setLatest(environmentId, packageName, versionId, onlyIf),
       setVersionArchiveStatus: (

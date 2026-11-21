@@ -13,6 +13,7 @@ import {
    isUniqueViolation,
    TransactionQueries,
 } from "./DuckDBConnection";
+import { newId } from "./rows";
 
 type Row = Record<string, unknown>;
 
@@ -94,12 +95,31 @@ export class VersionRepository {
    async commitPublish(
       version: NewVersion,
       promote: PromoteRule,
+      options: { createPackage?: boolean } = {},
    ): Promise<{ version: Version; promoted: boolean }> {
       const { environmentId, packageName, versionId } = version;
       return this.db.transaction(async (tx) => {
+         const now = new Date().toISOString();
+         if (options.createPackage) {
+            // A package's first version: its row is written with it, never
+            // before it, so no crash leaves a package with no version.
+            await tx.run(
+               `INSERT INTO packages (id, environment_id, name, description, manifest_path, metadata, created_at, updated_at)
+                SELECT ?, ?, ?, NULL, '', '{}', ?, ?
+                WHERE NOT EXISTS (SELECT 1 FROM packages WHERE environment_id = ? AND name = ?)`,
+               [
+                  newId(),
+                  environmentId,
+                  packageName,
+                  now,
+                  now,
+                  environmentId,
+                  packageName,
+               ],
+            );
+         }
          const current = await readLatest(tx, environmentId, packageName);
          const promoted = current !== versionId && promote(current);
-         const now = new Date().toISOString();
          let row: Row | null;
          try {
             row = await tx.get<Row>(

@@ -1130,15 +1130,6 @@ export class EnvironmentStore
             }
             return false;
          },
-         removePackageRecord: async (packageName) => {
-            const existing = await repository.getPackageByName(
-               environmentId,
-               packageName,
-            );
-            // The row only: what is keyed by the package's name (an
-            // unversioned package's runs and ledger) predates this publish.
-            if (existing) await repository.deletePackageRecord(existing.id);
-         },
          packageRemoved: (packageName) =>
             this.cleanupPackageEmbeddings(environmentName, packageName),
       });

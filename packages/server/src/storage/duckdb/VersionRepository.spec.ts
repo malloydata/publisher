@@ -245,6 +245,33 @@ describe("VersionRepository", () => {
       expect(await repo.listVersions(ENV_ID, "ghost")).toEqual([]);
    });
 
+   it("writes a package's row with its first version when asked, and neither when the commit fails", async () => {
+      const { repo } = await freshRepo();
+      const ghost = { ...newVersion("1.0.0"), packageName: "ghost" };
+      await expect(
+         repo.commitPublish(
+            ghost,
+            () => {
+               throw new Error("rule failed");
+            },
+            { createPackage: true },
+         ),
+      ).rejects.toThrow("rule failed");
+      expect(await repo.getPackageByName(ENV_ID, "ghost")).toBeNull();
+
+      await repo.commitPublish(ghost, always, { createPackage: true });
+      expect(await repo.getPackageByName(ENV_ID, "ghost")).toMatchObject({
+         name: "ghost",
+         latestVersion: "1.0.0",
+      });
+      // An existing row is kept as it is.
+      const before = await repo.getPackageByName(ENV_ID, PKG);
+      await repo.commitPublish(newVersion("1.0.0"), always, {
+         createPackage: true,
+      });
+      expect((await repo.getPackageByName(ENV_ID, PKG))!.id).toBe(before!.id);
+   });
+
    it("writes nothing when the promote rule throws", async () => {
       const { repo } = await freshRepo();
       await expect(

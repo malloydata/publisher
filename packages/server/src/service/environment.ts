@@ -2967,7 +2967,6 @@ export class Environment {
             packageName: string,
             description: string | null | undefined,
          ): Promise<boolean>;
-         removePackageRecord(packageName: string): Promise<void>;
          /** A package went with its last version: drop what is kept on it. */
          packageRemoved?(packageName: string): void;
       },
@@ -3027,7 +3026,6 @@ export class Environment {
                );
             },
             ensurePackageRecord: hooks.ensurePackageRecord,
-            removePackageRecord: hooks.removePackageRecord,
             boundManifestOf: (loaded) => loaded.getManifestLocation() ?? null,
             hostMarked: (loaded) => loaded.materialization().isHostOwned(),
             isVersionBuilding: (packageName, versionId) =>
