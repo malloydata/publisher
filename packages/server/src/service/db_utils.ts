@@ -24,6 +24,7 @@ import {
 } from "./gcs_s3_utils";
 import { getImpersonatedAuthClient } from "./gcp_impersonation";
 import { assertGoogleCredentialsIsNotADirectory } from "./google_credentials";
+import { managedCatalogMessage } from "./managed_catalog_scope";
 import { ApiConnection } from "./model";
 import { runIntrospectionSQL, sqlLiteral } from "./introspection_sql";
 import { RECORD_COLUMN_TYPE } from "./record_column_type";
@@ -1197,7 +1198,13 @@ async function getSchemasForDuckLake(
             malloyConnection,
             `SELECT schema_name FROM information_schema.schemata WHERE catalog_name = '${sqlLiteral(catalogName, connection.type)}' ORDER BY schema_name`,
          );
-         const rows = standardizeRunSQLResult(result);
+         // A managed connection reads only its catalog's `main` schema
+         // (managed_catalog_scope.ts): the others are not listed to it.
+         const rows = standardizeRunSQLResult(result).filter(
+            (row) =>
+               connection.managed !== true ||
+               (row as Record<string, unknown>).schema_name === "main",
+         );
 
          return rows.map((row: unknown) => {
             const typedRow = row as Record<string, unknown>;
@@ -2160,6 +2167,20 @@ async function listTablesForDuckLake(
 
    const catalogName = schemaName.split(".")[0];
    const actualSchemaName = schemaName.split(".")[1];
+   if (
+      connection.managed === true &&
+      (catalogName.toLowerCase() !== (connection.name ?? "").toLowerCase() ||
+         actualSchemaName?.toLowerCase() !== "main" ||
+         schemaName.split(".").length !== 2)
+   ) {
+      throw new BadRequestError(
+         managedCatalogMessage(
+            "A table listing",
+            connection.name ?? "",
+            `the schema '${schemaName}'`,
+         ),
+      );
+   }
    return withIntrospectionFailure(
       `tables for DuckLake schema ${schemaName} in connection ${connection.name}`,
       async () => {
