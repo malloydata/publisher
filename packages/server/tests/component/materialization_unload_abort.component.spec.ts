@@ -357,6 +357,33 @@ describe("F-42: what retiring a package mid-build leaves in its warehouse", () =
          expect(await packageTables()).toEqual([]);
       });
 
+      // A run the retire reaches only after it committed, and whose next
+      // step then fails: its own record names its tables, and serves them.
+      it(`${retire} keeps the tables of a run that committed before the abort reached it`, async () => {
+         let retired: Promise<void> | undefined;
+         rewire((real) => ({
+            commitManifest: async (...args) => {
+               const served = await real.commitManifest(...args);
+               retired = env[retire](PKG);
+               void served;
+               throw new Error("injected: a step after the commit failed");
+            },
+         }));
+         const created = await service.createMaterialization(ENV, PKG, {
+            sourceNames: ["afast"],
+         });
+         const deadline = Date.now() + 120_000;
+         while (!retired) {
+            if (Date.now() > deadline) throw new Error("never committed");
+            await new Promise((r) => setTimeout(r, 20));
+         }
+         await retired;
+         expect((await repo.getMaterializationById(created.id))?.status).toBe(
+            "MANIFEST_FILE_READY",
+         );
+         expect(await packageTables()).toHaveLength(1);
+      });
+
       // A table a committed run names is that run's: the retire keeps it,
       // as deleting a package keeps every committed run's tables. After an
       // unload, the package answers equal to live (live, as it does after

@@ -1017,10 +1017,20 @@ export class Reclaimer {
                environmentId,
                packageName,
             )) ?? [];
-         if (!listed.some((m) => m.id === runId)) {
+         const own = listed.find((m) => m.id === runId);
+         if (!own) {
             logger.warn(
                "Not dropping a retired run's tables: the package's records are gone, so what other runs name cannot be read",
                { runId, packageName },
+            );
+            return;
+         }
+         // Committed before the abort reached it: its record names these
+         // tables, and serves them.
+         if (!isActiveRun(own.status)) {
+            logger.info(
+               "Not dropping a retired run's tables: it committed before it was stopped",
+               { runId, packageName, status: own.status },
             );
             return;
          }
