@@ -162,7 +162,8 @@ async function postgresTableCollation(
 }
 
 /** The Postgres dialect's reads: a column's collation, and its identity. */
-interface PostgresCollationReader extends CollationReader {
+export interface PostgresCollationReader extends CollationReader {
+   readonly scope: "column";
    /** The database's default collation, judged. */
    defaultCollation(io: ProbeIO): Promise<Collation>;
    /**
@@ -181,6 +182,7 @@ interface PostgresCollationReader extends CollationReader {
 
 /** The Postgres dialect's reader. */
 export const POSTGRES_COLLATION: PostgresCollationReader = Object.freeze({
+   scope: "column" as const,
    sourceColumns: (io: ProbeIO, sql: string) =>
       postgresCollation(io, unfinalizedPostgresSQL(sql)),
    storedTable: postgresTableCollation,

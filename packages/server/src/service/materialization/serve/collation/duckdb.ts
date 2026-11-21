@@ -68,7 +68,10 @@ async function duckdbTableCollation(
 }
 
 /** The DuckDB dialect's reader. */
-export const DUCKDB_COLLATION: CollationReader = Object.freeze({
+export const DUCKDB_COLLATION: CollationReader & {
+   readonly scope: "instance";
+} = Object.freeze({
+   scope: "instance" as const,
    sourceColumns: duckdbCollation,
    storedTable: duckdbTableCollation,
 });

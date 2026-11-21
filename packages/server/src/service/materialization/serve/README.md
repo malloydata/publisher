@@ -64,6 +64,7 @@ scopes, failing closed and the refusal text) stays in `gate_collation.ts`.
 | `collation/duckdb.ts`   | The DuckDB dialect's reader: a source and a stored table compare bytes unless the instance sets a `default_collation` or a `COLLATE` appears in the SQL or a definition it holds                                                                                                  |
 | `collation/postgres.ts` | The Postgres dialect's reader: a column's collation through `pg_collation_for`, a table's from its catalog, the database default, and each one's resolved identity (by provider and locale, never by name)                                                                        |
 | `collation/bigquery.ts` | The BigQuery dialect's catalog reads: a project's collated datasets by region, the types of the tables a query reads, a dataset's tables with their collated paths; each kept in the caller's per-runtime, per-bind map and dropped after five minutes (a minute after a failure) |
+| `collation/index.ts`    | The readers by Malloy dialect (`collationReaderOf`); a dialect with none has no readable collation. Each reader's scope (instance, column, dataset) agrees with its `stringCollation` fact                                                                                        |
 
 ## Dependency rule
 

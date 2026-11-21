@@ -180,7 +180,9 @@ export interface Capabilities {
     * `dataset` (byte-exact unless a table the query reads holds a column or
     * field with a collation, read from its BigQuery dataset's
     * `INFORMATION_SCHEMA`, or a `COLLATE` is written); absent when it
-    * cannot be read, which keeps no gate over a string column there.
+    * cannot be read, which keeps no gate over a string column there. A fact
+    * only: the code that reads it is the dialect's collation reader
+    * (`serve/collation/`), whose scope a spec holds to this value.
     */
    stringCollation: "binary" | "instance" | "column" | "dataset" | undefined;
    /**

@@ -26,6 +26,8 @@ import {
    deltaStatements,
    pairDeltaStatements,
 } from "../../src/service/materialization/run/incremental_apply";
+import { DUCKDB_COLLATION } from "../../src/service/materialization/serve/collation/duckdb";
+import { probeIO } from "../../src/service/materialization/serve/gate_collation";
 import {
    ownedTableProbeSql,
    relationProbeSql,
@@ -317,5 +319,44 @@ describe("DuckDB conformance", () => {
          `SELECT 'NaN'::DOUBLE = 'NaN'::DOUBLE AS eq, 'NaN'::DOUBLE > 'Infinity'::DOUBLE AS above, 0.1::DOUBLE = 0.1 AS exact`,
       );
       expect(nan).toEqual({ eq: true, above: true, exact: true });
+   });
+
+   it("the collation reader reads the instance: binary until a COLLATE or a default_collation", async () => {
+      const other = new DuckDBConnection(
+         "reader",
+         path.join(dir, "reader.duckdb"),
+      );
+      try {
+         const io = probeIO(other as never);
+         await other.runSQL(`CREATE TABLE plain (s VARCHAR)`);
+         expect(
+            await DUCKDB_COLLATION.sourceColumns(
+               io,
+               "SELECT 'a' AS probe_value",
+            ),
+         ).toBe("binary");
+         expect(await DUCKDB_COLLATION.storedTable(io, "plain")).toBe("binary");
+         expect(
+            await DUCKDB_COLLATION.sourceColumns(
+               io,
+               "SELECT 'a' COLLATE NOCASE AS probe_value",
+            ),
+         ).toBe("unknown");
+         await other.runSQL(`CREATE TABLE ci (s VARCHAR COLLATE NOCASE)`);
+         expect(await DUCKDB_COLLATION.storedTable(io, "ci")).toBe("unknown");
+         expect(await DUCKDB_COLLATION.storedTable(io, "plain")).toBe("binary");
+         expect(
+            await DUCKDB_COLLATION.sourceColumns(
+               io,
+               "SELECT 'a' AS probe_value",
+            ),
+         ).toBe("unknown");
+         await other.runSQL(`SET default_collation = 'nocase'`);
+         expect(await DUCKDB_COLLATION.storedTable(io, "plain")).toBe(
+            "unknown",
+         );
+      } finally {
+         await other.close();
+      }
    });
 });

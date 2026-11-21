@@ -39,6 +39,8 @@ import {
    probePostgresVersion,
    renderSqlBound,
 } from "../../src/service/materialization/run/incremental_apply";
+import { POSTGRES_COLLATION } from "../../src/service/materialization/serve/collation/postgres";
+import { probeIO } from "../../src/service/materialization/serve/gate_collation";
 import {
    relationProbeSql,
    tableCommentSql,
@@ -411,6 +413,41 @@ describe.skipIf(!url)("Postgres conformance", () => {
       );
       expect(eq).toEqual({ d: false, c: false, n: true });
       expect(CAN.stringCollation).toBe("column");
+   });
+
+   it("the collation reader judges columns under C, an ICU nondeterministic collation and the default", async () => {
+      // The fixture from the stringCollation probe above: d default, c "C",
+      // n nondeterministic ICU.
+      const io = probeIO(pg as never);
+      const column = (name: string) =>
+         POSTGRES_COLLATION.sourceColumns(
+            io,
+            `SELECT ${name} AS probe_value FROM ${t("s")}`,
+         );
+      const fallback = await POSTGRES_COLLATION.defaultCollation(io);
+      expect(["binary", "deterministic"]).toContain(fallback);
+      expect({
+         c: await column("c"),
+         n: await column("n"),
+         d: await column("d"),
+      }).toEqual({ c: "binary", n: "unknown", d: fallback });
+      // A table holding the nondeterministic column is unknown; one of C
+      // columns only is binary.
+      expect(await POSTGRES_COLLATION.storedTable(io, `"${schema}"."s"`)).toBe(
+         "unknown",
+      );
+      await run(`CREATE TABLE ${t("sc")} (c text COLLATE "C", i int)`);
+      expect(await POSTGRES_COLLATION.storedTable(io, `"${schema}"."sc"`)).toBe(
+         "binary",
+      );
+      // Identities tell the three apart, and the default column reads as
+      // the database default's.
+      const ids = await POSTGRES_COLLATION.columnIdentities(
+         io,
+         `"${schema}"."s"`,
+      );
+      expect(new Set(ids.values()).size).toBe(3);
+      expect(ids.get("d")).toBe(await POSTGRES_COLLATION.defaultIdentity(io));
    });
 
    it("passthroughNumericAsDouble: DuckDB's postgres_query reads an unconstrained numeric as DOUBLE", async () => {

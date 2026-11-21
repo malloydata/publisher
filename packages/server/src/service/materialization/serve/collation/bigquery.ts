@@ -345,3 +345,9 @@ export class BigQueryCatalog {
       );
    }
 }
+
+/**
+ * The BigQuery dialect's reader: read query-wide from the catalog
+ * ({@link BigQueryCatalog}); it has no per-column or per-table read.
+ */
+export const BIGQUERY_COLLATION = Object.freeze({ scope: "dataset" as const });

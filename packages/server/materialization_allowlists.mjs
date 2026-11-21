@@ -139,6 +139,11 @@ export const RATCHET_DIALECT_LITERALS = {
    // The dialect table itself: the DialectName union, its rows' keys,
    // standardsql's display name, and STORAGE_DIALECT.
    "service/materialization/domain/dialect.ts": { count: 20, step: "table" },
+   // The collation readers, keyed by dialect: one key per reader.
+   "service/materialization/serve/collation/index.ts": {
+      count: 3,
+      step: "table",
+   },
    // The dialect table's evidence: one key per row.
    "service/materialization/domain/dialect_evidence.ts": {
       count: 9,
@@ -284,6 +289,11 @@ export const RATCHET_CONNECTION_TYPE_LITERALS = {
    "service/db_utils.ts": { count: 16, step: "D3" },
    // a DuckLake destination's catalog overlap.
    "service/destination_overlap.ts": { count: 2, step: "D3" },
+   // the collation readers' table, keyed by dialect.
+   "service/materialization/serve/collation/index.ts": {
+      count: 2,
+      step: "table",
+   },
    // the quoting sets, keyed by dialect.
    "service/quoting.ts": { count: 7, step: "table" },
    // per-type test and schema routes.

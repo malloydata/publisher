@@ -42,6 +42,14 @@ export interface ProbeIO {
 /** One dialect's collation reads, each through a {@link ProbeIO}. */
 export interface CollationReader {
    /**
+    * How a query's strings are read: `instance`, once over the whole
+    * instance and the query's SQL; `column`, per string column the gates and
+    * scopes compare. (BigQuery's reader is `dataset`: from the catalog of
+    * every table the query reads.) It agrees with the dialect's
+    * `stringCollation` fact (`domain/dialect.ts`), which a spec checks.
+    */
+   readonly scope: "instance" | "column";
+   /**
     * What the strings of a source compare under, read from SQL that
     * selects them (as `probe_value`, through the author's compile).
     */
