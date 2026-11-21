@@ -673,6 +673,39 @@ describe("verdicts read between a bind and the served copy's compile at bind", (
    });
 });
 
+describe("a package's warnings read between a bind and the served copy's compile", () => {
+   const s = scenario({ "m.malloy": WHOLE_COPY_OFF }, WHOLE_QUERIES);
+
+   it("never carry the previous copy's served-copy-not-served warnings, and carry the new copy's once it lands", async () => {
+      const pkg = s.fixture?.pkg;
+      if (!pkg) throw new Error("not loaded");
+      const mz = pkg.materialization();
+      const model = pkg.getModel("m.malloy")!;
+      const stored = s.fixture!.stored;
+      expect(servedCopyWarnings(s.fixture)).toMatchObject([
+         { model: "m.malloy", reason: "cross_connection_unbuilt" },
+      ]);
+      // Unbind the tables the copy failed over: what a bind response reads
+      // at once is the package's warnings, before the compile lands.
+      mz.bind({ storage: {} });
+      expect(model.servedCopySourceIDs()).toBe("pending");
+      expect(servedCopyWarnings(s.fixture)).toEqual([]);
+      await model.prepareServedCopy();
+      expect(servedCopyWarnings(s.fixture)).toEqual([]);
+      // Bound again: withheld while pending, then the new copy's own.
+      mz.bind({ storage: stored as never });
+      expect(servedCopyWarnings(s.fixture)).toEqual([]);
+      for (const name of ["deals_s", "carriers_s", "carriers_m"]) {
+         expect(verdict(s.fixture, name).servedCopyPending).toBe(true);
+      }
+      await model.prepareServedCopy();
+      expect(servedCopyWarnings(s.fixture)).toMatchObject([
+         { model: "m.malloy", reason: "cross_connection_unbuilt" },
+      ]);
+      expectAgreement(s, WHOLE_QUERIES);
+   });
+});
+
 describe("a rebind whose served copy ends up off", () => {
    const s = scenario({ "m.malloy": WHOLE_COPY_OFF }, WHOLE_QUERIES);
    const STORED = ["carriers_m", "carriers_s", "deals_s"];

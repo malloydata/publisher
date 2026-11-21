@@ -3150,9 +3150,18 @@ export class Model {
       return this.servedCopy.servedThroughBaseSourceIDs();
    }
 
-   /** Why this model's served copy leaves sources unserved (empty when off). */
+   /**
+    * Why this model's served copy leaves sources unserved: empty when off,
+    * and withheld while the copy is pending ({@link servedCopySourceIDs}),
+    * so a package's warnings never carry a previous bind's problems while
+    * its verdicts say pending.
+    */
    public servedCopyProblems(): readonly ServedCopyProblem[] {
       if (!this.servedCopyEnabled()) return [];
+      if (!this.servedCopy.isCurrent()) {
+         this.refreshServedCopy();
+         return [];
+      }
       return this.servedCopy.problems();
    }
 
