@@ -16,6 +16,9 @@
  */
 export type Collation = "binary" | "deterministic" | "unknown";
 
+/** Most rows one complete catalog read takes; a read that fills it proves nothing. */
+export const CATALOG_ROW_LIMIT = 100_000;
+
 /** One connection's I/O, as the collation reads use it. */
 export interface ProbeIO {
    /** The connection's Malloy dialect, which quotes a name it reads. */
@@ -25,6 +28,15 @@ export interface ProbeIO {
     * instance's gate (which refuses settings reads to caller and author SQL).
     */
    rows(sql: string): Promise<Record<string, unknown>[]>;
+   /**
+    * Every row of a catalog read, or a throw (the check then answers live).
+    * Malloy's BigQuery connection reads one results page: 10 rows unless a
+    * `rowLimit` asks for more, and BigQuery ends a page at about 10 MB
+    * whatever it asks for. So this asks for {@link CATALOG_ROW_LIMIT} rows
+    * and answers only when the read is provably whole: fewer rows than that,
+    * and every row its `totalRows` reports.
+    */
+   completeRows(sql: string): Promise<Record<string, unknown>[]>;
    /**
     * BigQuery: the locations of project `project`'s datasets, through the
     * client the connection holds (`datasets.list`, a metadata call, which

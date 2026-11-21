@@ -69,7 +69,11 @@ import { identifier } from "../../malloy_text";
 import { queryTableReads } from "../../governance/ir/source_reads";
 
 import type { CollationProbe, GateReads } from "./gate_reads_types";
-import type { Collation, ProbeIO } from "./collation/probe_io";
+import {
+   CATALOG_ROW_LIMIT,
+   type Collation,
+   type ProbeIO,
+} from "./collation/probe_io";
 import { DUCKDB_COLLATION } from "./collation/duckdb";
 import type { PostgresCollationReader } from "./collation/postgres";
 import { collationReaderOf } from "./collation";
@@ -682,6 +686,21 @@ async function probe(args: {
 type Rows = { rows: Record<string, unknown>[] };
 
 /**
+ * Publisher's own catalog read over `connection`, admitted past a locked
+ * DuckDB instance's gate (duckdb_lockdown.ts), at the connection's default
+ * page unless `options` asks for more rows.
+ */
+async function catalogRead(
+   connection: Connection,
+   sql: string,
+   options?: { rowLimit: number },
+): Promise<Rows & { totalRows?: unknown }> {
+   return (await runAsInternalStatement(sql, () =>
+      connection.runSQL(sql, options),
+   )) as unknown as Rows & { totalRows?: unknown };
+}
+
+/**
  * The I/O the collation reads go through over `connection`: its catalog
  * reads, each admitted past a locked DuckDB instance's gate
  * (duckdb_lockdown.ts), and, for BigQuery, what its driver holds (the
@@ -692,10 +711,22 @@ export function probeIO(connection: Connection): ProbeIO {
    return {
       dialectName: connection.dialectName,
       async rows(sql) {
-         const result = (await runAsInternalStatement(sql, () =>
-            connection.runSQL(sql),
-         )) as unknown as Rows;
-         return result.rows ?? [];
+         return (await catalogRead(connection, sql)).rows ?? [];
+      },
+      async completeRows(sql) {
+         const result = await catalogRead(connection, sql, {
+            rowLimit: CATALOG_ROW_LIMIT,
+         });
+         const found = result.rows ?? [];
+         if (
+            found.length >= CATALOG_ROW_LIMIT ||
+            result.totalRows === undefined ||
+            result.totalRows === null ||
+            Number(result.totalRows) !== found.length
+         ) {
+            throw new Error("a catalog read that may be incomplete");
+         }
+         return found;
       },
       async datasetLocations(project) {
          const client = (

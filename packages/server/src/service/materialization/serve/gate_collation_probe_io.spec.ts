@@ -12,6 +12,7 @@ import type { Connection } from "@malloydata/malloy";
 import { describe, expect, it } from "bun:test";
 import fs from "fs";
 import path from "path";
+import { CATALOG_ROW_LIMIT } from "./collation/probe_io";
 import { probeIO } from "./gate_collation";
 
 function fake(fields: Record<string, unknown>): Connection {
@@ -78,6 +79,38 @@ describe("the collation reads' I/O adapter", () => {
       const io = probeIO(fake({}));
       expect(io.dialectName).toBe("standardsql");
       expect(await io.rows("SELECT 1")).toEqual([]);
+   });
+
+   it("answers a complete read only when it is provably whole", async () => {
+      const asked: unknown[] = [];
+      const reading = (answer: Record<string, unknown>) =>
+         probeIO(
+            fake({
+               runSQL: async (_sql: string, options: unknown) => {
+                  asked.push(options);
+                  return answer;
+               },
+            }),
+         );
+      const two = [{ a: 1 }, { a: 2 }];
+      expect(
+         await reading({ rows: two, totalRows: 2 }).completeRows("SELECT 1"),
+      ).toEqual(two);
+      expect(asked).toEqual([{ rowLimit: CATALOG_ROW_LIMIT }]);
+      // One page of a longer answer, or a read that says nothing of its size.
+      for (const answer of [
+         { rows: two, totalRows: 11 },
+         { rows: two, totalRows: null },
+         { rows: two },
+         {
+            rows: Array.from({ length: CATALOG_ROW_LIMIT }, () => ({})),
+            totalRows: CATALOG_ROW_LIMIT,
+         },
+      ]) {
+         await expect(reading(answer).completeRows("SELECT 1")).rejects.toThrow(
+            "may be incomplete",
+         );
+      }
    });
 
    it("is the one place in serve/ that reads the BigQuery driver", () => {
