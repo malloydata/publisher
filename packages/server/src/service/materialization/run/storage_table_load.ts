@@ -587,6 +587,8 @@ interface LoadColumn {
 /** The columns a load settles on once the objects are checked against the table. */
 interface LoadLayout {
    keys: string[];
+   /** The type of each of `keys`, in order. */
+   keyTypes: string[];
    /** Every non-key column of the table after the load. */
    columns: LoadColumn[];
    /** Columns of the objects the table lacks, added before the rows are written. */
@@ -596,7 +598,6 @@ interface LoadLayout {
 
 const STAGE = quoteIdentifier("__publisher_stage", STORAGE_DIALECT);
 const CHANGES = quoteIdentifier("__publisher_changes", STORAGE_DIALECT);
-const DIFF = quoteIdentifier("__publisher_diff", STORAGE_DIALECT);
 /** Reserved for the load's own columns; a column of the objects may not start with it. */
 const HELPER_PREFIX = "__publisher_";
 
@@ -721,7 +722,7 @@ export function loadLayout(
          });
       }
    }
-   const keys = params.key.map((key) => {
+   const keyColumns = params.key.map((key) => {
       const s = stageByName.get(fold(key));
       const t = tableByName.get(fold(key));
       if (!s || (table && !t)) {
@@ -732,11 +733,13 @@ export function loadLayout(
             { tableType: t?.type, loadType: s?.type },
          );
       }
-      return t?.name ?? s.name;
+      return { name: t?.name ?? s.name, type: t?.type ?? s.type };
    });
+   const keys = keyColumns.map((k) => k.name);
    const keyNames = new Set(keys.map(fold));
    return {
       keys,
+      keyTypes: keyColumns.map((k) => k.type),
       columns: columns.filter((c) => !keyNames.has(fold(c.name))),
       added,
       cursor: cursorLayout(params.cursor, stageByName, tableByName),
@@ -1115,7 +1118,7 @@ async function settleStage(
  * One join over every compared column hashes a whole row of each side, so the
  * keys are settled in a pass over the keys alone and the columns are compared
  * in `groups`: one inner join each, carrying only the keys and that group's
- * columns.
+ * columns, adding the keys it finds changed to `changes` unless already there.
  */
 export function mergeStatements(plan: {
    target: string;
@@ -1146,15 +1149,18 @@ export function mergeStatements(plan: {
       `FROM ${STAGE} AS __s ${replace ? "FULL" : "LEFT"} JOIN ` +
       `(SELECT ${keys.map(q).join(", ")}, TRUE AS __publisher_present FROM ${target}) AS __t ON ${on} ` +
       `GROUP BY ${keys.map(key).join(", ")} HAVING ${touched}`;
-   const groupPass = (group: readonly LoadColumn[], i: number) =>
-      `${i === 0 ? `CREATE TEMP TABLE ${DIFF} AS` : `INSERT INTO ${DIFF}`} SELECT ${keys.map((k) => `__s.${q(k)}`).join(", ")} ` +
-      `FROM ${STAGE} AS __s JOIN ${target} AS __t ON ${on} WHERE ` +
+   // Anti joined to CHANGES so a key several groups change lands once; the keys pass already has every key stored more than once.
+   const groupPass = (group: readonly LoadColumn[]) =>
+      `INSERT INTO ${CHANGES} SELECT ${keys.map((k) => `__s.${q(k)}`).join(", ")}, 'changed', 1 ` +
+      `FROM ${STAGE} AS __s JOIN ${target} AS __t ON ${on} WHERE (` +
       group
          .map(
             (c) =>
                `${c.inTable ? `__t.${q(c.name)}` : "NULL"} IS DISTINCT FROM ${c.inStage ? `__s.${q(c.name)}` : "NULL"}`,
          )
-         .join(" OR ");
+         .join(" OR ") +
+      `) AND NOT EXISTS (SELECT 1 FROM ${CHANGES} AS __c WHERE ` +
+      `${keys.map((k) => `__c.${q(k)} = __s.${q(k)}`).join(" AND ")})`;
    const passes = (plan.groups ?? [plan.columns])
       .filter((group) => group.length > 0)
       .map(groupPass);
@@ -1163,19 +1169,7 @@ export function mergeStatements(plan: {
       ...plan.columns.filter((c) => c.inStage).map((c) => c.name),
    ];
    return {
-      changes: [
-         keysPass,
-         ...passes,
-         // A key a group changes was stored once, or the keys pass already has it.
-         ...(passes.length === 0
-            ? []
-            : [
-                 `INSERT INTO ${CHANGES} SELECT DISTINCT ${keys.map((k) => `__d.${q(k)}`).join(", ")}, 'changed', 1 ` +
-                    `FROM ${DIFF} AS __d WHERE NOT EXISTS (SELECT 1 FROM ${CHANGES} AS __c WHERE ` +
-                    `${keys.map((k) => `__c.${q(k)} = __d.${q(k)}`).join(" AND ")})`,
-                 `DROP TABLE ${DIFF}`,
-              ]),
-      ],
+      changes: [keysPass, ...passes],
       delete:
          `DELETE FROM ${target} AS __t WHERE EXISTS (SELECT 1 FROM ${CHANGES} AS __s WHERE ` +
          `__s.__publisher_status <> 'new' AND ${nullSafeKeyMatch(keys.map(q), "__t", "__s")})`,
@@ -1189,7 +1183,9 @@ export function mergeStatements(plan: {
 
 /** A column's bytes in a join's hash table when the objects do not say: a fixed-width type's, else a generous guess for text, binary and nested values. */
 const FIXED_COLUMN_BYTES = 8;
+const WIDE_FIXED_COLUMN_BYTES = 16;
 const VARIABLE_COLUMN_BYTES = 32;
+const WIDE_FIXED_TYPES = new Set(["HUGEINT", "UHUGEINT", "UUID", "INTERVAL"]);
 const FIXED_WIDTH_TYPES = new Set([
    "BOOLEAN",
    ...SIGNED_INTEGERS,
@@ -1203,23 +1199,28 @@ const FIXED_WIDTH_TYPES = new Set([
    "TIMESTAMP_MS",
    "TIMESTAMP_NS",
    "TIMESTAMP WITH TIME ZONE",
-   "UUID",
-   "INTERVAL",
 ]);
 
-const typeBytes = (type: string) => {
+export const typeBytes = (type: string) => {
    const t = type.toUpperCase();
-   return FIXED_WIDTH_TYPES.has(t) || t.startsWith("DECIMAL(")
-      ? FIXED_COLUMN_BYTES
-      : VARIABLE_COLUMN_BYTES;
+   if (WIDE_FIXED_TYPES.has(t)) return WIDE_FIXED_COLUMN_BYTES;
+   const decimal = /^DECIMAL\((\d+)/.exec(t);
+   if (decimal) {
+      return Number(decimal[1]) > 18
+         ? WIDE_FIXED_COLUMN_BYTES
+         : FIXED_COLUMN_BYTES;
+   }
+   return FIXED_WIDTH_TYPES.has(t) ? FIXED_COLUMN_BYTES : VARIABLE_COLUMN_BYTES;
 };
 
 /**
  * Packs columns into the groups of {@link mergeStatements}: the keys
  * (`keyBytes` a row) ride in every group, and a group takes columns while both
- * sides of its rows (`rows × bytes × 2`) stay within `budget`. A column over
- * the budget on its own gets a group of its own, and may spill. First fit,
- * widest first, so the passes are few; each group keeps the columns' order.
+ * sides of its rows (`rows × bytes × 2`), beside the changes table's keys that
+ * the anti join hashes, stay within `budget`. `rows` is the smaller side's,
+ * which a hash join builds on. A column over the budget on its own gets a
+ * group of its own, and may spill. First fit, widest first, so the passes are
+ * few; each group keeps the columns' order.
  */
 export function packColumnGroups<T>(
    columns: readonly { column: T; bytes: number }[],
@@ -1227,7 +1228,8 @@ export function packColumnGroups<T>(
    rows: number,
    budget: number,
 ): T[][] {
-   const fits = (bytes: number) => (keyBytes + bytes) * rows * 2 <= budget;
+   const fits = (bytes: number) =>
+      (keyBytes + bytes) * rows * 2 + keyBytes * rows <= budget;
    const groups: { bytes: number; members: { column: T; at: number }[] }[] = [];
    const widestFirst = columns
       .map((c, at) => ({ ...c, at }))
@@ -1281,8 +1283,8 @@ export async function parquetRowBytes(
 
 /**
  * The compared columns split into the groups of {@link mergeStatements}, each
- * sized to hold both sides of its rows within half the session's memory (or
- * `columnGroupBudget`). No column is taken as narrower than its type's width,
+ * sized to hold both sides of the smaller side's rows within half the
+ * session's memory (or `columnGroupBudget`). No column is taken as narrower than its type's width,
  * since a Parquet encoding is smaller than the row a hash join holds, and one
  * the objects lack has only its type to go by.
  */
@@ -1291,6 +1293,7 @@ async function columnGroups(
    params: KeyedLoadParams,
    layout: LoadLayout,
    stageRows: number,
+   rowsBefore: number,
 ): Promise<LoadColumn[][]> {
    if (layout.columns.length < 2) return [layout.columns];
    const budget =
@@ -1319,11 +1322,12 @@ async function columnGroups(
          ),
       })),
       layout.keys.reduce(
-         (sum, k) =>
-            sum + Math.max(measured.get(fold(k)) ?? 0, FIXED_COLUMN_BYTES),
+         (sum, k, i) =>
+            sum +
+            Math.max(measured.get(fold(k)) ?? 0, typeBytes(layout.keyTypes[i])),
          0,
       ),
-      stageRows,
+      Math.min(stageRows, rowsBefore),
       budget,
    );
 }
@@ -1342,13 +1346,20 @@ async function planKeyedLoad(
    layout: LoadLayout,
    target: string,
    stageRows: number,
+   rowsBefore: number,
 ): Promise<LoadPlan> {
    const { changes } = mergeStatements({
       target,
       mode: params.mode,
       keys: layout.keys,
       columns: layout.columns,
-      groups: await columnGroups(session, params, layout, stageRows),
+      groups: await columnGroups(
+         session,
+         params,
+         layout,
+         stageRows,
+         rowsBefore,
+      ),
    });
    for (const statement of changes) await session.runSQL(statement);
    const [r] = rows(
@@ -1516,7 +1527,14 @@ async function planAndApply(
    const plan: LoadPlan = !exists
       ? { inserted: stats.rows, replaced: 0, deleted: 0, unchanged: 0 }
       : params.key.length > 0
-        ? await planKeyedLoad(session, params, layout, target, stats.rows)
+        ? await planKeyedLoad(
+             session,
+             params,
+             layout,
+             target,
+             stats.rows,
+             rowsBefore,
+          )
         : await planKeylessLoad(
              session,
              layout,

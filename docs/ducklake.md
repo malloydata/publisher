@@ -293,8 +293,9 @@ stream in batches:
   false`) when loads are large.
 - A keyed load compares a table's columns in narrow passes rather than one join over every column: the
   keys first, then groups of columns sized so both sides of a group's rows fit in half the session's
-  memory, which keeps a replace of tens of millions of rows within the spill limit. A single column whose
-  rows times width exceed that budget on its own may still spill past it. A keyless replace has no key to
+  memory. A keyed replace or merge of 10 million rows by 21 columns stays within the 6 GiB spill limit
+  (measured); spill grows with the stage's size plus the widest single column, so a column whose rows
+  times width exceed that budget on its own may still spill past it. A keyless replace has no key to
   narrow by: when its row count matches the table's (every retry) it compares whole rows of both sides, and
   a table larger than the session's memory can exceed the spill limit, so give a large stream a `key`. A
   load that outgrows the memory or spill limit answers `500` and writes nothing; the server's log names

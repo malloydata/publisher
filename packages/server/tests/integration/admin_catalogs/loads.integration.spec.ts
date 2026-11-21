@@ -1302,12 +1302,12 @@ describe.skipIf(!SUPERUSER)("loads", () => {
                   .map((r) => String(r.explain_value))
                   .join("\n");
             const planned: string[] = [];
-            // The keys pass, a pass per group, and the union; the drop plans no join.
-            for (const statement of statements.changes.slice(0, -1)) {
+            // The keys pass, then a pass per group straight into the changes.
+            expect(statements.changes).toHaveLength(3);
+            for (const statement of statements.changes) {
                planned.push(await plan(statement));
                await sql(writer, statement);
             }
-            await sql(writer, statements.changes.at(-1)!);
             planned.push(
                await plan(statements.delete),
                await plan(statements.insert),
@@ -1317,10 +1317,14 @@ describe.skipIf(!SUPERUSER)("loads", () => {
                expect(text).not.toContain("NL_JOIN");
                expect(text).not.toContain("CROSS_PRODUCT");
             }
-            const [keysPass, vPass, wPass, union, , insert] = planned;
+            const [keysPass, vPass, wPass, , insert] = planned;
             // A delim join holds every column of its left side; the delete's is over the table's row ids alone.
-            for (const text of [keysPass, vPass, wPass, union, insert]) {
+            for (const text of [keysPass, vPass, wPass, insert]) {
                expect(text).not.toContain("DELIM_JOIN");
+            }
+            // A group pass anti joins the changes, hashing their keys, so a key several groups change lands once.
+            for (const text of [vPass, wPass]) {
+               expect(text).toMatch(/Join Type:\s+(RIGHT_)?ANTI/);
             }
             expect(keysPass).not.toMatch(/\b[vw]\b/);
             expect(vPass).toMatch(/\bv\b/);
@@ -1388,9 +1392,8 @@ describe.skipIf(!SUPERUSER)("loads", () => {
       }
 
       const passesOf = (seen: string[]) =>
-         seen.filter((s) =>
-            /^(CREATE TEMP TABLE|INSERT INTO) "__publisher_diff"/.test(s),
-         ).length;
+         seen.filter((s) => s.startsWith('INSERT INTO "__publisher_changes"'))
+            .length;
 
       // A budget of one byte puts every compared column in a group of its own.
       describe.each([
@@ -1667,6 +1670,37 @@ describe.skipIf(!SUPERUSER)("loads", () => {
          },
       );
 
+      it("sizes the groups by the smaller of the stage and the table, the side a hash join builds on", async () => {
+         const table = "grp_smaller_side";
+         await direct(table, {
+            mode: "merge",
+            key: ["id"],
+            objects: [
+               await parquet(
+                  "SELECT i AS id, i + 100 AS a, 2 AS b, 3 AS c FROM range(1, 2) t(i)",
+               ),
+            ],
+         });
+         // Over budget at the stage's 2000 rows, within it at the table's one.
+         const { value, seen } = await recorded(async () =>
+            direct(
+               table,
+               {
+                  mode: "merge",
+                  key: ["id"],
+                  objects: [
+                     await parquet(
+                        "SELECT i AS id, i AS a, 2 AS b, 3 AS c FROM range(1, 2001) t(i)",
+                     ),
+                  ],
+               },
+               10_000,
+            ),
+         );
+         expect(value).toMatchObject({ rowsInserted: 1999, rowsReplaced: 1 });
+         expect(passesOf(seen)).toBe(1);
+      });
+
       it("keyless: compares the bags only when their sizes match, and still guards a shrink", async () => {
          const replace = async (
             rows: number,
@@ -1745,7 +1779,7 @@ describe.skipIf(!SUPERUSER)("loads", () => {
             this: DuckDBConnection,
             ...args: Parameters<typeof original>
          ) {
-            return args[0].startsWith('CREATE TEMP TABLE "__publisher_diff"')
+            return args[0].startsWith('INSERT INTO "__publisher_changes"')
                ? Promise.reject(
                     new Error(
                        "Out of Memory Error: failed to offload data block of size 256.0 KiB (5.9 GiB/6.0 GiB used).",

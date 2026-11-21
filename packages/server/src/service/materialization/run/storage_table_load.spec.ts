@@ -18,6 +18,7 @@ import {
    loadStorageTable,
    mergeStatements,
    packColumnGroups,
+   typeBytes,
    parquetRowBytes,
    readerRefusal,
    readerSql,
@@ -774,7 +775,7 @@ describe("mergeStatements: the plan joins on plain equality", () => {
       expect(text).toContain('NULL IS DISTINCT FROM __s."new"');
    });
 
-   it("settles the keys in a pass that names no compared column, and compares each group in a join of its own", () => {
+   it("settles the keys in a pass that names no compared column, and adds each group's changed keys straight to the changes unless already there", () => {
       const [a, b, c] = ["a", "b", "c"].map((name) => ({
          ...v,
          name,
@@ -786,22 +787,26 @@ describe("mergeStatements: the plan joins on plain equality", () => {
          columns: [a, b, c],
          groups: [[a, b], [c]],
       });
-      const [keys, first, second, union, drop] = changes;
-      expect(changes).toHaveLength(5);
+      const [keys, first, second] = changes;
+      expect(changes).toHaveLength(3);
       expect(keys).toStartWith('CREATE TEMP TABLE "__publisher_changes"');
       expect(keys).not.toMatch(/"[abc]"/);
-      expect(first).toStartWith('CREATE TEMP TABLE "__publisher_diff"');
+      expect(first).toStartWith('INSERT INTO "__publisher_changes"');
       expect(first).toContain('__t."a" IS DISTINCT FROM __s."a" OR __t."b"');
       expect(first).not.toContain('"c"');
-      expect(second).toStartWith('INSERT INTO "__publisher_diff"');
+      expect(second).toStartWith('INSERT INTO "__publisher_changes"');
       expect(second).toContain('__t."c" IS DISTINCT FROM __s."c"');
       expect(second).not.toMatch(/"[ab]"/);
-      expect(union).toStartWith('INSERT INTO "__publisher_changes"');
-      expect(drop).toBe('DROP TABLE "__publisher_diff"');
+      for (const pass of [first, second]) {
+         expect(pass).toContain(
+            'AND NOT EXISTS (SELECT 1 FROM "__publisher_changes" AS __c WHERE __c."id" = __s."id")',
+         );
+         expect(pass).not.toContain("__publisher_diff");
+      }
    });
 
    it("compares every column in one group by default, and none when there is no column", () => {
-      expect(statements("merge").changes).toHaveLength(4);
+      expect(statements("merge").changes).toHaveLength(2);
       const keysOnly = mergeStatements({
          target: "t",
          mode: "merge",
@@ -817,18 +822,18 @@ describe("packColumnGroups: columns into compare passes within a budget", () => 
       bytes.map((b, i) => ({ column: `c${i}`, bytes: b }));
 
    it("keeps every column in one group when both sides of the rows fit", () => {
-      expect(packColumnGroups(sized(8, 8, 8), 8, 100, 100 * 2 * 32)).toEqual([
+      expect(packColumnGroups(sized(8, 8, 8), 8, 100, 7200)).toEqual([
          ["c0", "c1", "c2"],
       ]);
    });
 
-   it("counts the keys and both sides of every row against each group", () => {
-      // 100 rows × 2 sides × (8 key + 16) = 4800 bytes a group of two 8-byte columns.
-      expect(packColumnGroups(sized(8, 8, 8, 8), 8, 100, 4800)).toEqual([
+   it("counts the keys and both sides of every row against each group, and the changes' keys once", () => {
+      // 100 rows × 2 sides × (8 key + 16) + 100 × 8 key = 5600 bytes a group of two 8-byte columns.
+      expect(packColumnGroups(sized(8, 8, 8, 8), 8, 100, 5600)).toEqual([
          ["c0", "c1"],
          ["c2", "c3"],
       ]);
-      expect(packColumnGroups(sized(8, 8, 8, 8), 8, 100, 4799)).toEqual([
+      expect(packColumnGroups(sized(8, 8, 8, 8), 8, 100, 5599)).toEqual([
          ["c0"],
          ["c1"],
          ["c2"],
@@ -847,7 +852,7 @@ describe("packColumnGroups: columns into compare passes within a budget", () => 
    });
 
    it("gives a column that exceeds the budget alone a group of its own, and packs the rest around it", () => {
-      expect(packColumnGroups(sized(8, 500, 8), 8, 100, 4800)).toEqual([
+      expect(packColumnGroups(sized(8, 500, 8), 8, 100, 5600)).toEqual([
          ["c1"],
          ["c0", "c2"],
       ]);
@@ -856,6 +861,24 @@ describe("packColumnGroups: columns into compare passes within a budget", () => 
    it("takes no group for no column, and one group when there are no rows", () => {
       expect(packColumnGroups([], 8, 100, 1)).toEqual([]);
       expect(packColumnGroups(sized(8, 8), 8, 0, 1)).toEqual([["c0", "c1"]]);
+   });
+});
+
+describe("typeBytes: a column's width in a join's hash table", () => {
+   it.each([
+      ["BIGINT", 8],
+      ["TIMESTAMP WITH TIME ZONE", 8],
+      ["DECIMAL(18,3)", 8],
+      ["HUGEINT", 16],
+      ["UHUGEINT", 16],
+      ["UUID", 16],
+      ["INTERVAL", 16],
+      ["DECIMAL(19,2)", 16],
+      ["DECIMAL(38,10)", 16],
+      ["VARCHAR", 32],
+      ["STRUCT(a INTEGER)", 32],
+   ])("counts %s at %d bytes", (type, bytes) => {
+      expect(typeBytes(type)).toBe(bytes);
    });
 });
 
