@@ -48,7 +48,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from "fs";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
-import type { ClientConfig, PoolConfig } from "pg";
+import { Client, type ClientConfig, type PoolConfig } from "pg";
 import tls from "tls";
 import { components } from "../api";
 import {
@@ -2381,7 +2381,7 @@ export function splitPgAttachCredentials(
 export function pgClientConfig(
    subject: string,
    conninfo: string,
-): ClientConfig {
+): ClientConfig & { plaintextFallback: boolean } {
    const params = new Map<string, string>();
    for (const { key, value } of pgConninfoKeyValues(subject, conninfo)) {
       params.set(key, value);
@@ -2389,26 +2389,59 @@ export function pgClientConfig(
    const first = (key: string) => params.get(key)?.split(",")[0] || undefined;
    const host = first("host");
    const port = first("port");
+   const sslmode = params.get("sslmode");
    return {
       host,
       port: port === undefined ? undefined : Number(port),
       database: params.get("dbname"),
       user: params.get("user"),
       password: params.get("password"),
-      ssl: pgClientSsl(
-         subject,
-         params.get("sslmode"),
-         host,
-         params.get("sslrootcert"),
-      ),
+      ssl: pgClientSsl(subject, sslmode, host, params.get("sslrootcert")),
+      plaintextFallback: TLS_OPTIONAL_SSLMODES.has(sslmode),
       connectionTimeoutMillis: 10_000,
    };
 }
 
 /**
+ * A connected node-pg client for a libpq connection string. `onError` hears a
+ * dropped idle connection, which unhandled would end the process.
+ */
+export async function connectPgClient(
+   subject: string,
+   conninfo: string,
+   onError: (error: Error) => void = () => undefined,
+): Promise<Client> {
+   const { plaintextFallback, ...config } = pgClientConfig(subject, conninfo);
+   const connect = async (ssl: ClientConfig["ssl"]) => {
+      const client = new Client({ ...config, ssl });
+      client.on("error", onError);
+      await client.connect();
+      return client;
+   };
+   try {
+      return await connect(config.ssl);
+   } catch (error) {
+      // libpq's `prefer`: plaintext only when the server refuses TLS.
+      if (plaintextFallback && /does not support SSL/i.test(String(error))) {
+         return connect(false);
+      }
+      throw error;
+   }
+}
+
+/** The sslmodes under which libpq tries TLS but accepts a server without it. */
+const TLS_OPTIONAL_SSLMODES = new Set<string | undefined>([
+   undefined,
+   "allow",
+   "prefer",
+]);
+
+/**
  * libpq's `sslmode` as a node-pg `ssl` option. node-pg cannot fall back from TLS
- * to plaintext, so the modes that only try TLS (`allow`, `prefer`, unset) stay
- * plaintext. `verify-*` trust `sslrootcert`, else the runtime's ambient anchors.
+ * to plaintext itself, so the TLS-optional modes ask for TLS and the caller
+ * retries in plaintext only on the server's refusal (`plaintextFallback`).
+ * `require` with an `sslrootcert` verifies the chain, as libpq does. `verify-*`
+ * trust `sslrootcert`, else the runtime's ambient anchors.
  */
 export function pgClientSsl(
    subject: string,
@@ -2418,21 +2451,23 @@ export function pgClientSsl(
 ): ClientConfig["ssl"] {
    const ca = () =>
       readFileSync(sslrootcert ?? ambientTrustBundlePath(), "utf8");
+   const verifyChain = () => ({
+      rejectUnauthorized: true,
+      ca: ca(),
+      checkServerIdentity: () => undefined,
+   });
    switch (sslmode) {
-      case undefined:
       case "disable":
+         return false;
+      case undefined:
       case "allow":
       case "prefer":
-         return false;
-      case "require":
       case "no-verify":
          return { rejectUnauthorized: false };
+      case "require":
+         return sslrootcert ? verifyChain() : { rejectUnauthorized: false };
       case "verify-ca":
-         return {
-            rejectUnauthorized: true,
-            ca: ca(),
-            checkServerIdentity: () => undefined,
-         };
+         return verifyChain();
       case "verify-full":
          return { rejectUnauthorized: true, ca: ca(), servername: host };
       default:

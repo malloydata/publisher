@@ -31,7 +31,7 @@ import {
    createPgAttachSecret,
    escapeSQL,
    isDuckLakeInitRace,
-   pgClientConfig,
+   connectPgClient,
    tablePartitionKeys,
    type PartitionKey,
 } from "./connection";
@@ -805,17 +805,16 @@ export class CatalogAdmin {
       fn: (lock: TableLock) => Promise<T>,
    ): Promise<T> {
       const key = `${catalog}.${schema}.${table}`;
-      const client = new Client(
-         pgClientConfig("The catalog database", this.config.catalogDatabase),
-      );
       let lost = false;
-      // An idle connection the server or network drops emits `error`, which
-      // unhandled would end the process.
-      client.on("error", () => {
-         lost = true;
-      });
+      let client: Client;
       try {
-         await client.connect();
+         client = await connectPgClient(
+            "The catalog database",
+            this.config.catalogDatabase,
+            () => {
+               lost = true;
+            },
+         );
       } catch (error) {
          throw this.redacted(error);
       }

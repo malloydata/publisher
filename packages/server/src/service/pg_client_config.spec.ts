@@ -29,7 +29,6 @@ describe("pgClientConfig", () => {
          database: "cat",
          user: "an admin",
          password: "p w",
-         ssl: false,
       });
    });
 
@@ -50,24 +49,32 @@ describe("pgClientConfig", () => {
    });
 
    it.each([
-      [undefined, false],
-      ["disable", false],
-      ["allow", false],
-      ["prefer", false],
-      ["require", { rejectUnauthorized: false }],
-      ["no-verify", { rejectUnauthorized: false }],
-   ] as const)("maps sslmode %s to %p", (sslmode, ssl) => {
-      const conninfo = `host=h${sslmode ? ` sslmode=${sslmode}` : ""}`;
-      expect(config(conninfo).ssl).toEqual(ssl);
-   });
+      [undefined, { rejectUnauthorized: false }, true],
+      ["disable", false, false],
+      ["allow", { rejectUnauthorized: false }, true],
+      ["prefer", { rejectUnauthorized: false }, true],
+      ["require", { rejectUnauthorized: false }, false],
+      ["no-verify", { rejectUnauthorized: false }, false],
+   ] as const)(
+      "maps sslmode %s to %p, plaintext fallback %p",
+      (sslmode, ssl, plaintextFallback) => {
+         const conninfo = `host=h${sslmode ? ` sslmode=${sslmode}` : ""}`;
+         expect(config(conninfo)).toMatchObject({ ssl, plaintextFallback });
+      },
+   );
 
-   it("verifies the chain only for verify-ca, against sslrootcert", () => {
-      const { ssl } = config(`host=h sslmode=verify-ca sslrootcert=${ca}`) as {
-         ssl: Record<string, unknown>;
-      };
-      expect(ssl).toMatchObject({ rejectUnauthorized: true, ca: "PEM-BYTES" });
-      expect((ssl.checkServerIdentity as () => unknown)()).toBeUndefined();
-   });
+   it.each(["require", "verify-ca"])(
+      "verifies the chain but not the host for %s with an sslrootcert",
+      (sslmode) => {
+         const ssl = config(`host=h sslmode=${sslmode} sslrootcert=${ca}`)
+            .ssl as unknown as Record<string, unknown>;
+         expect(ssl).toMatchObject({
+            rejectUnauthorized: true,
+            ca: "PEM-BYTES",
+         });
+         expect((ssl.checkServerIdentity as () => unknown)()).toBeUndefined();
+      },
+   );
 
    it("verifies the chain and the host name for verify-full", () => {
       expect(
