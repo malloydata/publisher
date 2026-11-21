@@ -98,6 +98,12 @@ export interface LegAnswer {
     */
    readonly gateTablesRead?: readonly TableRead[];
    /**
+    * For the served copy: the author sources its compile re-rooted on their
+    * tables, by `sourceID`, read or not. A join to one reads its table, never
+    * its query, so the row-scope check leaves that query out.
+    */
+   readonly rerootedSourceIDs?: ReadonlySet<string>;
+   /**
     * The bindings the runnable's shape was built from: a store failure is
     * retried live only when every one allows it. Empty when the answer reads
     * nothing through a virtual map.
@@ -330,6 +336,7 @@ function servedLeg(servedCopy: ServedCopyServe): Leg {
             runnable: served.runnable,
             tablesRead: served.tablesRead,
             gateTablesRead: served.gateTablesRead,
+            rerootedSourceIDs: served.rerootedSourceIDs,
             shapeBindings: served.bindings,
             virtualMap: served.virtualMap,
             graftScope: served.graftScope,
