@@ -84,11 +84,9 @@ import {
    type BigQueryJobListerFactory,
 } from "./bigquery_job_cancel";
 import type { QueryMetadata } from "../../query_metadata";
-import {
-   attachDuckLakeReadWrite,
-   managedSearchPathSql,
-   type PartitionKey,
-} from "../../connection";
+import { attachDuckLakeReadWrite } from "../../connection";
+import { managedSearchPathSql } from "../../dialects/ducklake";
+import type { PartitionKey } from "../../dialects/ducklake_catalog";
 import {
    connectionDialectOf,
    federateSourceForPassthrough,

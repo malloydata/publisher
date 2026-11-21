@@ -23,11 +23,13 @@ import {
 import {
    attachDuckLakeReadOnly,
    attachDuckLakeReadWrite,
+} from "../../connection";
+import {
+   type PartitionKey,
    recordedCatalogSettings,
    stripTrailingSlashes,
    tablePartitionKeys,
-   type PartitionKey,
-} from "../../connection";
+} from "../../dialects/ducklake_catalog";
 import { escapeSQL, installAndLoadExtension } from "../../duckdb_session_setup";
 import {
    createLocalDataPaths,

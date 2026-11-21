@@ -4,8 +4,8 @@
 /**
  * What every Publisher-owned DuckDB session is set up with before it runs a
  * statement of its own: its resource limits, its extension-management pins,
- * the extensions it installs and loads, and the string-literal and secret-name
- * escaping its attach statements are built with.
+ * the extensions it installs and loads, the string-literal and secret-name
+ * escaping its attach statements are built with, and the rows its reads return.
  *
  * A leaf: it imports no connection module, so the connection-type registry
  * (service/dialects/) and connection.ts can both use it.
@@ -222,4 +222,11 @@ export function sanitizeSecretName(name: string): string {
 
 export function escapeSQL(value: string): string {
    return value.replace(/'/g, "''");
+}
+
+/** Rows out of a DuckDBConnection.runSQL result, in either shape it returns. */
+export function runSQLRows(result: unknown): Record<string, unknown>[] {
+   if (Array.isArray(result)) return result as Record<string, unknown>[];
+   const rows = (result as { rows?: unknown }).rows;
+   return Array.isArray(rows) ? (rows as Record<string, unknown>[]) : [];
 }

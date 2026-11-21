@@ -22,17 +22,17 @@ import { components } from "../api";
 import {
    attachDuckLakeReadOnlyIfPresent,
    attachDuckLakeReadWrite,
-   buildCloudStorageSecretSQL,
-   storageSecretScope,
    buildEnvironmentMalloyConfig,
    buildProxiedSslQuery,
    createEnvironmentConnections,
    EnvironmentPooledPostgresConnection,
-   resolveProxiedTls,
-   testConnectionConfig,
    isExpiredCredentialError,
    redactTestFailure,
+   resolveProxiedTls,
+   testConnectionConfig,
 } from "./connection";
+import { buildCloudStorageSecretSQL } from "./cloud_storage_secret";
+import { storageSecretScope } from "./dialects/ducklake_catalog";
 import { bigQueryAttachSQL } from "./dialects/bigquery";
 import { snowflakeAttachSQL } from "./dialects/snowflake";
 import { buildPgConnectionString } from "./postgres_conninfo";

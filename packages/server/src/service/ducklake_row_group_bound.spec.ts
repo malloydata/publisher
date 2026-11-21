@@ -7,7 +7,7 @@
 // one -- and so the catalog-scoped CALL cannot silently become a session SET.
 import { afterEach, describe, expect, it } from "bun:test";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
-import { applyDuckLakeRowGroupBound } from "./connection";
+import { applyDuckLakeRowGroupBound } from "./dialects/ducklake";
 import { assertDuckDBResourceConfig } from "../config";
 import { installSettings } from "../test_helpers/settings_env";
 

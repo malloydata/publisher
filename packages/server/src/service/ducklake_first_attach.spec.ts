@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "bun:test";
-import { firstAttachClauses } from "./connection";
+import { firstAttachClauses } from "./dialects/ducklake";
 
 describe("firstAttachClauses", () => {
    it("adds ENCRYPTED and the inlining limit only when asked", () => {

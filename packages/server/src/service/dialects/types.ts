@@ -129,6 +129,57 @@ export interface PassthroughDialect {
    wrap(handle: string, innerSQL: string): string;
 }
 
+/** How a storage destination's catalog is attached to a session. */
+export interface DestinationAttachMode {
+   /**
+    * `true` is the live user-facing path; `false` the build variant, used
+    * only on a transient build session so a materialization can write.
+    */
+   readOnly: boolean;
+   /**
+    * For a caller that only looks: when the catalog is found absent, attach
+    * nothing and return `false`.
+    */
+   skipIfAbsent?: boolean;
+   /**
+    * Who authored the config, which the S3 credential-chain policy turns on:
+    * the operator's own storage destinations and catalogs pass
+    * `"storage-destination"`; an environment connection is author-supplied.
+    */
+   origin?: ConnectionOrigin;
+   /**
+    * A catalog served as its own tables (the connection's `managed`). Attached
+    * read-only, its storage secret reaches only the `main` schema's files.
+    */
+   managed?: boolean;
+   /**
+    * First-attach settings, which DuckLake fixes in the catalog when it creates
+    * it and ignores on a catalog that already exists. Only a catalog create
+    * (the admin API's POST /catalogs) sets them.
+    */
+   encrypted?: boolean;
+   dataInliningRowLimit?: number;
+}
+
+/**
+ * How a connection of this type is attached to a DuckDB session as a catalog
+ * a build writes into and a serve reads from (a storage destination, or the
+ * connection's own catalog).
+ */
+export interface DestinationDialect {
+   /**
+    * Attach `connection`'s catalog under `name`, its credentials set up before
+    * the ATTACH and its storage secret scoped after it. Returns `false` only
+    * when `mode.skipIfAbsent` found no catalog, and `true` otherwise.
+    */
+   attach(
+      session: DuckDBConnection,
+      name: string,
+      connection: ApiConnection,
+      mode: DestinationAttachMode,
+   ): Promise<boolean>;
+}
+
 /** One connection type's entry in the registry. */
 export interface ConnectionDialect {
    /** The type this entry is for, as its registry key. */
@@ -162,4 +213,6 @@ export interface ConnectionDialect {
    readonly attached?: AttachedDatabaseDialect;
    /** How a build reads a source of this type; absent when it cannot. */
    readonly passthrough?: PassthroughDialect;
+   /** How a catalog of this type is attached; absent when it cannot be. */
+   readonly destination?: DestinationDialect;
 }
