@@ -49,8 +49,6 @@ Two consequences worth knowing. A section merged to `main` ships in the **next**
 
 **Who is affected:** deployments whose callers may run raw SQL on a managed database or a DuckDB, DuckLake or MotherDuck connection. A query that contains the separator text, even inside a string or a comment, is now a 400. **What to do:** upgrade. No legitimate query needs the separator text; remove it from any SQL or model that spells it.
 
-## [Unreleased] — a `statement_usage` record carries `bytes_out`, and a notebook cell on a metered connection is recorded
-
 ## [Unreleased] — `select: *` answered live for a column a stored table leaves out names why
 
 **Fixed: `select: *` on a served `#@ persist` source whose table leaves a column out answered live with no reason in its path report (0.17.0 known issue).** A star that expands to a column the stored table cannot carry (a Postgres array, a `jsonb`, a DuckDB `MAP`) must be answered live, or the answer would lack a column live returns; but the served copy's decline named no table, so a database table was not reported at all. The path report now names each such table `NOT_SERVED`, with a `detail` naming the columns the result would lack and why, for `#(materialize)` and `storage=` tables too. A star that expands only to columns the table carries is served, as before.
