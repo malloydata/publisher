@@ -26,11 +26,25 @@
 // posts size updates to the parent window so Publisher.embed() in the host
 // can resize the iframe.
 //
+// Inside the in-app viewer's iframe, once the framing page has asked for them
+// with a "publisher:subscribe" message, it also posts a "publisher:query"
+// message after each query: what the page asked (model, query, filters,
+// givens, the version it ran against) and what came back (row count and the
+// first rows, or the error). A host that frames the app, such as a chat beside
+// it, can then say what the reader is looking at. A report that cannot be
+// built, or does not fit even cut down, is not sent, and its seq goes unused.
+// Reports go only to the origin that subscribed, never to "*"; the last few
+// from before the subscribe are kept and sent when it arrives. Never on a hosted embed surface (/apps/...): that page belongs to a
+// customer's site, and its results are not the framing page's to read.
+//
 // The "publisher:resize" postMessage protocol below is the SAME contract the
 // SPA host consumes. Its canonical definition lives in
 // packages/sdk/src/utils/dataAppEmbed.ts (PUBLISHER_RESIZE_MESSAGE_TYPE /
-// PublisherResizeMessage). This file is build-step-free vanilla JS and can't
-// import it, so keep the message type/shape here in sync with that module.
+// PublisherResizeMessage), as do "publisher:subscribe"'s and
+// "publisher:query"'s (PUBLISHER_SUBSCRIBE_MESSAGE_TYPE /
+// PublisherSubscribeMessage, PUBLISHER_QUERY_MESSAGE_TYPE /
+// PublisherQueryMessage). This file is build-step-free vanilla JS and can't
+// import it, so keep the message types/shapes here in sync with that module.
 
 (function () {
    "use strict";
@@ -131,9 +145,277 @@
       return { env: env, pkg: pkg };
    }
 
+   // --- Query reports to the framing page ----------------------------------
+   // How many result rows a report carries, and the most characters it may take
+   // once serialized: enough for a host to quote the numbers on screen, not a
+   // copy of the result.
+   var QUERY_REPORT_MAX_ROWS = 20;
+   var QUERY_REPORT_MAX_CHARS = 16000;
+   // How many reports from before the framing page subscribes are kept for it:
+   // the latest few, enough to say what is on screen when it starts listening.
+   var QUERY_REPORT_BACKLOG = 10;
+   var reportsQueries = (function () {
+      if (!inAppMatch) return false;
+      try {
+         return window.self !== window.top;
+      } catch (_e) {
+         return true; // cross-origin parent: framed
+      }
+   })();
+   // The origin of the framing page that subscribed; until then, reports wait.
+   var reportOrigin = null;
+   var reportBacklog = [];
+   // Reports go out as queries finish. Each carries the order its query
+   // started in, so a host can keep the latest one asked rather than the last
+   // one answered.
+   var querySeq = 0;
+
+   if (reportsQueries) {
+      window.addEventListener("message", function (event) {
+         if (event.source !== window.parent) return;
+         if (!event.data || event.data.type !== "publisher:subscribe") return;
+         // An opaque origin ("null") is not one postMessage can address.
+         if (!event.origin || event.origin === "null") return;
+         reportOrigin = event.origin;
+         var backlog = reportBacklog;
+         reportBacklog = [];
+         for (var i = 0; i < backlog.length; i++) sendQueryReport(backlog[i]);
+      });
+   }
+
+   function sendQueryReport(report) {
+      try {
+         window.parent.postMessage(report, reportOrigin);
+      } catch (_e) {
+         /* a report that can't be cloned is not worth failing the query */
+      }
+   }
+
+   // A result's row count, and its first rows as plain objects. query's rows are
+   // the result itself; queryFull's envelope is a Malloy result, its rows record
+   // cells under data.array_value named by schema.fields, so only the rows a
+   // report carries are converted.
+   function resultRows(outcome) {
+      var result = outcome.result;
+      if (outcome.compactJson) {
+         if (!Array.isArray(result)) return undefined;
+         return {
+            count: result.length,
+            first: function (n) {
+               return result.slice(0, n);
+            },
+         };
+      }
+      var cells = result && result.data && result.data.array_value;
+      if (!Array.isArray(cells)) return undefined;
+      var fields = (result.schema && result.schema.fields) || [];
+      return {
+         count: cells.length,
+         first: function (n) {
+            return cells.slice(0, n).map(function (cell) {
+               return recordOf(cell, fields);
+            });
+         },
+      };
+   }
+
+   function recordOf(cell, fields) {
+      var row = {};
+      var values = (cell && cell.record_value) || [];
+      for (var i = 0; i < fields.length && i < values.length; i++) {
+         row[fields[i].name] = cellValue(values[i], fields[i].type);
+      }
+      return row;
+   }
+
+   var SCALAR_CELL_VALUES = {
+      string_cell: "string_value",
+      number_cell: "number_value",
+      boolean_cell: "boolean_value",
+      date_cell: "date_value",
+      timestamp_cell: "timestamp_value",
+      json_cell: "json_value",
+      sql_native_cell: "sql_native_value",
+   };
+
+   function cellValue(cell, type) {
+      if (!cell) return null;
+      if (cell.kind === "record_cell") {
+         return recordOf(cell, (type && type.fields) || []);
+      }
+      if (cell.kind === "array_cell") {
+         var element = type && type.element_type;
+         return (cell.array_value || []).map(function (item) {
+            return cellValue(item, element);
+         });
+      }
+      var key = SCALAR_CELL_VALUES[cell.kind];
+      return key && key in cell ? cell[key] : null;
+   }
+
+   function reportSize(report) {
+      return JSON.stringify(report).length;
+   }
+
+   // Fit a report into QUERY_REPORT_MAX_CHARS, serialized. What the page asked
+   // has to fit with no rows first: the largest of its query text, error,
+   // givens and filters is cut short, or left out when it is not text, until
+   // the rest fits, and the report is marked truncated. Then it keeps as many
+   // of the first rows as fit, since a host reads the first ones. False when
+   // even the report with nothing left to cut does not fit.
+   function fitQueryReport(report) {
+      var rows = report.rows;
+      if (rows) report.rows = [];
+      var done = {};
+      while (reportSize(report) > QUERY_REPORT_MAX_CHARS) {
+         var key = largestCuttable(report, done);
+         if (!key) return false;
+         done[key] = true;
+         report.truncated = true;
+         if (typeof report[key] === "string") cutText(report, key);
+         else delete report[key];
+      }
+      if (rows) {
+         // Keep the longest run of leading rows that fits, stopping at the
+         // first that does not, measuring each row once: the report with n
+         // rows is the report with none, plus those rows, plus a comma
+         // between each two.
+         var size = reportSize(report);
+         var kept = 0;
+         while (kept < rows.length) {
+            var next =
+               size + JSON.stringify(rows[kept]).length + (kept > 0 ? 1 : 0);
+            if (next > QUERY_REPORT_MAX_CHARS) break;
+            size = next;
+            kept++;
+         }
+         report.rows = rows.slice(0, kept);
+      }
+      return true;
+   }
+
+   // The largest of the fields a report may cut or leave out that is not
+   // already cut, by its serialized size.
+   function largestCuttable(report, done) {
+      var keys = ["query", "error", "givens", "filterParams"];
+      var largest = null;
+      var largestSize = 0;
+      for (var i = 0; i < keys.length; i++) {
+         var key = keys[i];
+         if (done[key] || report[key] === undefined) continue;
+         var size = JSON.stringify(report[key]).length;
+         if (size > largestSize) {
+            largest = key;
+            largestSize = size;
+         }
+      }
+      return largest;
+   }
+
+   // Shorten report[key] until the report fits, ending it with an ellipsis.
+   function cutText(report, key) {
+      var text = report[key];
+      var over = reportSize(report) - QUERY_REPORT_MAX_CHARS;
+      while (typeof text === "string" && text.length > 0 && over > 0) {
+         text = text.slice(0, Math.max(0, text.length - over - 1));
+         report[key] = text + "\u2026";
+         over = reportSize(report) - QUERY_REPORT_MAX_CHARS;
+      }
+   }
+
+   function postQueryReport(
+      target,
+      modelPath,
+      malloyQuery,
+      opts,
+      versionId,
+      seq,
+      outcome,
+   ) {
+      if (!reportsQueries) return;
+      var report = {
+         type: "publisher:query",
+         seq: seq,
+         environment: target.env,
+         package: target.pkg,
+         model: modelPath,
+      };
+      if (malloyQuery) report.query = malloyQuery;
+      if (opts.sourceName) report.sourceName = opts.sourceName;
+      if (opts.queryName) report.queryName = opts.queryName;
+      if (opts.filterParams) report.filterParams = opts.filterParams;
+      // The filters above were not applied: a host must not describe the rows
+      // as filtered by them.
+      if (opts.bypassFilters) report.bypassFilters = true;
+      if (opts.givens) report.givens = opts.givens;
+      if (versionId) report.versionId = versionId;
+      try {
+         var all = outcome.error ? undefined : resultRows(outcome);
+         if (outcome.error) {
+            report.error = String(outcome.error);
+         } else if (all) {
+            report.rowCount = all.count;
+            report.rows = all.first(QUERY_REPORT_MAX_ROWS);
+         }
+         if (!fitQueryReport(report)) return;
+      } catch (_e) {
+         return; // a report that can't be built is not worth failing the query
+      }
+      if (reportOrigin) {
+         sendQueryReport(report);
+      } else {
+         // A copy: the page may change the givens or filters it passed before
+         // the report goes out.
+         reportBacklog.push(JSON.parse(JSON.stringify(report)));
+         if (reportBacklog.length > QUERY_REPORT_BACKLOG) reportBacklog.shift();
+      }
+   }
+
    async function rawQuery(modelPath, malloyQuery, opts, compactJson) {
       opts = opts || {};
       var target = resolveTarget(opts);
+      var seq = ++querySeq;
+      var versionId;
+      try {
+         versionId = await queryVersion(target, opts);
+         var result = await runQuery(
+            target,
+            modelPath,
+            malloyQuery,
+            opts,
+            compactJson,
+            versionId,
+         );
+      } catch (err) {
+         postQueryReport(target, modelPath, malloyQuery, opts, versionId, seq, {
+            error: (err && err.message) || err,
+         });
+         throw err;
+      }
+      postQueryReport(target, modelPath, malloyQuery, opts, versionId, seq, {
+         result: result,
+         compactJson: compactJson,
+      });
+      return result;
+   }
+
+   // The page's own version applies only to its own package; a query aimed
+   // elsewhere gets that package's latest unless it names one.
+   async function queryVersion(target, opts) {
+      if (opts.versionId) return opts.versionId;
+      return target.env === ctx.environment && target.pkg === ctx.package
+         ? await pinnedVersion()
+         : undefined;
+   }
+
+   async function runQuery(
+      target,
+      modelPath,
+      malloyQuery,
+      opts,
+      compactJson,
+      versionId,
+   ) {
       var url =
          apiBase +
          "/environments/" +
@@ -155,13 +437,6 @@
       if (opts.filterParams) body.filterParams = opts.filterParams;
       if (opts.bypassFilters) body.bypassFilters = true;
       if (opts.givens) body.givens = opts.givens;
-      // The page's own version applies only to its own package; a query aimed
-      // elsewhere gets that package's latest unless it names one.
-      var versionId =
-         opts.versionId ||
-         (target.env === ctx.environment && target.pkg === ctx.package
-            ? await pinnedVersion()
-            : undefined);
       if (versionId) body.versionId = versionId;
 
       var headers = Object.assign(

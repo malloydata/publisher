@@ -1,0 +1,532 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
+import { describe, expect, it } from "bun:test";
+import fs from "fs";
+import path from "path";
+import vm from "vm";
+import { isPublisherQueryMessage } from "../../../sdk/src/utils/dataAppEmbed";
+
+/**
+ * The runtime's "publisher:query" report: evaluates the real publisher.js in a vm context that
+ * stands in for a framed page, with `fetch` answering the query and `parent.postMessage`
+ * recorded, so what a host receives is read off the wire the runtime actually writes.
+ */
+
+const SOURCE = fs.readFileSync(path.join(__dirname, "publisher.js"), "utf8");
+
+/** The framing page's origin, as a subscribe from it carries. */
+const HOST_ORIGIN = "https://host.example.com";
+
+type Message = Record<string, unknown>;
+type Answer = { ok: boolean; status: number; body: unknown };
+
+function runtime({
+   pathname = "/environments/sales-env/packages/sales/index.html",
+   search = "",
+   framed = true,
+   answer = {
+      ok: true,
+      status: 200,
+      body: { result: JSON.stringify([{ region: "EMEA", revenue: 120 }]) },
+   },
+}: {
+   pathname?: string;
+   /** The page URL's query string, such as `?versionId=1.0.0`. */
+   search?: string;
+   framed?: boolean;
+   /** The server's answer to every query, or a function of the request body. */
+   answer?: Answer | ((body: Message) => Answer | Promise<Answer>);
+} = {}) {
+   // Every postMessage the page makes, to its parent or to itself, with its target origin.
+   const posted: { message: Message; targetOrigin: string }[] = [];
+   // Every query request body the page sends to the server.
+   const queried: Message[] = [];
+   const record = (message: Message, targetOrigin: string) =>
+      posted.push({ message, targetOrigin });
+   const parent = { postMessage: record };
+   const listeners: Record<string, ((event: unknown) => void)[]> = {};
+   const sandbox: Record<string, unknown> = {
+      location: {
+         pathname,
+         origin: "https://acme.data.example.com",
+         search,
+      },
+      fetch: async (url: string, init: { body?: string }) => {
+         // The read of the page's own package at its version: the package has it.
+         if (!init.body) {
+            const versionId = new URL(url, "https://x").searchParams.get(
+               "versionId",
+            );
+            return { ok: true, status: 200, json: async () => ({ versionId }) };
+         }
+         const a =
+            typeof answer === "function"
+               ? await answer(JSON.parse(init.body))
+               : answer;
+         queried.push(JSON.parse(init.body));
+         return {
+            ok: a.ok,
+            status: a.status,
+            statusText: "",
+            json: async () => a.body,
+         };
+      },
+      // What the embedded-page branch touches when framed: no layout to measure here.
+      document: {
+         readyState: "complete",
+         body: null,
+         documentElement: { scrollHeight: 400 },
+      },
+      addEventListener: (type: string, fn: (event: unknown) => void) => {
+         (listeners[type] ??= []).push(fn);
+      },
+      postMessage: record,
+      setInterval: () => 0,
+      console,
+   };
+   sandbox.window = sandbox;
+   sandbox.self = sandbox;
+   sandbox.top = framed ? {} : sandbox;
+   sandbox.parent = framed ? parent : sandbox;
+   vm.runInContext(SOURCE, vm.createContext(sandbox), {
+      filename: "publisher.js",
+   });
+   const Publisher = (
+      sandbox as {
+         Publisher: Record<string, (...args: unknown[]) => Promise<unknown>>;
+      }
+   ).Publisher;
+   const sent = () =>
+      posted.filter((p) => p.message.type === "publisher:query");
+   const reports = () => sent().map((p) => p.message);
+   /** A message arriving at the page, by default the framing page's subscribe. */
+   const deliver = ({
+      data = { type: "publisher:subscribe" } as unknown,
+      source = sandbox.parent,
+      origin = HOST_ORIGIN,
+   }: { data?: unknown; source?: unknown; origin?: string } = {}) => {
+      for (const fn of listeners.message ?? []) fn({ data, source, origin });
+   };
+   return { Publisher, reports, sent, deliver, queried };
+}
+
+describe("publisher:query reports", () => {
+   it("tells the framing page what the page asked and the rows that came back", async () => {
+      const { Publisher, reports, deliver } = runtime();
+      deliver();
+      await Publisher.query("sales.malloy", "run: orders -> by_region", {
+         givens: { region: "EMEA" },
+         filterParams: { quarter: "2026-Q3" },
+      });
+      expect(reports()).toEqual([
+         {
+            type: "publisher:query",
+            seq: 1,
+            environment: "sales-env",
+            package: "sales",
+            model: "sales.malloy",
+            query: "run: orders -> by_region",
+            givens: { region: "EMEA" },
+            filterParams: { quarter: "2026-Q3" },
+            rowCount: 1,
+            rows: [{ region: "EMEA", revenue: 120 }],
+         },
+      ]);
+   });
+
+   it("numbers each report by when its query started, not when it finished", async () => {
+      let releaseSlow = () => {};
+      const slow = new Promise<void>((resolve) => (releaseSlow = resolve));
+      const { Publisher, reports, deliver } = runtime({
+         answer: async (body) => {
+            if (body.query === "run: slow") await slow;
+            return {
+               ok: true,
+               status: 200,
+               body: { result: JSON.stringify([{ q: body.query }]) },
+            };
+         },
+      });
+      deliver();
+      const first = Publisher.query("sales.malloy", "run: slow", {});
+      await Publisher.query("sales.malloy", "run: fast", {});
+      releaseSlow();
+      await first;
+      expect(reports().map((r) => [r.query, r.seq])).toEqual([
+         ["run: fast", 2],
+         ["run: slow", 1],
+      ]);
+   });
+
+   it("names a named view instead of a query", async () => {
+      const { Publisher, reports, deliver } = runtime();
+      deliver();
+      await Publisher.query("sales.malloy", undefined, {
+         sourceName: "orders",
+         queryName: "by_region",
+      });
+      expect(reports()[0]).toMatchObject({
+         sourceName: "orders",
+         queryName: "by_region",
+      });
+      expect(reports()[0]).not.toHaveProperty("query");
+   });
+
+   it("reports a failed query's error, and still throws it to the page", async () => {
+      const { Publisher, reports, deliver } = runtime({
+         answer: {
+            ok: false,
+            status: 400,
+            body: { message: "unknown field revenue" },
+         },
+      });
+      deliver();
+      await expect(
+         Publisher.query("sales.malloy", "run: orders -> x", {}),
+      ).rejects.toThrow("unknown field revenue");
+      expect(reports()).toEqual([
+         expect.objectContaining({
+            error: "Publisher.query: unknown field revenue",
+         }),
+      ]);
+   });
+
+   it("reads queryFull's rows from the Malloy result, as plain rows", async () => {
+      // The full shape the server sends when compactJson is false: record cells under
+      // data.array_value, named by schema.fields, a nested view as an array of records.
+      const full = {
+         schema: {
+            fields: [
+               {
+                  kind: "dimension",
+                  name: "region",
+                  type: { kind: "string_type" },
+               },
+               {
+                  kind: "dimension",
+                  name: "revenue",
+                  type: { kind: "number_type" },
+               },
+               {
+                  kind: "dimension",
+                  name: "by_month",
+                  type: {
+                     kind: "array_type",
+                     element_type: {
+                        kind: "record_type",
+                        fields: [
+                           { name: "month", type: { kind: "date_type" } },
+                        ],
+                     },
+                  },
+               },
+            ],
+         },
+         data: {
+            kind: "array_cell",
+            array_value: [
+               {
+                  kind: "record_cell",
+                  record_value: [
+                     { kind: "string_cell", string_value: "EMEA" },
+                     { kind: "number_cell", number_value: 120 },
+                     {
+                        kind: "array_cell",
+                        array_value: [
+                           {
+                              kind: "record_cell",
+                              record_value: [
+                                 {
+                                    kind: "date_cell",
+                                    date_value: "2026-07-01",
+                                 },
+                              ],
+                           },
+                        ],
+                     },
+                  ],
+               },
+               {
+                  kind: "record_cell",
+                  record_value: [
+                     { kind: "null_cell" },
+                     { kind: "number_cell", number_value: 5 },
+                     { kind: "array_cell", array_value: [] },
+                  ],
+               },
+            ],
+         },
+      };
+      const { Publisher, reports, deliver } = runtime({
+         answer: {
+            ok: true,
+            status: 200,
+            body: { result: JSON.stringify(full) },
+         },
+      });
+      deliver();
+      expect(await Publisher.queryFull("sales.malloy", "run: x", {})).toEqual(
+         full,
+      );
+      expect(reports()[0]).toMatchObject({
+         rowCount: 2,
+         rows: [
+            {
+               region: "EMEA",
+               revenue: 120,
+               by_month: [{ month: "2026-07-01" }],
+            },
+            { region: null, revenue: 5, by_month: [] },
+         ],
+      });
+   });
+
+   it("carries the row count and only the first 20 rows", async () => {
+      const many = Array.from({ length: 50 }, (_, i) => ({ i }));
+      const { Publisher, reports, deliver } = runtime({
+         answer: {
+            ok: true,
+            status: 200,
+            body: { result: JSON.stringify(many) },
+         },
+      });
+      deliver();
+      await Publisher.query("sales.malloy", "run: x", {});
+      expect(reports()[0].rowCount).toBe(50);
+      expect(reports()[0].rows).toEqual(many.slice(0, 20));
+   });
+
+   it("keeps the longest run of leading rows that fits in the report", async () => {
+      const wide = Array.from({ length: 20 }, (_, i) => ({
+         i,
+         note: "x".repeat(2000),
+      }));
+      const { Publisher, reports, deliver } = runtime({
+         answer: {
+            ok: true,
+            status: 200,
+            body: { result: JSON.stringify(wide) },
+         },
+      });
+      deliver();
+      await Publisher.query("sales.malloy", "run: x", {
+         givens: { region: "EMEA" },
+      });
+      const report = reports()[0];
+      const rows = report.rows as unknown[];
+      // The leading rows, as many as fit: one more would not.
+      expect(rows.length).toBeGreaterThan(0);
+      expect(rows).toEqual(wide.slice(0, rows.length));
+      expect(JSON.stringify(report).length).toBeLessThanOrEqual(16000);
+      expect(
+         JSON.stringify({ ...report, rows: wide.slice(0, rows.length + 1) })
+            .length,
+      ).toBeGreaterThan(16000);
+      expect(report.rowCount).toBe(20);
+      expect(report).not.toHaveProperty("truncated");
+   });
+
+   it("cuts the query text, and says so, when no rows leave room for it", async () => {
+      const longQuery = "run: orders -> { where: " + "x".repeat(30000) + " }";
+      const { Publisher, reports, deliver } = runtime();
+      deliver();
+      await Publisher.query("sales.malloy", longQuery, {
+         givens: { region: "EMEA" },
+      });
+      const report = reports()[0];
+      const size = JSON.stringify(report).length;
+      expect(size).toBeLessThanOrEqual(16000);
+      // Cut to fit, not dropped: the text fills what the report has left.
+      expect(size).toBeGreaterThan(15900);
+      expect(report.truncated).toBe(true);
+      expect(longQuery.startsWith((report.query as string).slice(0, -1))).toBe(
+         true,
+      );
+      expect(report.rows).toEqual([]);
+      expect(report.rowCount).toBe(1);
+      expect(report.givens).toEqual({ region: "EMEA" });
+   });
+
+   it("leaves out givens too large to fit before the query, the filters or the rows, and says so", async () => {
+      const { Publisher, reports, deliver } = runtime();
+      deliver();
+      await Publisher.query("sales.malloy", "run: orders -> by_region", {
+         givens: { ids: "x".repeat(17000) },
+         filterParams: { region: "EMEA" },
+      });
+      const report = reports()[0];
+      expect(JSON.stringify(report).length).toBeLessThanOrEqual(16000);
+      expect(report.truncated).toBe(true);
+      expect(report).not.toHaveProperty("givens");
+      expect(report.query).toBe("run: orders -> by_region");
+      expect(report.filterParams).toEqual({ region: "EMEA" });
+      expect(report.rows).toEqual([{ region: "EMEA", revenue: 120 }]);
+   });
+
+   it("cuts the largest of what the page asked first, keeping the rest whole", async () => {
+      const longQuery = "run: orders -> { where: " + "x".repeat(20000) + " }";
+      const { Publisher, reports, deliver } = runtime();
+      deliver();
+      await Publisher.query("sales.malloy", longQuery, {
+         givens: { note: "y".repeat(5000) },
+      });
+      const report = reports()[0];
+      expect(JSON.stringify(report).length).toBeLessThanOrEqual(16000);
+      expect(report.truncated).toBe(true);
+      expect(report.givens).toEqual({ note: "y".repeat(5000) });
+      expect((report.query as string).endsWith("\u2026")).toBe(true);
+   });
+
+   it("sends no report it cannot fit, and still answers the page", async () => {
+      const { Publisher, sent, deliver } = runtime();
+      deliver();
+      const rows = await Publisher.query("sales.malloy", undefined, {
+         sourceName: "s".repeat(20000),
+         queryName: "by_region",
+      });
+      expect(rows).toEqual([{ region: "EMEA", revenue: 120 }]);
+      expect(sent()).toEqual([]);
+   });
+
+   it("says when the page bypassed its filters, and the version the query ran against", async () => {
+      const { Publisher, reports, deliver, queried } = runtime();
+      deliver();
+      await Publisher.query("sales.malloy", "run: x", {
+         filterParams: { region: "EMEA" },
+         bypassFilters: true,
+         versionId: "2.0.0",
+      });
+      expect(queried[0]).toMatchObject({
+         bypassFilters: true,
+         versionId: "2.0.0",
+      });
+      expect(reports()[0]).toMatchObject({
+         filterParams: { region: "EMEA" },
+         bypassFilters: true,
+         versionId: "2.0.0",
+      });
+   });
+
+   it("names the page's own pinned version, and none for another package's latest", async () => {
+      const { Publisher, reports, deliver, queried } = runtime({
+         search: "?versionId=1.0.0",
+      });
+      deliver();
+      await Publisher.query("sales.malloy", "run: x", {});
+      await Publisher.query("other.malloy", "run: y", { package: "other" });
+      expect(queried.map((q) => q.versionId)).toEqual(["1.0.0", undefined]);
+      expect(reports()[0].versionId).toBe("1.0.0");
+      expect(reports()[1]).not.toHaveProperty("versionId");
+      expect(reports()[0]).not.toHaveProperty("bypassFilters");
+   });
+
+   it("sends reports the SDK's isPublisherQueryMessage accepts", async () => {
+      const { Publisher, reports, deliver } = runtime({
+         answer: { ok: false, status: 500, body: { message: "boom" } },
+      });
+      deliver();
+      await Publisher.query("sales.malloy", "run: x", {}).catch(() => {});
+      const {
+         Publisher: ok,
+         reports: okReports,
+         deliver: okDeliver,
+      } = runtime();
+      okDeliver();
+      await ok.query("sales.malloy", "run: x", { givens: { region: "EMEA" } });
+      const all = [...reports(), ...okReports()];
+      expect(all).toHaveLength(2);
+      for (const report of all)
+         expect(isPublisherQueryMessage(report)).toBe(true);
+   });
+
+   it("posts nothing on a hosted embed surface, even to a subscriber", async () => {
+      const { Publisher, sent, deliver } = runtime({
+         pathname: "/apps/sales-env/sales/index.html",
+      });
+      deliver();
+      await Publisher.query("sales.malloy", "run: x", {});
+      expect(sent()).toEqual([]);
+   });
+
+   it("posts nothing when the page is not framed, even to a subscriber", async () => {
+      // Not framed, the page is its own parent: a subscribe from it would pass the source check.
+      const { Publisher, sent, deliver } = runtime({ framed: false });
+      deliver();
+      await Publisher.query("sales.malloy", "run: x", {});
+      expect(sent()).toEqual([]);
+   });
+});
+
+describe("publisher:subscribe handshake", () => {
+   it("posts nothing until the framing page subscribes", async () => {
+      const { Publisher, sent } = runtime();
+      await Publisher.query("sales.malloy", "run: x", {});
+      expect(sent()).toEqual([]);
+   });
+
+   it("keeps the latest 10 reports from before the subscribe and sends them in order", async () => {
+      const { Publisher, reports, deliver } = runtime();
+      for (let i = 0; i < 12; i++) {
+         await Publisher.query("sales.malloy", `run: q${i}`, {});
+      }
+      expect(reports()).toEqual([]);
+      deliver();
+      expect(reports().map((r) => r.query)).toEqual(
+         Array.from({ length: 10 }, (_, i) => `run: q${i + 2}`),
+      );
+      await Publisher.query("sales.malloy", "run: after", {});
+      expect(reports().map((r) => r.query)).toHaveLength(11);
+      expect(reports()[10].query).toBe("run: after");
+   });
+
+   it("keeps a waiting report as it was asked, though the page reuses its givens", async () => {
+      const { Publisher, reports, deliver } = runtime();
+      const givens = { region: "EMEA" };
+      await Publisher.query("sales.malloy", "run: x", { givens });
+      givens.region = "APAC";
+      deliver();
+      expect(reports()[0].givens).toEqual({ region: "EMEA" });
+   });
+
+   it("still answers the page when a result's rows cannot be read", async () => {
+      const odd = { data: { kind: "array_cell", array_value: [null] } };
+      const { Publisher, sent, deliver } = runtime({
+         answer: {
+            ok: true,
+            status: 200,
+            body: { result: JSON.stringify(odd) },
+         },
+      });
+      deliver();
+      expect(await Publisher.queryFull("sales.malloy", "run: x", {})).toEqual(
+         odd,
+      );
+      expect(sent()).toHaveLength(1);
+   });
+
+   it("ignores a subscribe from a window other than its parent", async () => {
+      const { Publisher, sent, deliver } = runtime();
+      deliver({ source: {} });
+      await Publisher.query("sales.malloy", "run: x", {});
+      expect(sent()).toEqual([]);
+   });
+
+   it("ignores a subscribe from an opaque origin, which it could not address", async () => {
+      const { Publisher, sent, deliver } = runtime();
+      deliver({ origin: "null" });
+      await Publisher.query("sales.malloy", "run: x", {});
+      expect(sent()).toEqual([]);
+   });
+
+   it("posts every report to the subscriber's origin, never '*'", async () => {
+      const { Publisher, sent, deliver } = runtime();
+      await Publisher.query("sales.malloy", "run: before", {});
+      deliver({ origin: "https://chat.example.com" });
+      await Publisher.query("sales.malloy", "run: after", {});
+      expect(sent().map((p) => [p.message.query, p.targetOrigin])).toEqual([
+         ["run: before", "https://chat.example.com"],
+         ["run: after", "https://chat.example.com"],
+      ]);
+   });
+});

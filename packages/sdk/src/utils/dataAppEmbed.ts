@@ -5,7 +5,10 @@
 //
 // Both the Publisher SPA host (DataAppViewer.tsx, Package.tsx) and the
 // build-step-free browser runtime (packages/server/src/runtime/publisher.js)
-// speak this protocol. publisher.js cannot import from here — it ships as
+// speak the resize part of this protocol. The SPA does not subscribe to query
+// reports: "publisher:subscribe" and "publisher:query" are for other hosts that
+// frame a data app, such as a chat beside it, so nothing in this repo sending
+// or reading them does not make them unused. publisher.js cannot import from here — it ships as
 // standalone vanilla JS — so it carries a cross-reference comment pointing at
 // this file as the single source of truth. Keep the two in sync.
 
@@ -32,6 +35,100 @@ export function isPublisherResizeMessage(
       data !== null &&
       (data as { type?: unknown }).type === PUBLISHER_RESIZE_MESSAGE_TYPE &&
       typeof (data as { height?: unknown }).height === "number"
+   );
+}
+
+/**
+ * postMessage `type` a host posts to an embedded data app's frame to ask for
+ * its {@link PublisherQueryMessage} reports: `iframe.contentWindow.postMessage(
+ * { type: "publisher:subscribe" }, frameOrigin)`, on every `load` of the
+ * iframe: one sent before the runtime loads is lost, and a reloaded page starts
+ * with no subscriber. The runtime accepts it only from its parent window, and
+ * from then on posts its reports to the origin the subscribe came from, never
+ * `"*"`. The latest reports from before the subscribe (at most 10) are sent, in
+ * order, when it arrives. Payload shape is {@link PublisherSubscribeMessage}.
+ */
+export const PUBLISHER_SUBSCRIBE_MESSAGE_TYPE = "publisher:subscribe";
+
+/** Subscribe message a host posts to an embedded data app's frame. */
+export interface PublisherSubscribeMessage {
+   type: typeof PUBLISHER_SUBSCRIBE_MESSAGE_TYPE;
+}
+
+/**
+ * postMessage `type` an embedded data app's runtime emits to its host frame
+ * after each query, once the host has subscribed with a
+ * {@link PublisherSubscribeMessage}, in the in-app viewer only (never on a
+ * hosted `/apps/` embed surface). Payload shape is
+ * {@link PublisherQueryMessage}. A host uses it to say what the reader is
+ * looking at, e.g. to a chat beside the app. A report the runtime cannot build,
+ * or that does not fit in 16,000 characters even cut down, is not sent, and its
+ * `seq` goes unused, so a gap in `seq` is not a lost message.
+ */
+export const PUBLISHER_QUERY_MESSAGE_TYPE = "publisher:query";
+
+/** Query report posted by an embedded data app's publisher.js runtime. */
+export interface PublisherQueryMessage {
+   type: typeof PUBLISHER_QUERY_MESSAGE_TYPE;
+   /**
+    * The order the query started in, counting from 1 for the page. Reports
+    * arrive in the order queries finish, so a host that keeps one report per
+    * view keeps the one with the highest `seq`.
+    */
+   seq: number;
+   environment: string;
+   package: string;
+   /** Model path the query ran against, as the page passed it. */
+   model: string;
+   /** The Malloy query text, when the page sent one. */
+   query?: string;
+   /** A named source and view, when the page ran one instead of query text. */
+   sourceName?: string;
+   queryName?: string;
+   /** The filters and givens the page passed. */
+   filterParams?: Record<string, unknown>;
+   /**
+    * True when the page asked the server to skip its filters, so the rows are
+    * not filtered by `filterParams`.
+    */
+   bypassFilters?: boolean;
+   givens?: Record<string, unknown>;
+   /**
+    * The published version the query ran against: the one the page named, or
+    * the page's own pinned version for a query on its own package. Absent, the
+    * package's latest.
+    */
+   versionId?: string;
+   /** Rows returned, when the query succeeded and returned rows. */
+   rowCount?: number;
+   /**
+    * The first rows: at most 20, and only as many as keep the whole report
+    * within 16,000 characters serialized.
+    */
+   rows?: Record<string, unknown>[];
+   /** The error message, when the query failed. */
+   error?: string;
+   /**
+    * True when what the page asked did not fit in 16,000 characters serialized
+    * even with no rows, so the largest of the query text, error, givens and
+    * filterParams was cut short, or left out when it is not text, until the
+    * rest fit.
+    */
+   truncated?: boolean;
+}
+
+/** Type guard for a {@link PublisherQueryMessage} arriving via postMessage. */
+export function isPublisherQueryMessage(
+   data: unknown,
+): data is PublisherQueryMessage {
+   if (typeof data !== "object" || data === null) return false;
+   const m = data as Record<string, unknown>;
+   return (
+      m.type === PUBLISHER_QUERY_MESSAGE_TYPE &&
+      typeof m.seq === "number" &&
+      typeof m.environment === "string" &&
+      typeof m.package === "string" &&
+      typeof m.model === "string"
    );
 }
 
