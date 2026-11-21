@@ -2419,14 +2419,14 @@ export function pgClientConfig(
    }
    const requested = params.get("sslmode") ?? externalEnv("PGSSLMODE");
    const systemRoots = params.get("sslrootcert") === "system";
-   // libpq 16: `sslrootcert=system` defaults to verify-full and refuses a weaker mode.
+   // libpq 16: public roots vouch for any hostname, so `sslrootcert=system` allows only verify-full.
    const sslmode =
       requested === "no-verify"
          ? LIBPQ_NO_VERIFY_SSLMODE
          : (requested ?? (systemRoots ? "verify-full" : undefined));
-   if (systemRoots && sslmode !== "verify-ca" && sslmode !== "verify-full") {
+   if (systemRoots && sslmode !== "verify-full") {
       throw new Error(
-         `${subject}: sslmode '${sslmode}' may not be used with sslrootcert=system.`,
+         `${subject}: weak sslmode '${sslmode}' may not be used with sslrootcert=system (use 'verify-full').`,
       );
    }
    return {
@@ -2508,6 +2508,7 @@ export function pgClientSsl(
          );
       }
    };
+   // `system` reads Node's roots plus NODE_EXTRA_CA_CERTS, not OpenSSL's store as libpq does.
    const ca = () =>
       sslrootcert && sslrootcert !== "system"
          ? pem("sslrootcert", sslrootcert)

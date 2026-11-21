@@ -298,13 +298,13 @@ describe("pgClientConfig", () => {
       expect(ssl.ca).toContain("BEGIN CERTIFICATE");
    });
 
-   it.each(["require", "prefer"])(
+   it.each(["require", "prefer", "verify-ca"])(
       "refuses sslmode %s with sslrootcert=system",
       (sslmode) => {
          expect(() =>
             config(`host=h sslmode=${sslmode} sslrootcert=system`),
          ).toThrow(
-            `test: sslmode '${sslmode}' may not be used with sslrootcert=system.`,
+            `test: weak sslmode '${sslmode}' may not be used with sslrootcert=system (use 'verify-full').`,
          );
       },
    );
