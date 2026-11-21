@@ -897,14 +897,20 @@ function declaredMoves(
 /**
  * Whether a build of a column the source declares as `declared` writes
  * `storedType` by design, though the type does not serve it: a warehouse
- * answers a `date` truncation (or `date + interval`) with a naive timestamp,
- * and a `boolean` over an integer flag with the integer.
+ * answers a `date` truncation (or `date + interval`) with a timestamp, and a
+ * `boolean` over an integer flag with the integer.
+ *
+ * Postgres answers `DATE_TRUNC` of a date with a `timestamptz`: midnight in
+ * the session's zone, which Malloy's driver sets to UTC for the build and
+ * every read alike. Its date is then exact with no query time zone, and the
+ * read casts it back ({@link driftedColumnRead}); under a query time zone the
+ * cast would take the date in that zone, so the column is left out and a
+ * query reading it answers live. Either way it is the type the build wrote,
+ * not drift, so it is not reported.
  */
 function byDesign(storedType: string, declared: string): boolean {
    const family = typeFamily(storedType);
-   if (declared === "date") {
-      return family === "timestamp" && !isZoned(storedType);
-   }
+   if (declared === "date") return family === "timestamp";
    if (declared === "boolean") {
       return family === "number" && /INT/i.test(storedType);
    }

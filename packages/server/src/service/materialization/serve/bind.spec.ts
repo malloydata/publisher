@@ -1189,6 +1189,61 @@ describe("applyObservedColumns", () => {
          expect(unchanged.entries.v1?.heldRead).toBeUndefined();
       });
 
+      it("reads a date Postgres stored as a timestamptz (DATE_TRUNC of a date) as by design: cast back with no query time zone, left out under one, unreported either way", () => {
+         const run = (queryTimezone?: string) =>
+            applyObservedColumns({
+               entries: {
+                  v1: {
+                     tableName: "public.t",
+                     connectionName: "pg",
+                     schema: [{ name: "dm", type: "TIMESTAMP WITH TIME ZONE" }],
+                  },
+               },
+               bindings: [],
+               observed: new Map([
+                  [
+                     "v1",
+                     {
+                        dialect: "postgres",
+                        columns: [
+                           {
+                              name: "dm",
+                              type: "TIMESTAMP WITH TIME ZONE",
+                              nativeType: "timestamp with time zone",
+                           },
+                        ],
+                     },
+                  ],
+               ]),
+               declared: () => ({
+                  columns: [{ name: "dm", type: "date" }],
+                  connectionName: "pg",
+                  ...(queryTimezone ? { queryTimezone } : {}),
+               }),
+            });
+         const utc = run();
+         expect(utc.drifted[0]?.columns).toEqual([
+            {
+               column: "dm",
+               builtType: "TIMESTAMP WITH TIME ZONE",
+               observedType: "TIMESTAMP WITH TIME ZONE",
+               declaredMoved: true,
+               castOnly: true,
+            },
+         ]);
+         const zoned = run("America/Denver");
+         expect(zoned.drifted[0]?.columns).toEqual([
+            {
+               column: "dm",
+               builtType: "TIMESTAMP WITH TIME ZONE",
+               observedType: "TIMESTAMP WITH TIME ZONE",
+               declaredMoved: true,
+               castOnly: true,
+               leftOut: true,
+            },
+         ]);
+      });
+
       it("reads a column the build writes as another type by design (a date truncation as a timestamp) through its cast, unreported", () => {
          const out = applyObservedColumns({
             entries: {
