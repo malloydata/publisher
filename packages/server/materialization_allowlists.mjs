@@ -190,8 +190,11 @@ export const RATCHET_DIALECT_LITERALS = {
  * Connection-type literals (a configured type spelled as a string literal or
  * an object key), per file, over materialization and the connection modules
  * the registry (service/dialects/) absorbs: frozen at their count before the
- * branches move, each tagged with the step that moves them. `table`: a list
- * of types kept as data (FederatedSourceType, PASSTHROUGH_SOURCE_TYPES).
+ * branches move, each tagged with the step that moves them. `table`: no
+ * branch, frozen: a list of types kept as data (FederatedSourceType,
+ * PASSTHROUGH_SOURCE_TYPES, STORAGE_DESTINATION_TYPES), a table keyed by
+ * type, a type a refusal's message names, a record's engine label, or the
+ * package sandbox's connection name.
  */
 export const RATCHET_CONNECTION_TYPE_LITERALS = {
    // READ_ONLY_DIALECTS' `sqlserver`, and the same-catalog gate's `ducklake`.
@@ -200,17 +203,20 @@ export const RATCHET_CONNECTION_TYPE_LITERALS = {
       step: "table",
    },
    // the package sandbox's connection name.
-   "service/materialization/run/reclaimer.ts": { count: 1, step: "D4" },
+   "service/materialization/run/reclaimer.ts": { count: 1, step: "table" },
    // a refusal's message naming the destination type file cleanup applies to.
-   "service/materialization/run/storage_admin.ts": { count: 1, step: "D4" },
+   "service/materialization/run/storage_admin.ts": { count: 1, step: "table" },
    // STORAGE_DESTINATION_TYPES, and a refusal's message naming a DuckLake
    // destination's type.
    "service/materialization/run/materialization_build_session.ts": {
       count: 3,
-      step: "D4",
+      step: "table",
    },
    // the read-cost record's engine label.
-   "service/materialization/run/build_read_cost.ts": { count: 4, step: "D4" },
+   "service/materialization/run/build_read_cost.ts": {
+      count: 4,
+      step: "table",
+   },
    // the DuckLake catalog read of a database table's columns.
    "service/materialization/run/database_column_read.ts": {
       count: 3,
