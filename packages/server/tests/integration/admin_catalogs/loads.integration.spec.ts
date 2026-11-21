@@ -30,7 +30,7 @@ import {
 } from "../../../src/service/connection";
 import { createIsolatedBuildSession } from "../../../src/service/materialization/run/materialization_build_session";
 import { mergeStatements } from "../../../src/service/materialization/run/storage_table_load";
-import { SUPERUSER, superuser } from "./superuser";
+import { SUPERUSER, superuser, until } from "./superuser";
 
 const DB = `loads_it_${process.pid}`;
 const CATALOG = "lake";
@@ -42,16 +42,6 @@ async function refusal(p: Promise<unknown>): Promise<CatalogAdminError> {
    );
    expect(error).toBeInstanceOf(CatalogAdminError);
    return error as CatalogAdminError;
-}
-
-/** Polls `read` until it answers, for a test waiting on another connection. */
-async function until<T>(read: () => Promise<T | undefined>): Promise<T> {
-   for (let i = 0; i < 1500; i++) {
-      const value = await read();
-      if (value !== undefined) return value;
-      await new Promise((resolve) => setTimeout(resolve, 10));
-   }
-   throw new Error("timed out waiting");
 }
 
 /** A type the load must round-trip without rewriting its rows on a retry. */

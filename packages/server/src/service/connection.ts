@@ -2376,8 +2376,9 @@ export function splitPgAttachCredentials(
 /**
  * A node-pg client config for a libpq connection string, for work the DuckDB
  * attach cannot do (a session advisory lock). It reads the string as libpq
- * does, the deployment's PGSSLMODE included, and refuses what it cannot
- * follow: a `service`, a `hostaddr`, or a list of hosts, none of which a
+ * does, the deployment's PGSSLMODE and certificate files included (the string
+ * wins), and refuses what it cannot follow: a `service`, a `hostaddr` (in the
+ * string or as PGSERVICE / PGHOSTADDR), or a list of hosts, none of which a
  * single node-pg connection can take. The TLS mapping is {@link pgClientSsl}.
  * A dead connection is noticed by keepalive, and a query that stops
  * answering by its timeout. Exported for tests.
@@ -2391,17 +2392,32 @@ export function pgClientConfig(
       params.set(key, value);
    }
    const unsupported = ["service", "hostaddr"].find((key) => params.has(key));
+   const ambient = (["PGSERVICE", "PGHOSTADDR"] as const).find((name) =>
+      externalEnv(name),
+   );
    const listed = ["host", "port"].find((key) =>
       params.get(key)?.includes(","),
    );
+   if (ambient) {
+      throw new Error(
+         `${subject}: ${ambient} is set in the environment, which loads cannot use; unset it and spell host, port and dbname.`,
+      );
+   }
    if (unsupported || listed) {
       throw new Error(
          `${subject}: the connection string sets ${unsupported ? `'${unsupported}'` : `more than one '${listed}'`}, which loads cannot use; spell host, port and dbname.`,
       );
    }
    const port = params.get("port") || undefined;
-   const requested =
-      params.get("sslmode") ?? externalEnv("PGSSLMODE")?.toLowerCase();
+   for (const [key, name] of [
+      ["sslrootcert", "PGSSLROOTCERT"],
+      ["sslcert", "PGSSLCERT"],
+      ["sslkey", "PGSSLKEY"],
+   ] as const) {
+      const file = externalEnv(name);
+      if (!params.has(key) && file) params.set(key, file);
+   }
+   const requested = params.get("sslmode") ?? externalEnv("PGSSLMODE");
    const sslmode =
       requested === "no-verify" ? LIBPQ_NO_VERIFY_SSLMODE : requested;
    return {
@@ -2422,15 +2438,21 @@ export function pgClientConfig(
 /**
  * A connected node-pg client for a libpq connection string. `onError` hears a
  * dropped idle connection, which unhandled would end the process.
+ * `queryTimeoutMillis` replaces the default bound on a query's answer.
  */
 export async function connectPgClient(
    subject: string,
    conninfo: string,
    onError: (error: Error) => void = () => undefined,
+   queryTimeoutMillis?: number,
 ): Promise<Client> {
    const { plaintextFallback, ...config } = pgClientConfig(subject, conninfo);
    const connect = async (ssl: ClientConfig["ssl"]) => {
-      const client = new Client({ ...config, ssl });
+      const client = new Client({
+         ...config,
+         ssl,
+         ...(queryTimeoutMillis ? { query_timeout: queryTimeoutMillis } : {}),
+      });
       client.on("error", onError);
       await client.connect();
       return client;

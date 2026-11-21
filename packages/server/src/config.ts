@@ -332,17 +332,15 @@ export const getDuckDBTempDirectory = (): string | undefined =>
  * sensible zero.
  */
 const DUCKDB_BYTE_SIZE =
-   /^(?!0+(\.0+)?\s*[A-Za-z])\d+(\.\d+)?\s*(B|KB|KIB|MB|MIB|GB|GIB|TB|TIB)$/i;
+   /^(?!0+(\.0+)?\s*[A-Za-z])(?<amount>\d+(\.\d+)?)\s*(?<unit>B|KB|KIB|MB|MIB|GB|GIB|TB|TIB)$/i;
 
 /** A size {@link DUCKDB_BYTE_SIZE} accepts, in bytes: `GB` is 1000^3 and `GiB` 1024^3, as DuckDB reads them. */
 export function duckDBByteSize(size: string): number {
-   const match = /^(\d+(?:\.\d+)?)\s*([A-Za-z]+)$/.exec(size.trim());
-   if (!match || !DUCKDB_BYTE_SIZE.test(size.trim())) {
-      throw new Error(`Not a DuckDB size: "${size}"`);
-   }
-   const unit = match[2].toUpperCase();
+   const groups = DUCKDB_BYTE_SIZE.exec(size.trim())?.groups;
+   if (!groups) throw new Error(`Not a DuckDB size: "${size}"`);
+   const unit = groups.unit.toUpperCase();
    return (
-      Number(match[1]) *
+      Number(groups.amount) *
       (unit.includes("I") ? 1024 : 1000) ** "BKMGT".indexOf(unit[0])
    );
 }

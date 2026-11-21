@@ -801,7 +801,7 @@ function topLevelColumns(
  * columns at the top of each, shape by shape. A column typed NULL in every
  * object is absent, and objects that leave no column are refused. A name the
  * load reserves, one DuckDB cannot tell from another by case (it renames the
- * second `A_1`), or one holding a NUL is refused.
+ * second `A_1`, a NULL-typed one included), or one holding a NUL is refused.
  */
 export function sourceColumns(shapes: readonly SchemaShape[]): string[] {
    const nullTyped = new Map<string, boolean>();
@@ -830,9 +830,12 @@ export function sourceColumns(shapes: readonly SchemaShape[]): string[] {
          "The objects have no column to load.",
       );
    }
+   // Over every physical name: DuckDB renames the second spelling whether or not the first is typed NULL.
    const byFold = new Map<string, string[]>();
-   for (const [name] of present) {
+   for (const name of nullTyped.keys()) {
       byFold.set(fold(name), [...(byFold.get(fold(name)) ?? []), name]);
+   }
+   for (const [name] of present) {
       if (
          name.includes("\0") ||
          fold(name).startsWith(HELPER_PREFIX) ||

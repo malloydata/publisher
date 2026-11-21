@@ -17,7 +17,7 @@ import {
 } from "../../../src/service/catalog_admin";
 import { resetInstrumentsForTesting } from "../../../src/telemetry";
 import { startMetricsHarness } from "../../../src/test_helpers/metrics_harness";
-import { SUPERUSER, superuser } from "./superuser";
+import { SUPERUSER, superuser, until } from "./superuser";
 
 const DB = `table_lock_${process.pid}`;
 
@@ -109,6 +109,33 @@ describe.skipIf(!SUPERUSER)("table load admission", () => {
       // The dead connection's lock went with it.
       expect(await admin.withTableLock("c", "s", "t", async () => "free")).toBe(
          "free",
+      );
+   });
+
+   it("drops a connection whose query stops answering: the refusal is LOAD_BUSY and the backend's lock is freed", async () => {
+      const slow = new CatalogAdmin({
+         catalogDatabase: `${SUPERUSER} dbname=${DB}`,
+         lockQueryTimeoutMillis: 300,
+      });
+      const advisoryLocks = async () =>
+         Number(
+            (
+               await superuser(
+                  `SELECT count(*) AS n FROM pg_locks l JOIN pg_database d ON d.oid = l.database
+                   WHERE l.locktype = 'advisory' AND l.granted AND d.datname = '${DB}'`,
+               )
+            )[0].n,
+         );
+      const error = await refusal(
+         slow.withTableLock("c", "s", "t", async ({ pg }) => {
+            expect(await advisoryLocks()).toBe(1);
+            await pg("SELECT pg_sleep(5)");
+         }),
+      );
+      expect([error.status, error.reason]).toEqual([503, "LOAD_BUSY"]);
+      // The server sees the destroyed socket once the sleeping backend next speaks.
+      await until(async () =>
+         (await advisoryLocks()) === 0 ? true : undefined,
       );
    });
 

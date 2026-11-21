@@ -14,7 +14,11 @@ export type ExternalVariable =
    | "OTEL_EXPORTER_OTLP_ENDPOINT"
    | "GOOGLE_APPLICATION_CREDENTIALS"
    | "PGSSLMODE"
-   | "PGSERVICE";
+   | "PGSSLROOTCERT"
+   | "PGSSLCERT"
+   | "PGSSLKEY"
+   | "PGSERVICE"
+   | "PGHOSTADDR";
 
 export function externalEnv(name: ExternalVariable): string | undefined {
    return process.env[name];

@@ -21,3 +21,13 @@ export async function superuser(
       await client.end();
    }
 }
+
+/** Polls `read` until it answers, for a test waiting on another connection. */
+export async function until<T>(read: () => Promise<T | undefined>): Promise<T> {
+   for (let i = 0; i < 1500; i++) {
+      const value = await read();
+      if (value !== undefined) return value;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+   }
+   throw new Error("timed out waiting");
+}

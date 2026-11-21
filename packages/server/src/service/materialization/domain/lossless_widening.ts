@@ -41,8 +41,11 @@ const INTEGER_WIDTHS: Record<string, { rank: number; unsigned: boolean }> = {
    uhugeint: { rank: 5, unsigned: true },
 };
 
-/** The decimal digits each integer width holds in full. */
-const INTEGER_DIGITS = [0, 3, 5, 10, 19, 39];
+/** The decimal digits each integer width holds in full, by rank; only UBIGINT's maximum has one more than BIGINT's. */
+const INTEGER_DIGITS = {
+   signed: [0, 3, 5, 10, 19, 39],
+   unsigned: [0, 3, 5, 10, 20, 39],
+};
 
 function parsedType(type: string): ParsedType {
    const t = type.trim().replace(/\s+/g, " ").toLowerCase();
@@ -113,7 +116,10 @@ export function losslessWidening(built: string, now: string): boolean {
             : !to.unsigned && to.rank >= from.rank;
       }
       if (to.kind === "decimal") {
-         return to.precision - to.scale >= INTEGER_DIGITS[from.rank];
+         return (
+            to.precision - to.scale >=
+            INTEGER_DIGITS[from.unsigned ? "unsigned" : "signed"][from.rank]
+         );
       }
       // A DOUBLE holds every 32-bit integer exactly; a FLOAT every 16-bit one.
       if (to.kind === "float") return from.rank <= to.rank + 1;

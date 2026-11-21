@@ -149,6 +149,8 @@ export interface CatalogAdminConfig {
    catalogDatabase: string;
    /** The storage credential every catalog's data path is read and written with. */
    storage?: Omit<DucklakeStorage, "bucketUrl">;
+   /** Internal: bounds a query on a table lock's connection (default 30 s); specs shorten it. */
+   lockQueryTimeoutMillis?: number;
 }
 
 /**
@@ -834,6 +836,7 @@ export class CatalogAdmin {
             () => {
                lost = true;
             },
+            this.config.lockQueryTimeoutMillis,
          );
       } catch (error) {
          throw this.redacted(error);
@@ -851,7 +854,13 @@ export class CatalogAdmin {
          const locked = await query(
             `SELECT pg_try_advisory_lock(${TABLE_LOCK_KEY}) AS locked`,
             [key],
-         );
+         ).catch(() => {
+            lost = true;
+            throw loadBusy(
+               "lost",
+               `The lock on '${key}' could not be taken; retry the load.`,
+            );
+         });
          if (locked[0]?.locked !== true) {
             throw loadBusy("lock", `A load of '${key}' is already running.`);
          }

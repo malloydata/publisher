@@ -653,6 +653,19 @@ describe("sourceColumns: the columns the objects' schemas hold", () => {
       ).toMatchObject({ detail: "case_collision" });
    });
 
+   it.each(["UNKNOWN", "NullType()"])(
+      "refuses a column typed NULL (%s) that differs only by case from a populated one",
+      (nullType) => {
+         expect(
+            contract(() =>
+               sourceColumns([
+                  shape(["root", 2], ["a", 0, nullType], ["A", 0]),
+               ]),
+            ),
+         ).toMatchObject({ column: "a", detail: "case_collision" });
+      },
+   );
+
    it("does not take a nested field's name for a column's", () => {
       expect(
          sourceColumns([shape(["root", 2], ["id", 0], ["st", 1], ["ID", 0])]),

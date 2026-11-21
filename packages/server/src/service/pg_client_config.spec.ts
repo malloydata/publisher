@@ -4,13 +4,42 @@
 // The node-pg config built from the libpq connection string the admin API
 // attaches with, so a session advisory lock reaches the same database as the
 // DuckLake attach does.
-import { afterAll, afterEach, describe, expect, it } from "bun:test";
+import {
+   afterAll,
+   afterEach,
+   beforeEach,
+   describe,
+   expect,
+   it,
+} from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { pgClientConfig } from "./connection";
 
 const config = (conninfo: string) => pgClientConfig("test", conninfo);
+
+const ENV_VARIABLES = [
+   "PGSSLMODE",
+   "PGSSLROOTCERT",
+   "PGSSLCERT",
+   "PGSSLKEY",
+   "PGSERVICE",
+   "PGHOSTADDR",
+] as const;
+const priorEnv = new Map<string, string | undefined>();
+beforeEach(() => {
+   for (const name of ENV_VARIABLES) {
+      priorEnv.set(name, process.env[name]);
+      delete process.env[name];
+   }
+});
+afterEach(() => {
+   for (const [name, value] of priorEnv) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+   }
+});
 
 describe("pgClientConfig", () => {
    const dir = mkdtempSync(join(tmpdir(), "pg-client-config-"));
@@ -166,10 +195,6 @@ describe("pgClientConfig", () => {
    });
 
    describe("the deployment's PGSSLMODE", () => {
-      afterEach(() => {
-         delete process.env.PGSSLMODE;
-      });
-
       it("applies when the string sets no sslmode, as libpq reads it", () => {
          process.env.PGSSLMODE = "verify-full";
          expect(config(`host=h sslrootcert=${ca}`)).toMatchObject({
@@ -199,7 +224,64 @@ describe("pgClientConfig", () => {
             "test has unsupported sslmode 'bogus'.",
          );
       });
+
+      it("is case-sensitive, as libpq is", () => {
+         process.env.PGSSLMODE = "Disable";
+         expect(() => config("host=h")).toThrow(
+            "test has unsupported sslmode 'Disable'.",
+         );
+      });
    });
+
+   describe("the deployment's certificate files", () => {
+      const cert = join(dir, "env.crt");
+      const key = join(dir, "env.key");
+      const otherCa = join(dir, "other-ca.pem");
+      writeFileSync(cert, "ENV-CERT");
+      writeFileSync(key, "ENV-KEY");
+      writeFileSync(otherCa, "OTHER-PEM");
+
+      it("supplies the root, certificate and key the string leaves out", () => {
+         process.env.PGSSLMODE = "verify-full";
+         process.env.PGSSLROOTCERT = ca;
+         process.env.PGSSLCERT = cert;
+         process.env.PGSSLKEY = key;
+         expect(config("host=h").ssl).toEqual({
+            rejectUnauthorized: true,
+            ca: "PEM-BYTES",
+            cert: "ENV-CERT",
+            key: "ENV-KEY",
+         });
+      });
+
+      it("yields to the string's own files, as libpq does", () => {
+         process.env.PGSSLROOTCERT = otherCa;
+         process.env.PGSSLCERT = join(dir, "missing.crt");
+         expect(
+            config(
+               `host=h sslmode=verify-full sslrootcert=${ca} sslcert=${cert}`,
+            ).ssl,
+         ).toMatchObject({ ca: "PEM-BYTES", cert: "ENV-CERT" });
+      });
+   });
+
+   it.each(["PGSERVICE", "PGHOSTADDR"] as const)(
+      "refuses %s in the environment, naming the variable and not the string",
+      (name) => {
+         process.env[name] = "10.0.0.1";
+         const error = String(
+            (() => {
+               try {
+                  config("host=h password=secret");
+               } catch (e) {
+                  return e;
+               }
+            })(),
+         );
+         expect(error).toContain(`test: ${name} is set in the environment`);
+         expect(error).not.toContain("secret");
+      },
+   );
 
    it("trusts the runtime's ambient anchors when verify-* names no sslrootcert", () => {
       const { ssl } = config("host=h sslmode=verify-full") as {
