@@ -112,6 +112,11 @@ export interface Compiled {
    /** Bindings actually re-rooted, with their destination under its alias. */
    rerooted: Binding[];
    /**
+    * The author `sourceID`s the copy re-rooted on their tables (a
+    * `#(materialize)` binding's author source, not its generated one).
+    */
+   rerootedSourceIDs?: ReadonlySet<string>;
+   /**
     * Extensions of a re-rooted source left as written, which read their
     * base's table by name: each with its chain of ancestor `sourceID`s and the
     * base its text names (see `readsRerootedBase`).
