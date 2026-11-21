@@ -6,7 +6,8 @@
 type: sets_zone__served is {
    id::number,
    created_at::timestamp,
-   h::number
+   h::number,
+   d::timestamp
 }
 type: inherits_zone__served is {
    id::number,
@@ -43,8 +44,10 @@ source: inherits_zone is __served_copy_alias_of_lake.virtual('eae11fcde4b5b91f75
 source: sets_zone is __served_copy_alias_of_lake.virtual('7087a145c021bb3abb6d843089ba74ee113f6841371adbd448bc5ce0667f9cd1')::sets_zone__served extend {
   private rename:
     id__stored is id
+    d__stored is d
   dimension:
     id is id__stored::"HUGEINT"
+    d is d__stored.day
  primary_key: id }
 
 source: reader is orders_raw extend {
@@ -58,7 +61,8 @@ source: reader is orders_raw extend {
 type: sets_zone__served is {
    id::number,
    created_at::timestamp,
-   h::number
+   h::number,
+   d::timestamp
 }
 type: inherits_zone__served is {
    id::number,
@@ -95,8 +99,10 @@ source: inherits_zone is __served_copy_alias_of_lake.virtual('eae11fcde4b5b91f75
 source: sets_zone is __served_copy_alias_of_lake.virtual('7087a145c021bb3abb6d843089ba74ee113f6841371adbd448bc5ce0667f9cd1')::sets_zone__served extend {
   private rename:
     id__stored is id
+    d__stored is d
   dimension:
     id is id__stored::"HUGEINT"
+    d is d__stored.day
  primary_key: id }
 
 source: reader is orders_raw extend {
