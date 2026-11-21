@@ -661,6 +661,8 @@ export class ServedCopyServe {
       tablesRead: Binding[];
       /** What the answer is judged to read for its gates (tablesReadForGates). */
       gateTablesRead: Binding[];
+      /** The author sources the copy re-rooted on their tables, by `sourceID`. */
+      rerootedSourceIDs: ReadonlySet<string>;
       /**
        * The served copy's compiled model, where a row-level gate is grafted
        * when this answer runs: the gate's text is the author's, kept in
@@ -878,6 +880,7 @@ export class ServedCopyServe {
          bindings: compiled.rerooted,
          tablesRead,
          gateTablesRead: tablesReadForGates(sql, compiled.rerooted, tablesRead),
+         rerootedSourceIDs: compiled.rerootedSourceIDs ?? new Set(),
          graftScope: {
             modelDef: compiled.modelDef as ModelDef,
             materializer: attempt.materializer,
@@ -2509,6 +2512,12 @@ export class ServedCopyServe {
          optOutIDs,
          unsafeIDs,
          rerooted,
+         // Each re-rooted author source, and each extension left as written
+         // that reads its base's table by name, its query unchanged.
+         rerootedSourceIDs: new Set([
+            ...candidates.map((c) => c.reroot.sourceID),
+            ...throughBase.map((t) => t.sourceID),
+         ]),
          ...(throughBase.length > 0 ? { throughBase } : {}),
          aliased,
          problems,

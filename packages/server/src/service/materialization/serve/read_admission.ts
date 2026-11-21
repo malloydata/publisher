@@ -180,10 +180,9 @@ export class ReadAdmission {
     */
    private gateReadsFor(
       tables: readonly TableRead[],
-      rerooted: readonly TableRead[] = [],
+      onTables: ReadonlySet<string> = new Set(),
    ): Promise<GateReads | undefined> {
       const stored = storedSourceIDs(tables);
-      const onTables = storedSourceIDs(rerooted);
       const key = [[...stored].sort(), [...onTables].sort()].join("\n\n");
       let r = this.reads.get(key);
       if (r === undefined) {
@@ -217,7 +216,7 @@ export class ReadAdmission {
       const read = answer.gateTablesRead ?? answer.tablesRead ?? [];
       // The served copy reads each source it re-rooted from its table, so a
       // join to one never re-applies that source's own query.
-      const rerooted = leg === "served" ? answer.shapeBindings : [];
+      const rerooted = leg === "served" ? answer.rerootedSourceIDs : undefined;
       const scopeReads = () => this.gateReadsFor(read, rerooted);
       // Only the served copy and a rollup re-apply a row scope, and only
       // past a gate is the scope's reads needed otherwise; both read through
