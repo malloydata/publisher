@@ -2434,6 +2434,84 @@ describe("EnvironmentStore path-injection guards", () => {
       );
    });
 
+   describe("attachedDatabases[].name", () => {
+      const environment = {
+         name: "ok-env",
+         connections: [
+            {
+               name: "lake",
+               type: "duckdb",
+               duckdbConnection: {
+                  attachedDatabases: [
+                     { name: 'evil"; SELECT 1 --', type: "postgres" },
+                  ],
+               },
+            },
+         ],
+      };
+
+      it("is a 400 when an environment is created", async () => {
+         const refused = environmentStore.addEnvironment(
+            environment as never,
+            true,
+         );
+         await expect(refused).rejects.toBeInstanceOf(BadRequestError);
+         await expect(refused).rejects.toThrow("attachedDatabases[0].name");
+      });
+
+      it("is a 400 for an S3 region off its shape when an environment is created", async () => {
+         await expect(
+            environmentStore.addEnvironment(
+               {
+                  name: "ok-env",
+                  connections: [
+                     {
+                        name: "lake",
+                        type: "duckdb",
+                        duckdbConnection: {
+                           attachedDatabases: [
+                              {
+                                 name: "bucket",
+                                 type: "s3",
+                                 s3Connection: { region: "x'y" },
+                              },
+                           ],
+                        },
+                     },
+                  ],
+               } as never,
+               true,
+            ),
+         ).rejects.toBeInstanceOf(BadRequestError);
+      });
+
+      it("is a 400 for a DuckLake storage region off its shape when an environment is created", async () => {
+         await expect(
+            environmentStore.addEnvironment(
+               {
+                  name: "ok-env",
+                  connections: [
+                     {
+                        name: "lake",
+                        type: "ducklake",
+                        ducklakeConnection: {
+                           storage: { s3Connection: { region: "x'y" } },
+                        },
+                     },
+                  ],
+               } as never,
+               true,
+            ),
+         ).rejects.toThrow("ducklakeConnection.storage.s3Connection.region");
+      });
+
+      it("is a 400 when an environment is updated", async () => {
+         await expect(
+            environmentStore.updateEnvironment(environment as never),
+         ).rejects.toBeInstanceOf(BadRequestError);
+      });
+   });
+
    describe("updateEnvironment", () => {
       it.each(TRAVERSAL_NAMES)(
          "rejects %s as environment.name (%p)",
