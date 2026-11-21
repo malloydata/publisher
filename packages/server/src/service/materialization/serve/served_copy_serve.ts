@@ -2805,6 +2805,23 @@ function rerootsLosing(
          givenTerms: givenReadingFilterTerms,
       });
    };
+   // A source this model does not name (only a join reaches it, an import
+   // of an import) that the served compile holds nowhere: the joins that
+   // reach it were left out (a join across connections, answered live and
+   // warned on its own), so nothing in this model reads it and its re-root
+   // is moot. Left as written, with no warning of its own: it loses nothing
+   // a caller can read here.
+   const unreached = state.candidates.filter(
+      (c) =>
+         map.node(c.reroot.sourceID)?.name === undefined &&
+         servedMap.node(c.reroot.sourceID) === undefined &&
+         servedDefOf(servedMap, c.reroot.sourceID) === undefined,
+   );
+   if (unreached.length > 0) {
+      for (const c of unreached) withoutKept.delete(c);
+      state.candidates = state.candidates.filter((c) => !unreached.includes(c));
+      return true;
+   }
    const losses = new Map(state.candidates.map((c) => [c, lossOf(c)]));
    const lost = state.candidates.filter((c) => {
       const loss = losses.get(c);

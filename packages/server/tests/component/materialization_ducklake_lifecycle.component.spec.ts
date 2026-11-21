@@ -2522,3 +2522,101 @@ describe.skipIf(process.platform === "win32")(
       });
    },
 );
+
+/**
+ * A stored source that a model reaches only through an import of an import,
+ * by a join the served copy leaves out across connections (Credible's
+ * `crm_current` via `pipeline.malloy`). That model's served copy holds the
+ * source nowhere, so nothing there reads it: it raised `served-copy-not-served`
+ * (`fields_not_carried`), which said the source inherits fields its table does
+ * not carry. It does not, and the model that names it serves it from its
+ * table; the warning is gone, and every answer is the same.
+ */
+describe.skipIf(process.platform === "win32")(
+   "a stored source reached in an importing model only by a join left out across connections",
+   () => {
+      const ROWS = `warehouse.sql("""SELECT * FROM (VALUES ('a', 'east', 'ok', 1.0), ('a', 'east', 'cancelled', 2.0), ('b', 'west', 'ok', 4.0)) AS t(category, region, status, amount)""")`;
+      const lake = new LakeFixture("unreached", () => ({
+         "m.malloy": `import "deals.malloy"\n`,
+         "deals.malloy": `import "crm.malloy"
+source: d_raw is ${ROWS} extend {
+  join_one: cur is crm_current on category = cur.category and region = cur.region
+}
+source: d11_incl is d_raw -> {
+  group_by: category, region, is_deleted is status = 'cancelled', cur_amt is cur.amt
+  aggregate: amt is amount.sum()
+}
+#@ persist storage="lake" name="gtmval_deals11"
+source: deals11 is d11_incl extend { where: not is_deleted }
+#@ persist storage="lake" name="gtmval_d_unrelated"
+source: d_unrelated is ${ROWS} -> { group_by: region; aggregate: n is count() }
+`,
+         "crm.malloy": `##! experimental.persistence
+source: crm_raw is ${ROWS}
+#@ persist storage="lake" name="gtmval_crm_current"
+source: crm_current is crm_raw -> { group_by: category, region; aggregate: amt is amount.sum() }
+`,
+      }));
+      beforeAll(() => lake.setUp());
+      afterAll(() => lake.tearDown());
+
+      const QUERIES: [model: string, query: string, served: boolean][] = [
+         [
+            "m.malloy",
+            "run: deals11 -> { group_by: category, region; aggregate: a is amt.sum() }",
+            true,
+         ],
+         [
+            "m.malloy",
+            "run: d_raw -> { group_by: category; aggregate: a is cur.amt.sum() }",
+            false,
+         ],
+         [
+            "deals.malloy",
+            "run: crm_current -> { group_by: category, region; aggregate: a is amt.sum() }",
+            true,
+         ],
+      ];
+      async function askIn(model: string, query: string) {
+         const result = await lake.pkg
+            .getModel(model)!
+            .runQuery(
+               unrecordedAudit(),
+               { query } as never,
+               QueryPrivileges.of({ includeHiddenFilesAndSources: true }),
+            );
+         return {
+            rows: (result.compactResult as Record<string, unknown>[])
+               .map((r) =>
+                  JSON.stringify(
+                     Object.fromEntries(
+                        Object.entries(r).map(([k, v]) => [k, String(v)]),
+                     ),
+                  ),
+               )
+               .sort(),
+            servedBy: result.path?.servedBy?.kind ?? "live",
+         };
+      }
+
+      it("raises no warning on it there, and every answer equals live", async () => {
+         const live = [];
+         for (const [model, query] of QUERIES) {
+            live.push((await askIn(model, query)).rows);
+         }
+         expect((await lake.run()).status).toBe("MANIFEST_FILE_READY");
+         for (const [i, [model, query, served]] of QUERIES.entries()) {
+            const answer = await askIn(model, query);
+            expect(answer.rows, query).toEqual(live[i]);
+            if (served) expect(answer.servedBy, query).toBe("materialized");
+         }
+         // Read once each model's served copy has compiled.
+         const warned = (lake.pkg.getPackageMetadata().warnings ?? [])
+            .filter((w) => w.code === "served-copy-not-served")
+            .map((w) => [w.model, w.subject, w.reason]);
+         expect(
+            warned.filter(([, subject]) => subject === "crm_current"),
+         ).toEqual([]);
+      });
+   },
+);
