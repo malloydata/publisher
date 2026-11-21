@@ -21,6 +21,10 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — a filter on a numeric `pick` is no longer read as a string comparison
+
+**Fixed: a query filtering on a numeric `pick` answered live from a non-binary origin.** Before a stored table answers a query that filters, Publisher checks that each string the filter compares compares there as live compares it, and skips the check when the filter compares no string. A `pick` was never read as comparing no string, so `having: x > 0` over `x is sum(pick 1 when amt > 1 else 0)`, or a later stage's filter on an earlier stage's `pick 1 when amt > 1 else 0`, was checked as a string comparison and, on a DuckDB instance with a `default_collation` or wherever the collation could not be read, declined and answered live. A `pick` whose conditions and branches compare and yield no string now counts as comparing none. One whose condition or any branch compares or yields a string (`pick 1 when category > 'M' else 0`, `pick 'a' when … else 'b'`) is still checked.
+
 ## [Unreleased] — a database table whose build recorded no column types answers live (security)
 
 **Fixed (security): a leak in 0.17.0 and 0.17.1.** Before a database table (a colocated `#@ persist` or `#(materialize)` table, a database rollup, or a persisted view or query) is served, Publisher compares its columns, as the warehouse holds them now, with the types its build recorded, so a column altered after the build is read faithfully or left out. A table whose manifest entry recorded no types, neither `schema` nor `nativeSchema`, had nothing to compare against, so a column altered after the build was served as if unchanged.
