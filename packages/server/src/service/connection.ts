@@ -524,7 +524,7 @@ async function createBigQuerySecret(
    await connection.runSQL(`
       CREATE OR REPLACE SECRET ${secretName} (
          TYPE BIGQUERY,
-         SCOPE 'bq://${projectId}',
+         SCOPE '${escapeSQL(`bq://${projectId}`)}',
          SERVICE_ACCOUNT_JSON '${escapedJson}'
       );
    `);
@@ -557,6 +557,40 @@ function escapeSnowflakeIdentity(
    };
 }
 
+/**
+ * The ATTACH of a BigQuery project under `name`. The alias is quoted as a
+ * DuckDB identifier and the project as a string literal, so neither can end
+ * the statement, whatever validation the name passed.
+ */
+export function bigQueryAttachSQL(name: string, projectId: string): string {
+   return `ATTACH '${escapeSQL(`project=${projectId}`)}' AS ${quoteIdentifier(name, "duckdb")} (TYPE bigquery, READ_ONLY);`;
+}
+
+/** The secret a Snowflake attachment named `name` creates. */
+function snowflakeSecretName(name: string): string {
+   return `${name}_secret`;
+}
+
+/**
+ * The statements that attach a Snowflake database under `name`: its secret
+ * (from the already-escaped `secretLines`), a test query through that secret,
+ * and the ATTACH. Every use of the name is quoted: as a DuckDB identifier
+ * (the alias, the secret) or escaped as a string literal (the database to
+ * attach, the secret the test query names), so none can end its statement.
+ */
+export function snowflakeAttachSQL(
+   name: string,
+   secretLines: string[],
+): { createSecret: string; test: string; attach: string } {
+   const secret = snowflakeSecretName(name);
+   const quotedSecret = quoteIdentifier(secret, "duckdb");
+   return {
+      createSecret: `CREATE OR REPLACE SECRET ${quotedSecret} (\n${secretLines.join(",\n")}\n   );`,
+      test: `SELECT * FROM snowflake_query('SELECT 1', '${escapeSQL(secret)}');`,
+      attach: `ATTACH '${escapeSQL(name)}' AS ${quoteIdentifier(name, "duckdb")} (TYPE snowflake, SECRET ${quotedSecret}, READ_ONLY);`,
+   };
+}
+
 async function attachBigQuery(
    connection: DuckDBConnection,
    attachedDb: AttachedDatabase,
@@ -582,8 +616,7 @@ async function attachBigQuery(
       `Created BigQuery secret: ${secretName} for project: ${projectId}`,
    );
 
-   const attachCommand = `ATTACH 'project=${projectId}' AS ${attachedDb.name} (TYPE bigquery, READ_ONLY);`;
-   await connection.runSQL(attachCommand);
+   await connection.runSQL(bigQueryAttachSQL(attachedDb.name ?? "", projectId));
    logger.info(`Successfully attached BigQuery database: ${attachedDb.name}`);
 }
 
@@ -635,17 +668,14 @@ async function attachSnowflake(
       ...(params.schema ? [`      SCHEMA '${params.schema}'`] : []),
       ...(params.role ? [`      ROLE '${params.role}'`] : []),
    ];
-   const secretString = `CREATE OR REPLACE SECRET ${attachedDb.name}_secret (\n${secretLines.join(",\n")}\n   );`;
+   const statements = snowflakeAttachSQL(attachedDb.name ?? "", secretLines);
 
-   await connection.runSQL(secretString);
+   await connection.runSQL(statements.createSecret);
 
-   const testresult = await connection.runSQL(
-      `SELECT * FROM snowflake_query('SELECT 1', '${attachedDb.name}_secret');`,
-   );
+   const testresult = await connection.runSQL(statements.test);
    logger.info(`Testing Snowflake connection:`, testresult.rows);
 
-   const attachCommand = `ATTACH '${attachedDb.name}' AS ${attachedDb.name} (TYPE snowflake, SECRET ${attachedDb.name}_secret, READ_ONLY);`;
-   await connection.runSQL(attachCommand);
+   await connection.runSQL(statements.attach);
    logger.info(`Successfully attached Snowflake database: ${attachedDb.name}`);
 }
 
@@ -2698,7 +2728,9 @@ async function attachCloudStorage(
 
    if (await doesSecretExistInDuckDB(connection, secretName)) {
       // Force-refresh attachments using this storage.
-      await connection.runSQL(`DETACH ${attachedDb.name};`).catch(() => {});
+      await connection
+         .runSQL(`DETACH ${quoteIdentifier(attachedDb.name ?? "", "duckdb")};`)
+         .catch(() => {});
    }
    await connection.runSQL(createSecretCommand);
 
@@ -2805,7 +2837,9 @@ async function attachAzureStorage(
    }
 
    if (await doesSecretExistInDuckDB(connection, secretName)) {
-      await connection.runSQL(`DETACH ${attachedDb.name};`).catch(() => {});
+      await connection
+         .runSQL(`DETACH ${quoteIdentifier(attachedDb.name ?? "", "duckdb")};`)
+         .catch(() => {});
    }
    await connection.runSQL(createSecretCommand);
 
@@ -2989,7 +3023,7 @@ async function detachAttachment(
    );
    const secret =
       type === "snowflake"
-         ? `${name}_secret`
+         ? quoteIdentifier(snowflakeSecretName(name), "duckdb")
          : type === "bigquery" ||
              type === "gcs" ||
              type === "s3" ||
@@ -4553,7 +4587,7 @@ async function testDuckDBConnection(
          switch (attachedDb.type) {
             case "postgres": {
                await duckdbConnection.runSQL(
-                  `SELECT schema_name FROM information_schema.schemata WHERE catalog_name = '${attachedDb.name}' LIMIT 1`,
+                  `SELECT schema_name FROM information_schema.schemata WHERE catalog_name = '${escapeSQL(attachedDb.name)}' LIMIT 1`,
                );
                logger.info(
                   `Attached Postgres database test passed: ${attachedDb.name}`,
@@ -4563,7 +4597,7 @@ async function testDuckDBConnection(
             case "bigquery": {
                await runInternalSQL(
                   duckdbConnection,
-                  `SELECT database_name FROM duckdb_databases() WHERE database_name = '${attachedDb.name}'`,
+                  `SELECT database_name FROM duckdb_databases() WHERE database_name = '${escapeSQL(attachedDb.name)}'`,
                );
                logger.info(
                   `Attached BigQuery database test passed: ${attachedDb.name}`,
@@ -4573,7 +4607,7 @@ async function testDuckDBConnection(
             case "snowflake": {
                await runInternalSQL(
                   duckdbConnection,
-                  `SELECT database_name FROM duckdb_databases() WHERE database_name = '${attachedDb.name}'`,
+                  `SELECT database_name FROM duckdb_databases() WHERE database_name = '${escapeSQL(attachedDb.name)}'`,
                );
                logger.info(
                   `Attached Snowflake database test passed: ${attachedDb.name}`,
@@ -4583,7 +4617,7 @@ async function testDuckDBConnection(
             case "gcs": {
                await runInternalSQL(
                   duckdbConnection,
-                  `SELECT name FROM duckdb_secrets() WHERE name LIKE '%${attachedDb.name}%' LIMIT 1`,
+                  `SELECT name FROM duckdb_secrets() WHERE name LIKE '%${escapeSQL(attachedDb.name)}%' LIMIT 1`,
                );
                logger.info(
                   `Cloud storage credentials test passed: ${attachedDb.name}`,
@@ -4593,7 +4627,7 @@ async function testDuckDBConnection(
             case "s3": {
                await runInternalSQL(
                   duckdbConnection,
-                  `SELECT name FROM duckdb_secrets() WHERE name LIKE '%${attachedDb.name}%' LIMIT 1`,
+                  `SELECT name FROM duckdb_secrets() WHERE name LIKE '%${escapeSQL(attachedDb.name)}%' LIMIT 1`,
                );
                logger.info(
                   `Cloud storage credentials test passed: ${attachedDb.name}`,
@@ -4615,7 +4649,7 @@ async function testDuckDBConnection(
                } else {
                   await runInternalSQL(
                      duckdbConnection,
-                     `SELECT name FROM duckdb_secrets() WHERE name LIKE '%${attachedDb.name}%' LIMIT 1`,
+                     `SELECT name FROM duckdb_secrets() WHERE name LIKE '%${escapeSQL(attachedDb.name)}%' LIMIT 1`,
                   );
                   logger.info(
                      `Azure SPN credentials test passed: ${attachedDb.name}`,

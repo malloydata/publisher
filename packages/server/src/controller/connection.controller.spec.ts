@@ -1108,6 +1108,89 @@ describe("ConnectionController.getConnectionTemporaryTable guards", () => {
    });
 });
 
+describe("ConnectionController: an attached database name off its pattern is a 400", () => {
+   afterEach(() => sinon.restore());
+
+   const hostile = 'evil"; SELECT 1 --';
+   const duckdbWith = (name: string) => ({
+      name: "lake",
+      type: "duckdb" as const,
+      duckdbConnection: {
+         attachedDatabases: [
+            {
+               name,
+               type: "postgres" as const,
+               postgresConnection: { host: "10.0.0.1", port: 5432 },
+            },
+         ],
+      },
+   });
+
+   function controllerWithService() {
+      const { controller } = buildController(sinon.stub().resolves());
+      const service = {
+         addConnection: sinon.stub().resolves(),
+         updateConnection: sinon.stub().resolves(),
+      };
+      (
+         controller as unknown as { connectionService: typeof service }
+      ).connectionService = service;
+      return { controller, service };
+   }
+
+   it("refuses it on create, before the connection is stored", async () => {
+      const { controller, service } = controllerWithService();
+      const refused = controller.addConnection(
+         "env",
+         "lake",
+         duckdbWith(hostile) as never,
+      );
+      await expect(refused).rejects.toBeInstanceOf(BadRequestError);
+      await expect(refused).rejects.toThrow("attachedDatabases[0].name");
+      expect(service.addConnection.called).toBe(false);
+   });
+
+   it("refuses it on update, with or without a type in the patch", async () => {
+      const { controller, service } = controllerWithService();
+      const patch = duckdbWith(hostile);
+      const { type: _type, ...untyped } = patch;
+      for (const body of [patch, untyped]) {
+         await expect(
+            controller.updateConnection("env", "lake", body as never),
+         ).rejects.toBeInstanceOf(BadRequestError);
+      }
+      expect(service.updateConnection.called).toBe(false);
+   });
+
+   it("refuses it on test, before any ATTACH is tried", async () => {
+      const controller = new ConnectionController(fakeOf<ConnectionAdmin>({}));
+      for (const config of [
+         duckdbWith(hostile),
+         { config: duckdbWith(hostile) },
+      ]) {
+         await expect(
+            controller.testConnectionConfiguration(config as never),
+         ).rejects.toBeInstanceOf(BadRequestError);
+      }
+   });
+
+   it("stores a valid name as before", async () => {
+      const { controller, service } = controllerWithService();
+      await controller.addConnection(
+         "env",
+         "lake",
+         duckdbWith("warehouse_pg") as never,
+      );
+      await controller.updateConnection(
+         "env",
+         "lake",
+         duckdbWith("warehouse_pg") as never,
+      );
+      expect(service.addConnection.calledOnce).toBe(true);
+      expect(service.updateConnection.calledOnce).toBe(true);
+   });
+});
+
 describe("ConnectionController.testConnectionConfiguration name validation", () => {
    afterEach(() => sinon.restore());
 

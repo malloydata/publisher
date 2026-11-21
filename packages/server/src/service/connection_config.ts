@@ -217,6 +217,43 @@ export function normalizeSnowflakePrivateKey(privateKey: string): string {
    return privateKeyContent;
 }
 
+/**
+ * The pattern `AttachedDatabase.name` documents (api-doc.yaml): a letter or
+ * underscore, then letters, digits and underscores. The name becomes a DuckDB
+ * catalog alias and part of a secret's name, so it is held to it wherever a
+ * connection's config is accepted.
+ */
+export const ATTACHED_DATABASE_NAME_PATTERN = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
+
+/**
+ * Throws unless every `attachedDatabases[].name` on `connection` that is set
+ * matches {@link ATTACHED_DATABASE_NAME_PATTERN}. An absent name is left to
+ * the attach that reads it. The message names the entry by position, not by
+ * the rejected text.
+ */
+export function validateAttachedDatabaseNames(
+   connection: Partial<ApiConnection>,
+): void {
+   const attached = connection.duckdbConnection?.attachedDatabases;
+   if (!Array.isArray(attached)) return;
+   attached.forEach((attachedDb, index) => {
+      const name = (attachedDb as { name?: unknown } | null)?.name;
+      if (name === undefined || name === null) return;
+      if (
+         typeof name === "string" &&
+         ATTACHED_DATABASE_NAME_PATTERN.test(name)
+      ) {
+         return;
+      }
+      throw new Error(
+         `attachedDatabases[${index}].name on connection "${connection.name}" ` +
+            `is invalid: an attached database name must match ` +
+            `${ATTACHED_DATABASE_NAME_PATTERN.source} (a letter or underscore, ` +
+            `then letters, digits or underscores).`,
+      );
+   });
+}
+
 // Narrows the environment-author API surface: rejects securityPolicy,
 // allowedDirectories, etc., and admits setupSQL only behind
 // PUBLISHER_ALLOW_DUCKDB_SETUP_SQL. It is NOT a filesystem isolation boundary:
@@ -224,6 +261,8 @@ export function normalizeSnowflakePrivateKey(privateKey: string): string {
 // DuckDB's local-file access is unchanged. Adversarial filesystem isolation
 // (path-traversal checks, an allowlist) is not provided.
 export function validateDuckdbApiSurface(connection: ApiConnection): void {
+   // Before the type test: a PATCH may send attachedDatabases without a type.
+   validateAttachedDatabaseNames(connection);
    if (connection.type !== "duckdb" || !connection.duckdbConnection) return;
 
    const unsupportedFields = Object.keys(connection.duckdbConnection).filter(

@@ -22,6 +22,7 @@ import { components } from "../api";
 import {
    attachDuckLakeReadOnlyIfPresent,
    attachDuckLakeReadWrite,
+   bigQueryAttachSQL,
    buildCloudStorageSecretSQL,
    storageSecretScope,
    buildEnvironmentMalloyConfig,
@@ -33,7 +34,9 @@ import {
    testConnectionConfig,
    isExpiredCredentialError,
    redactTestFailure,
+   snowflakeAttachSQL,
 } from "./connection";
+import { countStatements } from "./single_select";
 import {
    DEFAULT_S3_CREDENTIAL_CHAIN,
    resolveCloudStorageCredentials,
@@ -3081,11 +3084,11 @@ describe("connection integration tests", () => {
          );
 
          // The DSN-leak fix itself, pinned without depending on any extension:
-         // `attachedDatabases[].name` has a `pattern` in api-doc.yaml but there
-         // is no request validator, so a hyphen reaches the ATTACH. Unquoted it
-         // fails to parse after the DSN literal, which is what truncates the
-         // redactor's anchor away.
-         it("quotes a hyphenated attached-database alias in the ATTACH", async () => {
+         // an attached-database alias unquoted after the DSN literal fails to
+         // parse, which is what truncates the redactor's anchor away. A name
+         // off `attachedDatabases[].name`'s pattern (a hyphen) is now refused
+         // before any ATTACH, and a valid one is still quoted.
+         it("refuses a hyphenated attached-database alias, and quotes a valid one, in the ATTACH", async () => {
             const sql: string[] = [];
             sinon
                .stub(DuckDBConnection.prototype, "runSQL")
@@ -3094,27 +3097,35 @@ describe("connection integration tests", () => {
                   return { rows: [], totalRows: 0, runStats: {} } as never;
                });
 
-            await testConnectionConfig({
-               name: "probe_duckdb",
-               type: "duckdb",
-               duckdbConnection: {
-                  attachedDatabases: [
-                     {
-                        name: "evil-db",
-                        type: "postgres",
-                        postgresConnection: {
-                           connectionString: `postgres://alice:${leakedPassword}@127.0.0.1:1/db`,
+            const withAlias = (name: string) =>
+               testConnectionConfig({
+                  name: "probe_duckdb",
+                  type: "duckdb",
+                  duckdbConnection: {
+                     attachedDatabases: [
+                        {
+                           name,
+                           type: "postgres",
+                           postgresConnection: {
+                              connectionString: `postgres://alice:${leakedPassword}@127.0.0.1:1/db`,
+                           },
                         },
-                     },
-                  ],
-               },
-            });
+                     ],
+                  },
+               });
+            const isPostgresAttach = (q: string) =>
+               q.startsWith("ATTACH") && q.includes("TYPE postgres");
 
-            const attach = sql.find(
-               (q) => q.startsWith("ATTACH") && q.includes("TYPE postgres"),
-            );
+            const refused = await withAlias("evil-db");
+            expect(refused.status).toBe("failed");
+            expect(refused.errorMessage).toContain("attachedDatabases[0].name");
+            expect(refused.errorMessage).not.toContain(leakedPassword);
+            expect(sql.some(isPostgresAttach)).toBe(false);
+
+            await withAlias("Evil_db");
+            const attach = sql.find(isPostgresAttach);
             expect(attach).toBeDefined();
-            expect(attach).toContain('AS "evil-db"');
+            expect(attach).toContain('AS "Evil_db"');
             expect(attach).not.toContain(leakedPassword);
          });
 
@@ -4829,5 +4840,90 @@ describe("storageSecretScope", () => {
             managed: false,
          }),
       ).toBe("/srv/lake/");
+   });
+});
+
+describe("attached database ATTACH and SECRET SQL quotes the name", () => {
+   // Built as if validation had been bypassed: each statement must still read
+   // as exactly one statement to DuckDB's parser, with the name inside a quoted
+   // identifier or an escaped string literal.
+   const hostileNames = [
+      'evil"; SELECT 1 --',
+      "evil'; SELECT 1 --",
+      "evil AS x; DROP TABLE t; --",
+      "evil\nSELECT 1",
+   ];
+
+   it("keeps a valid name's BigQuery ATTACH as it was, but quoted", () => {
+      expect(bigQueryAttachSQL("sales_bq", "my-project")).toBe(
+         `ATTACH 'project=my-project' AS "sales_bq" (TYPE bigquery, READ_ONLY);`,
+      );
+   });
+
+   it("keeps a valid name's Snowflake statements as they were, but quoted", () => {
+      const statements = snowflakeAttachSQL("sales_sf", [
+         "      TYPE snowflake",
+      ]);
+      expect(statements.createSecret).toBe(
+         `CREATE OR REPLACE SECRET "sales_sf_secret" (\n      TYPE snowflake\n   );`,
+      );
+      expect(statements.test).toBe(
+         `SELECT * FROM snowflake_query('SELECT 1', 'sales_sf_secret');`,
+      );
+      expect(statements.attach).toBe(
+         `ATTACH 'sales_sf' AS "sales_sf" (TYPE snowflake, SECRET "sales_sf_secret", READ_ONLY);`,
+      );
+   });
+
+   for (const name of hostileNames) {
+      it(`quotes and escapes a hostile name (${JSON.stringify(name)})`, async () => {
+         const bigquery = bigQueryAttachSQL(name, "p'roj");
+         expect(bigquery).toContain(`AS "${name.replace(/"/g, '""')}"`);
+         expect(bigquery).toContain(`'project=p''roj'`);
+         expect(await countStatements(bigquery)).toBe(1);
+
+         const snowflake = snowflakeAttachSQL(name, ["      TYPE snowflake"]);
+         const quotedSecret = `"${`${name}_secret`.replace(/"/g, '""')}"`;
+         expect(snowflake.createSecret).toContain(
+            `CREATE OR REPLACE SECRET ${quotedSecret} (`,
+         );
+         expect(snowflake.test).toContain(
+            `'${`${name}_secret`.replace(/'/g, "''")}'`,
+         );
+         expect(snowflake.attach).toContain(
+            `ATTACH '${name.replace(/'/g, "''")}' AS "${name.replace(/"/g, '""')}"`,
+         );
+         expect(snowflake.attach).toContain(`SECRET ${quotedSecret},`);
+         for (const sql of [
+            snowflake.createSecret,
+            snowflake.test,
+            snowflake.attach,
+         ]) {
+            expect(await countStatements(sql)).toBe(1);
+         }
+      });
+   }
+
+   it("leaves a valid name's catalog reachable by its unquoted name", async () => {
+      // A model reads an attached catalog as `name.schema.table`, unquoted:
+      // quoting the alias at ATTACH must not change the name it answers to.
+      const connection = new DuckDBConnection({
+         name: "attach_quote_probe",
+         databasePath: ":memory:",
+      });
+      try {
+         const alias = bigQueryAttachSQL("Sales_Db", "x").match(
+            / AS ("[^"]+") /,
+         )?.[1];
+         expect(alias).toBe(`"Sales_Db"`);
+         await connection.runSQL(`ATTACH ':memory:' AS ${alias}`);
+         await connection.runSQL(
+            "CREATE TABLE Sales_Db.main.t AS SELECT 1 AS a",
+         );
+         const result = await connection.runSQL("SELECT a FROM sales_db.t");
+         expect(result.rows).toEqual([{ a: 1 }]);
+      } finally {
+         await connection.close();
+      }
    });
 });

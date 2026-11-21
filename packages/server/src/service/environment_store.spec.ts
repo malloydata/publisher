@@ -2434,6 +2434,38 @@ describe("EnvironmentStore path-injection guards", () => {
       );
    });
 
+   describe("attachedDatabases[].name", () => {
+      const environment = {
+         name: "ok-env",
+         connections: [
+            {
+               name: "lake",
+               type: "duckdb",
+               duckdbConnection: {
+                  attachedDatabases: [
+                     { name: 'evil"; SELECT 1 --', type: "postgres" },
+                  ],
+               },
+            },
+         ],
+      };
+
+      it("is a 400 when an environment is created", async () => {
+         const refused = environmentStore.addEnvironment(
+            environment as never,
+            true,
+         );
+         await expect(refused).rejects.toBeInstanceOf(BadRequestError);
+         await expect(refused).rejects.toThrow("attachedDatabases[0].name");
+      });
+
+      it("is a 400 when an environment is updated", async () => {
+         await expect(
+            environmentStore.updateEnvironment(environment as never),
+         ).rejects.toBeInstanceOf(BadRequestError);
+      });
+   });
+
    describe("updateEnvironment", () => {
       it.each(TRAVERSAL_NAMES)(
          "rejects %s as environment.name (%p)",

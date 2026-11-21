@@ -13,6 +13,8 @@ import { logger } from "../logger";
 import {
    assembleEnvironmentConnections,
    normalizeSnowflakePrivateKey,
+   validateAttachedDatabaseNames,
+   validateDuckdbApiSurface,
    validateStorageDestinations,
 } from "./connection_config";
 import { installSettings } from "../test_helpers/settings_env";
@@ -1717,5 +1719,70 @@ describe("assembleEnvironmentConnections — duckdb setupSQL", () => {
       expect(() => assembleEnvironmentConnections([conn], "/tmp/env")).toThrow(
          /must provide either attachedDatabases or non-empty setupSQL/i,
       );
+   });
+});
+
+describe("attachedDatabases[].name is held to its documented pattern", () => {
+   const withAttached = (name: unknown): ApiConnection =>
+      ({
+         name: "lake",
+         type: "duckdb",
+         duckdbConnection: {
+            attachedDatabases: [
+               { name: "first_ok", type: "s3" },
+               { name, type: "bigquery" },
+            ],
+         },
+      }) as ApiConnection;
+
+   it.each([
+      'evil"; SELECT 1 --',
+      "evil'",
+      "has space",
+      "1starts_with_digit",
+      "dash-ed",
+      "",
+      "semi;colon",
+   ])("refuses %p, naming the entry by position, not by its text", (name) => {
+      const refuse = () => validateAttachedDatabaseNames(withAttached(name));
+      expect(refuse).toThrow(
+         /attachedDatabases\[1\]\.name on connection "lake" is invalid/,
+      );
+      expect(refuse).toThrow("^[a-zA-Z_][a-zA-Z0-9_]*$");
+      // The rejected text is not echoed back.
+      if (name.length > 3) expect(refuse).not.toThrow(name);
+   });
+
+   it("refuses a name that is not a string", () => {
+      expect(() => validateAttachedDatabaseNames(withAttached(42))).toThrow(
+         /is invalid/,
+      );
+   });
+
+   it.each(["sales", "_sales", "Sales_DB_1", "a"])("accepts %p", (name) => {
+      expect(() =>
+         validateAttachedDatabaseNames(withAttached(name)),
+      ).not.toThrow();
+   });
+
+   it("leaves an absent name to the attach that reads it", () => {
+      expect(() =>
+         validateAttachedDatabaseNames(withAttached(undefined)),
+      ).not.toThrow();
+   });
+
+   it("is part of the DuckDB surface check, even with no type (a PATCH)", () => {
+      const patch = withAttached("bad name");
+      delete (patch as { type?: string }).type;
+      expect(() => validateDuckdbApiSurface(patch)).toThrow(/is invalid/);
+   });
+
+   it("refuses the name at config load, before any connection is built", () => {
+      expect(() =>
+         assembleEnvironmentConnections(
+            [withAttached('evil"; SELECT 1 --')],
+            "/tmp/env",
+         ),
+      ).toThrow(/attachedDatabases\[1\]\.name/);
    });
 });

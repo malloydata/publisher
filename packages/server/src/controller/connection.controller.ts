@@ -43,7 +43,10 @@ import {
    toPublicConnection,
    toPublicConnections,
 } from "../service/connection_public_view";
-import { validateDuckdbApiSurface } from "../service/connection_config";
+import {
+   validateAttachedDatabaseNames,
+   validateDuckdbApiSurface,
+} from "../service/connection_config";
 import { assertSingleSelect } from "../service/single_select";
 import {
    meterStatement,
@@ -1309,6 +1312,14 @@ export class ConnectionController {
          connectionConfig.name
       ) {
          assertSafePackageName(connectionConfig.name);
+      }
+
+      // An attached database's name becomes a DuckDB alias: one off the
+      // documented pattern is a 400, before any ATTACH is tried.
+      try {
+         validateAttachedDatabaseNames(connectionConfig);
+      } catch (error) {
+         throw new BadRequestError((error as Error).message);
       }
 
       try {
