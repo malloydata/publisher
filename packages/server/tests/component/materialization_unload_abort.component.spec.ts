@@ -10,11 +10,10 @@
  *
  * Then, over a warehouse that outlives the package (an environment DuckDB
  * connection on a file, where the package sandbox is in memory), what the
- * retire leaves: republishing the package answers live, equal to live, and
- * reads no table the cancelled run left behind. The campaign's other half of
- * F-42, that the retire leaves no table at all, does not hold: the table the
- * run built before the retire stays in the warehouse with no package to
- * reclaim it (held as an `it.todo` below).
+ * retire leaves: no table the cancelled run wrote, the one whose write
+ * landed after the abort included, and every table a committed run of the
+ * package names. Republishing the package answers equal to live, reading no
+ * table the cancelled run left behind.
  */
 
 import {
@@ -31,7 +30,11 @@ import { logger } from "../../src/logger";
 import { unrecordedAudit } from "../../src/service/access_record";
 import { parsePackageName } from "../../src/service/identity";
 import { Environment } from "../../src/service/environment";
-import { MaterializationService } from "../../src/service/materialization/run/materialization_service";
+import { BuildCancelledError } from "../../src/service/materialization/domain/build_cancelled";
+import {
+   MaterializationService,
+   type RunCollaboratorOverrides,
+} from "../../src/service/materialization/run/materialization_service";
 import type { ResourceRepository } from "../../src/storage/DatabaseInterface";
 import { DuckDBConnection } from "../../src/storage/duckdb/DuckDBConnection";
 import { __setPackageLoadPoolForTests } from "../../src/package_load/package_load_pool";
@@ -82,6 +85,7 @@ async function retireMidBuild(
    env: Environment,
    service: MaterializationService,
    retire: Retire,
+   options: { forceRefresh?: boolean } = {},
 ): Promise<{ runId: string; builtAfterRetire: string[] }> {
    let created: { id: string } | undefined;
    let retired: Promise<void> | undefined;
@@ -108,7 +112,7 @@ async function retireMidBuild(
       return (info as (...a: unknown[]) => unknown)(...args);
    }) as never);
    try {
-      created = await service.createMaterialization(ENV, PKG, {});
+      created = await service.createMaterialization(ENV, PKG, options);
       const deadline = Date.now() + 150_000;
       while (!retired) {
          if (Date.now() > deadline) throw new Error("afast never built");
@@ -279,20 +283,129 @@ describe("F-42: what retiring a package mid-build leaves in its warehouse", () =
          Object.fromEntries(Object.entries(r).map(([k, v]) => [k, String(v)])),
       );
 
-   for (const retire of ["deletePackage", "unloadPackage"] as const) {
-      // F-42, still open: the table `afast` was built into before the retire
-      // stays in the warehouse with no package behind it, and nothing in
-      // Publisher reclaims it. Leaving none needs a product change.
-      it.todo(
-         `${retire} leaves no table of the package in its warehouse`,
-         async () => {
-            const { runId } = await retireMidBuild(env, service, retire);
-            expect((await repo.getMaterializationById(runId))?.status).toBe(
-               "CANCELLED",
-            );
-            expect(await packageTables()).toEqual([]);
-         },
+   /** A service over `env` with `collaborators`, wired to its retire. */
+   function rewire(collaborators: RunCollaboratorOverrides): void {
+      service = serviceOverEnvironment(
+         () => repo,
+         () => env,
+         collaborators,
       );
+      env.setPackageRetiringHook((packageName) =>
+         service.abortPackageRuns(ENV, packageName),
+      );
+   }
+
+   /** Run the package's `sourceNames` and wait until the run settles. */
+   async function commitRun(sourceNames: string[]): Promise<void> {
+      const created = await service.createMaterialization(ENV, PKG, {
+         sourceNames,
+      });
+      const running = (
+         service as unknown as {
+            runningAbortControllers: Map<string, unknown>;
+         }
+      ).runningAbortControllers;
+      const deadline = Date.now() + 120_000;
+      while (running.has(created.id)) {
+         if (Date.now() > deadline) throw new Error("run never settled");
+         await new Promise((r) => setTimeout(r, 20));
+      }
+      expect((await repo.getMaterializationById(created.id))?.status).toBe(
+         "MANIFEST_FILE_READY",
+      );
+   }
+
+   for (const retire of ["deletePackage", "unloadPackage"] as const) {
+      // F-42: the table `afast` was built into before the retire is dropped
+      // before the retire returns, so no table outlives the package.
+      it(`${retire} leaves no table of the package in its warehouse`, async () => {
+         const { runId } = await retireMidBuild(env, service, retire);
+         expect((await repo.getMaterializationById(runId))?.status).toBe(
+            "CANCELLED",
+         );
+         expect(await packageTables()).toEqual([]);
+      });
+
+      // The race: a build whose write lands after the abort (a driver that
+      // ignores the signal, or a write that commits before its interrupt
+      // reaches it) and then answers cancelled. Its table is in no record of
+      // the run, and is dropped all the same.
+      it(`${retire} drops the table of the build in flight when its write lands after the abort`, async () => {
+         let retired: Promise<void> | undefined;
+         rewire((real) => ({
+            buildOneSource: async (options) => {
+               if (options.persistSource.name !== "afast" || retired) {
+                  return real.buildOneSource(options);
+               }
+               retired = env[retire](PKG);
+               const ignoringAbort = { ...options };
+               delete ignoringAbort.signal;
+               await real.buildOneSource(ignoringAbort);
+               throw new BuildCancelledError();
+            },
+         }));
+         const created = await service.createMaterialization(ENV, PKG, {});
+         const deadline = Date.now() + 150_000;
+         while (!retired) {
+            if (Date.now() > deadline) throw new Error("afast never started");
+            await new Promise((r) => setTimeout(r, 20));
+         }
+         await retired;
+         expect((await repo.getMaterializationById(created.id))?.status).toBe(
+            "CANCELLED",
+         );
+         expect(await packageTables()).toEqual([]);
+      });
+
+      // A run the retire reaches only after it committed, and whose next
+      // step then fails: its own record names its tables, and serves them.
+      it(`${retire} keeps the tables of a run that committed before the abort reached it`, async () => {
+         let retired: Promise<void> | undefined;
+         rewire((real) => ({
+            commitManifest: async (...args) => {
+               const served = await real.commitManifest(...args);
+               retired = env[retire](PKG);
+               void served;
+               throw new Error("injected: a step after the commit failed");
+            },
+         }));
+         const created = await service.createMaterialization(ENV, PKG, {
+            sourceNames: ["afast"],
+         });
+         const deadline = Date.now() + 120_000;
+         while (!retired) {
+            if (Date.now() > deadline) throw new Error("never committed");
+            await new Promise((r) => setTimeout(r, 20));
+         }
+         await retired;
+         expect((await repo.getMaterializationById(created.id))?.status).toBe(
+            "MANIFEST_FILE_READY",
+         );
+         expect(await packageTables()).toHaveLength(1);
+      });
+
+      // A table a committed run names is that run's: the retire keeps it,
+      // as deleting a package keeps every committed run's tables. After an
+      // unload, the package answers equal to live (live, as it does after
+      // any cancelled rebuild of a table it served).
+      it(`${retire} keeps the table a committed run names, though the cancelled run rebuilt it`, async () => {
+         await commitRun(["afast"]);
+         const before = await packageTables();
+         expect(before).toHaveLength(1);
+         const { runId } = await retireMidBuild(env, service, retire, {
+            forceRefresh: true,
+         });
+         expect((await repo.getMaterializationById(runId))?.status).toBe(
+            "CANCELLED",
+         );
+         expect(await packageTables()).toEqual(before);
+         if (retire === "deletePackage") return;
+         await env.addPackage(PKG);
+         const body = "{ group_by: k; order_by: k }";
+         const live = await ask(`run: afast__live -> ${body}`);
+         const served = await ask(`run: afast -> ${body}`);
+         expect(exact(served.rows)).toEqual(exact(live.rows));
+      });
 
       it(`after ${retire}, the republished package answers live, equal to live, reading no table the run left`, async () => {
          const { runId } = await retireMidBuild(env, service, retire);

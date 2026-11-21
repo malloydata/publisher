@@ -57,6 +57,7 @@ import { Environment } from "../../src/service/environment";
 import { parsePackageName } from "../../src/service/identity";
 import * as dialects from "../../src/service/materialization/domain/dialect";
 import { backupSuffix } from "../../src/service/materialization/run/build_table_names";
+import { BuildCancelledError } from "../../src/service/materialization/domain/build_cancelled";
 import { listStorageTables } from "../../src/service/materialization/run/storage_admin";
 import { MaterializationService } from "../../src/service/materialization/run/materialization_service";
 import { QueryPrivileges } from "../../src/service/model_query_request";
@@ -2373,6 +2374,249 @@ source: sb_sales is sb_raw extend {
             expect(answer.servedBy.kind, query).toBe("live");
             expect(answer.rows, query).toEqual(LIVE);
          }
+      });
+   },
+);
+
+/**
+ * Retiring a package (deleting or unloading it) while a run builds into a
+ * DuckLake destination: the run is aborted, and before the retire returns it
+ * drops the `storage=` tables it wrote, the one whose write committed after
+ * the abort included, and keeps every table a committed run names.
+ */
+describe.skipIf(process.platform === "win32")(
+   "retiring a package mid-run on a DuckLake storage= destination",
+   () => {
+      const DAILY = selfName("daily");
+      const ORDERS = selfName("orders");
+      const COUNT = /^SELECT count\(\*\) AS n FROM "lake"\./;
+
+      /**
+       * Start a run and retire the package with `retire` once `when` says so
+       * (after a statement ran). Resolves once the retire has, with the
+       * run's id.
+       */
+      async function retireMidRun(
+         lake: LakeFixture,
+         retire: "deletePackage" | "unloadPackage",
+         when: (sql: string) => boolean,
+         options: { forceRefresh?: boolean } = {},
+      ): Promise<string> {
+         lake.env.setPackageRetiringHook((packageName) =>
+            lake.service.abortPackageRuns(ENV, packageName),
+         );
+         let retired: Promise<void> | undefined;
+         lake.afterStatement = (sql) => {
+            if (!retired && when(sql)) retired = lake.env[retire](PKG);
+         };
+         try {
+            const created = await lake.service.createMaterialization(ENV, PKG, {
+               forceRefresh: options.forceRefresh ?? false,
+            });
+            const deadline = Date.now() + 120_000;
+            while (!retired) {
+               if (Date.now() > deadline) throw new Error("never retired");
+               await new Promise((r) => setTimeout(r, 20));
+            }
+            await retired;
+            expect(
+               (await lake.repo.getMaterializationById(created.id))?.status,
+            ).toBe("CANCELLED");
+            return created.id;
+         } finally {
+            lake.afterStatement = undefined;
+         }
+      }
+
+      for (const retire of ["deletePackage", "unloadPackage"] as const) {
+         describe(`${retire}, after the first table was built`, () => {
+            const lake = new LakeFixture(`retire-built-${retire}`, () => ({
+               "m.malloy": TWO_SOURCES,
+            }));
+            beforeAll(() => lake.setUp());
+            afterAll(() => lake.tearDown());
+
+            it("leaves no table of the run in the destination", async () => {
+               await retireMidRun(lake, retire, (sql) => COUNT.test(sql));
+               expect(await lake.catalogTables()).toEqual([]);
+            });
+         });
+
+         describe(`${retire}, when the first table's write commits after the abort`, () => {
+            const lake = new LakeFixture(`retire-race-${retire}`, () => ({
+               "m.malloy": TWO_SOURCES,
+            }));
+            beforeAll(() => lake.setUp());
+            afterAll(() => lake.tearDown());
+
+            it("leaves no table of the run in the destination", async () => {
+               // An interrupt that reaches the CREATE rolls it back, so the
+               // race is a build whose write commits and which then answers
+               // cancelled: it never reports its table built.
+               let retired: Promise<void> | undefined;
+               lake.service = serviceOverEnvironment(
+                  () => lake.repo,
+                  () => lake.env,
+                  (real) => ({
+                     buildOneSource: async (options) => {
+                        if (retired) return real.buildOneSource(options);
+                        retired = lake.env[retire](PKG);
+                        const ignoringAbort = { ...options };
+                        delete ignoringAbort.signal;
+                        await real.buildOneSource(ignoringAbort);
+                        throw new BuildCancelledError();
+                     },
+                  }),
+               );
+               lake.env.setPackageRetiringHook((packageName) =>
+                  lake.service.abortPackageRuns(ENV, packageName),
+               );
+               const created = await lake.service.createMaterialization(
+                  ENV,
+                  PKG,
+                  {},
+               );
+               const deadline = Date.now() + 120_000;
+               while (!retired) {
+                  if (Date.now() > deadline) throw new Error("never retired");
+                  await new Promise((r) => setTimeout(r, 20));
+               }
+               await retired;
+               expect(
+                  (await lake.repo.getMaterializationById(created.id))?.status,
+               ).toBe("CANCELLED");
+               expect(await lake.catalogTables()).toEqual([]);
+            });
+         });
+      }
+
+      describe("unloadPackage, after a committed run", () => {
+         const lake = new LakeFixture("retire-committed", () => ({
+            "m.malloy": TWO_SOURCES,
+         }));
+         beforeAll(() => lake.setUp());
+         afterAll(() => lake.tearDown());
+
+         it("keeps every table the committed run names, and the package answers equal to live", async () => {
+            const live: Record<string, Answer["rows"]> = {};
+            for (const [name, query] of Object.entries(TWO_QUERIES)) {
+               live[name] = (await lake.ask(query)).rows;
+            }
+            expect((await lake.run()).status).toBe("MANIFEST_FILE_READY");
+            await retireMidRun(
+               lake,
+               "unloadPackage",
+               (sql) => COUNT.test(sql),
+               {
+                  forceRefresh: true,
+               },
+            );
+            expect(await lake.catalogTables()).toEqual([DAILY, ORDERS].sort());
+            await lake.env.addPackage(PKG);
+            lake.pkg = await lake.env.getPackage(parsePackageName(PKG), false);
+            await lake.reopenServe();
+            for (const [name, query] of Object.entries(TWO_QUERIES)) {
+               expect((await lake.ask(query)).rows, name).toEqual(live[name]!);
+            }
+         });
+      });
+   },
+);
+
+/**
+ * A stored source that a model reaches only through an import of an import,
+ * by a join the served copy leaves out across connections (Credible's
+ * `crm_current` via `pipeline.malloy`). That model's served copy holds the
+ * source nowhere, so nothing there reads it: it raised `served-copy-not-served`
+ * (`fields_not_carried`), which said the source inherits fields its table does
+ * not carry. It does not, and the model that names it serves it from its
+ * table; the warning is gone, and every answer is the same.
+ */
+describe.skipIf(process.platform === "win32")(
+   "a stored source reached in an importing model only by a join left out across connections",
+   () => {
+      const ROWS = `warehouse.sql("""SELECT * FROM (VALUES ('a', 'east', 'ok', 1.0), ('a', 'east', 'cancelled', 2.0), ('b', 'west', 'ok', 4.0)) AS t(category, region, status, amount)""")`;
+      const lake = new LakeFixture("unreached", () => ({
+         "m.malloy": `import "deals.malloy"\n`,
+         "deals.malloy": `import "crm.malloy"
+source: d_raw is ${ROWS} extend {
+  join_one: cur is crm_current on category = cur.category and region = cur.region
+}
+source: d11_incl is d_raw -> {
+  group_by: category, region, is_deleted is status = 'cancelled', cur_amt is cur.amt
+  aggregate: amt is amount.sum()
+}
+#@ persist storage="lake" name="gtmval_deals11"
+source: deals11 is d11_incl extend { where: not is_deleted }
+#@ persist storage="lake" name="gtmval_d_unrelated"
+source: d_unrelated is ${ROWS} -> { group_by: region; aggregate: n is count() }
+`,
+         "crm.malloy": `##! experimental.persistence
+source: crm_raw is ${ROWS}
+#@ persist storage="lake" name="gtmval_crm_current"
+source: crm_current is crm_raw -> { group_by: category, region; aggregate: amt is amount.sum() }
+`,
+      }));
+      beforeAll(() => lake.setUp());
+      afterAll(() => lake.tearDown());
+
+      const QUERIES: [model: string, query: string, served: boolean][] = [
+         [
+            "m.malloy",
+            "run: deals11 -> { group_by: category, region; aggregate: a is amt.sum() }",
+            true,
+         ],
+         [
+            "m.malloy",
+            "run: d_raw -> { group_by: category; aggregate: a is cur.amt.sum() }",
+            false,
+         ],
+         [
+            "deals.malloy",
+            "run: crm_current -> { group_by: category, region; aggregate: a is amt.sum() }",
+            true,
+         ],
+      ];
+      async function askIn(model: string, query: string) {
+         const result = await lake.pkg
+            .getModel(model)!
+            .runQuery(
+               unrecordedAudit(),
+               { query } as never,
+               QueryPrivileges.of({ includeHiddenFilesAndSources: true }),
+            );
+         return {
+            rows: (result.compactResult as Record<string, unknown>[])
+               .map((r) =>
+                  JSON.stringify(
+                     Object.fromEntries(
+                        Object.entries(r).map(([k, v]) => [k, String(v)]),
+                     ),
+                  ),
+               )
+               .sort(),
+            servedBy: result.path?.servedBy?.kind ?? "live",
+         };
+      }
+
+      it("raises no warning on it there, and every answer equals live", async () => {
+         const live = [];
+         for (const [model, query] of QUERIES) {
+            live.push((await askIn(model, query)).rows);
+         }
+         expect((await lake.run()).status).toBe("MANIFEST_FILE_READY");
+         for (const [i, [model, query, served]] of QUERIES.entries()) {
+            const answer = await askIn(model, query);
+            expect(answer.rows, query).toEqual(live[i]);
+            if (served) expect(answer.servedBy, query).toBe("materialized");
+         }
+         // Read once each model's served copy has compiled.
+         const warned = (lake.pkg.getPackageMetadata().warnings ?? [])
+            .filter((w) => w.code === "served-copy-not-served")
+            .map((w) => [w.model, w.subject, w.reason]);
+         expect(
+            warned.filter(([, subject]) => subject === "crm_current"),
+         ).toEqual([]);
       });
    },
 );

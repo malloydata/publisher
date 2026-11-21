@@ -670,6 +670,28 @@ export function storedColumnsOfOutput(
    return out;
 }
 
+/**
+ * A warehouse column's type (as its catalog names it) in the spelling a
+ * build's schema capture writes ({@link storedColumnsOfOutput}), or undefined
+ * when Malloy reads it as no basic type, which has no spelling. An array is
+ * one, though a dialect maps `DATE[]` to its element's `date`.
+ */
+export function spelledNativeType(
+   nativeType: string,
+   dialect: string,
+): string | undefined {
+   if (isArrayType(nativeType)) return undefined;
+   const [spelled] = storedColumnsOfOutput(
+      [{ name: "c", ...getDialect(dialect).sqlTypeToMalloyType(nativeType) }],
+      { nested: false, bigint: true, timestamptz: true },
+   );
+   return spelled?.type;
+}
+
+function isArrayType(type: string): boolean {
+   return /\[\s*\d*\s*\]\s*$/.test(type) || /^\s*ARRAY\b/i.test(type);
+}
+
 /** One output field's type in DuckDB's spelling, or undefined (see above). */
 function storedTypeOfField(
    field: unknown,

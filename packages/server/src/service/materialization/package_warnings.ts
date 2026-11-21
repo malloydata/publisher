@@ -1005,6 +1005,15 @@ function servedCopyProblemReasonMessage(
                "(drop `storage=`)."
             );
          }
+         if (problem.declarerNotStored) {
+            return (
+               `This source's join${join ? ` \`${join}\`` : ""} reads a source the served copy reads from its ` +
+               "storage destination, which this source's own connection cannot reach. Queries that use the " +
+               "join are answered live; the others are answered as before. To serve them too, store this " +
+               "source in the same destination, or build the joined source in its own database (drop its " +
+               "`storage=`)."
+            );
+         }
          return (
             `This source is stored in a destination its join${join ? ` \`${join}\`` : ""} cannot reach: ` +
             "the joined source reads another connection. Queries that use the join are answered live; " +

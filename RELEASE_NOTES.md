@@ -96,7 +96,42 @@ each repeated at most every 5 minutes per key while queries arrive, and again af
 
 **Who is affected:** deployments whose callers may run raw SQL on a managed database or a DuckDB, DuckLake or MotherDuck connection. A query that contains the separator text, even inside a string or a comment, is now a 400. **What to do:** upgrade. No legitimate query needs the separator text; remove it from any SQL or model that spells it.
 
-## [Unreleased] — a `statement_usage` record carries `bytes_out`, and a notebook cell on a metered connection is recorded
+## [Unreleased] — `select: *` answered live for a column a stored table leaves out names why
+
+**Fixed: `select: *` on a served `#@ persist` source whose table leaves a column out answered live with no reason in its path report (0.17.0 known issue).** A star that expands to a column the stored table cannot carry (a Postgres array, a `jsonb`, a DuckDB `MAP`) must be answered live, or the answer would lack a column live returns; but the served copy's decline named no table, so a database table was not reported at all. The path report now names each such table `NOT_SERVED`, with a `detail` naming the columns the result would lack and why, for `#(materialize)` and `storage=` tables too. A star that expands only to columns the table carries is served, as before.
+
+**Who is affected:** a client that reads the path report. **What to do:** nothing.
+
+## [Unreleased] — a database `#@ persist` table holding a column no stored type spells serves every query that does not read it
+
+**Fixed: a database `#@ persist` source whose table holds a column Malloy types as `json` or `sql native` answered every query live (0.17.0 known issue).** Such a column (a Postgres `jsonb`; a DuckDB `MAP`, `BLOB`, `INTERVAL`, `UUID` or `JSON`) has no stored type the served copy can declare, so the table's columns left it out, and the served copy then left the whole source as written (`served-copy-not-served`, `fields_not_carried`), though nothing the table holds was wrong. The column is now left out per query: a query that reads it answers live, its path report naming the table `MISSING_FIELD` with the column and the type the warehouse holds it as, and every other query is served from the table, equal to live.
+
+**Fixed: a live answer for a database table the served copy leaves as written gave no reason.** The path report considered nothing. It now names the queried source's own table `NOT_SERVED`, with the served copy's reason code, which the package's `served-copy-not-served` warning explains.
+
+**Who is affected:** a package with such a database `#@ persist` source. **What to do:** nothing.
+
+## [Unreleased] — a database `#(materialize)` over a Postgres `timestamptz` column serves from its table
+
+**Fixed: a database `#(materialize)` source on Postgres whose table holds a `timestamptz` column was never served (0.17.0 known issue).** A database build reads its new table's columns back to bind it, and Postgres's schema reader refuses a table name with no schema, which is how a build names its tables. The build captured no columns, and the served copy fell back to the source's compiled columns, which cannot spell a zoned timestamp. Every query on the source, one not reading that column included, answered live with `NOT_SERVED` ("column `ts` (declared `timestamptz`) is not in the stored table"). The bind now reads a zoned timestamp from the warehouse types the build captures beside its columns (`nativeSchema`), spelled as the bind's own column read spells them, when the build captured no columns. The zoned timestamp is declared and served, in any query time zone, equal to live.
+
+**Who is affected:** a package with a database `#(materialize)` source on Postgres over a `timestamptz` column. **What to do:** nothing; a table already built is served once the package loads.
+
+## [Unreleased] — no `fields_not_carried` warning on a stored source a model reaches only through a join it cannot serve
+
+**Fixed: a needless `served-copy-not-served` warning, `reason: fields_not_carried`.** A model that imports a file that imports a stored source, and reaches that source only through a join the served copy leaves out across connections (a source on the warehouse joining a `storage=` table), warned that the stored source "inherits fields … that its stored table does not carry". It inherits none: that model's served copy holds the source nowhere, so nothing there reads it, and the join is already answered live and warned on its own (`cross_connection_join`). The warning is no longer raised for it. No answer changes: the model that names the source still serves it from its table.
+
+## [Unreleased] — deleting or unloading a package drops the tables its aborted build wrote
+
+**Fixed: a table an aborted run built before its package was deleted or unloaded stayed in the warehouse with nothing to reclaim it.** 0.17.0 stops a package's running builds before the package goes; the tables those builds had already written, which no committed run names, were left behind. An auto-run aborted by its package's delete or unload now drops, before it settles (so before the delete answers, within its 30-second wait), every Publisher-named table its builds wrote, in the database and in a `storage=` destination, the build in flight at the abort included, whose write may have committed after the abort. It keeps a table at an author's `name=`, which may have stood before the run; a table any other committed run of the package names, of any version, so a sibling version keeps serving its shared tables; and a table another package has marked since. A run whose record is already gone when it settles (it outlasted the delete's wait) drops nothing. Tables of committed runs are still left in place by a package delete, as before, and a host-instructed run's tables are the host's.
+
+**Who is affected:** anyone who deletes or unloads a package while an auto-run of it is building. **What to do:** nothing. A table at an author's `name=` that such a run wrote is kept and logged ("Keeping the tables at an author's name= that a retired run wrote"); drop it by hand if nothing reads it.
+
+## [Unreleased] — a date truncation Postgres stores as `timestamptz` is no longer reported as drift
+
+**Fixed: a false `database-column-type-mismatch` warning on a Postgres database table holding a date truncation.** Postgres answers `DATE_TRUNC` of a date (a `d.month` dimension, say) with a `timestamptz`, which a database `#@ persist` or `#(materialize)` table stores as built. Where the build reads the table's columns back (a `name=` that names a schema), the bind compared that column with the declared `date`, reported it as altered outside a build, and counted it in `publisher_storage_column_type_mismatch_total`. It is now read as the type the build wrote, as a naive timestamp already was, and not reported. Answers are unchanged: with no query time zone the column is read through its cast to `DATE`, which is exact, since Malloy's Postgres driver builds and reads in UTC; under a query time zone a query reading it still answers live.
+
+**Who is affected:** a package with such a table on Postgres. **What to do:** nothing.
+
 ## [0.17.0] — a `statement_usage` record carries `bytes_out`, and a notebook cell on a metered connection is recorded
 
 **New field on the `statement_usage` record: `bytes_out`.** It follows the fields 0.16.1 added (`statement_id`, `catalog`, `threads`, `worker`). `bytes_out` is the size in UTF-8 bytes of the statement's result as Publisher serialized it for the caller, in the shape asked for: a model query's `result` (full or compact; MCP's `execute_query` asks for compact), a notebook cell's `result`, raw SQL's `data`. The envelope around it (the HTTP response's other fields, an MCP answer's metadata) is not counted. For Publisher's own MCP `execute_query`, it is the compact result the query returned to the tool, before the tool wraps it and trims rows to fit its size budget: the agent can receive fewer bytes than it counts. It is absent on a build, a load or a copy (they return no rows), on a failed statement, and when a row or byte cap refused the result.
@@ -2281,7 +2316,7 @@ In `examples/clinical-records`, the de-identified patient now returns a null `bi
 
 ## [0.12.2] — Settings are read once, from one registry, and bad values fail startup
 
-Every Publisher setting is now read once at startup, through one registry, as step 1 of the configuration design ([docs/configuration-design.md](docs/configuration-design.md)) lays out. The names, the defaults and the precedence are today's, and no value that works changes meaning. These are the changes:
+Every Publisher setting is now read once at startup, through one registry, as step 1 of the configuration design (now Appendix C of [docs/publisher-v1.md](docs/publisher-v1.md#appendix-c-the-configuration-registry-and-mapping)) lays out. The names, the defaults and the precedence are today's, and no value that works changes meaning. These are the changes:
 
 - **A value that does not parse fails startup**, and every bad value of one startup is reported together, one line each, in one format: `mcp.port from MCP_PORT: expected an integer from 0 to 65535, got "40a0"`. A value used to fail only when something read it, sometimes on the first query; it now fails even for a setting this configuration never reads, such as a memory-governor fraction with `PUBLISHER_MAX_MEMORY_BYTES` unset. Some values that used to be accepted are now refused, because each setting has one type:
   - `PUBLISHER_PORT`, `MCP_PORT`, `SHUTDOWN_DRAIN_DURATION_SECONDS` and `SHUTDOWN_GRACEFUL_CLOSE_TIMEOUT_SECONDS` were read with `Number()` and no check, so a typo was `NaN` and a fraction was accepted. They now take whole numbers in decimal digits, so `SHUTDOWN_DRAIN_DURATION_SECONDS=2.5`, `SHUTDOWN_GRACEFUL_CLOSE_TIMEOUT_SECONDS=2.5` and `PUBLISHER_PORT=4000.0` fail. Under Bun, a non-numeric `MCP_PORT` bound an ephemeral port. `0` is still an ephemeral port.

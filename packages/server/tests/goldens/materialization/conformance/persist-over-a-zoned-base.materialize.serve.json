@@ -18,12 +18,12 @@
     "warnings": [
       {
         "code": "served-copy-not-served",
-        "message": "This source is stored in a destination its join `z` cannot reach: the joined source reads another connection. Queries that use the join are answered live; the others read the stored table. To serve them too, inline the join (inline=), materialize the joined source into the same destination, or build this source in its own database (drop `storage=`).",
+        "message": "This source's join `z` reads a source the served copy reads from its storage destination, which this source's own connection cannot reach. Queries that use the join are answered live; the others are answered as before. To serve them too, store this source in the same destination, or build the joined source in its own database (drop its `storage=`).",
         "subject": "reader"
       },
       {
         "code": "served-copy-not-served",
-        "message": "This source is stored in a destination its join `s` cannot reach: the joined source reads another connection. Queries that use the join are answered live; the others read the stored table. To serve them too, inline the join (inline=), materialize the joined source into the same destination, or build this source in its own database (drop `storage=`).",
+        "message": "This source's join `s` reads a source the served copy reads from its storage destination, which this source's own connection cannot reach. Queries that use the join are answered live; the others are answered as before. To serve them too, store this source in the same destination, or build the joined source in its own database (drop its `storage=`).",
         "subject": "reader"
       }
     ]
