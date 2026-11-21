@@ -119,6 +119,15 @@ function recorder(fail: boolean): { conn: Connection; sql: string[] } {
    return { conn, sql };
 }
 
+/**
+ * The runtime's socket error text differs by platform (Linux prefixes an
+ * `ECONNREFUSED: ` code that macOS leaves out), so the golden records it
+ * without the code.
+ */
+function stableMessage(message: string): string {
+   return message.replace(/\bE[A-Z]+: (?=Unable to connect)/g, "");
+}
+
 async function listing(
    run: (conn: Connection) => Promise<unknown>,
    fail: boolean,
@@ -128,7 +137,9 @@ async function listing(
       return { value: await run(r.conn), sql: r.sql };
    } catch (error) {
       return {
-         error: error instanceof Error ? error.message : String(error),
+         error: stableMessage(
+            error instanceof Error ? error.message : String(error),
+         ),
          name: error instanceof Error ? error.constructor.name : typeof error,
          sql: r.sql,
       };
