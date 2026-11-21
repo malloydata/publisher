@@ -115,6 +115,8 @@ export interface LegAnswer {
    readonly graftScope: GraftScope | undefined;
    /** For a rollup answer: the rollup that answered. */
    readonly rollupMember?: string;
+   /** For a rollup answer: the `sourceID` of the source that declares it. */
+   readonly rollupBaseSourceID?: string;
    /**
     * A database table the answer reads that Malloy files under a key not its
     * address (sources of one build placed in two tables): the run's manifest
@@ -308,6 +310,7 @@ function rollupLeg(rollups: RollupVariantServe): Leg {
             virtualMap: answer.virtualMap,
             graftScope: answer.graftScope,
             rollupMember: answer.rollupSourceName,
+            rollupBaseSourceID: answer.rollupBaseSourceID,
             ...(answer.keyedTable ? { keyedTable: answer.keyedTable } : {}),
          };
       },

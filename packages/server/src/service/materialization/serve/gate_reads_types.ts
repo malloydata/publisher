@@ -103,6 +103,14 @@ export interface GateReads {
     * every column in a group holds the same, and fails otherwise.
     */
    readonly sameCollation?: readonly (readonly (readonly string[])[])[];
+   /**
+    * Of {@link entryPaths}, those whose every read is of a source known to be
+    * read live (a live join beside a stored table), which no stored table's
+    * collation changes: the stored-side check passes over them. Set only for
+    * a query's result reads (`result_reads.ts`), never for a gate's, whose
+    * columns must each be held. Absent: none.
+    */
+   readonly livePaths?: readonly (readonly string[])[];
 }
 
 /** A table an answer read, as the stored-side probe reads it. */
@@ -123,6 +131,8 @@ export interface CollationProbe {
       authorRunnable: QueryMaterializer;
       reads: GateReads | undefined;
       givens?: Record<string, unknown>;
+      /** The bind the query was pinned to: a probe may keep reads per bind. */
+      bind?: object;
    }): Promise<string | undefined>;
    storedRefusal(args: {
       tables: readonly ProbedTable[];
@@ -131,5 +141,14 @@ export interface CollationProbe {
       authorRunnable: QueryMaterializer;
       reads: GateReads | undefined;
       givens?: Record<string, unknown>;
+      /**
+       * The stored side's warehouse reads for one answer, by what they read:
+       * every comparison asked of that answer shares them.
+       */
+      storedReads?: Map<string, Promise<unknown>>;
+      /** The bind the query was pinned to: a probe may keep reads per bind. */
+      bind?: object;
+      /** A database table its catalog does not list is passed over (a result's). */
+      unlistedPasses?: boolean;
    }): Promise<string | undefined>;
 }

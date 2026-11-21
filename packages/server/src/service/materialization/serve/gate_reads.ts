@@ -338,6 +338,11 @@ class GateReadWalk {
    scoped = false;
    equalityOnly = true;
    comparesNoString = true;
+   /**
+    * Every string comparison read so far compares a plain column against
+    * values that take no collation of their own (`GateReads.comparesOnlyColumns`).
+    */
+   comparesOnlyColumns = true;
    readonly entryPaths: string[][] = [];
    entryPathsComplete = true;
    private steps = 0;
@@ -351,6 +356,128 @@ class GateReadWalk {
        */
       private readonly rerooted: ReadonlySet<string> = new Set(),
    ) {}
+
+   /** A string comparison not known to compare only columns. */
+   private noColumnsOnly(): void {
+      this.comparesNoString = false;
+      this.comparesOnlyColumns = false;
+   }
+
+   /**
+    * Whether every comparison in `e` (a query's own filter term on
+    * `owner`'s fields) compares under a column's collation, as Postgres
+    * derives it: a plain string column (no expression, not a stage output)
+    * against string literals or givens, whose collation the column's
+    * outranks, or values that are not strings at all, under `and`, `or`,
+    * `not`. Two columns, a function, a computed field or any other node
+    * reads false, and the comparison is judged under the default too.
+    */
+   private onlyColumnComparisons(
+      e: unknown,
+      owner: unknown,
+      depth = 0,
+   ): boolean {
+      if (depth > 64 || e === null || typeof e !== "object") return false;
+      const n = e as {
+         node?: unknown;
+         e?: unknown;
+         kids?: {
+            left?: unknown;
+            right?: unknown;
+            e?: unknown;
+            oneOf?: unknown;
+         };
+      };
+      const rec = (x: unknown) =>
+         this.onlyColumnComparisons(x, owner, depth + 1);
+      const coercible = (x: unknown) => {
+         const k = (x as { node?: unknown } | null)?.node;
+         return k === "stringLiteral" || k === "given" || k === "null";
+      };
+      const notString = (x: unknown) => {
+         const k = (x as { node?: unknown; path?: unknown } | null)?.node;
+         if (k === "field") {
+            const t = typeAt(
+               owner,
+               asArray((x as { path?: unknown }).path) as string[],
+            );
+            return nonStringType(t);
+         }
+         return (
+            k === "numberLiteral" ||
+            k === "true" ||
+            k === "false" ||
+            k === "null" ||
+            k === "dateLiteral" ||
+            k === "timestampLiteral"
+         );
+      };
+      const column = (x: unknown) => this.plainStringColumn(x, owner);
+      switch (n.node) {
+         case "and":
+         case "or":
+            return rec(n.kids?.left) && rec(n.kids?.right);
+         case "not":
+         case "()":
+            return rec(n.e);
+         case "is-null":
+         case "is-not-null":
+            return true;
+         case "=":
+         case "!=":
+         case ">":
+         case "<":
+         case ">=":
+         case "<=":
+         case "like":
+         case "!like": {
+            const { left, right } = n.kids ?? {};
+            if (notString(left) && notString(right)) return true;
+            return (
+               (column(left) && coercible(right)) ||
+               (coercible(left) && column(right))
+            );
+         }
+         case "in": {
+            const oneOf = n.kids?.oneOf;
+            return (
+               column(n.kids?.e) &&
+               Array.isArray(oneOf) &&
+               oneOf.every(coercible)
+            );
+         }
+         default:
+            return false;
+      }
+   }
+
+   /** Whether `x` reads a stored string column as it is, on `owner`. */
+   private plainStringColumn(x: unknown, owner: unknown): boolean {
+      const f = x as { node?: unknown; path?: unknown } | null;
+      if (
+         f?.node !== "field" ||
+         !Array.isArray(f.path) ||
+         f.path.length === 0
+      ) {
+         return false;
+      }
+      let at: unknown = owner;
+      let field: FieldLike | undefined;
+      for (const name of f.path as string[]) {
+         // A query-shaped source's field is a stage output, computed.
+         if ((at as { query?: unknown } | undefined)?.query !== undefined) {
+            return false;
+         }
+         field = fieldsOf(at).get(name);
+         if (field === undefined) return false;
+         at = field;
+      }
+      return (
+         field?.type === "string" &&
+         field.e === undefined &&
+         field.join === undefined
+      );
+   }
 
    /** A given's declared type, by its id in the model, or undefined. */
    givenType(id: unknown): string | undefined {
@@ -606,7 +733,7 @@ class GateReadWalk {
          if (!this.equalityOrNotString(f.e, source)) this.equalityOnly = false;
          // A computed field's own comparison is the gate's too: a boolean
          // over a string (`late is region > 'M'`) orders that string.
-         if (!this.leavesNotString(f.e, source)) this.comparesNoString = false;
+         if (!this.leavesNotString(f.e, source)) this.noColumnsOnly();
          const reads = fieldPathsIn(f.e);
          // An expression that names no field it reads (a composite's field,
          // resolved per member at compile) has no path a probe could read:
@@ -691,7 +818,7 @@ class GateReadWalk {
             // partitioned by (`row_number()` over `order_by: value`), so it
             // compares them as an ordering does.
             this.equalityOnly = false;
-            this.comparesNoString = false;
+            this.noColumnsOnly();
             const read = this.windowReads(qf, own, byName);
             if (read === undefined) this.unresolved = true;
             else for (const p of read) next.push({ path: p, chain });
@@ -700,7 +827,7 @@ class GateReadWalk {
             // A stage's expression reads the stage's input, not typed here,
             // and has no path from the entry point.
             if (!this.leavesNotString(qf.e, undefined)) {
-               this.comparesNoString = false;
+               this.noColumnsOnly();
             }
             this.entryPathsComplete = false;
             const read = fieldPathsIn(qf.e);
@@ -871,7 +998,7 @@ class GateReadWalk {
          this.scoped = true;
          const e = (f as { e?: unknown }).e;
          if (!this.equalityOrNotString(e, source)) this.equalityOnly = false;
-         if (!this.leavesNotString(e, source)) this.comparesNoString = false;
+         if (!this.leavesNotString(e, source)) this.noColumnsOnly();
          for (const p of fieldPathsIn(e)) {
             if (depth === 0) this.entryPaths.push(p);
             else this.entryPathsComplete = false;
@@ -951,7 +1078,7 @@ class GateReadWalk {
             }
             this.entryPathsComplete = false;
             // A stage's term reads the stage's fields, not typed here.
-            this.comparesNoString = false;
+            this.noColumnsOnly();
             for (const p of fieldPathsIn((f as { e?: unknown }).e)) {
                if (i === 0) atBase(p);
                else if (p.length === 1) {
@@ -1158,6 +1285,8 @@ class GateReadWalk {
       if (this.comparesNoStringThroughScalars(e, owner)) return;
       this.scoped = true;
       this.comparesNoString = false;
+      if (!this.onlyColumnComparisons(e, owner))
+         this.comparesOnlyColumns = false;
       if (!this.equalityOrNotString(e, owner)) this.equalityOnly = false;
       for (const p of paths) {
          // A measure whose value compares no string has its filters followed
@@ -1419,7 +1548,7 @@ class GateReadWalk {
       const prior = ctx.pipeline.slice(ctx.fromStage, i);
       if (this.stageOutputsCompareNoString(e, prior, ctx.base)) return;
       this.scoped = true;
-      this.comparesNoString = false;
+      this.noColumnsOnly();
       if (!this.equalityOrNotString(e, input)) this.equalityOnly = false;
       const query = { query: { structRef: ctx.entry, pipeline: ctx.pipeline } };
       for (const p of fieldPathsIn(e)) {
@@ -1440,7 +1569,7 @@ class GateReadWalk {
       const followed = prior.slice(ctx.fromStage);
       if (this.stageOutputsCompareNoString(e, followed, ctx.base)) return;
       this.scoped = true;
-      this.comparesNoString = false;
+      this.noColumnsOnly();
       this.unresolved = true;
    }
 
@@ -1788,6 +1917,7 @@ export async function queryFilterReadsOfQuery(
          entryPaths: walk.entryPaths,
          entryPathsComplete: walk.entryPathsComplete,
          comparesNoString: walk.comparesNoString && !walk.unresolved,
+         comparesOnlyColumns: walk.comparesOnlyColumns && !walk.unresolved,
       };
    } catch {
       return undefined;

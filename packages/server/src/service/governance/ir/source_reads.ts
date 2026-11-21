@@ -180,3 +180,21 @@ export function sourceReads(source: {
       return undefined;
    }
 }
+
+/**
+ * The warehouse tables a compiled query reads: its entry point's rows (the
+ * resolved struct, or a composite's resolved member) and every join its
+ * stages reach, sorted and distinct; undefined when that cannot be known, by
+ * the same rule as {@link sourceReads} (author SQL anywhere in it).
+ */
+export function queryTableReads(
+   entry: unknown,
+   pipeline: unknown,
+): TableRead[] | undefined {
+   return sourceReads({
+      _sourceDef: {
+         type: "query_source",
+         query: { structRef: entry, pipeline },
+      },
+   });
+}

@@ -20,7 +20,8 @@
  *   comparison rules;
  * - the query's result: a string it orders by needs the source to compare
  *   bytes as a `storage=` table does, and one it groups or compares by
- *   equality needs equality to be byte equality there;
+ *   equality needs equality to be byte equality there; on a database table,
+ *   each needs the stored column to keep its source's collation;
  * - a row filter declared on a composite, which live refuses every caller of.
  *
  * Pure: the switches and every fact are inputs. The collation probes run
@@ -69,9 +70,9 @@ export type Comparison =
    | "scope"
    /** What the caller's own query filters compare. */
    | "filters"
-   /** The strings the query's result orders by (the source side only). */
+   /** The strings the query's result orders by. */
    | "result_ordered"
-   /** The strings the query's result groups or compares by (the source side only). */
+   /** The strings the query's result groups or compares by. */
    | "result_grouped";
 
 /** One probe admission needs before it can decide. */
@@ -96,13 +97,18 @@ export type QueryFilterFacts =
      };
 
 /**
- * Whether the query's result depends on how a `storage=` table it reads
- * compares strings: absent or not applying when it reads no `storage=` table
- * or its source's dialect compares bytes; `unread` fails closed.
+ * Whether the query's result depends on how a stored table it reads compares
+ * strings: absent or not applying when it reads no stored table or its
+ * source's dialect's collation is not read; `unread` fails closed.
  */
 export type ResultOrderFacts =
    | { readonly applies: false }
-   | { readonly applies: true; readonly reads: "unread" | "read" };
+   | {
+        readonly applies: true;
+        readonly reads: "unread" | "read";
+        /** The stored tables the result is read from. */
+        readonly tables: readonly TableRead[];
+     };
 
 /** What is known about one query and its answer, gathered by the caller. */
 export interface ReadFacts {
@@ -120,7 +126,7 @@ export interface ReadFacts {
    readonly columnsListed: boolean;
    /** The caller's own filters; absent, none is judged. */
    readonly queryFilters?: QueryFilterFacts;
-   /** The query's result over `storage=` tables; absent, it is not judged. */
+   /** The query's result over stored tables; absent, it is not judged. */
    readonly resultOrder?: ResultOrderFacts;
    /** The probes' answers, by comparison, as far as they were asked. */
    readonly probes?: Partial<Record<Comparison, ComparisonProbes>>;
@@ -234,6 +240,8 @@ function comparisonRefusal(
    comparison: Comparison,
    tables: readonly TableRead[],
    facts: ReadFacts,
+   /** The tables the stored side judges; absent, every one. */
+   storedTables: readonly TableRead[] = tables,
 ): ComparisonOutcome {
    const stored = tables.filter((t) => t.tier === "storage");
    if (storesGateColumnZoned(tables)) {
@@ -246,6 +254,7 @@ function comparisonRefusal(
       }
       if (probes.source.refusal !== undefined) return probes.source;
    }
+   if (storedTables.length === 0) return { refusal: undefined };
    if (probes?.stored === undefined) {
       return { probe: { comparison, side: "stored" } };
    }
@@ -324,9 +333,11 @@ function queryFilterVerdict(facts: ReadFacts): AdmissionVerdict | undefined {
 
 /**
  * The result rule: a string the result orders by must compare bytes at the
- * source (a binary collation), and one it groups or compares by must at
- * least compare equal as bytes do; each judged by the source side's probe.
- * Fails closed when the result cannot be read.
+ * source (a binary collation) when a `storage=` table is read, and one it
+ * groups or compares by must at least compare equal as bytes do; and every
+ * database table must hold those strings under the collation the source
+ * compares them by (the stored side, as the gates' and filters' are
+ * judged). Fails closed when the result cannot be read.
  */
 function resultOrderVerdict(facts: ReadFacts): AdmissionVerdict | undefined {
    const result = facts.resultOrder;
@@ -338,12 +349,21 @@ function resultOrderVerdict(facts: ReadFacts): AdmissionVerdict | undefined {
       ["result_ordered", "orders"],
       ["result_grouped", "groups or compares"],
    ] as const) {
-      const source = facts.probes?.[comparison]?.source;
-      if (source === undefined) return needs({ comparison, side: "source" });
-      if (source.refusal !== undefined) {
+      // The stored side judges database tables: a `storage=` table's own
+      // collation is judged where its gates, scopes and filters compare, and
+      // a result over one by its source's alone (the read of a table its
+      // catalog does not list then fails, and its fallback decides).
+      const outcome = comparisonRefusal(
+         comparison,
+         result.tables,
+         facts,
+         result.tables.filter((t) => t.tier === "database"),
+      );
+      if ("probe" in outcome) return needs(outcome.probe);
+      if (outcome.refusal !== undefined) {
          return decline(
             "result_order_comparison",
-            `the result ${what} a string a stored table does not compare as its source does: ${source.refusal}`,
+            `the result ${what} a string a stored table does not compare as its source does: ${outcome.refusal}`,
          );
       }
    }
