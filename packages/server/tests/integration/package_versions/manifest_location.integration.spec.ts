@@ -17,6 +17,7 @@
  * its base data.
  */
 
+import { withNativeSchema } from "../../../src/test_helpers/host_manifest";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import fs from "fs";
 import os from "os";
@@ -86,12 +87,21 @@ function writeManifest(name: string, sourceEntityId: string): string {
          builtAt: new Date().toISOString(),
          strict: false,
          entries: {
-            [sourceEntityId]: {
-               sourceEntityId,
-               sourceName: "order_summary",
-               physicalTableName: BOUND_TABLE,
-               connectionName: "duckdb",
-            },
+            // With the column types its build would record, as a host
+            // sends them (host_manifest.ts).
+            [sourceEntityId]: withNativeSchema(
+               {
+                  sourceEntityId,
+                  sourceName: "order_summary",
+                  physicalTableName: BOUND_TABLE,
+                  connectionName: "duckdb",
+               },
+               [
+                  { name: "category", type: "VARCHAR" },
+                  { name: "total_orders", type: "BIGINT" },
+                  { name: "total_revenue", type: "BIGINT" },
+               ],
+            ),
          },
       }),
    );

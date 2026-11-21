@@ -91,7 +91,7 @@ source: daily is orders -> {
             for (const b of fixture.bindings) {
                const physical = b.tablePath!.split(".").slice(1).join(".");
                const parquet = join(work, `${physical}.parquet`);
-               await fixture.duckdb.runSQL(
+               await fixture.destination.runSQL(
                   `COPY (SELECT * FROM ${b.tablePath}) TO '${parquet}' (FORMAT parquet)`,
                );
                await setup.runSQL(

@@ -3,6 +3,10 @@
 
 /// <reference types="bun-types" />
 
+import {
+   type RecordedColumn,
+   runNativeSchema,
+} from "../../../src/test_helpers/host_manifest";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import * as fsp from "fs/promises";
 import os from "os";
@@ -180,6 +184,9 @@ describe("Manifest binding via Package.manifestLocation (E2E)", () => {
     * package to live (unbound) — keeping the table — so a subsequent
     * manifest-URI bind is what routes the served query.
     */
+   /** The column types the build reported for `order_summary`. */
+   let builtTypes: RecordedColumn[] = [];
+
    async function buildTableThenRevertToLive(): Promise<void> {
       const createRes = await fetch(url("/materializations"), {
          method: "POST",
@@ -190,6 +197,9 @@ describe("Manifest binding via Package.manifestLocation (E2E)", () => {
       const { id } = (await createRes.json()) as { id: string };
       const built = await pollUntilTerminal(id);
       expect(built.status).toBe("MANIFEST_FILE_READY");
+      // What the build reported of its table, for each manifest a test binds,
+      // as a host copies it (host_manifest.ts).
+      builtTypes = runNativeSchema(built);
       // Revert to live: drop the auto-load binding but leave the built table.
       await fetch(url("?reload=true"));
       // Retire the run record so it doesn't hold the per-package active slot.
@@ -213,6 +223,7 @@ describe("Manifest binding via Package.manifestLocation (E2E)", () => {
                   sourceName: "order_summary",
                   physicalTableName,
                   connectionName: "duckdb",
+                  nativeSchema: builtTypes,
                },
             },
          }),
@@ -265,6 +276,7 @@ describe("Manifest binding via Package.manifestLocation (E2E)", () => {
                   sourceName: "order_summary",
                   physicalTableName: "main.order_summary_mz",
                   connectionName: "duckdb",
+                  nativeSchema: builtTypes,
                },
             },
          }),

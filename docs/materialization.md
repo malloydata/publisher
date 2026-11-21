@@ -982,6 +982,14 @@ builds, password or key pair, reads its rows so that a live answer equals the se
 An integer inside a nested (array or record) column is not covered: a Snowflake nest arrives as
 JSON, which the driver parses into JavaScript numbers, so a value in it past 2^53 is rounded live.
 
+**What a host's manifest must carry.** The bind compares each bound table's columns, as its
+warehouse holds them now, with the types its build recorded, so a column altered outside a build is
+cast faithfully or left out. A host that binds its own manifest must therefore send the types: a
+`storage=` entry its `schema`, and a database (colocated) entry its `nativeSchema`, each column with
+its warehouse type, as a build reports it (or its `schema`). A database entry with neither is
+treated as unverifiable (`types_unrecorded`, above) and answers live until it is rebuilt with its
+types recorded.
+
 A run's record (`GET …/packages/{packageName}/materializations/{materializationId}`, and the
 listing) returns its build manifest. Each entry names the physical table it built, and a database
 entry's `nativeSchema` lists every column of that table with its warehouse type, including columns
@@ -1074,6 +1082,7 @@ A `live` verdict's `reason`:
 | `shadowed` | Its storage table is bound, but every model's source of that name is another source. | Rename it. |
 | `destination_missing` | `storage=` names a destination this environment does not configure, so no build can write its table. Not reported while `PERSIST_STORAGE_MODE` is `off`, which ignores `storage=`. | Configure the destination, name a configured one, or drop `storage=`. |
 | `connection_cannot_hold_table` | Materialized in its own warehouse, on a connection whose type creates no tables. | Add `storage=` naming a configured destination, or drop the annotation. |
+| `types_unrecorded` | A database table, bound, whose manifest entry records no column types (neither `schema` nor `nativeSchema`): its build's type capture failed, or the entry predates it, or a host sent none. A column altered since the build cannot be seen, so the bind leaves the table out, and every leg (served copy, rollup, persisted view and query) answers live. The package warning is `materialization-types-unrecorded`; the path report says `NOT_SERVED` with code `types_unrecorded`. | Rebuild the table. A host binding its own manifest sends each database entry's `nativeSchema` (or its `schema`). |
 | `stale` | Its table is past its freshness window, and its fallback does not serve stale. | Run a build, widen the freshness window, or set its fallback to `stale_ok`. |
 | `materialization_off` | A `#(materialize)` source, which only the served copy reads, and the served copy is off. | Set `PUBLISHER_MATERIALIZE=true` (and, for `storage=`, `PERSIST_STORAGE_MODE=on`). |
 | `served_copy` | A source the served copy reads (`#(materialize)`, or `#@ persist` on a source) whose table is built and bound, but no model's served copy reads it, so every query on it is answered live. `notServedIn` says where and why (below). | Fix what the `served-copy-not-served` warning names; for `#(materialize)`, or drop it if a source it is built on already answers its queries. |

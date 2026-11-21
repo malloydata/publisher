@@ -138,7 +138,7 @@ source: ev is duckdb.table('ev') extend {
             for (const c of b.schema) {
                const type = driftOf(c.name);
                if (!type) continue;
-               await fixture.duckdb.runSQL(
+               await fixture.destination.runSQL(
                   `ALTER TABLE ${b.tablePath} ALTER "${c.name}" TYPE ${type}`,
                );
                altered.push(c.name);
