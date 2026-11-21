@@ -202,6 +202,38 @@ describe("MaterializationScheduler", () => {
       expect(service.calls.length).toBe(1);
    });
 
+   it("skips a tick while the one before it is still firing, so a due schedule fires once", async () => {
+      // The first tick's fire is held, as a slow compile holds it: the
+      // schedule stays due until that fire returns.
+      const service = fakeService({ lastFireAt: new Date(t0 - 10 * 60_000) });
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => (release = resolve));
+      let firing!: () => void;
+      const fired = new Promise<void>((resolve) => (firing = resolve));
+      const create = service.createMaterialization.bind(service);
+      service.createMaterialization = (async (
+         ...args: Parameters<typeof create>
+      ) => {
+         firing();
+         await gate;
+         return create(...args);
+      }) as typeof create;
+      const sched = makeScheduler(
+         [fakePackage("p", { schedule: "* * * * *" })],
+         service,
+      );
+      const first = sched.tick(t0);
+      await fired;
+      // The interval comes round while the first is still firing.
+      const second = sched.tick(t0 + 1);
+      release();
+      await Promise.all([first, second]);
+      expect(service.calls.length).toBe(1);
+      // The next tick runs as usual.
+      await sched.tick(t0 + 2);
+      expect(service.calls.length).toBe(1);
+   });
+
    it("does not catch up a never-fired schedule on first arm", async () => {
       // No prior SCHEDULER fire on record -> anchor is now -> strictly future,
       // so a freshly-scheduled (never-fired) package does not fire on arm.

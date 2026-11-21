@@ -33,6 +33,7 @@ import {
    recordQueryRoute,
    recordQueryRouteDuration,
    recordScheduledFire,
+   recordSchedulerTickSkipped,
    recordSharedAddressInstructions,
    recordStaleUpstreamEntry,
    recordUpstreamRecompute,
@@ -462,6 +463,8 @@ const EMISSIONS: Record<string, () => void> = {
       recordDropTables("success", "database", "reclaim"),
    publisher_materialization_scheduled_fires_total: () =>
       recordScheduledFire("fired"),
+   publisher_materialization_scheduler_ticks_skipped_total: () =>
+      recordSchedulerTickSkipped(),
    publisher_query_route_total: () =>
       recordQueryRoute("rollup", "used", "NONE"),
    publisher_query_route_duration_ms: () => recordQueryRouteDuration(1, "live"),
