@@ -24,7 +24,7 @@ import {
    attachDuckLakeReadOnly,
    attachDuckLakeReadWrite,
    recordedCatalogSettings,
-   recordedSchemaPath,
+   recordedSchemaPaths,
 } from "../../../src/service/connection";
 import { listStorageTables } from "../../../src/service/materialization/run/storage_admin";
 import type { components } from "../../../src/api";
@@ -273,22 +273,17 @@ describe.skipIf(!SUPERUSER)(
             expect(settings.data_path.replace(/\/+$/, "")).toBe(
                join(root, "ds_owned"),
             );
-            expect(
-               await recordedSchemaPath(
-                  session,
-                  "ds_owned",
-                  "ds_owned",
-                  "main",
-               ),
-            ).toEqual({ path: "main/", relative: true });
-            expect(
-               await recordedSchemaPath(
-                  session,
-                  "ds_owned",
-                  "ds_owned",
-                  "nowhere",
-               ),
-            ).toBeUndefined();
+            const schemaPaths = await recordedSchemaPaths(
+               session,
+               "ds_owned",
+               "ds_owned",
+               ["main", "nowhere"],
+            );
+            expect(schemaPaths.get("main")).toEqual({
+               path: "main/",
+               relative: true,
+            });
+            expect(schemaPaths.has("nowhere")).toBe(false);
          } finally {
             await session.close();
          }

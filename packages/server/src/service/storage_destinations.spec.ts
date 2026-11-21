@@ -19,6 +19,7 @@ import {
 } from "../errors";
 import { ConnectionController } from "../controller/connection.controller";
 import { logger } from "../logger";
+import { allowedForLockdown } from "./duckdb_lockdown";
 import { installSettings } from "../test_helpers/settings_env";
 import { buildEnvironmentMalloyConfig } from "./connection";
 import {
@@ -641,9 +642,11 @@ describe("Environment: connections and storage destinations are disjoint", () =>
          },
       });
 
+      type RecordedPath = { path: string; path_is_relative: boolean | null };
       type Recorded = {
          dataPath?: string;
-         main?: { path: string; path_is_relative: boolean | null };
+         main?: RecordedPath;
+         schemas?: Record<string, RecordedPath>;
       };
       const RECORDED: Recorded = {
          dataPath: "gs://bucket/org_a/db_x/",
@@ -674,10 +677,26 @@ describe("Environment: connections and storage destinations are disjoint", () =>
                         : []
                   ) as never;
                }
-               if (/\.ducklake_schema WHERE schema_name = 'main'/.test(text)) {
-                  return (recorded.main ? [recorded.main] : []) as never;
+               const wanted =
+                  /\.ducklake_schema WHERE schema_name IN \((.*)\) AND/.exec(
+                     text,
+                  );
+               if (wanted) {
+                  const known: Record<string, RecordedPath | undefined> = {
+                     main: recorded.main,
+                     ...recorded.schemas,
+                  };
+                  return [...wanted[1].matchAll(/'([^']*)'/g)]
+                     .map(([, name]) => name)
+                     .filter((name) => known[name])
+                     .map((name) => ({
+                        schema_name: name,
+                        ...known[name]!,
+                     })) as never;
                }
                if (/CREATE OR REPLACE SECRET/i.test(text)) return [] as never;
+               // The stubbed catalog has no `main` schema to search.
+               if (/^SET search_path/.test(text)) return [] as never;
                return runSQL.call(this, sql);
             });
       };
@@ -706,8 +725,129 @@ describe("Environment: connections and storage destinations are disjoint", () =>
          expect(secrets(statements)).toHaveLength(1);
          expect(secrets(statements)[0]).toContain("TYPE gcs");
          expect(secrets(statements)[0]).toContain(
-            "SCOPE 'gs://bucket/org_a/db_x/main/'",
+            "SCOPE ['gs://bucket/org_a/db_x/main/']",
          );
+      });
+
+      const readableView = (readableSchemas: string[]) => {
+         const lake = noPathLake("db_x", { managed: true });
+         lake.ducklakeConnection!.readableSchemas = readableSchemas;
+         return lake;
+      };
+
+      it("scopes a managed view to main and its readable schemas, in one metadata read, and lets the lock reach each", async () => {
+         const statements: string[] = [];
+         stubCatalog(statements, {
+            ...RECORDED,
+            schemas: {
+               sync_a: { path: "sync_a/", path_is_relative: true },
+               sync_b: { path: "sync_b/", path_is_relative: null },
+            },
+         });
+         const connection = await buildEnvironmentMalloyConfig(
+            [readableView(["sync_b", "sync_a", "main", "sync_a"])],
+            envPath,
+         ).malloyConfig.connections.lookupConnection("db_x");
+         expect(secrets(statements)).toHaveLength(1);
+         expect(secrets(statements)[0]).toContain(
+            "SCOPE ['gs://bucket/org_a/db_x/main/', 'gs://bucket/org_a/db_x/sync_a/', 'gs://bucket/org_a/db_x/sync_b/']",
+         );
+         expect(
+            statements.filter((sql) => /\.ducklake_schema WHERE/.test(sql)),
+         ).toHaveLength(1);
+         expect(allowedForLockdown(connection)).toEqual(
+            expect.arrayContaining([
+               "gs://bucket/org_a/db_x/main/",
+               "gs://bucket/org_a/db_x/sync_a/",
+               "gs://bucket/org_a/db_x/sync_b/",
+            ]),
+         );
+      });
+
+      it("re-emits the whole scope list when the renewer replaces a chain secret", async () => {
+         const restore = installSettings({
+            env: { S3_CREDENTIAL_CHAIN_POLICY: "any" },
+         }).restore;
+         try {
+            const statements: string[] = [];
+            stubCatalog(statements, {
+               ...RECORDED,
+               schemas: { sync_a: { path: "sync_a/", path_is_relative: true } },
+            });
+            const lake = noPathLake("db_x", { managed: true }, "s3");
+            lake.ducklakeConnection!.storage = {
+               s3Connection: {
+                  provider: "credential_chain",
+                  chain: "env",
+                  region: "us-east-1",
+               },
+            };
+            lake.ducklakeConnection!.readableSchemas = ["sync_a"];
+            const connection = (await buildEnvironmentMalloyConfig(
+               [lake],
+               envPath,
+            ).malloyConfig.connections.lookupConnection("db_x")) as unknown as {
+               storageSecretRenewer: () => Promise<void>;
+            };
+            const scope =
+               "SCOPE ['gs://bucket/org_a/db_x/main/', 'gs://bucket/org_a/db_x/sync_a/']";
+            expect(secrets(statements)[0]).toContain("REFRESH 'auto'");
+            expect(secrets(statements)[0]).toContain(scope);
+
+            statements.length = 0;
+            await connection.storageSecretRenewer();
+            expect(secrets(statements)).toHaveLength(1);
+            expect(secrets(statements)[0]).toContain(scope);
+         } finally {
+            restore();
+         }
+      });
+
+      it("skips a readable schema the catalog does not record, and narrows to what resolves", async () => {
+         const statements: string[] = [];
+         const error = sinon.stub(logger, "error");
+         stubCatalog(statements, {
+            ...RECORDED,
+            schemas: {
+               sync_a: { path: "sync_a/", path_is_relative: true },
+               escape: { path: "../other/", path_is_relative: true },
+            },
+         });
+         await lookupView(readableView(["escape", "ghost", "sync_a"]));
+         expect(secrets(statements)[0]).toContain(
+            "SCOPE ['gs://bucket/org_a/db_x/main/', 'gs://bucket/org_a/db_x/sync_a/']",
+         );
+         expect(
+            error
+               .getCalls()
+               .map((call) => (call.args as unknown[])[1])
+               .filter(Boolean),
+         ).toEqual([
+            { catalog: "db_x", schema: "escape" },
+            { catalog: "db_x", schema: "ghost" },
+         ]);
+      });
+
+      it("refuses the attach when main is not recorded, whatever else is listed", async () => {
+         const statements: string[] = [];
+         stubCatalog(statements, {
+            dataPath: "gs://bucket/org_a/db_x/",
+            schemas: { sync_a: { path: "sync_a/", path_is_relative: true } },
+         });
+         const failure = await lookupView(readableView(["sync_a"]));
+         expect(failure?.message).toMatch(
+            /No storage secret could be scoped for DuckLake catalog 'db_x'/,
+         );
+         expect(secrets(statements)).toHaveLength(0);
+      });
+
+      it("does not read the schema paths for a destination, which serves every schema", async () => {
+         const statements: string[] = [];
+         stubCatalog(statements);
+         await lookupDestination(noPathLake("db_x"));
+         expect(
+            statements.filter((sql) => /\.ducklake_schema WHERE/.test(sql)),
+         ).toHaveLength(0);
       });
 
       it("scopes a destination with no configured path to the whole recorded data path", async () => {
@@ -716,7 +856,7 @@ describe("Environment: connections and storage destinations are disjoint", () =>
          await lookupDestination(noPathLake("db_x"));
          expect(secrets(statements)).toHaveLength(1);
          expect(secrets(statements)[0]).toContain(
-            "SCOPE 'gs://bucket/org_a/db_x/'",
+            "SCOPE ['gs://bucket/org_a/db_x/']",
          );
       });
 
@@ -728,7 +868,7 @@ describe("Environment: connections and storage destinations are disjoint", () =>
          await lookupDestination(noPathLake("db_x", { managed: true }));
          expect(secrets(statements)).toHaveLength(1);
          expect(secrets(statements)[0]).toContain(
-            "SCOPE 'gs://bucket/org_a/db_x/'",
+            "SCOPE ['gs://bucket/org_a/db_x/']",
          );
       });
 
@@ -743,7 +883,7 @@ describe("Environment: connections and storage destinations are disjoint", () =>
          });
          await lookupView(noPathLake("db_x", { managed: true }));
          expect(secrets(statements)[0]).toContain(
-            "SCOPE 'gs://bucket/org_a/db_x/'",
+            "SCOPE ['gs://bucket/org_a/db_x/']",
          );
          sinon.restore();
          const relative: string[] = [];
@@ -753,7 +893,7 @@ describe("Environment: connections and storage destinations are disjoint", () =>
          });
          await lookupView(noPathLake("db_y", { managed: true }));
          expect(secrets(relative)[0]).toContain(
-            "SCOPE 'gs://bucket/org_a/db_x/main/'",
+            "SCOPE ['gs://bucket/org_a/db_x/main/']",
          );
       });
 
@@ -770,7 +910,7 @@ describe("Environment: connections and storage destinations are disjoint", () =>
             ),
          );
          const mainPath = statements.findIndex((sql) =>
-            /"__ducklake_metadata_db_x"\."db_x"\.ducklake_schema WHERE schema_name = 'main'/.test(
+            /"__ducklake_metadata_db_x"\."db_x"\.ducklake_schema WHERE schema_name IN \('main'\)/.test(
                sql,
             ),
          );

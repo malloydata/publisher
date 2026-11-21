@@ -68,9 +68,13 @@ Two consequences for models:
   `lake.table('s3://bucket/raw/x.parquet')`, now fails. Put the object under the data path, or read it
   through a `duckdb` connection whose `attachedDatabases` entry holds a credential for it; those secrets
   are not scoped.
-- A `managed: true` connection attached read-only is scoped narrower, to its `main` schema's recorded
-  path, so a model reads only the catalog's own tables. Tables a build wrote to a `destinationSchema` are
-  served through the storage destination's own session, as before.
+- A `managed: true` connection attached read-only is scoped narrower, to the recorded paths of its `main`
+  schema and of the schemas its `ducklakeConnection.readableSchemas` lists (bare lowercase names; `main`
+  is always readable), so a model reads only those schemas' tables. A listed schema the catalog does not
+  record, or whose path is not under the data path, is left out and logged. The narrowing gates Parquet
+  files on S3 and GCS only: a local data path is not narrowed, and the catalog's metadata is not gated.
+  Tables a build wrote to a `destinationSchema` are served through the storage destination's own session,
+  as before.
 
 A catalog with nothing to scope to, a config with no `bucketUrl` whose catalog records no data path, is
 not attached: the attach fails naming the catalog, and the next lookup retries it. A `publisher` proxy

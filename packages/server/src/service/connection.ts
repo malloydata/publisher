@@ -79,6 +79,7 @@ import {
    buildPostgresConnectionString,
    CoreConnectionEntry,
    EnvironmentConnectionMetadata,
+   normalizeReadableSchemas,
    normalizeSnowflakePrivateKey,
    parseServiceAccountKey,
    removeUndefined,
@@ -1261,7 +1262,8 @@ async function attachDuckLakeWithMode(
       origin?: ConnectionOrigin;
       /**
        * A catalog served as its own tables (the connection's `managed`). Attached
-       * read-only, its storage secret reaches only the `main` schema's files.
+       * read-only, its storage secret reaches only the files of `main` and of the
+       * config's `readableSchemas`.
        */
       managed?: boolean;
       /**
@@ -1461,6 +1463,9 @@ async function attachDuckLakeWithMode(
          const scope = await attachedDuckLakeScope(connection, dbName, {
             configuredDataPath: dataPath,
             metadataSchema,
+            readableSchemas: normalizeReadableSchemas(
+               ducklakeConfig.readableSchemas,
+            ),
             readOnly: options.readOnly,
             // Only a connection view is narrowed: an operator's destination
             // serves every schema, whatever flags its entry carries.
@@ -1478,7 +1483,7 @@ async function attachDuckLakeWithMode(
          }
          await attachCloudStorage(connection, storage, options.origin, scope);
          // The lock allows exactly what the secret is scoped to.
-         allowForLockdown(connection, scope);
+         for (const prefix of scope) allowForLockdown(connection, prefix);
       } catch (error) {
          // Once the instance is locked the catalog is the locker's, attached
          // and scoped, and nothing could ATTACH it again: detaching it would
@@ -1516,9 +1521,9 @@ async function attachDuckLakeWithMode(
 /**
  * The scope of an attached catalog's storage secret ({@link storageSecretScope}),
  * reading from the catalog's metadata whatever the config does not state: the
- * recorded data path when the config has none, and the `main` schema's path for
- * a managed read-only view. Runs on the attached catalog, so nothing here is a
- * guess the preflight could fail softly on.
+ * recorded data path when the config has none, and the paths of `main` and the
+ * readable schemas for a managed read-only view. Runs on the attached catalog,
+ * so nothing here is a guess the preflight could fail softly on.
  */
 async function attachedDuckLakeScope(
    connection: DuckDBConnection,
@@ -1526,10 +1531,11 @@ async function attachedDuckLakeScope(
    input: {
       configuredDataPath?: string;
       metadataSchema?: string;
+      readableSchemas?: string[];
       readOnly: boolean;
       managed: boolean;
    },
-): Promise<string | undefined> {
+): Promise<string[] | undefined> {
    const recordedDataPath = input.configuredDataPath
       ? undefined
       : (
@@ -1539,19 +1545,19 @@ async function attachedDuckLakeScope(
               input.metadataSchema,
            )
         ).data_path;
-   const mainSchemaPath =
+   const schemaPaths =
       input.managed && input.readOnly
-         ? await recordedSchemaPath(
-              connection,
-              dbName,
-              input.metadataSchema,
+         ? await recordedSchemaPaths(connection, dbName, input.metadataSchema, [
               "main",
-           )
+              ...(input.readableSchemas ?? []),
+           ])
          : undefined;
    return storageSecretScope({
+      catalog: dbName,
       configuredDataPath: input.configuredDataPath,
       recordedDataPath,
-      mainSchemaPath,
+      schemaPaths,
+      readableSchemas: input.readableSchemas,
       readOnly: input.readOnly,
       managed: input.managed,
    });
@@ -1602,28 +1608,43 @@ export async function recordedCatalogSettings(
    return settings;
 }
 
+/** The path a catalog records for a schema, and whether it is relative to the data path. */
+export interface RecordedSchemaPath {
+   path: string;
+   relative: boolean;
+}
+
 /**
- * The path a catalog attached as `alias` records for one of its schemas in
- * `ducklake_schema`, and whether it is relative to the data path, or undefined
- * when the schema is not recorded. A path of `''` is what a catalog migrated
- * from DuckLake 0.2 records for `main`: its files sit directly under the data
- * path. A NULL `path_is_relative` reads as relative, the recorded default.
+ * The paths a catalog attached as `alias` records in `ducklake_schema` for the
+ * named schemas, in one query, keyed by schema name; a schema the catalog does
+ * not record is absent. A path of `''` is what a catalog migrated from DuckLake
+ * 0.2 records for `main`: its files sit directly under the data path. A NULL
+ * `path_is_relative` reads as relative, the recorded default.
  */
-export async function recordedSchemaPath(
+export async function recordedSchemaPaths(
    connection: DuckDBConnection,
    alias: string,
    metadataSchema: string | undefined,
-   schemaName: string,
-): Promise<{ path: string; relative: boolean } | undefined> {
-   const row = runSQLRows(
+   schemaNames: string[],
+): Promise<Map<string, RecordedSchemaPath>> {
+   const names = schemaNames.map((name) => `'${escapeSQL(name)}'`).join(", ");
+   const rows = runSQLRows(
       await runInternalSQL(
          connection,
-         `SELECT path, path_is_relative FROM ${metadataCatalogRef(alias, metadataSchema)}.ducklake_schema ` +
-            `WHERE schema_name = '${escapeSQL(schemaName)}' AND end_snapshot IS NULL LIMIT 1`,
+         `SELECT schema_name, path, path_is_relative FROM ${metadataCatalogRef(alias, metadataSchema)}.ducklake_schema ` +
+            `WHERE schema_name IN (${names}) AND end_snapshot IS NULL`,
       ),
-   )[0];
-   if (!row || typeof row.path !== "string") return undefined;
-   return { path: row.path, relative: row.path_is_relative !== false };
+   );
+   const recorded = new Map<string, RecordedSchemaPath>();
+   for (const row of rows) {
+      if (typeof row.schema_name === "string" && typeof row.path === "string") {
+         recorded.set(row.schema_name, {
+            path: row.path,
+            relative: row.path_is_relative !== false,
+         });
+      }
+   }
+   return recorded;
 }
 
 /**
@@ -1698,42 +1719,89 @@ function isBucketlessUrl(url: string): boolean {
 }
 
 /**
- * The URL prefix a DuckLake catalog's storage secret is scoped to, with exactly
- * one trailing slash so `…/org_a/` never matches `…/org_ab`. The configured data
- * path when the config states one, else the data path the catalog recorded,
- * which the preflight read. A managed catalog attached read-only is the
- * user-facing view of its own tables, so its secret reaches only the `main`
- * schema's files: the schema path the catalog recorded, under the data path when
- * relative. Undefined when nothing states a path, when a managed view's main
- * path is unknown, or when the root names no bucket: the caller then refuses
- * the attach rather than creating an unscoped secret.
+ * The scope prefix of a readable schema other than `main`: its recorded path,
+ * which must resolve strictly under `rootSlash` (the data path, one trailing
+ * slash) as plain segments. Undefined for anything else (the data path itself,
+ * a `..`, `.` or empty segment, an absolute path elsewhere), because the
+ * prefix would then reach files outside the schema's own directory.
+ */
+function readableSchemaScope(
+   rootSlash: string,
+   recorded: RecordedSchemaPath,
+): string | undefined {
+   let rest = recorded.path;
+   if (!recorded.relative) {
+      if (!rest.startsWith(rootSlash)) return undefined;
+      rest = rest.slice(rootSlash.length);
+   }
+   const trimmed = stripTrailingSlashes(rest);
+   if (
+      trimmed === "" ||
+      trimmed
+         .split("/")
+         .some((part) => part === "" || part === "." || part === "..")
+   ) {
+      return undefined;
+   }
+   return `${rootSlash}${trimmed}/`;
+}
+
+/**
+ * The URL prefixes a DuckLake catalog's storage secret is scoped to, each with
+ * exactly one trailing slash so `…/org_a/` never matches `…/org_ab`. The
+ * configured data path when the config states one, else the data path the
+ * catalog recorded, which the preflight read. A managed catalog attached
+ * read-only is the user-facing view of its own tables, so its secret reaches
+ * only the files of `main` and of `readableSchemas`: the schema paths the
+ * catalog recorded, under the data path when relative. `main` keeps the
+ * leniency of catalogs migrated from DuckLake 0.2 (an absolute path, an empty
+ * path for the data path itself); every other schema must resolve strictly under
+ * the data path, and one that does not, or that the catalog does not record, is
+ * left out and logged, so a bad entry narrows the view rather than widening it.
+ * Undefined when nothing states a path, when a managed view's main path is
+ * unknown, or when the root names no bucket: the caller then refuses the attach
+ * rather than creating an unscoped secret.
  */
 export function storageSecretScope(input: {
+   catalog: string;
    configuredDataPath?: string;
    recordedDataPath?: string;
-   mainSchemaPath?: { path: string; relative: boolean };
+   schemaPaths?: ReadonlyMap<string, RecordedSchemaPath>;
+   readableSchemas?: string[];
    readOnly: boolean;
    managed: boolean;
-}): string | undefined {
+}): string[] | undefined {
    const root = input.configuredDataPath || input.recordedDataPath;
    if (!root || isBucketlessUrl(root)) return undefined;
-   if (input.managed && input.readOnly) {
-      const main = input.mainSchemaPath;
-      if (!main) return undefined;
-      if (!main.relative) {
-         return isBucketlessUrl(main.path)
-            ? undefined
-            : oneTrailingSlash(main.path);
-      }
-      // An empty relative path is the data path itself (a catalog migrated from
-      // DuckLake 0.2 records it for `main`).
+   const rootSlash = oneTrailingSlash(root);
+   if (!(input.managed && input.readOnly)) return [rootSlash];
+   const main = input.schemaPaths?.get("main");
+   if (!main) return undefined;
+   let mainScope: string;
+   if (!main.relative) {
+      if (isBucketlessUrl(main.path)) return undefined;
+      mainScope = oneTrailingSlash(main.path);
+   } else {
+      // An empty relative path is the data path itself.
       let start = 0;
       while (start < main.path.length && main.path[start] === "/") start++;
-      return oneTrailingSlash(
-         `${oneTrailingSlash(root)}${main.path.slice(start)}`,
-      );
+      mainScope = oneTrailingSlash(`${rootSlash}${main.path.slice(start)}`);
    }
-   return oneTrailingSlash(root);
+   const scope = [mainScope];
+   for (const schema of input.readableSchemas ?? []) {
+      const recorded = input.schemaPaths?.get(schema);
+      const prefix = recorded && readableSchemaScope(rootSlash, recorded);
+      if (prefix) {
+         scope.push(prefix);
+      } else {
+         logger.error(
+            "A readable schema is left out of the managed view's storage scope: " +
+               "the catalog does not record it, or its path is not strictly under the data path",
+            { catalog: input.catalog, schema },
+         );
+      }
+   }
+   return [...new Set(scope)];
 }
 
 /**
@@ -2573,8 +2641,8 @@ export function buildCloudStorageSecretSQL(
    const isGCS = credentials.type === "gcs";
    const escapedKeyId = escapeSQL(credentials.accessKeyId);
    const escapedSecret = escapeSQL(credentials.secretAccessKey);
-   const scopeClause = credentials.scope
-      ? `SCOPE '${escapeSQL(credentials.scope)}'`
+   const scopeClause = credentials.scope?.length
+      ? `SCOPE [${credentials.scope.map((prefix) => `'${escapeSQL(prefix)}'`).join(", ")}]`
       : "";
 
    let createSecretCommand: string;
@@ -2668,7 +2736,7 @@ async function attachCloudStorage(
    connection: DuckDBConnection,
    attachedDb: AttachedDatabase,
    origin: ConnectionOrigin = "connection",
-   scope?: string,
+   scope?: string[],
 ): Promise<void> {
    const storageType = attachedDb.type?.toUpperCase() || "";
    // The scope rides on the credentials so the renewer re-emits it.

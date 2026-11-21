@@ -725,6 +725,27 @@ function validateMotherDuckShape(connection: ApiConnection): void {
    }
 }
 
+/** A plain identifier: what metadataSchema and destinationSchema allow. */
+const PLAIN_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/** A schema name `readableSchemas` accepts: lowercase only. */
+const READABLE_SCHEMA_NAME = /^[a-z_][a-z0-9_]*$/;
+
+/**
+ * The schemas a managed read-only DuckLake view may read besides `main`, as one
+ * canonical list: sorted, deduplicated, `main` dropped, undefined when empty. The
+ * one place that decides which lists mean the same, so a reordering never
+ * reopens the connection and the attach scopes what the identity names.
+ */
+export function normalizeReadableSchemas(
+   list?: string[],
+): string[] | undefined {
+   const names = [...new Set(list ?? [])]
+      .filter((name) => name !== "main")
+      .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+   return names.length > 0 ? names : undefined;
+}
+
 function validateDuckLakeShape(
    connection: ApiConnection,
    origin: ConnectionOrigin,
@@ -772,10 +793,7 @@ function validateDuckLakeShape(
    // reach escapeSQL as a non-string, a TypeError at the first attach.
    if (connection.ducklakeConnection.catalog.metadataSchema !== undefined) {
       const schema = connection.ducklakeConnection.catalog.metadataSchema;
-      if (
-         typeof schema !== "string" ||
-         !/^[A-Za-z_][A-Za-z0-9_]*$/.test(schema)
-      ) {
+      if (typeof schema !== "string" || !PLAIN_IDENTIFIER.test(schema)) {
          throw new Error(
             `DuckLake catalog metadataSchema must be a plain identifier ` +
                `([A-Za-z_][A-Za-z0-9_]*), got '${schema}' for connection: ` +
@@ -789,12 +807,44 @@ function validateDuckLakeShape(
    if (destinationSchema !== undefined && destinationSchema !== null) {
       if (
          typeof destinationSchema !== "string" ||
-         !/^[A-Za-z_][A-Za-z0-9_]*$/.test(destinationSchema)
+         !PLAIN_IDENTIFIER.test(destinationSchema)
       ) {
          throw new Error(
             `DuckLake destinationSchema must be a plain identifier ` +
                `([A-Za-z_][A-Za-z0-9_]*), got '${destinationSchema}' for connection: ` +
                `${connection.name}`,
+         );
+      }
+   }
+   // Each name becomes a prefix of the view's storage secret scope, so anything
+   // but a plain lowercase identifier would widen or break it.
+   const readable = connection.ducklakeConnection.readableSchemas;
+   if (readable !== undefined && readable !== null) {
+      if (origin === "storage-destination") {
+         throw new Error(
+            `DuckLake readableSchemas applies to a managed connection view, not a ` +
+               `storage destination: ${connection.name}`,
+         );
+      }
+      if (
+         connection.managed !== true ||
+         connection.ducklakeConnection.readOnly === false
+      ) {
+         throw new Error(
+            `DuckLake readableSchemas requires a managed, read-only connection: ` +
+               `${connection.name}`,
+         );
+      }
+      if (
+         !Array.isArray(readable) ||
+         readable.some(
+            (name) =>
+               typeof name !== "string" || !READABLE_SCHEMA_NAME.test(name),
+         )
+      ) {
+         throw new Error(
+            `DuckLake readableSchemas must be a list of lowercase schema names ` +
+               `([a-z_][a-z0-9_]*) for connection: ${connection.name}`,
          );
       }
    }
@@ -1517,7 +1567,14 @@ function buildDuckLakeEntry(connection: NamedConnection): CoreConnectionEntry {
          "ducklake",
          setupIdentity({
             name: connection.name,
-            ducklakeConnection: connection.ducklakeConnection ?? null,
+            ducklakeConnection: connection.ducklakeConnection
+               ? {
+                    ...connection.ducklakeConnection,
+                    readableSchemas: normalizeReadableSchemas(
+                       connection.ducklakeConnection.readableSchemas,
+                    ),
+                 }
+               : null,
             managed: connection.managed === true,
          }),
       ),
