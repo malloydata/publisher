@@ -57,6 +57,7 @@ import {
    tableNamesIn,
    WRITES_TABLES_KEY,
    writeTargetsIn,
+   type WriteTarget,
 } from "../../versions/materialization_scope";
 import type { MaterializationEnvironment, MaterializationHost } from "../host";
 import {
@@ -976,6 +977,85 @@ export class Reclaimer {
          // Never let cleanup mask the build failure that triggered it.
          logger.warn("Failed-run table reclaim did not complete", {
             packageName: owner.packageName,
+            code: errorCodeOf(err),
+         });
+      }
+   }
+
+   /**
+    * Drop the tables a run wrote before its package's delete or unload
+    * aborted it (`targets`: each table whose build started, the one in
+    * flight at the abort included, since its write may have committed after
+    * the abort), Publisher-named ones only: the caller keeps a table at an
+    * author's `name=`, which may have stood before the run wrote it. The
+    * run has not committed, so no record names these tables, and once the
+    * package goes nothing would reclaim them. Called by the run itself
+    * before it settles, so the retire that waits for it finds them gone.
+    *
+    * Left in place, as every reclaim leaves them: a table any other
+    * committed run of the package, of any version, names (in its place, or
+    * by its table segment anywhere: a sibling version may serve it), and a
+    * table another package has marked since. Nothing is dropped when the
+    * run's own record is gone already (a retire that stopped waiting for
+    * it removed the package's records), since what other runs named can no
+    * longer be read. Best-effort: never throws.
+    */
+   async reclaimRetiredRunTables(request: {
+      environment: MaterializationEnvironment;
+      environmentName: string;
+      environmentId: string;
+      packageName: string;
+      runId: string;
+      targets: WriteTarget[];
+      connectionFor: (name: string) => Promise<MalloyConnection | undefined>;
+   }): Promise<void> {
+      const { environmentName, environmentId, packageName, runId } = request;
+      if (request.targets.length === 0) return;
+      try {
+         const listed =
+            (await this.repository.listMaterializations(
+               environmentId,
+               packageName,
+            )) ?? [];
+         if (!listed.some((m) => m.id === runId)) {
+            logger.warn(
+               "Not dropping a retired run's tables: the package's records are gone, so what other runs name cannot be read",
+               { runId, packageName },
+            );
+            return;
+         }
+         const stillReferenced = tablesStillReferenced(
+            listed,
+            (other) => other.id !== runId,
+         );
+         const owed = await this.deps.dropManifestEntries(
+            request.environment,
+            environmentName,
+            packageName,
+            runId,
+            "reclaim",
+            request.targets.map((target) => ({
+               sourceEntityId: target.sourceEntityId,
+               physicalTableName: target.physicalTableName,
+               connectionName: target.connectionName,
+               ...(target.storageDestinationName
+                  ? { storageDestinationName: target.storageDestinationName }
+                  : {}),
+            })),
+            stillReferenced,
+            request.connectionFor,
+         );
+         if (owed.length > 0) {
+            logger.warn("A retired run left tables it could not drop", {
+               runId,
+               packageName,
+               tables: owed.map((e) => e.physicalTableName),
+            });
+         }
+      } catch (err) {
+         logger.warn("Failed to drop a retired run's tables", {
+            runId,
+            packageName,
             code: errorCodeOf(err),
          });
       }

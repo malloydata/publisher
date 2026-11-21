@@ -263,6 +263,13 @@ function runQueryContext(run: RunScope): QueryContext {
 interface RunState {
    markedShared: boolean;
    packagePath: string | undefined;
+   /** The package the run builds, once loaded. */
+   target?: RunTarget;
+   /**
+    * Each instruction whose build started, in order, and whether the author
+    * chose its table's name.
+    */
+   buildsStarted: { instruction: BuildInstruction; authorNamed: boolean }[];
 }
 
 /** The package a run builds, loaded and compiled. */
@@ -1055,6 +1062,7 @@ export class MaterializationService {
          // Where the package is on this server, once known: a whole-run failure
          // names its files package-relative too (see packageRelativeRun).
          packagePath: undefined,
+         buildsStarted: [],
       };
       const mode: MaterializationMode = telemetry.mode;
       const startedAt = telemetry.startedAtMs;
@@ -1077,6 +1085,7 @@ export class MaterializationService {
          });
 
          const target = await this.loadRunPackage(run, state);
+         state.target = target;
          const { environmentId, pkg, compiled } = target;
 
          // Assembled BEFORE the instructions because skip-if-unchanged consults
@@ -1143,6 +1152,7 @@ export class MaterializationService {
             target,
             derived,
             incremental,
+            state,
          );
          const committed = await this.commitRun(run, target, derived, built);
          await this.finishCommittedRun(run, target, derived, committed, state);
@@ -1174,8 +1184,61 @@ export class MaterializationService {
                opts.version,
             );
          }
+         await this.reclaimIfRetired(run, state);
          throw err;
       }
+   }
+
+   /**
+    * A run its package's delete or unload aborted gives back, before it
+    * settles, the tables its builds may have written: once the package goes
+    * nothing serves them and nothing else would reclaim them. An auto-run
+    * only: a host's tables are its own. Never throws.
+    */
+   private async reclaimIfRetired(
+      run: RunScope,
+      state: RunState,
+   ): Promise<void> {
+      const { id, environmentName, packageName, orchestrated, signal } = run;
+      const target = state.target;
+      if (
+         orchestrated ||
+         !signal.aborted ||
+         !this.lifecycle.isRetiring(id) ||
+         target === undefined ||
+         state.buildsStarted.length === 0
+      ) {
+         return;
+      }
+      const { environment, environmentId, pkg } = target;
+      // A table at the author's `name=` may have stood before this run
+      // wrote it, and a reader outside Malloy may rely on it: kept.
+      const kept = state.buildsStarted.filter((b) => b.authorNamed);
+      if (kept.length > 0) {
+         logger.info(
+            "Keeping the tables at an author's name= that a retired run wrote",
+            {
+               runId: id,
+               packageName,
+               tables: kept.map((b) => b.instruction.physicalTableName),
+            },
+         );
+      }
+      await this.reclaimer.reclaimRetiredRunTables({
+         environment,
+         environmentName,
+         environmentId,
+         packageName,
+         runId: id,
+         targets: writeTargetsFor(
+            pkg.getBuildPlan(),
+            state.buildsStarted
+               .filter((b) => !b.authorNamed)
+               .map((b) => b.instruction),
+         ),
+         // The package is still loaded: a retire stops its runs first.
+         connectionFor: (name) => pkg.getMalloyConnection(name),
+      });
    }
 
    /**
@@ -1471,6 +1534,7 @@ export class MaterializationService {
       target: RunTarget,
       derived: RunInstructions,
       incremental: IncrementalRunContext | undefined,
+      state: RunState,
    ): Promise<InstructedBuildResult> {
       const { id, packageName, opts, signal, orchestrated } = run;
       const { environmentId, environment, versionId, pkg, compiled } = target;
@@ -1543,6 +1607,8 @@ export class MaterializationService {
                environmentId,
                packageName,
             )) ?? [],
+         onBuildStarted: (instruction, authorNamed) =>
+            state.buildsStarted.push({ instruction, authorNamed }),
       });
    }
 
