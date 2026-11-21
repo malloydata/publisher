@@ -759,7 +759,7 @@ class GateReadWalk {
             // partitioned by (`row_number()` over `order_by: value`), so it
             // compares them as an ordering does.
             this.equalityOnly = false;
-            this.comparesNoString = false;
+            this.noColumnsOnly();
             const read = this.windowReads(qf, own, byName);
             if (read === undefined) this.unresolved = true;
             else for (const p of read) next.push({ path: p, chain });
