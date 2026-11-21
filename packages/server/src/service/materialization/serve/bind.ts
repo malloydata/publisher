@@ -625,7 +625,11 @@ export interface ObservedDrift {
  *   ({@link driftedColumnRead}), so only a query reading a left-out column
  *   answers live;
  * - a table whose read failed (`unread`), or that was not read, is left out
- *   of both: it answers live (fail safe).
+ *   of both: it answers live (fail safe);
+ * - a table whose build captured neither its columns nor their native types
+ *   (`uncaptured`) is left out of both too: with no built type to compare,
+ *   no alter since the build can be seen (a float, or an exact type that
+ *   rounds its values), so every read of it answers live.
  *
  * With no observation (`observed` undefined) everything is returned as is.
  */
@@ -644,16 +648,12 @@ export function applyObservedColumns(args: {
    bindings: Binding[];
    drifted: ObservedDrift[];
    unread: UnreadTable[];
+   /** The tables left out because their build captured no column types. */
+   uncaptured: string[];
 } {
    const { observed } = args;
-   if (!observed) {
-      return {
-         entries: args.entries,
-         bindings: [...args.bindings],
-         drifted: [],
-         unread: [],
-      };
-   }
+   if (!observed) return asBound(args.entries, args.bindings);
+   const uncaptured: string[] = [];
    const entries: FreshnessManifest = {};
    const drifted: ObservedDrift[] = [];
    const unread: UnreadTable[] = [];
@@ -677,6 +677,11 @@ export function applyObservedColumns(args: {
             reason: read.unread,
             ...(read.detail !== undefined ? { detail: read.detail } : {}),
          });
+         left.add(id);
+         continue;
+      }
+      if (!entry.schema?.length && !entry.nativeSchema?.length) {
+         uncaptured.push(id);
          left.add(id);
          continue;
       }
@@ -821,7 +826,21 @@ export function applyObservedColumns(args: {
          },
       ];
    });
-   return { entries, bindings, drifted, unread };
+   return { entries, bindings, drifted, unread, uncaptured };
+}
+
+/** With no observation, everything as bound: nothing drifted, read or left out. */
+function asBound(
+   entries: FreshnessManifest,
+   bindings: readonly Binding[],
+): ReturnType<typeof applyObservedColumns> {
+   return {
+      entries,
+      bindings: [...bindings],
+      drifted: [],
+      unread: [],
+      uncaptured: [],
+   };
 }
 
 /**

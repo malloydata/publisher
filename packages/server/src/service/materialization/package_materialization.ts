@@ -205,7 +205,8 @@ export class PackageMaterialization {
    private observedOutcome: {
       drifted: ObservedDrift[];
       unread: UnreadTable[];
-   } = { drifted: [], unread: [] };
+      uncaptured: string[];
+   } = { drifted: [], unread: [], uncaptured: [] };
    /** The `storage=` bindings a host's or a run's manifest made. */
    private storageBindings: readonly Binding[] = [];
    /**
@@ -442,6 +443,7 @@ export class PackageMaterialization {
       this.observedOutcome = {
          drifted: observed.drifted,
          unread: observed.unread,
+         uncaptured: observed.uncaptured,
       };
       const { addresses, binding: asOfBuild } = this.asOfBuildTables();
       const bindings = [
@@ -805,6 +807,13 @@ export class PackageMaterialization {
                sourceEntityId: drift.sourceEntityId,
                columns: reported,
             },
+         );
+      }
+      for (const id of this.observedOutcome.uncaptured) {
+         if (!read(id)) continue;
+         logger.warn(
+            "A database table's build captured none of its column types, so a change to them since cannot be seen; its sources answer live until it is rebuilt",
+            { packageName: this.owner.packageName(), sourceEntityId: id },
          );
       }
       for (const miss of this.observedOutcome.unread) {

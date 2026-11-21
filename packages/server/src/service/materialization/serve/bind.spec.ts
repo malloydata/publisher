@@ -963,13 +963,18 @@ describe("applyObservedColumns", () => {
    // Strict-origin mode: with no capture, a binding's columns are the plan's
    // spelling (every number a DOUBLE), so an exact gate column altered to a
    // DOUBLE read as unmoved, and a gate over it was kept on the copy.
-   it("judges each column of a table whose build captured no schema by the type it holds", () => {
+   it("judges each column of a table whose build captured no type for it by the type it holds", () => {
       const planned = [
          { name: "acct", type: "DOUBLE" },
          { name: "region", type: "VARCHAR" },
       ];
       const out = applyObservedColumns({
-         entries: { addr1: { tableName: "orders_t" } },
+         entries: {
+            addr1: {
+               tableName: "orders_t",
+               nativeSchema: [{ name: "region", type: "VARCHAR" }],
+            },
+         },
          bindings: [{ ...binding, schema: planned }],
          observed: new Map([
             [
@@ -985,7 +990,6 @@ describe("applyObservedColumns", () => {
       });
       expect(out.bindings[0].retypedColumns).toEqual([
          { name: "acct", type: "DOUBLE" },
-         { name: "region", type: "VARCHAR" },
       ]);
       expect(out.drifted).toEqual([]);
    });
@@ -993,10 +997,15 @@ describe("applyObservedColumns", () => {
    // Strict-origin mode: a rollup whose build captured neither its columns
    // nor their native types (a capture that failed) was served from a
    // DuckLake DOUBLE as exact; the read's `storedAsDouble` was ignored.
-   it("leaves out a DuckLake 128-bit integer held as a DOUBLE when the build captured no schema", () => {
+   it("leaves out a DuckLake 128-bit integer held as a DOUBLE that the build captured no type for", () => {
       const out = applyObservedColumns({
          entries: {
-            rollup1: { tableName: "orders_by_g", connectionName: "lake" },
+            rollup1: {
+               tableName: "orders_by_g",
+               connectionName: "lake",
+               // A capture that named only some columns.
+               nativeSchema: [{ name: "g", type: "VARCHAR" }],
+            },
          },
          bindings: [],
          observed: new Map([
@@ -1019,6 +1028,7 @@ describe("applyObservedColumns", () => {
       expect(out.entries.rollup1).toEqual({
          tableName: "orders_by_g",
          connectionName: "lake",
+         nativeSchema: [{ name: "g", type: "VARCHAR" }],
          heldRead: {
             connectionName: "lake",
             columns: [{ name: "g", type: "VARCHAR", nativeType: "VARCHAR" }],
@@ -1646,7 +1656,7 @@ describe("applyObservedColumns", () => {
       });
    }
 
-   it("with no native type captured, a column that reads as another type than declared is still drift", () => {
+   it("leaves out a table whose build captured neither its columns nor their native types, so it answers live", () => {
       const out = applyObservedColumns({
          entries: { addr1: { tableName: "orders_t" } },
          bindings: [{ ...binding, schema: [{ name: "d", type: "DATE" }] }],
@@ -1662,14 +1672,11 @@ describe("applyObservedColumns", () => {
             ],
          ]),
       });
-      expect(out.drifted).toEqual([
-         {
-            sourceEntityId: "addr1",
-            columns: [
-               { column: "d", builtType: "DATE", observedType: "TIMESTAMP" },
-            ],
-         },
-      ]);
+      // No built type to compare with: no alter since the build can be
+      // seen, so neither the binding nor the entry is kept.
+      expect(out.bindings).toEqual([]);
+      expect(out.entries).toEqual({});
+      expect(out.uncaptured).toEqual(["addr1"]);
    });
 
    it("passes a storage binding through untouched", () => {
