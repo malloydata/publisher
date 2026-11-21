@@ -73,8 +73,8 @@ source: tm is t extend {
   measure: mf is max(category) { where: category > 'M' }
   measure: mp is max(pick 'x' when category > 'M' else null)
   measure: np is sum(pick 1 when category > 'M' else 0)
-  measure: mx_ok is max(category)
-  measure: np_ok is amt.sum() * 2 + c
+  measure: nd is count(category)
+  measure: np_ok is amt.sum() * 2 + c + count(amt)
 }
 
 source: tj is duckdb.sql("SELECT 1 AS oid, 'Books' AS cat") extend {
@@ -405,9 +405,36 @@ describe("queryFilterReadsOfQuery: the caller's own filters", () => {
             )
          ).equalityOnly,
       ).toBe(false);
+      expect(
+         (
+            await reads(
+               "run: tm -> { group_by: id; aggregate: n is count(); having: np_ok > 0 }",
+            )
+         ).comparesNoString,
+      ).toBe(true);
+   });
+
+   it("reads a having: on an aggregate output through what it aggregates, never on trust", async () => {
       for (const q of [
-         "run: tm -> { group_by: id; aggregate: n is count(); having: mx_ok is null }",
-         "run: tm -> { group_by: id; aggregate: n is count(); having: np_ok > 0 }",
+         // An output naming a measure, and one computing it inline.
+         "run: tm -> { group_by: id; aggregate: x is np; having: x > 0 }",
+         "run: tm -> { group_by: id; aggregate: x is sum(pick 1 when category > 'M' else 0); having: x > 0 }",
+         // A distinct count of a string counts what a collation tells apart.
+         "run: tm -> { group_by: id; aggregate: n is count(); having: nd > 1 }",
+         "run: tm -> { group_by: id; aggregate: x is count(category); having: x > 1 }",
+         // `max` of a string orders it.
+         "run: tm -> { group_by: id; aggregate: n is count(); having: mx is null }",
+         // Through a join whose on: compares strings.
+         "run: tj -> { group_by: oid; aggregate: x is tt.amt.sum(); having: x > 0 }",
+      ]) {
+         const r = await reads(q);
+         expect(r.comparesNoString, q).toBe(false);
+         expect(r.scoped, q).toBe(true);
+      }
+      for (const q of [
+         "run: tm -> { group_by: id; aggregate: x is amt.sum(); having: x > 0 }",
+         "run: tm -> { group_by: id; aggregate: x is count(amt); having: x > 1 }",
+         "run: tj -> { group_by: oid; aggregate: x is tn.amt.sum(); having: x > 0 }",
       ]) {
          expect((await reads(q)).comparesNoString, q).toBe(true);
       }

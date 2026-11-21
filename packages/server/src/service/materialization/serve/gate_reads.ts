@@ -464,10 +464,7 @@ class GateReadWalk {
     * Its `on:` is read on the source that declares the join, its leaves by
     * type alone.
     */
-   private joinsCompareNoString(
-      source: unknown,
-      path: readonly string[],
-   ): boolean {
+   private joinsCompareNoString(source: unknown, path: readonly string[]): boolean {
       let at = source;
       for (const name of path.slice(0, -1)) {
          const f = fieldsOf(at).get(name);
@@ -1012,7 +1009,12 @@ class GateReadWalk {
    ): void {
       const term = (raw: unknown) => {
          // A `having:` names the stage's own outputs: read each as what it is.
-         const e = this.outputsResolved(raw, stage);
+         const input = nested
+            ? undefined
+            : prior.length === 0
+              ? ctx.entry
+              : ctx.pipeline[i - 1]?.outputStruct;
+         const e = this.outputsResolved(raw, stage, input);
          if (nested) this.nestTerm(ctx, e, prior);
          else if (prior.length === 0) this.entryTerm(ctx, e, []);
          else this.stageTerm(ctx, e, i);
@@ -1051,11 +1053,17 @@ class GateReadWalk {
     * `e` with each of `stage`'s outputs it names (`node: "outputField"`)
     * replaced by what that output is: the field it references, or its own
     * expression. One that is neither is left as it is, and read unresolved.
+    * `input`: what the stage reads, on which an aggregate output is judged.
     */
-   private outputsResolved(e: unknown, stage: QueryStage, depth = 0): unknown {
+   private outputsResolved(
+      e: unknown,
+      stage: QueryStage,
+      input: unknown,
+      depth = 0,
+   ): unknown {
       if (depth > 64 || e === null || typeof e !== "object") return e;
       if (Array.isArray(e)) {
-         return e.map((x) => this.outputsResolved(x, stage, depth + 1));
+         return e.map((x) => this.outputsResolved(x, stage, input, depth + 1));
       }
       const n = e as { node?: unknown; name?: unknown };
       if (n.node === "outputField") {
@@ -1063,18 +1071,22 @@ class GateReadWalk {
          if (qf?.type === "fieldref" && Array.isArray(qf.path)) {
             return { node: "field", path: qf.path };
          }
-         // An aggregate that is not a string compares as a number does (its
-         // own filters are read from the stage's fields).
+         // An aggregate that is not a string, and whose value compares none
+         // on the stage's input (a sum of a `pick` over a string ordering
+         // compares one), compares as a number does; its own filters are
+         // read from the stage's fields. Any other is read as what it is.
          if (
             qf?.e !== undefined &&
             (qf as { expressionType?: unknown }).expressionType ===
                "aggregate" &&
-            nonStringType(qf.type)
+            nonStringType(qf.type) &&
+            input !== undefined &&
+            this.valueComparesNoString(qf.e, input)
          ) {
             return { node: "numberLiteral", literal: "0" };
          }
          if (qf?.e !== undefined) {
-            return this.outputsResolved(qf.e, stage, depth + 1);
+            return this.outputsResolved(qf.e, stage, input, depth + 1);
          }
          this.unresolved = true;
          return e;
@@ -1082,7 +1094,7 @@ class GateReadWalk {
       return Object.fromEntries(
          Object.entries(e).map(([k, v]) => [
             k,
-            this.outputsResolved(v, stage, depth + 1),
+            this.outputsResolved(v, stage, input, depth + 1),
          ]),
       );
    }
@@ -1164,7 +1176,14 @@ class GateReadWalk {
             const arg = n.e as { node?: unknown } | undefined;
             // `count()` aggregates no field.
             if (arg === undefined || arg.node === "") return true;
-            return this.valueComparesNoString(arg, source, depth + 1);
+            // A sum or an average adds what it aggregates; any other
+            // aggregate compares it (`count(category)` counts the distinct
+            // values a collation tells apart, `max` orders them), so that
+            // must be no string at all.
+            const fn = (n as { function?: unknown }).function;
+            return fn === "sum" || fn === "avg"
+               ? this.valueComparesNoString(arg, source, depth + 1)
+               : this.comparesNoStringThroughScalars(arg, source, depth + 1);
          }
          case "filteredExpr":
             return this.valueComparesNoString(n.kids?.e, source, depth + 1);
