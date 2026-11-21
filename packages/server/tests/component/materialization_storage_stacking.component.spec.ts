@@ -155,9 +155,10 @@ source: child is mid extend {
 /**
  * A `#@ persist` query source (joining another stored source) and an `extend`
  * of it that adds only a `where:` (gtm-funnel's `deals`): the extension runs
- * the base's query, so it builds the base's rows. With a `name=` of each
- * (`names`), the two are folded onto two tables and the extension is built
- * from the base's; without, they are one table.
+ * the base's query, so it builds the base's rows. The base's query reads a
+ * stored source (`rates`), so both are chained builds. With a `name=` of
+ * each (`names`), the two are folded onto two tables and the extension is
+ * built from the base's; without, they are one table.
  */
 const extendOnlyModel = (names: boolean) => {
    const name = (n: string) => (names ? ` name="${n}"` : "");
@@ -186,6 +187,48 @@ source: deals2 is d_incl extend { where: not is_deleted }
 };
 const EXTEND_ONLY_QUERY =
    "run: deals2 -> { group_by: cat, cur_rate; aggregate: t is total.sum() }";
+
+/**
+ * gtm-funnel's shape: the stored parent is a table-shaped `include` plus
+ * `extend` over an unpersisted query stage, joining warehouse sources (one
+ * keyed through another join), and the extension adds a `where:` and a
+ * dimension. Its joins read the warehouse, so it is built from there.
+ */
+const GTM_SHAPE_MODEL = `##! experimental { persistence access_modifiers }
+source: raw is ${RAW}
+source: attrs is warehouse.sql("""
+  SELECT * FROM (VALUES ('a', 1), ('b', 2), ('c', 1)) AS t(cat, company_id)
+""")
+source: companies is warehouse.sql("""
+  SELECT * FROM (VALUES (1, 'acme'), (2, 'globex')) AS t(company_id, company_name)
+""")
+
+source: progress is raw extend {
+  join_one: at is attrs on at.cat = cat
+} -> {
+  group_by: cat, sub, is_deleted is amt < 0, company_id is at.company_id
+  aggregate: total is amt.sum()
+}
+
+#@ persist storage="${LAKE}" name="gtm_deals_including_deleted"
+source: deals_including_deleted is progress include {
+  public: cat, sub, is_deleted, total
+} extend {
+  join_one: a is attrs on a.cat = cat
+  join_one: co is companies on co.company_id = a.company_id
+  dimension: company is co.company_name
+}
+
+#@ persist storage="${LAKE}" name="gtm_deals"
+source: deals is deals_including_deleted extend {
+  where: not is_deleted
+  dimension: loud is upper(company)
+}
+`;
+const GTM_SHAPE_QUERY =
+   "run: deals -> { group_by: cat, sub; aggregate: t is total.sum() }";
+const GTM_SHAPE_JOINED_QUERY =
+   "run: deals -> { group_by: loud, sub; aggregate: t is total.sum() }";
 
 /** Rows with every value as a string, sorted, to compare across engines. */
 const asStrings = (rows: Record<string, unknown>[]) =>
@@ -879,6 +922,37 @@ source: mid is parent extend {
          const served = await answer("m.malloy", EXTEND_ONLY_QUERY);
          expect(served.servedBy).toBe("materialized");
          expect(asStrings(served.rows)).toEqual(asStrings(live.rows));
+      });
+
+      it("builds gtm-funnel's shape (an include over a query stage, joins through a join, a name= on each) from the warehouse, strict, equal to live", async () => {
+         await setUp({ "m.malloy": GTM_SHAPE_MODEL });
+         const live = await answer("m.malloy", GTM_SHAPE_QUERY);
+         const liveJoined = await answer("m.malloy", GTM_SHAPE_JOINED_QUERY);
+         expect(live.servedBy).toBe("live");
+         const m = await build({ strictUpstreams: true });
+         expect([m.status, m.error]).toEqual(["MANIFEST_FILE_READY", null]);
+         const base = entryOf(m, "deals_including_deleted");
+         const deals = entryOf(m, "deals");
+         expect(deals.physicalTableName).not.toBe(base.physicalTableName);
+         // The query stage reads no stored source, so neither table is a
+         // chained build: each is its own warehouse build, and the stacked
+         // path that refused deals2 is never taken.
+         expect(
+            statements.filter(
+               (x) =>
+                  /\bCREATE\b/i.test(x) &&
+                  x.includes(`"${deals.physicalTableName}"`),
+            )[0],
+         ).toContain(RAW_MARK);
+         expect(asStrings(await storedRows(deals.physicalTableName))).toEqual(
+            asStrings(await plannedRows(deals)),
+         );
+         const served = await answer("m.malloy", GTM_SHAPE_QUERY);
+         expect(served.servedBy).toBe("materialized");
+         expect(asStrings(served.rows)).toEqual(asStrings(live.rows));
+         // A field read through its warehouse joins answers live, equal.
+         const joined = await answer("m.malloy", GTM_SHAPE_JOINED_QUERY);
+         expect(asStrings(joined.rows)).toEqual(asStrings(liveJoined.rows));
       });
 
       it("builds an extend-only #@ persist source on its base's one table when neither names one", async () => {
