@@ -23,13 +23,12 @@ import {
 import {
    attachDuckLakeReadOnly,
    attachDuckLakeReadWrite,
-   escapeSQL,
-   installAndLoadExtension,
    recordedCatalogSettings,
    stripTrailingSlashes,
    tablePartitionKeys,
    type PartitionKey,
 } from "../../connection";
+import { escapeSQL, installAndLoadExtension } from "../../duckdb_session_setup";
 import {
    createLocalDataPaths,
    lockDownDestinationSession,

@@ -22,16 +22,15 @@ import type { components } from "../api";
 import { BadRequestError, ConflictError } from "../errors";
 import { logger } from "../logger";
 import {
-   applySessionResourceLimits,
    attachDuckLakeForCreate,
    attachDuckLakeReadOnly,
    attachDuckLakeReadWrite,
-   createPgAttachSecret,
-   escapeSQL,
    isDuckLakeInitRace,
    tablePartitionKeys,
    type PartitionKey,
 } from "./connection";
+import { applySessionResourceLimits, escapeSQL } from "./duckdb_session_setup";
+import { createPgAttachSecret } from "./postgres_conninfo";
 import { createIsolatedBuildSession } from "./materialization/run/materialization_build_session";
 import {
    cleanupStorageFiles,

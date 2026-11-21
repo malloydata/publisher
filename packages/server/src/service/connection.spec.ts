@@ -26,7 +26,6 @@ import {
    buildCloudStorageSecretSQL,
    storageSecretScope,
    buildEnvironmentMalloyConfig,
-   buildPgConnectionString,
    buildProxiedSslQuery,
    createEnvironmentConnections,
    EnvironmentPooledPostgresConnection,
@@ -36,6 +35,7 @@ import {
    redactTestFailure,
    snowflakeAttachSQL,
 } from "./connection";
+import { buildPgConnectionString } from "./postgres_conninfo";
 import { countStatements } from "./single_select";
 import {
    DEFAULT_S3_CREDENTIAL_CHAIN,

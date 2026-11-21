@@ -20,8 +20,8 @@ import { BadRequestError, StorageCatalogNotFoundError } from "../../../errors";
 import {
    attachDuckLakeReadOnlyIfPresent,
    attachDuckLakeReadWrite,
-   escapeSQL,
 } from "../../connection";
+import { escapeSQL } from "../../duckdb_session_setup";
 import { storageDestinationRoot } from "../../connection_config";
 import { quoteIdentifier, quoteManifestTablePath } from "../../quoting";
 import { STORAGE_DIALECT } from "../domain/dialect";

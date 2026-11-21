@@ -85,14 +85,16 @@ import {
 } from "./bigquery_job_cancel";
 import type { QueryMetadata } from "../../query_metadata";
 import {
-   applySessionResourceLimits,
    attachDuckLakeReadWrite,
-   escapeSQL,
    managedSearchPathSql,
    federateSourceForPassthrough,
    type FederatedSourceType,
    type PartitionKey,
 } from "../../connection";
+import {
+   applySessionResourceLimits,
+   escapeSQL,
+} from "../../duckdb_session_setup";
 import type { WatermarkBound } from "./incremental_apply";
 import type { LateRows } from "../domain/types";
 import { storageDestinationRoot } from "../../connection_config";

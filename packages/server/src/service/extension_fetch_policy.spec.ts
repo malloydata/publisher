@@ -8,10 +8,8 @@ import path from "path";
 import sinon from "sinon";
 import { getExtensionFetchPolicy } from "../config";
 import { installSettings } from "../test_helpers/settings_env";
-import {
-   applyExtensionSessionSettings,
-   buildEnvironmentMalloyConfig,
-} from "./connection";
+import { buildEnvironmentMalloyConfig } from "./connection";
+import { applyExtensionSessionSettings } from "./duckdb_session_setup";
 
 let restoreSettings: (() => void) | undefined;
 

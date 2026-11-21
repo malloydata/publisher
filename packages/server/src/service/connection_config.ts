@@ -6,10 +6,9 @@ import {
    networkedDuckDBOptions,
    setupIdentity,
 } from "./duckdb_lockdown";
-import { externalEnv, settings } from "../settings";
+import { settings } from "../settings";
 import { boolean, Mismatch } from "../settings/types";
 import { createPrivateKey } from "crypto";
-import { existsSync } from "fs";
 import path from "path";
 import { components } from "../api";
 import {
@@ -19,6 +18,11 @@ import {
    isDuckdbSetupSqlAllowed,
 } from "../config";
 import { BadRequestError } from "../errors";
+import {
+   buildPostgresConnectionString,
+   postgresStatementTimeoutMs,
+   validatePostgresSslmode,
+} from "./postgres_conninfo";
 import { connectionDialectOf } from "./dialects";
 import { logger } from "../logger";
 import {
@@ -38,72 +42,6 @@ import {
 
 type ApiConnection = components["schemas"]["Connection"];
 type AttachedDatabase = components["schemas"]["AttachedDatabase"];
-
-// TLS modes accepted on a postgres connection, proxied or direct. Defined here
-// (connection.ts imports this module) so config-load validation and the
-// connect-time builders share one list. Mirrors `sslmode` in api-doc.yaml.
-export const PROXIED_SSLMODES = [
-   "disable",
-   "no-verify",
-   "verify-ca",
-   "verify-full",
-] as const;
-
-/**
- * Throws unless `sslmode` is one of PROXIED_SSLMODES and, for `verify-ca`, a
- * readable CA bundle is available to pin it against. `subject` leads each
- * error message.
- */
-function validatePostgresSslmode(subject: string, sslmode: string): void {
-   if (!(PROXIED_SSLMODES as readonly string[]).includes(sslmode)) {
-      throw new Error(
-         `${subject} has unsupported sslmode '${sslmode}' ` +
-            `(expected ${PROXIED_SSLMODES.join(" | ")}).`,
-      );
-   }
-   if (sslmode === "verify-ca") {
-      const caBundle = externalEnv("NODE_EXTRA_CA_CERTS");
-      if (!caBundle || !existsSync(caBundle)) {
-         throw new Error(
-            `${subject} uses sslmode 'verify-ca' but no readable ` +
-               `CA bundle is available (NODE_EXTRA_CA_CERTS is unset or points at a missing file). ` +
-               `Add the CA bundle to the image or use sslmode 'no-verify'.`,
-         );
-      }
-   }
-}
-
-// Postgres's own ceiling for statement_timeout, which is an int in ms. A larger
-// value makes the session SET fail on every connection that applies it.
-const POSTGRES_MAX_STATEMENT_TIMEOUT_MS = 2_147_483_647;
-
-/**
- * The connection's statement timeout, validated. Returns undefined when unset.
- *
- * Every consumer interpolates this value into SQL (`SET statement_timeout`) or
- * a libpq conninfo string, so anything but an integer from 1 to
- * POSTGRES_MAX_STATEMENT_TIMEOUT_MS is rejected here rather than trusted: a JSON
- * body is not held to the schema before it reaches this code.
- */
-export function postgresStatementTimeoutMs(
-   name: string,
-   pg: components["schemas"]["PostgresConnection"],
-): number | undefined {
-   const value: unknown = pg.statementTimeoutMilliseconds;
-   if (value === undefined || value === null) return undefined;
-   if (
-      typeof value !== "number" ||
-      !Number.isInteger(value) ||
-      value < 1 ||
-      value > POSTGRES_MAX_STATEMENT_TIMEOUT_MS
-   ) {
-      throw new Error(
-         `Connection '${name}' has an invalid statementTimeoutMilliseconds ` +
-            `${JSON.stringify(value)} (expected an integer from 1 to ${POSTGRES_MAX_STATEMENT_TIMEOUT_MS}).`,
-      );
-   }
-   return value;
-}
 
 export type CoreConnectionEntry = {
    is: string;
@@ -403,77 +341,6 @@ export function parseServiceAccountKey(
       throw new Error('Invalid service account key: incorrect "type" field');
    }
    return keyData;
-}
-
-/**
- * The pg connectionString query params for a direct connection's own sslmode.
- * Same meanings as the proxied query path (buildProxiedSslQuery): `no-verify`
- * encrypts without verifying, `verify-ca` pins the chain to NODE_EXTRA_CA_CERTS
- * without the hostname (libpq-compatible parsing is what makes pg honor that),
- * and `verify-full` checks the chain and the real hostname.
- */
-function directSslParams(
-   sslmode: (typeof PROXIED_SSLMODES)[number],
-): Record<string, string> {
-   switch (sslmode) {
-      case "disable":
-      case "no-verify":
-      case "verify-full":
-         return { sslmode };
-      case "verify-ca":
-         return {
-            uselibpqcompat: "true",
-            sslmode: "verify-ca",
-            sslrootcert: externalEnv("NODE_EXTRA_CA_CERTS") ?? "",
-         };
-   }
-}
-
-/**
- * The connectionString a postgres connection is opened with, or undefined when
- * the individual host/port/user/password/database fields should be used as-is.
- *
- * A raw `connectionString` always wins. Otherwise the sslmode is the
- * connection's own `sslmode` when `applySslmode` is set and the field is
- * present, else the deployment PGSSLMODE, else none. `applySslmode` is false
- * for a proxied connection, which applies its sslmode on the tunnel instead
- * and must not have it baked into a string that targets the real host.
- */
-export function buildPostgresConnectionString(
-   config: components["schemas"]["PostgresConnection"],
-   { applySslmode }: { applySslmode: boolean },
-): string | undefined {
-   if (config.connectionString) {
-      return config.connectionString;
-   }
-
-   const params = new URLSearchParams();
-   const pgSslmode = externalEnv("PGSSLMODE");
-   if (applySslmode && config.sslmode != null) {
-      for (const [key, value] of Object.entries(
-         directSslParams(config.sslmode),
-      )) {
-         params.set(key, value);
-      }
-   } else if (pgSslmode) {
-      params.set("sslmode", pgSslmode);
-   } else {
-      return undefined;
-   }
-   const auth =
-      config.userName && config.password
-         ? `${encodeURIComponent(config.userName)}:${encodeURIComponent(
-              config.password,
-           )}@`
-         : config.userName
-           ? `${encodeURIComponent(config.userName)}@`
-           : "";
-   const host = config.host ?? "localhost";
-   const port = config.port ? `:${config.port}` : "";
-   const database = config.databaseName
-      ? `/${encodeURIComponent(config.databaseName)}`
-      : "";
-   return `postgresql://${auth}${host}${port}${database}?${params.toString()}`;
 }
 
 function buildDuckdbEntry(

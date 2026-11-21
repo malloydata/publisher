@@ -16,13 +16,15 @@ import * as sinon from "sinon";
 import tls from "tls";
 import type { components } from "../api";
 import {
-   ambientTrustBundlePath,
    attachDuckLakeReadWrite,
    federateSourceForPassthrough,
+} from "./connection";
+import {
+   ambientTrustBundlePath,
    buildProxiedPgAttachString,
    pgAttachSecretName,
    pgConninfoPair,
-} from "./connection";
+} from "./postgres_conninfo";
 import { installSettings } from "../test_helpers/settings_env";
 
 /** A real in-memory DuckDB connection with runSQL stubbed to capture SQL. */

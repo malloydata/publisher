@@ -280,7 +280,7 @@ export const RATCHET_CONNECTION_TYPE_LITERALS = {
       step: "table",
    },
    // attach handlers, the passthrough federation, the per-type core entries.
-   "service/connection.ts": { count: 56, step: "D3" },
+   "service/connection.ts": { count: 55, step: "D3" },
    // per-type shape validation and core entries.
    "service/connection_config.ts": { count: 46, step: "D3" },
    // a deleted connection's file cleanup.

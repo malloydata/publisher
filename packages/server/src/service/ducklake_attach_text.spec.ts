@@ -24,8 +24,8 @@ import {
    attachDuckLakeReadOnly,
    attachDuckLakeReadOnlyIfPresent,
    attachDuckLakeReadWrite,
-   pgAttachSecretName,
 } from "./connection";
+import { pgAttachSecretName } from "./postgres_conninfo";
 
 let restoreSettings: () => void;
 beforeAll(() => {

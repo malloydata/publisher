@@ -34,7 +34,7 @@
 
 import type { DuckDBConnection } from "@malloydata/db-duckdb";
 import { logger } from "../../../logger";
-import { escapeSQL } from "../../connection";
+import { escapeSQL } from "../../duckdb_session_setup";
 import { quoteIdentifier } from "../../quoting";
 import { STORED_COLUMN_TYPE_MISMATCH_CODE } from "../stored_column_types";
 import { STORAGE_DIALECT } from "../domain/dialect";
