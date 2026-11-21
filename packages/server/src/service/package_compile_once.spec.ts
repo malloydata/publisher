@@ -16,6 +16,7 @@
  * Driven on real Packages in a real Environment, counting package compiles
  * at the load pool.
  */
+import { withNativeSchema } from "../test_helpers/host_manifest";
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import fs from "fs/promises";
 import os from "os";
@@ -114,6 +115,12 @@ describe("a package compiles once per thing a compile reads", () => {
          sourceLocation: null,
       });
 
+   /** `summary_a`'s columns, as its build records them (host_manifest.ts). */
+   const SUMMARY_TYPES = [
+      { name: "a", type: "INTEGER" },
+      { name: "n", type: "BIGINT" },
+   ];
+
    /** A host manifest binding `summary` to `summary_a`, and its database entries. */
    async function writeManifest(
       pkg: Package,
@@ -128,19 +135,25 @@ describe("a package compiles once per thing a compile reads", () => {
             builtAt: new Date().toISOString(),
             strict: false,
             entries: {
-               [id!]: {
-                  sourceEntityId: id,
-                  sourceName: "summary",
-                  physicalTableName: "summary_a",
-                  connectionName: "duckdb",
-               },
+               [id!]: withNativeSchema(
+                  {
+                     sourceEntityId: id,
+                     sourceName: "summary",
+                     physicalTableName: "summary_a",
+                     connectionName: "duckdb",
+                  },
+                  SUMMARY_TYPES,
+               ),
             },
          }),
       );
       return {
          file,
          entries: {
-            [id!]: { tableName: "summary_a", connectionName: "duckdb" },
+            [id!]: withNativeSchema(
+               { tableName: "summary_a", connectionName: "duckdb" },
+               SUMMARY_TYPES,
+            ),
          },
       };
    }
