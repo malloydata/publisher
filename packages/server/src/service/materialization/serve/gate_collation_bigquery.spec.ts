@@ -21,7 +21,7 @@ import {
    type QueryMaterializer,
    SingleConnectionRuntime,
 } from "@malloydata/malloy";
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, jest } from "bun:test";
 import {
    storedTableCollationRefusal,
    stringGateCollationRefusal,
@@ -33,24 +33,26 @@ import { resultReadsOfQuery } from "./result_reads";
 interface Catalog {
    location?: string;
    /**
-    * The location `datasets.list` names for every dataset of a project;
-    * absent, the client cannot be reached.
+    * The location `datasets.list` names for every dataset of a project, or
+    * "none" when it lists no dataset; absent, the client cannot be reached.
     */
    listed?: string;
    /** Each project's datasets that hold a collated column, or a failure. */
    projects?: Record<string, string[] | "fail">;
-   /** Datasets a project-wide read does not see (no permission, say). */
+   /** Tables (`dataset.table`) a project-wide read does not see. */
    unseen?: string[];
+   /** Tables (`dataset.table`) a dataset's own read does not see. */
+   unseenInDataset?: string[];
+   /** Each table's type, by `dataset.table`; absent, a base table. */
+   types?: Record<string, string>;
    /** Each dataset's collated columns, by table, then path; or a failure. */
    datasets?: Record<string, Record<string, Record<string, string>> | "fail">;
-   /** Tables a dataset's read does not see. */
-   unseenTables?: string[];
 }
 
-/** Every dataset and table the model names, as the stub's catalog holds them. */
-const TABLES: Record<string, string[]> = {
-   "proj.ds": ["plain_t", "ci_t", "copy_t"],
-   ds2: ["other_t"],
+/** Every table the model names, by project, then dataset. */
+const TABLES: Record<string, Record<string, string[]>> = {
+   proj: { ds: ["plain_t", "ci_t", "copy_t"], ds2: ["other_t"] },
+   "other-project": { ds: ["t"] },
 };
 
 /**
@@ -75,7 +77,11 @@ function stubBigQuery(catalog: Catalog): {
    stub.bigQuery = {
       getDatasets: async () => {
          if (catalog.listed === undefined) throw new Error("no credentials");
-         return [[{ metadata: { location: catalog.listed } }]];
+         return [
+            catalog.listed === "none"
+               ? []
+               : [{ metadata: { location: catalog.listed } }],
+         ];
       },
    };
    const fields = [
@@ -98,24 +104,38 @@ function stubBigQuery(catalog: Catalog): {
       dialect: "standardsql",
       fields,
    });
+   const typeOf = (key: string) => catalog.types?.[key] ?? "BASE TABLE";
    stub.runSQL = async (sql: string) => {
       sent.push(sql);
       const region =
          /FROM `([^`]+)`\.`region-([^`]+)`\.INFORMATION_SCHEMA/.exec(sql);
       if (region) {
          regions.push(region[2]);
-         const collated = catalog.projects?.[region[1]] ?? [];
+         const project = region[1];
+         const collated = catalog.projects?.[project] ?? [];
          if (collated === "fail") throw new Error("Access Denied");
-         const seen = new Set([
-            ...(region[1] === "proj" ? ["ds", "ds2"] : ["ds"]),
-            ...collated,
-         ]);
-         for (const d of catalog.unseen ?? []) seen.delete(d);
+         if (sql.includes(".TABLES")) {
+            const wanted = [...sql.matchAll(/'([^']+)'/g)].map((m) => m[1]);
+            const held = Object.entries(TABLES[project] ?? {}).flatMap(
+               ([d, ts]) => ts.map((t) => `${d}.${t}`),
+            );
+            return {
+               rows: wanted
+                  .filter((w) => held.includes(w))
+                  .filter((w) => !(catalog.unseen ?? []).includes(w))
+                  .map((w) => {
+                     const [d, t] = w.split(".");
+                     return {
+                        table_schema: d,
+                        table_name: t,
+                        table_type: typeOf(w),
+                     };
+                  }),
+               totalRows: 0,
+            };
+         }
          return {
-            rows: [...seen].map((d) => ({
-               table_schema: d,
-               collated: collated.includes(d),
-            })),
+            rows: collated.map((d) => ({ table_schema: d })),
             totalRows: 0,
          };
       }
@@ -124,15 +144,25 @@ function stubBigQuery(catalog: Catalog): {
       );
       if (!dataset) throw new Error(`unexpected SQL: ${sql}`);
       const name = dataset[2] ? `${dataset[1]}.${dataset[2]}` : dataset[1];
-      const tables = catalog.datasets?.[name] ?? {};
-      if (tables === "fail") throw new Error("Access Denied");
-      const names = new Set([...(TABLES[name] ?? []), ...Object.keys(tables)]);
-      for (const t of catalog.unseenTables ?? []) names.delete(t);
+      const cols = catalog.datasets?.[name] ?? {};
+      if (cols === "fail") throw new Error("Access Denied");
+      const project = dataset[2] ? dataset[1] : "proj";
+      const datasetName = dataset[2] ?? dataset[1];
+      const names = (TABLES[project]?.[datasetName] ?? []).filter(
+         (t) =>
+            !(catalog.unseenInDataset ?? []).includes(`${datasetName}.${t}`),
+      );
       return {
-         rows: [...names].flatMap((table) => [
-            { table_name: table, path: "", collation_name: "" },
-            ...Object.entries(tables[table] ?? {}).map(([path, c]) => ({
+         rows: names.flatMap((table) => [
+            {
                table_name: table,
+               table_type: typeOf(`${datasetName}.${table}`),
+               path: "",
+               collation_name: "",
+            },
+            ...Object.entries(cols[table] ?? {}).map(([path, c]) => ({
+               table_name: table,
+               table_type: "",
                path,
                collation_name: c,
             })),
@@ -195,17 +225,19 @@ async function refusal(
 }
 
 describe("a BigQuery source's string comparison, with a location", () => {
-   it("is binary when the project holds no collated column, one read", async () => {
+   it("is binary when the project holds no collated column and the read sees the table", async () => {
       const { why, sent } = await refusal(
          { location: "US" },
          "run: plain -> { group_by: region; order_by: region }",
       );
       expect(why).toBeUndefined();
-      expect(sent).toHaveLength(1);
-      expect(sent[0]).toContain(
-         "`proj`.`region-us`.INFORMATION_SCHEMA.COLUMNS",
+      expect(sent).toHaveLength(2);
+      expect(sent.join("\n")).toContain(
+         "`proj`.`region-us`.INFORMATION_SCHEMA.TABLES",
       );
-      expect(sent[0]).toContain("COLUMN_FIELD_PATHS");
+      expect(sent.join("\n")).toContain(
+         "`proj`.`region-us`.INFORMATION_SCHEMA.COLUMN_FIELD_PATHS",
+      );
    });
 
    it("serves an .sql() source when its project holds no collated column", async () => {
@@ -241,7 +273,7 @@ describe("a BigQuery source's string comparison, with a location", () => {
       expect(denied.why).toBe(LIVE);
    });
 
-   it("reads a listed dataset table by table: a collated table live, another served", async () => {
+   it("reads a collated dataset table by table: a collated table live, another served", async () => {
       const catalog: Catalog = {
          location: "US",
          projects: { proj: ["ds"] },
@@ -252,8 +284,8 @@ describe("a BigQuery source's string comparison, with a location", () => {
          "run: ci -> { group_by: region; order_by: region }",
       );
       expect(ci.why).toBe(LIVE);
-      expect(ci.sent).toHaveLength(2);
-      expect(ci.sent[1]).toContain("`proj`.`ds`.INFORMATION_SCHEMA.COLUMNS");
+      expect(ci.sent).toHaveLength(3);
+      expect(ci.sent[2]).toContain("`proj`.`ds`.INFORMATION_SCHEMA.TABLES");
       const plain = await refusal(
          catalog,
          "run: plain -> { group_by: region; order_by: region }",
@@ -265,13 +297,13 @@ describe("a BigQuery source's string comparison, with a location", () => {
       const { why, sent } = await refusal(
          {
             location: "US",
-            projects: { proj: ["elsewhere_ds"] },
+            projects: { proj: ["ds2"] },
             datasets: { "proj.ds": CI_DS },
          },
          "run: ci -> { group_by: region }",
       );
       expect(why).toBeUndefined();
-      expect(sent).toHaveLength(1);
+      expect(sent).toHaveLength(2);
    });
 
    it("answers live when the project read fails", async () => {
@@ -282,7 +314,7 @@ describe("a BigQuery source's string comparison, with a location", () => {
       expect(why).toBe(LIVE);
    });
 
-   it("answers live when a listed dataset's read fails", async () => {
+   it("answers live when a collated dataset's read fails", async () => {
       const { why } = await refusal(
          {
             location: "US",
@@ -304,8 +336,15 @@ describe("a BigQuery source's string comparison, with a location", () => {
       expect(why).toBe(LIVE);
       expect(sent).toHaveLength(0);
    });
+});
 
-   it("reads each project once per loaded model, and again after a failure", async () => {
+describe("a BigQuery catalog read's caching", () => {
+   afterEach(() => {
+      jest.useRealTimers();
+   });
+
+   it("reads once per loaded model, holds a failure for a minute, then reads again", async () => {
+      jest.useFakeTimers();
       const catalog: Catalog = { location: "US", projects: { proj: "fail" } };
       const { connection, sent } = stubBigQuery(catalog);
       const model = new SingleConnectionRuntime({ connection }).loadModel(
@@ -317,33 +356,76 @@ describe("a BigQuery source's string comparison, with a location", () => {
             reads: STRING_READS,
          });
       expect(await ask("run: plain -> { group_by: region }")).toBe(LIVE);
+      expect(sent).toHaveLength(1);
       catalog.projects = {};
+      // Within the minute: still live, and nothing is issued again.
+      jest.advanceTimersByTime(30_000);
+      expect(await ask("run: plain -> { group_by: region }")).toBe(LIVE);
+      expect(sent).toHaveLength(1);
+      // After it: read again, and served.
+      jest.advanceTimersByTime(31_000);
       expect(await ask("run: plain -> { group_by: region }")).toBeUndefined();
+      expect(sent).toHaveLength(3);
+      // The project's read is kept; another table set is confirmed anew.
       expect(await ask("run: ci -> { group_by: region }")).toBeUndefined();
-      expect(sent).toHaveLength(2);
+      expect(sent).toHaveLength(4);
+   });
+
+   it("reads again under a new runtime, as after a build or a reload", async () => {
+      const { connection, sent } = stubBigQuery({ location: "US" });
+      for (let i = 0; i < 2; i++) {
+         expect(
+            await stringGateCollationRefusal({
+               authorRunnable: runnable(
+                  connection,
+                  "run: plain -> { group_by: region }",
+               ),
+               reads: STRING_READS,
+            }),
+         ).toBeUndefined();
+      }
+      expect(sent).toHaveLength(4);
    });
 });
 
-describe("a BigQuery source's coverage", () => {
-   it("answers live when no project-wide read saw the table's dataset", async () => {
+describe("a BigQuery source's coverage, by table", () => {
+   it("answers live when the project-wide read does not see the table", async () => {
       const { why } = await refusal(
-         { location: "US", unseen: ["ds"] },
+         { location: "US", unseen: ["ds.plain_t"] },
          "run: plain -> { group_by: region }",
       );
       expect(why).toBe(LIVE);
    });
 
-   it("answers live when the dataset's read did not see the table", async () => {
+   it("answers live when a collated dataset's read does not see the table", async () => {
+      // A hidden collated table beside visible ones: its dataset is listed
+      // as collated, but the table itself must be seen.
       const { why } = await refusal(
          {
             location: "US",
             projects: { proj: ["ds"] },
             datasets: { "proj.ds": CI_DS },
-            unseenTables: ["plain_t"],
+            unseenInDataset: ["ds.ci_t"],
          },
-         "run: plain -> { group_by: region }",
+         "run: ci -> { group_by: region }",
       );
       expect(why).toBe(LIVE);
+   });
+
+   it("serves a view only when its project holds no collated column", async () => {
+      const view = { "ds.plain_t": "VIEW" };
+      const clean = await refusal(
+         { location: "US", types: view },
+         "run: plain -> { group_by: region }",
+      );
+      expect(clean.why).toBeUndefined();
+      // A collated column anywhere in the project: the view's columns are
+      // not documented to carry what it reads, so it answers live.
+      const dirty = await refusal(
+         { location: "US", types: view, projects: { proj: ["ds2"] } },
+         "run: plain -> { group_by: region }",
+      );
+      expect(dirty.why).toBe(LIVE);
    });
 });
 
@@ -363,6 +445,15 @@ describe("a BigQuery source's string comparison, with no location set", () => {
          "run: authored -> { group_by: region }",
       );
       expect(why).toBe(LIVE);
+   });
+
+   it("answers an .sql() source live when datasets.list names no dataset", async () => {
+      const { why, sent } = await refusal(
+         { listed: "none" },
+         "run: authored -> { group_by: region }",
+      );
+      expect(why).toBe(LIVE);
+      expect(sent).toHaveLength(0);
    });
 });
 
@@ -384,6 +475,14 @@ describe("a BigQuery source's string comparison, with no location and no client"
       const { why } = await refusal(
          { datasets: { ds2: { other_t: { region: "und:ci" } } } },
          "run: joined -> { group_by: o.region }",
+      );
+      expect(why).toBe(LIVE);
+   });
+
+   it("answers a view live: no project to read", async () => {
+      const { why } = await refusal(
+         { types: { "ds.plain_t": "VIEW" } },
+         "run: plain -> { group_by: region }",
       );
       expect(why).toBe(LIVE);
    });
@@ -430,25 +529,44 @@ describe("a BigQuery result's re-grouping and ordering", () => {
 
 describe("a BigQuery database table", () => {
    const ask = (catalog: Catalog, table: string, query: string) => {
-      const { connection } = stubBigQuery(catalog);
+      const { connection, sent } = stubBigQuery(catalog);
       const r = runnable(connection, query);
-      return storedTableCollationRefusal({
-         tables: [{ tier: "database", tablePath: table }],
-         answerRunnable: r,
-         virtualMap: undefined,
-         authorRunnable: r,
-         reads: STRING_READS,
-      });
+      return {
+         sent,
+         why: storedTableCollationRefusal({
+            tables: [{ tier: "database", tablePath: table }],
+            answerRunnable: r,
+            virtualMap: undefined,
+            authorRunnable: r,
+            reads: STRING_READS,
+         }),
+      };
    };
 
-   it("is kept when its source reads no collated string", async () => {
+   it("is kept when neither it nor its source holds a collated string", async () => {
       expect(
          await ask(
             { location: "US" },
             "proj.ds.copy_t",
             "run: plain -> { group_by: region }",
-         ),
+         ).why,
       ).toBeUndefined();
+   });
+
+   it("answers live when its source lost the collation its copy kept", async () => {
+      // Built while the source column was und:ci; the source was replaced
+      // without it since, and the copy still groups case-insensitively.
+      expect(
+         await ask(
+            {
+               location: "US",
+               projects: { proj: ["ds"] },
+               datasets: { "proj.ds": { copy_t: { region: "und:ci" } } },
+            },
+            "proj.ds.copy_t",
+            "run: plain -> { group_by: region }",
+         ).why,
+      ).toBe("a stored table compares strings under a unknown collation");
    });
 
    it("answers live when its source's column is collated and its own is not", async () => {
@@ -461,8 +579,8 @@ describe("a BigQuery database table", () => {
             },
             "proj.ds.copy_t",
             "run: ci -> { group_by: region }",
-         ),
-      ).toBeDefined();
+         ).why,
+      ).toBe("a stored table compares strings under a unknown collation");
    });
 
    it("is kept when its column reads back the source's collation", async () => {
@@ -477,7 +595,7 @@ describe("a BigQuery database table", () => {
             },
             "proj.ds.copy_t",
             "run: ci -> { group_by: region }",
-         ),
+         ).why,
       ).toBeUndefined();
    });
 
@@ -493,7 +611,7 @@ describe("a BigQuery database table", () => {
             },
             "proj.ds.copy_t",
             "run: ci -> { group_by: region }",
-         ),
-      ).toBeDefined();
+         ).why,
+      ).toBe("a stored table compares strings under a unknown collation");
    });
 });

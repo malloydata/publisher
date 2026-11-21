@@ -246,13 +246,19 @@ export const collationProbe: CollationProbe = {
 };
 
 /**
- * The BigQuery catalog reads, by the loaded model's runtime (each query
- * compiles a model of its own, so a compiled model would read the catalog
- * per query; a reload loads a new runtime), then what each reads. A failed
- * read fails its askers closed and is read again next time, so a transient
- * failure does not hold the model live until a reload.
+ * The BigQuery catalog reads, by the loaded model's runtime, then what each
+ * reads. Each query compiles a model of its own, so a compiled model would
+ * read the catalog per query; the runtime is replaced whenever the package
+ * reloads its models, which a reload does and every build's bind does
+ * (`Package.reloadAllModels` hydrates new models, each with a runtime of its
+ * own), so a build or a reload drops these. A failed or denied read fails
+ * its askers closed and is kept for {@link BIGQUERY_FAILURE_TTL_MS}, so it is
+ * not issued again on every query, then read again.
  */
 const bigqueryProbes = new WeakMap<object, Map<string, Promise<unknown>>>();
+
+/** How long a failed or denied catalog read answers live before it is retried. */
+const BIGQUERY_FAILURE_TTL_MS = 60_000;
 
 function bigqueryProbeOnce<T>(
    runtime: object,
@@ -268,10 +274,18 @@ function bigqueryProbeOnce<T>(
    let p = byKey.get(key) as Promise<T> | undefined;
    if (!p) {
       if (byKey.size >= 1000) byKey.clear();
-      p = run();
       const held = byKey;
-      p.catch(() => held.delete(key));
-      byKey.set(key, p);
+      const mine = run();
+      p = mine;
+      // A failure is kept for the TTL (no clock is read here: a timer drops
+      // it), and only if nothing has replaced it since.
+      mine.catch(() => {
+         const timer = setTimeout(() => {
+            if (held.get(key) === mine) held.delete(key);
+         }, BIGQUERY_FAILURE_TTL_MS);
+         (timer as { unref?: () => void }).unref?.();
+      });
+      byKey.set(key, mine);
    }
    return p;
 }
@@ -284,49 +298,123 @@ function bqName(segment: string): string {
 /** Most datasets one project-wide read lists before it proves nothing. */
 const MAX_PROJECT_DATASETS = 10000;
 
-/** What one region of a project holds, as a project-wide read sees it. */
-interface ProjectRegion {
-   /** Every dataset holding a table the read saw. */
-   readonly seen: ReadonlySet<string>;
-   /** Of those, each holding a collated column or field. */
-   readonly collated: ReadonlySet<string>;
-}
-
 /**
- * Every dataset of BigQuery project `project` in region `location` that
- * holds a table the caller's read sees, and which of them hold a table with
- * a collated column or `STRUCT` field; undefined when there are more than
- * {@link MAX_PROJECT_DATASETS}. One region-qualified `INFORMATION_SCHEMA`
- * query over `COLUMNS` and `COLUMN_FIELD_PATHS` (the region written in
- * lower case, as BigQuery's documentation writes it: `region-us`), which
- * BigQuery bills (on demand, at least 10 MB for each view it reads) and runs
- * in that region.
+ * The datasets of BigQuery project `project` in region `location` that hold
+ * a table with a collated column or `STRUCT` field (an empty set: none
+ * does), or undefined when there are more than {@link MAX_PROJECT_DATASETS}.
+ * One region-qualified `INFORMATION_SCHEMA` query over `COLUMNS` and
+ * `COLUMN_FIELD_PATHS` (the region in lower case, as BigQuery's
+ * documentation writes it: `region-us`), billed on demand at least 10 MB for
+ * each view it reads, run in that region.
  */
-async function bigqueryProjectRegion(
+async function bigqueryCollatedDatasets(
    connection: Connection,
    project: string,
    location: string,
-): Promise<ProjectRegion | undefined> {
+): Promise<ReadonlySet<string> | undefined> {
    const schema = `${bqName(project)}.${bqName(`region-${location.toLowerCase()}`)}.INFORMATION_SCHEMA`;
    const found = await rows(
       connection,
-      `SELECT table_schema, LOGICAL_OR(IFNULL(collation_name, '') != '') AS collated FROM (SELECT table_schema, collation_name FROM ${schema}.COLUMNS UNION ALL SELECT table_schema, collation_name FROM ${schema}.COLUMN_FIELD_PATHS) GROUP BY table_schema LIMIT ${MAX_PROJECT_DATASETS + 1}`,
+      `SELECT DISTINCT table_schema FROM (SELECT table_schema FROM ${schema}.COLUMNS WHERE IFNULL(collation_name, '') != '' UNION ALL SELECT table_schema FROM ${schema}.COLUMN_FIELD_PATHS WHERE IFNULL(collation_name, '') != '') LIMIT ${MAX_PROJECT_DATASETS + 1}`,
    );
    if (found.length > MAX_PROJECT_DATASETS) return undefined;
-   return {
-      seen: new Set(found.map((r) => String(r.table_schema))),
-      collated: new Set(
-         found
-            .filter((r) => r.collated === true || r.collated === "true")
-            .map((r) => String(r.table_schema)),
-      ),
-   };
+   return new Set(found.map((r) => String(r.table_schema)));
+}
+
+/** A string literal for BigQuery SQL. */
+function bqString(s: string): string {
+   return `'${s.replace(/\\/g, "\\\\").replace(/'/g, "\\'")}'`;
 }
 
 /**
+ * The type (`BASE TABLE`, `VIEW`, …) of each of `tables` (dataset, name) that
+ * a region-qualified `INFORMATION_SCHEMA.TABLES` read of `project` in
+ * `location` sees, by `dataset.name`; a table it does not see is absent.
+ * One query, filtered to those tables, billed at least 10 MB.
+ */
+async function bigqueryTableTypes(
+   connection: Connection,
+   project: string,
+   location: string,
+   tables: readonly { dataset: string; name: string }[],
+): Promise<ReadonlyMap<string, string>> {
+   const schema = `${bqName(project)}.${bqName(`region-${location.toLowerCase()}`)}.INFORMATION_SCHEMA`;
+   // A dataset or table name holds no dot, so `dataset.table` names one.
+   const wanted = tables
+      .map((t) => bqString(`${t.dataset}.${t.name}`))
+      .join(", ");
+   const found = await rows(
+      connection,
+      `SELECT table_schema, table_name, table_type FROM ${schema}.TABLES WHERE CONCAT(table_schema, '.', table_name) IN (${wanted})`,
+   );
+   return new Map(
+      found.map((r) => [
+         `${String(r.table_schema)}.${String(r.table_name)}`,
+         String(r.table_type),
+      ]),
+   );
+}
+
+/** What one dataset's read sees of a table: its type and collated paths. */
+interface DatasetTable {
+   readonly type: string;
+   readonly collated: ReadonlyMap<string, string>;
+}
+
+/**
+ * Every table of BigQuery dataset `dataset` (`project.dataset`, or a dataset
+ * of the job's own project) the read sees, with its type and its collated
+ * columns and `STRUCT` fields by path. One `INFORMATION_SCHEMA` query over
+ * `TABLES`, `COLUMNS` and `COLUMN_FIELD_PATHS`, billed at least 10 MB for
+ * each.
+ */
+async function bigqueryDatasetTables(
+   connection: Connection,
+   dataset: string,
+): Promise<ReadonlyMap<string, DatasetTable>> {
+   const parts = dataset.split(".");
+   if (parts.length > 2 || parts.some((p) => p === "")) {
+      throw new Error("not a dataset");
+   }
+   const schema = `${parts.map(bqName).join(".")}.INFORMATION_SCHEMA`;
+   const found = await rows(
+      connection,
+      `SELECT table_name, table_type, '' AS path, '' AS collation_name FROM ${schema}.TABLES UNION ALL SELECT table_name, '' AS table_type, column_name AS path, collation_name FROM ${schema}.COLUMNS WHERE IFNULL(collation_name, '') != '' UNION ALL SELECT table_name, '' AS table_type, field_path AS path, collation_name FROM ${schema}.COLUMN_FIELD_PATHS WHERE IFNULL(collation_name, '') != ''`,
+   );
+   const types = new Map<string, string>();
+   const collated = new Map<string, Map<string, string>>();
+   for (const r of found) {
+      const table = String(r.table_name);
+      const path = String(r.path ?? "");
+      if (path === "") {
+         types.set(table, String(r.table_type));
+         continue;
+      }
+      let cols = collated.get(table);
+      if (!cols) {
+         cols = new Map();
+         collated.set(table, cols);
+      }
+      cols.set(path, String(r.collation_name));
+   }
+   const out = new Map<string, DatasetTable>();
+   for (const [table, type] of types) {
+      out.set(table, { type, collated: collated.get(table) ?? new Map() });
+   }
+   return out;
+}
+
+/**
+ * The table types whose columns hold their own collation in the catalog.
+ * A view's (or a materialized view's, an external table's) columns are not
+ * documented to carry the collation of what it reads.
+ */
+const TABLE_TYPES = new Set(["BASE TABLE", "CLONE", "SNAPSHOT"]);
+
+/**
  * The locations of BigQuery project `project`'s datasets, through the
- * client the connection holds (`datasets.list`, a metadata call BigQuery
- * does not bill, which lists only the datasets the caller may get).
+ * client the connection holds (`datasets.list`, a metadata call, which
+ * lists only the datasets the caller may get).
  */
 async function bigqueryDatasetLocations(
    connection: Connection,
@@ -356,39 +444,6 @@ async function bigqueryDatasetLocations(
       locations.add(l.toLowerCase());
    }
    return [...locations];
-}
-
-/**
- * Every table of BigQuery dataset `dataset` (`project.dataset`, or a dataset
- * of the job's own project) the read sees, each with its collated columns
- * and `STRUCT` fields by path (empty for a table with none). One
- * `INFORMATION_SCHEMA` query, billed as above.
- */
-async function bigqueryDatasetCollations(
-   connection: Connection,
-   dataset: string,
-): Promise<ReadonlyMap<string, ReadonlyMap<string, string>>> {
-   const parts = dataset.split(".");
-   if (parts.length > 2 || parts.some((p) => p === "")) {
-      throw new Error("not a dataset");
-   }
-   const schema = `${parts.map(bqName).join(".")}.INFORMATION_SCHEMA`;
-   const found = await rows(
-      connection,
-      `SELECT DISTINCT table_name, '' AS path, '' AS collation_name FROM ${schema}.COLUMNS UNION DISTINCT SELECT table_name, column_name AS path, collation_name FROM ${schema}.COLUMNS WHERE IFNULL(collation_name, '') != '' UNION DISTINCT SELECT table_name, field_path AS path, collation_name FROM ${schema}.COLUMN_FIELD_PATHS WHERE IFNULL(collation_name, '') != ''`,
-   );
-   const out = new Map<string, Map<string, string>>();
-   for (const r of found) {
-      const table = String(r.table_name);
-      let cols = out.get(table);
-      if (!cols) {
-         cols = new Map();
-         out.set(table, cols);
-      }
-      const path = String(r.path ?? "");
-      if (path !== "") cols.set(path, String(r.collation_name));
-   }
-   return out;
 }
 
 /** A string that can be a BigQuery project ID (a domain-scoped one too). */
@@ -438,39 +493,198 @@ function bigqueryJobContext(connection: Connection): {
    };
 }
 
+/** A BigQuery table path placed: the projects it may be in, its dataset, its name. */
+interface PlacedTable {
+   readonly projects: readonly string[];
+   /** As written: `dataset` or `project.dataset`. */
+   readonly dataset: string;
+   /** The dataset's own name. */
+   readonly datasetName: string;
+   readonly name: string;
+}
+
+/** `path` placed under the job's `projects`, or undefined when it cannot be. */
+function placeTable(
+   path: string,
+   projects: readonly string[],
+): PlacedTable | undefined {
+   const segments = path.split("`").join("").split(".");
+   if (segments.length < 2 || segments.length > 3) return undefined;
+   const name = segments[segments.length - 1];
+   // A wildcard (`events_*`) names no one table the catalog lists.
+   if (name.includes("*")) return undefined;
+   return {
+      projects: segments.length === 3 ? [segments[0]] : projects,
+      dataset: segments.slice(0, -1).join("."),
+      datasetName: segments[segments.length - 2],
+      name,
+   };
+}
+
+/**
+ * The catalog reads one BigQuery query's checks go through: its
+ * connection, and each project's regions and collated datasets, read once
+ * per loaded model.
+ */
+class BigQueryCatalog {
+   readonly job: ReturnType<typeof bigqueryJobContext>;
+
+   constructor(
+      private readonly runtime: object,
+      readonly connection: Connection,
+      private readonly connectionName: string | undefined,
+   ) {
+      this.job = bigqueryJobContext(connection);
+   }
+
+   /**
+    * `project`'s regions: the connection's `location`, or each location
+    * `datasets.list` names; undefined when neither can be read, or when it
+    * lists no dataset (no region to prove anything in).
+    */
+   async regions(project: string): Promise<string[] | undefined> {
+      if (this.job.location !== undefined) return [this.job.location];
+      try {
+         const regions = await bigqueryProbeOnce(
+            this.runtime,
+            [this.connectionName, "locations", project],
+            () => bigqueryDatasetLocations(this.connection, project),
+         );
+         return regions.length > 0 ? regions : undefined;
+      } catch {
+         return undefined;
+      }
+   }
+
+   /**
+    * `project`'s collated datasets, across its regions; undefined when they
+    * cannot be read or proved (a failed read, too many datasets, no region).
+    */
+   async collatedDatasets(
+      project: string,
+   ): Promise<ReadonlySet<string> | undefined> {
+      const regions = await this.regions(project);
+      if (regions === undefined) return undefined;
+      const out = new Set<string>();
+      for (const region of regions) {
+         let r: ReadonlySet<string> | undefined;
+         try {
+            r = await bigqueryProbeOnce(
+               this.runtime,
+               [this.connectionName, "project", project, region],
+               () => bigqueryCollatedDatasets(this.connection, project, region),
+            );
+         } catch {
+            return undefined;
+         }
+         if (r === undefined) return undefined;
+         for (const d of r) out.add(d);
+      }
+      return out;
+   }
+
+   /**
+    * Each of `tables`' type, read project-wide in each of its projects'
+    * regions, by `project.dataset.name`; `no_region` when a project has no
+    * region to read; undefined when a read fails.
+    */
+   async tableTypes(
+      tables: readonly PlacedTable[],
+   ): Promise<Map<string, string> | "no_region" | undefined> {
+      const out = new Map<string, string>();
+      const byProject = new Map<string, PlacedTable[]>();
+      for (const t of tables) {
+         for (const p of t.projects) {
+            byProject.set(p, [...(byProject.get(p) ?? []), t]);
+         }
+      }
+      for (const [project, list] of byProject) {
+         const regions = await this.regions(project);
+         if (regions === undefined) return "no_region";
+         const wanted = list
+            .map((t) => ({ dataset: t.datasetName, name: t.name }))
+            .sort((a, b) =>
+               `${a.dataset}.${a.name}` < `${b.dataset}.${b.name}` ? -1 : 1,
+            );
+         for (const region of regions) {
+            let types: ReadonlyMap<string, string>;
+            try {
+               types = await bigqueryProbeOnce(
+                  this.runtime,
+                  [
+                     this.connectionName,
+                     "tables",
+                     project,
+                     region,
+                     ...wanted.map((w) => `${w.dataset}.${w.name}`),
+                  ],
+                  () =>
+                     bigqueryTableTypes(
+                        this.connection,
+                        project,
+                        region,
+                        wanted,
+                     ),
+               );
+            } catch {
+               return undefined;
+            }
+            for (const [k, v] of types) out.set(`${project}.${k}`, v);
+         }
+      }
+      return out;
+   }
+
+   /** Dataset `dataset`'s tables, read once per loaded model. */
+   datasetTables(dataset: string): Promise<ReadonlyMap<string, DatasetTable>> {
+      return bigqueryProbeOnce(
+         this.runtime,
+         [this.connectionName, "dataset", dataset],
+         () => bigqueryDatasetTables(this.connection, dataset),
+      );
+   }
+}
+
 /**
  * What a BigQuery query's strings compare under. `known: false` (answer
- * live): its SQL names a `COLLATE`; a read failed or was denied; a table it
- * reads is in a dataset no read saw; it holds author SQL (an `.sql()`
- * source, a raw SQL expression) and a project it may read holds a collated
- * column, or no project could be read; or a table path this cannot place.
- * Else `collated`: each collated column and field of the tables it reads,
- * by path, with its collations; empty, every string it reads compares
- * byte-exact.
+ * live): its SQL names a `COLLATE`; a read failed or was denied (and is
+ * then not issued again for {@link BIGQUERY_FAILURE_TTL_MS}); a table it
+ * reads is not one a read saw; a view (or a materialized view, an external
+ * table) it reads is in a project holding a collated column; it holds
+ * author SQL (an `.sql()` source, a raw SQL expression) and a project it
+ * may read holds a collated column, or could not be read; or a table path
+ * this cannot place. Else `collated`: each collated column and field of
+ * the tables it reads, by path, with its collations; empty, every string it
+ * reads compares byte-exact.
  *
- * Each project is read project-wide, once per region it has datasets in:
- * the connection's `location`, or else every location `datasets.list`
- * names for it. One query per region lists every dataset the read sees and
- * which hold a collated column. A table Malloy says the query reads must be
- * in a dataset a read saw (coverage, not only absence: BigQuery documents
+ * Each project is read project-wide, once per region it has datasets in
+ * (the connection's `location`, or each location `datasets.list` names):
+ * one query lists the datasets holding a collated column, and one, filtered
+ * to the tables Malloy says the query reads, confirms each of them and its
+ * type, so a hidden table is never taken for byte-exact (BigQuery documents
  * that a region-qualified read needs permission on the project, not which
- * rows a caller with less sees), and only a listed collated dataset is read
- * table by table, where the table itself must be seen. With no region to
- * read (no `location`, and `datasets.list` unreachable), each dataset a
- * `.table()` source reads is read on its own. A default collation (a
- * table's, a dataset's) is taken to be resolved into each column's own.
+ * rows a caller permitted on less sees). A table in a collated dataset is
+ * read again with its dataset. With no region to read (no `location`, and
+ * `datasets.list` unreachable or empty), each dataset a `.table()` source
+ * reads is read on its own, and a view or author SQL answers live. A
+ * default collation (a table's, a dataset's) is taken to be resolved into
+ * each column's own, which BigQuery does not document.
  *
- * The residual risk is author SQL: its tables are not known, so a project
- * whose reads list no collated column serves it, and a table the
- * credentials may query but whose metadata no read lists (so its collation
- * is never seen) would be compared byte-exact.
+ * The residual risk is author SQL and views over a project whose reads list
+ * no collated column: their tables are not known, so a table the
+ * credentials may query but whose metadata no read lists would be compared
+ * byte-exact.
  */
 async function bigquerySource(args: {
    authorRunnable: QueryMaterializer;
    givens?: Record<string, unknown>;
 }): Promise<
    | { known: false }
-   | { known: true; collated: ReadonlyMap<string, ReadonlySet<string>> }
+   | {
+        known: true;
+        collated: ReadonlyMap<string, ReadonlySet<string>>;
+        catalog: BigQueryCatalog;
+     }
 > {
    const unknown = { known: false } as const;
    try {
@@ -491,27 +705,19 @@ async function bigquerySource(args: {
       if (/\bcollate\b/i.test(sql)) return unknown;
       const connectionName =
          typeof struct?.connection === "string" ? struct.connection : undefined;
-      const connection =
-         await runtime.connections.lookupConnection(connectionName);
-      const job = bigqueryJobContext(connection);
+      const catalog = new BigQueryCatalog(
+         runtime,
+         await runtime.connections.lookupConnection(connectionName),
+         connectionName,
+      );
+      const { job } = catalog;
       if (job.projects.length === 0) return unknown;
       const tables = queryTableReads(
          prepared.compositeResolvedSourceDef ?? struct,
          prepared.pipeline,
       );
-      // Each table placed: the projects it may be in (a two-part path is in
-      // the job's project), its dataset as written, and its name.
-      const placed: {
-         projects: string[];
-         dataset: string;
-         name: string;
-      }[] = [];
+      const placed: PlacedTable[] = [];
       for (const t of tables ?? []) {
-         const segments = t.table.split("`").join("").split(".");
-         if (segments.length < 2 || segments.length > 3) return unknown;
-         const name = segments[segments.length - 1];
-         // A wildcard (`events_*`) names no one table the catalog lists.
-         if (name.includes("*")) return unknown;
          // A table on another connection is not this query's to place.
          if (
             connectionName !== undefined &&
@@ -519,86 +725,60 @@ async function bigquerySource(args: {
          ) {
             return unknown;
          }
-         placed.push({
-            projects: segments.length === 3 ? [segments[0]] : job.projects,
-            dataset: segments.slice(0, -1).join("."),
-            name,
-         });
+         const p = placeTable(t.table, job.projects);
+         if (p === undefined) return unknown;
+         placed.push(p);
       }
-      const projects = new Set([
-         ...job.projects,
-         ...placed.flatMap((p) => p.projects),
-         ...(tables === undefined ? sqlProjects(sql) : []),
-      ]);
-      // Each project's regions, merged; undefined when a region's read
-      // lists too many datasets to prove anything.
-      const read = new Map<
-         string,
-         { seen: Set<string>; collated: Set<string> } | undefined
-      >();
-      let regionsRead = true;
-      for (const project of projects) {
-         let regions: string[];
-         if (job.location !== undefined) {
-            regions = [job.location];
-         } else {
-            try {
-               regions = await bigqueryProbeOnce(
-                  runtime,
-                  [connectionName, "locations", project],
-                  () => bigqueryDatasetLocations(connection, project),
-               );
-            } catch {
-               regionsRead = false;
-               break;
-            }
+      // Whether every project in `projects` is read and holds no collated
+      // column: what author SQL and a view are served under.
+      const clean = async (projects: Iterable<string>) => {
+         for (const project of projects) {
+            const d = await catalog.collatedDatasets(project);
+            if (d === undefined || d.size > 0) return false;
          }
-         let merged: { seen: Set<string>; collated: Set<string> } | undefined =
-            { seen: new Set(), collated: new Set() };
-         for (const region of regions) {
-            const r = await bigqueryProbeOnce(
-               runtime,
-               [connectionName, "project", project, region],
-               () => bigqueryProjectRegion(connection, project, region),
-            );
-            if (r === undefined || merged === undefined) {
-               merged = undefined;
-               continue;
-            }
-            for (const d of r.seen) merged.seen.add(d);
-            for (const d of r.collated) merged.collated.add(d);
-         }
-         read.set(project, merged);
-      }
+         return true;
+      };
       if (tables === undefined) {
-         if (!regionsRead) return unknown;
-         const clean = [...read.values()].every(
-            (r) => r !== undefined && r.collated.size === 0,
-         );
-         return clean ? { known: true, collated: new Map() } : unknown;
+         const projects = new Set([...job.projects, ...sqlProjects(sql)]);
+         return (await clean(projects))
+            ? { known: true, collated: new Map(), catalog }
+            : unknown;
       }
+      const types = await catalog.tableTypes(placed);
+      // A failed or denied read answers live; only a project with no region
+      // to read is read dataset by dataset.
+      if (types === undefined) return unknown;
       const collated = new Map<string, Set<string>>();
       for (const t of placed) {
-         const datasetName = t.dataset.split(".").pop() as string;
-         if (regionsRead) {
-            const views = t.projects.map((p) => read.get(p));
-            if (views.every((v) => v !== undefined)) {
-               // Coverage: some read must have seen the table's dataset.
-               if (!views.some((v) => v!.seen.has(datasetName))) {
-                  return unknown;
-               }
-               if (!views.some((v) => v!.collated.has(datasetName))) continue;
+         if (types !== "no_region") {
+            // Coverage, by table: the project-wide read must see it.
+            const type = t.projects
+               .map((p) => types.get(`${p}.${t.datasetName}.${t.name}`))
+               .find((x) => x !== undefined);
+            if (type === undefined) return unknown;
+            if (!TABLE_TYPES.has(type)) {
+               if (!(await clean(t.projects))) return unknown;
+               continue;
             }
+            let inCollated = false;
+            for (const p of t.projects) {
+               const d = await catalog.collatedDatasets(p);
+               if (d === undefined) return unknown;
+               if (d.has(t.datasetName)) inCollated = true;
+            }
+            if (!inCollated) continue;
          }
-         const byTable = await bigqueryProbeOnce(
-            runtime,
-            [connectionName, "dataset", t.dataset],
-            () => bigqueryDatasetCollations(connection, t.dataset),
+         const datasetTable = (await catalog.datasetTables(t.dataset)).get(
+            t.name,
          );
-         const cols = byTable.get(t.name);
-         // Coverage: the dataset's read must have seen the table.
-         if (cols === undefined) return unknown;
-         for (const [path, c] of cols) {
+         // Coverage, by table: the dataset's read must see it, as a table.
+         if (
+            datasetTable === undefined ||
+            !TABLE_TYPES.has(datasetTable.type)
+         ) {
+            return unknown;
+         }
+         for (const [path, c] of datasetTable.collated) {
             let set = collated.get(path);
             if (!set) {
                set = new Set();
@@ -607,19 +787,22 @@ async function bigquerySource(args: {
             set.add(c);
          }
       }
-      return { known: true, collated };
+      return { known: true, collated, catalog };
    } catch {
       return unknown;
    }
 }
 
 /**
- * A BigQuery database table, judged against its source: byte-exact when
- * every string the source query reads is; else kept only when the table
- * holds each collated source column under the same name and collation and
- * no collated column the source does not (a build's `CREATE TABLE AS` is
- * not known to keep a collation, so the table's own is read). Unknown
- * whenever either side cannot be read.
+ * A BigQuery database table, judged against its source: kept only when its
+ * own collated columns and fields are exactly the source's, path for path
+ * and collation for collation, an empty set on both sides included (a
+ * build's `CREATE TABLE AS` is not known to keep or drop a collation, and a
+ * source replaced after the build may have lost the one its copy kept).
+ * The table's dataset is read once per loaded model when its project-wide
+ * read lists it as holding no collated column (a build reloads the models,
+ * so a rebuilt table is read again); else on every answer. Unknown whenever
+ * either side cannot be read.
  */
 async function bigqueryDatabaseTableCollation(
    t: StoredTable,
@@ -633,27 +816,50 @@ async function bigqueryDatabaseTableCollation(
 ): Promise<Collation> {
    const source = await bigquerySource(args);
    if (!source.known) return "unknown";
-   if (source.collated.size === 0) return "binary";
    const tablePath = t.tablePath;
    if (tablePath === undefined) return "unknown";
-   const segments = tablePath.split("`").join("").split(".");
-   if (segments.length < 2 || segments.length > 3) return "unknown";
-   const dataset = segments.slice(0, -1).join(".");
-   // The stored side is read on every answer (once per answer), as a table
-   // altered after its build must be.
-   const byTable = await memoized(
-      memo,
-      ["bigquery-dataset", connectionName, dataset],
-      () => bigqueryDatasetCollations(connection, dataset),
-   );
-   const stored = byTable.get(segments[segments.length - 1]);
-   if (stored === undefined) return "unknown";
+   const placed = placeTable(tablePath, source.catalog.job.projects);
+   if (placed === undefined) return "unknown";
+   if (source.collated.size === 0) {
+      // A table in a dataset no project-wide read lists as collated, and
+      // seen by the read filtered to it, holds no collated column.
+      const types = await source.catalog.tableTypes([placed]);
+      if (types === undefined) return "unknown";
+      const type =
+         types === "no_region"
+            ? undefined
+            : placed.projects
+                 .map((p) =>
+                    types.get(`${p}.${placed.datasetName}.${placed.name}`),
+                 )
+                 .find((x) => x !== undefined);
+      let listed = types === "no_region";
+      for (const p of placed.projects) {
+         const d = await source.catalog.collatedDatasets(p);
+         if (d === undefined || d.has(placed.datasetName)) listed = true;
+      }
+      if (!listed && type !== undefined && TABLE_TYPES.has(type)) {
+         return "binary";
+      }
+   }
+   // The stored side, read on every answer (once per answer).
+   const stored = (
+      await memoized(
+         memo,
+         ["bigquery-dataset", connectionName, placed.dataset],
+         () => bigqueryDatasetTables(connection, placed.dataset),
+      )
+   ).get(placed.name);
+   if (stored === undefined || !TABLE_TYPES.has(stored.type)) return "unknown";
    for (const [path, collations] of source.collated) {
-      if (collations.size !== 1 || !collations.has(stored.get(path) ?? "")) {
+      if (
+         collations.size !== 1 ||
+         !collations.has(stored.collated.get(path) ?? "")
+      ) {
          return "unknown";
       }
    }
-   for (const [path, c] of stored) {
+   for (const [path, c] of stored.collated) {
       if (!source.collated.get(path)?.has(c)) return "unknown";
    }
    return "binary";

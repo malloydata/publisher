@@ -233,8 +233,9 @@ follow the same rule ([the served copy](#the-served-copy-materialization-v2-publ
     is read from a `storage=` table only when the source's comparison is known to match: on
     BigQuery when no column or `STRUCT` field the query's tables hold carries a collation (read
     from `INFORMATION_SCHEMA`: project-wide in each region the project has datasets in, then per
-    collated dataset; each table the query reads must be in a dataset the read saw; an `.sql()`
-    source, whose tables are not known, is served when its projects list no collated column), and
+    collated dataset; each table the query reads must itself be seen by a read filtered to it; a
+    view or an `.sql()` source, whose tables are not known, is served only when its projects list
+    no collated column), and
     the query's SQL names no `COLLATE`; on a
     DuckDB-dialect source when the instance sets no `default_collation`
     and no `COLLATE` appears in the query's SQL or in any table or view the instance holds; on

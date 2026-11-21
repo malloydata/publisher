@@ -54,27 +54,39 @@ function standInBigQuery(name: string): Connection {
          ],
       }),
       // The bind's catalog read of the stored table's columns, as BigQuery
-      // types them; every other statement returns nothing (the collation
-      // probe's reads among them: no collated column).
+      // types them, and the collation probe's read of the stored table's
+      // type; every other statement returns nothing (the collation probe's
+      // other reads among them: no collated column).
       runSQL: async (sql: string) =>
-         sql.includes("INFORMATION_SCHEMA.COLUMNS") &&
-         !sql.includes("collation_name")
+         /INFORMATION_SCHEMA\.TABLES\b/.test(sql)
             ? {
                  rows: [
                     {
+                       table_schema: "scratch",
                        table_name: "by_k_table",
-                       column_name: "k",
-                       data_type: "STRING",
-                    },
-                    {
-                       table_name: "by_k_table",
-                       column_name: "total",
-                       data_type: "INT64",
+                       table_type: "BASE TABLE",
                     },
                  ],
-                 totalRows: 2,
+                 totalRows: 1,
               }
-            : { rows: [], totalRows: 0 },
+            : sql.includes("INFORMATION_SCHEMA.COLUMNS") &&
+                !sql.includes("collation_name")
+              ? {
+                   rows: [
+                      {
+                         table_name: "by_k_table",
+                         column_name: "k",
+                         data_type: "STRING",
+                      },
+                      {
+                         table_name: "by_k_table",
+                         column_name: "total",
+                         data_type: "INT64",
+                      },
+                   ],
+                   totalRows: 2,
+                }
+              : { rows: [], totalRows: 0 },
    });
    return connection;
 }
