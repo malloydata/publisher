@@ -44,7 +44,7 @@ import {
    toPublicConnections,
 } from "../service/connection_public_view";
 import {
-   validateAttachedDatabaseFields,
+   validateConnectionSqlFields,
    validateDuckdbApiSurface,
 } from "../service/connection_config";
 import { assertSingleSelect } from "../service/single_select";
@@ -1318,7 +1318,7 @@ export class ConnectionController {
       // a secret literal: either off its documented pattern is a 400, before
       // any ATTACH is tried.
       try {
-         validateAttachedDatabaseFields(connectionConfig);
+         validateConnectionSqlFields(connectionConfig);
       } catch (error) {
          throw new BadRequestError((error as Error).message);
       }

@@ -232,16 +232,42 @@ export const ATTACHED_DATABASE_NAME_PATTERN = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
  */
 export const S3_REGION_PATTERN = /^[a-zA-Z0-9_-]+$/;
 
+/** Throws unless `region`, when set, matches {@link S3_REGION_PATTERN}. */
+function assertS3Region(
+   region: unknown,
+   field: string,
+   connectionName: string | undefined,
+): void {
+   if (region === undefined || region === null || region === "") return;
+   if (typeof region === "string" && S3_REGION_PATTERN.test(region)) return;
+   throw new Error(
+      `${field} on connection "${connectionName}" is invalid: an S3 region ` +
+         `must match ${S3_REGION_PATTERN.source} (letters, digits, hyphens or ` +
+         `underscores, such as us-east-1).`,
+   );
+}
+
 /**
- * Throws unless every `attachedDatabases[]` entry on `connection` that sets a
- * name matches {@link ATTACHED_DATABASE_NAME_PATTERN} and every S3 region set
- * matches {@link S3_REGION_PATTERN}. An absent name or region is left to the
- * attach that reads it. The message names the entry by position, not by the
- * rejected text.
+ * Throws unless every connection field Publisher places in setup SQL holds
+ * its shape: each `attachedDatabases[]` name that is set matches
+ * {@link ATTACHED_DATABASE_NAME_PATTERN}, and each S3 region that is set (an
+ * attached database's, a DuckLake connection's storage) matches
+ * {@link S3_REGION_PATTERN}. An absent value is left to the attach that reads
+ * it. The message names the field by path, not by the rejected text.
  */
-export function validateAttachedDatabaseFields(
+export function validateConnectionSqlFields(
    connection: Partial<ApiConnection>,
 ): void {
+   assertS3Region(
+      (
+         connection.ducklakeConnection?.storage?.s3Connection as
+            | { region?: unknown }
+            | null
+            | undefined
+      )?.region,
+      "ducklakeConnection.storage.s3Connection.region",
+      connection.name,
+   );
    const attached = connection.duckdbConnection?.attachedDatabases;
    if (!Array.isArray(attached)) return;
    attached.forEach((attachedDb, index) => {
@@ -265,20 +291,11 @@ export function validateAttachedDatabaseFields(
                `then letters, digits or underscores).`,
          );
       }
-      const region = entry?.s3Connection?.region;
-      if (
-         region !== undefined &&
-         region !== null &&
-         region !== "" &&
-         !(typeof region === "string" && S3_REGION_PATTERN.test(region))
-      ) {
-         throw new Error(
-            `attachedDatabases[${index}].s3Connection.region on connection ` +
-               `"${connection.name}" is invalid: an S3 region must match ` +
-               `${S3_REGION_PATTERN.source} (letters, digits, hyphens or ` +
-               `underscores, such as us-east-1).`,
-         );
-      }
+      assertS3Region(
+         entry?.s3Connection?.region,
+         `attachedDatabases[${index}].s3Connection.region`,
+         connection.name,
+      );
    });
 }
 
@@ -289,8 +306,9 @@ export function validateAttachedDatabaseFields(
 // DuckDB's local-file access is unchanged. Adversarial filesystem isolation
 // (path-traversal checks, an allowlist) is not provided.
 export function validateDuckdbApiSurface(connection: ApiConnection): void {
-   // Before the type test: a PATCH may send attachedDatabases without a type.
-   validateAttachedDatabaseFields(connection);
+   // Before the type test: a PATCH may send attachedDatabases without a type,
+   // and a DuckLake connection's storage region is checked here too.
+   validateConnectionSqlFields(connection);
    if (connection.type !== "duckdb" || !connection.duckdbConnection) return;
 
    const unsupportedFields = Object.keys(connection.duckdbConnection).filter(

@@ -2485,6 +2485,26 @@ describe("EnvironmentStore path-injection guards", () => {
          ).rejects.toBeInstanceOf(BadRequestError);
       });
 
+      it("is a 400 for a DuckLake storage region off its shape when an environment is created", async () => {
+         await expect(
+            environmentStore.addEnvironment(
+               {
+                  name: "ok-env",
+                  connections: [
+                     {
+                        name: "lake",
+                        type: "ducklake",
+                        ducklakeConnection: {
+                           storage: { s3Connection: { region: "x'y" } },
+                        },
+                     },
+                  ],
+               } as never,
+               true,
+            ),
+         ).rejects.toThrow("ducklakeConnection.storage.s3Connection.region");
+      });
+
       it("is a 400 when an environment is updated", async () => {
          await expect(
             environmentStore.updateEnvironment(environment as never),

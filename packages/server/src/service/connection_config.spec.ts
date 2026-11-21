@@ -13,7 +13,7 @@ import { logger } from "../logger";
 import {
    assembleEnvironmentConnections,
    normalizeSnowflakePrivateKey,
-   validateAttachedDatabaseFields,
+   validateConnectionSqlFields,
    validateDuckdbApiSurface,
    validateStorageDestinations,
 } from "./connection_config";
@@ -1744,7 +1744,7 @@ describe("attachedDatabases[].name is held to its documented pattern", () => {
       "",
       "semi;colon",
    ])("refuses %p, naming the entry by position, not by its text", (name) => {
-      const refuse = () => validateAttachedDatabaseFields(withAttached(name));
+      const refuse = () => validateConnectionSqlFields(withAttached(name));
       expect(refuse).toThrow(
          /attachedDatabases\[1\]\.name on connection "lake" is invalid/,
       );
@@ -1754,20 +1754,20 @@ describe("attachedDatabases[].name is held to its documented pattern", () => {
    });
 
    it("refuses a name that is not a string", () => {
-      expect(() => validateAttachedDatabaseFields(withAttached(42))).toThrow(
+      expect(() => validateConnectionSqlFields(withAttached(42))).toThrow(
          /is invalid/,
       );
    });
 
    it.each(["sales", "_sales", "Sales_DB_1", "a"])("accepts %p", (name) => {
       expect(() =>
-         validateAttachedDatabaseFields(withAttached(name)),
+         validateConnectionSqlFields(withAttached(name)),
       ).not.toThrow();
    });
 
    it("leaves an absent name to the attach that reads it", () => {
       expect(() =>
-         validateAttachedDatabaseFields(withAttached(undefined)),
+         validateConnectionSqlFields(withAttached(undefined)),
       ).not.toThrow();
    });
 
@@ -1813,7 +1813,7 @@ describe("attachedDatabases[].s3Connection.region is held to a region's shape", 
       "us-east-1;",
       "eu/west",
    ])("refuses %p without echoing it", (region) => {
-      const refuse = () => validateAttachedDatabaseFields(withRegion(region));
+      const refuse = () => validateConnectionSqlFields(withRegion(region));
       expect(refuse).toThrow(
          /attachedDatabases\[0\]\.s3Connection\.region on connection "lake" is invalid/,
       );
@@ -1821,7 +1821,7 @@ describe("attachedDatabases[].s3Connection.region is held to a region's shape", 
    });
 
    it("refuses a region that is not a string", () => {
-      expect(() => validateAttachedDatabaseFields(withRegion(7))).toThrow(
+      expect(() => validateConnectionSqlFields(withRegion(7))).toThrow(
          /region .* is invalid/,
       );
    });
@@ -1830,7 +1830,7 @@ describe("attachedDatabases[].s3Connection.region is held to a region's shape", 
       "accepts %p",
       (region) => {
          expect(() =>
-            validateAttachedDatabaseFields(withRegion(region)),
+            validateConnectionSqlFields(withRegion(region)),
          ).not.toThrow();
       },
    );
@@ -1842,5 +1842,59 @@ describe("attachedDatabases[].s3Connection.region is held to a region's shape", 
       expect(() =>
          assembleEnvironmentConnections([withRegion("x'y")], "/tmp/env"),
       ).toThrow(/s3Connection\.region/);
+   });
+});
+
+describe("ducklakeConnection.storage.s3Connection.region is held to a region's shape", () => {
+   const withRegion = (region: unknown): ApiConnection =>
+      ({
+         name: "lake",
+         type: "ducklake",
+         ducklakeConnection: {
+            catalog: {
+               postgresConnection: {
+                  host: "127.0.0.1",
+                  port: 5432,
+                  databaseName: "catalog",
+                  userName: "u",
+                  password: "p",
+               },
+            },
+            storage: {
+               bucketUrl: "s3://bucket/lake",
+               s3Connection: {
+                  accessKeyId: "AK",
+                  secretAccessKey: "SK",
+                  region,
+               },
+            },
+         },
+      }) as ApiConnection;
+   const hostile = "us-east-1'); SET threads=1; --";
+
+   it("refuses a bad region by path, without echoing it", () => {
+      const refuse = () => validateConnectionSqlFields(withRegion(hostile));
+      expect(refuse).toThrow(
+         /ducklakeConnection\.storage\.s3Connection\.region on connection "lake" is invalid/,
+      );
+      expect(refuse).not.toThrow(hostile);
+      expect(() => validateConnectionSqlFields(withRegion(7))).toThrow(
+         /is invalid/,
+      );
+   });
+
+   it("refuses it in the surface check without a type (a PATCH), and at config load", () => {
+      const patch = withRegion("x'y");
+      delete (patch as { type?: string }).type;
+      expect(() => validateDuckdbApiSurface(patch)).toThrow(/region/);
+      expect(() =>
+         assembleEnvironmentConnections([withRegion("x'y")], "/tmp/env"),
+      ).toThrow(/ducklakeConnection\.storage\.s3Connection\.region/);
+   });
+
+   it.each(["us-east-1", "auto", undefined, ""])("accepts %p", (region) => {
+      expect(() =>
+         validateConnectionSqlFields(withRegion(region)),
+      ).not.toThrow();
    });
 });

@@ -1267,6 +1267,84 @@ describe("ConnectionController: an attached S3 region off its shape is a 400", (
    });
 });
 
+describe("ConnectionController: a DuckLake storage S3 region off its shape is a 400", () => {
+   afterEach(() => sinon.restore());
+
+   const withRegion = (region: string) => ({
+      name: "lake",
+      type: "ducklake" as const,
+      ducklakeConnection: {
+         catalog: {
+            postgresConnection: { host: "10.0.0.1", port: 5432 },
+         },
+         storage: {
+            bucketUrl: "s3://bucket/lake",
+            s3Connection: {
+               accessKeyId: "AK",
+               secretAccessKey: "SK",
+               region,
+            },
+         },
+      },
+   });
+   const hostile = "us-east-1'); SET threads=1; --";
+
+   it("refuses it on create, update, an untyped PATCH and test, before anything runs", async () => {
+      const { controller } = buildController(sinon.stub().resolves());
+      const service = {
+         addConnection: sinon.stub().resolves(),
+         updateConnection: sinon.stub().resolves(),
+      };
+      (
+         controller as unknown as { connectionService: typeof service }
+      ).connectionService = service;
+      const { type: _type, ...untyped } = withRegion(hostile);
+      const attempts = [
+         () =>
+            controller.addConnection(
+               "env",
+               "lake",
+               withRegion(hostile) as never,
+            ),
+         () =>
+            controller.updateConnection(
+               "env",
+               "lake",
+               withRegion(hostile) as never,
+            ),
+         () => controller.updateConnection("env", "lake", untyped as never),
+         () =>
+            controller.testConnectionConfiguration(
+               withRegion(hostile) as never,
+            ),
+      ];
+      for (const attempt of attempts) {
+         await expect(attempt()).rejects.toBeInstanceOf(BadRequestError);
+         await expect(attempt()).rejects.toThrow(
+            "ducklakeConnection.storage.s3Connection.region",
+         );
+      }
+      expect(service.addConnection.called).toBe(false);
+      expect(service.updateConnection.called).toBe(false);
+   });
+
+   it("stores a valid region as before", async () => {
+      const { controller } = buildController(sinon.stub().resolves());
+      const addConnection = sinon.stub().resolves();
+      (
+         controller as unknown as {
+            connectionService: { addConnection: sinon.SinonStub };
+         }
+      ).connectionService = { addConnection } as never;
+      await controller.addConnection(
+         "env",
+         "lake",
+         withRegion("eu-west-2") as never,
+      );
+      expect(addConnection.calledOnce).toBe(true);
+   });
+});
+
 describe("ConnectionController.testConnectionConfiguration name validation", () => {
    afterEach(() => sinon.restore());
 
