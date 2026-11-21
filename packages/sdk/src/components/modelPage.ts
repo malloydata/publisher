@@ -2,11 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * The model page a server asks for, its `PUBLISHER_MODEL_PAGE`. The Explorer
- * writes the queries it builds back to Malloy text with string values unescaped
- * (`escapeString` in `@malloydata/malloy-interfaces` is a TODO), so a drilled
- * value holding a double quote rewrites its query; `viewer` shows a page that
- * builds none.
+ * The model page a server asks for, its `PUBLISHER_MODEL_PAGE`: `explorer`
+ * builds queries, `viewer` shows a page that builds none.
  */
 export type ModelPage = "explorer" | "viewer";
 

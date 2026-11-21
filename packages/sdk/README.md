@@ -364,10 +364,6 @@ The Explorer's own components, [`ModelExplorer`](#modelexplorer), `ModelExplorer
 `SourcesExplorer`, ignore the setting: each is the Explorer wherever it is drawn, so a host that
 renders one checks `useServer().modelPage` first.
 
-The Explorer writes the queries it builds back to Malloy text through `@malloydata/malloy-interfaces`,
-which puts a string value in unescaped (`escapeString` is a TODO), so a drilled value holding a double
-quote rewrites its query.
-
 ```tsx
 import { Model, encodeResourceUri } from "@malloy-publisher/sdk";
 
