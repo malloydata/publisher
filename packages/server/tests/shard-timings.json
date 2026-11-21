@@ -81,7 +81,6 @@
     "src/mcp_config.spec.ts": 59,
     "src/mcp_exposure.spec.ts": 154,
     "src/node_version_check.spec.ts": 2,
-    "src/notebook_metrics.spec.ts": 1,
     "src/package_embedding_status_contract.spec.ts": 4,
     "src/package_load/job_files.spec.ts": 90,
     "src/package_load/load_shapes.spec.ts": 1274,

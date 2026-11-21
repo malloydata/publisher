@@ -77,6 +77,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.ivl_events"
+          }
+        ],
         "refresh": "incremental",
         "sourceEntityId": "5f853126c98e0bbbf7adcd993bc8d647ba38b72889f448af72cdc21a79ef89fb",
         "sourceID": "events@<hammer>/ivl/ivl.malloy",

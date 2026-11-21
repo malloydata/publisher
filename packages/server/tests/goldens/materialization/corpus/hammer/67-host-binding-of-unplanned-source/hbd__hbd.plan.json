@@ -75,6 +75,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.hbd_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "e4602c5b0af31c1f245edd939382d839251e6668e80a37b4896b696d05eb0451",
         "sourceID": "all_rows@<hammer>/hbd/hbd.malloy",

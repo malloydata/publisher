@@ -117,7 +117,6 @@ export type EnvironmentConnectionMetadata = {
    apiConnection: ApiConnection;
    attachedDatabases: AttachedDatabase[];
    hasAzureAttachment: boolean;
-   hasSnowflakePrivateKey: boolean;
    isDuckLake: boolean;
    databasePath?: string;
    workingDirectory: string;
@@ -218,6 +217,88 @@ export function normalizeSnowflakePrivateKey(privateKey: string): string {
    return privateKeyContent;
 }
 
+/**
+ * The pattern `AttachedDatabase.name` documents (api-doc.yaml): a letter or
+ * underscore, then letters, digits and underscores. The name becomes a DuckDB
+ * catalog alias and part of a secret's name, so it is held to it wherever a
+ * connection's config is accepted.
+ */
+export const ATTACHED_DATABASE_NAME_PATTERN = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
+
+/**
+ * The shape an S3 region takes (`us-east-1`, an S3-compatible store's own
+ * name). The region becomes a string literal in the attach's secret, so it is
+ * held to it wherever a connection's config is accepted, as the name is.
+ */
+export const S3_REGION_PATTERN = /^[a-zA-Z0-9_-]+$/;
+
+/** Throws unless `region`, when set, matches {@link S3_REGION_PATTERN}. */
+function assertS3Region(
+   region: unknown,
+   field: string,
+   connectionName: string | undefined,
+): void {
+   if (region === undefined || region === null || region === "") return;
+   if (typeof region === "string" && S3_REGION_PATTERN.test(region)) return;
+   throw new Error(
+      `${field} on connection "${connectionName}" is invalid: an S3 region ` +
+         `must match ${S3_REGION_PATTERN.source} (letters, digits, hyphens or ` +
+         `underscores, such as us-east-1).`,
+   );
+}
+
+/**
+ * Throws unless every connection field Publisher places in setup SQL holds
+ * its shape: each `attachedDatabases[]` name that is set matches
+ * {@link ATTACHED_DATABASE_NAME_PATTERN}, and each S3 region that is set (an
+ * attached database's, a DuckLake connection's storage) matches
+ * {@link S3_REGION_PATTERN}. An absent value is left to the attach that reads
+ * it. The message names the field by path, not by the rejected text.
+ */
+export function validateConnectionSqlFields(
+   connection: Partial<ApiConnection>,
+): void {
+   assertS3Region(
+      (
+         connection.ducklakeConnection?.storage?.s3Connection as
+            | { region?: unknown }
+            | null
+            | undefined
+      )?.region,
+      "ducklakeConnection.storage.s3Connection.region",
+      connection.name,
+   );
+   const attached = connection.duckdbConnection?.attachedDatabases;
+   if (!Array.isArray(attached)) return;
+   attached.forEach((attachedDb, index) => {
+      const entry = attachedDb as {
+         name?: unknown;
+         s3Connection?: { region?: unknown } | null;
+      } | null;
+      const name = entry?.name;
+      if (
+         name !== undefined &&
+         name !== null &&
+         !(
+            typeof name === "string" &&
+            ATTACHED_DATABASE_NAME_PATTERN.test(name)
+         )
+      ) {
+         throw new Error(
+            `attachedDatabases[${index}].name on connection "${connection.name}" ` +
+               `is invalid: an attached database name must match ` +
+               `${ATTACHED_DATABASE_NAME_PATTERN.source} (a letter or underscore, ` +
+               `then letters, digits or underscores).`,
+         );
+      }
+      assertS3Region(
+         entry?.s3Connection?.region,
+         `attachedDatabases[${index}].s3Connection.region`,
+         connection.name,
+      );
+   });
+}
+
 // Narrows the environment-author API surface: rejects securityPolicy,
 // allowedDirectories, etc., and admits setupSQL only behind
 // PUBLISHER_ALLOW_DUCKDB_SETUP_SQL. It is NOT a filesystem isolation boundary:
@@ -225,6 +306,9 @@ export function normalizeSnowflakePrivateKey(privateKey: string): string {
 // DuckDB's local-file access is unchanged. Adversarial filesystem isolation
 // (path-traversal checks, an allowlist) is not provided.
 export function validateDuckdbApiSurface(connection: ApiConnection): void {
+   // Before the type test: a PATCH may send attachedDatabases without a type,
+   // and a DuckLake connection's storage region is checked here too.
+   validateConnectionSqlFields(connection);
    if (connection.type !== "duckdb" || !connection.duckdbConnection) return;
 
    const unsupportedFields = Object.keys(connection.duckdbConnection).filter(
@@ -999,6 +1083,13 @@ export const DECLARABLE_STORAGE_DESTINATION_TYPES: ReadonlySet<string> =
  */
 export const STORAGE_DESTINATIONS_DIR = ".storage-destinations";
 
+/**
+ * The connection every package gets of its own: an in-memory DuckDB sandbox,
+ * so nothing built in it survives a restart. The name is reserved: a
+ * destination or environment connection may not take it.
+ */
+export const PACKAGE_SANDBOX_CONNECTION = "duckdb";
+
 /** Where {@link STORAGE_DESTINATIONS_DIR} sits for an environment. */
 export function storageDestinationRoot(environmentPath: string): string {
    return path.join(environmentPath, STORAGE_DESTINATIONS_DIR);
@@ -1363,6 +1454,30 @@ function configBoolean(value: unknown, name: string): boolean | undefined {
    );
 }
 
+/**
+ * Drop keys whose value is `undefined` or `null`.
+ *
+ * The null guard for connectors Publisher builds itself, outside Malloy's
+ * registry (which strips nulls on its own path). A surviving `null` reaches
+ * `makeDigest`, which reads `.length` off each part, and throws on the first
+ * digest; the package-load worker takes that digest, so the whole package fails
+ * to load ("import reference failure") while /compile still succeeds.
+ *
+ * Nulls come from an explicit `null` in publisher.config.json or a client
+ * serializing unset optionals over POST /connections, and persist through the
+ * repository's JSON round trip. An explicit null and an omitted field produce
+ * the same digest.
+ */
+export function removeUndefined<T extends object>(
+   value: T,
+): { [K in keyof T]?: Exclude<T[K], null> } {
+   return Object.fromEntries(
+      Object.entries(value).filter(
+         ([, fieldValue]) => fieldValue !== undefined && fieldValue !== null,
+      ),
+   ) as { [K in keyof T]?: Exclude<T[K], null> };
+}
+
 function buildSnowflakeEntry(connection: NamedConnection): CoreConnectionEntry {
    return {
       is: "snowflake",
@@ -1379,10 +1494,9 @@ function buildSnowflakeEntry(connection: NamedConnection): CoreConnectionEntry {
       ),
       warehouse: connection.snowflakeConnection?.warehouse,
       // An explicit `null` here would throw in Malloy's `makeDigest` (see
-      // nullToUndefined). Defense in depth: Malloy's connection lookup drops
-      // nulls today, but that guard is not a contract and the dependency is a
-      // caret range. The key-pair path that bypasses the lookup is handled by
-      // `removeUndefined` in connection.ts.
+      // nullToUndefined). Publisher builds every Snowflake connection itself
+      // (snowflake_connection.ts), which drops them too; this entry only
+      // registers the name.
       database: nullToUndefined(connection.snowflakeConnection?.database),
       schema: nullToUndefined(connection.snowflakeConnection?.schema),
       role: nullToUndefined(connection.snowflakeConnection?.role),
@@ -1600,9 +1714,6 @@ export function assembleEnvironmentConnections(
          hasAzureAttachment: attachedDatabases.some(
             (database) => database.type === "azure",
          ),
-         hasSnowflakePrivateKey:
-            connection.type === "snowflake" &&
-            !!connection.snowflakeConnection?.privateKey,
          isDuckLake,
          databasePath,
          workingDirectory: environmentPath,

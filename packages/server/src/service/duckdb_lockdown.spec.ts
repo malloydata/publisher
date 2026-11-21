@@ -253,6 +253,31 @@ async function expectCommonVectorsRefused(
          `COPY (SELECT 1) TO '${root}/pkg/x.csv'\n-- hack: split on this\nSELECT 1`,
       ),
    ).toContain("locked down");
+   // Nor after it: the query Malloy splits off last is gated before any part
+   // runs, so a macro placed in front of a refused query is never created.
+   const macro = `lockdown_sep_${Math.random().toString(36).slice(2)}`;
+   const macroCount = async () =>
+      Number(
+         rowsOf(
+            await runInternalSQL(
+               connection,
+               `SELECT count(*) AS n FROM duckdb_functions() WHERE function_name = '${macro}'`,
+            ),
+         )[0]?.n,
+      );
+   for (const query of [
+      "SELECT * FROM duckdb_settings()",
+      "CREATE SECRET sep (TYPE http, BEARER_TOKEN 't')",
+      "SELECT 1; SELECT 2",
+   ]) {
+      expect(
+         await refused(
+            connection,
+            `CREATE MACRO ${macro}() AS 1\n-- hack: split on this\n${query}`,
+         ),
+      ).toContain("locked down");
+      expect(await macroCount()).toBe(0);
+   }
    // A .sql() source is one SELECT, decided by DuckDB's parser.
    const sqlSource = (selectStr: string) =>
       (
@@ -587,6 +612,16 @@ describe("author SQL in a model on a DuckDB connection reads as one SELECT", () 
          await expect(load(model)).rejects.toThrow(
             /introspection|does not exist/,
          );
+      }
+   });
+
+   it("refuses author SQL that spells the DuckDB connector's statement separator", async () => {
+      for (const model of [
+         `source: s is duckdb.sql("SELECT 1 AS a -- hack: split on this")`,
+         `source: s is duckdb.sql("SELECT '-- hack: split on this' AS a")`,
+         `source: s is duckdb.sql("SELECT 1 AS a") extend { dimension: d is sql_string("'-- hack: split on this'") }`,
+      ]) {
+         await expect(load(model)).rejects.toThrow(/statement separator/);
       }
    });
 

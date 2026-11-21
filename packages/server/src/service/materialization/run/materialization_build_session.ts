@@ -106,7 +106,7 @@ import {
    destinationSchemaOf,
    storageTablePath,
 } from "../domain/storage_table_path";
-import { carriesAuthorSql, isSameCatalog } from "./same_catalog_build";
+import { carriesAuthorSql, isSameCatalog } from "../domain/same_catalog_build";
 import {
    numericAsTextSQL,
    postgresNumericColumns,
@@ -1398,7 +1398,6 @@ export async function buildDownstreamIntoStorage(params: {
       model,
       downstreamName,
       virtualMap,
-      physicalTableName,
       environmentPath,
    } = params;
 
@@ -1420,35 +1419,89 @@ export async function buildDownstreamIntoStorage(params: {
             ),
          });
 
-         // Quoted as in buildSourceIntoStorage, to match the serve side.
-         const target = quoteManifestTablePath(
-            storageTablePath(
-               destinationName,
-               physicalTableName,
-               destinationSchemaOf(destinationConnection),
-            ),
-            STORAGE_DIALECT,
-         );
-         // The downstream's own declared types, as for a recompute.
-         const casts = storageBuildCasts(downstream);
-         const schema = await createTableWithDeclaredTypes(
-            session,
-            target,
-            sql,
-            { columns: casts.declaredColumns, ...casts.castOptions },
-            params.replacesView ? { replacesView: params.replacesView } : {},
-         );
-
-         return {
-            storageDestinationName: destinationName,
-            schema,
-            rowCount: await countStoredRows(session, target),
-            // Reads no source warehouse: here, uniquely, null means "spent nothing".
-            readCost: null,
-            upstreamReuse: "reused",
-         };
+         return writeStackedTable(session, params, sql, downstream);
       },
    );
+}
+
+/**
+ * Build a `storage=` source whose recompute runs the same query as a stored
+ * upstream's (one compiler key: an `extend` of it that adds no query of its
+ * own, folded onto a table of its own by a `name=` or a projection of its
+ * own) as a projection of that upstream's table: the same rows a recompute
+ * writes, the columns the source stores, cast to its declared types. The
+ * caller proves the two builds are one; nothing is compiled here.
+ */
+export async function buildProjectionIntoStorage(params: {
+   destinationName: string;
+   destinationConnection: ApiConnection;
+   /** The source being built: its declared types. */
+   downstream: PersistSource;
+   /** The columns it stores (storedColumnNames), each one the upstream's table holds. */
+   columns: readonly string[];
+   /** The upstream's stored table, quoted, as the build session reads it. */
+   upstreamTable: string;
+   /** Logical, unquoted physical table path for the downstream's own table. */
+   physicalTableName: string;
+   environmentPath: string;
+   /** See StorageBuildRequest.replacesView. */
+   replacesView?: string[];
+}): Promise<StorageBuildResult> {
+   const { destinationName, destinationConnection, environmentPath } = params;
+   return withDestinationSession(
+      { destinationName, destinationConnection, environmentPath },
+      { purpose: "build", build: true },
+      async (session) =>
+         writeStackedTable(
+            session,
+            params,
+            `SELECT ${params.columns
+               .map((c) => quoteIdentifier(c, STORAGE_DIALECT))
+               .join(", ")} FROM ${params.upstreamTable}`,
+            params.downstream,
+         ),
+   );
+}
+
+/** CTAS a stacked build's SQL into the destination, as a recompute types it. */
+async function writeStackedTable(
+   session: DuckDBConnection,
+   params: {
+      destinationName: string;
+      destinationConnection: ApiConnection;
+      physicalTableName: string;
+      replacesView?: string[];
+   },
+   sql: string,
+   downstream: PersistSource,
+): Promise<StorageBuildResult> {
+   const { destinationName, destinationConnection, physicalTableName } = params;
+   // Quoted as in buildSourceIntoStorage, to match the serve side.
+   const target = quoteManifestTablePath(
+      storageTablePath(
+         destinationName,
+         physicalTableName,
+         destinationSchemaOf(destinationConnection),
+      ),
+      STORAGE_DIALECT,
+   );
+   // The downstream's own declared types, as for a recompute.
+   const casts = storageBuildCasts(downstream);
+   const schema = await createTableWithDeclaredTypes(
+      session,
+      target,
+      sql,
+      { columns: casts.declaredColumns, ...casts.castOptions },
+      params.replacesView ? { replacesView: params.replacesView } : {},
+   );
+   return {
+      storageDestinationName: destinationName,
+      schema,
+      rowCount: await countStoredRows(session, target),
+      // Reads no source warehouse: here, uniquely, null means "spent nothing".
+      readCost: null,
+      upstreamReuse: "reused",
+   };
 }
 
 /** A DuckLake destination's catalog config, or a clean 400 when it has none. */

@@ -73,12 +73,11 @@ is how a local authoring loop talks to a hosted environment.
 
 ## Packages in this repo
 
-| Package                                                  | Description                                                                                                                                     |
-| -------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| **[packages/server](../packages/server/)**               | Express.js backend providing REST API (port 4000) and MCP API (port 4040). Loads Malloy packages, compiles queries, executes against databases. |
-| **[packages/sdk](../packages/sdk/)**                     | React component library the Console is built from (internal — see above).                                                                       |
-| **[packages/app](../packages/app/)**                     | Reference implementation and production-ready data exploration tool built with the SDK.                                                         |
-| **[packages/python-client](../packages/python-client/)** | Auto-generated Python SDK for the REST API.                                                                                                     |
+| Package                                    | Description                                                                                                                                     |
+| ------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| **[packages/server](../packages/server/)** | Express.js backend providing REST API (port 4000) and MCP API (port 4040). Loads Malloy packages, compiles queries, executes against databases. |
+| **[packages/sdk](../packages/sdk/)**       | React component library the Console is built from (internal — see above).                                                                       |
+| **[packages/app](../packages/app/)**       | Reference implementation and production-ready data exploration tool built with the SDK.                                                         |
 
 ## Materialization inside the server
 
@@ -135,7 +134,7 @@ only when a rule needs one); **govern** whatever answered, the authority on ever
 live; **run** it with the
 manifest or virtual map the answer names, retrying live only when every binding it read allows it;
 and **report**: the caps, the metrics, the access record and the path report, all read off the one
-`Answer`. A notebook cell is governed and run on its own compile, not routed.
+`Answer`.
 
 **The build path.** A package's load plans it: the load worker compiles each model and plans it in
 `plan/`, which reads each declaration once (`declaration.ts`), plans and compiles each generated

@@ -87,6 +87,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.xpn_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "bbd710d6e522f2ecb13f6cc756060a32752660ce8839ed176ebbd7b0729c51c7",
         "sourceID": "daily@<hammer>/xpn/xpn.malloy",
@@ -119,6 +125,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.xpn_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "a488ac5a2b6eb1a61248c5c7a8343146ebecc0ddf02bd092ae29fd8203ba5e21",
         "sourceID": "daily_with_avg@<hammer>/xpn/xpn.malloy",

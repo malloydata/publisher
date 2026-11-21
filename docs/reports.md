@@ -519,6 +519,41 @@ read-only support, so existing ones still open and run as linear reports, wherev
 create one. A `.malloynb`'s compile errors show only when its cells run, and it takes its options as
 file-level `## autorun=false` and `## givens { … }` lines rather than inside an artifact tag.
 
+Each code cell runs through `POST …/models/{path}/query` as query text, so its `run:` statement runs in
+restricted mode: a `run:` that calls a `sql_*` function answers `400`, and so does one that reads a table
+directly, such as `run: duckdb.table('data/orders.csv') -> …`, on a package with no `index.malloy`. With
+one, the surface refuses that read first, with `404`. To keep such a cell, declare the table, or a dimension
+over the `sql_*` expression, in a source the notebook declares, and run that source. On a
+package with an `index.malloy`, a source the cells declare is not queryable, so declare it in a model file
+and export it from `index.malloy`. A join written in a cell's `run:` is the caller's join, gated as a run
+target is, as [authorize.md](authorize.md#the-entry-point-and-only-the-entry-point) describes. To keep a
+join the author's, declare it in a source in a model file.
+
+Two more shapes are refused for every reader. A `run:` whose text carries an annotation only the model
+author may write, such as `#(authorize)` or `#(classification)`, answers `400`, even when the annotation
+is only spelled in a comment beside the `run:`; remove it from the cell. A `run:` over a source with a
+required `#(filter)` answers `400`, because the Console sends no filter value for a notebook cell; move
+the filter to a `given:` declaration, as [Coming from `#(filter)`](givens.md#coming-from-filter)
+describes. A `run:` that fails to compile on its own for any
+other reason answers `400` with the compiler's message; fix the statement so it compiles alone.
+
+Each code cell the query route would refuse for every reader in the Console is a package warning when
+the package loads, code `malloynb-cell-refused`, so these show in the package warnings and the Console
+before a reader opens the notebook. The warning names the notebook, the cell by its position counting
+markdown cells, the rule as `reason` and the fix. The rules are `off_surface`, `caller_annotation` for
+an annotation only the model author may write, such as `#(authorize)` in a comment beside the `run:`,
+`required_filter` for a required `#(filter)`, which the Console never fills, `restricted_mode`, and
+`compile_error` for any other compile failure of the `run:` statement on its own. It runs the query
+route's checks, in the route's order, on the text the Console sends, and a test holds the two together
+for every cell of a fixture package. Markdown cells are not read, since the Console does not run them. A
+cell that only a reader's givens refuse, by `#(authorize)` or a row-level gate, gets no warning, and a
+caller sending `includeHiddenFilesAndSources` still runs an `off_surface` cell. A notebook lists at most
+10 refused cells one by one and a package at most 50. The rest of a notebook that lists some are named
+by number and reason in one `malloynb-cells-unlisted` warning for that notebook. The notebooks after the
+package limit share one `malloynb-cells-unlisted` warning with no `model`, which counts their cells by
+reason and names the first 10 of them, so the number of warnings stays bounded however many notebooks
+there are.
+
 ## Filter controls
 
 Controls are the `given:` declarations the tiles reference. **Declare them in the report file**: it is the
@@ -905,10 +940,6 @@ that are otherwise silent: a control that never appears, a click that goes nowhe
 
   The warning leaves the source unnamed when the package gates anything with `#(authorize)`.
 
-- **A shared grid basename.** Two or more grid reports with the same file name in different directories
-  (`report-name-ambiguous`, warn, one per name, naming the paths): the deprecated `…/dashboards/{name}`
-  route answers 409 for that name. The report routes address by path and are unaffected. Fix: rename one of
-  the files.
 - **Tags that did not parse**, on the report or on a `given:` declaration, and renderer tags the validator
   rejects.
 
@@ -942,13 +973,12 @@ everywhere else. A tile's `query` is an expression, so send it as `{"query": "ru
 `text` tiles, which have nothing to run.
 [ai-agents.md](ai-agents.md) has the REST playbook.
 
-**Deprecated aliases.** `GET …/dashboards` and `GET …/dashboards/{name}` answer with the grid reports, the
-item resolving a unique basename and answering `409` naming every match when it is ambiguous (the package
-warns about each such name at load, `report-name-ambiguous`);
-`GET …/notebooks`, `…/notebooks/{path}` and `…/notebooks/{path}/cells/{i}` answer for the linear reports. An
-old Console link `/<env>/<pkg>/dashboards/<name>` or `/notebooks/<name>` still opens: a file that is there
-opens at its path, and otherwise a unique basename redirects to the report's path. All of these are removed
-in a later release; use `…/reports`.
+**Deprecated aliases.** An old Console link `/<env>/<pkg>/dashboards/<name>` or `/notebooks/<name>` still
+opens: a file that is there opens at its path, and otherwise a unique basename redirects to the report's
+path. It is removed in a later release. The `…/dashboards` and `…/notebooks` API routes are removed: list
+with `GET …/reports`, read one by its path with `GET …/reports/{path}`, and run a `.malloynb`'s code cell
+as a tile is run, its `run:` statement as `query` and the `.malloynb`'s path as the model. That works over REST and
+in the `show_report` panel; MCP `execute_query` does not take a `.malloynb` path.
 
 After editing a report file in a watched environment (`--watch-env`), `GET …/packages/<pkg>?reload=true`
 recompiles the package in place, and a reload that fails to compile leaves the previously compiled model
@@ -1077,10 +1107,8 @@ browser instead, keyed by the report's path, and the package page lists those dr
 ## Rendering one in your own React app
 
 `@malloy-publisher/sdk` exports a `Report` component that renders a `.malloy` report of either layout from
-`GET …/reports/{path}`, running every tile and `run:` cell through the query endpoint. `<Dashboard>` and
-`<Notebook>` stay exported as deprecated wrappers over the same renderers, so an existing integration keeps
-working, and `<Notebook>` is the one that renders a legacy `.malloynb`: its cells run only through the
-deprecated notebook routes, which `Report` never calls. The Console is one consumer of these components rather than their
+`GET …/reports/{path}`, running every tile through the query endpoint. It renders a legacy `.malloynb` cell
+by cell, each code cell through the same endpoint. The Console is one consumer of these components rather than their
 home: they take props instead of reading a router, so the host decides what a drill and a filter change
 mean.
 
@@ -1089,22 +1117,22 @@ near the root of your app. Add `versionId` to the URI and every request it makes
 each tile's query, and each control's suggest query. Publisher itself answers `501 Not Implemented` to a
 `versionId` on any route, so this is for a host that resolves versions at its own routing layer.
 
-The example below uses the deprecated `<Dashboard>` wrapper, whose props stay stable until it is removed:
+The example below renders the storefront's `overview.malloy`:
 
 ```tsx
 import {
-  Dashboard,
   encodeResourceUri,
+  Report,
   ServerProvider,
 } from "@malloy-publisher/sdk";
 
 <ServerProvider baseURL="https://publisher.example.com/api/v0">
-  <Dashboard
+  <Report
     resourceUri={encodeResourceUri({
       environmentName: "examples",
       packageName: "storefront",
     })}
-    dashboard="overview"
+    path="overview.malloy"
     givens={Object.fromEntries(searchParams)}
     // MERGE, do not replace. `managed` is every given this report declares,
     // including the ones holding no value right now, so a control the reader
@@ -1269,7 +1297,8 @@ A host that supports [MCP Apps](https://github.com/modelcontextprotocol/ext-apps
 claude.ai among them) draws the report in the conversation, as the Console's reader draws it: the filter row,
 every tile, the click menu with Show rows, and `# drill` click-through, where a drill to another report opens it
 in the same panel with Back to return. "Open in Publisher" takes the report and its current filter values to the
-Console. A host that draws no panel shows the tool's text, which names the report, its tiles and filters, and
+Console. A legacy `.malloynb` opens there too. On a notebook's cells the panel also never offers the
+Explorer, which the Console offers unless the server runs with `PUBLISHER_MODEL_PAGE=viewer`. A host that draws no panel shows the tool's text, which names the report, its tiles and filters, and
 its Console address.
 
 The panel holds no credentials and fetches nothing itself. Its reads (the report, its tiles' queries, the

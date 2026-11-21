@@ -71,6 +71,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.bml_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "6d1c2c89cfb3d5726c7ac619f1bb8cb0eab5b8ce55aac08e2c43ef26ac4b3b7c",
         "sourceID": "daily@<hammer>/bml/bml.malloy",

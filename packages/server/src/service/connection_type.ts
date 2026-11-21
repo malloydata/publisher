@@ -16,9 +16,13 @@
 import { externalEnv } from "../settings/external";
 
 const recorded = new WeakMap<object, string>();
+/** Connections configured `managed` (a catalog an orchestrator provisions). */
+const managed = new WeakSet<object>();
 
 /** Test seam layers: connection name -> the type to record instead. */
 const overrides: Map<string, string>[] = [];
+/** Test seam layers: connection names to record as `managed`. */
+const managedOverrides: Set<string>[] = [];
 
 /**
  * Test seam: record each connection named in `types` as the type it maps to,
@@ -68,6 +72,35 @@ function pushOverrides(types: Record<string, string>): () => void {
    };
 }
 
+/**
+ * Test seam: record each connection named in `names` as `managed`, until the
+ * returned restore is called. Throws outside a test process, as
+ * {@link recordConnectionsAsForTests} does.
+ */
+export function recordConnectionsManagedForTests(
+   names: readonly string[],
+): () => void {
+   if (externalEnv("NODE_ENV") !== "test") {
+      throw new Error(
+         "recordConnectionsManagedForTests is a test seam: it runs only under NODE_ENV=test",
+      );
+   }
+   const layer = new Set(names);
+   managedOverrides.push(layer);
+   return () => {
+      const at = managedOverrides.indexOf(layer);
+      if (at >= 0) managedOverrides.splice(at, 1);
+   };
+}
+
+function managedOverrideOf(connection: object): boolean {
+   const name = (connection as { name?: unknown }).name;
+   return (
+      typeof name === "string" &&
+      managedOverrides.some((layer) => layer.has(name))
+   );
+}
+
 function overrideOf(connection: object): string | undefined {
    const name = (connection as { name?: unknown }).name;
    if (typeof name !== "string") return undefined;
@@ -78,14 +111,41 @@ function overrideOf(connection: object): string | undefined {
    return undefined;
 }
 
-/** Record `connection`'s configured type; returns `connection`. */
+/**
+ * Record `connection`'s configured type, and whether it is configured
+ * `managed`; returns `connection`.
+ */
 export function recordConnectionType<T extends object>(
    connection: T,
    type: string | undefined,
+   options: { managed?: boolean } = {},
 ): T {
    const recordedType = overrideOf(connection) ?? type;
    if (recordedType) recorded.set(connection, recordedType);
+   if (options.managed === true || managedOverrideOf(connection)) {
+      managed.add(connection);
+   }
    return connection;
+}
+
+/** Whether `connection` was recorded as configured `managed`. */
+export function isManagedConnection(
+   connection: object | null | undefined,
+): boolean {
+   return !!connection && managed.has(connection);
+}
+
+/**
+ * The names of the resolved connections recorded as `managed`, sorted, for
+ * the build plan (`CompiledBuildPlan.managedConnections`).
+ */
+export function resolveManagedConnections(
+   connections: ReadonlyMap<string, object>,
+): string[] {
+   return [...connections]
+      .filter(([, connection]) => managed.has(connection))
+      .map(([name]) => name)
+      .sort();
 }
 
 /** The type recorded for `connection`, or undefined when none was. */

@@ -50,6 +50,7 @@ import { reachableSourceIDs, SourceMap } from "./text/source_map";
 import {
    entryPointGateExprs,
    gateColumnTypesOf,
+   gateColumnUpstreamTypesOf,
    gateReads,
 } from "./serve/gate_reads";
 import { ownLevelNotes, type AnnotationsDef } from "../annotations";
@@ -423,6 +424,10 @@ export class ServeVerdicts {
                ? "serves"
                : "not_served";
          },
+         servedCopyOnDatabaseOnly: (sourceID) =>
+            servedCopy.on && !servedCopy.pending
+               ? servedCopy.databaseOnly.has(sourceID)
+               : undefined,
          persistedViewOf: (sourceID) => persistedViews.get(sourceID),
          declaredMaterialize: (sourceID) =>
             this.declaredMaterialize(buildPlan, sourceID),
@@ -804,22 +809,37 @@ function servedCopyState(models: ReadonlyMap<string, Model>): {
    on: boolean;
    pending: boolean;
    ids: ReadonlySet<string>;
+   /** Re-rooted on a database table by some model, on a storage table by none. */
+   databaseOnly: ReadonlySet<string>;
    signature: string;
 } {
    let on = false;
    let pending = false;
    const ids = new Set<string>();
+   const onDatabase = new Set<string>();
+   const onStorage = new Set<string>();
    for (const model of models.values()) {
       const reread = model.servedCopySourceIDs?.();
       if (reread === undefined) continue;
       on = true;
-      if (reread === "pending") pending = true;
-      else for (const id of reread) ids.add(id);
+      if (reread === "pending") {
+         pending = true;
+         continue;
+      }
+      const databaseOnly = model.servedCopyDatabaseOnlyIDs?.() ?? new Set();
+      for (const id of reread) {
+         ids.add(id);
+         (databaseOnly.has(id) ? onDatabase : onStorage).add(id);
+      }
    }
+   // A source another model re-rooted on its storage table is not database-only.
+   const databaseOnly = new Set(
+      [...onDatabase].filter((id) => !onStorage.has(id)),
+   );
    const signature = on
-      ? `${pending ? "pending" : "compiled"}:${[...ids].sort().join(",")}`
+      ? `${pending ? "pending" : "compiled"}:${[...ids].sort().join(",")}:${[...databaseOnly].sort().join(",")}`
       : "off";
-   return { on, pending, ids, signature };
+   return { on, pending, ids, databaseOnly, signature };
 }
 
 /** A plan source's wire columns with both a name and a type. */
@@ -883,7 +903,10 @@ function storageGateRead(
    storageBindings: readonly Binding[],
    buildPlan: BuildPlan | undefined,
    models: Map<string, Model>,
-): Pick<TableRead, "gateColumnTypes" | "gatesReadNoColumn"> {
+): Pick<
+   TableRead,
+   "gateColumnTypes" | "gateColumnUpstreamTypes" | "gatesReadNoColumn"
+> {
    const bound = storageBindings.filter((b) => b.sourceIDs?.includes(sourceID));
    if (bound.length === 0) return { gateColumnTypes: [] };
    const found = gatedDefOf(sourceID, buildPlan, models);
@@ -903,10 +926,18 @@ function storageGateRead(
       !reads.unresolved &&
       reads.columns.length === 0 &&
       reads.names.size === 0;
+   // What each stored gate column copies, aligned with the types.
+   const upstream = gateColumnUpstreamTypesOf(
+      reads,
+      bound.map((b) => b.schema),
+      bound.map((b) => b.upstreamSchemas),
+   );
+   const listed = !types.some((t) => t === undefined);
    return {
-      gateColumnTypes: types.some((t) => t === undefined)
-         ? undefined
-         : types.flatMap((t) => t ?? []),
+      gateColumnTypes: listed ? types.flatMap((t) => t ?? []) : undefined,
+      ...(listed
+         ? { gateColumnUpstreamTypes: upstream.flatMap((u) => u ?? []) }
+         : {}),
       ...(readsNoColumn ? { gatesReadNoColumn: true } : {}),
    };
 }

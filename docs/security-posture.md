@@ -277,11 +277,11 @@ a source that should not answer schema questions to outsiders wants a lock as we
   may not otherwise see, so a failure to attach the gate returns an opaque error naming no column,
   join, or expression — only the source.
 - **A gate is evaluated with the query it is grafted into.** A gate on a field computed from a
-  timestamp follows the query's `timezone:`, and a gate inherited through a `->` derivation filters
-  the derivation's output, after its `all()`, window functions and `limit` have run over every row.
-  For these two live behaviours served answers match a live run. Gate on a column that already
-  holds the date or key, and filter a derivation's input with a first-stage `where:` on the gate's
-  given when its global context is sensitive. See
+  timestamp follows the query's `timezone:`; served answers match a live run. Gate on a column that
+  already holds the date or key. A gate inherited through a `->` derivation filters the base's rows
+  before the derivation runs, so the derivation's `all()`, window functions, `limit` and renames see
+  only the caller's rows; where it cannot be applied there (a base that hides the gate's column) the
+  query is denied. See
   [row-level-access.md § Where a gate is evaluated](row-level-access.md#where-a-gate-is-evaluated).
 - **A row-level gate's given values land in the warehouse query log.** The filter is inlined
   (`WHERE org_id IN (7, 8)`), not parameterized, so every caller's group set appears verbatim in
@@ -424,9 +424,13 @@ secret, and no `SET`/`RESET` once locked. On a locked instance, Publisher also r
 DuckDB sees it, any statement that creates or drops a secret, that reaches DuckDB's logging or
 profiling (which DuckDB's configuration lock does not cover), that runs SQL taken from text
 (`query()`, a serialized plan, `IMPORT DATABASE`), or that introspects the instance's catalog,
-settings, secrets, variables or pragmas, calls DuckLake's own functions, or reaches an attached
-database other than through its tables; author SQL
-that does any of these is refused when the package loads. A Postgres database attached to DuckDB
+settings, secrets, variables, pragmas or its own files (its file cache, spill files and
+extensions), calls DuckLake's own functions, or reaches an attached
+database other than through its tables (an attached database's Postgres system schemas,
+`pg_catalog`, `information_schema`, `pg_toast` and `pg_temp_N`, included; DuckDB's own
+`information_schema` and `pg_catalog` still read, except the `pg_settings`, `pg_database` and
+`pg_prepared_statements` views over refused functions); author SQL that does any of these,
+logging, profiling and SQL run from text included, is refused when the package loads. A Postgres database attached to DuckDB
 (a DuckLake catalog, an attached database, a federated build source) is attached through a
 temporary DuckDB secret that holds its user, password and client-key password, so its attach path carries no credential. It reads each statement with DuckDB's own
 parser where the parser can serialize it, and every statement with a fail-closed lexical check

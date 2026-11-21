@@ -637,3 +637,60 @@ describe("RollupVariantServe (a joined source's rollup, read through the join)",
       ).toEqual({ name: "NoRollupForQuery", detail: "no rollup" });
    });
 });
+
+const FOLDED_MODEL = `##! experimental { persistence composite_sources }
+source: trips_named is duckdb.sql("select * from (values (1, 1)) as t(trip_id, station_id)") extend {
+  primary_key: trip_id
+  #(rollup) grain=["station_id"] name="scratch.trips_by_station"
+  measure: trip_count is count()
+}
+
+source: trips_default is duckdb.sql("select * from (values (1, 1)) as t(trip_id, station_id)") extend {
+  primary_key: trip_id
+  #(rollup) grain=["station_id"]
+  measure: trip_count is count()
+}
+`;
+
+/**
+ * Campaign R-01: two rollups of one build placed apart are two addresses that
+ * Malloy files under one key. The moved one is read under that key, also
+ * when the manifest holds no entry at the key (its twin stored elsewhere, or
+ * not built), where before its compile recomputed and it read as NOT_BUILT.
+ */
+describe("RollupVariantServe (a rollup whose address is not Malloy's key)", () => {
+   let f: PersistedResultFixture;
+   let named: { sourceEntityId: string; compilerKey?: string };
+   beforeAll(async () => {
+      f = await persistedResultFixture(FOLDED_MODEL);
+      const found = [...f.catalog.planned.values()].find((t) =>
+         t.name.startsWith("trips_named__rollup__"),
+      );
+      if (!found) throw new Error("no rollup of trips_named planned");
+      named = found;
+   });
+   afterAll(async () => {
+      await f?.cleanup();
+   });
+
+   it("answers from its own table with only its own entry bound", async () => {
+      expect(named.compilerKey).toBeDefined();
+      expect(named.compilerKey).not.toBe(named.sourceEntityId);
+      const query =
+         "run: trips_named -> { group_by: station_id; aggregate: trip_count }";
+      const entries = {
+         [named.sourceEntityId]: { tableName: "named_rollup_t" },
+      };
+      const answer = await f.rollups.attempt({
+         queryString: query,
+         givens: undefined,
+         authorRunnable: f.materializer.loadQuery(query),
+         pinned: pinnedOf([], entries as never),
+      });
+      expect(answer.databaseTablePath).toBe("named_rollup_t");
+      expect(answer.keyedTable).toEqual({
+         tableId: named.sourceEntityId,
+         compilerKey: named.compilerKey!,
+      });
+   });
+});

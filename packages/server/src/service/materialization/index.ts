@@ -17,13 +17,10 @@
 export { PackageMaterialization } from "./package_materialization";
 export { withNameProblems } from "./plan/load_gate_text";
 export { loadVerdictOfPlan } from "./package_warnings";
-export {
-   withoutRetainedAliases,
-   withRetainedAliases,
-} from "./package_warnings";
 export { MaterializationService } from "./run/materialization_service";
 export { keptTablesResolverFor, Reclaimer } from "./run/reclaimer";
 export { isUsableTableName } from "./run/manifest_loader";
 export { MaterializationScheduler } from "./run/materialization_scheduler";
+export { readUpstreamSchemas } from "./run/upstream_schema_read";
 export type * from "./host";
 export type { SynthesizedRuntimeFactory } from "./text/generated_files";

@@ -28,6 +28,7 @@ import {
    TableNotFoundError,
    UnconfiguredConnectionError,
 } from "../errors";
+import { bigIntReplacer } from "../json_utils";
 import { recordQueryCapExceeded } from "../query_cap_metrics";
 import { logger } from "../logger";
 import { assertSafePackageName } from "../path_safety";
@@ -42,9 +43,17 @@ import {
    toPublicConnection,
    toPublicConnections,
 } from "../service/connection_public_view";
-import { validateDuckdbApiSurface } from "../service/connection_config";
+import {
+   validateConnectionSqlFields,
+   validateDuckdbApiSurface,
+} from "../service/connection_config";
 import { assertSingleSelect } from "../service/single_select";
-import { usageCatalog, withStatementUsage } from "../service/statement_usage";
+import {
+   meterStatement,
+   responseBytes,
+   usageCatalog,
+   type PendingStatementUsage,
+} from "../service/statement_usage";
 import { ConnectionService } from "../service/connection_service";
 import {
    columnsOfSchema,
@@ -954,26 +963,31 @@ export class ConnectionController {
       // A managed connection is metered (statement_usage.ts): the statement
       // that runs below emits one usage record, whether it answers or fails.
       // One refused above, or by a check before the run, never ran and emits
-      // none.
-      const metered = <T extends { rows: unknown[] }>(
+      // none. A statement that answered emits it once its response is
+      // serialized, with the response's size; the finally below covers a
+      // response that never is (the row cap refused it).
+      let pending: PendingStatementUsage | undefined;
+      const metered = async <T extends { rows: unknown[] }>(
          run: () => Promise<T>,
-      ): Promise<T> =>
-         managed
-            ? withStatementUsage(
-                 {
-                    environment: environmentName,
-                    connection: connectionName,
-                    surface: "sql",
-                    package: packageName,
-                    catalog: this.managedCatalog(
-                       environmentForAdmission,
-                       connectionName,
-                    ),
-                 },
-                 run,
-                 (result) => result.rows.length,
-              )
-            : run();
+      ): Promise<T> => {
+         if (!managed) return run();
+         const { result, usage } = await meterStatement(
+            {
+               environment: environmentName,
+               connection: connectionName,
+               surface: "sql",
+               package: packageName,
+               catalog: this.managedCatalog(
+                  environmentForAdmission,
+                  connectionName,
+               ),
+            },
+            run,
+            (answered) => answered.rows.length,
+         );
+         pending = usage;
+         return result;
+      };
 
       const malloyConnection = await this.getMalloyConnection(
          environmentName,
@@ -1067,31 +1081,54 @@ export class ConnectionController {
       //
       // runWithQueryTimeout turns a hung query into a 504, and its signal is
       // passed as abortSignal so the driver call is actually cancelled.
-      if (isStreamingConnection(malloyConnection)) {
-         const streamed = await runWithQueryTimeout(async (signal) => {
+      try {
+         if (isStreamingConnection(malloyConnection)) {
+            const streamed = await runWithQueryTimeout(async (signal) => {
+               const optionsWithSignal: RunSQLOptions = {
+                  ...runSQLOptions,
+                  abortSignal: signal,
+               };
+               try {
+                  return await metered(() =>
+                     streamSqlWithBudget(
+                        malloyConnection,
+                        sqlStatement,
+                        optionsWithSignal,
+                        { maxRows, maxBytes },
+                     ),
+                  );
+               } catch (error) {
+                  // Already classified, with a message written for the caller.
+                  if (
+                     error instanceof PayloadTooLargeError ||
+                     error instanceof ConnectionError
+                  )
+                     throw error;
+                  // If the timer fired, runWithQueryTimeout replaces this with
+                  // a QueryTimeoutError, so this matters only for real driver
+                  // failures.
+                  throw sqlRunFailure(
+                     error,
+                     connectionName,
+                     environmentForAdmission,
+                  );
+               }
+            }, getQueryTimeoutMs());
+            const data = JSON.stringify(streamed, bigIntReplacer);
+            pending?.emit(responseBytes(data));
+            return { data, queryCorrelationId };
+         }
+
+         const result = await runWithQueryTimeout(async (signal) => {
             const optionsWithSignal: RunSQLOptions = {
                ...runSQLOptions,
                abortSignal: signal,
             };
             try {
                return await metered(() =>
-                  streamSqlWithBudget(
-                     malloyConnection,
-                     sqlStatement,
-                     optionsWithSignal,
-                     { maxRows, maxBytes },
-                  ),
+                  malloyConnection.runSQL(sqlStatement, optionsWithSignal),
                );
             } catch (error) {
-               // Already classified, with a message written for the caller.
-               if (
-                  error instanceof PayloadTooLargeError ||
-                  error instanceof ConnectionError
-               )
-                  throw error;
-               // If the timer fired, runWithQueryTimeout replaces this with
-               // a QueryTimeoutError, so this matters only for real driver
-               // failures.
                throw sqlRunFailure(
                   error,
                   connectionName,
@@ -1099,33 +1136,22 @@ export class ConnectionController {
                );
             }
          }, getQueryTimeoutMs());
-         return { data: JSON.stringify(streamed), queryCorrelationId };
-      }
 
-      const result = await runWithQueryTimeout(async (signal) => {
-         const optionsWithSignal: RunSQLOptions = {
-            ...runSQLOptions,
-            abortSignal: signal,
-         };
-         try {
-            return await metered(() =>
-               malloyConnection.runSQL(sqlStatement, optionsWithSignal),
+         if (maxRows > 0 && result.rows.length > maxRows) {
+            // Counted on the buffered path too, so the metric covers every
+            // connector, not just streaming ones.
+            recordQueryCapExceeded("rows", "connection_sql");
+            throw new PayloadTooLargeError(
+               `Query returned more than ${maxRows} rows. Refine the query (add a LIMIT or more selective WHERE) or raise PUBLISHER_MAX_QUERY_ROWS.`,
             );
-         } catch (error) {
-            throw sqlRunFailure(error, connectionName, environmentForAdmission);
          }
-      }, getQueryTimeoutMs());
 
-      if (maxRows > 0 && result.rows.length > maxRows) {
-         // Counted on the buffered path too, so the metric covers every
-         // connector, not just streaming ones.
-         recordQueryCapExceeded("rows", "connection_sql");
-         throw new PayloadTooLargeError(
-            `Query returned more than ${maxRows} rows. Refine the query (add a LIMIT or more selective WHERE) or raise PUBLISHER_MAX_QUERY_ROWS.`,
-         );
+         const data = JSON.stringify(result, bigIntReplacer);
+         pending?.emit(responseBytes(data));
+         return { data, queryCorrelationId };
+      } finally {
+         pending?.emit();
       }
-
-      return { data: JSON.stringify(result), queryCorrelationId };
    }
 
    /** Raw SQL like {@link getConnectionQueryData}, so it is recorded as ungated too. */
@@ -1286,6 +1312,15 @@ export class ConnectionController {
          connectionConfig.name
       ) {
          assertSafePackageName(connectionConfig.name);
+      }
+
+      // An attached database's name becomes a DuckDB alias and its S3 region
+      // a secret literal: either off its documented pattern is a 400, before
+      // any ATTACH is tried.
+      try {
+         validateConnectionSqlFields(connectionConfig);
+      } catch (error) {
+         throw new BadRequestError((error as Error).message);
       }
 
       try {

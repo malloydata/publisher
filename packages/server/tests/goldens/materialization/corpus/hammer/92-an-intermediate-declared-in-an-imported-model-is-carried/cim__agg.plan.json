@@ -91,6 +91,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.cim_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "cf7d087d64620ff1eb2c523463c0b6628858e8050579b6f504efd253c86afeb8",
         "sourceID": "daily@<hammer>/cim/base.malloy",
@@ -115,6 +121,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.cim_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "a3a214c891e0ab845be62a8fa88a472b7d57a157c972a21b11ac1e7664d7949e",
         "sourceID": "rollup@<hammer>/cim/agg.malloy",

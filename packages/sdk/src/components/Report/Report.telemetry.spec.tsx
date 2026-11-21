@@ -194,12 +194,25 @@ describe("opening a report", () => {
    // DEPRECATED FEATURE COVERAGE — delete together with
    // `.malloynb` notebooks (see RELEASE_NOTES deprecations).
    describe("deprecated: .malloynb notebooks", () => {
-      it("reports a .malloynb as unsupported rather than opened", async () => {
-         manifest = {
-            ...CELLS,
-            path: "legacy.malloynb",
-            notebook: { ...CELLS.notebook, format: "malloynb" },
-         } as ReportManifest;
+      const LEGACY = {
+         ...CELLS,
+         path: "legacy.malloynb",
+         notebook: {
+            format: "malloynb",
+            notebookCells: [
+               { type: "markdown", text: "Cell prose" },
+               { type: "code", text: 'import "orders.malloy"' },
+               {
+                  type: "code",
+                  text: "run: orders -> by_month",
+                  runQuery: "run: orders -> by_month",
+               },
+            ],
+         },
+      } as ReportManifest;
+
+      it("reports a .malloynb as opened, counting the cells it runs", async () => {
+         manifest = LEGACY;
          const onEvent = mock((_event: ReportEvent) => {});
          render(
             <Report
@@ -210,10 +223,38 @@ describe("opening a report", () => {
             { wrapper: serverWrapper },
          );
          await waitFor(() => expect(onEvent).toHaveBeenCalled());
-         expect(typesOf(onEvent.mock.calls)).toEqual(["report.load_failed"]);
-         expect(onEvent.mock.calls[0][0]).toMatchObject({
-            category: "unsupported",
-         });
+         expect(typesOf(onEvent.mock.calls)).toEqual(["report.opened"]);
+         expect(onEvent.mock.calls[0][0]).toMatchObject({ tiles: 1 });
+      });
+
+      it("reports a .malloynb cell's failed query by the cell's position", async () => {
+         manifest = LEGACY;
+         queryFailure = { response: { status: 500 } };
+         const onEvent = mock((_event: ReportEvent) => {});
+         render(
+            <Report
+               resourceUri={URI}
+               path="legacy.malloynb"
+               onEvent={onEvent}
+            />,
+            { wrapper: serverWrapper },
+         );
+         await waitFor(() =>
+            expect(typesOf(onEvent.mock.calls)).toContain(
+               "report.query_failed",
+            ),
+         );
+         expect(
+            onEvent.mock.calls
+               .map(([event]) => event)
+               .filter((event) => event.type === "report.query_failed"),
+         ).toEqual([
+            expect.objectContaining({
+               tile: 2,
+               category: "server",
+               path: "legacy.malloynb",
+            }),
+         ]);
       });
    });
 });

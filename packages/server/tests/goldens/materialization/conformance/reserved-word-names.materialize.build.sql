@@ -2,6 +2,35 @@
 -- Addresses are computed with a fixed connection digest (golden-digest:<connection>),
 -- so they move exactly when the SQL or the folded layout moves.
 
+-- ==== source month
+-- sourceID: month@<pkg>/m.malloy
+-- connection: duckdb
+-- sourceEntityId: 506790f386a062d41ddcf1ebc52dcb1313c9a71c07ed5b97cbdc1a72c7067220
+-- compiler key: 506790f386a062d41ddcf1ebc52dcb1313c9a71c07ed5b97cbdc1a72c7067220 (the sourceEntityId)
+-- build SQL:
+WITH __stage0 AS (
+  SELECT 
+     EXTRACT(month FROM base."order_date") as "month",
+     base."region" as "group",
+     COALESCE(SUM(base."amount"),0) as "total"
+  FROM (
+    SELECT CAST(id AS BIGINT) AS id, CAST(customer_id AS BIGINT) AS customer_id,
+           region, status,
+           CAST(amount AS DOUBLE) AS amount, CAST(discount AS DOUBLE) AS discount,
+           CAST(order_date AS DATE) AS order_date,
+           CAST(created_at AS TIMESTAMP) AS created_at,
+           CAST("order" AS BIGINT) AS "order"
+    FROM read_csv('data/orders.csv', header=true, all_varchar=true)
+  ) as base
+  GROUP BY 1,2
+  ORDER BY 3 desc NULLS LAST
+)
+SELECT 
+   base."month" as "month",
+   base."group" as "group",
+   base."total" as "total"
+FROM __stage0 as base
+
 -- ==== source order
 -- sourceID: order@<pkg>/m.malloy
 -- connection: duckdb
@@ -37,7 +66,16 @@ FROM __stage0 as base
 
 -- ==== <pkg>/m.malloy.materialize.malloy
 ##! experimental.persistence
+import { month__mat__base is `month` } from 'm.malloy'
 import { order__mat__base is order } from 'm.malloy'
+
+#@ persist name="month" storage="lake"
+source: month__mat is month__mat__base -> {
+  select:
+    `month`,
+    group,
+    total
+}
 
 #@ persist name="order" storage="lake"
 source: order__mat is order__mat__base -> {

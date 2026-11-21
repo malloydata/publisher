@@ -365,9 +365,8 @@ export function useGivensState({
    // a link copied before anything was touched follows the file's starting
    // values as they are later edited, rather than pinning the ones it was opened
    // at. That falls out of the seeding below for a host that mounts this with
-   // its manifest loaded, as the report reader does. (A host that mounts first
-   // and loads after, as the deprecated `.malloynb` runner does, reports them on
-   // an uncached load.)
+   // its manifest loaded, as `Report` does for either format. A host that
+   // mounts first and loads after reports them on an uncached load.
    //
    // The reference starts at the first render's values rather than empty. The
    // control row is empty until the manifest arrives and says which givens
@@ -394,11 +393,12 @@ export function useGivensState({
       lastReportedAt.current = Date.now();
    }
    // Recorded only when the report is actually DELIVERED. A surface withholds
-   // the callback while it is still loading — `Notebook` passes undefined until
-   // the document has arrived, so that a report made in the window where it
-   // does not yet know which givens exist cannot tell the host to clear
-   // parameters belonging to the notebook then arriving — and a value recorded
-   // in that window is remembered as reported without the host ever hearing it.
+   // the callback while it is still loading — `useDocumentControls` passes
+   // undefined until the document has arrived, so that a report made in the
+   // window where it does not yet know which givens exist cannot tell the host
+   // to clear parameters belonging to the notebook then arriving — and a value
+   // recorded in that window is remembered as reported without the host ever
+   // hearing it.
    //
    // That is not merely a missed report, because the echo test above reads this
    // same record: the host's URL still holds the old value, the record says the

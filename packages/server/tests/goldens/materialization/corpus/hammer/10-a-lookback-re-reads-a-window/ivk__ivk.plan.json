@@ -78,6 +78,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.ivk_events"
+          }
+        ],
         "refresh": "incremental",
         "sourceEntityId": "00d5a52424c0fa84173b7772dff51f6ea77ea3ed9a9b291a0b223199379256ff",
         "sourceID": "events@<hammer>/ivk/ivk.malloy",

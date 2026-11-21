@@ -18,6 +18,7 @@ import type {
 } from "@malloydata/malloy";
 
 import { PayloadTooLargeError } from "./errors";
+import { bigIntReplacer } from "./json_utils";
 import { recordQueryCapExceeded } from "./query_cap_metrics";
 
 /** Runtime check and type narrow for streaming-capable connections. */
@@ -78,7 +79,10 @@ export async function streamSqlWithBudget(
          if (maxBytes > 0) {
             // Duplicates the final stringify per row; the early abort on
             // overflow is worth it.
-            byteTotal += Buffer.byteLength(JSON.stringify(row), "utf8");
+            byteTotal += Buffer.byteLength(
+               JSON.stringify(row, bigIntReplacer),
+               "utf8",
+            );
             if (byteTotal > maxBytes) {
                recordQueryCapExceeded("bytes", "connection_sql");
                overflowMessage = `Query response exceeded ${maxBytes} bytes (had at least ${byteTotal}). Refine the query (project fewer columns, add a LIMIT, or filter wide values) or raise PUBLISHER_MAX_RESPONSE_BYTES.`;

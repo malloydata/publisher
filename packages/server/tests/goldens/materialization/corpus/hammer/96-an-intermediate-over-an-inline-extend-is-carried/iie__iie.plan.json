@@ -101,6 +101,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.iie_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "ac1cb5568b19bda1d9472ea4e97ec242e757ea623b8155df506cea8602f06df2",
         "sourceID": "daily@<hammer>/iie/iie.malloy",
@@ -129,6 +135,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.iie_regions"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "040a61d03225555b2a8bc5216a1b0bbd245b84185b194929736b1eeb664fd11f",
         "sourceID": "regions_kept@<hammer>/iie/iie.malloy",
@@ -157,6 +169,16 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.iie_orders"
+          },
+          {
+            "connectionName": "orders_pg",
+            "table": "public.iie_regions"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "33a0a8a71a03697f7e667ee6b75e9c0a964f7608fb06f7717431b5f1ce167150",
         "sourceID": "rollup@<hammer>/iie/iie.malloy",

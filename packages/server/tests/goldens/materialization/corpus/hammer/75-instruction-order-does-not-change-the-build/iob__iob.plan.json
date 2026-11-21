@@ -87,6 +87,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.iob_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "0416b96383e1693279bed5c6e6571eb4dc9d61869c7d0d21d4b3de0f37952c3c",
         "sourceID": "daily@<hammer>/iob/iob.malloy",
@@ -111,6 +117,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.iob_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "f2fb2227eff44a9017d6606a3f354fd44ea476f4aba3bc952a9cf144acaa30cc",
         "sourceID": "rollup@<hammer>/iob/iob.malloy",

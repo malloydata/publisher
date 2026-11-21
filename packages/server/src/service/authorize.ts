@@ -746,7 +746,16 @@ export function assertNoMisplacedAuthorizeAnnotations(
  * caller with a fabricated 200. Own-wins-over-ancestor is also scoped per
  * route.
  */
-export type AuthorizeMapGroup = { route: string; exprs: string[] };
+export type AuthorizeMapGroup = {
+   route: string;
+   exprs: string[];
+   /**
+    * Read on a `->` derivation's base, not on the source itself: the gate
+    * filters that base's rows, in the base's field space, so it is validated
+    * where the base is an entry point and not against this source's output.
+    */
+   fromBase?: true;
+};
 export type AuthorizeMap = Map<string, AuthorizeMapGroup[]>;
 
 /**
@@ -1039,8 +1048,10 @@ export async function validateAuthorizeProbes(
    // Each group is validated INDEPENDENTLY so a rejection names the source
    // that actually declared the term (see `AuthorizeMap`).
    for (const [sourceName, groups] of options.authorizeMap ?? []) {
-      for (const { route, exprs } of groups) {
-         if (exprs.length === 0) continue;
+      for (const { route, exprs, fromBase } of groups) {
+         // A derivation's base gate filters the base's rows; it is lifted
+         // there, and the base's own entry is validated on its own.
+         if (exprs.length === 0 || fromBase) continue;
          let condition: CompiledGateCondition;
          try {
             condition = await liftRowLevelCondition(

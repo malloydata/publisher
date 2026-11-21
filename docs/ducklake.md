@@ -281,7 +281,11 @@ takes the connection's name, so the two may be named differently and a table pat
 connection still resolves. That session can write the catalog, so it runs only SQL Malloy generated: a
 source carrying an `.sql()` source or a `sql_*` expression anywhere beneath it is refused, as every
 DuckLake source was before, and so is a table read from a file or URL (`lake.table('/x.csv')`),
-which that session would read with the destination's storage credential. A chained build (a
+which that session would read with the destination's storage credential. Such a source is refused when
+the package loads (`persist-not-built`, reason `storage_source_unsupported`) and answered live, rather
+than failing its build. On a connection configured `managed` the same holds with no `storage=` too: a
+managed catalog's tables are built inside it, so a `#@ persist`, `#(materialize)` or rollup over author
+SQL there is refused at load whatever it declares. A chained build (a
 downstream stacked on its stored parents in the destination) runs on the same kind of session and follows
 the same rule: a downstream carrying author SQL is recomputed from raw instead of stacked on its parents.
 
@@ -295,11 +299,12 @@ record names no sink; a log collector maps it. Its fields, each left out when th
 | `environment` | The environment the statement ran in; empty for an admin load or copy. |
 | `connection` | The connection or storage destination, by the name the environment gives it; the catalog's name for an admin load or copy. |
 | `catalog` | The DuckLake catalog the statement ran on: the connection's `catalog.metadataSchema`, which is also the catalog's name on the admin API. It names the same catalog whatever a connection is called. |
-| `surface` | `serve` (a model query), `sql` (raw SQL on a `managed` connection), `build`, `load` or `copy`. |
+| `surface` | `serve` (a model query or a notebook cell), `sql` (raw SQL on a `managed` connection), `build`, `load` or `copy`. |
 | `package` | The package served or built. |
 | `duration_ms` | Wall-clock milliseconds the statement ran. |
 | `rows` | Rows returned or written, when the result reports a count. |
-| `status` | `ok` or `error`. |
+| `bytes_out` | UTF-8 bytes of the statement's result as Publisher serialized it for the caller, in the shape asked for: a model query's `result` (`serve`, full or compact; MCP's `execute_query` asks for compact), a notebook cell's `result`, raw SQL's `data` (`sql`). The envelope around it (the HTTP response's other fields, an MCP answer's metadata) is not counted. For Publisher's own MCP `execute_query`, it is the compact result the query returned to the tool, before the tool wraps it and trims rows to fit its size budget: the agent can receive fewer bytes than it counts. Absent on a build, a load or a copy, on a failed statement, and when a row or byte cap refused the result. The record of a statement that answered goes out once its result is serialized; `duration_ms` is still the statement's own. |
+| `status` | `ok` or `error`. On `serve` or `sql`, `ok` without `bytes_out` means the statement ran but its result was never returned: a row or byte cap refused it (the caller got a 413), or a later step failed. A collector that counts completed answers should not count those. |
 | `threads` | The `duckdb.threads` setting: the thread count a DuckDB instance of the process opens with. Left out under `off`, and when the cap could not be applied (a `@malloydata/db-duckdb` release that changed the internals Publisher patches, which Publisher logs at startup); a connection that sets its own `threads` is not reflected. |
 | `worker` | The host name of the process that ran it: the pod's name in Kubernetes. |
 

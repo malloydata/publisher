@@ -85,7 +85,7 @@ import {
    withDeclaration,
 } from "./materialize_read_time";
 import type { MalloyRange, TermUse } from "../domain/read_time_terms";
-import { capabilitiesOf } from "../domain/dialect";
+import { capabilitiesOf, describeDialects } from "../domain/dialect";
 import type { RefusedReason } from "../domain/types";
 import {
    rollingWindowTerms,
@@ -411,14 +411,16 @@ function storableDimension(field: FieldLike): string | undefined {
 }
 
 /**
- * Whether a compiled field is a public array its table can hold as it is: a
- * persisted query's `nest:` (a repeated record) or an array column the source
- * reads, neither computed. A declared `join_many:` is the joined source's
- * type, never `array`, so it is not one. A hidden array is not stored.
+ * Whether a compiled field is an array or record its table can hold as it
+ * is: a persisted query's `nest:` (a repeated record), or an array or record
+ * (struct) column the source reads, none computed. A declared `join_one:` or
+ * `join_many:` is the joined source's type, never `array` or `record`, so it
+ * is not one. A hidden one is a candidate, as a hidden dimension is, marked
+ * with its `access` by {@link materializeColumns}.
  */
-function storableArray(field: FieldLike): string | undefined {
-   if (field.type !== "array" || field.e !== undefined) return undefined;
-   if (hiddenAccess(field)) return undefined;
+function storableNested(field: FieldLike): string | undefined {
+   if (field.type !== "array" && field.type !== "record") return undefined;
+   if (field.e !== undefined) return undefined;
    const dimension =
       typeof field.as === "string"
          ? field.as
@@ -429,8 +431,8 @@ function storableArray(field: FieldLike): string | undefined {
 }
 
 /**
- * The stored columns of a source: its atomic dimensions and public arrays
- * ({@link storableArray}), less any whose value reads through a join that is
+ * The stored columns of a source: its atomic dimensions, arrays and records
+ * ({@link storableNested}), less any whose value reads through a join that is
  * not inlined (a reference join is read at query time, so what reads through
  * it is computed at read). A field whose join usage is unknown is stored only
  * when the source has no join. `inline` names the inlined joins; `joins` comes
@@ -462,9 +464,15 @@ export function materializeColumns(
    const perCaller = givenReadingFields(def.fields);
    for (const raw of def.fields ?? []) {
       const field = raw as FieldLike;
-      const nested = storableArray(field);
+      const nested = storableNested(field);
       if (nested !== undefined) {
-         out.push({ dimension: nested, column: nested, computed: false });
+         const access = hiddenAccess(field);
+         out.push({
+            dimension: nested,
+            column: nested,
+            computed: false,
+            ...(access ? { access } : {}),
+         });
          continue;
       }
       const dimension = storableDimension(field);
@@ -1859,6 +1867,10 @@ function pairLayoutOf(
       if (problem) {
          return new Declined(problem.reason, { refused: "inline_unsupported" });
       }
+      const ungrouped = ungroupablePairColumn(def, map, columns);
+      if (ungrouped) {
+         return new Declined(ungrouped, { refused: "inline_unsupported" });
+      }
       const pairs = (laid as { pair: MaterializePair }[]).map((l) => l.pair);
       pair = pairs[0];
       if (pairs.length > 1) {
@@ -1933,6 +1945,84 @@ function pairLayoutOf(
       ...(pairBlocks ? { pairBlocks } : {}),
       ...(pairFullRefresh ? { pairFullRefresh } : {}),
    };
+}
+
+/**
+ * Why a pair table cannot be built in its source's dialect: its build groups
+ * by every stored column (build_file_generator.ts, `pairBody`), and one of
+ * them has a type that dialect's `GROUP BY` refuses (BigQuery: GEOGRAPHY,
+ * JSON, ARRAY, STRUCT; Postgres: json, xml, the geometric types, and arrays
+ * of them). Undefined when every column can be grouped.
+ */
+function ungroupablePairColumn(
+   def: PlannedDef,
+   map: SourceMap,
+   columns: readonly MaterializeColumn[],
+): string | undefined {
+   const refused = capabilitiesOf(def.dialect).ungroupableTypes;
+   if (!refused) return undefined;
+   for (const c of columns) {
+      const type = ungroupedTypeOf(storedFieldOf(def, map, c), refused);
+      if (type === undefined) continue;
+      return (
+         `inline= names a join_many, whose pair table's build groups by every ` +
+         `stored column, and \`${c.column}\` is a ${type.toUpperCase()} column, ` +
+         `which ${describeDialects(new Set([String(def.dialect)]))} cannot ` +
+         "group by; leave the column out of the source (and of the joined " +
+         "source's public dimensions), or inline no join_many"
+      );
+   }
+   return undefined;
+}
+
+/**
+ * The type of `field` a dialect's `GROUP BY` refuses (`refused`), as named
+ * in the refusal, or undefined when it groups: a `sql native` field by its
+ * raw type in lower case, an array by the Malloy type `array` or by its
+ * element (`json[]`), any other by its Malloy type.
+ */
+function ungroupedTypeOf(
+   field: FieldLike | undefined,
+   refused: { malloy: readonly string[]; native: readonly string[] },
+): string | undefined {
+   if (field?.type === "sql native") {
+      const raw =
+         typeof field.rawType === "string" ? field.rawType.toLowerCase() : "";
+      return refused.native.includes(raw) ? raw : undefined;
+   }
+   if (typeof field?.type !== "string") return undefined;
+   if (refused.malloy.includes(field.type)) return field.type;
+   if (field.type === "array") {
+      const element = ungroupedTypeOf(
+         field.elementTypeDef as FieldLike | undefined,
+         refused,
+      );
+      return element === undefined ? undefined : `${element}[]`;
+   }
+   return undefined;
+}
+
+/**
+ * The compiled field a stored column reads: the source's own, or the field
+ * of the joined source at the end of the column's join path.
+ */
+function storedFieldOf(
+   def: PlannedDef,
+   map: SourceMap,
+   c: MaterializeColumn,
+): FieldLike | undefined {
+   let fields = def.fields ?? [];
+   let joins = map.joinsOf(def.sourceID);
+   for (const name of c.join === undefined ? [] : (c.path ?? [c.join])) {
+      const join = joins.find((j) => j.name === name);
+      if (!join) return undefined;
+      fields = join.fields;
+      joins = map.joinedReadsOf(join).joins;
+   }
+   return fields.find((raw) => {
+      const f = raw as FieldLike;
+      return (typeof f.as === "string" ? f.as : f.name) === c.dimension;
+   }) as FieldLike | undefined;
 }
 
 /**

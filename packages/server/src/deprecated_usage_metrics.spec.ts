@@ -3,7 +3,7 @@
 
 /**
  * `publisher_deprecated_usage_total`, through each seam that counts it: the
- * legacy routes, the Console alias, the `#(filter)` request fields, the
+ * Console alias, the `#(filter)` request fields, the
  * deprecated publisher.json keys and the deprecated formats. Each is driven
  * through the seam's own entry point, so a seam that stops counting fails
  * here rather than reading as "nobody uses it" on the day it is deleted.
@@ -11,23 +11,15 @@
  * `service/report_discovery_telemetry.spec.ts`.
  */
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
-import express from "express";
 import request from "supertest";
 import { PackageController } from "./controller/package.controller";
 import { resetDeprecatedUsageMetricsForTest } from "./deprecated_usage_metrics";
-import {
-   EnvironmentNotFoundError,
-   PackageNotFoundError,
-   ServiceUnavailableError,
-} from "./errors";
+import { EnvironmentNotFoundError, PackageNotFoundError } from "./errors";
 import {
    recordDeprecatedFilterUsage,
    setFilterDeprecationHeaders,
 } from "./filter_deprecation";
 import { logger } from "./logger";
-import { registerDeprecatedRoutes } from "./routes/deprecated";
-import { QuerySlots } from "./query_concurrency";
-import { registerLegacyRoutes, type LegacyControllerSet } from "./server-old";
 import { recordDeprecatedFormatUsage } from "./service/deprecated/lints";
 import type { DeprecatedPersistAnnotation } from "./service/deprecated/persist_annotations";
 import {
@@ -66,123 +58,6 @@ describe("publisher_deprecated_usage_total", () => {
    afterEach(async () => {
       resetDeprecatedUsageMetricsForTest();
       await harness.shutdown();
-   });
-
-   describe("the legacy routes", () => {
-      /** The routes over a store with no environments: by default every call is a 404. */
-      const app = (
-         fail: (name: string) => Error = (name) =>
-            new EnvironmentNotFoundError(`Environment ${name} does not exist`),
-      ) => {
-         const store = fakeOf<EnvironmentAdmin & PackageAdmin>({
-            getEnvironment: async (name: string) => {
-               throw fail(name);
-            },
-         });
-         const server = express();
-         registerDeprecatedRoutes(server, "/api/v0", store, new QuerySlots());
-         return server;
-      };
-      const pkg = "/api/v0/environments/env/packages/pkg";
-
-      it("counts each request by route family, whatever it answers", async () => {
-         const server = app();
-         await request(server).get(`${pkg}/dashboards`);
-         await request(server).get(`${pkg}/dashboards/sales`);
-         await request(server).get(`${pkg}/dashboards/sales`);
-         await request(server).get(`${pkg}/notebooks`);
-         await request(server).get(`${pkg}/notebooks/tour.malloynb`);
-         await request(server).get(`${pkg}/notebooks/tour.malloynb/cells/0`);
-
-         expect(await used("dashboards_list")).toBe(1);
-         expect(await used("dashboard_get")).toBe(2);
-         expect(await used("notebooks_list")).toBe(1);
-         expect(await used("notebook_get")).toBe(1);
-         expect(await used("notebook_cell")).toBe(1);
-      });
-
-      it("counts the project-path notebook routes under the same features, once each", async () => {
-         const store = fakeOf<EnvironmentAdmin & PackageAdmin>({
-            getEnvironment: async (name: string) => {
-               throw new EnvironmentNotFoundError(
-                  `Environment ${name} does not exist`,
-               );
-            },
-         });
-         const server = express();
-         registerDeprecatedRoutes(server, "/api/v0", store, new QuerySlots());
-         registerLegacyRoutes(server, {
-            environmentStore: store,
-            querySlots: new QuerySlots(),
-         } as unknown as LegacyControllerSet);
-         const project = "/api/v0/projects/env/packages/pkg";
-         await request(server).get(`${project}/notebooks`);
-         await request(server).get(`${project}/notebooks/tour.malloynb`);
-         await request(server).get(
-            `${project}/notebooks/tour.malloynb/cells/0`,
-         );
-         // And the environment-path routes beside them, still once each.
-         await request(server).get(`${pkg}/notebooks`);
-         await request(server).get(`${pkg}/notebooks/tour.malloynb`);
-         await request(server).get(`${pkg}/notebooks/tour.malloynb/cells/0`);
-
-         expect(await used("notebooks_list")).toBe(2);
-         expect(await used("notebook_get")).toBe(2);
-         expect(await used("notebook_cell")).toBe(2);
-      });
-
-      it("logs a 404 once, at warn, never at error", async () => {
-         // `bun test` runs many spec files in one process, and their async
-         // work logs through this same logger while the spies are active
-         // (another file's "Environment env does not exist", say). Only lines
-         // naming this request's own environment are this request's.
-         const probe = "deprecated-404-probe";
-         const path = `/api/v0/environments/${probe}/packages/pkg/dashboards/sales`;
-         const warn = spyOn(logger, "warn");
-         const error = spyOn(logger, "error");
-         try {
-            const res = await request(app()).get(path);
-            expect(res.status).toBe(404);
-            expect(linesMentioning(warn, probe)).toEqual([
-               [
-                  "Request refused",
-                  {
-                     path,
-                     packageName: "pkg",
-                     status: 404,
-                     error: `Environment ${probe} does not exist`,
-                  },
-               ],
-            ]);
-            expect(linesMentioning(error, probe)).toEqual([]);
-         } finally {
-            warn.mockRestore();
-            error.mockRestore();
-         }
-      });
-
-      it("logs a 5xx once, at error, whether or not the mapping logs that class", async () => {
-         const error = spyOn(logger, "error");
-         try {
-            // 503: a class the mapping answers without logging.
-            const busy = await request(
-               app(() => new ServiceUnavailableError("busy-503-marker")),
-            ).get(`${pkg}/notebooks/tour.malloynb/cells/0`);
-            expect(busy.status).toBe(503);
-            // 500: a class the mapping logs itself, with its stack.
-            const fault = await request(
-               app(() => new Error("fault-500-marker")),
-            ).get(`${pkg}/dashboards/sales`);
-            expect(fault.status).toBe(500);
-
-            expect(
-               linesMentioning(error, "busy-503-marker").map(([text]) => text),
-            ).toEqual(["Request failed"]);
-            expect(linesMentioning(error, "fault-500-marker")).toHaveLength(1);
-         } finally {
-            error.mockRestore();
-         }
-      });
    });
 
    describe("the Console alias", () => {

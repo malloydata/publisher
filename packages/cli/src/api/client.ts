@@ -12,7 +12,6 @@ import {
   MaterializationActionActionEnum,
   MaterializationsApi,
   ModelsApi,
-  NotebooksApi,
   PackageMaterializationConfig,
   PackageScopeEnum,
   PackagesApi,
@@ -24,7 +23,6 @@ export class PublisherClient {
   private connectionsApi: ConnectionsApi;
   private materializationsApi: MaterializationsApi;
   private modelsApi: ModelsApi;
-  private notebooksApi: NotebooksApi;
   private databasesApi: DatabasesApi;
   private baseURL: string;
 
@@ -40,7 +38,6 @@ export class PublisherClient {
     this.connectionsApi = new ConnectionsApi(config);
     this.materializationsApi = new MaterializationsApi(config);
     this.modelsApi = new ModelsApi(config);
-    this.notebooksApi = new NotebooksApi(config);
     this.databasesApi = new DatabasesApi(config);
   }
 
@@ -371,39 +368,6 @@ export class PublisherClient {
   ): Promise<any> {
     try {
       const response = await this.modelsApi.getModel(
-        environmentName,
-        packageName,
-        path,
-      );
-      return response.data;
-    } catch (error) {
-      throw this.handleError(error as AxiosError);
-    }
-  }
-
-  // Notebooks (read-only)
-  async listNotebooks(
-    environmentName: string,
-    packageName: string,
-  ): Promise<any[]> {
-    try {
-      const response = await this.notebooksApi.listNotebooks(
-        environmentName,
-        packageName,
-      );
-      return response.data;
-    } catch (error) {
-      throw this.handleError(error as AxiosError);
-    }
-  }
-
-  async getNotebook(
-    environmentName: string,
-    packageName: string,
-    path: string,
-  ): Promise<any> {
-    try {
-      const response = await this.notebooksApi.getNotebook(
         environmentName,
         packageName,
         path,

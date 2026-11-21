@@ -291,16 +291,12 @@ describe("filter given values are checked on arrival", () => {
             "filter_givens.malloynb",
             getConnections(),
          );
+         // Cell 1's query, run on the notebook's own path.
          await expect(
-            notebook.executeNotebookCell(
-               unrecordedAudit(),
-               1,
-               undefined,
-               undefined,
-               {
-                  BIG: "asdf",
-               },
-            ),
+            notebook.runQuery(unrecordedAudit(), {
+               query: "run: orders -> filtered",
+               givens: { BIG: "asdf" },
+            }),
          ).rejects.toThrow("Invalid value for given BIG (filter<boolean>)");
       });
    });

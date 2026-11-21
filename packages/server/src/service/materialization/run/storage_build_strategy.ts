@@ -51,11 +51,12 @@ import { authorModelLiftContext } from "../text/author_model";
 import {
    declarableColumns,
    duckdbTypeToMalloyType,
+   holdsDucklakeDouble,
    type UndeclarableColumn,
 } from "../stored_column_types";
 import { quoteManifestTablePath, quoteTablePath } from "../../quoting";
 import { reachPersisted } from "../text/source_map";
-import { extensionOverStoredModel } from "./run_plan";
+import { extensionOverStoredModel, storedColumnNames } from "./run_plan";
 import {
    type MaterializeParent,
    type MaterializePlan,
@@ -88,6 +89,7 @@ import {
 } from "./incremental_build";
 import {
    buildDownstreamIntoStorage,
+   buildProjectionIntoStorage,
    buildSourceIntoStorage,
    oneFileModel,
    withDestinationSession,
@@ -110,7 +112,7 @@ import {
    wrongTierDetail,
 } from "./build_upstreams";
 import { redactConnectionSecrets } from "./connection_redaction";
-import { carriesAuthorSql, isSameCatalog } from "./same_catalog_build";
+import { carriesAuthorSql, isSameCatalog } from "../domain/same_catalog_build";
 import { compiledTextReader } from "../../../utils";
 import {
    destinationSchemaOf,
@@ -1149,6 +1151,32 @@ export class StorageBuildStrategy
             "no materialized upstream is available in this destination to build on",
          );
       }
+      // An `extend` of a stored source that adds no query of its own runs
+      // that source's query: a recompute writes its rows. Over its table
+      // that is a projection, which no text written over the re-rooted
+      // upstream can say (the re-root is a table, and Malloy persists only a
+      // query-shaped source).
+      const sameBuild = sameBuildUpstream(
+         persistSource,
+         stops,
+         upstreams,
+         planFacts,
+      );
+      if (sameBuild) {
+         return buildProjectionIntoStorage({
+            destinationName,
+            destinationConnection,
+            downstream: persistSource,
+            columns: sameBuild.columns,
+            upstreamTable: quoteManifestTablePath(
+               sameBuild.upstream.tablePath,
+               STORAGE_DIALECT,
+            ),
+            physicalTableName,
+            environmentPath: environment.getEnvironmentPath(),
+            ...(replacesView ? { replacesView } : {}),
+         });
+      }
       const notCarried = (detail: string) =>
          new ChainedShapeNotCarriedError(
             `'${persistSource.name}' reaches only stored upstreams ` +
@@ -1338,6 +1366,59 @@ export class StorageBuildStrategy
          );
       }
    }
+}
+
+/**
+ * The stored upstream whose build is `persistSource`'s own, and the columns
+ * `persistSource` stores, when its table can be written as a projection of
+ * that upstream's: one compiler key (the same SQL on the same connection, so
+ * a recompute writes the same rows), at another address (folded apart by a
+ * `name=` or a projection, so its own table), each stored column in the
+ * upstream's table, none of them one DuckLake holds rounded. Undefined
+ * otherwise, and the build is written over the re-rooted upstreams.
+ */
+function sameBuildUpstream(
+   persistSource: PersistSource,
+   stops: readonly { name: string; sourceID: string }[],
+   upstreams: readonly Binding[],
+   planFacts: ChainedPlanFacts,
+): { upstream: Binding; columns: string[] } | undefined {
+   const key = planFacts.compilerKeyBySourceId[persistSource.sourceID];
+   if (key === undefined) return undefined;
+   const ownAddress = planFacts.addressBySourceId[persistSource.sourceID];
+   let columns: string[];
+   try {
+      columns = storedColumnNames(persistSource);
+   } catch {
+      return undefined;
+   }
+   for (const stop of stops) {
+      const address = planFacts.addressBySourceId[stop.sourceID];
+      if (
+         planFacts.compilerKeyBySourceId[stop.sourceID] !== key ||
+         address === undefined ||
+         address === ownAddress
+      ) {
+         continue;
+      }
+      const upstream = upstreams.find(
+         (b) =>
+            b.virtualHandle === address &&
+            (b.sourceIDs?.includes(stop.sourceID) ??
+               b.sourceName === stop.name),
+      );
+      if (!upstream) continue;
+      const held = new Map(upstream.schema.map((c) => [c.name, c.type]));
+      if (
+         columns.every((c) => {
+            const type = held.get(c);
+            return type !== undefined && !holdsDucklakeDouble(type);
+         })
+      ) {
+         return { upstream, columns };
+      }
+   }
+   return undefined;
 }
 
 /** A `storage=` extension table and the parent it builds over. */

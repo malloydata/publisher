@@ -82,6 +82,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.nw_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "d0f7f6e253375aa7c5e4ceff9c247d56bf9dfa175c6985eeb28525384f18170a",
         "sourceID": "daily@<hammer>/nw/nw.malloy",
@@ -107,6 +113,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.nw_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "de1fb34ea9ae01a3dc662c160fd9d1d3d49299db910cc3550c817fd8a31f51f1",
         "sourceID": "database_daily@<hammer>/nw/nw.malloy",

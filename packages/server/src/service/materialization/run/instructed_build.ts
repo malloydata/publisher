@@ -45,6 +45,7 @@ import {
    buildSQLOf,
    compilerBuildId,
    computeSourceEntityId,
+   upstreamSchemasOfSource,
    presentAs,
    type RunPlan,
    tierGateInputs,
@@ -492,6 +493,7 @@ export class InstructedBuild {
                tables,
                connectionDigests,
                compiled.tableFolds,
+               compiled.upstreamSchemas,
                // A host can imply a destination the annotation does not declare,
                // so the instruction decides a source's current tier.
                (sourceID, sourceEntityId) =>
@@ -526,6 +528,7 @@ export class InstructedBuild {
          connectionDigests,
          index,
          compiled.tableFolds,
+         compiled.upstreamSchemas,
       );
 
       let settled: ReturnType<typeof settleRefusals> = {
@@ -951,6 +954,7 @@ export class InstructedBuild {
          persistSource,
          compiled.connectionDigests,
          compiled.tableFolds,
+         compiled.upstreamSchemas,
       );
       if (!resolved) return undefined;
       const { instruction, orchestrated } = resolved;
@@ -969,6 +973,7 @@ export class InstructedBuild {
             compiled.connectionDigests,
             compiled.tables[persistSource.sourceID]?.target,
             compiled.tableFolds,
+            compiled.upstreamSchemas,
          );
 
       // A host-supplied name its dialect cannot quote (it does not parse, or
@@ -1168,6 +1173,13 @@ export class InstructedBuild {
          if (compiled.tables[persistSource.sourceID]?.rollup) {
             built = { ...built, origin: "rollup" as const };
          }
+         // The upstream tables' column types its address folds in, on both
+         // tiers, so a host keeps what each table was built from.
+         const upstreamSchemas = upstreamSchemasOfSource(
+            persistSource,
+            compiled.upstreamSchemas,
+         );
+         if (upstreamSchemas) built = { ...built, upstreamSchemas };
          // Every database table a build writes carries the package's mark,
          // whoever named it (an author's name=, Publisher, or a host's
          // instruction), so a caller's drop can prove the table is this
@@ -1335,6 +1347,7 @@ function authorNamedInstructions(
             source,
             run.compiled.connectionDigests,
             run.compiled.tableFolds,
+            run.compiled.upstreamSchemas,
          )?.instruction;
          if (
             instruction?.physicalTableName === selfAssignTableName(source) &&
@@ -1617,6 +1630,7 @@ function databaseRefusalOn(
                compiled.connectionDigests,
                target,
                compiled.tableFolds,
+               compiled.upstreamSchemas,
             );
          } catch {
             // No address, so no table it could share.
@@ -1708,6 +1722,7 @@ async function storedJoinOf(
          compiled.connectionDigests,
          joined.target,
          compiled.tableFolds,
+         compiled.upstreamSchemas,
       );
       const entry = run.entries[address];
       if (
@@ -2041,6 +2056,7 @@ function carryRollupKeys(run: InstructedRun, ledger: UniquenessLedger): void {
          compiled.connectionDigests,
          table.target,
          compiled.tableFolds,
+         compiled.upstreamSchemas,
       );
       const entry = run.entries[address];
       if (!entry?.physicalTableName || run.builtAddresses.has(address)) {
@@ -2084,6 +2100,7 @@ function carryRollupKeys(run: InstructedRun, ledger: UniquenessLedger): void {
          compiled.connectionDigests,
          target,
          compiled.tableFolds,
+         compiled.upstreamSchemas,
       );
       const entry = run.entries[address];
       if (!entry?.physicalTableName || run.builtAddresses.has(address)) {
@@ -2117,6 +2134,7 @@ function carryRollupKeys(run: InstructedRun, ledger: UniquenessLedger): void {
          compiled.connectionDigests,
          table.target,
          compiled.tableFolds,
+         compiled.upstreamSchemas,
       );
       const entry = run.entries[address];
       if (!entry || run.builtAddresses.has(address)) continue;
@@ -2198,6 +2216,7 @@ async function overStoredBaseSource(
          compiled.connectionDigests,
          base.target,
          compiled.tableFolds,
+         compiled.upstreamSchemas,
       );
    } catch {
       return undefined;
@@ -2277,6 +2296,7 @@ export function buildsPlannedTable(
             compiled.connectionDigests,
             undefined,
             compiled.tableFolds,
+            compiled.upstreamSchemas,
          ) === at.rollupAddress
       );
    }
@@ -2290,6 +2310,7 @@ export function buildsPlannedTable(
          compiled.connectionDigests,
          undefined,
          compiled.tableFolds,
+         compiled.upstreamSchemas,
       ) !== at.baseAddress
    ) {
       return false;
@@ -2370,6 +2391,7 @@ function storedRollupBase(
          compiled.connectionDigests,
          base.target,
          compiled.tableFolds,
+         compiled.upstreamSchemas,
       );
    } catch {
       return undefined;

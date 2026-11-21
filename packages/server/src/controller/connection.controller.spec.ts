@@ -32,6 +32,7 @@ import {
 } from "./connection.controller";
 import { installSettings } from "../test_helpers/settings_env";
 import { fakeOf } from "../test_helpers/store_fakes";
+import { driverValue, fakeSnowflake } from "../test_helpers/fake_snowflake";
 import type { ConnectionAdmin } from "../service/environment_ports";
 
 /**
@@ -1107,6 +1108,243 @@ describe("ConnectionController.getConnectionTemporaryTable guards", () => {
    });
 });
 
+describe("ConnectionController: an attached database name off its pattern is a 400", () => {
+   afterEach(() => sinon.restore());
+
+   const hostile = 'evil"; SELECT 1 --';
+   const duckdbWith = (name: string) => ({
+      name: "lake",
+      type: "duckdb" as const,
+      duckdbConnection: {
+         attachedDatabases: [
+            {
+               name,
+               type: "postgres" as const,
+               postgresConnection: { host: "10.0.0.1", port: 5432 },
+            },
+         ],
+      },
+   });
+
+   function controllerWithService() {
+      const { controller } = buildController(sinon.stub().resolves());
+      const service = {
+         addConnection: sinon.stub().resolves(),
+         updateConnection: sinon.stub().resolves(),
+      };
+      (
+         controller as unknown as { connectionService: typeof service }
+      ).connectionService = service;
+      return { controller, service };
+   }
+
+   it("refuses it on create, before the connection is stored", async () => {
+      const { controller, service } = controllerWithService();
+      const refused = controller.addConnection(
+         "env",
+         "lake",
+         duckdbWith(hostile) as never,
+      );
+      await expect(refused).rejects.toBeInstanceOf(BadRequestError);
+      await expect(refused).rejects.toThrow("attachedDatabases[0].name");
+      expect(service.addConnection.called).toBe(false);
+   });
+
+   it("refuses it on update, with or without a type in the patch", async () => {
+      const { controller, service } = controllerWithService();
+      const patch = duckdbWith(hostile);
+      const { type: _type, ...untyped } = patch;
+      for (const body of [patch, untyped]) {
+         await expect(
+            controller.updateConnection("env", "lake", body as never),
+         ).rejects.toBeInstanceOf(BadRequestError);
+      }
+      expect(service.updateConnection.called).toBe(false);
+   });
+
+   it("refuses it on test, before any ATTACH is tried", async () => {
+      const controller = new ConnectionController(fakeOf<ConnectionAdmin>({}));
+      for (const config of [
+         duckdbWith(hostile),
+         { config: duckdbWith(hostile) },
+      ]) {
+         await expect(
+            controller.testConnectionConfiguration(config as never),
+         ).rejects.toBeInstanceOf(BadRequestError);
+      }
+   });
+
+   it("stores a valid name as before", async () => {
+      const { controller, service } = controllerWithService();
+      await controller.addConnection(
+         "env",
+         "lake",
+         duckdbWith("warehouse_pg") as never,
+      );
+      await controller.updateConnection(
+         "env",
+         "lake",
+         duckdbWith("warehouse_pg") as never,
+      );
+      expect(service.addConnection.calledOnce).toBe(true);
+      expect(service.updateConnection.calledOnce).toBe(true);
+   });
+});
+
+describe("ConnectionController: an attached S3 region off its shape is a 400", () => {
+   afterEach(() => sinon.restore());
+
+   const withRegion = (region: string) => ({
+      name: "lake",
+      type: "duckdb" as const,
+      duckdbConnection: {
+         attachedDatabases: [
+            {
+               name: "bucket",
+               type: "s3" as const,
+               s3Connection: {
+                  accessKeyId: "AK",
+                  secretAccessKey: "SK",
+                  region,
+               },
+            },
+         ],
+      },
+   });
+   const hostile = "us-east-1'); SET threads=1; --";
+
+   it("refuses it on create, update, an untyped PATCH and test, before anything runs", async () => {
+      const { controller } = buildController(sinon.stub().resolves());
+      const service = {
+         addConnection: sinon.stub().resolves(),
+         updateConnection: sinon.stub().resolves(),
+      };
+      (
+         controller as unknown as { connectionService: typeof service }
+      ).connectionService = service;
+      const { type: _type, ...untyped } = withRegion(hostile);
+      const attempts = [
+         () =>
+            controller.addConnection(
+               "env",
+               "lake",
+               withRegion(hostile) as never,
+            ),
+         () =>
+            controller.updateConnection(
+               "env",
+               "lake",
+               withRegion(hostile) as never,
+            ),
+         () => controller.updateConnection("env", "lake", untyped as never),
+         () =>
+            controller.testConnectionConfiguration(
+               withRegion(hostile) as never,
+            ),
+      ];
+      for (const attempt of attempts) {
+         await expect(attempt()).rejects.toBeInstanceOf(BadRequestError);
+         await expect(attempt()).rejects.toThrow("s3Connection.region");
+      }
+      expect(service.addConnection.called).toBe(false);
+      expect(service.updateConnection.called).toBe(false);
+   });
+
+   it("stores a valid region as before", async () => {
+      const { controller } = buildController(sinon.stub().resolves());
+      const addConnection = sinon.stub().resolves();
+      (
+         controller as unknown as {
+            connectionService: { addConnection: sinon.SinonStub };
+         }
+      ).connectionService = { addConnection } as never;
+      await controller.addConnection(
+         "env",
+         "lake",
+         withRegion("eu-west-2") as never,
+      );
+      expect(addConnection.calledOnce).toBe(true);
+   });
+});
+
+describe("ConnectionController: a DuckLake storage S3 region off its shape is a 400", () => {
+   afterEach(() => sinon.restore());
+
+   const withRegion = (region: string) => ({
+      name: "lake",
+      type: "ducklake" as const,
+      ducklakeConnection: {
+         catalog: {
+            postgresConnection: { host: "10.0.0.1", port: 5432 },
+         },
+         storage: {
+            bucketUrl: "s3://bucket/lake",
+            s3Connection: {
+               accessKeyId: "AK",
+               secretAccessKey: "SK",
+               region,
+            },
+         },
+      },
+   });
+   const hostile = "us-east-1'); SET threads=1; --";
+
+   it("refuses it on create, update, an untyped PATCH and test, before anything runs", async () => {
+      const { controller } = buildController(sinon.stub().resolves());
+      const service = {
+         addConnection: sinon.stub().resolves(),
+         updateConnection: sinon.stub().resolves(),
+      };
+      (
+         controller as unknown as { connectionService: typeof service }
+      ).connectionService = service;
+      const { type: _type, ...untyped } = withRegion(hostile);
+      const attempts = [
+         () =>
+            controller.addConnection(
+               "env",
+               "lake",
+               withRegion(hostile) as never,
+            ),
+         () =>
+            controller.updateConnection(
+               "env",
+               "lake",
+               withRegion(hostile) as never,
+            ),
+         () => controller.updateConnection("env", "lake", untyped as never),
+         () =>
+            controller.testConnectionConfiguration(
+               withRegion(hostile) as never,
+            ),
+      ];
+      for (const attempt of attempts) {
+         await expect(attempt()).rejects.toBeInstanceOf(BadRequestError);
+         await expect(attempt()).rejects.toThrow(
+            "ducklakeConnection.storage.s3Connection.region",
+         );
+      }
+      expect(service.addConnection.called).toBe(false);
+      expect(service.updateConnection.called).toBe(false);
+   });
+
+   it("stores a valid region as before", async () => {
+      const { controller } = buildController(sinon.stub().resolves());
+      const addConnection = sinon.stub().resolves();
+      (
+         controller as unknown as {
+            connectionService: { addConnection: sinon.SinonStub };
+         }
+      ).connectionService = { addConnection } as never;
+      await controller.addConnection(
+         "env",
+         "lake",
+         withRegion("eu-west-2") as never,
+      );
+      expect(addConnection.calledOnce).toBe(true);
+   });
+});
+
 describe("ConnectionController.testConnectionConfiguration name validation", () => {
    afterEach(() => sinon.restore());
 
@@ -2174,6 +2412,116 @@ describe("ConnectionController: raw SQL on a locked-down DuckDB connection is on
    });
 });
 
+describe("ConnectionController: the DuckDB connector's statement separator cannot smuggle a second statement", () => {
+   afterEach(() => sinon.restore());
+
+   // @malloydata/db-duckdb splits raw SQL on its statement separator and runs
+   // every part, while DuckDB's parser reads the separator as a comment. The
+   // gate judges the text as the connector runs it.
+   function controllerOn(apiConnection: Record<string, unknown>) {
+      const runSQL = sinon.stub().resolves({ rows: [{ n: 1 }], totalRows: 1 });
+      const manifestTemporaryTable = sinon.stub().resolves("tmp_1");
+      const fetchSelectSchema = sinon.stub().resolves({ fields: [] });
+      const fakeStore = fakeOf<ConnectionAdmin>({
+         getEnvironment: sinon.stub().resolves({
+            assertCanAdmitQuery: sinon.stub(),
+            getApiConnection: () => apiConnection,
+         }),
+      });
+      const controller = new ConnectionController(fakeStore);
+      sinon
+         .stub(
+            controller as unknown as {
+               getMalloyConnection: (...args: unknown[]) => Promise<Connection>;
+            },
+            "getMalloyConnection",
+         )
+         .resolves({
+            runSQL,
+            manifestTemporaryTable,
+            fetchSelectSchema,
+         } as unknown as Connection);
+      return { controller, runSQL, manifestTemporaryTable, fetchSelectSchema };
+   }
+
+   const query = (
+      controller: ConnectionController,
+      name: string,
+      sql: string,
+   ) =>
+      controller.getConnectionQueryData(
+         "env",
+         name,
+         sql,
+         "",
+         undefined,
+         undefined,
+         undefined,
+         {},
+      );
+
+   const smuggled = [
+      "SELECT 1 AS one -- hack: split on this SET memory_limit='256MB'",
+      "SELECT 1 AS one -- hack: split on this\nSET memory_limit='256MB'",
+      "SELECT '-- hack: split on this' AS s",
+      "SELECT 1 /* -- hack: split on this */",
+   ];
+
+   for (const [label, apiConnection, name] of [
+      [
+         "a managed database",
+         { name: "sales", type: "ducklake", managed: true },
+         "sales",
+      ],
+      [
+         "a locked-down DuckDB connection",
+         { name: "lake", type: "duckdb" },
+         "lake",
+      ],
+      ["the package sandbox", { name: "duckdb", type: "duckdb" }, "duckdb"],
+   ] as const) {
+      it(`refuses SQL that spells the separator on ${label} with a 400, before anything runs`, async () => {
+         const {
+            controller,
+            runSQL,
+            manifestTemporaryTable,
+            fetchSelectSchema,
+         } = controllerOn(apiConnection);
+         for (const sql of smuggled) {
+            const refused = query(controller, name, sql);
+            await expect(refused).rejects.toBeInstanceOf(BadRequestError);
+            await expect(refused).rejects.toThrow("statement separator");
+            await expect(
+               controller.getConnectionSqlSource("env", name, sql),
+            ).rejects.toBeInstanceOf(BadRequestError);
+            await expect(
+               controller.getConnectionTemporaryTable(
+                  "env",
+                  name,
+                  sql,
+                  undefined,
+                  undefined,
+                  {},
+               ),
+            ).rejects.toBeInstanceOf(BadRequestError);
+         }
+         expect(runSQL.called).toBe(false);
+         expect(fetchSelectSchema.called).toBe(false);
+         expect(manifestTemporaryTable.called).toBe(false);
+      });
+
+      it(`still runs a plain SELECT on ${label}, and still refuses a semicolon script`, async () => {
+         const { controller, runSQL } = controllerOn(apiConnection);
+         await query(controller, name, "SELECT 1 AS one");
+         expect(runSQL.calledOnce).toBe(true);
+         await expect(
+            query(controller, name, "SELECT 1; SET memory_limit='256MB'"),
+         ).rejects.toBeInstanceOf(BadRequestError);
+         expect(runSQL.calledOnce).toBe(true);
+      });
+   }
+});
+
 describe("ConnectionController.getConnectionQueryData statement usage", () => {
    afterEach(() => {
       sinon.restore();
@@ -2260,6 +2608,33 @@ describe("ConnectionController.getConnectionQueryData statement usage", () => {
          rows: 2,
          status: "ok",
       });
+      // The bytes of the response body the route answers with, exactly.
+      const { data } = outcome as { data: string };
+      expect(records[0].bytes_out).toBe(Buffer.byteLength(data, "utf8"));
+   });
+
+   it("records a statement whose result the row cap refuses, once, without bytes_out", async () => {
+      // More rows than the cap: the route answers 413 after the statement ran,
+      // so no response is serialized, and the statement still has its record.
+      const runSQL = sinon.stub().resolves({
+         rows: Array.from({ length: 5 }, (_, a) => ({ a })),
+         totalRows: 5,
+      });
+      const controller = controllerOver(buffered(runSQL), managedConnection);
+      setEnv({ PUBLISHER_MAX_QUERY_ROWS: "3" });
+
+      const { records, outcome } = await usageRecords(
+         query(controller, "SELECT a FROM t"),
+      );
+
+      expect(outcome).toBeInstanceOf(Error);
+      expect(records).toHaveLength(1);
+      expect(records[0]).toMatchObject({
+         surface: "sql",
+         rows: 5,
+         status: "ok",
+      });
+      expect(records[0]).not.toHaveProperty("bytes_out");
    });
 
    it("records a streamed statement the same way", async () => {
@@ -2286,6 +2661,8 @@ describe("ConnectionController.getConnectionQueryData statement usage", () => {
          rows: 3,
          status: "ok",
       });
+      const { data } = outcome as { data: string };
+      expect(records[0].bytes_out).toBe(Buffer.byteLength(data, "utf8"));
    });
 
    it("records nothing on a connection that is not managed", async () => {
@@ -2346,4 +2723,67 @@ describe("ConnectionController.getConnectionQueryData statement usage", () => {
       expect(records[0]).toMatchObject({ surface: "sql", status: "error" });
       expect(records[0].rows).toBeUndefined();
    });
+});
+
+/**
+ * F-16: a Snowflake integer past 2^53 reaches raw SQL as a BigInt (every
+ * Snowflake connection reads integers exactly), so the answer must serialize
+ * it, on the buffered and the streamed path, and in the byte count too.
+ */
+describe("ConnectionController.getConnectionQueryData Snowflake big integers", () => {
+   afterEach(() => sinon.restore());
+
+   const BIG = "4530000000000225187";
+
+   function snowflakeController(streaming: boolean): ConnectionController {
+      const connection = fakeSnowflake(() => [
+         { ID: driverValue("fixed", BIG), N: driverValue("fixed", "5") },
+      ]);
+      if (!streaming) {
+         sinon.stub(connection, "canStream").returns(false as never);
+      }
+      const fakeStore = fakeOf<ConnectionAdmin>({
+         getEnvironment: sinon.stub().resolves({
+            assertCanAdmitQuery: sinon.stub().returns(undefined),
+            getApiConnection: () => ({ name: "sf", type: "snowflake" }),
+         }),
+      });
+      const controller = new ConnectionController(fakeStore);
+      sinon
+         .stub(
+            controller as unknown as {
+               getMalloyConnection: (...args: unknown[]) => Promise<Connection>;
+            },
+            "getMalloyConnection",
+         )
+         .resolves(connection as unknown as Connection);
+      return controller;
+   }
+
+   for (const [label, streaming] of [
+      ["buffered", false],
+      ["streamed", true],
+   ] as const) {
+      it(`answers every digit as a JSON string (${label})`, async () => {
+         // A byte cap, so the streamed path counts each row's bytes.
+         setEnv({ PUBLISHER_MAX_RESPONSE_BYTES: "1000000" });
+         const result = await snowflakeController(
+            streaming,
+         ).getConnectionQueryData(
+            "env",
+            "sf",
+            "SELECT id, n FROM t",
+            "",
+            undefined,
+            undefined,
+            undefined,
+            {},
+         );
+         expect(result.data).toContain(`"ID":"${BIG}"`);
+         const parsed = JSON.parse(result.data ?? "") as {
+            rows: Record<string, unknown>[];
+         };
+         expect(parsed.rows).toEqual([{ ID: BIG, N: 5 }]);
+      });
+   }
 });

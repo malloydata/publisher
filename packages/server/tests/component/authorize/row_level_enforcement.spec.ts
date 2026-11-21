@@ -16,6 +16,7 @@
 import { unrecordedAudit } from "../../../src/service/access_record";
 import {
    API,
+   type GivenValue,
    type ModelDef,
    type ModelMaterializer,
    type SourceDef,
@@ -31,6 +32,7 @@ import {
    createGateClassificationDeps,
    resolveGateShape,
 } from "../../../src/service/gate_classification";
+import { resolveGraftTarget } from "../../../src/service/gate_classification";
 import { Model } from "../../../src/service/model";
 import {
    boundRows,
@@ -298,11 +300,7 @@ source: X is duckdb.table('parent') extend {
          (orphan as unknown as { sourceID?: string }).sourceID = undefined;
          (orphan as unknown as { referenceID?: string }).referenceID =
             undefined;
-         const target = internals.resolveGraftTarget(
-            orphan,
-            modelDef,
-            modelDef,
-         );
+         const target = resolveGraftTarget(orphan, modelDef, modelDef);
          expect(target).toBeUndefined();
       } finally {
          await duckdb.close();
@@ -464,6 +462,8 @@ source: X is duckdb.table('parent') extend {
             exprs: ["org_id in $GROUPS"],
             selfContained: false,
             route: "access_filter",
+            // Read on X itself, not through a `->` derivation.
+            baseHops: 0,
             struct: modelDef.contents["X"] as unknown as SourceDef,
          };
 
@@ -539,6 +539,7 @@ source: X is duckdb.table('parent') extend {
             label: "X",
             exprs: ["false"],
             selfContained: true,
+            baseHops: 0,
             struct: modelDef.contents["X"] as unknown as SourceDef,
          };
 
@@ -574,13 +575,9 @@ source: X is duckdb.table('parent') extend {
 
 describe("row-level authorize — runnable identity (CRITICAL)", () => {
    it("a notebook-shaped cell composing a source's own where: filter AND a row-level gate carries BOTH", async () => {
-      // Exercised at the QueryMaterializer level (same recompile shape
-      // executeNotebookCell uses: `mm.loadQuery` + authorizeAndBindRunnable),
-      // since a full notebook harness needs the .malloynb worker path this
-      // file's headline bug already shows is unreachable for any row-field
-      // gate. This proves the COMPOSITION invariant executeNotebookCell's own
-      // doc states: the recompile must use whatever text the filter refinement
-      // already rebuilt, not the pre-refinement cell text.
+      // Exercised at the QueryMaterializer level (`mm.loadQuery` +
+      // authorizeAndBindRunnable). This proves the COMPOSITION invariant: the
+      // recompile that binds the gate keeps the source's own `where:`.
       const { internals, mm, duckdb } = await buildGatedModel(`
 #(secure)
 given:
@@ -1031,10 +1028,10 @@ source: X is duckdb.table('parent') extend {
 
 describe("row-level authorize — other", () => {
    it("error scrubbing: a fail-closed row-level deny never names the column/join/expression to the caller", async () => {
-      // A query-source projection dropping `authorized` — the shape that
-      // reproduces a thrown `AccessDeniedError` under the dimension form
-      // (see the "fail-closed" describe block's own tests: an `extend {
-      // except: ... }` resolves to a live, empty result instead).
+      // A query-source over a base that `except:`s the gated column: the gate
+      // has no base copy carrying the column to filter, so it denies (a
+      // projection that merely drops the column answers the base's admitted
+      // rows: the gate filters the base before the derivation runs).
       const { internals, mm, duckdb } = await buildGatedModel(`
 #(secure)
 given:
@@ -1044,7 +1041,7 @@ given:
 source: X is duckdb.table('parent') extend {
    measure: n is count()
 }
-source: W is X -> { group_by: id, val; aggregate: n is count() }
+source: W is X extend { except: org_id } -> { group_by: id, val; aggregate: n is count() }
 `);
       try {
          const err = await boundRows(
@@ -1108,27 +1105,18 @@ source: X is duckdb.table('parent') extend {
 });
 
 // ---------------------------------------------------------------------------
-// Notebook cells — a cell that both declares a gated source and runs it, and
-// a cell whose `#(filter)` refinement fails to compile.
+// Notebook cells — a cell that declares a gated source, run on the notebook's
+// own path as the query route runs it.
 // ---------------------------------------------------------------------------
 
-/**
- * Extract the value of the first field of the first row from a notebook
- * cell's JSON-stringified result (`executeNotebookCell`'s `result` string).
- * Same shape `tests/component/filter.component.spec.ts`'s `parseNotebookResult` decodes,
- * narrowed to the one cell this file only needs: a single-row, single-column
- * `aggregate:` result.
- */
-function firstCellResultValue(resultJson: string): unknown {
-   const parsed = JSON.parse(resultJson);
-   const row = parsed?.data?.array_value?.[0]?.record_value?.[0];
-   return (
-      row?.number_value ??
-      row?.string_value ??
-      row?.boolean_value ??
-      row?.timestamp_value ??
-      null
-   );
+/** The rows a query on the notebook's own path answers, with `givens`. */
+async function notebookRows(
+   model: Model,
+   query: string,
+   givens: Record<string, GivenValue>,
+): Promise<Record<string, unknown>[]> {
+   const result = await model.runQuery(unrecordedAudit(), { query, givens });
+   return result.compactResult as Record<string, unknown>[];
 }
 
 // DEPRECATED FEATURE COVERAGE — delete together with
@@ -1162,89 +1150,22 @@ run: local2 -> { aggregate: n is count() }
          expect(err).toBeUndefined();
 
          // Cell 0 declares `gated`; cell 1 declares ITS OWN source `local2`
-         // (deriving from `gated`) and runs it in the SAME cell. Grafting
-         // the row-level condition against the model-wide cumulative
-         // modelDef — which, by the time this request runs, already has
-         // `local2` — and then recompiling this cell's own
-         // `source:`+`run:` text against it fails to compile with "Cannot
-         // redefine 'local2'", because that text tries to redeclare a name
-         // the graft target model already carries. Grafting the model AS OF
-         // THIS CELL (cell 0's own scope, which does not have `local2` yet)
-         // is what makes the redeclaration — and therefore the whole cell —
-         // resolvable again.
-         const result = await model.executeNotebookCell(
-            unrecordedAudit(),
-            1,
-            undefined,
-            false,
-            {
-               GROUPS: [1],
-            },
+         // (deriving from `gated`) and runs it. Run on the notebook's path,
+         // `local2` carries the gate it inherits.
+         const rows = await notebookRows(
+            model,
+            "run: local2 -> { aggregate: n is count() }",
+            { GROUPS: [1] },
          );
-         expect(result.result).toBeDefined();
          // org_id=1 rows are ids 1,2 — the gate filters out the org_id=2
          // rows (ids 3,4), so the count is 2, not 4.
-         expect(firstCellResultValue(result.result!)).toBe(2);
+         expect(rows[0].n).toBe(2);
       } finally {
          await cleanup();
       }
    });
 
-   // DEPRECATED FEATURE COVERAGE — delete together with
-   // `#(filter)` (see RELEASE_NOTES deprecations).
-   describe("deprecated: #(filter)", () => {
-      it("CRITICAL — a cell whose #(filter) refinement does not compile surfaces that failure, never a silent unfiltered admit", async () => {
-         const { model, cleanup } = await loadAuthorizeModel(
-            {
-               "nb.malloynb": `>>>malloy
-##! experimental.givens
-
-#(secure)
-given:
-  ROLE :: string
-
-#(filter) dimension=nonexistent_field type=equal
-#(authorize) 'admin' = $ROLE
-source: gated is duckdb.table('parent') extend {
-   measure: n is count()
-}
-
-run: gated -> { aggregate: n is count() }
-`,
-            },
-            "nb.malloynb",
-         );
-         try {
-            const loadErr = (model as unknown as { compilationError?: Error })
-               .compilationError;
-            expect(loadErr).toBeUndefined();
-
-            // filterParams supplies a value for the `nonexistent_field` filter,
-            // so the `#(filter)` refinement rebuild appends
-            // `+ {where: nonexistent_field = 'x'}` to the cell's text — which
-            // fails to compile, since `gated` has no such field. The caller is
-            // given the ADMITTING role deliberately: this pins that a broken
-            // refinement surfaces its own compile failure rather than silently
-            // admitting unfiltered rows, and a denied caller would short-circuit
-            // on the lock's 403 before reaching that question at all.
-            await expect(
-               model.executeNotebookCell(
-                  unrecordedAudit(),
-                  0,
-                  { nonexistent_field: "x" },
-                  false,
-                  {
-                     ROLE: "admin",
-                  },
-               ),
-            ).rejects.toThrow(/nonexistent_field/);
-         } finally {
-            await cleanup();
-         }
-      });
-   });
-
-   it("CRITICAL — a row-level gate declared and run in the FIRST code cell returns correctly filtered rows (no earlier cell to graft against; grafts its OWN post-declaration scope, repointing the compiled queryDef rather than recompiling text)", async () => {
+   it("CRITICAL — a row-level gate declared and run in the FIRST code cell returns correctly filtered rows", async () => {
       const { model, cleanup } = await loadAuthorizeModel(
          {
             "nb.malloynb": `>>>malloy
@@ -1271,17 +1192,12 @@ run: gated -> { aggregate: n is count() }
 
          // org_id=1 rows are ids 1,2 — the gate filters out the org_id=2
          // rows (ids 3,4), so the count is 2, not 4.
-         const result = await model.executeNotebookCell(
-            unrecordedAudit(),
-            0,
-            undefined,
-            false,
-            {
-               GROUPS: [1],
-            },
+         const rows = await notebookRows(
+            model,
+            "run: gated -> { aggregate: n is count() }",
+            { GROUPS: [1] },
          );
-         expect(result.result).toBeDefined();
-         expect(firstCellResultValue(result.result!)).toBe(2);
+         expect(rows[0].n).toBe(2);
       } finally {
          await cleanup();
       }
@@ -1312,23 +1228,18 @@ run: gated -> { aggregate: n is count() }
             .compilationError;
          expect(err).toBeUndefined();
 
-         const result = await model.executeNotebookCell(
-            unrecordedAudit(),
-            0,
-            undefined,
-            false,
-            {
-               GROUPS: [],
-            },
+         const rows = await notebookRows(
+            model,
+            "run: gated -> { aggregate: n is count() }",
+            { GROUPS: [] },
          );
-         expect(result.result).toBeDefined();
-         expect(firstCellResultValue(result.result!)).toBe(0);
+         expect(rows[0].n).toBe(0);
       } finally {
          await cleanup();
       }
    });
 
-   it("a row-level gate in a code cell preceded only by markdown also returns correctly filtered rows (same fallback as the first-cell case)", async () => {
+   it("a row-level gate in a code cell preceded only by markdown also returns correctly filtered rows", async () => {
       const { model, cleanup } = await loadAuthorizeModel(
          {
             "nb.malloynb": `>>>markdown
@@ -1356,23 +1267,18 @@ run: gated -> { aggregate: n is count() }
             .compilationError;
          expect(err).toBeUndefined();
 
-         const result = await model.executeNotebookCell(
-            unrecordedAudit(),
-            1,
-            undefined,
-            false,
-            {
-               GROUPS: [1],
-            },
+         const rows = await notebookRows(
+            model,
+            "run: gated -> { aggregate: n is count() }",
+            { GROUPS: [1] },
          );
-         expect(result.result).toBeDefined();
-         expect(firstCellResultValue(result.result!)).toBe(2);
+         expect(rows[0].n).toBe(2);
       } finally {
          await cleanup();
       }
    });
 
-   it("CRITICAL — a LATER cell that declares and runs its own gated source (not just the first cell) also returns correctly filtered rows — the earlier cell exists but does not carry the declared source, so its scope is just as unusable as cell 0's absence", async () => {
+   it("CRITICAL — a LATER cell that declares and runs its own gated source (not just the first cell) also returns correctly filtered rows", async () => {
       const { model, cleanup } = await loadAuthorizeModel(
          {
             "nb.malloynb": `>>>malloy
@@ -1400,17 +1306,12 @@ run: gated -> { aggregate: n is count() }
             .compilationError;
          expect(err).toBeUndefined();
 
-         const result = await model.executeNotebookCell(
-            unrecordedAudit(),
-            1,
-            undefined,
-            false,
-            {
-               GROUPS: [1],
-            },
+         const rows = await notebookRows(
+            model,
+            "run: gated -> { aggregate: n is count() }",
+            { GROUPS: [1] },
          );
-         expect(result.result).toBeDefined();
-         expect(firstCellResultValue(result.result!)).toBe(2);
+         expect(rows[0].n).toBe(2);
       } finally {
          await cleanup();
       }
@@ -1441,17 +1342,12 @@ run: gated -> { group_by: org_id, id } -> { aggregate: n is count() }
             .compilationError;
          expect(err).toBeUndefined();
 
-         const result = await model.executeNotebookCell(
-            unrecordedAudit(),
-            0,
-            undefined,
-            false,
-            {
-               GROUPS: [1],
-            },
+         const rows = await notebookRows(
+            model,
+            "run: gated -> { group_by: org_id, id } -> { aggregate: n is count() }",
+            { GROUPS: [1] },
          );
-         expect(result.result).toBeDefined();
-         expect(firstCellResultValue(result.result!)).toBe(2);
+         expect(rows[0].n).toBe(2);
       } finally {
          await cleanup();
       }
@@ -1483,17 +1379,10 @@ run: gated -> byorg
             .compilationError;
          expect(err).toBeUndefined();
 
-         const result = await model.executeNotebookCell(
-            unrecordedAudit(),
-            0,
-            undefined,
-            false,
-            {
-               GROUPS: [1],
-            },
-         );
-         expect(result.result).toBeDefined();
-         expect(firstCellResultValue(result.result!)).toBe(2);
+         const rows = await notebookRows(model, "run: gated -> byorg", {
+            GROUPS: [1],
+         });
+         expect(rows[0].n).toBe(2);
       } finally {
          await cleanup();
       }
@@ -1528,34 +1417,18 @@ run: gated -> { group_by: id, org_id, childtable.name }
          expect(err).toBeUndefined();
 
          // child_id=10 rows are ids 1 and 3 (parent), which join to name='bob'.
-         // The RUN QUERY itself references the joined field (`childtable.name`
-         // in the projection) — residual limitation: the joined-field shape
-         // only proved out on the new (queryDef-repoint) path when the run
-         // query's own text already references the joined field, which is
-         // what forces the join into the ORIGINALLY compiled queryDef before
-         // the graft appends its condition.
-         const result = await model.executeNotebookCell(
-            unrecordedAudit(),
-            0,
-            undefined,
-            false,
-            {
-               GROUPS: ["bob"],
-            },
+         const rows = await notebookRows(
+            model,
+            "run: gated -> { group_by: id, org_id, childtable.name }",
+            { GROUPS: ["bob"] },
          );
-         expect(result.result).toBeDefined();
-         const rowCount = (
-            JSON.parse(result.result!) as {
-               data?: { array_value?: unknown[] };
-            }
-         ).data?.array_value?.length;
-         expect(rowCount).toBe(2);
+         expect(rows.length).toBe(2);
       } finally {
          await cleanup();
       }
    });
 
-   it("CRITICAL — P0 on the new path: a self-declaring cell's ungated entry point joining a gated source does not fire the joined gate", async () => {
+   it("CRITICAL — P0: a self-declaring cell's ungated entry point joining a gated source does not fire the joined gate", async () => {
       const { model, cleanup } = await loadAuthorizeModel(
          {
             "nb.malloynb": `>>>malloy
@@ -1586,20 +1459,14 @@ run: joiner -> { aggregate: n is count() }
 
          // `joiner` declares no gate of its own and does not derive from
          // `childtable` — collectEntryPointGates does not walk joins, so
-         // childtable's "false" gate must not be collected here either. All
-         // 4 seed rows, unfiltered — same P0 rule the non-notebook query path
-         // enforces, now proven for a cell whose graft scope is its OWN
-         // post-declaration model (both sources are declared in this SAME
-         // self-declaring cell).
-         const result = await model.executeNotebookCell(
-            unrecordedAudit(),
-            0,
-            undefined,
-            false,
+         // childtable's gate must not be collected here either. All 4 seed
+         // rows, unfiltered — the same P0 rule every query path enforces.
+         const rows = await notebookRows(
+            model,
+            "run: joiner -> { aggregate: n is count() }",
             {},
          );
-         expect(result.result).toBeDefined();
-         expect(firstCellResultValue(result.result!)).toBe(4);
+         expect(rows[0].n).toBe(4);
       } finally {
          await cleanup();
       }
@@ -1765,20 +1632,18 @@ source: X is duckdb.table('parent') extend {
       }
    });
 
-   it("CRITICAL — an entry point whose gate resolves to `deny` does not route to storage (`queryEntryPointHasRowLevelGate` used to admit routing for any non-`row_level` resolution, including `deny`)", async () => {
+   it("CRITICAL — a derivation that inherits a row gate through `->` does not route to storage: it answers live, its base filtered first", async () => {
       const { restore: restoreSettings } = installSettings({
          env: { PERSIST_STORAGE_MODE: "on" },
       });
       const duckdb = await seededDuckdb();
-      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rla-storage-deny-"));
+      const dir = fs.mkdtempSync(
+         path.join(os.tmpdir(), "rla-storage-derived-"),
+      );
       try {
-         // `W_except` is a query-source projection dropping the gate
-         // dimension itself — the shape that makes `resolveGateShape`
-         // return `deny` rather than `row_level` UNDER `Model.create` (an
-         // `extend { except: org_id }` instead aborts the WHOLE model's
-         // load here — see load_validation.spec.ts's unexpressible-derivation
-         // coverage of that shape; this test is about the routing
-         // PRE-CHECK, not load validation).
+         // `W` drops the gate column; the gate filters `X`'s rows before `W`
+         // groups them. A storage table for `W` would be built from every
+         // org's rows, so it must never answer a gated caller.
          fs.writeFileSync(
             path.join(dir, "m.malloy"),
             `##! experimental.givens
@@ -1792,7 +1657,79 @@ source: X is duckdb.table('parent') extend {
    measure: n is count()
 }
 
-source: W_except is X -> { group_by: id, val; aggregate: n is count() }
+source: W is X -> { group_by: id, val; aggregate: n is count() }
+`,
+         );
+         const model = await Model.create(
+            "test-pkg",
+            dir,
+            "m.malloy",
+            connectionsFor(duckdb),
+         );
+         expect(
+            (model as unknown as { compilationError?: Error }).compilationError,
+         ).toBeUndefined();
+         await duckdb.runSQL(
+            "CREATE OR REPLACE TABLE mz_derived AS SELECT 999 AS n",
+         );
+         const serveConfig = duckdbMalloyConfig(duckdb).malloyConfig;
+         model.setServeDestinationConfig(() => serveConfig);
+         model.setServeBindings([
+            {
+               kind: "persist",
+               tier: "storage",
+               sourceName: "W",
+               destinationName: "duckdb",
+               virtualHandle: "h",
+               tablePath: "mz_derived",
+               schema: [{ name: "n", type: "BIGINT" }],
+            },
+         ]);
+         const result = await model.runQuery(
+            unrecordedAudit(),
+            {
+               query: "run: W -> { aggregate: c is count() }",
+               filterParams: {},
+               givens: { GROUPS: [1] },
+            },
+            QueryPrivileges.of({ bypassFilters: true }),
+         );
+         expect(result.servedFrom).not.toBe("storage");
+         // org 1 holds ids 1 and 2: two groups, not the stub's 999 and not
+         // the four groups of every org.
+         expect(JSON.stringify(result.compactResult)).toBe('[{"c":2}]');
+      } finally {
+         restoreSettings();
+         await duckdb.close();
+         fs.rmSync(dir, { recursive: true, force: true });
+      }
+   });
+
+   it("CRITICAL — an entry point whose gate resolves to `deny` does not route to storage (`queryEntryPointHasRowLevelGate` used to admit routing for any non-`row_level` resolution, including `deny`)", async () => {
+      const { restore: restoreSettings } = installSettings({
+         env: { PERSIST_STORAGE_MODE: "on" },
+      });
+      const duckdb = await seededDuckdb();
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rla-storage-deny-"));
+      try {
+         // `W_except` is a query-source over a base that `except:`s the
+         // gate column: the gate has no base copy to filter, so
+         // `resolveGateShape` returns `deny` rather than `row_level`. This
+         // test is about the routing PRE-CHECK, not load validation.
+         fs.writeFileSync(
+            path.join(dir, "m.malloy"),
+            `##! experimental.givens
+
+#(secure)
+given:
+  GROUPS :: number[]
+
+#(access_filter) org_id in $GROUPS
+source: X is duckdb.table('parent') extend {
+   measure: n is count()
+}
+
+source: W_except is X extend { except: org_id } -> { group_by: id, val; aggregate: n is count() }
 `,
          );
          const model = await Model.create(
@@ -2153,8 +2090,7 @@ source: gated is duckdb.sql("SELECT 1 as org_id, 1 as x") extend {
    }
 
    /** One graft set, distinct per `n`, in a distinct cache scope. Varying the
-    *  scope is how a notebook multiplies entries -- the case that makes the
-    *  count unbounded in practice. */
+    *  scope multiplies entries, as distinct graft scopes do. */
    function fill(model: Model, n: number): void {
       const inner = internals(model);
       const scope = inner.defaultGraftScope();

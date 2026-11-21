@@ -60,6 +60,7 @@ import {
    makeSnapshot,
    pin,
    type Snapshot,
+   underCompilerKeys,
 } from "./domain/binding";
 import { observedDatabaseColumns } from "./run/database_column_read";
 import {
@@ -340,9 +341,17 @@ export class PackageMaterialization {
       };
    }
 
-   /** The bound manifest entries, or undefined when serving live; reused by /compile. */
+   /**
+    * The bound manifest entries as Malloy reads them (each also under its
+    * compiler key, underCompilerKeys), or undefined when serving live;
+    * reused by /compile.
+    */
    getBuildManifestEntries(): BuildManifest["entries"] | undefined {
-      return this.buildManifestEntries;
+      if (!this.buildManifestEntries) return undefined;
+      return underCompilerKeys(
+         { entries: this.buildManifestEntries },
+         this.plan.compilerKeys,
+      ).entries;
    }
 
    /**
@@ -373,6 +382,19 @@ export class PackageMaterialization {
       return pin(this.snapshot(), new Date(now)).compilerManifest.entries;
    }
 
+   /**
+    * {@link getFreshBuildManifest} as Malloy reads it: each entry also under
+    * its compiler key (underCompilerKeys). What a compile is handed.
+    */
+   getFreshCompilerManifest(
+      now: number = Date.now(),
+   ): BuildManifest["entries"] | undefined {
+      const fresh = this.getFreshBuildManifest(now);
+      if (!fresh) return undefined;
+      return underCompilerKeys({ entries: fresh }, this.plan.compilerKeys)
+         .entries;
+   }
+
    /** Point every model's policy at this package's snapshot; idempotent. */
    wireServingResolvers(): void {
       this.owner.modelPolicy().setServingResolvers({
@@ -400,6 +422,8 @@ export class PackageMaterialization {
          plan.materializePlans,
          plan.databaseSourceEligibility,
          plan.asOfBuild,
+         plan.withdrawn,
+         plan.compilerKeys,
          this.owner.models(),
          getMaterializeEnabled(),
       ];
@@ -419,7 +443,7 @@ export class PackageMaterialization {
          drifted: observed.drifted,
          unread: observed.unread,
       };
-      const asOfBuild = this.asOfBuildBinding();
+      const { addresses, binding: asOfBuild } = this.asOfBuildTables();
       const bindings = [
          ...this.storageBindings.map((b) => {
             const kind = kindOf(b);
@@ -428,34 +452,55 @@ export class PackageMaterialization {
          ...observed.bindings,
       ].map((b) => (asOfBuild(b) ? { ...b, asOfBuild: true } : b));
       const signature = JSON.stringify(bindings);
+      const entries = this.observedColumns
+         ? observed.entries
+         : (this.databaseEntries ?? {});
       const snapshot = makeSnapshot(
          memo && memo.signature === signature
             ? memo.snapshot.bindings
             : Object.freeze(bindings),
-         this.observedColumns ? observed.entries : (this.databaseEntries ?? {}),
+         addresses.size === 0
+            ? entries
+            : Object.fromEntries(
+                 Object.entries(entries).map(([id, e]) => [
+                    id,
+                    addresses.has(id) ? { ...e, asOfBuild: true } : e,
+                 ]),
+              ),
+         plan.withdrawn,
+         plan.compilerKeys,
       );
       this.snapshotMemo = { key, snapshot, signature };
       return snapshot;
    }
 
    /**
-    * Whether a binding reads a table stored as of its build: one of its
-    * sources, or its content address, is one the plan marks `asOfBuild`.
-    * Read admission answers an access decision over it live.
+    * The tables the plan marks `asOfBuild`, by content address, for the
+    * database manifest entries; and whether a binding reads one (one of its
+    * sources, or its content address, is one). Read admission answers an
+    * access decision over such a table live.
     */
-   private asOfBuildBinding(): (b: Binding) => boolean {
+   private asOfBuildTables(): {
+      addresses: ReadonlySet<string>;
+      binding: (b: Binding) => boolean;
+   } {
       const ids = new Set(Object.keys(this.plan.asOfBuild));
-      if (ids.size === 0) return () => false;
-      const sources = this.plan.buildPlan?.sources ?? {};
+      if (ids.size === 0) return { addresses: new Set(), binding: () => false };
+      // The plan the bindings and `asOfBuild` are read from: after a failed
+      // refresh the current plan is gone, and the last good one still serves.
+      const sources = this.plan.servingPlan()?.sources ?? {};
       const addresses = new Set(
          [...ids].flatMap((id) => {
             const address = sources[id]?.sourceEntityId;
             return address ? [address] : [];
          }),
       );
-      return (b) =>
-         addresses.has(b.virtualHandle) ||
-         (b.sourceIDs ?? []).some((id) => ids.has(id));
+      return {
+         addresses,
+         binding: (b) =>
+            addresses.has(b.virtualHandle) ||
+            (b.sourceIDs ?? []).some((id) => ids.has(id)),
+      };
    }
 
    /**
@@ -1238,9 +1283,11 @@ export class PackageMaterialization {
    }
 
    storageWarnings(): ApiPackageWarning[] {
-      return warnings.storageWarnings(
-         this.plan.buildPlan,
-         getPersistStorageMode(),
+      const mode = getPersistStorageMode();
+      if (mode === "on") return [];
+      const fresh = this.getFreshBuildManifest() ?? {};
+      return warnings.storageWarnings(this.plan.buildPlan, mode, (id) =>
+         Object.hasOwn(fresh, id),
       );
    }
 

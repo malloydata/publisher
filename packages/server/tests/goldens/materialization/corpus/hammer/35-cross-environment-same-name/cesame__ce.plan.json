@@ -71,6 +71,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.ce_orders_e1"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "713c86582c6aa8cca575b1d62fd3f3ad44a26eb599a356a086a7388df5501792",
         "sourceID": "daily@<hammer>/cesame/ce.malloy",

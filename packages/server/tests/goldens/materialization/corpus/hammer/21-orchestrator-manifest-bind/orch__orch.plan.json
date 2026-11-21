@@ -71,6 +71,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.orch_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "6ff8713b2f8abc8accde2ec19f10d41d8be8f9dd25397ab79d13702713580309",
         "sourceID": "daily@<hammer>/orch/orch.malloy",

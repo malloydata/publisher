@@ -27,10 +27,7 @@ import {
 // Registers the "publisher" connection type (proxies SQL to a remote Publisher);
 // lookupConnection resolves it through the registry like any other type.
 import "@malloydata/db-publisher";
-import {
-   buildPoolOptions,
-   SnowflakeConnection,
-} from "@malloydata/db-snowflake";
+import type { SnowflakeConnection } from "@malloydata/db-snowflake";
 import "@malloydata/db-sqlserver";
 import type { SQLServerConnection } from "@malloydata/db-sqlserver";
 import "@malloydata/db-trino";
@@ -39,10 +36,12 @@ import {
    Connection,
    contextOverlay,
    MalloyConfig,
+   type QueryRecord,
    TableSourceDef,
 } from "@malloydata/malloy";
 import type { LookupConnection } from "@malloydata/malloy/connection";
 import { AxiosError } from "axios";
+import { AsyncLocalStorage } from "async_hooks";
 import { createHash } from "crypto";
 import { mkdtempSync, readFileSync, writeFileSync } from "fs";
 import fs from "fs/promises";
@@ -85,9 +84,12 @@ import {
    EnvironmentConnectionMetadata,
    normalizeSnowflakePrivateKey,
    parseServiceAccountKey,
+   removeUndefined,
    postgresStatementTimeoutMs,
    PROXIED_SSLMODES,
 } from "./connection_config";
+import { buildSnowflakeConnection } from "./snowflake_connection";
+import { guardBigQueryTruncation } from "./bigquery_truncation";
 import { gcpImpersonationOverlay } from "./gcp_impersonation";
 import { assertGoogleCredentialsIsNotADirectory } from "./google_credentials";
 import {
@@ -522,7 +524,7 @@ async function createBigQuerySecret(
    await connection.runSQL(`
       CREATE OR REPLACE SECRET ${secretName} (
          TYPE BIGQUERY,
-         SCOPE 'bq://${projectId}',
+         SCOPE '${escapeSQL(`bq://${projectId}`)}',
          SERVICE_ACCOUNT_JSON '${escapedJson}'
       );
    `);
@@ -555,6 +557,40 @@ function escapeSnowflakeIdentity(
    };
 }
 
+/**
+ * The ATTACH of a BigQuery project under `name`. The alias is quoted as a
+ * DuckDB identifier and the project as a string literal, so neither can end
+ * the statement, whatever validation the name passed.
+ */
+export function bigQueryAttachSQL(name: string, projectId: string): string {
+   return `ATTACH '${escapeSQL(`project=${projectId}`)}' AS ${quoteIdentifier(name, "duckdb")} (TYPE bigquery, READ_ONLY);`;
+}
+
+/** The secret a Snowflake attachment named `name` creates. */
+function snowflakeSecretName(name: string): string {
+   return `${name}_secret`;
+}
+
+/**
+ * The statements that attach a Snowflake database under `name`: its secret
+ * (from the already-escaped `secretLines`), a test query through that secret,
+ * and the ATTACH. Every use of the name is quoted: as a DuckDB identifier
+ * (the alias, the secret) or escaped as a string literal (the database to
+ * attach, the secret the test query names), so none can end its statement.
+ */
+export function snowflakeAttachSQL(
+   name: string,
+   secretLines: string[],
+): { createSecret: string; test: string; attach: string } {
+   const secret = snowflakeSecretName(name);
+   const quotedSecret = quoteIdentifier(secret, "duckdb");
+   return {
+      createSecret: `CREATE OR REPLACE SECRET ${quotedSecret} (\n${secretLines.join(",\n")}\n   );`,
+      test: `SELECT * FROM snowflake_query('SELECT 1', '${escapeSQL(secret)}');`,
+      attach: `ATTACH '${escapeSQL(name)}' AS ${quoteIdentifier(name, "duckdb")} (TYPE snowflake, SECRET ${quotedSecret}, READ_ONLY);`,
+   };
+}
+
 async function attachBigQuery(
    connection: DuckDBConnection,
    attachedDb: AttachedDatabase,
@@ -580,8 +616,7 @@ async function attachBigQuery(
       `Created BigQuery secret: ${secretName} for project: ${projectId}`,
    );
 
-   const attachCommand = `ATTACH 'project=${projectId}' AS ${attachedDb.name} (TYPE bigquery, READ_ONLY);`;
-   await connection.runSQL(attachCommand);
+   await connection.runSQL(bigQueryAttachSQL(attachedDb.name ?? "", projectId));
    logger.info(`Successfully attached BigQuery database: ${attachedDb.name}`);
 }
 
@@ -633,17 +668,14 @@ async function attachSnowflake(
       ...(params.schema ? [`      SCHEMA '${params.schema}'`] : []),
       ...(params.role ? [`      ROLE '${params.role}'`] : []),
    ];
-   const secretString = `CREATE OR REPLACE SECRET ${attachedDb.name}_secret (\n${secretLines.join(",\n")}\n   );`;
+   const statements = snowflakeAttachSQL(attachedDb.name ?? "", secretLines);
 
-   await connection.runSQL(secretString);
+   await connection.runSQL(statements.createSecret);
 
-   const testresult = await connection.runSQL(
-      `SELECT * FROM snowflake_query('SELECT 1', '${attachedDb.name}_secret');`,
-   );
+   const testresult = await connection.runSQL(statements.test);
    logger.info(`Testing Snowflake connection:`, testresult.rows);
 
-   const attachCommand = `ATTACH '${attachedDb.name}' AS ${attachedDb.name} (TYPE snowflake, SECRET ${attachedDb.name}_secret, READ_ONLY);`;
-   await connection.runSQL(attachCommand);
+   await connection.runSQL(statements.attach);
    logger.info(`Successfully attached Snowflake database: ${attachedDb.name}`);
 }
 
@@ -2619,14 +2651,14 @@ export function buildCloudStorageSecretSQL(
             "PROVIDER credential_chain",
             `CHAIN '${chain}'`,
             "REFRESH 'auto'",
-            `REGION '${region}'`,
+            `REGION '${escapeSQL(region)}'`,
          ];
       } else {
          clauses = [
             "TYPE s3",
             `KEY_ID '${escapedKeyId}'`,
             `SECRET '${escapedSecret}'`,
-            `REGION '${region}'`,
+            `REGION '${escapeSQL(region)}'`,
          ];
       }
       // Additive on both arms: an S3-compatible endpoint behind a host role is a
@@ -2696,7 +2728,9 @@ async function attachCloudStorage(
 
    if (await doesSecretExistInDuckDB(connection, secretName)) {
       // Force-refresh attachments using this storage.
-      await connection.runSQL(`DETACH ${attachedDb.name};`).catch(() => {});
+      await connection
+         .runSQL(`DETACH ${quoteIdentifier(attachedDb.name ?? "", "duckdb")};`)
+         .catch(() => {});
    }
    await connection.runSQL(createSecretCommand);
 
@@ -2803,7 +2837,9 @@ async function attachAzureStorage(
    }
 
    if (await doesSecretExistInDuckDB(connection, secretName)) {
-      await connection.runSQL(`DETACH ${attachedDb.name};`).catch(() => {});
+      await connection
+         .runSQL(`DETACH ${quoteIdentifier(attachedDb.name ?? "", "duckdb")};`)
+         .catch(() => {});
    }
    await connection.runSQL(createSecretCommand);
 
@@ -2987,7 +3023,7 @@ async function detachAttachment(
    );
    const secret =
       type === "snowflake"
-         ? `${name}_secret`
+         ? quoteIdentifier(snowflakeSecretName(name), "duckdb")
          : type === "bigquery" ||
              type === "gcs" ||
              type === "s3" ||
@@ -3092,10 +3128,29 @@ class AzureDuckDBConnection extends DuckDBConnection {
    }
 }
 
+/**
+ * The DuckLake connection whose storage-secret renewal the current async chain
+ * is running, so a statement the renewal itself issues does not renew again.
+ */
+const renewingStorageSecretOf = new AsyncLocalStorage<object>();
+
 class DuckLakeConnection extends DuckDBConnection {
    private connectionName: string;
    private storageSecretRenewer?: () => Promise<void>;
-   private renewingStorageSecret = false;
+   /**
+    * The renewal in flight, shared by every statement that failed on the
+    * expired credential meanwhile: the statement gate hands the connection to
+    * the next statement as soon as one fails, so a second can fail before the
+    * first's renewal has run, and it must wait for that renewal, not give up.
+    * Resolves to whether the renewal succeeded; it never rejects.
+    */
+   private storageSecretRenewal?: Promise<boolean>;
+   /**
+    * How many renewals have completed. A statement that started before the
+    * latest one completed ran on the old credential, so it runs again on the
+    * new one rather than renewing a credential that is already fresh.
+    */
+   private storageSecretRenewals = 0;
 
    /** @see RenewableStorageSecret */
    setStorageSecretRenewer(renew: () => Promise<void>): void {
@@ -3118,34 +3173,129 @@ class DuckLakeConnection extends DuckDBConnection {
       sql: string,
       options?: Parameters<DuckDBConnection["runSQL"]>[1],
    ): Promise<Awaited<ReturnType<DuckDBConnection["runSQL"]>>> {
+      const renewalsBefore = this.storageSecretRenewals;
       try {
          return await super.runSQL(sql, options);
       } catch (error) {
-         // The renewal's own statement runs through this method; the flag stops
-         // a failure there from recursing.
-         const renew = this.storageSecretRenewer;
-         if (
-            !shouldRenewStorageSecret({
-               error,
-               hasRenewer: !!renew,
-               alreadyRenewing: this.renewingStorageSecret,
-            }) ||
-            !renew
-         ) {
+         if (!(await this.renewedStorageSecretAfter(error, renewalsBefore))) {
             throw await this.catalogUnavailableOr(error);
          }
+         try {
+            return await super.runSQL(sql, options);
+         } catch (rerunError) {
+            throw await this.catalogUnavailableOr(rerunError);
+         }
+      }
+   }
+
+   /**
+    * Streams SQL (the raw `sqlQuery` route) with {@link runSQL}'s recovery:
+    * an expired credential is renewed and the statement run again once, and a
+    * lost catalog is confirmed and reported typed. Both errors arrive before
+    * the first row (DuckDB binds and opens the scan before it yields), so only
+    * the first pull is checked, and nothing is buffered. An error after a row
+    * has been yielded is thrown as it is: running again would repeat rows the
+    * caller already has.
+    */
+   async *runSQLStream(
+      sql: string,
+      options?: Parameters<DuckDBConnection["runSQLStream"]>[1],
+   ): AsyncIterableIterator<QueryRecord> {
+      const renewalsBefore = this.storageSecretRenewals;
+      let rows = super.runSQLStream(sql, options);
+      let first: IteratorResult<QueryRecord>;
+      try {
+         first = await rows.next();
+      } catch (error) {
+         if (!(await this.renewedStorageSecretAfter(error, renewalsBefore))) {
+            throw await this.catalogUnavailableOr(error);
+         }
+         rows = super.runSQLStream(sql, options);
+         try {
+            first = await rows.next();
+         } catch (rerunError) {
+            throw await this.catalogUnavailableOr(rerunError);
+         }
+      }
+      if (first.done) return;
+      // A consumer that stops early (a cap, an abort) returns this stream; the
+      // driver's must be returned too, or its statement is never released.
+      // `yield*` forwards that, but not while the first row is held here.
+      try {
+         yield first.value;
+         yield* rows;
+      } finally {
+         await rows.return?.(undefined);
+      }
+   }
+
+   /**
+    * Re-resolve the storage credential when `error` is an expired one, so
+    * the caller runs its statement again; false, renewing nothing, otherwise.
+    * A renewal already in flight is joined rather than started again, and
+    * one that completed since the statement started (`renewalsBefore`) is
+    * taken as done, so statements failing together share one renewal and each
+    * runs once more. A renewal that fails (an STS outage) is logged once and
+    * answers false to every statement sharing it, so each throws its own
+    * expired-credential error, the storage refusal the caller is told of,
+    * rather than the renewer's.
+    */
+   private async renewedStorageSecretAfter(
+      error: unknown,
+      renewalsBefore: number,
+   ): Promise<boolean> {
+      const renew = this.storageSecretRenewer;
+      if (
+         !renew ||
+         !shouldRenewStorageSecret({
+            error,
+            hasRenewer: !!renew,
+            // The renewal's own statement runs through runSQL: a failure there
+            // is the renewal's to throw, not one to wait on itself for.
+            alreadyRenewing: renewingStorageSecretOf.getStore() === this,
+         })
+      ) {
+         return false;
+      }
+      if (
+         !this.storageSecretRenewal &&
+         this.storageSecretRenewals === renewalsBefore
+      ) {
          logger.info(
             "Object-storage credential expired; re-resolving and retrying once",
             { connection: this.connectionName },
          );
-         this.renewingStorageSecret = true;
-         try {
-            await renew();
-         } finally {
-            this.renewingStorageSecret = false;
-         }
-         return await super.runSQL(sql, options);
+         const renewal = renewingStorageSecretOf
+            .run(this, renew)
+            .then(
+               () => {
+                  this.storageSecretRenewals++;
+                  return true;
+               },
+               (renewalError: unknown) => {
+                  logger.warn(
+                     "Object-storage credential renewal failed; answering the expired credential's refusal",
+                     {
+                        connection: this.connectionName,
+                        error:
+                           renewalError instanceof Error
+                              ? renewalError.message
+                              : String(renewalError),
+                     },
+                  );
+                  return false;
+               },
+            )
+            .finally(() => {
+               if (this.storageSecretRenewal === renewal) {
+                  this.storageSecretRenewal = undefined;
+               }
+            });
+         this.storageSecretRenewal = renewal;
       }
+      // None in flight: one completed since the statement started, so its
+      // credential is already fresh.
+      return (await this.storageSecretRenewal) ?? true;
    }
 
    /**
@@ -3376,71 +3526,6 @@ function entryToDuckDBOptions(
       rest.workingDirectory = workingDirectory;
    }
    return { ...removeUndefined(rest), name };
-}
-
-/**
- * Drop keys whose value is `undefined` or `null`.
- *
- * The null guard for connectors Publisher builds itself, outside Malloy's
- * registry (which strips nulls on its own path). A surviving `null` reaches
- * `makeDigest`, which reads `.length` off each part, and throws on the first
- * digest; the package-load worker takes that digest, so the whole package fails
- * to load ("import reference failure") while /compile still succeeds.
- *
- * Nulls come from an explicit `null` in publisher.config.json or a client
- * serializing unset optionals over POST /connections, and persist through the
- * repository's JSON round trip. An explicit null and an omitted field produce
- * the same digest.
- */
-function removeUndefined<T extends object>(
-   value: T,
-): { [K in keyof T]?: Exclude<T[K], null> } {
-   return Object.fromEntries(
-      Object.entries(value).filter(
-         ([, fieldValue]) => fieldValue !== undefined && fieldValue !== null,
-      ),
-   ) as { [K in keyof T]?: Exclude<T[K], null> };
-}
-
-function buildSnowflakePrivateKeyConnection(
-   metadata: EnvironmentConnectionMetadata,
-): SnowflakeConnection {
-   const name = metadata.apiConnection.name!;
-   const snowflake = metadata.apiConnection.snowflakeConnection;
-   if (!snowflake?.privateKey) {
-      throw new Error(
-         `Snowflake private key is required for connection ${name}`,
-      );
-   }
-   if (!snowflake.account) {
-      throw new Error(`Snowflake account is required for connection ${name}`);
-   }
-   if (!snowflake.username) {
-      throw new Error(`Snowflake username is required for connection ${name}`);
-   }
-   if (!snowflake.warehouse) {
-      throw new Error(`Snowflake warehouse is required for connection ${name}`);
-   }
-
-   return new SnowflakeConnection(name, {
-      connOptions: {
-         account: snowflake.account,
-         username: snowflake.username,
-         privateKey: normalizeSnowflakePrivateKey(snowflake.privateKey),
-         authenticator: "SNOWFLAKE_JWT",
-         warehouse: snowflake.warehouse,
-         ...removeUndefined({
-            password: snowflake.password,
-            privateKeyPass: snowflake.privateKeyPass,
-            database: snowflake.database,
-            schema: snowflake.schema,
-            role: snowflake.role,
-         }),
-      },
-      timeoutMs: snowflake.responseTimeoutMilliseconds,
-      // Same pool sizing as the registry path; server-owned, not in the API.
-      poolOptions: buildPoolOptions({ poolMin: 1, poolMax: 20 }),
-   });
 }
 
 // TLS mode for a proxied postgres connection, as pg connectionString query
@@ -3810,7 +3895,10 @@ export function buildEnvironmentMalloyConfig(
    // Promises are cached so concurrent lookups share one build and never leak a
    // losing instance's pool. One cache per branch keeps the concrete subtype.
    const duckLakeCache = new Map<string, Promise<DuckLakeConnection>>();
-   const snowflakeJwtCache = new Map<string, Promise<SnowflakeConnection>>();
+   const snowflakeConnectionCache = new Map<
+      string,
+      Promise<SnowflakeConnection>
+   >();
    const azureDuckDBCache = new Map<string, Promise<AzureDuckDBConnection>>();
    const proxyConnectionCache = new Map<
       string,
@@ -4214,13 +4302,18 @@ export function buildEnvironmentMalloyConfig(
                return connectionPromise;
             }
 
-            if (metadata?.hasSnowflakePrivateKey) {
-               let connectionPromise = snowflakeJwtCache.get(name!);
+            // Every Snowflake connection, password or key pair, so each reads
+            // its rows the same way (snowflake_connection.ts).
+            if (metadata?.apiConnection.type === "snowflake") {
+               let connectionPromise = snowflakeConnectionCache.get(name!);
                if (!connectionPromise) {
                   connectionPromise = Promise.resolve(
-                     buildSnowflakePrivateKeyConnection(metadata),
+                     buildSnowflakeConnection(
+                        name!,
+                        metadata.apiConnection.snowflakeConnection,
+                     ),
                   );
-                  snowflakeJwtCache.set(name!, connectionPromise);
+                  snowflakeConnectionCache.set(name!, connectionPromise);
                }
                return connectionPromise;
             }
@@ -4266,6 +4359,9 @@ export function buildEnvironmentMalloyConfig(
             // This generation's lookup created it, so releasing the generation
             // hard-closes it.
             ownDuckDBConnection(malloyConfig, connection);
+            if (metadata?.apiConnection.type === "bigquery") {
+               guardBigQueryTruncation(connection);
+            }
             if (metadata) {
                await attachOnce(connection, metadata);
             }
@@ -4335,9 +4431,12 @@ export function buildEnvironmentMalloyConfig(
                      });
                   }
                }
-               // Its configured type, which a `storage=` build's eligibility
-               // reads (a dialect does not tell DuckDB from DuckLake).
-               recordConnectionType(connection, metadata?.apiConnection.type);
+               // Its configured type, and whether it is `managed`, which a
+               // build's eligibility reads (a dialect does not tell DuckDB
+               // from DuckLake, nor a managed catalog from another).
+               recordConnectionType(connection, metadata?.apiConnection.type, {
+                  managed: metadata?.apiConnection.managed === true,
+               });
                return applyConnectionFingerprint(connection, metadata);
             },
          };
@@ -4350,7 +4449,7 @@ export function buildEnvironmentMalloyConfig(
       releaseConnections: async () => {
          const wrapperPromises: Promise<Connection>[] = [
             ...duckLakeCache.values(),
-            ...snowflakeJwtCache.values(),
+            ...snowflakeConnectionCache.values(),
             ...azureDuckDBCache.values(),
             ...proxyConnectionCache.values(),
             ...postgresConnectionCache.values(),
@@ -4374,7 +4473,7 @@ export function buildEnvironmentMalloyConfig(
          );
          duckLakeCache.clear();
          duckLakeCurrent.clear();
-         snowflakeJwtCache.clear();
+         snowflakeConnectionCache.clear();
          azureDuckDBCache.clear();
          proxyConnectionCache.clear();
          postgresConnectionCache.clear();
@@ -4488,7 +4587,7 @@ async function testDuckDBConnection(
          switch (attachedDb.type) {
             case "postgres": {
                await duckdbConnection.runSQL(
-                  `SELECT schema_name FROM information_schema.schemata WHERE catalog_name = '${attachedDb.name}' LIMIT 1`,
+                  `SELECT schema_name FROM information_schema.schemata WHERE catalog_name = '${escapeSQL(attachedDb.name)}' LIMIT 1`,
                );
                logger.info(
                   `Attached Postgres database test passed: ${attachedDb.name}`,
@@ -4498,7 +4597,7 @@ async function testDuckDBConnection(
             case "bigquery": {
                await runInternalSQL(
                   duckdbConnection,
-                  `SELECT database_name FROM duckdb_databases() WHERE database_name = '${attachedDb.name}'`,
+                  `SELECT database_name FROM duckdb_databases() WHERE database_name = '${escapeSQL(attachedDb.name)}'`,
                );
                logger.info(
                   `Attached BigQuery database test passed: ${attachedDb.name}`,
@@ -4508,7 +4607,7 @@ async function testDuckDBConnection(
             case "snowflake": {
                await runInternalSQL(
                   duckdbConnection,
-                  `SELECT database_name FROM duckdb_databases() WHERE database_name = '${attachedDb.name}'`,
+                  `SELECT database_name FROM duckdb_databases() WHERE database_name = '${escapeSQL(attachedDb.name)}'`,
                );
                logger.info(
                   `Attached Snowflake database test passed: ${attachedDb.name}`,
@@ -4518,7 +4617,7 @@ async function testDuckDBConnection(
             case "gcs": {
                await runInternalSQL(
                   duckdbConnection,
-                  `SELECT name FROM duckdb_secrets() WHERE name LIKE '%${attachedDb.name}%' LIMIT 1`,
+                  `SELECT name FROM duckdb_secrets() WHERE name LIKE '%${escapeSQL(attachedDb.name)}%' LIMIT 1`,
                );
                logger.info(
                   `Cloud storage credentials test passed: ${attachedDb.name}`,
@@ -4528,7 +4627,7 @@ async function testDuckDBConnection(
             case "s3": {
                await runInternalSQL(
                   duckdbConnection,
-                  `SELECT name FROM duckdb_secrets() WHERE name LIKE '%${attachedDb.name}%' LIMIT 1`,
+                  `SELECT name FROM duckdb_secrets() WHERE name LIKE '%${escapeSQL(attachedDb.name)}%' LIMIT 1`,
                );
                logger.info(
                   `Cloud storage credentials test passed: ${attachedDb.name}`,
@@ -4550,7 +4649,7 @@ async function testDuckDBConnection(
                } else {
                   await runInternalSQL(
                      duckdbConnection,
-                     `SELECT name FROM duckdb_secrets() WHERE name LIKE '%${attachedDb.name}%' LIMIT 1`,
+                     `SELECT name FROM duckdb_secrets() WHERE name LIKE '%${escapeSQL(attachedDb.name)}%' LIMIT 1`,
                   );
                   logger.info(
                      `Azure SPN credentials test passed: ${attachedDb.name}`,

@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { readUpstreamSchemas } from "./materialization";
 import type {
    GivenValue,
    LogMessage,
@@ -516,7 +517,10 @@ async function openCompileContext(
    // past its window that execution no longer reads. The package dry-run
    // keeps the bound entries, as the reload it mirrors does.
    const boundManifestEntries = pkg.materialization().getBuildManifestEntries();
-   const freshManifestEntries = pkg.materialization().getFreshBuildManifest();
+   // As Malloy reads them: each also under its compiler key.
+   const freshManifestEntries = pkg
+      .materialization()
+      .getFreshCompilerManifest();
    const runtime = new Runtime({
       urlReader: interceptingReader,
       config: pkg.getMalloyConfig(),
@@ -1395,6 +1399,7 @@ async function loadPackageInWorker(ctx: CompileContext) {
    const { source, modelName } = ctx;
    try {
       return await getPackageLoadPool().loadPackage({
+         upstreamSchemas: readUpstreamSchemas,
          packagePath: ctx.packagePath,
          packageName: ctx.packageName,
          environmentName: ctx.environmentName,

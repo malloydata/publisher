@@ -73,10 +73,33 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "duckdb",
+            "table": "'data/orders.csv'"
+          }
+        ],
         "refresh": null,
-        "sourceEntityId": "218fa4ffa546f2a111269e08a2004f00e5f76922c05e984890204e4a53107cb9",
+        "sourceEntityId": "4ab942004fa34a997237fa2e6b732c6b53cf7454f079c4345dea24a95d653bc6",
         "sourceID": "order_summary@<pkg>/persist_warn_test.malloy",
-        "sql": "sha256:5e69f4a7c8d758cd"
+        "sql": "sha256:5e69f4a7c8d758cd",
+        "upstreamSchemas": [
+          {
+            "columns": [
+              {
+                "name": "category",
+                "nativeType": "VARCHAR"
+              },
+              {
+                "name": "amount",
+                "nativeType": "BIGINT"
+              }
+            ],
+            "connectionName": "duckdb",
+            "dialect": "duckdb",
+            "table": "'data/orders.csv'"
+          }
+        ]
       }
     }
   }

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * The tile's own query key, asserted directly rather than through `Dashboard`.
+ * The tile's own query key, asserted directly rather than through `DashboardView`.
  *
  * `DashboardTile` is exported from the package root, so a host can mount one
  * itself, and `versionId` has to land in both the request and the key from the
@@ -31,6 +31,7 @@ const executeQueryModel = mock(
       _modelPath: string,
       _request: { versionId?: string },
       _includeHidden?: boolean,
+      _versionId?: string,
       _options?: { signal?: AbortSignal },
    ) => pending(),
 );
@@ -138,7 +139,7 @@ it("puts the filter warning under the heading and above the result", () => {
 
 // The request's own signal, as react-query handed it to `executeQueryModel`.
 const signalOf = (call: number) =>
-   executeQueryModel.mock.calls[call][5]?.signal as AbortSignal;
+   executeQueryModel.mock.calls[call][6]?.signal as AbortSignal;
 
 it("cancels a tile's request when the tile goes away", async () => {
    const { unmount } = render(tileAt("v1"), { wrapper: serverWrapper });

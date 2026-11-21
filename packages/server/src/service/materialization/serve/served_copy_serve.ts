@@ -108,6 +108,8 @@ import {
    type Pinned,
    type Snapshot,
 } from "../domain/binding";
+import { servedCopyReadsTier } from "../domain/placement";
+import type { Tier } from "../domain/vocabulary";
 import {
    authorModelLiftContext,
    type DerivedSourceDef,
@@ -361,6 +363,11 @@ type AuthorReroot = Reroot & {
     * bigint type Malloy does not read back as one).
     */
    columnsLeftOut?: readonly string[];
+   /**
+    * Why each of {@link columnsLeftOut} is left out, as a caller-safe phrase
+    * (`leftOutPhrase`), for the decline of a query that reads one.
+    */
+   leftOutWhy?: ReadonlyMap<string, string>;
 };
 
 /**
@@ -513,6 +520,26 @@ export class ServedCopyServe {
       const compiled = this.lanes.kept(0);
       if (!compiled) return undefined;
       return new Set(compiled.rerooted.flatMap((b) => b.sourceIDs ?? []));
+   }
+
+   /**
+    * The author `sourceID`s the compiled copy re-rooted on a database table
+    * and on no storage table; undefined before the first compile.
+    */
+   rerootedOnDatabaseOnly(): ReadonlySet<string> | undefined {
+      const compiled = this.lanes.kept(0);
+      if (!compiled) return undefined;
+      const onStorage = new Set(
+         compiled.rerooted
+            .filter((b) => !isDatabase(b))
+            .flatMap((b) => b.sourceIDs ?? []),
+      );
+      return new Set(
+         compiled.rerooted
+            .filter(isDatabase)
+            .flatMap((b) => b.sourceIDs ?? [])
+            .filter((id) => !onStorage.has(id)),
+      );
    }
 
    /**
@@ -746,10 +773,28 @@ export class ServedCopyServe {
                const tableIds = compiled.aliased
                   .filter((b) => b.sourceIDs?.some((id) => sourceIDs.has(id)))
                   .map((b) => b.virtualHandle);
+               // Each column named with why a table leaves it out (its
+               // declared and stored types, or that the table lacks it):
+               // each distinct reason of the tables that leave it out.
+               const why = [
+                  ...new Set(
+                     named.flatMap((c) => {
+                        const reasons = [...sourceIDs]
+                           .map((id) => compiled.leftOutWhy?.get(id)?.get(c))
+                           .filter((w): w is string => w !== undefined);
+                        // Every re-root records why for each column it
+                        // leaves out; one that did not is never named, as
+                        // it may be hidden.
+                        return reasons.length > 0
+                           ? reasons
+                           : [noCastPhrase("a stored column")];
+                     }),
+                  ),
+               ];
                decline(
                   "the query reads a stored column the served copy leaves out of its table's type",
                   "served_copy_column_left_out",
-                  `the stored table cannot answer with live's columns: no cast reads ${named.map((c) => `column \`${c}\``).join(", ")} as declared`,
+                  `the stored table cannot answer with live's columns: ${why.join("; ")}`,
                   tableIds,
                );
             }
@@ -1193,6 +1238,7 @@ export class ServedCopyServe {
       let columns: ServedColumn[];
       let inlinedJoins: InlinedJoin[] = [];
       let columnsLeftOut: string[] = [];
+      const leftOutWhy = new Map<string, string>();
       const subject: RerootSubject = {
          binding,
          node,
@@ -1202,6 +1248,8 @@ export class ServedCopyServe {
          timeframeOf,
          problems,
          storesOutputNames: !plan,
+         columnRef: columnRefOf(plan, fieldsByName),
+         leftOutWhy,
       };
       if (plan) {
          const stored = materializedColumnsOf(subject, plan);
@@ -1234,6 +1282,7 @@ export class ServedCopyServe {
                sourceName,
                sourceID: node.sourceID,
                reason: "column_types",
+               ...leftOutDetail(subject, columnsLeftOut),
             });
             return undefined;
          }
@@ -1283,33 +1332,7 @@ export class ServedCopyServe {
             : {}),
          columns,
          reservedNames,
-         ...(plan
-            ? {
-                 storedDimensions: plan.columns
-                    .filter(
-                       (c) =>
-                          c.computed &&
-                          c.join === undefined &&
-                          !columnsLeftOut.includes(c.dimension),
-                    )
-                    .map((c) => c.dimension),
-              }
-            : {}),
-         ...(plan && !plan.zoneFreeRows ? { zonedRows: true } : {}),
-         ...(plan
-            ? (() => {
-                 const zonedDimensions = plan.columns
-                    .filter(
-                       (c) =>
-                          c.computed &&
-                          c.join === undefined &&
-                          !c.zoneFree &&
-                          !columnsLeftOut.includes(c.dimension),
-                    )
-                    .map((c) => c.dimension);
-                 return zonedDimensions.length > 0 ? { zonedDimensions } : {};
-              })()
-            : {}),
+         ...(plan ? planDimensionsOf(plan, columnsLeftOut) : {}),
          ...(zoned.restated.length > 0
             ? { restatedTruncations: zoned.restated }
             : {}),
@@ -1318,7 +1341,12 @@ export class ServedCopyServe {
             ? { readTimeTerms: plan.readTimeTerms }
             : {}),
          ...(inlinedJoins.length > 0 ? { inlinedJoins } : {}),
-         ...(columnsLeftOut.length > 0 ? { columnsLeftOut } : {}),
+         ...(columnsLeftOut.length > 0
+            ? {
+                 columnsLeftOut,
+                 leftOutWhy: leftOutWhyOf(subject, columnsLeftOut),
+              }
+            : {}),
          // An `except:` naming a column the table does not store has nothing
          // to exclude on any re-root, v1 or `#(materialize)`.
          dropsUnstoredExcepts: true as const,
@@ -1365,6 +1393,7 @@ export class ServedCopyServe {
          const nativeCast = ownReads.get(c.name);
          if (nativeCast) return [{ ...c, nativeCast }];
          columnsLeftOut.push(c.name);
+         subject.leftOutWhy.set(c.name, leftOutPhraseOf(subject, c));
          return [];
       });
       // A stored scalar whose field live types as a warehouse-native type
@@ -1380,6 +1409,7 @@ export class ServedCopyServe {
             return [c];
          }
          columnsLeftOut.push(c.name);
+         subject.leftOutWhy.set(c.name, leftOutPhraseOf(subject, c));
          return [];
       });
       if (columns.length === 0) {
@@ -1387,6 +1417,7 @@ export class ServedCopyServe {
             sourceName,
             sourceID: node.sourceID,
             reason: "column_types",
+            ...leftOutDetail(subject, columnsLeftOut),
          });
          return undefined;
       }
@@ -1420,6 +1451,16 @@ export class ServedCopyServe {
       const undeclarable = columns
          .filter(undeclarableColumn)
          .map((c) => c.name);
+      for (const c of columns.filter(undeclarableColumn)) {
+         subject.leftOutWhy.set(
+            c.name,
+            leftOutPhrase(
+               subject.columnRef(c.name),
+               fieldsByName.get(c.name),
+               c.type,
+            ),
+         );
+      }
       if (undeclarable.length > 0 && undeclarable.length < columns.length) {
          columns = columns.filter((c) => !undeclarable.includes(c.name));
          columnsLeftOut = [...columnsLeftOut, ...undeclarable];
@@ -1429,6 +1470,9 @@ export class ServedCopyServe {
             sourceName,
             sourceID: node.sourceID,
             reason: "column_types",
+            detail: undeclarable
+               .map((n) => subject.leftOutWhy.get(n))
+               .join("; "),
          });
          return undefined;
       }
@@ -1687,6 +1731,13 @@ export class ServedCopyServe {
       lift: ReturnType<typeof authorModelLiftContext>,
       problems: ServedCopyProblem[],
       lane: number,
+      /**
+       * Storage bindings of sources bound in both tiers to pass over for
+       * their database twin: a compile already dropped them.
+       */
+      passedOver: ReadonlySet<Binding> = new Set(),
+      /** Filled with each source bound in both tiers: its storage binding's database twin. */
+      twins?: Map<Binding, Binding>,
    ): {
       candidates: { binding: Binding; reroot: AuthorReroot }[];
       throughBase: NonNullable<Compiled["throughBase"]>[number][];
@@ -1715,6 +1766,28 @@ export class ServedCopyServe {
             });
          }
       }
+      // A source bound in both tiers is re-rooted on one table: two re-roots
+      // of one declaration splice it twice, and both are refused. The storage
+      // table, unless a compile already dropped it (`passedOver`): then its
+      // database twin.
+      const keyOf = (c: (typeof candidates)[number]) =>
+         rerootKey(c.reroot.url, c.reroot.sourceName);
+      const byKey = new Map<string, (typeof candidates)[number][]>();
+      for (const c of candidates) {
+         byKey.set(keyOf(c), [...(byKey.get(keyOf(c)) ?? []), c]);
+      }
+      for (const same of byKey.values()) {
+         const storage = same.find((c) => c.binding.tier === "storage");
+         const database = same.find((c) => c.binding.tier === "database");
+         if (storage && database) twins?.set(storage.binding, database.binding);
+      }
+      candidates = candidates.filter((c) => {
+         if (passedOver.has(c.binding)) return false;
+         const tiers: Tier[] = (byKey.get(keyOf(c)) ?? [])
+            .filter((o) => !passedOver.has(o.binding))
+            .map((o) => o.binding.tier);
+         return servedCopyReadsTier(c.binding.tier, tiers);
+      });
       // An extension of a re-rooted source reads it by name already, and
       // re-rooting the extension too would replace the base it inherits its
       // parent's fields from. Leave it as written, unless it is an extension
@@ -1783,6 +1856,12 @@ export class ServedCopyServe {
       return { candidates, throughBase, withoutKept };
    }
 
+   /**
+    * The copy over `bindings`: compiled once, and again for each source
+    * bound in both tiers whose storage table the passes dropped (a field it
+    * does not carry, a refusal, the ladder), re-rooted then on its database
+    * table, as if the storage one were not bound.
+    */
    private async compile(
       key: string,
       generation: number,
@@ -1790,6 +1869,61 @@ export class ServedCopyServe {
       lane = 0,
       /** The pin's time, which a remembered failure is held against. */
       asOf = 0,
+   ): Promise<Compiled> {
+      const passedOver = new Set<Binding>();
+      // Why each storage table passed over was dropped, from the compile
+      // that dropped it: still warned, as served from the database instead.
+      const fellBack: ServedCopyProblem[] = [];
+      for (;;) {
+         const twins = new Map<Binding, Binding>();
+         const compiled = await this.compileOver(
+            key,
+            generation,
+            bindings,
+            lane,
+            asOf,
+            passedOver,
+            twins,
+         );
+         const rerooted = new Set(compiled.rerooted);
+         const dropped = [...twins.keys()].filter(
+            (b) => !passedOver.has(b) && !rerooted.has(b),
+         );
+         if (dropped.length === 0) {
+            if (fellBack.length === 0) return compiled;
+            // Only for a source the database table now serves.
+            const onDatabase = new Set(
+               compiled.rerooted.flatMap((b) => b.sourceIDs ?? []),
+            );
+            return {
+               ...compiled,
+               problems: [
+                  ...compiled.problems,
+                  ...fellBack.filter(
+                     (p) =>
+                        p.sourceID !== undefined && onDatabase.has(p.sourceID),
+                  ),
+               ],
+            };
+         }
+         const droppedIDs = new Set(dropped.flatMap((b) => b.sourceIDs ?? []));
+         for (const p of compiled.problems) {
+            if (p.sourceID !== undefined && droppedIDs.has(p.sourceID)) {
+               fellBack.push({ ...p, servedFromDatabase: true });
+            }
+         }
+         for (const b of dropped) passedOver.add(b);
+      }
+   }
+
+   private async compileOver(
+      key: string,
+      generation: number,
+      bindings: Binding[],
+      lane: number,
+      asOf: number,
+      passedOver: ReadonlySet<Binding>,
+      twins: Map<Binding, Binding>,
    ): Promise<Compiled> {
       const over = bindings;
       const problems: ServedCopyProblem[] = [];
@@ -1822,6 +1956,8 @@ export class ServedCopyServe {
          lift,
          problems,
          lane,
+         passedOver,
+         twins,
       );
       const { throughBase, withoutKept } = prepared;
       const state: CopyPassState = {
@@ -2275,7 +2411,8 @@ export class ServedCopyServe {
          problems.push({
             sourceName: l.declaration ?? l.name,
             reason: "cross_connection_join",
-            join: l.name,
+            join: l.join ?? l.name,
+            ...(l.join !== undefined ? { leftOutWhole: true as const } : {}),
          });
       }
       const unsafeIDs = classificationCeiling(
@@ -2347,6 +2484,11 @@ export class ServedCopyServe {
             candidates
                .filter((c) => (c.reroot.columnsLeftOut ?? []).length > 0)
                .map((c) => [c.reroot.sourceID, c.reroot.columnsLeftOut!]),
+         ),
+         leftOutWhy: new Map(
+            candidates
+               .filter((c) => c.reroot.leftOutWhy !== undefined)
+               .map((c) => [c.reroot.sourceID, c.reroot.leftOutWhy!]),
          ),
          inlinedJoins: new Map(
             candidates
@@ -2511,12 +2653,16 @@ function withoutLeftOutColumn(
 ): boolean {
    const { withoutKept, problems } = state;
    const message = error instanceof Error ? error.message : String(error);
+   // A path through a record left out (`ecom.qty`) names the record too.
    const named = new Set(
       [
          ...message.matchAll(
             /'([^']+)' is not defined|Reference to undefined (?:value|object) `?([^`\s]+)/g,
          ),
-      ].map((m) => m[1] ?? m[2]),
+      ].flatMap((m) => {
+         const name = m[1] ?? m[2];
+         return [name, name.split(".")[0]];
+      }),
    );
    if (named.size === 0) return false;
    const naming = state.candidates.filter((c) =>
@@ -2537,10 +2683,20 @@ function withoutLeftOutColumn(
    );
    const failing = placed.length > 0 ? placed : naming;
    for (const c of failing) {
+      // The left-out columns the model's text reads, each with why.
+      const read = (c.reroot.columnsLeftOut ?? []).filter((n) => named.has(n));
       problems.push({
          sourceName: c.reroot.sourceName,
          sourceID: c.reroot.sourceID,
          reason: "column_types",
+         ...(read.length > 0
+            ? {
+                 detail: read
+                    .map((n) => c.reroot.leftOutWhy?.get(n))
+                    .filter((w): w is string => w !== undefined)
+                    .join("; "),
+              }
+            : {}),
       });
       withoutKept.delete(c);
    }
@@ -2682,6 +2838,171 @@ interface RerootSubject {
     * after its renames (`BigIntegerReadOptions.storesOutputNames`).
     */
    storesOutputNames: boolean;
+   /** How a caller's detail names a column: `column \`x\``, or `a hidden column`. */
+   columnRef(name: string): string;
+   /** Why each column left out so far is, by name ({@link leftOutPhrase}). */
+   leftOutWhy: Map<string, string>;
+}
+
+/**
+ * A live field's Malloy type as the author would write it (`string[]`,
+ * `{ a::string, n::number }[]`), for a caller's detail; undefined when it is
+ * not a basic type, or a list or record of them.
+ */
+function liveTypeText(field: unknown, depth = 0): string | undefined {
+   const f = field as
+      | { type?: unknown; elementTypeDef?: unknown; fields?: unknown }
+      | undefined;
+   if (typeof f?.type !== "string" || depth > 16) return undefined;
+   if (f.type === "record") return recordTypeText(f.fields, depth);
+   if (f.type !== "array") return f.type;
+   const element = f.elementTypeDef as { type?: unknown } | undefined;
+   const inner =
+      element?.type === "record_element"
+         ? recordTypeText(f.fields, depth)
+         : liveTypeText(element, depth + 1);
+   return inner === undefined ? undefined : `${inner}[]`;
+}
+
+/** {@link liveTypeText} of a record's fields, `{ a::string, n::number }`. */
+function recordTypeText(fields: unknown, depth: number): string | undefined {
+   if (!Array.isArray(fields) || fields.length === 0) return undefined;
+   const parts: string[] = [];
+   for (const raw of fields) {
+      const field = raw as { name?: unknown; as?: unknown };
+      const name = field.as ?? field.name;
+      const type = liveTypeText(raw, depth + 1);
+      if (typeof name !== "string" || type === undefined) return undefined;
+      parts.push(`${name}::${type}`);
+   }
+   return `{ ${parts.join(", ")} }`;
+}
+
+/** Whether live answers a field as a list (of scalars or records) or a record. */
+function isListOrRecord(field: unknown): boolean {
+   const type = (field as { type?: unknown } | undefined)?.type;
+   return type === "array" || type === "record";
+}
+
+/** How a caller's detail names a column the author's source hides. */
+const HIDDEN_COLUMN = "a hidden column";
+
+/**
+ * Why a stored column is left out, or cannot be carried, in a caller's
+ * words: the column (as {@link RerootSubject.columnRef} names it) with its
+ * declared type and its stored type, or that the table does not hold it.
+ */
+function leftOutPhrase(
+   ref: string,
+   field: unknown,
+   storedType: string | undefined,
+): string {
+   const missing = storedType === undefined;
+   // A hidden column's types would tell a caller what it holds: none given.
+   if (ref === HIDDEN_COLUMN) {
+      return missing
+         ? `${ref} is not in the stored table`
+         : `${ref} has no declaration that reads it back as live answers it`;
+   }
+   const live = liveTypeText(field);
+   const declared = live === undefined ? "" : `declared \`${live}\``;
+   if (missing) {
+      return `${ref}${declared ? ` (${declared})` : ""} is not in the stored table`;
+   }
+   return (
+      `${ref} (${declared ? `${declared}, ` : ""}stored as ${storedType}) ` +
+      "has no declaration that reads it back as live answers it"
+   );
+}
+
+/** {@link leftOutPhrase} for one of the re-root's stored columns. */
+function leftOutPhraseOf(subject: RerootSubject, c: ServedColumn): string {
+   return leftOutPhrase(
+      subject.columnRef(c.name),
+      subject.fieldsByName.get(c.name),
+      c.type,
+   );
+}
+
+/** The phrase for a column no cast reads as declared, as a decline has said it. */
+function noCastPhrase(ref: string): string {
+   return `no cast reads ${ref} as declared`;
+}
+
+/**
+ * A `#(materialize)` re-root's stored computed dimensions, those zoned, and
+ * whether its rows are, less the columns it leaves out.
+ */
+function planDimensionsOf(
+   plan: MaterializePlan,
+   columnsLeftOut: readonly string[],
+): Pick<AuthorReroot, "storedDimensions" | "zonedRows" | "zonedDimensions"> {
+   const stored = plan.columns.filter(
+      (c) =>
+         c.computed &&
+         c.join === undefined &&
+         !columnsLeftOut.includes(c.dimension),
+   );
+   const zonedDimensions = stored
+      .filter((c) => !c.zoneFree)
+      .map((c) => c.dimension);
+   return {
+      storedDimensions: stored.map((c) => c.dimension),
+      ...(!plan.zoneFreeRows ? { zonedRows: true } : {}),
+      ...(zonedDimensions.length > 0 ? { zonedDimensions } : {}),
+   };
+}
+
+/**
+ * How a caller's detail names a re-root's column: `column \`x\``, or `a
+ * hidden column` when the author's source hides it (a plan column with an
+ * access modifier, or a field with one).
+ */
+function columnRefOf(
+   plan: MaterializePlan | undefined,
+   fieldsByName: ReadonlyMap<string, unknown>,
+): (name: string) => string {
+   const hidden = new Set([
+      ...(plan?.columns ?? [])
+         .filter((c) => c.access !== undefined)
+         .flatMap((c) => [c.column, c.dimension]),
+      ...[...fieldsByName]
+         .filter(
+            ([, f]) =>
+               (f as { accessModifier?: unknown }).accessModifier !== undefined,
+         )
+         .map(([name]) => name),
+   ]);
+   return (name) => (hidden.has(name) ? HIDDEN_COLUMN : `column \`${name}\``);
+}
+
+/** Why each of `columns` is left out, by name, for a decline's detail. */
+function leftOutWhyOf(
+   subject: RerootSubject,
+   columns: readonly string[],
+): Map<string, string> {
+   return new Map(
+      columns.map((c) => [
+         c,
+         subject.leftOutWhy.get(c) ?? noCastPhrase(subject.columnRef(c)),
+      ]),
+   );
+}
+
+/** A `column_types` problem's `detail` naming `columns`, when there are any. */
+function leftOutDetail(
+   subject: RerootSubject,
+   columns: readonly string[],
+): { detail?: string } {
+   if (columns.length === 0) return {};
+   return {
+      detail: columns
+         .map(
+            (c) =>
+               subject.leftOutWhy.get(c) ?? noCastPhrase(subject.columnRef(c)),
+         )
+         .join("; "),
+   };
 }
 
 /**
@@ -2700,9 +3021,7 @@ function materializedColumnsOf(
         inlinedJoins: InlinedJoin[];
      }
    | undefined {
-   const { binding, node, sourceName, def, fieldsByName, timeframeOf } =
-      subject;
-   const { problems } = subject;
+   const { binding, node, sourceName, def, problems } = subject;
    let inlinedJoins: InlinedJoin[] = [];
    // Exactly what the build stored: the plan's columns (the source's
    // atomic dimensions, computed ones too, each under its own name, a
@@ -2716,8 +3035,6 @@ function materializedColumnsOf(
    const lineage = readSourceClassifications(
       def.fields as IrField[] | undefined,
    );
-   const columns: ServedColumn[] = [];
-   const columnsLeftOut: string[] = [];
    // A stored column whose type is not live's (the upstream column's type
    // changed under the same content address, or the table was altered): read
    // through a faithful cast, else left out so only a query reading it
@@ -2741,59 +3058,14 @@ function materializedColumnsOf(
          c.castTo === "BOOLEAN" ? ("boolean" as const) : ("date" as const),
       ]),
    );
-   const leftOut = new Set(typePlan.leftOut.map((m) => m.column));
-   for (const c of plan.columns) {
-      // An inlined join's columns are read under the join's name
-      // (inlinedJoinsOf, below), not as fields of the source.
-      if (c.join !== undefined) continue;
-      if (leftOut.has(c.column)) {
-         columnsLeftOut.push(c.column);
-         continue;
-      }
-      const type = stored.get(c.column);
-      // A column live types as warehouse-native (a UUID) has no stored
-      // spelling, so a database table's captured columns leave it out: it is
-      // left out here too, so only a query reading it answers live, as a
-      // `storage=` table's is (declarableColumns).
-      if (
-         type === undefined &&
-         isDatabase(binding) &&
-         liveTypesAsNative(fieldsByName.get(c.dimension))
-      ) {
-         columnsLeftOut.push(c.column);
-         continue;
-      }
-      // A build that stored a dimension under another name cannot be
-      // read back as that field.
-      if (type === undefined || c.column !== c.dimension) {
-         problems.push({
-            sourceName,
-            sourceID: node.sourceID,
-            reason: "column_types",
-         });
-         return undefined;
-      }
-      const notes = storedColumnNotes(
-         fieldsByName.get(c.dimension),
-         lineage.get(c.dimension),
-      );
-      const cast = castTo.get(c.column);
-      columns.push({
-         name: c.column,
-         type,
-         ...(notes.length > 0 ? { notes } : {}),
-         ...timeframeOf(c.dimension),
-         ...(c.access ? { access: c.access } : {}),
-         ...(cast ? { castTo: cast } : {}),
-         // A zoned timestamp whose field live types `timestamptz` is
-         // declared as one, as a v1 table's is.
-         ...((fieldsByName.get(c.dimension) as { type?: unknown })?.type ===
-            "timestamptz" &&
-         /^(TIMESTAMP WITH TIME ZONE|TIMESTAMPTZ)$/i.test(type.trim())
-            ? { timestamptz: true as const }
-            : {}),
-      });
-   }
+   const own = materializedOwnColumns(subject, plan, {
+      stored,
+      lineage,
+      leftOut: new Set(typePlan.leftOut.map((m) => m.column)),
+      castTo,
+   });
+   if (!own) return undefined;
+   const { columns, columnsLeftOut } = own;
    const joined = inlinedJoinsOf(plan, def.fields, stored, lineage);
    if (
       joined === undefined ||
@@ -2801,10 +3073,12 @@ function materializedColumnsOf(
          j.columns.some((c) => storedMalloyType(c.type) === undefined),
       )
    ) {
+      const undeclared = undeclaredJoinedColumns(def.fields, joined ?? []);
       problems.push({
          sourceName,
          sourceID: node.sourceID,
          reason: "column_types",
+         ...(undeclared.length > 0 ? { detail: undeclared.join("; ") } : {}),
       });
       return undefined;
    }
@@ -2855,6 +3129,152 @@ function materializedColumnsOf(
       }),
    }));
    return { columns, columnsLeftOut, inlinedJoins };
+}
+
+/**
+ * {@link materializedColumnsOf}'s own (not joined) columns: each plan column
+ * the table stores as live's type or through a faithful cast, the ones no
+ * read gives exactly left out with why. Undefined, with a `column_types`
+ * problem, when the table lacks a column that is not a list, or stored one
+ * under another name.
+ */
+function materializedOwnColumns(
+   subject: RerootSubject,
+   plan: MaterializePlan,
+   read: {
+      stored: ReadonlyMap<string, string>;
+      lineage: ReturnType<typeof readSourceClassifications>;
+      leftOut: ReadonlySet<string>;
+      castTo: ReadonlyMap<string, "boolean" | "date">;
+   },
+): { columns: ServedColumn[]; columnsLeftOut: string[] } | undefined {
+   const { binding, node, sourceName, fieldsByName, timeframeOf, problems } =
+      subject;
+   const { stored, lineage, leftOut, castTo } = read;
+   const columns: ServedColumn[] = [];
+   const columnsLeftOut: string[] = [];
+   for (const c of plan.columns) {
+      // An inlined join's columns are read under the join's name
+      // (inlinedJoinsOf, below), not as fields of the source.
+      if (c.join !== undefined) continue;
+      if (leftOut.has(c.column)) {
+         columnsLeftOut.push(c.column);
+         subject.leftOutWhy.set(
+            c.column,
+            leftOutPhrase(
+               subject.columnRef(c.column),
+               fieldsByName.get(c.dimension),
+               stored.get(c.column),
+            ),
+         );
+         continue;
+      }
+      const type = stored.get(c.column);
+      // A column live types as warehouse-native (a UUID) has no stored
+      // spelling, so a database table's captured columns leave it out: it is
+      // left out here too, so only a query reading it answers live, as a
+      // `storage=` table's is (declarableColumns).
+      if (
+         type === undefined &&
+         isDatabase(binding) &&
+         liveTypesAsNative(fieldsByName.get(c.dimension))
+      ) {
+         columnsLeftOut.push(c.column);
+         continue;
+      }
+      // A list or record the table does not hold (a `storage=` table built
+      // before its build stored arrays and records, until its next full
+      // build) is left out as one no declaration reads back is: only a
+      // query reading it (the copy's compile of it fails, directly or
+      // through a field, filter or nest over it) answers live, and every
+      // other query reads the table.
+      if (
+         type === undefined &&
+         c.column === c.dimension &&
+         isListOrRecord(fieldsByName.get(c.dimension))
+      ) {
+         columnsLeftOut.push(c.column);
+         subject.leftOutWhy.set(
+            c.column,
+            leftOutPhrase(
+               subject.columnRef(c.column),
+               fieldsByName.get(c.dimension),
+               undefined,
+            ),
+         );
+         continue;
+      }
+      // A build that stored a dimension under another name cannot be
+      // read back as that field.
+      if (type === undefined || c.column !== c.dimension) {
+         problems.push({
+            sourceName,
+            sourceID: node.sourceID,
+            reason: "column_types",
+            detail:
+               type === undefined
+                  ? leftOutPhrase(
+                       subject.columnRef(c.dimension),
+                       fieldsByName.get(c.dimension),
+                       undefined,
+                    )
+                  : `${subject.columnRef(c.dimension)} is stored under another name`,
+         });
+         return undefined;
+      }
+      const notes = storedColumnNotes(
+         fieldsByName.get(c.dimension),
+         lineage.get(c.dimension),
+      );
+      const cast = castTo.get(c.column);
+      columns.push({
+         name: c.column,
+         type,
+         ...(notes.length > 0 ? { notes } : {}),
+         ...timeframeOf(c.dimension),
+         ...(c.access ? { access: c.access } : {}),
+         ...(cast ? { castTo: cast } : {}),
+         // A zoned timestamp whose field live types `timestamptz` is
+         // declared as one, as a v1 table's is.
+         ...((fieldsByName.get(c.dimension) as { type?: unknown })?.type ===
+            "timestamptz" &&
+         /^(TIMESTAMP WITH TIME ZONE|TIMESTAMPTZ)$/i.test(type.trim())
+            ? { timestamptz: true as const }
+            : {}),
+      });
+   }
+   return { columns, columnsLeftOut };
+}
+
+/**
+ * Each inlined-join column no `type:` declares, as a caller's detail names
+ * it: through its join, unless the join or the field is hidden.
+ */
+function undeclaredJoinedColumns(
+   fields: unknown[] | undefined,
+   joined: readonly {
+      join: string;
+      access?: unknown;
+      columns: readonly { name: string; type: string }[];
+   }[],
+): string[] {
+   return joined.flatMap((j) => {
+      const joinFields = joinedFieldsAt(fields, [j.join]);
+      return j.columns
+         .filter((c) => storedMalloyType(c.type) === undefined)
+         .map((c) => {
+            const field = joinFields.find((f) => fieldNameOf(f) === c.name);
+            const hidden =
+               j.access !== undefined ||
+               (field as { accessModifier?: unknown } | undefined)
+                  ?.accessModifier !== undefined;
+            return leftOutPhrase(
+               hidden ? HIDDEN_COLUMN : `column \`${j.join}.${c.name}\``,
+               field,
+               c.type,
+            );
+         });
+   });
 }
 
 /**
@@ -2949,6 +3369,17 @@ function v1ColumnsOf(
    );
    const leftOut = new Set(typePlan.leftOut.map((m) => m.column));
    columnsLeftOut = [...leftOut];
+   const storedTypeOf = new Map(narrowed.map((c) => [c.name, c.type]));
+   for (const name of leftOut) {
+      subject.leftOutWhy.set(
+         name,
+         leftOutPhrase(
+            subject.columnRef(name),
+            fieldsByName.get(name),
+            storedTypeOf.get(name),
+         ),
+      );
+   }
    // A nest of the persisted query a destination did not store (a lake
    // that cannot hold a repeated record): left out like a column no
    // type reads, so only a query through it answers live, as the serve
@@ -2971,6 +3402,10 @@ function v1ColumnsOf(
          !stored.has(name.toLowerCase())
       ) {
          columnsLeftOut.push(name);
+         subject.leftOutWhy.set(
+            name,
+            leftOutPhrase(subject.columnRef(name), f, undefined),
+         );
       }
    }
    // Each with its field's annotations (`#(doc)`, `# label`, `#

@@ -103,6 +103,16 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.pjw_orders"
+          },
+          {
+            "connectionName": "orders_pg",
+            "table": "public.pjw_regions"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "836b355aa6de60d51d0a748ae7491a845b9b6d41a908a1c64449f4497ad563d4",
         "sourceID": "by_name@<hammer>/pjw/pjw.malloy",
@@ -135,6 +145,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.pjw_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "b4a5b0b921ff3cb12606008c0032f7e74c65840ec9a66f9566bdb79d0734cd09",
         "sourceID": "daily@<hammer>/pjw/pjw.malloy",
@@ -159,6 +175,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.pjw_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "500818b9ebdb35cf6ebcfe1f8fa516748e0b1fff5571e337b78d8626ba86253a",
         "sourceID": "rollup@<hammer>/pjw/pjw.malloy",

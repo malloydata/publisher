@@ -93,6 +93,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.hbi_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "50e08c877886851d137cfa81f0c95d5dd2735057201536a5d54273b0847ec264",
         "sourceID": "all_rollup@<hammer>/hbi/hbi.malloy",

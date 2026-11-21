@@ -83,6 +83,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.uag_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "0b24a07d9e9b13815d748b6717a3aa1477876823bbe8f801afa6f706e6a9e233",
         "sourceID": "daily@<hammer>/uag/uag.malloy",
@@ -111,6 +117,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.uag_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "0b24a07d9e9b13815d748b6717a3aa1477876823bbe8f801afa6f706e6a9e233",
         "sourceID": "shares@<hammer>/uag/uag.malloy",

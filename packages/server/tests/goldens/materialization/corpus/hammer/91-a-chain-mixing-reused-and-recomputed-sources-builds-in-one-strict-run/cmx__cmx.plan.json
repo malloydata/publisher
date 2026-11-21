@@ -121,6 +121,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.cmx_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "6c78dad00d882fc718ce688bee839aa9a7f485814d626bdee75c57e674110350",
         "sourceID": "daily@<hammer>/cmx/cmx.malloy",
@@ -153,6 +159,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.cmx_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "6c78dad00d882fc718ce688bee839aa9a7f485814d626bdee75c57e674110350",
         "sourceID": "daily_regional@<hammer>/cmx/cmx.malloy",
@@ -181,6 +193,16 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.cmx_orders"
+          },
+          {
+            "connectionName": "orders_pg",
+            "table": "public.cmx_regions"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "df2ea08ee5bdf89b3b28b9c02f82c70a0f6de864592fe18ee3d48280c55ad58a",
         "sourceID": "regional@<hammer>/cmx/cmx.malloy",
@@ -205,6 +227,16 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.cmx_orders"
+          },
+          {
+            "connectionName": "orders_pg",
+            "table": "public.cmx_regions"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "75c6692d5e685ea56574888f62625f4c8405c38e9971b26940cbaeee891ce286",
         "sourceID": "summary@<hammer>/cmx/cmx.malloy",
