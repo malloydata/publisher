@@ -160,10 +160,10 @@ export const RATCHET_DIALECT_LITERALS = {
       count: 1,
       step: "table",
    },
-   // Connection types (FederatedSourceType, the storage destination types),
-   // whose `postgres`, `snowflake` and `duckdb` share a dialect's spelling.
+   // The storage destination types, whose `duckdb` shares a dialect's
+   // spelling.
    "service/materialization/run/materialization_build_session.ts": {
-      count: 2,
+      count: 1,
       step: "table",
    },
    // PASSTHROUGH_SOURCE_TYPES, connection types a `storage=` build reads,
@@ -213,7 +213,7 @@ export const RATCHET_CONNECTION_TYPE_LITERALS = {
    "service/materialization/run/incremental_apply.ts": { count: 4, step: "D4" },
    // the source and destination types' own rules.
    "service/materialization/run/materialization_build_session.ts": {
-      count: 8,
+      count: 7,
       step: "D4",
    },
    // the read-cost record's engine label.

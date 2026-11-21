@@ -40,7 +40,7 @@ import { recordConnectionsAsForTests } from "../../src/service/connection_type";
 import { Environment } from "../../src/service/environment";
 import { parsePackageName } from "../../src/service/identity";
 import { MaterializationService } from "../../src/service/materialization/run/materialization_service";
-import * as numericPrecision from "../../src/service/materialization/run/postgres_numeric_precision";
+import * as numericPrecision from "../../src/service/materialization/run/passthrough/postgres";
 import { StorageBuildStrategy } from "../../src/service/materialization/run/storage_build_strategy";
 import { QueryPrivileges } from "../../src/service/model_query_request";
 import type {

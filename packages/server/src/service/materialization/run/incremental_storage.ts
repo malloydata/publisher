@@ -40,7 +40,7 @@ import {
    guardDeltaDecimals,
    numericAsTextSQL,
    postgresNumericColumns,
-} from "./postgres_numeric_precision";
+} from "./passthrough/postgres";
 
 /** What the passthrough's describe and type probe found ({@link postgresNumericColumns}). */
 type NumericRead = Awaited<ReturnType<typeof postgresNumericColumns>>;
@@ -313,7 +313,7 @@ export function storageDeltaTarget(params: {
             // trade as a full build, bounded by the delta.
             // A numeric the seed stored as DECIMAL (or kept as text) is read as
             // Postgres's exact text too, and cast into its column only when it
-            // fits; one that does not re-seeds (postgres_numeric_precision.ts).
+            // fits; one that does not re-seeds (passthrough/postgres.ts).
             const exact = capabilitiesOf(sourceType).passthroughNumericAsDouble
                ? await exactNumericColumns(
                     session,

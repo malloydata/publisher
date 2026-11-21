@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * Keep a Postgres `numeric`'s exact value in a `storage=` table.
+ * A `storage=` build's Postgres source, read through DuckDB's `postgres`
+ * extension: a `numeric` kept exact, and the warehouse types the build keeps
+ * (passthrough_build.ts reads it). The delta's precision guard, which
+ * incremental storage applies, is here too.
  *
  * DuckDB's Postgres passthrough reads a `numeric` with no typmod (an
  * unconstrained column, and every numeric expression: `a + b`, `sum(x)`, a
@@ -30,17 +33,20 @@
  * column reads as DOUBLE. A build that has a numeric column to keep writes
  * the whole result twice: once to the session's local stage (spilling to the
  * build's temp directory), once to the destination. The warehouse is read once.
+ *
+ * Effects: SQL in Postgres through the passthrough (a describe and a type
+ * probe, neither runs the query) and in the build session; logs.
  */
 
 import type { DuckDBConnection } from "@malloydata/db-duckdb";
-import { logger } from "../../../logger";
-import { escapeSQL } from "../../duckdb_session_setup";
-import { quoteIdentifier } from "../../quoting";
-import { STORED_COLUMN_TYPE_MISMATCH_CODE } from "../stored_column_types";
-import { STORAGE_DIALECT } from "../domain/dialect";
-import { errorCodeOf } from "../../../error_code";
-import { fromSubselect } from "../subselect";
-import { errMessage } from "../../../utils";
+import { logger } from "../../../../logger";
+import { escapeSQL } from "../../../duckdb_session_setup";
+import { quoteIdentifier } from "../../../quoting";
+import { STORED_COLUMN_TYPE_MISMATCH_CODE } from "../../stored_column_types";
+import { STORAGE_DIALECT } from "../../domain/dialect";
+import { errorCodeOf } from "../../../../error_code";
+import { fromSubselect } from "../../subselect";
+import { errMessage } from "../../../../utils";
 
 /** DuckDB's widest DECIMAL. */
 const DECIMAL_MAX_PRECISION = 38;
@@ -334,4 +340,45 @@ function rowsOf(result: unknown): Record<string, unknown>[] {
       string,
       unknown
    >[];
+}
+
+/**
+ * A Postgres build's read of `buildSQL` with each `numeric` DuckDB would read
+ * as DOUBLE read as its exact text instead (`readSQL`), and the stage that
+ * stores each as the DECIMAL that holds it, once read; `described` is each
+ * column as the session reads it. Nothing to recast reads `buildSQL` as it is.
+ */
+export async function recastPostgresNumerics(
+   session: DuckDBConnection,
+   handle: string,
+   buildSQL: string,
+   sourceDialect: string,
+   numericColumns: typeof postgresNumericColumns = postgresNumericColumns,
+): Promise<{
+   readSQL: string;
+   described?: { name: string; type: string }[];
+   stage?: (
+      selectSQL: string,
+      table: string,
+   ) => Promise<{ selectSQL: string; drop: () => Promise<void> }>;
+}> {
+   const numeric = await numericColumns(
+      session,
+      handle,
+      buildSQL,
+      sourceDialect,
+   );
+   const described = numeric.described ? { described: numeric.described } : {};
+   if (numeric.numeric.length === 0) return { readSQL: buildSQL, ...described };
+   return {
+      readSQL: numericAsTextSQL(
+         buildSQL,
+         numeric.columns,
+         numeric.numeric,
+         sourceDialect,
+      ),
+      ...described,
+      stage: (selectSQL, table) =>
+         stageNumericColumns(session, selectSQL, numeric.numeric, { table }),
+   };
 }

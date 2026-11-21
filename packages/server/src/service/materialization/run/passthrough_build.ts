@@ -6,8 +6,9 @@
  * source connection's configured type ({@link FederatedSourceType}), never by
  * Malloy's dialect: how a read is prepared and, where it can be, labelled;
  * what a session needs before the read and after the build; what a read
- * cost; how a cancelled build's warehouse jobs are cancelled; and whether
- * the late-row check reads a stored source's window. The engines' own
+ * cost; how a cancelled build's warehouse jobs are cancelled; which columns
+ * are read and stored as the warehouse holds them; and whether the late-row
+ * check reads a stored source's window. The engines' own
  * modules (passthrough/) implement them; the build session and incremental
  * storage read them here, and never branch on a source type themselves.
  *
@@ -21,6 +22,10 @@ import type { components } from "../../../api";
 import type { FederatedSourceType } from "../../dialects";
 import type { QueryMetadata } from "../../query_metadata";
 import type { BuildReadCost } from "./build_read_cost";
+import {
+   postgresNumericColumns,
+   recastPostgresNumerics,
+} from "./passthrough/postgres";
 import {
    clearSnowflakeSessionTag,
    snowflakeReadCostAfterBuild,
@@ -57,6 +62,8 @@ export interface PassthroughRead {
 export interface PassthroughDeps {
    /** The BigQuery jobs API a cancelled build cancels its reads through. */
    bigQueryJobs?: BigQueryJobListerFactory;
+   /** The Postgres column-type read a build stores exact numerics by. */
+   numericColumns?: typeof postgresNumericColumns;
 }
 
 /** One passthrough source type's part in a build. */
@@ -115,6 +122,25 @@ interface PassthroughBuild {
       deps: PassthroughDeps,
    ): () => Promise<void>;
    /**
+    * The read of `buildSQL` that keeps exact a column the passthrough would
+    * read inexactly (`readSQL`), the stage that stores each such column once
+    * read, and each column as the session reads it; for a dialect whose
+    * passthrough reads a numeric as DOUBLE (`passthroughNumericAsDouble`).
+    */
+   recastColumns?(
+      session: DuckDBConnection,
+      handle: string,
+      buildSQL: string,
+      sourceDialect: string,
+      deps: PassthroughDeps,
+   ): ReturnType<typeof recastPostgresNumerics>;
+   /**
+    * Whether a build describes its passthrough to keep a column whose
+    * warehouse type the dialect declares `string` (a Postgres `bytea` or
+    * `interval`), rather than cast it.
+    */
+   readonly keepsWarehouseTypes?: true;
+   /**
     * Whether the late-row check reads a stored source's window through this
     * engine's passthrough (DeltaTarget.windowRows).
     */
@@ -159,8 +185,19 @@ const PASSTHROUGH_BUILDS: Readonly<
       release: clearSnowflakeSessionTag,
       windowRows: true,
    },
+   // Its numerics, and a column its dialect declares `string`, kept as the
+   // warehouse holds them.
    postgres: {
       prepareRead: readAsWritten,
+      recastColumns: (session, handle, buildSQL, sourceDialect, deps) =>
+         recastPostgresNumerics(
+            session,
+            handle,
+            buildSQL,
+            sourceDialect,
+            deps.numericColumns,
+         ),
+      keepsWarehouseTypes: true,
       windowRows: true,
    },
 });

@@ -94,11 +94,6 @@ import {
    storageTablePath,
 } from "../domain/storage_table_path";
 import { carriesAuthorSql, isSameCatalog } from "../domain/same_catalog_build";
-import {
-   numericAsTextSQL,
-   postgresNumericColumns,
-   stageNumericColumns,
-} from "./postgres_numeric_precision";
 import { PASSTHROUGH_SOURCE_TYPES } from "../domain/source_connection_type";
 import { capabilitiesOf, STORAGE_DIALECT } from "../domain/dialect";
 
@@ -623,7 +618,7 @@ export interface BuildSessionDeps {
    federate?: typeof federateSourceForPassthrough;
    read?: typeof issuePassthroughRead;
    /** The Postgres column-type read a build stores exact numerics by. */
-   numericColumns?: typeof postgresNumericColumns;
+   numericColumns?: PassthroughDeps["numericColumns"];
    /** The BigQuery jobs API a cancelled build cancels its reads through. */
    bigQueryJobs?: PassthroughDeps["bigQueryJobs"];
 }
@@ -849,38 +844,24 @@ async function buildOnFederatedSession(
 
    // A Postgres numeric DuckDB would read as DOUBLE is read as its exact
    // text instead, staged, and stored as the DECIMAL that holds it
-   // (postgres_numeric_precision.ts).
-   const numeric = capabilitiesOf(sourceType).passthroughNumericAsDouble
-      ? await (params.deps?.numericColumns ?? postgresNumericColumns)(
+   // (passthrough/postgres.ts).
+   const recast = capabilitiesOf(sourceType).passthroughNumericAsDouble
+      ? await build?.recastColumns?.(
            session,
            handle,
            buildSQL,
            sourceType,
+           params.deps ?? {},
         )
-      : { columns: [], numeric: [] };
+      : undefined;
    const passthrough = await read(
       session,
       sourceType,
       handle,
-      numeric.numeric.length > 0
-         ? numericAsTextSQL(
-              buildSQL,
-              numeric.columns,
-              numeric.numeric,
-              sourceType,
-           )
-         : buildSQL,
+      recast?.readSQL ?? buildSQL,
       queryMetadata,
    );
-   const staged =
-      numeric.numeric.length > 0
-         ? await stageNumericColumns(
-              session,
-              passthrough.selectSQL,
-              numeric.numeric,
-              { table: target },
-           )
-         : undefined;
+   const staged = await recast?.stage?.(passthrough.selectSQL, target);
 
    // The serve transform declares exactly this schema, and the compiler does
    // not type-check a virtual source's declared columns.
@@ -896,7 +877,7 @@ async function buildOnFederatedSession(
          { columns: params.declaredColumns ?? [], ...params.castOptions },
          {
             sourceType,
-            ...(numeric.described ? { described: numeric.described } : {}),
+            ...(recast?.described ? { described: recast.described } : {}),
             ...(params.replacesView
                ? { replacesView: params.replacesView }
                : {}),
@@ -1648,9 +1629,9 @@ async function computedWideIntegers(
  * `bytea` or `interval`, which the dialect declares `string`).
  *
  * The warehouse's types are read by describing the SELECT in the destination's
- * session, for a Postgres source only: there the describe prepares the
- * statement and runs nothing, and only Postgres's dialect declares such a
- * column `string`. No other passthrough is described: whether it runs (and
+ * session, for a source whose passthrough build keeps them (Postgres's) only:
+ * there the describe prepares the statement and runs nothing, and only
+ * Postgres's dialect declares such a column `string`. No other passthrough is described: whether it runs (and
  * bills) the query is not known. A describe that fails changes nothing: every
  * column is cast, and the build itself reports the error.
  */
@@ -1661,7 +1642,12 @@ async function columnsToCast(
    sourceType: FederatedSourceType | undefined,
    alreadyDescribed?: readonly { name: string; type: string }[],
 ): Promise<readonly DeclaredColumn[]> {
-   if (sourceType !== "postgres") return declared;
+   if (
+      sourceType === undefined ||
+      passthroughBuildOf(sourceType)?.keepsWarehouseTypes !== true
+   ) {
+      return declared;
+   }
    if (!declared.some((d) => d.type === "string")) return declared;
    let described: readonly WireColumn[];
    try {

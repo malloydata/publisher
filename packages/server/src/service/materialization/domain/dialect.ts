@@ -161,7 +161,7 @@ export interface Capabilities {
     * as DOUBLE (Postgres: an unconstrained `numeric`, a `numeric(p,s)` with
     * p > 38, and every numeric expression), so the build reads those columns
     * as the warehouse's text and stores the DECIMAL that holds them
-    * (`run/postgres_numeric_precision.ts`). BigQuery's NUMERIC and
+    * (`run/passthrough/postgres.ts`). BigQuery's NUMERIC and
     * Snowflake's NUMBER already arrive as DECIMAL.
     */
    passthroughNumericAsDouble: boolean;
