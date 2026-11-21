@@ -23,7 +23,6 @@ describe("the serveVerdicts contract", () => {
             string,
             {
                type?: string;
-               enum?: unknown[];
                description?: string;
                items?: { $ref?: string; type?: string };
             }
@@ -80,7 +79,7 @@ describe("the serveVerdicts contract", () => {
    it("declares the served copy's pending marker", () => {
       const pending = schemas.ServeVerdict.properties?.servedCopyPending;
       expect(pending?.type).toBe("boolean");
-      expect(pending?.enum).toEqual([true]);
+      expect(pending?.description).toContain("always `true`");
       expect(pending?.description).toContain("must re-read");
       expect(pending?.description).toContain("#@ persist");
    });

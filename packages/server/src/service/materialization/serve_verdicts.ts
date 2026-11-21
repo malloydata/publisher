@@ -435,8 +435,7 @@ export class ServeVerdicts {
          // Judged per source: a model still compiling (or holding a copy over
          // the previous bind's bindings) blanks the judgement only of the
          // sources it holds, and marks those pending.
-         servedCopyPending: (sourceID) =>
-            servedCopy.pendingHolds(sourceID),
+         servedCopyPending: (sourceID) => servedCopy.pendingHolds(sourceID),
          servedCopyOutcome: (sourceID) =>
             servedCopy.on && !servedCopy.pendingHolds(sourceID)
                ? servedCopyOutcomeOf(
@@ -850,14 +849,14 @@ function servedCopyState(models: ReadonlyMap<string, Model>): {
    const onStorage = new Set<string>();
    const compiled: CompiledServedCopy[] = [];
    const parts: string[] = [];
-   const pendingModelDefs: unknown[] = [];
+   const pendingModels: Model[] = [];
    for (const [modelPath, model] of models) {
       const reread = model.servedCopySourceIDs?.();
       if (reread === undefined) continue;
       on = true;
       if (reread === "pending") {
          pending = true;
-         pendingModelDefs.push(model.getModelDef?.());
+         pendingModels.push(model);
          continue;
       }
       const databaseOnly = model.servedCopyDatabaseOnlyIDs?.() ?? new Set();
@@ -889,8 +888,8 @@ function servedCopyState(models: ReadonlyMap<string, Model>): {
    // Holds as `servedCopyOutcomeOf` reads it: the model declares or
    // imports the source.
    const pendingHolds = (sourceID: string) =>
-      pendingModelDefs.some(
-         (def) => SourceMap.of(def).node(sourceID) !== undefined,
+      pendingModels.some(
+         (model) => sourceMapOf(model).node(sourceID) !== undefined,
       );
    return {
       on,
@@ -901,6 +900,20 @@ function servedCopyState(models: ReadonlyMap<string, Model>): {
       pendingHolds,
       signature,
    };
+}
+
+/**
+ * A model's source map, read once per model: its IR never changes, and
+ * `/status` reads the verdicts on every poll.
+ */
+const sourceMaps = new WeakMap<Model, SourceMap>();
+function sourceMapOf(model: Model): SourceMap {
+   let map = sourceMaps.get(model);
+   if (!map) {
+      map = SourceMap.of(model.getModelDef?.());
+      sourceMaps.set(model, map);
+   }
+   return map;
 }
 
 /** One model's compiled served copy, as the verdicts read it. */

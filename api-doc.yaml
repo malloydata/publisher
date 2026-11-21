@@ -5004,9 +5004,8 @@ components:
             running a query.
         servedCopyPending:
           type: boolean
-          enum: [true]
           description: >-
-            Present (always `true`) while some model that holds this source,
+            Present, and always `true`, while some model that holds this source,
             which its served copy reads (`#(materialize)` or `#@ persist`), has
             yet to compile its served copy over the tables bound now. A bind
             returns before that compile, so the verdict carries no served-copy
