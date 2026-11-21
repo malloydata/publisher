@@ -40,7 +40,7 @@ import {
    pairDeltaStatements,
    lateRowsSql,
    probeMaxWatermark,
-   probePostgresVersion,
+   probeServerVersion,
    probeStoredWatermark,
    probeTargetColumns,
    renderSqlBound,
@@ -239,7 +239,7 @@ async function statements(): Promise<Record<string, unknown>> {
    });
    {
       const r = recorder();
-      await probePostgresVersion(r.run);
+      await probeServerVersion(r.run, "postgres");
       out.probePostgresVersion = r.statements;
    }
    out.renderSqlBound = perDialect((d) =>

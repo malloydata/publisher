@@ -178,10 +178,10 @@ export const RATCHET_DIALECT_LITERALS = {
       count: 2,
       step: "table",
    },
-   // TABLE_PATH_OPTIONS, the incremental probe's per-dialect table-path
-   // decoding (four keys), and probePostgresVersion's own dialect.
+   // DECODED_PATH_DIALECTS, the incremental probe's per-dialect table-path
+   // decoding (four elements).
    "service/materialization/run/incremental_apply.ts": {
-      count: 5,
+      count: 4,
       step: "table",
    },
    // The package-local DuckDB connection, by its connection name.
@@ -209,8 +209,8 @@ export const RATCHET_CONNECTION_TYPE_LITERALS = {
    "service/materialization/run/reclaimer.ts": { count: 1, step: "D4" },
    // a refusal's message naming the destination type file cleanup applies to.
    "service/materialization/run/storage_admin.ts": { count: 1, step: "D4" },
-   // DECODED_PATH_DIALECTS and the server-version probe's dialect.
-   "service/materialization/run/incremental_apply.ts": { count: 4, step: "D4" },
+   // DECODED_PATH_DIALECTS.
+   "service/materialization/run/incremental_apply.ts": { count: 3, step: "D4" },
    // STORAGE_DESTINATION_TYPES, and a refusal's message naming a DuckLake
    // destination's type.
    "service/materialization/run/materialization_build_session.ts": {

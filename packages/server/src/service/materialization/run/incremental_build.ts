@@ -63,7 +63,7 @@ import {
    isPairGuardFailure,
    isRenderableWatermarkType,
    planIncrementalStep,
-   probePostgresVersion,
+   probeServerVersion,
    seedCoveredThrough,
    type DeltaTarget,
    type IncrementalLineage,
@@ -354,7 +354,7 @@ export async function planSourceRefresh(params: {
       lineage.strategy === "merge" &&
       capabilitiesOf(target.dialect).mergeGatedByServerVersion &&
       ledgerEntry !== null
-         ? await probePostgresVersion(target.runner)
+         ? await probeServerVersion(target.runner, target.dialect)
          : undefined;
    let step: IncrementalStep;
    try {

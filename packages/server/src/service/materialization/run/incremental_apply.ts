@@ -33,6 +33,7 @@ import {
    escapeSqlString,
    inOneTransaction,
    probeSelect,
+   serverVersionSql,
    targetColumnsProbeSql,
    transactionKeywords,
    watermarkTextSql,
@@ -560,19 +561,18 @@ export async function probeStoredWatermark(params: {
 }
 
 /**
- * Postgres's `server_version_num`, for the MERGE floor: MERGE is a syntax error
- * before Postgres 15.
+ * The server's version number, for the MERGE floor of a `dialect` a version
+ * gates it on (Postgres's `server_version_num`: MERGE is a syntax error before
+ * Postgres 15); undefined for any other dialect, or a read that fails.
  */
-export async function probePostgresVersion(
+export async function probeServerVersion(
    runner: SqlRunner,
+   dialect: string,
 ): Promise<number | undefined> {
+   const sql = serverVersionSql(dialect);
+   if (sql === undefined) return undefined;
    try {
-      const result = await runner(
-         probeSelect(
-            "postgres",
-            `SELECT current_setting('server_version_num') AS version_num`,
-         ),
-      );
+      const result = await runner(sql);
       const raw = probeRows(result.rows)[0]?.["version_num"];
       const parsed = Number(raw);
       return Number.isFinite(parsed) ? parsed : undefined;

@@ -36,7 +36,7 @@ import {
 import {
    applyDeltaScript,
    deltaStatements,
-   probePostgresVersion,
+   probeServerVersion,
    renderSqlBound,
 } from "../../src/service/materialization/run/incremental_apply";
 import { POSTGRES_COLLATION } from "../../src/service/materialization/serve/collation/postgres";
@@ -130,7 +130,10 @@ describe.skipIf(!url)("Postgres conformance", () => {
    });
 
    it("mergeGatedByServerVersion: server_version_num is read, and MERGE exists from 15", async () => {
-      const version = await probePostgresVersion((sql) => pg.runSQL(sql));
+      const version = await probeServerVersion(
+         (sql) => pg.runSQL(sql),
+         "postgres",
+      );
       expect(typeof version).toBe("number");
       // MERGE arrived in 15; a server below it refuses the statement, so the
       // capability is gated by the version read here.
