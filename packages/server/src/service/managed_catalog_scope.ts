@@ -16,11 +16,13 @@
  * this module can place in `main`:
  *
  * - a table as `t`, `main.t`, `<alias>.t` or `<alias>.main.t` (case-insensitive,
- *   as DuckDB resolves names). A bare name that is one of DuckDB's own catalog
- *   views (every one starts with a {@link SYSTEM_RELATION_PREFIXES} prefix) is
- *   refused: the session's search path falls through to them. A two-part name
- *   whose first part is the alias reaches the catalog's default schema,
- *   `main`; DuckDB refuses it as ambiguous should a schema of that name exist.
+ *   as DuckDB resolves names), whose name is a plain table name
+ *   ({@link isPlainTableName}). A name the catalog's `main` lacks falls through
+ *   the search path, however it is qualified: to DuckDB's own catalog views
+ *   (every one starts with a {@link SYSTEM_RELATION_PREFIXES} prefix), or to a
+ *   replacement scan that reads a file. A two-part name whose first part is
+ *   the alias reaches the catalog's default schema, `main`; DuckDB refuses it
+ *   as ambiguous should a schema of that name exist.
  * - no `DESCRIBE`, `SHOW` or `SUMMARIZE`;
  * - a table function only from {@link ALLOWED_TABLE_FUNCTIONS};
  * - no function call qualified with a catalog or a schema other than `main`,
@@ -56,6 +58,18 @@ function hasSystemPrefix(name: string): boolean {
    return SYSTEM_RELATION_PREFIXES.some((prefix) => name.startsWith(prefix));
 }
 
+/**
+ * Whether `name` (lowercased) can only be a table: not one of DuckDB's own
+ * catalog relations ({@link SYSTEM_RELATION_PREFIXES}), and nothing DuckDB
+ * would read as a file through a replacement scan (a path, a URL, a glob, or
+ * a name with an extension, so no dot at all).
+ */
+export function isPlainTableName(name: string): boolean {
+   return (
+      name !== "" && !hasSystemPrefix(name) && !/[./\\:*?[\]{}~]/.test(name)
+   );
+}
+
 /** Whether scalar function `name` (lowercased) reads the catalog. */
 export function isCatalogFunction(name: string): boolean {
    return (
@@ -63,7 +77,9 @@ export function isCatalogFunction(name: string): boolean {
       name === "current_schemas" ||
       name.startsWith("has_") ||
       name.endsWith("_description") ||
-      name === "format_pg_type"
+      name === "format_pg_type" ||
+      name === "format_type" ||
+      name === "get_block_size"
    );
 }
 
@@ -118,14 +134,15 @@ function refusalOfNode(
             str(record.schema_name),
             str(record.table_name),
          ];
-         const shown = [c, s, t].filter(Boolean).join(".");
-         if (c) {
-            return c === catalog && s === "main" ? undefined : `'${shown}'`;
-         }
-         if (s) {
-            return s === "main" || s === catalog ? undefined : `'${shown}'`;
-         }
-         return hasSystemPrefix(t) ? `'${shown}'` : undefined;
+         const shown = `'${[c, s, t].filter(Boolean).join(".")}'`;
+         // However it is qualified, a name the catalog's `main` lacks falls
+         // through the search path (to `system.main`, `system.pg_catalog` or
+         // a replacement scan), so the name itself must be one only a table
+         // of the catalog can answer to.
+         if (!isPlainTableName(t)) return shown;
+         if (c) return c === catalog && s === "main" ? undefined : shown;
+         if (s) return s === "main" || s === catalog ? undefined : shown;
+         return undefined;
       }
       case "TABLE_FUNCTION": {
          const fn = record.function as Record<string, unknown> | undefined;

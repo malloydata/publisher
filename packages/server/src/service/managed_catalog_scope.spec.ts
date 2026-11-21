@@ -71,6 +71,37 @@ describe("managed catalog scope", () => {
       ["a catalog function", "SELECT current_schemas(true)"],
       ["a statement that is not a SELECT", "PRAGMA table_info('gated')"],
       ["SQL that does not parse", "SELECT FROM WHERE"],
+      // A name `main` lacks falls through to DuckDB's own catalog views,
+      // however it is qualified, quoted or cased.
+      ["main.duckdb_tables", "SELECT * FROM main.duckdb_tables"],
+      ["MAIN.DuckDB_Columns, quoted", 'SELECT * FROM "MAIN"."DuckDB_Columns"'],
+      ["main.sqlite_master", "SELECT * FROM main.sqlite_master"],
+      ["main.pg_class", "SELECT * FROM Main.PG_CLASS"],
+      ["<alias>.duckdb_tables", "SELECT * FROM lake.duckdb_tables"],
+      [
+         "<alias>.main.duckdb_tables",
+         'SELECT * FROM "lake"."main"."duckdb_tables"',
+      ],
+      ["system.main.duckdb_tables", "SELECT * FROM system.main.duckdb_tables"],
+      [
+         "system.pg_catalog.pg_class",
+         "SELECT * FROM system.pg_catalog.pg_class",
+      ],
+      [
+         "main.duckdb_tables in sql_number",
+         "SELECT (SELECT max(estimated_size) FROM main.duckdb_tables)",
+      ],
+      // Replacement scans: a quoted path, glob or URL reads a file.
+      ["a quoted file", "SELECT * FROM 'gated.parquet'"],
+      [
+         "a quoted glob",
+         "SELECT count(*) FROM '/data/materialized/**/*.parquet'",
+      ],
+      ["a quoted URL", `SELECT * FROM "s3://bucket/materialized/x.parquet"`],
+      ["a path under main.", `SELECT * FROM main."materialized/x.parquet"`],
+      ["a dotted name", `SELECT * FROM "x.csv"`],
+      ["format_type", "SELECT format_type(23, NULL)"],
+      ["get_block_size", "SELECT get_block_size('lake')"],
    ])("refuses %s", async (_label, sql) => {
       expect(await managedCatalogRefusal(sql, "lake")).toBeString();
    });
@@ -88,25 +119,66 @@ describe("managed catalog scope", () => {
       ).toBe("'lake.materialized.gated'");
    });
 
-   it("covers every relation in DuckDB's system catalog with a refused prefix", async () => {
-      // A bare name falls through the search path to these; a DuckDB upgrade
-      // that adds one under another prefix fails here.
+   it("covers every relation DuckDB's search path reaches with a refused prefix", async () => {
+      // A name the catalog's `main` lacks falls through to these, however it
+      // is qualified. Listed with the extensions a managed connection loads; a
+      // DuckDB or extension upgrade that adds one under another prefix fails
+      // here, and so does one the check would admit qualified.
       const instance = await DuckDBInstance.create(":memory:");
       const connection = await instance.connect();
       try {
+         for (const extension of [
+            "ducklake",
+            "postgres",
+            "aws",
+            "httpfs",
+            "json",
+         ]) {
+            await connection.run(`INSTALL ${extension}; LOAD ${extension};`);
+         }
          const reader = await connection.runAndReadAll(
-            `SELECT lower(view_name) AS n FROM duckdb_views()
-               WHERE database_name = 'system' AND schema_name IN ('main', 'pg_catalog')
+            `SELECT database_name AS c, schema_name AS s, lower(view_name) AS n FROM duckdb_views()
+               WHERE database_name IN ('system', 'temp')
              UNION
-             SELECT lower(table_name) FROM duckdb_tables()
-               WHERE database_name = 'system' AND schema_name IN ('main', 'pg_catalog')`,
+             SELECT database_name, schema_name, lower(table_name) FROM duckdb_tables()
+               WHERE database_name IN ('system', 'temp')`,
          );
-         const names = reader.getRowObjectsJson().map((row) => String(row.n));
-         expect(names.length).toBeGreaterThan(10);
-         const uncovered = names.filter(
-            (name) => !SYSTEM_RELATION_PREFIXES.some((p) => name.startsWith(p)),
+         const rows = reader.getRowObjectsJson().map((row) => ({
+            c: String(row.c),
+            s: String(row.s),
+            n: String(row.n),
+         }));
+         expect(rows.length).toBeGreaterThan(10);
+         const searchPath = rows.filter(
+            (row) => row.s === "main" || row.s === "pg_catalog",
+         );
+         const uncovered = searchPath.filter(
+            (row) => !SYSTEM_RELATION_PREFIXES.some((p) => row.n.startsWith(p)),
          );
          expect(uncovered).toEqual([]);
+         for (const row of rows) {
+            const qualified = [
+               `SELECT * FROM ${row.s}.${row.n}`,
+               `SELECT * FROM ${row.c}.${row.s}.${row.n}`,
+            ];
+            // information_schema is not on the search path: reached only
+            // qualified, by its schema.
+            const forms =
+               row.s === "information_schema"
+                  ? qualified
+                  : [
+                       `SELECT * FROM ${row.n}`,
+                       `SELECT * FROM main.${row.n}`,
+                       `SELECT * FROM lake.main.${row.n}`,
+                       ...qualified,
+                    ];
+            for (const sql of forms) {
+               expect([sql, await managedCatalogRefusal(sql, "lake")]).toEqual([
+                  sql,
+                  expect.any(String),
+               ]);
+            }
+         }
       } finally {
          connection.closeSync();
          instance.closeSync();

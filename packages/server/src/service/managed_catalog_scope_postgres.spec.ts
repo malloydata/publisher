@@ -218,6 +218,26 @@ describe.skipIf(!PG_URL)(
             "a .sql() pg_class",
             `lake.sql("SELECT relname, reltuples FROM pg_class")`,
          ],
+         [
+            "a .sql() main.duckdb_tables",
+            `lake.sql("SELECT table_name, estimated_size FROM main.duckdb_tables")`,
+         ],
+         [
+            "a .sql() quoted, mixed-case catalog view",
+            `lake.sql("""SELECT * FROM "Main"."DuckDB_Columns" """)`,
+         ],
+         [
+            "a .sql() main.sqlite_master",
+            `lake.sql("SELECT * FROM main.sqlite_master")`,
+         ],
+         [
+            "a .table() main.duckdb_columns",
+            "lake.table('main.duckdb_columns')",
+         ],
+         [
+            "a .sql() replacement scan of another schema's files",
+            `lake.sql("SELECT count(*) AS n FROM '${dataPath}materialized/**/*.parquet'")`,
+         ],
       ])("refuses %s when the model compiles", async (_label, expr) => {
          const failure = await compile(`source: s is ${expr}`).then(
             () => undefined,
@@ -226,7 +246,9 @@ describe.skipIf(!PG_URL)(
          expect(failure).toContain("reads only its own catalog's tables");
          // Names what the author wrote, never the catalog's internals.
          expect(failure).not.toContain(schema);
-         expect(failure).not.toContain(dataPath);
+         if (!expr.includes(dataPath)) {
+            expect(failure).not.toContain(dataPath);
+         }
          expect(failure).not.toContain("acct_");
       });
 
@@ -246,6 +268,14 @@ describe.skipIf(!PG_URL)(
          [
             "a catalog listing",
             `sql_number("(SELECT max(estimated_size) FROM duckdb_tables())")`,
+         ],
+         [
+            "main.duckdb_tables",
+            `sql_number("(SELECT max(estimated_size) FROM main.duckdb_tables)")`,
+         ],
+         [
+            "another schema's files",
+            `sql_number("(SELECT count(*) FROM '${dataPath}materialized/**/*.parquet')")`,
          ],
       ])(
          "refuses a raw SQL expression reading %s when the package loads",
@@ -277,6 +307,25 @@ describe.skipIf(!PG_URL)(
                "reads only its own catalog's tables",
             );
          }
+      });
+
+      it("lets the managed connection's lock open only main's files on a local data path", async () => {
+         // The check below the model's: SQL the scope check never saw still
+         // cannot open another schema's files.
+         const conn = (await managed.malloyConfig.connections.lookupConnection(
+            "lake",
+         )) as unknown as {
+            runSQL(sql: string): Promise<{ rows: Record<string, unknown>[] }>;
+         };
+         const main = await conn.runSQL(
+            `SELECT count(*) AS n FROM read_parquet('${dataPath}main/**/*.parquet')`,
+         );
+         expect(String(main.rows[0].n)).toBe(orders.n);
+         await expect(
+            conn.runSQL(
+               `SELECT count(*) AS n FROM read_parquet('${dataPath}materialized/**/*.parquet')`,
+            ),
+         ).rejects.toThrow();
       });
 
       it("leaves the destination's own reads of its schema as they were", async () => {

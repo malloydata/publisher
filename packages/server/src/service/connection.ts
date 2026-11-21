@@ -1479,13 +1479,27 @@ async function attachDuckLakeWithMode(
          throw error;
       }
    }
+   // Only a connection view is narrowed: an operator's destination serves
+   // every schema, whatever flags its entry carries.
+   const managedView =
+      options.managed === true && options.origin !== "storage-destination";
    if (!storage) {
-      // No storage secret: the catalog's data path is what its lock allows.
+      // No storage secret (a local data path): what its lock allows is the
+      // whole data path, or, for a managed read-only view, only its `main`
+      // schema's files, as a secret would be scoped. A managed view whose main
+      // path cannot be read is allowed no data file at all.
       const root =
-         dataPath ||
-         (await recordedCatalogSettings(connection, dbName, metadataSchema)
-            .then((settings) => settings.data_path)
-            .catch(() => undefined));
+         managedView && options.readOnly
+            ? await attachedDuckLakeScope(connection, dbName, {
+                 configuredDataPath: dataPath,
+                 metadataSchema,
+                 readOnly: true,
+                 managed: true,
+              }).catch(() => undefined)
+            : dataPath ||
+              (await recordedCatalogSettings(connection, dbName, metadataSchema)
+                 .then((settings) => settings.data_path)
+                 .catch(() => undefined));
       if (root) allowForLockdown(connection, root);
    }
    if (storage) {
@@ -1501,11 +1515,7 @@ async function attachDuckLakeWithMode(
             configuredDataPath: dataPath,
             metadataSchema,
             readOnly: options.readOnly,
-            // Only a connection view is narrowed: an operator's destination
-            // serves every schema, whatever flags its entry carries.
-            managed:
-               options.managed === true &&
-               options.origin !== "storage-destination",
+            managed: managedView,
          });
          if (!scope) {
             throw new Error(

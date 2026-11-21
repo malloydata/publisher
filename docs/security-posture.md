@@ -235,7 +235,9 @@ Concretely:
   held to `main` before it runs: a `.table()` or `.sql()` source when the model compiles, a raw SQL
   expression when the package loads, and raw SQL at its route. Another schema or catalog, the
   metadata catalog, DuckDB's catalog views and functions, `DESCRIBE`/`SHOW`/`SUMMARIZE`, and table
-  functions other than `range`, `generate_series` and `unnest` are refused, and its schema listing
+  functions other than `range`, `generate_series` and `unnest` are refused, as is a table name that is a
+  path, glob or DuckDB catalog name however it is qualified; on a local data path its file allowlist
+  is `main`'s files, as its secret is scoped elsewhere; and its schema listing
   shows only `main` (`packages/server/src/service/managed_catalog_scope.ts`). DuckDB and DuckLake
   offer no attach option that hides a schema, the metadata, file statistics or inlined rows from a
   read-only attach, so this check is the control. A storage destination's own session still reads
