@@ -205,3 +205,40 @@ export function managedCatalogMessage(
       `in the catalog's main schema.`
    );
 }
+
+/**
+ * DuckDB's suggestion of a near name (`Did you mean "materialized.gated"?`),
+ * which it draws from every schema of every attached catalog, so a guessed
+ * name would enumerate the tables a managed connection may not name.
+ */
+const SUGGESTION = /[ \t]*\n?[ \t]*Did you mean [^\n]*/g;
+
+/** `message` without DuckDB's near-name suggestions. */
+export function withoutCatalogSuggestions(message: string): string {
+   return message.replace(SUGGESTION, "");
+}
+
+/**
+ * `error` without DuckDB's near-name suggestions in its message and stack, so
+ * whatever reports it (a compile diagnostic, a load error, a query's response)
+ * names nothing the managed connection may not name. The rest of the message,
+ * which names only what the SQL itself wrote, is kept. Edited in place, or,
+ * where the error will not take the edit, replaced by a plain error.
+ */
+export function scrubCatalogSuggestions(error: unknown): unknown {
+   if (!(error instanceof Error)) return error;
+   const message = withoutCatalogSuggestions(error.message);
+   if (message === error.message) return error;
+   try {
+      error.message = message;
+      if (typeof error.stack === "string") {
+         error.stack = withoutCatalogSuggestions(error.stack);
+      }
+      if (error.message === message) return error;
+   } catch {
+      // Replaced below.
+   }
+   const replaced = new Error(message);
+   replaced.name = error.name;
+   return replaced;
+}

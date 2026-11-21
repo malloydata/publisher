@@ -328,6 +328,72 @@ describe.skipIf(!PG_URL)(
          ).rejects.toThrow();
       });
 
+      it.each([
+         ["a .table() source", "lake.table('gatd')"],
+         ["a .table() source in main.", "lake.table('main.gatd')"],
+         ["a .sql() source", `lake.sql("SELECT * FROM gatd")`],
+      ])(
+         "names no other schema's table when %s misses, at compile",
+         async (_label, expr) => {
+            const failure = await compile(`source: s is ${expr}`).then(
+               () => undefined,
+               (error: Error) => error.message,
+            );
+            expect(failure).toBeString();
+            expect(failure).not.toMatch(/did you mean/i);
+            expect(failure).not.toContain("materialized");
+            expect(failure).not.toContain("gated");
+         },
+      );
+
+      it("names no other schema's table when a query misses, at run time", async () => {
+         const conn = (await managed.malloyConfig.connections.lookupConnection(
+            "lake",
+         )) as unknown as {
+            runSQL(sql: string): Promise<unknown>;
+            runSQLStream(sql: string): AsyncIterableIterator<unknown>;
+         };
+         const failures: string[] = [];
+         await conn.runSQL("SELECT * FROM gatd").catch((error: Error) => {
+            failures.push(`${error.message}\n${error.stack ?? ""}`);
+         });
+         try {
+            for await (const row of conn.runSQLStream("SELECT * FROM gatd")) {
+               void row;
+            }
+         } catch (error) {
+            failures.push(
+               `${(error as Error).message}\n${(error as Error).stack ?? ""}`,
+            );
+         }
+         expect(failures).toHaveLength(2);
+         for (const failure of failures) {
+            expect(failure).toContain("gatd");
+            expect(failure).not.toMatch(/did you mean/i);
+            expect(failure).not.toContain("materialized");
+         }
+      });
+
+      it("returns no result schema for another schema's table, though the catalog could describe it", async () => {
+         const conn =
+            await managed.malloyConfig.connections.lookupConnection("lake");
+         const failure = await conn
+            .fetchSchemaForSQLStruct(
+               {
+                  connection: "lake",
+                  selectStr: "SELECT * FROM materialized.gated",
+               },
+               {},
+            )
+            .then(
+               (result) => JSON.stringify(result),
+               (error: Error) => error.message,
+            );
+         expect(failure).toContain("reads only its own catalog's tables");
+         expect(failure).not.toContain("trip_count");
+         expect(failure).not.toContain("subscriber_type");
+      });
+
       it("leaves the destination's own reads of its schema as they were", async () => {
          const conn =
             (await destination.malloyConfig.connections.lookupConnection(

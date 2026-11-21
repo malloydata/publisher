@@ -5,6 +5,8 @@ import { DuckDBInstance } from "@duckdb/node-api";
 import { describe, expect, it } from "bun:test";
 import {
    managedCatalogRefusal,
+   scrubCatalogSuggestions,
+   withoutCatalogSuggestions,
    managedTablePathRefusal,
    SYSTEM_RELATION_PREFIXES,
 } from "./managed_catalog_scope";
@@ -183,5 +185,19 @@ describe("managed catalog scope", () => {
          connection.closeSync();
          instance.closeSync();
       }
+   });
+   it("drops DuckDB's near-name suggestion and keeps the rest of the error", () => {
+      const raw =
+         'Catalog Error: Table with name gatd does not exist!\nDid you mean "materialized.gated"?\n\nLINE 1: SELECT * FROM gatd';
+      expect(withoutCatalogSuggestions(raw)).toBe(
+         "Catalog Error: Table with name gatd does not exist!\n\nLINE 1: SELECT * FROM gatd",
+      );
+      const error = new Error(raw);
+      expect(scrubCatalogSuggestions(error)).toBe(error);
+      expect(error.message).not.toContain("materialized");
+      expect(error.stack).not.toContain("materialized");
+      const frozen = Object.freeze(new Error(raw));
+      const replaced = scrubCatalogSuggestions(frozen) as Error;
+      expect(replaced.message).not.toContain("materialized");
    });
 });

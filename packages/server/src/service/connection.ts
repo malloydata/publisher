@@ -104,6 +104,7 @@ import {
    managedCatalogMessage,
    managedCatalogRefusal,
    managedTablePathRefusal,
+   scrubCatalogSuggestions,
 } from "./managed_catalog_scope";
 import {
    allowForLockdown,
@@ -3327,6 +3328,9 @@ class DuckLakeConnection extends DuckDBConnection {
     * and reopens the connection.
     */
    private async catalogUnavailableOr(error: unknown): Promise<unknown> {
+      // A managed connection's errors name nothing outside `main`: DuckDB's
+      // "Did you mean" suggests a table from any schema of the catalog.
+      if (isManagedConnection(this)) error = scrubCatalogSuggestions(error);
       if (
          !/\b(Binder|Catalog) Error\b/.test(errMessage(error)) ||
          (await aliasAttachedOnInstance(this, this.connectionName)) !== false
