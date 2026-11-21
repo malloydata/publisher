@@ -185,7 +185,22 @@ export interface DestinationDialect {
       connection: ApiConnection,
       mode: DestinationAttachMode,
    ): Promise<boolean>;
+   /**
+    * Why `connection`, of this type, reaches the tables of `destination`, of
+    * this type too, or undefined when the comparison finds no overlap
+    * (destination_overlap.ts).
+    */
+   overlap(
+      connection: ApiConnection,
+      destination: ApiConnection,
+   ): string | undefined;
 }
+
+/**
+ * The environment's release of a deleted connection's local DuckDB file,
+ * by the method that runs it (connection_service.ts).
+ */
+export type FileCleanup = "deleteDuckDBConnection" | "deleteDuckLakeConnection";
 
 /** How one connection type lists its schemas and the tables in one schema. */
 export interface Introspector {
@@ -235,6 +250,18 @@ export interface ConnectionDialect {
     * (db_utils.ts, getSchemasForConnection and listTablesForSchema).
     */
    readonly introspector: Introspector;
+   /**
+    * Whether a connection of this type runs on a locked-down DuckDB instance
+    * (duckdb_lockdown.ts), so caller SQL on it runs only as a single SELECT.
+    */
+   readonly lockedDown?: true;
+   /**
+    * Whether a connection of this type derives a `<name>.duckdb` file from its
+    * name, so a name unsafe as a file name is refused.
+    */
+   readonly fileNamed?: true;
+   /** How a deleted connection's local file is released; absent when none. */
+   readonly fileCleanup?: FileCleanup;
    /** How a database of this type is attached; absent when it cannot be. */
    readonly attached?: AttachedDatabaseDialect;
    /** How a build reads a source of this type; absent when it cannot. */

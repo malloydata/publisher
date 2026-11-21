@@ -14,7 +14,8 @@
  * it (docs/security-posture.md).
  *
  * Cheap and conservative: only a DuckLake connection is compared, by its
- * catalog database and metadata schema and by its data path. A DuckDB
+ * catalog database and metadata schema and by its data path (the
+ * comparison is the registry entry's, dialects/ducklake.ts). A DuckDB
  * connection that attaches the destination through `setupSQL`, or a
  * connection that reads its data files directly, is not detected.
  *
@@ -22,52 +23,24 @@
  */
 
 import type { components } from "../api";
+import { connectionDialectOf } from "./dialects";
 
 type ApiConnection = components["schemas"]["Connection"];
-type PostgresConnection = components["schemas"]["PostgresConnection"];
-
-/** The catalog database a DuckLake config names, normalized. */
-function catalogKey(pg: PostgresConnection | undefined): string | undefined {
-   if (!pg) return undefined;
-   if (pg.connectionString?.trim()) return pg.connectionString.trim();
-   if (!pg.databaseName) return undefined;
-   return `${(pg.host ?? "localhost").toLowerCase()}:${pg.port ?? 5432}/${pg.databaseName}`;
-}
-
-/** A data path, normalized for a prefix comparison. */
-function dataPath(url: string | undefined): string | undefined {
-   const trimmed = url?.trim().replace(/\/+$/, "");
-   return trimmed ? `${trimmed}/` : undefined;
-}
 
 /**
  * Why `connection` reaches `destination`'s tables, or undefined when this
- * check finds no overlap.
+ * check finds no overlap. Only two connections of one type whose registry
+ * entry can compare them (DuckLake's) are compared.
  */
 export function destinationOverlap(
    connection: ApiConnection,
    destination: ApiConnection,
 ): string | undefined {
-   if (connection.type !== "ducklake" || destination.type !== "ducklake") {
+   const overlap = connectionDialectOf(destination.type)?.destination?.overlap;
+   if (overlap === undefined || connection.type !== destination.type) {
       return undefined;
    }
-   const c = connection.ducklakeConnection;
-   const d = destination.ducklakeConnection;
-   if (!c || !d) return undefined;
-   const cCatalog = catalogKey(c.catalog?.postgresConnection);
-   if (
-      cCatalog !== undefined &&
-      cCatalog === catalogKey(d.catalog?.postgresConnection) &&
-      (c.catalog?.metadataSchema ?? "") === (d.catalog?.metadataSchema ?? "")
-   ) {
-      return "it names the same DuckLake catalog";
-   }
-   const cPath = dataPath(c.storage?.bucketUrl);
-   const dPath = dataPath(d.storage?.bucketUrl);
-   if (cPath && dPath && (cPath.startsWith(dPath) || dPath.startsWith(cPath))) {
-      return "its data path overlaps the destination's";
-   }
-   return undefined;
+   return overlap(connection, destination);
 }
 
 /** Every connection that reaches a destination, with why. */

@@ -77,6 +77,7 @@ import type {
 } from "./types";
 
 type AttachedDatabase = components["schemas"]["AttachedDatabase"];
+type PostgresConnection = components["schemas"]["PostgresConnection"];
 
 export const DUCKLAKE: ConnectionDialect = Object.freeze({
    type: "ducklake",
@@ -88,6 +89,9 @@ export const DUCKLAKE: ConnectionDialect = Object.freeze({
    }),
    validateShape: validateDuckLakeShape,
    coreEntry: buildDuckLakeEntry,
+   lockedDown: true,
+   fileNamed: true,
+   fileCleanup: "deleteDuckLakeConnection",
    introspector: Object.freeze({
       schemas: getSchemasForDuckLake,
       tables: listTablesForDuckLake,
@@ -105,6 +109,7 @@ export const DUCKLAKE: ConnectionDialect = Object.freeze({
             connection.ducklakeConnection!,
             mode,
          ),
+      overlap: ducklakeOverlap,
    }),
 });
 
@@ -940,4 +945,46 @@ async function listTablesForDuckLake(
          return groupColumnRowsIntoTables(rows, (t) => `${schemaName}.${t}`);
       },
    );
+}
+
+/**
+ * Why a DuckLake `connection` reaches DuckLake `destination`'s tables
+ * (destination_overlap.ts): it names the same catalog database and metadata
+ * schema, or its data path overlaps the destination's.
+ */
+function ducklakeOverlap(
+   connection: ApiConnection,
+   destination: ApiConnection,
+): string | undefined {
+   const c = connection.ducklakeConnection;
+   const d = destination.ducklakeConnection;
+   if (!c || !d) return undefined;
+   const cCatalog = catalogKey(c.catalog?.postgresConnection);
+   if (
+      cCatalog !== undefined &&
+      cCatalog === catalogKey(d.catalog?.postgresConnection) &&
+      (c.catalog?.metadataSchema ?? "") === (d.catalog?.metadataSchema ?? "")
+   ) {
+      return "it names the same DuckLake catalog";
+   }
+   const cPath = dataPath(c.storage?.bucketUrl);
+   const dPath = dataPath(d.storage?.bucketUrl);
+   if (cPath && dPath && (cPath.startsWith(dPath) || dPath.startsWith(cPath))) {
+      return "its data path overlaps the destination's";
+   }
+   return undefined;
+}
+
+/** The catalog database a DuckLake config names, normalized. */
+function catalogKey(pg: PostgresConnection | undefined): string | undefined {
+   if (!pg) return undefined;
+   if (pg.connectionString?.trim()) return pg.connectionString.trim();
+   if (!pg.databaseName) return undefined;
+   return `${(pg.host ?? "localhost").toLowerCase()}:${pg.port ?? 5432}/${pg.databaseName}`;
+}
+
+/** A data path, normalized for a prefix comparison. */
+function dataPath(url: string | undefined): string | undefined {
+   const trimmed = url?.trim().replace(/\/+$/, "");
+   return trimmed ? `${trimmed}/` : undefined;
 }

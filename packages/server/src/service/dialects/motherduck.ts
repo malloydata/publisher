@@ -31,6 +31,7 @@ export const MOTHERDUCK: ConnectionDialect = Object.freeze({
    }),
    validateShape: validateMotherDuckShape,
    coreEntry: buildMotherDuckEntry,
+   lockedDown: true,
    introspector: Object.freeze({
       schemas: getSchemasForMotherDuck,
       tables: listTablesForMotherDuck,

@@ -285,13 +285,9 @@ export const RATCHET_CONNECTION_TYPE_LITERALS = {
    // the DuckDB API surface, the proxy's postgres-only rule, the declarable
    // destination types and the package sandbox's name.
    "service/connection_config.ts": { count: 11, step: "D3" },
-   // a deleted connection's file cleanup.
-   "service/connection_service.ts": { count: 2, step: "D3" },
    // the listings whose record members are already read (BigQuery's, a
    // remote Publisher's).
    "service/db_utils.ts": { count: 2, step: "D3" },
-   // a DuckLake destination's catalog overlap.
-   "service/destination_overlap.ts": { count: 2, step: "D3" },
    // the collation readers' table, keyed by dialect.
    "service/materialization/serve/collation/index.ts": {
       count: 2,
@@ -299,8 +295,9 @@ export const RATCHET_CONNECTION_TYPE_LITERALS = {
    },
    // the quoting sets, keyed by dialect.
    "service/quoting.ts": { count: 7, step: "table" },
-   // per-type test and schema routes.
-   "controller/connection.controller.ts": { count: 28, step: "D3" },
+   // the package sandbox's name, a DuckLake table path and a DuckDB
+   // connection's Azure attachments.
+   "controller/connection.controller.ts": { count: 12, step: "D3" },
 };
 /** Functions over 200 lines, "<file>#<function>": step. */
 export const RATCHET_LONG_FUNCTIONS = {};

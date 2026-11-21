@@ -54,6 +54,9 @@ export const DUCKDB: ConnectionDialect = Object.freeze({
    }),
    validateShape: validateDuckDBShape,
    coreEntry: buildDuckDBEntry,
+   lockedDown: true,
+   fileNamed: true,
+   fileCleanup: "deleteDuckDBConnection",
    introspector: Object.freeze({
       schemas: getSchemasForDuckDB,
       tables: listTablesForDuckDB,
