@@ -401,6 +401,15 @@ class GateReadWalk {
          case "timestamptzLiteral":
          case "now":
             return true;
+         case "is-null":
+         case "is-not-null":
+            // A null test of a field compares no value: a stored copy holds
+            // its nulls where live does, under any collation. Of anything
+            // else (`nullif(name, 'x') is null`), its operand is judged.
+            if (bareFieldPath((e as { e?: unknown }).e) !== undefined) {
+               return true;
+            }
+            break;
          default:
             if (
                typeof n.node !== "string" ||

@@ -352,6 +352,27 @@ describe("queryFilterReadsOfQuery: the caller's own filters", () => {
       expect(r.comparesNoString).toBe(false);
    });
 
+   it("reads a null test of a string column as comparing no string, and only that", async () => {
+      for (const q of [
+         "run: t -> { where: category is not null; select: id }",
+         "run: t -> { where: category is null and amt > 1; select: id }",
+         "run: t -> { aggregate: x is count() { where: category is not null } }",
+      ]) {
+         const r = await reads(q);
+         expect(r.comparesNoString, q).toBe(true);
+         expect(r.entryPaths, q).toEqual([]);
+      }
+      for (const q of [
+         "run: t -> { where: category = ''; select: id }",
+         "run: t -> { where: category is null or category = 'x'; select: id }",
+         "run: t -> { where: nullif(category, 'x') is null; select: id }",
+         "run: t -> { where: lc is null; select: id }",
+         "run: t -> { where: late is null; select: id }",
+      ]) {
+         expect((await reads(q)).comparesNoString, q).toBe(false);
+      }
+   });
+
    it("reads no filter at all as comparing no string", async () => {
       const r = await reads("run: t -> { group_by: category; aggregate: c }");
       expect(r.comparesNoString).toBe(true);

@@ -318,6 +318,42 @@ describe("gateReads: compares no string", () => {
       );
    });
 
+   it("holds for a where: that tests a string column for null, and only that", () => {
+      const scoped = (e: unknown) =>
+         gateReads({ ...ORDERS, filterList: [{ e }] }, [], MODEL);
+      for (const node of ["is-null", "is-not-null"]) {
+         const reads = scoped({ node, e: field(["region"]) });
+         expect(reads.scoped, node).toBe(true);
+         expect(reads.comparesNoString, node).toBe(true);
+         expect(reads.columns, node).toEqual([["region"]]);
+      }
+      const empty = { node: "stringLiteral", literal: "" };
+      for (const [what, e] of [
+         [
+            "an equality with ''",
+            { node: "=", kids: { left: field(["region"]), right: empty } },
+         ],
+         [
+            "a null test of a function of the column",
+            {
+               node: "is-null",
+               e: {
+                  node: "function_call",
+                  name: "nullif",
+                  kids: { args: [field(["region"]), M] },
+               },
+            },
+         ],
+         // `late is region > 'M'`: the null test reads `late`, which orders `region`.
+         [
+            "a null test of a dimension computed from a string",
+            { node: "is-null", e: field(["late"]) },
+         ],
+      ] as const) {
+         expect(scoped(e).comparesNoString, what).toBe(false);
+      }
+   });
+
    it("does not hold for a gate over a dimension computed from a string", () => {
       for (const name of ["late", "is_m", "late_n"]) {
          expect(
