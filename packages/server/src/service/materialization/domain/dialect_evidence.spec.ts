@@ -38,9 +38,9 @@ const UNVERIFIED_COUNTS: Record<DialectName, number> = {
    standardsql: 12,
    snowflake: 10,
    databricks: 5,
-   trino: 4,
+   trino: 0,
    presto: 3,
-   mysql: 2,
+   mysql: 0,
    sqlserver: 5,
 };
 

@@ -1656,12 +1656,12 @@ Publisher decides what it may build, refresh and serve on a warehouse by one tab
 | Capability                      | `duckdb`       | `postgres`   | `standardsql` | `snowflake` | `databricks` | `trino` | `presto` | `mysql` | `sqlserver` |
 | ------------------------------- | -------------- | ------------ | ------------- | ----------- | ------------ | ------- | -------- | ------- | ----------- |
 | `binary64Types`                 | **2 types**    | **1 type**   | none          | 6 types?    | none         | none    | none     | none    | none        |
-| `castsToIntegerType`            | **yes**        | **yes**      | yes?          | yes?        | yes?         | yes?    | yes?     | no      | yes?        |
-| `catalogHidesTables`            | no             | no           | no            | yes?        | no           | no      | no       | yes?    | no          |
+| `castsToIntegerType`            | **yes**        | **yes**      | yes?          | yes?        | yes?         | **yes** | yes?     | **no**  | yes?        |
+| `catalogHidesTables`            | no             | no           | no            | yes?        | no           | no      | no       | **yes** | no          |
 | `decodedTablePath`              | **yes**        | **yes**      | yes?          | yes?        | no           | no      | no       | no      | no          |
 | `dependencyGuard`               | no             | **yes**      | no            | no          | no           | no      | no       | no      | no          |
 | `driverKeepsBigIntegers`        | **yes**        | no           | no            | no          | no           | no      | no       | no      | no          |
-| `foldsTableNameCase`            | **yes**        | no           | no            | no          | yes?         | yes?    | yes?     | no      | yes?        |
+| `foldsTableNameCase`            | **yes**        | no           | no            | no          | yes?         | **yes** | yes?     | no      | yes?        |
 | `incrementalSourceRange`        | no             | **yes**      | yes?          | yes?        | no           | no      | no       | no      | no          |
 | `incrementalTargetDml`          | **yes**        | **yes**      | yes?          | yes?        | no           | no      | no       | no      | no          |
 | `leafBudget`                    | **120**        | **50**       | 120?          | 120?        | 120?         | 50      | 50       | 50      | 115?        |
@@ -1674,9 +1674,9 @@ Publisher decides what it may build, refresh and serve on a warehouse by one tab
 | `onlyBigIntegerType`            | none           | none         | `INT64`?      | none        | none         | none    | none     | none    | none        |
 | `pairDelta`                     | **yes**        | no           | no            | no          | no           | no      | no       | no      | no          |
 | `passthroughNumericAsDouble`    | no             | **yes**      | no            | no          | no           | no      | no       | no      | no          |
-| `relationProbe`                 | **yes**        | **yes**      | yes?          | yes?        | yes?         | yes?    | no       | no      | yes?        |
+| `relationProbe`                 | **yes**        | **yes**      | yes?          | yes?        | yes?         | **yes** | no       | no      | yes?        |
 | `stringCollation`               | **`instance`** | **`column`** | `dataset`?    | none        | none         | none    | none     | none    | none        |
-| `tableOwnership`                | **yes**        | **yes**      | yes?          | yes?        | yes?         | yes?    | yes?     | yes?    | yes?        |
+| `tableOwnership`                | **yes**        | **yes**      | yes?          | yes?        | yes?         | **yes** | yes?     | **yes** | yes?        |
 | `transactionalSwap`             | **yes**        | **yes**      | no            | no          | no           | no      | no       | no      | no          |
 | `ungroupableTypes`              | none           | **11 types** | 4 types?      | none        | none         | none    | none     | none    | none        |
 | `utcSessions`                   | **yes**        | no           | no            | no          | no           | no      | no       | no      | no          |

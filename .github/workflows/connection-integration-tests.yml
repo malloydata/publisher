@@ -318,6 +318,18 @@ jobs:
           cd packages/server
           bun test --timeout 100000 ./src/service/materialization/run/database_native_types.spec.ts
 
+      # The MySQL and Trino rows of the capability table observed on this job's
+      # servers (their conformance specs, the probes domain/dialect_evidence.ts
+      # names): a database and a grant-limited user on MySQL, a schema in
+      # Trino's memory catalog. Skipped where these variables are unset.
+      - name: Run MySQL and Trino conformance tests
+        env:
+          PUBLISHER_TEST_MYSQL_URL: mysql://root:mysql@127.0.0.1:3306
+          PUBLISHER_TEST_TRINO_URL: http://localhost:8080
+        run: |
+          cd packages/server
+          bun test --timeout 100000 ./tests/conformance/mysql.conformance.spec.ts ./tests/conformance/trino.conformance.spec.ts
+
       # The materialization specs that skip unless a Postgres is reachable:
       # DuckLake destinations on a Postgres catalog, a Postgres warehouse's
       # native column types, cross-package tables, the v1 cutover and its

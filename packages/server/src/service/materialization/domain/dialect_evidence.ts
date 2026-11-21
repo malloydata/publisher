@@ -61,25 +61,23 @@ export const SAFE_VALUES: Readonly<Capabilities> = Object.freeze({
 
 const POSTGRES_SPEC = "tests/conformance/postgres.conformance.spec.ts";
 const DUCKDB_SPEC = "tests/conformance/duckdb.conformance.spec.ts";
+const MYSQL_SPEC = "tests/conformance/mysql.conformance.spec.ts";
+const TRINO_SPEC = "tests/conformance/trino.conformance.spec.ts";
 
 const probe = (spec: string, test: string): Evidence => ({
    probe: `${spec}#${test}`,
 });
 const pg = (test: string) => probe(POSTGRES_SPEC, test);
 const duck = (test: string) => probe(DUCKDB_SPEC, test);
+const my = (test: string) => probe(MYSQL_SPEC, test);
+const trino = (test: string) => probe(TRINO_SPEC, test);
 
 const NO_BIGQUERY = { unverified: "no BigQuery conformance spec" } as const;
 const NO_SNOWFLAKE = { unverified: "no Snowflake conformance spec" } as const;
 const NO_DATABRICKS = {
    unverified: "no Databricks engine in CI",
 } as const;
-const NO_TRINO = {
-   unverified: "no Trino conformance spec (CI has a Trino service)",
-} as const;
 const NO_PRESTO = { unverified: "no Presto engine in CI" } as const;
-const NO_MYSQL = {
-   unverified: "no MySQL conformance spec (CI has a MySQL service)",
-} as const;
 const NO_SQLSERVER = { unverified: "no SQL Server engine in CI" } as const;
 
 /** Each dialect's evidence, by capability. */
@@ -210,10 +208,16 @@ export const EVIDENCE: Readonly<
       leafBudget: NO_DATABRICKS,
    },
    trino: {
-      relationProbe: NO_TRINO,
-      tableOwnership: NO_TRINO,
-      castsToIntegerType: NO_TRINO,
-      foldsTableNameCase: NO_TRINO,
+      relationProbe: trino(
+         "relationProbe: a table's comment reads back through the relation probe",
+      ),
+      tableOwnership: trino(
+         "tableOwnership: the ownership mark's comment reads back with its location",
+      ),
+      castsToIntegerType: trino("castsToIntegerType: CAST AS BIGINT"),
+      foldsTableNameCase: trino(
+         "foldsTableNameCase: a quoted name resolves case-insensitively",
+      ),
    },
    presto: {
       tableOwnership: NO_PRESTO,
@@ -221,8 +225,13 @@ export const EVIDENCE: Readonly<
       foldsTableNameCase: NO_PRESTO,
    },
    mysql: {
-      catalogHidesTables: NO_MYSQL,
-      tableOwnership: NO_MYSQL,
+      catalogHidesTables: my(
+         "catalogHidesTables: a table the session's grants do not cover is missing from its catalog",
+      ),
+      tableOwnership: my(
+         "tableOwnership: the ownership mark's comment reads back with its location",
+      ),
+      castsToIntegerType: my("castsToIntegerType: CAST names no integer type"),
    },
    sqlserver: {
       relationProbe: NO_SQLSERVER,
