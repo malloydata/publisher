@@ -5,9 +5,7 @@
  * Attributing a `storage=` build's warehouse read and recovering what it cost:
  * the Snowflake build session aligned with Malloy's live session settings and
  * tagged with the build's query metadata, then the tag's cost read back from
- * the session history and cleared; the BigQuery split read's capability probe
- * and its bounded job-record lookup ({@link BilledReadNotCapturedError} when a
- * billed read cannot be captured). Read by the build session.
+ * the session history and cleared. Read by the build session.
  *
  * Effects: SQL in the source warehouse, through the passthrough on the build
  * session; logs and attribution-skipped counts.
@@ -126,102 +124,6 @@ export async function tagSnowflakeSession(
       // unfindable by the cost lookup, which keys on that same tag.
       recordAttributionSkipped("tag_failed");
    }
-}
-
-/**
- * Can this connection list the job records the split read depends on?
- *
- * The split locates its result table through the job listing, a permission the
- * direct `bigquery_query()` path never needs. Probing with a one-row listing
- * BEFORE the read means a missing permission costs attribution, not the build:
- * once the read has run, falling back would bill it a second time.
- *
- * Not cached: caching would have to key on credentials and survive rotation.
- */
-export async function canSplitBigQueryRead(
-   session: DuckDBConnection,
-   handle: string,
-): Promise<boolean> {
-   try {
-      await session.runSQL(
-         `SELECT job_id FROM bigquery_jobs('${escapeSQL(handle)}', maxResults := 1)`,
-      );
-      return true;
-   } catch (error) {
-      logger.warn(
-         "Cannot list BigQuery jobs for this connection, so this build's " +
-            "warehouse read will not be labelled or costed",
-         {
-            code: errorCodeOf(error),
-         },
-      );
-      recordAttributionSkipped("job_listing_unavailable");
-      return false;
-   }
-}
-
-/**
- * A build failed AFTER its warehouse read had run and been billed.
- *
- * Everything else this path throws happens before anything is charged. Here the
- * rows live in an anonymous table the build could not locate, so a retry pays
- * for the same read twice: treat it as an operator decision, not something to
- * re-drive automatically. Without the job record there are no rows to capture,
- * so this fails the build rather than degrading to "no cost".
- */
-export class BilledReadNotCapturedError extends Error {
-   constructor(message: string, options?: { cause?: unknown }) {
-      super(message, options);
-      this.name = "BilledReadNotCapturedError";
-   }
-}
-
-const BIGQUERY_LOOKUP_ATTEMPTS = 3;
-const BIGQUERY_LOOKUP_BACKOFF_MS = 250;
-
-/**
- * Re-ask for the job record a few times before failing a build whose read has
- * already been billed. The capability probe showed this connection CAN list
- * jobs, so a failure here is likely transient (5xx, quota, rotated credential).
- * Bounded and short: the session still holds federated credentials, and a
- * warehouse that is down should fail the build rather than stall it.
- */
-export async function withBigQueryLookupRetry<T>(
-   work: () => Promise<T>,
-   /** Named in the terminal error: the only handle on a read that was paid for. */
-   parentJobId: string,
-): Promise<T> {
-   let lastError: unknown;
-   for (let attempt = 1; attempt <= BIGQUERY_LOOKUP_ATTEMPTS; attempt++) {
-      try {
-         return await work();
-      } catch (error) {
-         lastError = error;
-         if (attempt < BIGQUERY_LOOKUP_ATTEMPTS) {
-            logger.warn(
-               "Could not read the BigQuery job record for a build's read; retrying",
-               {
-                  attempt,
-                  of: BIGQUERY_LOOKUP_ATTEMPTS,
-                  parentJobId,
-                  code: errorCodeOf(error),
-               },
-            );
-            await new Promise((resolve) =>
-               setTimeout(resolve, BIGQUERY_LOOKUP_BACKOFF_MS * attempt),
-            );
-         }
-      }
-   }
-   // Names the parent job: it is an operator's only handle on the billed read,
-   // since a script's child job is absent from the default listing.
-   throw new BilledReadNotCapturedError(
-      `Could not read the BigQuery job record for a build's read (parent job ` +
-         `${parentJobId}) after ${BIGQUERY_LOOKUP_ATTEMPTS} attempts, so its ` +
-         `rows cannot be captured: ` +
-         `${lastError instanceof Error ? lastError.message : String(lastError)}`,
-      { cause: lastError },
-   );
 }
 
 /**

@@ -28,7 +28,7 @@ import {
    wrapPassthrough,
 } from "./materialization_build_session";
 import type { BuildReadCost } from "./build_read_cost";
-import { markBigQueryRead } from "./bigquery_job_cancel";
+import { passthroughBuildOf } from "./passthrough_build";
 import type { FederatedSourceType } from "../../dialects";
 import type { QueryMetadata } from "../../query_metadata";
 import { quoteIdentifier } from "../../quoting";
@@ -176,7 +176,7 @@ function storageWindowRows(params: {
    watermarkColumn: string;
    queryMetadata?: QueryMetadata;
 }): Pick<DeltaTarget, "windowRows"> {
-   if (params.sourceType === "bigquery") return {};
+   if (passthroughBuildOf(params.sourceType)?.windowRows === false) return {};
    const sourceDialect = params.persistSource.dialectName;
    return {
       windowRows: async (start, end, columns) => {
@@ -363,14 +363,13 @@ export function storageDeltaTarget(params: {
             // PostgresConnection row rewrite, which this DuckDB session lacks.
             // Wrapping would make every probe read undefined and seed forever.
             try {
+               // Marked where the engine marks its reads (BigQuery's, so a
+               // cancel finds the job); unlabelled, as no metadata is passed.
+               const prepared = await passthroughBuildOf(
+                  sourceType,
+               )?.prepareRead(session, handle, inner);
                const result = await session.runSQL(
-                  wrapPassthrough(
-                     sourceType,
-                     handle,
-                     sourceType === "bigquery"
-                        ? markBigQueryRead(session, inner)
-                        : inner,
-                  ),
+                  wrapPassthrough(sourceType, handle, prepared?.sql ?? inner),
                );
                const rows = (result?.rows ?? []) as Record<string, unknown>[];
                const raw = rows[0]?.["watermark_max"];

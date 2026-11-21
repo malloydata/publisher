@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as sinon from "sinon";
 import { logger } from "../../../logger";
 import { issuePassthroughRead } from "./materialization_build_session";
-import { BilledReadNotCapturedError } from "./build_attribution";
+import { BilledReadNotCapturedError } from "./passthrough/bigquery";
 
 /**
  * A labelled BigQuery read runs as a script, and its rows sit in an anonymous

@@ -1,0 +1,1174 @@
+{
+  "postgres: plain": {
+    "outcome": {
+      "schema": [
+        "amount DECIMAL(38,1)",
+        "s VARCHAR",
+        "b BLOB"
+      ],
+      "rowCount": 1,
+      "readCost": null
+    },
+    "statements": [
+      "SELECT current_setting('lock_configuration') AS v",
+      "SELECT current_setting('enable_external_access') AS v",
+      "SELECT extension_name FROM duckdb_extensions() WHERE loaded",
+      "SET GLOBAL enable_global_s3_configuration=false",
+      "SET GLOBAL s3_access_key_id=''",
+      "SET GLOBAL s3_secret_access_key=''",
+      "SET GLOBAL s3_session_token=''",
+      "LOAD excel",
+      "SELECT current_setting('temp_directory') AS v",
+      "SET autoinstall_known_extensions=false",
+      "SET autoload_known_extensions=false",
+      "SELECT count(*) FROM duckdb_secrets()",
+      "SET allowed_directories=['<tmp>','<tmp>']",
+      "SET enable_external_access=false",
+      "DESCRIBE (SELECT * FROM postgres_query('h''q', 'SELECT 1.5::DOUBLE AS amount, ''x'' AS s, ''\\x01''::BLOB AS b'))",
+      "SELECT * FROM postgres_query('h''q', 'SELECT (SELECT coalesce(nullif(typbasetype, 0), oid)::regtype::text FROM pg_type WHERE oid = pg_typeof(q.\"amount\")) AS t0 FROM (SELECT 1) AS one LEFT JOIN (SELECT * FROM (\nSELECT 1.5::DOUBLE AS amount, ''x'' AS s, ''\\x01''::BLOB AS b\n) AS b LIMIT 0) AS q ON true')",
+      "CREATE OR REPLACE TEMP TABLE \"__numeric_text_stage\" AS SELECT * FROM postgres_query('h''q', 'SELECT \"amount\"::text AS \"amount\", \"s\", \"b\" FROM (\nSELECT 1.5::DOUBLE AS amount, ''x'' AS s, ''\\x01''::BLOB AS b\n) AS __numeric_text')",
+      "SELECT max(CASE WHEN regexp_full_match(\"amount\", '^-?[0-9]+(\\.[0-9]*)?$') THEN length(ltrim(split_part(ltrim(\"amount\", '-'), '.', 1), '0')) END) AS i0, max(CASE WHEN regexp_full_match(\"amount\", '^-?[0-9]+(\\.[0-9]*)?$') THEN length(rtrim(split_part(\"amount\", '.', 2), '0')) END) AS s0, count(*) FILTER (WHERE \"amount\" IS NOT NULL AND NOT regexp_full_match(\"amount\", '^-?[0-9]+(\\.[0-9]*)?$')) AS n0 FROM temp.main.\"__numeric_text_stage\"",
+      "BEGIN TRANSACTION",
+      "CREATE OR REPLACE TABLE \"lake\".\"t\" AS (SELECT * REPLACE (CAST(\"s\" AS VARCHAR) AS \"s\") FROM (\nSELECT * REPLACE (CAST(\"amount\" AS DECIMAL(38,1)) AS \"amount\") FROM temp.main.\"__numeric_text_stage\"\n) AS __declared_types)",
+      "DESCRIBE \"lake\".\"t\"",
+      "COMMIT",
+      "DROP TABLE IF EXISTS temp.main.\"__numeric_text_stage\"",
+      "SELECT count(*) AS n FROM \"lake\".\"t\""
+    ]
+  },
+  "postgres: tagged": {
+    "outcome": {
+      "schema": [
+        "amount DECIMAL(38,1)",
+        "s VARCHAR",
+        "b BLOB"
+      ],
+      "rowCount": 1,
+      "readCost": null
+    },
+    "statements": [
+      "SELECT current_setting('lock_configuration') AS v",
+      "SELECT current_setting('enable_external_access') AS v",
+      "SELECT extension_name FROM duckdb_extensions() WHERE loaded",
+      "SET GLOBAL enable_global_s3_configuration=false",
+      "SET GLOBAL s3_access_key_id=''",
+      "SET GLOBAL s3_secret_access_key=''",
+      "SET GLOBAL s3_session_token=''",
+      "LOAD excel",
+      "SELECT current_setting('temp_directory') AS v",
+      "SET autoinstall_known_extensions=false",
+      "SET autoload_known_extensions=false",
+      "SELECT count(*) FROM duckdb_secrets()",
+      "SET allowed_directories=['<tmp>','<tmp>']",
+      "SET enable_external_access=false",
+      "DESCRIBE (SELECT * FROM postgres_query('h''q', 'SELECT 1.5::DOUBLE AS amount, ''x'' AS s, ''\\x01''::BLOB AS b'))",
+      "SELECT * FROM postgres_query('h''q', 'SELECT (SELECT coalesce(nullif(typbasetype, 0), oid)::regtype::text FROM pg_type WHERE oid = pg_typeof(q.\"amount\")) AS t0 FROM (SELECT 1) AS one LEFT JOIN (SELECT * FROM (\nSELECT 1.5::DOUBLE AS amount, ''x'' AS s, ''\\x01''::BLOB AS b\n) AS b LIMIT 0) AS q ON true')",
+      "CREATE OR REPLACE TEMP TABLE \"__numeric_text_stage\" AS SELECT * FROM postgres_query('h''q', 'SELECT \"amount\"::text AS \"amount\", \"s\", \"b\" FROM (\nSELECT 1.5::DOUBLE AS amount, ''x'' AS s, ''\\x01''::BLOB AS b\n) AS __numeric_text')",
+      "SELECT max(CASE WHEN regexp_full_match(\"amount\", '^-?[0-9]+(\\.[0-9]*)?$') THEN length(ltrim(split_part(ltrim(\"amount\", '-'), '.', 1), '0')) END) AS i0, max(CASE WHEN regexp_full_match(\"amount\", '^-?[0-9]+(\\.[0-9]*)?$') THEN length(rtrim(split_part(\"amount\", '.', 2), '0')) END) AS s0, count(*) FILTER (WHERE \"amount\" IS NOT NULL AND NOT regexp_full_match(\"amount\", '^-?[0-9]+(\\.[0-9]*)?$')) AS n0 FROM temp.main.\"__numeric_text_stage\"",
+      "BEGIN TRANSACTION",
+      "CREATE OR REPLACE TABLE \"lake\".\"t\" AS (SELECT * REPLACE (CAST(\"s\" AS VARCHAR) AS \"s\") FROM (\nSELECT * REPLACE (CAST(\"amount\" AS DECIMAL(38,1)) AS \"amount\") FROM temp.main.\"__numeric_text_stage\"\n) AS __declared_types)",
+      "DESCRIBE \"lake\".\"t\"",
+      "COMMIT",
+      "DROP TABLE IF EXISTS temp.main.\"__numeric_text_stage\"",
+      "SELECT count(*) AS n FROM \"lake\".\"t\""
+    ]
+  },
+  "postgres: tagged, no job listing": {
+    "outcome": {
+      "schema": [
+        "amount DECIMAL(38,1)",
+        "s VARCHAR",
+        "b BLOB"
+      ],
+      "rowCount": 1,
+      "readCost": null
+    },
+    "statements": [
+      "SELECT current_setting('lock_configuration') AS v",
+      "SELECT current_setting('enable_external_access') AS v",
+      "SELECT extension_name FROM duckdb_extensions() WHERE loaded",
+      "SET GLOBAL enable_global_s3_configuration=false",
+      "SET GLOBAL s3_access_key_id=''",
+      "SET GLOBAL s3_secret_access_key=''",
+      "SET GLOBAL s3_session_token=''",
+      "LOAD excel",
+      "SELECT current_setting('temp_directory') AS v",
+      "SET autoinstall_known_extensions=false",
+      "SET autoload_known_extensions=false",
+      "SELECT count(*) FROM duckdb_secrets()",
+      "SET allowed_directories=['<tmp>','<tmp>']",
+      "SET enable_external_access=false",
+      "DESCRIBE (SELECT * FROM postgres_query('h''q', 'SELECT 1.5::DOUBLE AS amount, ''x'' AS s, ''\\x01''::BLOB AS b'))",
+      "SELECT * FROM postgres_query('h''q', 'SELECT (SELECT coalesce(nullif(typbasetype, 0), oid)::regtype::text FROM pg_type WHERE oid = pg_typeof(q.\"amount\")) AS t0 FROM (SELECT 1) AS one LEFT JOIN (SELECT * FROM (\nSELECT 1.5::DOUBLE AS amount, ''x'' AS s, ''\\x01''::BLOB AS b\n) AS b LIMIT 0) AS q ON true')",
+      "CREATE OR REPLACE TEMP TABLE \"__numeric_text_stage\" AS SELECT * FROM postgres_query('h''q', 'SELECT \"amount\"::text AS \"amount\", \"s\", \"b\" FROM (\nSELECT 1.5::DOUBLE AS amount, ''x'' AS s, ''\\x01''::BLOB AS b\n) AS __numeric_text')",
+      "SELECT max(CASE WHEN regexp_full_match(\"amount\", '^-?[0-9]+(\\.[0-9]*)?$') THEN length(ltrim(split_part(ltrim(\"amount\", '-'), '.', 1), '0')) END) AS i0, max(CASE WHEN regexp_full_match(\"amount\", '^-?[0-9]+(\\.[0-9]*)?$') THEN length(rtrim(split_part(\"amount\", '.', 2), '0')) END) AS s0, count(*) FILTER (WHERE \"amount\" IS NOT NULL AND NOT regexp_full_match(\"amount\", '^-?[0-9]+(\\.[0-9]*)?$')) AS n0 FROM temp.main.\"__numeric_text_stage\"",
+      "BEGIN TRANSACTION",
+      "CREATE OR REPLACE TABLE \"lake\".\"t\" AS (SELECT * REPLACE (CAST(\"s\" AS VARCHAR) AS \"s\") FROM (\nSELECT * REPLACE (CAST(\"amount\" AS DECIMAL(38,1)) AS \"amount\") FROM temp.main.\"__numeric_text_stage\"\n) AS __declared_types)",
+      "DESCRIBE \"lake\".\"t\"",
+      "COMMIT",
+      "DROP TABLE IF EXISTS temp.main.\"__numeric_text_stage\"",
+      "SELECT count(*) AS n FROM \"lake\".\"t\""
+    ]
+  },
+  "postgres: cancelled at its read": {
+    "outcome": {
+      "schema": [
+        "amount DECIMAL(38,1)",
+        "s VARCHAR",
+        "b BLOB"
+      ],
+      "rowCount": 1,
+      "readCost": null
+    },
+    "statements": [
+      "SELECT current_setting('lock_configuration') AS v",
+      "SELECT current_setting('enable_external_access') AS v",
+      "SELECT extension_name FROM duckdb_extensions() WHERE loaded",
+      "SET GLOBAL enable_global_s3_configuration=false",
+      "SET GLOBAL s3_access_key_id=''",
+      "SET GLOBAL s3_secret_access_key=''",
+      "SET GLOBAL s3_session_token=''",
+      "LOAD excel",
+      "SELECT current_setting('temp_directory') AS v",
+      "SET autoinstall_known_extensions=false",
+      "SET autoload_known_extensions=false",
+      "SELECT count(*) FROM duckdb_secrets()",
+      "SET allowed_directories=['<tmp>','<tmp>']",
+      "SET enable_external_access=false",
+      "DESCRIBE (SELECT * FROM postgres_query('h''q', 'SELECT 1.5::DOUBLE AS amount, ''x'' AS s, ''\\x01''::BLOB AS b'))",
+      "SELECT * FROM postgres_query('h''q', 'SELECT (SELECT coalesce(nullif(typbasetype, 0), oid)::regtype::text FROM pg_type WHERE oid = pg_typeof(q.\"amount\")) AS t0 FROM (SELECT 1) AS one LEFT JOIN (SELECT * FROM (\nSELECT 1.5::DOUBLE AS amount, ''x'' AS s, ''\\x01''::BLOB AS b\n) AS b LIMIT 0) AS q ON true')",
+      "CREATE OR REPLACE TEMP TABLE \"__numeric_text_stage\" AS SELECT * FROM postgres_query('h''q', 'SELECT \"amount\"::text AS \"amount\", \"s\", \"b\" FROM (\nSELECT 1.5::DOUBLE AS amount, ''x'' AS s, ''\\x01''::BLOB AS b\n) AS __numeric_text')",
+      "SELECT max(CASE WHEN regexp_full_match(\"amount\", '^-?[0-9]+(\\.[0-9]*)?$') THEN length(ltrim(split_part(ltrim(\"amount\", '-'), '.', 1), '0')) END) AS i0, max(CASE WHEN regexp_full_match(\"amount\", '^-?[0-9]+(\\.[0-9]*)?$') THEN length(rtrim(split_part(\"amount\", '.', 2), '0')) END) AS s0, count(*) FILTER (WHERE \"amount\" IS NOT NULL AND NOT regexp_full_match(\"amount\", '^-?[0-9]+(\\.[0-9]*)?$')) AS n0 FROM temp.main.\"__numeric_text_stage\"",
+      "BEGIN TRANSACTION",
+      "CREATE OR REPLACE TABLE \"lake\".\"t\" AS (SELECT * REPLACE (CAST(\"s\" AS VARCHAR) AS \"s\") FROM (\nSELECT * REPLACE (CAST(\"amount\" AS DECIMAL(38,1)) AS \"amount\") FROM temp.main.\"__numeric_text_stage\"\n) AS __declared_types)",
+      "DESCRIBE \"lake\".\"t\"",
+      "COMMIT",
+      "DROP TABLE IF EXISTS temp.main.\"__numeric_text_stage\"",
+      "SELECT count(*) AS n FROM \"lake\".\"t\""
+    ]
+  },
+  "postgres: snowflake session refuses UTC": {
+    "outcome": {
+      "schema": [
+        "amount DECIMAL(38,1)",
+        "s VARCHAR",
+        "b BLOB"
+      ],
+      "rowCount": 1,
+      "readCost": null
+    },
+    "statements": [
+      "SELECT current_setting('lock_configuration') AS v",
+      "SELECT current_setting('enable_external_access') AS v",
+      "SELECT extension_name FROM duckdb_extensions() WHERE loaded",
+      "SET GLOBAL enable_global_s3_configuration=false",
+      "SET GLOBAL s3_access_key_id=''",
+      "SET GLOBAL s3_secret_access_key=''",
+      "SET GLOBAL s3_session_token=''",
+      "LOAD excel",
+      "SELECT current_setting('temp_directory') AS v",
+      "SET autoinstall_known_extensions=false",
+      "SET autoload_known_extensions=false",
+      "SELECT count(*) FROM duckdb_secrets()",
+      "SET allowed_directories=['<tmp>','<tmp>']",
+      "SET enable_external_access=false",
+      "DESCRIBE (SELECT * FROM postgres_query('h''q', 'SELECT 1.5::DOUBLE AS amount, ''x'' AS s, ''\\x01''::BLOB AS b'))",
+      "SELECT * FROM postgres_query('h''q', 'SELECT (SELECT coalesce(nullif(typbasetype, 0), oid)::regtype::text FROM pg_type WHERE oid = pg_typeof(q.\"amount\")) AS t0 FROM (SELECT 1) AS one LEFT JOIN (SELECT * FROM (\nSELECT 1.5::DOUBLE AS amount, ''x'' AS s, ''\\x01''::BLOB AS b\n) AS b LIMIT 0) AS q ON true')",
+      "CREATE OR REPLACE TEMP TABLE \"__numeric_text_stage\" AS SELECT * FROM postgres_query('h''q', 'SELECT \"amount\"::text AS \"amount\", \"s\", \"b\" FROM (\nSELECT 1.5::DOUBLE AS amount, ''x'' AS s, ''\\x01''::BLOB AS b\n) AS __numeric_text')",
+      "SELECT max(CASE WHEN regexp_full_match(\"amount\", '^-?[0-9]+(\\.[0-9]*)?$') THEN length(ltrim(split_part(ltrim(\"amount\", '-'), '.', 1), '0')) END) AS i0, max(CASE WHEN regexp_full_match(\"amount\", '^-?[0-9]+(\\.[0-9]*)?$') THEN length(rtrim(split_part(\"amount\", '.', 2), '0')) END) AS s0, count(*) FILTER (WHERE \"amount\" IS NOT NULL AND NOT regexp_full_match(\"amount\", '^-?[0-9]+(\\.[0-9]*)?$')) AS n0 FROM temp.main.\"__numeric_text_stage\"",
+      "BEGIN TRANSACTION",
+      "CREATE OR REPLACE TABLE \"lake\".\"t\" AS (SELECT * REPLACE (CAST(\"s\" AS VARCHAR) AS \"s\") FROM (\nSELECT * REPLACE (CAST(\"amount\" AS DECIMAL(38,1)) AS \"amount\") FROM temp.main.\"__numeric_text_stage\"\n) AS __declared_types)",
+      "DESCRIBE \"lake\".\"t\"",
+      "COMMIT",
+      "DROP TABLE IF EXISTS temp.main.\"__numeric_text_stage\"",
+      "SELECT count(*) AS n FROM \"lake\".\"t\""
+    ]
+  },
+  "postgres: incremental": {
+    "outcome": {
+      "schema": [
+        "amount DECIMAL(38,1)",
+        "s VARCHAR",
+        "b BLOB"
+      ],
+      "rowCount": 1,
+      "readCost": null
+    },
+    "statements": [
+      "SELECT current_setting('lock_configuration') AS v",
+      "SELECT current_setting('enable_external_access') AS v",
+      "SELECT extension_name FROM duckdb_extensions() WHERE loaded",
+      "SET GLOBAL enable_global_s3_configuration=false",
+      "SET GLOBAL s3_access_key_id=''",
+      "SET GLOBAL s3_secret_access_key=''",
+      "SET GLOBAL s3_session_token=''",
+      "LOAD excel",
+      "SELECT current_setting('temp_directory') AS v",
+      "SET autoinstall_known_extensions=false",
+      "SET autoload_known_extensions=false",
+      "SELECT count(*) FROM duckdb_secrets()",
+      "SET allowed_directories=['<tmp>','<tmp>']",
+      "SET enable_external_access=false",
+      "SELECT * FROM postgres_query('h''q', 'SELECT MAX(\"amount\") AS \"watermark_max\" FROM (SELECT 1.5::DOUBLE AS amount, ''x'' AS s, ''\\x01''::BLOB AS b) AS __w')",
+      "DESCRIBE \"lake\".\"t\"",
+      "DESCRIBE (SELECT * FROM postgres_query('h''q', 'SELECT 1.5::DOUBLE AS amount, ''x'' AS s, ''\\x01''::BLOB AS b'))",
+      "SELECT * FROM postgres_query('h''q', 'SELECT (SELECT coalesce(nullif(typbasetype, 0), oid)::regtype::text FROM pg_type WHERE oid = pg_typeof(q.\"amount\")) AS t0 FROM (SELECT 1) AS one LEFT JOIN (SELECT * FROM (\nSELECT 1.5::DOUBLE AS amount, ''x'' AS s, ''\\x01''::BLOB AS b\n) AS b LIMIT 0) AS q ON true')",
+      "CREATE OR REPLACE TEMP TABLE \"__numeric_text_stage\" AS SELECT * FROM postgres_query('h''q', 'SELECT \"amount\"::text AS \"amount\", \"s\", \"b\" FROM (\nSELECT 1.5::DOUBLE AS amount, ''x'' AS s, ''\\x01''::BLOB AS b\n) AS __numeric_text')",
+      "SELECT max(CASE WHEN regexp_full_match(\"amount\", '^-?[0-9]+(\\.[0-9]*)?$') THEN length(ltrim(split_part(ltrim(\"amount\", '-'), '.', 1), '0')) END) AS i0, max(CASE WHEN regexp_full_match(\"amount\", '^-?[0-9]+(\\.[0-9]*)?$') THEN length(rtrim(split_part(\"amount\", '.', 2), '0')) END) AS s0, count(*) FILTER (WHERE \"amount\" IS NOT NULL AND NOT regexp_full_match(\"amount\", '^-?[0-9]+(\\.[0-9]*)?$')) AS n0 FROM temp.main.\"__numeric_text_stage\"",
+      "BEGIN TRANSACTION",
+      "CREATE OR REPLACE TABLE \"lake\".\"t\" AS (SELECT * REPLACE (CAST(\"s\" AS VARCHAR) AS \"s\") FROM (\nSELECT * REPLACE (CAST(\"amount\" AS DECIMAL(38,1)) AS \"amount\") FROM temp.main.\"__numeric_text_stage\"\n) AS __declared_types)",
+      "DESCRIBE \"lake\".\"t\"",
+      "COMMIT",
+      "DROP TABLE IF EXISTS temp.main.\"__numeric_text_stage\"",
+      "SELECT count(*) AS n FROM \"lake\".\"t\""
+    ],
+    "incremental": {
+      "windowRows": true,
+      "frontier": {
+        "value": {
+          "bound": {
+            "malloyType": "number",
+            "value": "1.5"
+          }
+        }
+      },
+      "numericStoredAsDouble": {
+        "value": []
+      },
+      "window": {
+        "value": "SELECT * FROM postgres_query('h''q', 'SELECT \"amount\" FROM (SELECT \"amount\", \"s\", \"b\" FROM (SELECT * FROM (SELECT 1.5::DOUBLE AS amount, ''x'' AS s, ''\\x01''::BLOB AS b) AS __d WHERE \"amount\" >= 1 AND \"amount\" < 2) AS __public) AS __c')"
+      }
+    }
+  },
+  "bigquery: plain": {
+    "outcome": {
+      "schema": [
+        "amount DOUBLE",
+        "s VARCHAR",
+        "b VARCHAR"
+      ],
+      "rowCount": 1,
+      "readCost": null
+    },
+    "statements": [
+      "SELECT current_setting('lock_configuration') AS v",
+      "SELECT current_setting('enable_external_access') AS v",
+      "SELECT extension_name FROM duckdb_extensions() WHERE loaded",
+      "SET GLOBAL enable_global_s3_configuration=false",
+      "SET GLOBAL s3_access_key_id=''",
+      "SET GLOBAL s3_secret_access_key=''",
+      "SET GLOBAL s3_session_token=''",
+      "LOAD excel",
+      "SELECT current_setting('temp_directory') AS v",
+      "SET autoinstall_known_extensions=false",
+      "SET autoload_known_extensions=false",
+      "SELECT count(*) FROM duckdb_secrets()",
+      "SET allowed_directories=['<tmp>','<tmp>']",
+      "SET enable_external_access=false",
+      "BEGIN TRANSACTION",
+      "CREATE OR REPLACE TABLE \"lake\".\"t\" AS (SELECT * REPLACE (CAST(\"s\" AS VARCHAR) AS \"s\", CAST(\"b\" AS VARCHAR) AS \"b\") FROM (\nSELECT * FROM bigquery_query('h''q', 'SELECT 1.5::DOUBLE AS amount, ''x'' AS s, ''\\x01''::BLOB AS b')\n) AS __declared_types)",
+      "DESCRIBE \"lake\".\"t\"",
+      "COMMIT",
+      "SELECT count(*) AS n FROM \"lake\".\"t\""
+    ]
+  },
+  "bigquery: tagged": {
+    "outcome": {
+      "schema": [
+        "amount DOUBLE",
+        "s VARCHAR",
+        "b VARCHAR"
+      ],
+      "rowCount": 1,
+      "readCost": {
+        "engine": "bigquery",
+        "jobId": "child-1",
+        "parentJobId": "parent-1",
+        "bytesScanned": 100,
+        "bytesBilled": 10485760,
+        "slotTimeMs": 7,
+        "executionTimeMs": null,
+        "cacheHit": false
+      }
+    },
+    "statements": [
+      "SELECT current_setting('lock_configuration') AS v",
+      "SELECT current_setting('enable_external_access') AS v",
+      "SELECT extension_name FROM duckdb_extensions() WHERE loaded",
+      "SET GLOBAL enable_global_s3_configuration=false",
+      "SET GLOBAL s3_access_key_id=''",
+      "SET GLOBAL s3_secret_access_key=''",
+      "SET GLOBAL s3_session_token=''",
+      "LOAD excel",
+      "SELECT current_setting('temp_directory') AS v",
+      "SET autoinstall_known_extensions=false",
+      "SET autoload_known_extensions=false",
+      "SELECT count(*) FROM duckdb_secrets()",
+      "SET allowed_directories=['<tmp>','<tmp>']",
+      "SET enable_external_access=false",
+      "SELECT job_id FROM bigquery_jobs('h''q', maxResults := 1)",
+      "SELECT * FROM bigquery_execute('h''q', 'SET @@query_label = \"team:x,job:nightly\";\n/* publisher_build:<uuid> */\nSELECT 1.5::DOUBLE AS amount, ''x'' AS s, ''\\x01''::BLOB AS b;')",
+      "\n      SELECT job_id,\n             json_extract_string(configuration, '$.query.destinationTable.projectId') AS project,\n             json_extract_string(configuration, '$.query.destinationTable.datasetId') AS dataset,\n             json_extract_string(configuration, '$.query.destinationTable.tableId')   AS table,\n             \n   total_slot_time_ms,\n   json_extract_string(statistics, '$.query.totalBytesProcessed') AS bytes_processed,\n   json_extract_string(statistics, '$.query.totalBytesBilled')    AS bytes_billed,\n   json_extract_string(statistics, '$.query.cacheHit')            AS cache_hit\n      FROM (SELECT * FROM bigquery_jobs('h''q',\n                                        parentJobId := 'parent-1')\n            WHERE job_type = 'QUERY')\n      ORDER BY creation_time DESC",
+      "BEGIN TRANSACTION",
+      "CREATE OR REPLACE TABLE \"lake\".\"t\" AS (SELECT * REPLACE (CAST(\"s\" AS VARCHAR) AS \"s\", CAST(\"b\" AS VARCHAR) AS \"b\") FROM (\nSELECT * FROM bigquery_scan('proj._anon.result')\n) AS __declared_types)",
+      "DESCRIBE \"lake\".\"t\"",
+      "COMMIT",
+      "SELECT count(*) AS n FROM \"lake\".\"t\""
+    ]
+  },
+  "bigquery: tagged, no job listing": {
+    "outcome": {
+      "schema": [
+        "amount DOUBLE",
+        "s VARCHAR",
+        "b VARCHAR"
+      ],
+      "rowCount": 1,
+      "readCost": null
+    },
+    "statements": [
+      "SELECT current_setting('lock_configuration') AS v",
+      "SELECT current_setting('enable_external_access') AS v",
+      "SELECT extension_name FROM duckdb_extensions() WHERE loaded",
+      "SET GLOBAL enable_global_s3_configuration=false",
+      "SET GLOBAL s3_access_key_id=''",
+      "SET GLOBAL s3_secret_access_key=''",
+      "SET GLOBAL s3_session_token=''",
+      "LOAD excel",
+      "SELECT current_setting('temp_directory') AS v",
+      "SET autoinstall_known_extensions=false",
+      "SET autoload_known_extensions=false",
+      "SELECT count(*) FROM duckdb_secrets()",
+      "SET allowed_directories=['<tmp>','<tmp>']",
+      "SET enable_external_access=false",
+      "SELECT job_id FROM bigquery_jobs('h''q', maxResults := 1)",
+      "BEGIN TRANSACTION",
+      "CREATE OR REPLACE TABLE \"lake\".\"t\" AS (SELECT * REPLACE (CAST(\"s\" AS VARCHAR) AS \"s\", CAST(\"b\" AS VARCHAR) AS \"b\") FROM (\nSELECT * FROM bigquery_query('h''q', 'SELECT 1.5::DOUBLE AS amount, ''x'' AS s, ''\\x01''::BLOB AS b')\n) AS __declared_types)",
+      "DESCRIBE \"lake\".\"t\"",
+      "COMMIT",
+      "SELECT count(*) AS n FROM \"lake\".\"t\""
+    ]
+  },
+  "bigquery: cancelled at its read": {
+    "outcome": {
+      "error": "Build cancelled",
+      "name": "BuildCancelledError"
+    },
+    "statements": [
+      "SELECT current_setting('lock_configuration') AS v",
+      "SELECT current_setting('enable_external_access') AS v",
+      "SELECT extension_name FROM duckdb_extensions() WHERE loaded",
+      "SET GLOBAL enable_global_s3_configuration=false",
+      "SET GLOBAL s3_access_key_id=''",
+      "SET GLOBAL s3_secret_access_key=''",
+      "SET GLOBAL s3_session_token=''",
+      "LOAD excel",
+      "SELECT current_setting('temp_directory') AS v",
+      "SET autoinstall_known_extensions=false",
+      "SET autoload_known_extensions=false",
+      "SELECT count(*) FROM duckdb_secrets()",
+      "SET allowed_directories=['<tmp>','<tmp>']",
+      "SET enable_external_access=false",
+      "BEGIN TRANSACTION",
+      "CREATE OR REPLACE TABLE \"lake\".\"t\" AS (SELECT * REPLACE (CAST(\"s\" AS VARCHAR) AS \"s\", CAST(\"b\" AS VARCHAR) AS \"b\") FROM (\nSELECT * FROM bigquery_query('h''q', '/* publisher_build:<uuid> */\nSELECT 1.5::DOUBLE AS amount, ''x'' AS s, ''\\x01''::BLOB AS b')\n) AS __declared_types)",
+      "ROLLBACK"
+    ],
+    "listed": [
+      {
+        "projectId": "h'q",
+        "key": "{}"
+      }
+    ],
+    "cancelled": [
+      "job-3"
+    ]
+  },
+  "bigquery: snowflake session refuses UTC": {
+    "outcome": {
+      "schema": [
+        "amount DOUBLE",
+        "s VARCHAR",
+        "b VARCHAR"
+      ],
+      "rowCount": 1,
+      "readCost": {
+        "engine": "bigquery",
+        "jobId": "child-1",
+        "parentJobId": "parent-1",
+        "bytesScanned": 100,
+        "bytesBilled": 10485760,
+        "slotTimeMs": 7,
+        "executionTimeMs": null,
+        "cacheHit": false
+      }
+    },
+    "statements": [
+      "SELECT current_setting('lock_configuration') AS v",
+      "SELECT current_setting('enable_external_access') AS v",
+      "SELECT extension_name FROM duckdb_extensions() WHERE loaded",
+      "SET GLOBAL enable_global_s3_configuration=false",
+      "SET GLOBAL s3_access_key_id=''",
+      "SET GLOBAL s3_secret_access_key=''",
+      "SET GLOBAL s3_session_token=''",
+      "LOAD excel",
+      "SELECT current_setting('temp_directory') AS v",
+      "SET autoinstall_known_extensions=false",
+      "SET autoload_known_extensions=false",
+      "SELECT count(*) FROM duckdb_secrets()",
+      "SET allowed_directories=['<tmp>','<tmp>']",
+      "SET enable_external_access=false",
+      "SELECT job_id FROM bigquery_jobs('h''q', maxResults := 1)",
+      "SELECT * FROM bigquery_execute('h''q', 'SET @@query_label = \"team:x,job:nightly\";\nSELECT 1.5::DOUBLE AS amount, ''x'' AS s, ''\\x01''::BLOB AS b;')",
+      "\n      SELECT job_id,\n             json_extract_string(configuration, '$.query.destinationTable.projectId') AS project,\n             json_extract_string(configuration, '$.query.destinationTable.datasetId') AS dataset,\n             json_extract_string(configuration, '$.query.destinationTable.tableId')   AS table,\n             \n   total_slot_time_ms,\n   json_extract_string(statistics, '$.query.totalBytesProcessed') AS bytes_processed,\n   json_extract_string(statistics, '$.query.totalBytesBilled')    AS bytes_billed,\n   json_extract_string(statistics, '$.query.cacheHit')            AS cache_hit\n      FROM (SELECT * FROM bigquery_jobs('h''q',\n                                        parentJobId := 'parent-1')\n            WHERE job_type = 'QUERY')\n      ORDER BY creation_time DESC",
+      "BEGIN TRANSACTION",
+      "CREATE OR REPLACE TABLE \"lake\".\"t\" AS (SELECT * REPLACE (CAST(\"s\" AS VARCHAR) AS \"s\", CAST(\"b\" AS VARCHAR) AS \"b\") FROM (\nSELECT * FROM bigquery_scan('proj._anon.result')\n) AS __declared_types)",
+      "DESCRIBE \"lake\".\"t\"",
+      "COMMIT",
+      "SELECT count(*) AS n FROM \"lake\".\"t\""
+    ]
+  },
+  "bigquery: incremental": {
+    "outcome": {
+      "schema": [
+        "amount DOUBLE",
+        "s VARCHAR",
+        "b VARCHAR"
+      ],
+      "rowCount": 1,
+      "readCost": {
+        "engine": "bigquery",
+        "jobId": "child-1",
+        "parentJobId": "parent-1",
+        "bytesScanned": 100,
+        "bytesBilled": 10485760,
+        "slotTimeMs": 7,
+        "executionTimeMs": null,
+        "cacheHit": false
+      }
+    },
+    "statements": [
+      "SELECT current_setting('lock_configuration') AS v",
+      "SELECT current_setting('enable_external_access') AS v",
+      "SELECT extension_name FROM duckdb_extensions() WHERE loaded",
+      "SET GLOBAL enable_global_s3_configuration=false",
+      "SET GLOBAL s3_access_key_id=''",
+      "SET GLOBAL s3_secret_access_key=''",
+      "SET GLOBAL s3_session_token=''",
+      "LOAD excel",
+      "SELECT current_setting('temp_directory') AS v",
+      "SET autoinstall_known_extensions=false",
+      "SET autoload_known_extensions=false",
+      "SELECT count(*) FROM duckdb_secrets()",
+      "SET allowed_directories=['<tmp>','<tmp>']",
+      "SET enable_external_access=false",
+      "SELECT * FROM bigquery_query('h''q', '/* publisher_build:<uuid> */\nSELECT MAX(`amount`) AS `watermark_max` FROM (SELECT 1.5::DOUBLE AS amount, ''x'' AS s, ''\\x01''::BLOB AS b) AS __w')",
+      "SELECT job_id FROM bigquery_jobs('h''q', maxResults := 1)",
+      "SELECT * FROM bigquery_execute('h''q', 'SET @@query_label = \"team:x,job:nightly\";\n/* publisher_build:<uuid> */\nSELECT 1.5::DOUBLE AS amount, ''x'' AS s, ''\\x01''::BLOB AS b;')",
+      "\n      SELECT job_id,\n             json_extract_string(configuration, '$.query.destinationTable.projectId') AS project,\n             json_extract_string(configuration, '$.query.destinationTable.datasetId') AS dataset,\n             json_extract_string(configuration, '$.query.destinationTable.tableId')   AS table,\n             \n   total_slot_time_ms,\n   json_extract_string(statistics, '$.query.totalBytesProcessed') AS bytes_processed,\n   json_extract_string(statistics, '$.query.totalBytesBilled')    AS bytes_billed,\n   json_extract_string(statistics, '$.query.cacheHit')            AS cache_hit\n      FROM (SELECT * FROM bigquery_jobs('h''q',\n                                        parentJobId := 'parent-1')\n            WHERE job_type = 'QUERY')\n      ORDER BY creation_time DESC",
+      "BEGIN TRANSACTION",
+      "CREATE OR REPLACE TABLE \"lake\".\"t\" AS (SELECT * REPLACE (CAST(\"s\" AS VARCHAR) AS \"s\", CAST(\"b\" AS VARCHAR) AS \"b\") FROM (\nSELECT * FROM bigquery_scan('proj._anon.result')\n) AS __declared_types)",
+      "DESCRIBE \"lake\".\"t\"",
+      "COMMIT",
+      "SELECT count(*) AS n FROM \"lake\".\"t\""
+    ],
+    "incremental": {
+      "windowRows": false,
+      "frontier": {
+        "value": {
+          "error": "Parser Error: syntax error at or near \"`\"\n\nLINE 1: SELECT * FROM bigquery_query('h''q', '/* publisher_build:<uuid>...\n                      ^"
+        }
+      },
+      "numericStoredAsDouble": {
+        "value": []
+      }
+    }
+  },
+  "snowflake: plain": {
+    "outcome": {
+      "schema": [
+        "amount DOUBLE",
+        "s VARCHAR",
+        "b VARCHAR"
+      ],
+      "rowCount": 1,
+      "readCost": null
+    },
+    "statements": [
+      "SELECT current_setting('lock_configuration') AS v",
+      "SELECT current_setting('enable_external_access') AS v",
+      "SELECT extension_name FROM duckdb_extensions() WHERE loaded",
+      "SET GLOBAL enable_global_s3_configuration=false",
+      "SET GLOBAL s3_access_key_id=''",
+      "SET GLOBAL s3_secret_access_key=''",
+      "SET GLOBAL s3_session_token=''",
+      "LOAD excel",
+      "SELECT current_setting('temp_directory') AS v",
+      "SET autoinstall_known_extensions=false",
+      "SET autoload_known_extensions=false",
+      "SELECT count(*) FROM duckdb_secrets()",
+      "SET allowed_directories=['<tmp>','<tmp>']",
+      "SET enable_external_access=false",
+      "SELECT * FROM snowflake_query('ALTER SESSION SET QUOTED_IDENTIFIERS_IGNORE_CASE = FALSE', 'h''q')",
+      "SELECT * FROM snowflake_query('ALTER SESSION SET TIMEZONE = ''UTC''', 'h''q')",
+      "SELECT * FROM snowflake_query('ALTER SESSION SET WEEK_START = 7', 'h''q')",
+      "SELECT * FROM snowflake_query('SHOW PARAMETERS LIKE ''TIMEZONE'' IN SESSION', 'h''q')",
+      "SELECT * FROM snowflake_query('SHOW PARAMETERS LIKE ''WEEK_START'' IN SESSION', 'h''q')",
+      "BEGIN TRANSACTION",
+      "CREATE OR REPLACE TABLE \"lake\".\"t\" AS (SELECT * REPLACE (CAST(\"s\" AS VARCHAR) AS \"s\", CAST(\"b\" AS VARCHAR) AS \"b\") FROM (\nSELECT * FROM snowflake_query('SELECT 1.5::DOUBLE AS amount, ''x'' AS s, ''\\x01''::BLOB AS b', 'h''q')\n) AS __declared_types)",
+      "DESCRIBE \"lake\".\"t\"",
+      "COMMIT",
+      "SELECT count(*) AS n FROM \"lake\".\"t\"",
+      "SELECT * FROM snowflake_query('ALTER SESSION UNSET QUERY_TAG', 'h''q')"
+    ]
+  },
+  "snowflake: tagged": {
+    "outcome": {
+      "schema": [
+        "amount DOUBLE",
+        "s VARCHAR",
+        "b VARCHAR"
+      ],
+      "rowCount": 1,
+      "readCost": {
+        "engine": "snowflake",
+        "jobId": "sf-1",
+        "parentJobId": null,
+        "bytesScanned": 0,
+        "bytesBilled": null,
+        "slotTimeMs": null,
+        "executionTimeMs": 12,
+        "cacheHit": true
+      }
+    },
+    "statements": [
+      "SELECT current_setting('lock_configuration') AS v",
+      "SELECT current_setting('enable_external_access') AS v",
+      "SELECT extension_name FROM duckdb_extensions() WHERE loaded",
+      "SET GLOBAL enable_global_s3_configuration=false",
+      "SET GLOBAL s3_access_key_id=''",
+      "SET GLOBAL s3_secret_access_key=''",
+      "SET GLOBAL s3_session_token=''",
+      "LOAD excel",
+      "SELECT current_setting('temp_directory') AS v",
+      "SET autoinstall_known_extensions=false",
+      "SET autoload_known_extensions=false",
+      "SELECT count(*) FROM duckdb_secrets()",
+      "SET allowed_directories=['<tmp>','<tmp>']",
+      "SET enable_external_access=false",
+      "SELECT * FROM snowflake_query('ALTER SESSION SET QUOTED_IDENTIFIERS_IGNORE_CASE = FALSE', 'h''q')",
+      "SELECT * FROM snowflake_query('ALTER SESSION SET TIMEZONE = ''UTC''', 'h''q')",
+      "SELECT * FROM snowflake_query('ALTER SESSION SET WEEK_START = 7', 'h''q')",
+      "SELECT * FROM snowflake_query('SHOW PARAMETERS LIKE ''TIMEZONE'' IN SESSION', 'h''q')",
+      "SELECT * FROM snowflake_query('SHOW PARAMETERS LIKE ''WEEK_START'' IN SESSION', 'h''q')",
+      "SELECT * FROM snowflake_query('ALTER SESSION SET QUERY_TAG = ''{\"team\":\"Data Eng\",\"Team\":\"x\",\"job\":\"nightly\"}''', 'h''q')",
+      "BEGIN TRANSACTION",
+      "CREATE OR REPLACE TABLE \"lake\".\"t\" AS (SELECT * REPLACE (CAST(\"s\" AS VARCHAR) AS \"s\", CAST(\"b\" AS VARCHAR) AS \"b\") FROM (\nSELECT * FROM snowflake_query('SELECT 1.5::DOUBLE AS amount, ''x'' AS s, ''\\x01''::BLOB AS b', 'h''q')\n) AS __declared_types)",
+      "DESCRIBE \"lake\".\"t\"",
+      "COMMIT",
+      "SELECT count(*) AS n FROM \"lake\".\"t\"",
+      "SELECT * FROM snowflake_query('\n      SELECT QUERY_ID       AS \"job_id\",\n             QUERY_TEXT     AS \"query_text\",\n             BYTES_SCANNED  AS \"bytes_scanned\",\n             EXECUTION_TIME AS \"execution_time_ms\",\n             ROWS_PRODUCED  AS \"rows_produced\"\n      FROM TABLE(ANALYTICS.INFORMATION_SCHEMA.QUERY_HISTORY_BY_SESSION(\n                 RESULT_LIMIT => 10000))\n      WHERE QUERY_TAG = ''{\"team\":\"Data Eng\",\"Team\":\"x\",\"job\":\"nightly\"}''\n        AND EXECUTION_STATUS = ''SUCCESS''', 'h''q')",
+      "SELECT * FROM snowflake_query('ALTER SESSION UNSET QUERY_TAG', 'h''q')"
+    ]
+  },
+  "snowflake: tagged, no job listing": {
+    "outcome": {
+      "schema": [
+        "amount DOUBLE",
+        "s VARCHAR",
+        "b VARCHAR"
+      ],
+      "rowCount": 1,
+      "readCost": {
+        "engine": "snowflake",
+        "jobId": "sf-1",
+        "parentJobId": null,
+        "bytesScanned": 0,
+        "bytesBilled": null,
+        "slotTimeMs": null,
+        "executionTimeMs": 12,
+        "cacheHit": true
+      }
+    },
+    "statements": [
+      "SELECT current_setting('lock_configuration') AS v",
+      "SELECT current_setting('enable_external_access') AS v",
+      "SELECT extension_name FROM duckdb_extensions() WHERE loaded",
+      "SET GLOBAL enable_global_s3_configuration=false",
+      "SET GLOBAL s3_access_key_id=''",
+      "SET GLOBAL s3_secret_access_key=''",
+      "SET GLOBAL s3_session_token=''",
+      "LOAD excel",
+      "SELECT current_setting('temp_directory') AS v",
+      "SET autoinstall_known_extensions=false",
+      "SET autoload_known_extensions=false",
+      "SELECT count(*) FROM duckdb_secrets()",
+      "SET allowed_directories=['<tmp>','<tmp>']",
+      "SET enable_external_access=false",
+      "SELECT * FROM snowflake_query('ALTER SESSION SET QUOTED_IDENTIFIERS_IGNORE_CASE = FALSE', 'h''q')",
+      "SELECT * FROM snowflake_query('ALTER SESSION SET TIMEZONE = ''UTC''', 'h''q')",
+      "SELECT * FROM snowflake_query('ALTER SESSION SET WEEK_START = 7', 'h''q')",
+      "SELECT * FROM snowflake_query('SHOW PARAMETERS LIKE ''TIMEZONE'' IN SESSION', 'h''q')",
+      "SELECT * FROM snowflake_query('SHOW PARAMETERS LIKE ''WEEK_START'' IN SESSION', 'h''q')",
+      "SELECT * FROM snowflake_query('ALTER SESSION SET QUERY_TAG = ''{\"team\":\"Data Eng\",\"Team\":\"x\",\"job\":\"nightly\"}''', 'h''q')",
+      "BEGIN TRANSACTION",
+      "CREATE OR REPLACE TABLE \"lake\".\"t\" AS (SELECT * REPLACE (CAST(\"s\" AS VARCHAR) AS \"s\", CAST(\"b\" AS VARCHAR) AS \"b\") FROM (\nSELECT * FROM snowflake_query('SELECT 1.5::DOUBLE AS amount, ''x'' AS s, ''\\x01''::BLOB AS b', 'h''q')\n) AS __declared_types)",
+      "DESCRIBE \"lake\".\"t\"",
+      "COMMIT",
+      "SELECT count(*) AS n FROM \"lake\".\"t\"",
+      "SELECT * FROM snowflake_query('\n      SELECT QUERY_ID       AS \"job_id\",\n             QUERY_TEXT     AS \"query_text\",\n             BYTES_SCANNED  AS \"bytes_scanned\",\n             EXECUTION_TIME AS \"execution_time_ms\",\n             ROWS_PRODUCED  AS \"rows_produced\"\n      FROM TABLE(ANALYTICS.INFORMATION_SCHEMA.QUERY_HISTORY_BY_SESSION(\n                 RESULT_LIMIT => 10000))\n      WHERE QUERY_TAG = ''{\"team\":\"Data Eng\",\"Team\":\"x\",\"job\":\"nightly\"}''\n        AND EXECUTION_STATUS = ''SUCCESS''', 'h''q')",
+      "SELECT * FROM snowflake_query('ALTER SESSION UNSET QUERY_TAG', 'h''q')"
+    ]
+  },
+  "snowflake: cancelled at its read": {
+    "outcome": {
+      "schema": [
+        "amount DOUBLE",
+        "s VARCHAR",
+        "b VARCHAR"
+      ],
+      "rowCount": 1,
+      "readCost": null
+    },
+    "statements": [
+      "SELECT current_setting('lock_configuration') AS v",
+      "SELECT current_setting('enable_external_access') AS v",
+      "SELECT extension_name FROM duckdb_extensions() WHERE loaded",
+      "SET GLOBAL enable_global_s3_configuration=false",
+      "SET GLOBAL s3_access_key_id=''",
+      "SET GLOBAL s3_secret_access_key=''",
+      "SET GLOBAL s3_session_token=''",
+      "LOAD excel",
+      "SELECT current_setting('temp_directory') AS v",
+      "SET autoinstall_known_extensions=false",
+      "SET autoload_known_extensions=false",
+      "SELECT count(*) FROM duckdb_secrets()",
+      "SET allowed_directories=['<tmp>','<tmp>']",
+      "SET enable_external_access=false",
+      "SELECT * FROM snowflake_query('ALTER SESSION SET QUOTED_IDENTIFIERS_IGNORE_CASE = FALSE', 'h''q')",
+      "SELECT * FROM snowflake_query('ALTER SESSION SET TIMEZONE = ''UTC''', 'h''q')",
+      "SELECT * FROM snowflake_query('ALTER SESSION SET WEEK_START = 7', 'h''q')",
+      "SELECT * FROM snowflake_query('SHOW PARAMETERS LIKE ''TIMEZONE'' IN SESSION', 'h''q')",
+      "SELECT * FROM snowflake_query('SHOW PARAMETERS LIKE ''WEEK_START'' IN SESSION', 'h''q')",
+      "BEGIN TRANSACTION",
+      "CREATE OR REPLACE TABLE \"lake\".\"t\" AS (SELECT * REPLACE (CAST(\"s\" AS VARCHAR) AS \"s\", CAST(\"b\" AS VARCHAR) AS \"b\") FROM (\nSELECT * FROM snowflake_query('SELECT 1.5::DOUBLE AS amount, ''x'' AS s, ''\\x01''::BLOB AS b', 'h''q')\n) AS __declared_types)",
+      "DESCRIBE \"lake\".\"t\"",
+      "COMMIT",
+      "SELECT count(*) AS n FROM \"lake\".\"t\"",
+      "SELECT * FROM snowflake_query('ALTER SESSION UNSET QUERY_TAG', 'h''q')"
+    ]
+  },
+  "snowflake: snowflake session refuses UTC": {
+    "outcome": {
+      "error": "The Snowflake build session holds TIMEZONE = America/Denver, not Malloy's UTC, so its day and week buckets could differ from live's; the build is refused. Allow ALTER SESSION SET TIMEZONE for the build's role.",
+      "name": "Error"
+    },
+    "statements": [
+      "SELECT current_setting('lock_configuration') AS v",
+      "SELECT current_setting('enable_external_access') AS v",
+      "SELECT extension_name FROM duckdb_extensions() WHERE loaded",
+      "SET GLOBAL enable_global_s3_configuration=false",
+      "SET GLOBAL s3_access_key_id=''",
+      "SET GLOBAL s3_secret_access_key=''",
+      "SET GLOBAL s3_session_token=''",
+      "LOAD excel",
+      "SELECT current_setting('temp_directory') AS v",
+      "SET autoinstall_known_extensions=false",
+      "SET autoload_known_extensions=false",
+      "SELECT count(*) FROM duckdb_secrets()",
+      "SET allowed_directories=['<tmp>','<tmp>']",
+      "SET enable_external_access=false",
+      "SELECT * FROM snowflake_query('ALTER SESSION SET QUOTED_IDENTIFIERS_IGNORE_CASE = FALSE', 'h''q')",
+      "SELECT * FROM snowflake_query('ALTER SESSION SET TIMEZONE = ''UTC''', 'h''q')",
+      "SELECT * FROM snowflake_query('ALTER SESSION SET WEEK_START = 7', 'h''q')",
+      "SELECT * FROM snowflake_query('SHOW PARAMETERS LIKE ''TIMEZONE'' IN SESSION', 'h''q')",
+      "SELECT * FROM snowflake_query('ALTER SESSION UNSET QUERY_TAG', 'h''q')"
+    ]
+  },
+  "snowflake: incremental": {
+    "outcome": {
+      "schema": [
+        "amount DOUBLE",
+        "s VARCHAR",
+        "b VARCHAR"
+      ],
+      "rowCount": 1,
+      "readCost": {
+        "engine": "snowflake",
+        "jobId": "sf-1",
+        "parentJobId": null,
+        "bytesScanned": 0,
+        "bytesBilled": null,
+        "slotTimeMs": null,
+        "executionTimeMs": 12,
+        "cacheHit": true
+      }
+    },
+    "statements": [
+      "SELECT current_setting('lock_configuration') AS v",
+      "SELECT current_setting('enable_external_access') AS v",
+      "SELECT extension_name FROM duckdb_extensions() WHERE loaded",
+      "SET GLOBAL enable_global_s3_configuration=false",
+      "SET GLOBAL s3_access_key_id=''",
+      "SET GLOBAL s3_secret_access_key=''",
+      "SET GLOBAL s3_session_token=''",
+      "LOAD excel",
+      "SELECT current_setting('temp_directory') AS v",
+      "SET autoinstall_known_extensions=false",
+      "SET autoload_known_extensions=false",
+      "SELECT count(*) FROM duckdb_secrets()",
+      "SET allowed_directories=['<tmp>','<tmp>']",
+      "SET enable_external_access=false",
+      "SELECT * FROM snowflake_query('ALTER SESSION SET QUOTED_IDENTIFIERS_IGNORE_CASE = FALSE', 'h''q')",
+      "SELECT * FROM snowflake_query('ALTER SESSION SET TIMEZONE = ''UTC''', 'h''q')",
+      "SELECT * FROM snowflake_query('ALTER SESSION SET WEEK_START = 7', 'h''q')",
+      "SELECT * FROM snowflake_query('SHOW PARAMETERS LIKE ''TIMEZONE'' IN SESSION', 'h''q')",
+      "SELECT * FROM snowflake_query('SHOW PARAMETERS LIKE ''WEEK_START'' IN SESSION', 'h''q')",
+      "SELECT * FROM snowflake_query('ALTER SESSION SET QUERY_TAG = ''{\"team\":\"Data Eng\",\"Team\":\"x\",\"job\":\"nightly\"}''', 'h''q')",
+      "SELECT * FROM snowflake_query('SELECT MAX(\"amount\") AS \"watermark_max\" FROM (SELECT 1.5::DOUBLE AS amount, ''x'' AS s, ''\\x01''::BLOB AS b) AS __w', 'h''q')",
+      "BEGIN TRANSACTION",
+      "CREATE OR REPLACE TABLE \"lake\".\"t\" AS (SELECT * REPLACE (CAST(\"s\" AS VARCHAR) AS \"s\", CAST(\"b\" AS VARCHAR) AS \"b\") FROM (\nSELECT * FROM snowflake_query('SELECT 1.5::DOUBLE AS amount, ''x'' AS s, ''\\x01''::BLOB AS b', 'h''q')\n) AS __declared_types)",
+      "DESCRIBE \"lake\".\"t\"",
+      "COMMIT",
+      "SELECT count(*) AS n FROM \"lake\".\"t\"",
+      "SELECT * FROM snowflake_query('\n      SELECT QUERY_ID       AS \"job_id\",\n             QUERY_TEXT     AS \"query_text\",\n             BYTES_SCANNED  AS \"bytes_scanned\",\n             EXECUTION_TIME AS \"execution_time_ms\",\n             ROWS_PRODUCED  AS \"rows_produced\"\n      FROM TABLE(ANALYTICS.INFORMATION_SCHEMA.QUERY_HISTORY_BY_SESSION(\n                 RESULT_LIMIT => 10000))\n      WHERE QUERY_TAG = ''{\"team\":\"Data Eng\",\"Team\":\"x\",\"job\":\"nightly\"}''\n        AND EXECUTION_STATUS = ''SUCCESS''', 'h''q')",
+      "SELECT * FROM snowflake_query('ALTER SESSION UNSET QUERY_TAG', 'h''q')"
+    ],
+    "incremental": {
+      "windowRows": true,
+      "frontier": {
+        "value": {
+          "bound": {
+            "malloyType": "number",
+            "value": "1.5"
+          }
+        }
+      },
+      "numericStoredAsDouble": {
+        "value": []
+      },
+      "window": {
+        "value": "SELECT * FROM snowflake_query('SELECT \"amount\" FROM (SELECT \"amount\", \"s\", \"b\" FROM (SELECT * FROM (SELECT 1.5::DOUBLE AS amount, ''x'' AS s, ''\\x01''::BLOB AS b) AS __d WHERE \"amount\" >= 1 AND \"amount\" < 2) AS __public) AS __c', 'h''q')"
+      }
+    }
+  },
+  "trino: plain": {
+    "outcome": {
+      "error": "Cannot materialize a 'trino' source into a storage destination: the native query-passthrough build supports source connections of type bigquery, snowflake, postgres only.",
+      "name": "BadRequestError"
+    },
+    "statements": []
+  },
+  "trino: tagged": {
+    "outcome": {
+      "error": "Cannot materialize a 'trino' source into a storage destination: the native query-passthrough build supports source connections of type bigquery, snowflake, postgres only.",
+      "name": "BadRequestError"
+    },
+    "statements": []
+  },
+  "trino: tagged, no job listing": {
+    "outcome": {
+      "error": "Cannot materialize a 'trino' source into a storage destination: the native query-passthrough build supports source connections of type bigquery, snowflake, postgres only.",
+      "name": "BadRequestError"
+    },
+    "statements": []
+  },
+  "trino: cancelled at its read": {
+    "outcome": {
+      "error": "Cannot materialize a 'trino' source into a storage destination: the native query-passthrough build supports source connections of type bigquery, snowflake, postgres only.",
+      "name": "BadRequestError"
+    },
+    "statements": []
+  },
+  "trino: snowflake session refuses UTC": {
+    "outcome": {
+      "error": "Cannot materialize a 'trino' source into a storage destination: the native query-passthrough build supports source connections of type bigquery, snowflake, postgres only.",
+      "name": "BadRequestError"
+    },
+    "statements": []
+  },
+  "trino: incremental": {
+    "outcome": {
+      "error": "Cannot materialize a 'trino' source into a storage destination: the native query-passthrough build supports source connections of type bigquery, snowflake, postgres only.",
+      "name": "BadRequestError"
+    },
+    "statements": []
+  },
+  "databricks: plain": {
+    "outcome": {
+      "error": "Cannot materialize a 'databricks' source into a storage destination: the native query-passthrough build supports source connections of type bigquery, snowflake, postgres only.",
+      "name": "BadRequestError"
+    },
+    "statements": []
+  },
+  "databricks: tagged": {
+    "outcome": {
+      "error": "Cannot materialize a 'databricks' source into a storage destination: the native query-passthrough build supports source connections of type bigquery, snowflake, postgres only.",
+      "name": "BadRequestError"
+    },
+    "statements": []
+  },
+  "databricks: tagged, no job listing": {
+    "outcome": {
+      "error": "Cannot materialize a 'databricks' source into a storage destination: the native query-passthrough build supports source connections of type bigquery, snowflake, postgres only.",
+      "name": "BadRequestError"
+    },
+    "statements": []
+  },
+  "databricks: cancelled at its read": {
+    "outcome": {
+      "error": "Cannot materialize a 'databricks' source into a storage destination: the native query-passthrough build supports source connections of type bigquery, snowflake, postgres only.",
+      "name": "BadRequestError"
+    },
+    "statements": []
+  },
+  "databricks: snowflake session refuses UTC": {
+    "outcome": {
+      "error": "Cannot materialize a 'databricks' source into a storage destination: the native query-passthrough build supports source connections of type bigquery, snowflake, postgres only.",
+      "name": "BadRequestError"
+    },
+    "statements": []
+  },
+  "databricks: incremental": {
+    "outcome": {
+      "error": "Cannot materialize a 'databricks' source into a storage destination: the native query-passthrough build supports source connections of type bigquery, snowflake, postgres only.",
+      "name": "BadRequestError"
+    },
+    "statements": []
+  },
+  "mysql: plain": {
+    "outcome": {
+      "error": "Cannot materialize a 'mysql' source into a storage destination: the native query-passthrough build supports source connections of type bigquery, snowflake, postgres only.",
+      "name": "BadRequestError"
+    },
+    "statements": []
+  },
+  "mysql: tagged": {
+    "outcome": {
+      "error": "Cannot materialize a 'mysql' source into a storage destination: the native query-passthrough build supports source connections of type bigquery, snowflake, postgres only.",
+      "name": "BadRequestError"
+    },
+    "statements": []
+  },
+  "mysql: tagged, no job listing": {
+    "outcome": {
+      "error": "Cannot materialize a 'mysql' source into a storage destination: the native query-passthrough build supports source connections of type bigquery, snowflake, postgres only.",
+      "name": "BadRequestError"
+    },
+    "statements": []
+  },
+  "mysql: cancelled at its read": {
+    "outcome": {
+      "error": "Cannot materialize a 'mysql' source into a storage destination: the native query-passthrough build supports source connections of type bigquery, snowflake, postgres only.",
+      "name": "BadRequestError"
+    },
+    "statements": []
+  },
+  "mysql: snowflake session refuses UTC": {
+    "outcome": {
+      "error": "Cannot materialize a 'mysql' source into a storage destination: the native query-passthrough build supports source connections of type bigquery, snowflake, postgres only.",
+      "name": "BadRequestError"
+    },
+    "statements": []
+  },
+  "mysql: incremental": {
+    "outcome": {
+      "error": "Cannot materialize a 'mysql' source into a storage destination: the native query-passthrough build supports source connections of type bigquery, snowflake, postgres only.",
+      "name": "BadRequestError"
+    },
+    "statements": []
+  },
+  "sqlserver: plain": {
+    "outcome": {
+      "error": "Cannot materialize a 'sqlserver' source into a storage destination: the native query-passthrough build supports source connections of type bigquery, snowflake, postgres only.",
+      "name": "BadRequestError"
+    },
+    "statements": []
+  },
+  "sqlserver: tagged": {
+    "outcome": {
+      "error": "Cannot materialize a 'sqlserver' source into a storage destination: the native query-passthrough build supports source connections of type bigquery, snowflake, postgres only.",
+      "name": "BadRequestError"
+    },
+    "statements": []
+  },
+  "sqlserver: tagged, no job listing": {
+    "outcome": {
+      "error": "Cannot materialize a 'sqlserver' source into a storage destination: the native query-passthrough build supports source connections of type bigquery, snowflake, postgres only.",
+      "name": "BadRequestError"
+    },
+    "statements": []
+  },
+  "sqlserver: cancelled at its read": {
+    "outcome": {
+      "error": "Cannot materialize a 'sqlserver' source into a storage destination: the native query-passthrough build supports source connections of type bigquery, snowflake, postgres only.",
+      "name": "BadRequestError"
+    },
+    "statements": []
+  },
+  "sqlserver: snowflake session refuses UTC": {
+    "outcome": {
+      "error": "Cannot materialize a 'sqlserver' source into a storage destination: the native query-passthrough build supports source connections of type bigquery, snowflake, postgres only.",
+      "name": "BadRequestError"
+    },
+    "statements": []
+  },
+  "sqlserver: incremental": {
+    "outcome": {
+      "error": "Cannot materialize a 'sqlserver' source into a storage destination: the native query-passthrough build supports source connections of type bigquery, snowflake, postgres only.",
+      "name": "BadRequestError"
+    },
+    "statements": []
+  },
+  "duckdb: plain": {
+    "outcome": {
+      "error": "Cannot materialize a 'duckdb' source into a storage destination: the native query-passthrough build supports source connections of type bigquery, snowflake, postgres only.",
+      "name": "BadRequestError"
+    },
+    "statements": []
+  },
+  "duckdb: tagged": {
+    "outcome": {
+      "error": "Cannot materialize a 'duckdb' source into a storage destination: the native query-passthrough build supports source connections of type bigquery, snowflake, postgres only.",
+      "name": "BadRequestError"
+    },
+    "statements": []
+  },
+  "duckdb: tagged, no job listing": {
+    "outcome": {
+      "error": "Cannot materialize a 'duckdb' source into a storage destination: the native query-passthrough build supports source connections of type bigquery, snowflake, postgres only.",
+      "name": "BadRequestError"
+    },
+    "statements": []
+  },
+  "duckdb: cancelled at its read": {
+    "outcome": {
+      "error": "Cannot materialize a 'duckdb' source into a storage destination: the native query-passthrough build supports source connections of type bigquery, snowflake, postgres only.",
+      "name": "BadRequestError"
+    },
+    "statements": []
+  },
+  "duckdb: snowflake session refuses UTC": {
+    "outcome": {
+      "error": "Cannot materialize a 'duckdb' source into a storage destination: the native query-passthrough build supports source connections of type bigquery, snowflake, postgres only.",
+      "name": "BadRequestError"
+    },
+    "statements": []
+  },
+  "duckdb: incremental": {
+    "outcome": {
+      "error": "Cannot materialize a 'duckdb' source into a storage destination: the native query-passthrough build supports source connections of type bigquery, snowflake, postgres only.",
+      "name": "BadRequestError"
+    },
+    "statements": []
+  },
+  "motherduck: plain": {
+    "outcome": {
+      "error": "Cannot materialize a 'motherduck' source into a storage destination: the native query-passthrough build supports source connections of type bigquery, snowflake, postgres only.",
+      "name": "BadRequestError"
+    },
+    "statements": []
+  },
+  "motherduck: tagged": {
+    "outcome": {
+      "error": "Cannot materialize a 'motherduck' source into a storage destination: the native query-passthrough build supports source connections of type bigquery, snowflake, postgres only.",
+      "name": "BadRequestError"
+    },
+    "statements": []
+  },
+  "motherduck: tagged, no job listing": {
+    "outcome": {
+      "error": "Cannot materialize a 'motherduck' source into a storage destination: the native query-passthrough build supports source connections of type bigquery, snowflake, postgres only.",
+      "name": "BadRequestError"
+    },
+    "statements": []
+  },
+  "motherduck: cancelled at its read": {
+    "outcome": {
+      "error": "Cannot materialize a 'motherduck' source into a storage destination: the native query-passthrough build supports source connections of type bigquery, snowflake, postgres only.",
+      "name": "BadRequestError"
+    },
+    "statements": []
+  },
+  "motherduck: snowflake session refuses UTC": {
+    "outcome": {
+      "error": "Cannot materialize a 'motherduck' source into a storage destination: the native query-passthrough build supports source connections of type bigquery, snowflake, postgres only.",
+      "name": "BadRequestError"
+    },
+    "statements": []
+  },
+  "motherduck: incremental": {
+    "outcome": {
+      "error": "Cannot materialize a 'motherduck' source into a storage destination: the native query-passthrough build supports source connections of type bigquery, snowflake, postgres only.",
+      "name": "BadRequestError"
+    },
+    "statements": []
+  },
+  "ducklake: plain": {
+    "outcome": {
+      "error": "Cannot materialize a 'ducklake' source into a storage destination that is a different catalog. A DuckLake source builds only into its own catalog, matched by the catalog database's host, port and databaseName (a connectionString is never matched), its metadataSchema, and its data path when both configs state one.",
+      "name": "BadRequestError"
+    },
+    "statements": []
+  },
+  "ducklake: tagged": {
+    "outcome": {
+      "error": "Cannot materialize a 'ducklake' source into a storage destination that is a different catalog. A DuckLake source builds only into its own catalog, matched by the catalog database's host, port and databaseName (a connectionString is never matched), its metadataSchema, and its data path when both configs state one.",
+      "name": "BadRequestError"
+    },
+    "statements": []
+  },
+  "ducklake: tagged, no job listing": {
+    "outcome": {
+      "error": "Cannot materialize a 'ducklake' source into a storage destination that is a different catalog. A DuckLake source builds only into its own catalog, matched by the catalog database's host, port and databaseName (a connectionString is never matched), its metadataSchema, and its data path when both configs state one.",
+      "name": "BadRequestError"
+    },
+    "statements": []
+  },
+  "ducklake: cancelled at its read": {
+    "outcome": {
+      "error": "Cannot materialize a 'ducklake' source into a storage destination that is a different catalog. A DuckLake source builds only into its own catalog, matched by the catalog database's host, port and databaseName (a connectionString is never matched), its metadataSchema, and its data path when both configs state one.",
+      "name": "BadRequestError"
+    },
+    "statements": []
+  },
+  "ducklake: snowflake session refuses UTC": {
+    "outcome": {
+      "error": "Cannot materialize a 'ducklake' source into a storage destination that is a different catalog. A DuckLake source builds only into its own catalog, matched by the catalog database's host, port and databaseName (a connectionString is never matched), its metadataSchema, and its data path when both configs state one.",
+      "name": "BadRequestError"
+    },
+    "statements": []
+  },
+  "ducklake: incremental": {
+    "outcome": {
+      "error": "Cannot materialize a 'ducklake' source into a storage destination that is a different catalog. A DuckLake source builds only into its own catalog, matched by the catalog database's host, port and databaseName (a connectionString is never matched), its metadataSchema, and its data path when both configs state one.",
+      "name": "BadRequestError"
+    },
+    "statements": []
+  },
+  "publisher: plain": {
+    "outcome": {
+      "error": "Cannot materialize a 'publisher' source into a storage destination: the native query-passthrough build supports source connections of type bigquery, snowflake, postgres only.",
+      "name": "BadRequestError"
+    },
+    "statements": []
+  },
+  "publisher: tagged": {
+    "outcome": {
+      "error": "Cannot materialize a 'publisher' source into a storage destination: the native query-passthrough build supports source connections of type bigquery, snowflake, postgres only.",
+      "name": "BadRequestError"
+    },
+    "statements": []
+  },
+  "publisher: tagged, no job listing": {
+    "outcome": {
+      "error": "Cannot materialize a 'publisher' source into a storage destination: the native query-passthrough build supports source connections of type bigquery, snowflake, postgres only.",
+      "name": "BadRequestError"
+    },
+    "statements": []
+  },
+  "publisher: cancelled at its read": {
+    "outcome": {
+      "error": "Cannot materialize a 'publisher' source into a storage destination: the native query-passthrough build supports source connections of type bigquery, snowflake, postgres only.",
+      "name": "BadRequestError"
+    },
+    "statements": []
+  },
+  "publisher: snowflake session refuses UTC": {
+    "outcome": {
+      "error": "Cannot materialize a 'publisher' source into a storage destination: the native query-passthrough build supports source connections of type bigquery, snowflake, postgres only.",
+      "name": "BadRequestError"
+    },
+    "statements": []
+  },
+  "publisher: incremental": {
+    "outcome": {
+      "error": "Cannot materialize a 'publisher' source into a storage destination: the native query-passthrough build supports source connections of type bigquery, snowflake, postgres only.",
+      "name": "BadRequestError"
+    },
+    "statements": []
+  },
+  "constructor: plain": {
+    "outcome": {
+      "error": "Cannot materialize a 'constructor' source into a storage destination: the native query-passthrough build supports source connections of type bigquery, snowflake, postgres only.",
+      "name": "BadRequestError"
+    },
+    "statements": []
+  },
+  "constructor: tagged": {
+    "outcome": {
+      "error": "Cannot materialize a 'constructor' source into a storage destination: the native query-passthrough build supports source connections of type bigquery, snowflake, postgres only.",
+      "name": "BadRequestError"
+    },
+    "statements": []
+  },
+  "constructor: tagged, no job listing": {
+    "outcome": {
+      "error": "Cannot materialize a 'constructor' source into a storage destination: the native query-passthrough build supports source connections of type bigquery, snowflake, postgres only.",
+      "name": "BadRequestError"
+    },
+    "statements": []
+  },
+  "constructor: cancelled at its read": {
+    "outcome": {
+      "error": "Cannot materialize a 'constructor' source into a storage destination: the native query-passthrough build supports source connections of type bigquery, snowflake, postgres only.",
+      "name": "BadRequestError"
+    },
+    "statements": []
+  },
+  "constructor: snowflake session refuses UTC": {
+    "outcome": {
+      "error": "Cannot materialize a 'constructor' source into a storage destination: the native query-passthrough build supports source connections of type bigquery, snowflake, postgres only.",
+      "name": "BadRequestError"
+    },
+    "statements": []
+  },
+  "constructor: incremental": {
+    "outcome": {
+      "error": "Cannot materialize a 'constructor' source into a storage destination: the native query-passthrough build supports source connections of type bigquery, snowflake, postgres only.",
+      "name": "BadRequestError"
+    },
+    "statements": []
+  },
+  "nope: plain": {
+    "outcome": {
+      "error": "Cannot materialize a 'nope' source into a storage destination: the native query-passthrough build supports source connections of type bigquery, snowflake, postgres only.",
+      "name": "BadRequestError"
+    },
+    "statements": []
+  },
+  "nope: tagged": {
+    "outcome": {
+      "error": "Cannot materialize a 'nope' source into a storage destination: the native query-passthrough build supports source connections of type bigquery, snowflake, postgres only.",
+      "name": "BadRequestError"
+    },
+    "statements": []
+  },
+  "nope: tagged, no job listing": {
+    "outcome": {
+      "error": "Cannot materialize a 'nope' source into a storage destination: the native query-passthrough build supports source connections of type bigquery, snowflake, postgres only.",
+      "name": "BadRequestError"
+    },
+    "statements": []
+  },
+  "nope: cancelled at its read": {
+    "outcome": {
+      "error": "Cannot materialize a 'nope' source into a storage destination: the native query-passthrough build supports source connections of type bigquery, snowflake, postgres only.",
+      "name": "BadRequestError"
+    },
+    "statements": []
+  },
+  "nope: snowflake session refuses UTC": {
+    "outcome": {
+      "error": "Cannot materialize a 'nope' source into a storage destination: the native query-passthrough build supports source connections of type bigquery, snowflake, postgres only.",
+      "name": "BadRequestError"
+    },
+    "statements": []
+  },
+  "nope: incremental": {
+    "outcome": {
+      "error": "Cannot materialize a 'nope' source into a storage destination: the native query-passthrough build supports source connections of type bigquery, snowflake, postgres only.",
+      "name": "BadRequestError"
+    },
+    "statements": []
+  }
+}

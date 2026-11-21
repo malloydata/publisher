@@ -61,28 +61,17 @@ import {
    projectToStoredColumns,
    storedColumnNames,
 } from "./run_plan";
-import { bigQueryQueryLabelValue } from "./build_query_tag";
+import { resultRows, type BuildReadCost } from "./build_read_cost";
 import {
-   bigQueryReadCost,
-   resultRows,
-   str,
-   type BuildReadCost,
-} from "./build_read_cost";
-import {
-   BilledReadNotCapturedError,
-   canSplitBigQueryRead,
    clearSnowflakeSessionTag,
    snowflakeReadCostAfterBuild,
    tagSnowflakeSession,
-   withBigQueryLookupRetry,
 } from "./build_attribution";
-import { BIGQUERY_COST_COLUMNS } from "./warehouse_sql";
 import {
-   bigQueryJobLister,
-   markBigQueryRead,
-   trackBigQueryJobs,
-   type BigQueryJobListerFactory,
-} from "./bigquery_job_cancel";
+   passthroughBuildOf,
+   type PassthroughDeps,
+   type PassthroughRead,
+} from "./passthrough_build";
 import type { QueryMetadata } from "../../query_metadata";
 import { attachDuckLakeReadWrite } from "../../connection";
 import { managedSearchPathSql } from "../../dialects/ducklake";
@@ -172,24 +161,6 @@ function orderByExpressions(
 }
 
 /**
- * What the CTAS reads from, plus the warehouse's id for the read when its shape
- * yields one. `jobId` lets a build's cost be recovered by exact key rather than
- * by matching query text.
- */
-interface PassthroughRead {
-   /** The SELECT the CTAS wraps. */
-   selectSQL: string;
-   /** The warehouse's id for the read, null when this shape does not produce one. */
-   jobId: string | null;
-   /**
-    * What the read cost, when the shape that issued it also reported it. Read
-    * from the same job record that located the result table: a script's child
-    * job is reachable only through its parent, so no later lookup can find it.
-    */
-   cost: BuildReadCost | null;
-}
-
-/**
  * Issue the source-warehouse read for a `storage=` build and return what the
  * CTAS should select from. Two shapes, chosen by whether there is a BigQuery
  * label to apply:
@@ -214,81 +185,21 @@ export async function issuePassthroughRead(
    buildSQL: string,
    queryMetadata: QueryMetadata | undefined,
 ): Promise<PassthroughRead> {
-   // Marked so a cancelled build can find its job and cancel it
-   // (bigquery_job_cancel.ts); unchanged for any other engine.
-   if (sourceType === "bigquery") {
-      buildSQL = markBigQueryRead(session, buildSQL);
-   }
-   const label =
-      sourceType === "bigquery"
-         ? bigQueryQueryLabelValue(queryMetadata)
-         : undefined;
-   // Probed BEFORE anything runs: past this point the read is billed, and an
-   // unusable split could only be recovered by billing the read twice.
-   if (label === undefined || !(await canSplitBigQueryRead(session, handle))) {
+   // The engine's own preparation: BigQuery marks the read so a cancelled
+   // build can find its job, and labels it when it can split
+   // (passthrough/bigquery.ts); any other engine reads it as written.
+   const build = passthroughBuildOf(sourceType);
+   const prepared = build
+      ? await build.prepareRead(session, handle, buildSQL, queryMetadata)
+      : { sql: buildSQL };
+   if (prepared.label === undefined || build?.splitRead === undefined) {
       return {
-         selectSQL: wrapPassthrough(sourceType, handle, buildSQL),
+         selectSQL: wrapPassthrough(sourceType, handle, prepared.sql),
          jobId: null,
          cost: null,
       };
    }
-
-   // BigQuery creates a parent job for the script and one child per statement;
-   // the child that ran the SELECT carries both the label and the cost.
-   const script = `SET @@query_label = "${label}";\n${buildSQL};`;
-   const executed = await session.runSQL(
-      `SELECT * FROM bigquery_execute('${escapeSQL(handle)}', '${escapeSQL(script)}')`,
-   );
-   const parentJobId = firstColumn(executed, "job_id");
-   if (parentJobId === null) {
-      throw new BilledReadNotCapturedError(
-         "bigquery_execute returned no job_id for the build's read, so its " +
-            "result table cannot be located",
-      );
-   }
-
-   // The result table is anonymous, so its name comes from the job record.
-   // Newest first, because the listing order is undocumented and the SELECT is
-   // the script's last statement; `SET @@query_label` is not observed to produce
-   // a child with a destination table, but that is not guaranteed.
-   const located = await withBigQueryLookupRetry(async () => {
-      const child = await session.runSQL(`
-      SELECT job_id,
-             json_extract_string(configuration, '$.query.destinationTable.projectId') AS project,
-             json_extract_string(configuration, '$.query.destinationTable.datasetId') AS dataset,
-             json_extract_string(configuration, '$.query.destinationTable.tableId')   AS table,
-             ${BIGQUERY_COST_COLUMNS}
-      FROM (SELECT * FROM bigquery_jobs('${escapeSQL(handle)}',
-                                        parentJobId := '${escapeSQL(parentJobId)}')
-            WHERE job_type = 'QUERY')
-      ORDER BY creation_time DESC`);
-      const row = resultRows(child).find((r) => str(r.dataset) && str(r.table));
-      if (row === undefined) {
-         // Retried: a listing can answer 200 before it enumerates the child.
-         throw new Error(
-            `no child job with a result table under parent ${parentJobId}`,
-         );
-      }
-      return row;
-   }, parentJobId);
-
-   const path = [
-      str(located.project) ?? handle,
-      str(located.dataset),
-      str(located.table),
-   ].join(".");
-   const jobId = str(located.job_id);
-   return {
-      selectSQL: `SELECT * FROM bigquery_scan('${escapeSQL(path)}')`,
-      jobId,
-      cost: bigQueryReadCost(located, jobId, parentJobId),
-   };
-}
-
-/** One named column from the first row, or null when it is absent or empty. */
-function firstColumn(result: unknown, column: string): string | null {
-   const rows = resultRows(result);
-   return rows.length > 0 ? str(rows[0][column]) : null;
+   return build.splitRead(session, handle, prepared.sql, prepared.label);
 }
 
 /** Narrow a connection's declared type to a supported passthrough source type. */
@@ -591,7 +502,7 @@ export function createLocalDataPaths(
  * lands while the session is idle (between the federation and the CTAS, say)
  * is not lost. A read DuckDB makes through a warehouse extension
  * (BigQuery's) is not cancelled in the warehouse by the interrupt: a
- * BigQuery build cancels its jobs itself (bigquery_job_cancel.ts).
+ * BigQuery build cancels its jobs itself (passthrough/bigquery.ts).
  */
 export function interruptOnAbort(
    session: DuckDBConnection,
@@ -719,7 +630,7 @@ export interface BuildSessionDeps {
    /** The Postgres column-type read a build stores exact numerics by. */
    numericColumns?: typeof postgresNumericColumns;
    /** The BigQuery jobs API a cancelled build cancels its reads through. */
-   bigQueryJobs?: BigQueryJobListerFactory;
+   bigQueryJobs?: PassthroughDeps["bigQueryJobs"];
 }
 
 /**
@@ -844,15 +755,13 @@ export async function buildSourceIntoStorage(params: {
             // A BigQuery read outlives DuckDB's interrupt, so a cancel also
             // cancels the build's jobs in BigQuery, under the read's own key.
             const stopTrackingJobs =
-               sourceType === "bigquery"
-                  ? trackBigQueryJobs(session, params.signal, () =>
-                       (params.deps?.bigQueryJobs ?? bigQueryJobLister)(
-                          federated.handle,
-                          sourceConnection.bigqueryConnection
-                             ?.serviceAccountKeyJson,
-                       ),
-                    )
-                  : async () => {};
+               passthroughBuildOf(sourceType)?.trackJobs?.(
+                  session,
+                  params.signal,
+                  federated.handle,
+                  sourceConnection,
+                  params.deps ?? {},
+               ) ?? (async () => {});
             // Setup done (the destination attached, the source federated):
             // confine the session to them (duckdb_lockdown.ts). The
             // configuration is left unlocked because the build itself sets

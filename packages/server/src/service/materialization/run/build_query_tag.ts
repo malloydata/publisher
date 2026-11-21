@@ -14,7 +14,8 @@
  * Neither connector exports its renderer, so the grammars are reimplemented
  * here and pinned by tests that state the grammar.
  *
- * The Snowflake statement that sets the tag is warehouse_sql.ts's.
+ * The Snowflake statement that sets the tag is warehouse_sql.ts's; BigQuery's
+ * label grammar is passthrough/bigquery.ts's.
  *
  * Pinned to @malloydata/malloy 0.0.427.
  */
@@ -36,9 +37,6 @@ import type { BuildEnvironment } from "./build_upstreams";
  * properties to fit), so this is a backstop rather than a working limit.
  */
 const MAX_QUERY_TAG_LENGTH = 2000;
-
-/** BigQuery label keys and values are at most 63 characters. */
-const BQ_MAX_LEN = 63;
 
 /**
  * The bag as a Snowflake `QUERY_TAG` value: JSON, so the properties stay
@@ -144,53 +142,6 @@ export function snowflakeSessionCheckSQL(
          secretName,
       ),
    }));
-}
-
-/** BigQuery's label grammar: lowercase, `[a-z0-9_-]`, at most 63 characters. */
-function sanitizeBigQueryValue(value: string): string {
-   return value
-      .toLowerCase()
-      .replace(/[^a-z0-9_-]/g, "_")
-      .slice(0, BQ_MAX_LEN);
-}
-
-/** A key that cannot be made to start with a lowercase letter is dropped. */
-function sanitizeBigQueryKey(key: string): string | undefined {
-   const sanitized = sanitizeBigQueryValue(key);
-   return /^[a-z]/.test(sanitized) ? sanitized : undefined;
-}
-
-/**
- * The bag as a value for BigQuery's `@@query_label` system variable:
- * `key:value` pairs joined by commas, which is the form that variable takes.
- * The job's `configuration.labels` then carries them as a map.
- *
- * The separators need no escaping, which is a property of the grammar rather
- * than luck: `,` and `:` are both outside `[a-z0-9_-]`, so sanitizing every key
- * and value removes any that a property could have contributed. The same
- * substitution removes `'` and `\`, so this value cannot disturb the SQL literal
- * it is embedded in either.
- *
- * Undefined when the bag is empty, or when every key was dropped as unusable.
- */
-export function bigQueryQueryLabelValue(
-   metadata: QueryMetadata | undefined,
-): string | undefined {
-   if (metadata === undefined) return undefined;
-   // Keyed rather than appended, because sanitizing can collide two properties
-   // onto one label key and BigQuery REFUSES a list containing a duplicate: the
-   // statement errors, the script fails, and the build dies. The bag admits that
-   // collision legally — property names are validated case-PRESERVING, so `Team`
-   // and `team` are two properties that both render as `team`. Last wins, which
-   // is the shape every other drop in this rendering already takes.
-   const rendered = new Map<string, string>();
-   for (const [key, value] of Object.entries(metadata)) {
-      const sanitizedKey = sanitizeBigQueryKey(key);
-      if (sanitizedKey === undefined) continue;
-      rendered.set(sanitizedKey, sanitizeBigQueryValue(value));
-   }
-   if (rendered.size === 0) return undefined;
-   return [...rendered].map(([key, value]) => `${key}:${value}`).join(",");
 }
 
 /**

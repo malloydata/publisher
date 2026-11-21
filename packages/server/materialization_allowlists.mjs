@@ -178,6 +178,12 @@ export const RATCHET_DIALECT_LITERALS = {
       count: 2,
       step: "table",
    },
+   // The passthrough builds, keyed by a connection type whose `postgres` and
+   // `snowflake` share a dialect's spelling.
+   "service/materialization/run/passthrough_build.ts": {
+      count: 2,
+      step: "table",
+   },
    // TABLE_PATH_OPTIONS, the incremental probe's per-dialect table-path
    // decoding (four keys), and probePostgresVersion's own dialect.
    "service/materialization/run/incremental_apply.ts": {
@@ -211,9 +217,9 @@ export const RATCHET_CONNECTION_TYPE_LITERALS = {
    "service/materialization/run/storage_admin.ts": { count: 3, step: "D4" },
    // DECODED_PATH_DIALECTS and the server-version probe's dialect.
    "service/materialization/run/incremental_apply.ts": { count: 4, step: "D4" },
-   // the BigQuery job reads, the source and destination types' own rules.
+   // the source and destination types' own rules.
    "service/materialization/run/materialization_build_session.ts": {
-      count: 11,
+      count: 8,
       step: "D4",
    },
    // the read-cost record's engine label.
@@ -228,10 +234,10 @@ export const RATCHET_CONNECTION_TYPE_LITERALS = {
       count: 3,
       step: "table",
    },
-   // BigQuery's passthrough read of an incremental delta.
-   "service/materialization/run/incremental_storage.ts": {
-      count: 2,
-      step: "D4",
+   // the passthrough builds, keyed by a connection type.
+   "service/materialization/run/passthrough_build.ts": {
+      count: 3,
+      step: "table",
    },
    // a DuckLake source's same-catalog build.
    "service/materialization/run/storage_build_strategy.ts": {

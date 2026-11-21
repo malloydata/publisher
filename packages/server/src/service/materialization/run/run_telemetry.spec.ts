@@ -21,7 +21,7 @@ import {
 } from "../../../test_helpers/metrics_harness";
 import type { BuildInstruction, ManifestEntry } from "../domain/types";
 import { errorCodeOf } from "../../../error_code";
-import { BilledReadNotCapturedError } from "./build_attribution";
+import { BilledReadNotCapturedError } from "./passthrough/bigquery";
 import {
    buildKindOf,
    buildKindsByAddress,
