@@ -3,9 +3,10 @@
 
 /**
  * Whether a gate or a `where:` that a stored copy re-applies compares a string
- * column there as live compares it. The caller's own query filters are judged
- * by the same rules, read as `GateReads` of their own
- * (`queryFilterReadsOfQuery` in `gate_reads.ts`).
+ * column there as live compares it. The caller's own query filters, and the
+ * strings the query's result orders and groups by, are judged by the same
+ * rules, read as `GateReads` of their own (`queryFilterReadsOfQuery` in
+ * `gate_reads.ts`, `resultReadsOfQuery` in `result_reads.ts`).
  *
  * A `storage=` table is read in a DuckLake destination, whose string
  * comparison is byte-exact. Live compares the source column under its own
@@ -40,7 +41,8 @@
  * rebind compiles a new one, which reads it again), and for a DuckDB
  * instance once per query SQL, so a source altered in place is read again
  * only after a reload; the stored side on every answer, since a stored
- * table is the one place altered after Publisher built it.
+ * table is the one place altered after Publisher built it, once per answer
+ * however many comparisons (the gates, the filters, the result) ask.
  */
 
 import {
@@ -548,8 +550,11 @@ export async function storedTableCollationRefusal(args: {
    reads: GateReads | undefined;
    /** The caller's givens: a probe of a source whose rows read one needs it. */
    givens?: Record<string, unknown>;
+   /** This answer's stored-side reads, shared across its comparisons. */
+   storedReads?: Map<string, Promise<unknown>>;
 }): Promise<string | undefined> {
    if (args.tables.length === 0) return undefined;
+   const memo = args.storedReads ?? new Map<string, Promise<unknown>>();
    if (await comparesNoString(args)) return undefined;
    const sourceDialect = await entryDialectOf(args.authorRunnable);
    const equalityOnly = args.reads?.equalityOnly === true;
@@ -574,7 +579,7 @@ export async function storedTableCollationRefusal(args: {
       }
       let collation: Collation;
       try {
-         collation = await storedSide(t, args, runtime, sourceDialect);
+         collation = await storedSide(t, args, runtime, sourceDialect, memo);
       } catch {
          collation = "unknown";
       }
@@ -590,6 +595,7 @@ export async function storedTableCollationRefusal(args: {
          authorRunnable: args.authorRunnable,
          storedRuntime: runtime,
          reads: args.reads,
+         memo,
          ...(args.givens ? { givens: args.givens } : {}),
       });
    } catch {
@@ -741,9 +747,11 @@ async function databaseCollationRefusal(args: {
    authorRunnable: QueryMaterializer;
    storedRuntime: ProbeRuntime;
    reads: GateReads | undefined;
+   /** This answer's stored-side reads, shared across its comparisons. */
+   memo: Map<string, Promise<unknown>>;
    givens?: Record<string, unknown>;
 }): Promise<string | undefined> {
-   const { reads } = args;
+   const { reads, memo } = args;
    if (reads === undefined || reads.unresolved) return "gate reads unread";
    if (!reads.entryPathsComplete) return "a scope from elsewhere";
    const prepared = await readPreparedQuery(args.authorRunnable);
@@ -762,44 +770,72 @@ async function databaseCollationRefusal(args: {
    ).runtime;
    if (!runtime) return "no runtime";
    const source = await runtime.connections.lookupConnection(connectionName);
-   const paths = stringPaths(struct, reads.entryPaths);
-   if (paths === undefined) return "an unreadable gate path";
-   const compared = new Set<string>();
-   for (const path of paths) {
-      const id = await postgresCollationIdentity(
-         source,
-         unfinalizedPostgresSQL(
-            await probeSql({
-               runtime,
-               modelDef,
-               entryName,
-               path,
-               ...(args.givens ? { givens: args.givens } : {}),
-            }),
-         ),
-      );
-      if (id === undefined) return `\`${path.join(".")}\` unread`;
-      compared.add(id);
-   }
-   const sourceDefault = await postgresDefaultIdentity(source);
+   const sourceDefault = await memoized(
+      memo,
+      ["source-default", connectionName],
+      () => postgresDefaultIdentity(source),
+   );
    if (sourceDefault === undefined) return "the source's default unread";
-   // Each column the reads name, by every name it goes by, must be one of
-   // the tables' own; each string one joins the compared collations.
+   // Every column the stored tables hold, by name: its collation's identity.
    const held = new Map<string, string | null>();
    for (const t of args.tables) {
       if (t.tablePath === undefined) return "a table with no path";
-      const connection = await args.storedRuntime.connections.lookupConnection(
-         t.destinationName ?? connectionName,
+      const storedName = t.destinationName ?? connectionName;
+      const connection =
+         await args.storedRuntime.connections.lookupConnection(storedName);
+      const storedDefault = await memoized(
+         memo,
+         ["stored-default", storedName],
+         () => postgresDefaultIdentity(connection),
       );
-      if ((await postgresDefaultIdentity(connection)) !== sourceDefault) {
+      if (storedDefault !== sourceDefault) {
          return "a stored table's connection has another default collation";
       }
-      for (const [col, id] of await postgresColumnIdentities(
-         connection,
-         t.tablePath,
+      const tablePath = t.tablePath;
+      for (const [col, id] of await memoized(
+         memo,
+         ["columns", storedName, tablePath],
+         () => postgresColumnIdentities(connection, tablePath),
       )) {
          held.set(col, id);
       }
+   }
+   // A result read of a source known to be read live, which no stored table
+   // holds under any name it goes by, is no stored column: it is passed
+   // over, path and column both. A gate's reads never are (no `livePaths`).
+   const live = new Set((reads.livePaths ?? []).map((p) => p.join("\u0000")));
+   const kept = reads.entryPaths
+      .map((path, i) => ({ path, names: reads.columns[i] ?? [] }))
+      .filter(
+         ({ path, names }) =>
+            !live.has(path.join("\u0000")) || names.some((n) => held.has(n)),
+      );
+   const paths = stringPaths(
+      struct,
+      kept.map((k) => k.path),
+   );
+   if (paths === undefined) return "an unreadable gate path";
+   const compared = new Set<string>();
+   for (const path of paths) {
+      const id = await memoized(
+         memo,
+         ["source", connectionName, path.join(".")],
+         async () =>
+            postgresCollationIdentity(
+               source,
+               unfinalizedPostgresSQL(
+                  await probeSql({
+                     runtime,
+                     modelDef,
+                     entryName,
+                     path,
+                     ...(args.givens ? { givens: args.givens } : {}),
+                  }),
+               ),
+            ),
+      );
+      if (id === undefined) return `\`${path.join(".")}\` unread`;
+      compared.add(id);
    }
    // The names the entry point's own `where:` reads, and whether a rollup's
    // table was read: a rollup is built with its base's own `where:` applied.
@@ -808,7 +844,8 @@ async function databaseCollationRefusal(args: {
       (t) => (t as { kind?: unknown }).kind === "rollup",
    );
    let storedStrings = 0;
-   for (const names of reads.columns) {
+   const columns = live.size === 0 ? reads.columns : kept.map((k) => k.names);
+   for (const names of columns) {
       const found = names.filter((n) => held.has(n));
       if (found.length === 0) {
          if (rollupRead && names.some((n) => ownWhere.has(n))) continue;
@@ -911,6 +948,7 @@ async function storedSide(
    },
    runtime: ProbeRuntime,
    sourceDialect: string,
+   memo: Map<string, Promise<unknown>>,
 ): Promise<Collation> {
    if (t.tier === "storage") {
       const name = [...(args.virtualMap ?? new Map())].find(
@@ -922,12 +960,18 @@ async function storedSide(
       // destination's name, which a runtime without that alias does not
       // resolve (unknown).
       const connectionName = name ?? t.destinationName;
-      if (connectionName === undefined || t.tablePath === undefined) {
+      const tablePath = t.tablePath;
+      if (connectionName === undefined || tablePath === undefined) {
          return "unknown";
       }
-      return duckdbTableCollation(
-         await runtime.connections.lookupConnection(connectionName),
-         t.tablePath,
+      return memoized(
+         memo,
+         ["duckdb-table", connectionName, tablePath],
+         async () =>
+            duckdbTableCollation(
+               await runtime.connections.lookupConnection(connectionName),
+               tablePath,
+            ),
       );
    }
    const read = capabilitiesOf(sourceDialect).stringCollation;
@@ -936,14 +980,41 @@ async function storedSide(
       t.destinationName ?? (await entryConnectionOf(args.authorRunnable));
    const connection =
       await runtime.connections.lookupConnection(connectionName);
-   if (t.tablePath === undefined) {
+   const tablePath = t.tablePath;
+   if (tablePath === undefined) {
       // No path to read the table's own columns by: the instance-wide check
       // for DuckDB, and unknown elsewhere.
-      return read === "instance" ? duckdbCollation(connection, "") : "unknown";
+      return read === "instance"
+         ? memoized(memo, ["duckdb-instance", connectionName], () =>
+              duckdbCollation(connection, ""),
+           )
+         : "unknown";
    }
-   return read === "instance"
-      ? duckdbTableCollation(connection, t.tablePath)
-      : postgresTableCollation(connection, t.tablePath);
+   return memoized(memo, [read, connectionName, tablePath], () =>
+      read === "instance"
+         ? duckdbTableCollation(connection, tablePath)
+         : postgresTableCollation(connection, tablePath),
+   );
+}
+
+/**
+ * `run`'s answer, read once per `parts` in `memo` (one answer's stored-side
+ * reads): a failed read is kept too, and fails each asker closed.
+ */
+function memoized<T>(
+   memo: Map<string, Promise<unknown>>,
+   parts: readonly (string | undefined)[],
+   run: () => Promise<T>,
+): Promise<T> {
+   const key = JSON.stringify(parts);
+   let p = memo.get(key) as Promise<T> | undefined;
+   if (p === undefined) {
+      p = run();
+      // Read once even when it fails; each awaiter sees the failure.
+      p.catch(() => undefined);
+      memo.set(key, p);
+   }
+   return p;
 }
 
 /** The connection of the source a compiled query runs on. */

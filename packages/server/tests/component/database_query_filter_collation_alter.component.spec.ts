@@ -82,6 +82,8 @@ source: v is m_tab -> { select: id, category, sb is category = 'books' } extend 
 
 source: v3 is v extend { dimension: vis3 is vis2 and id > 0 }
 
+source: vn is m_tab -> { select: id, category }
+
 source: jv is warehouse.sql("""
   SELECT * FROM (VALUES (1), (2), (3), (4), (5), (6)) AS t(oid)
 """) extend {
@@ -222,8 +224,11 @@ const CASES: {
       throughStage: true,
    },
    {
+      // Over `vn`, whose stage compares no string: one that does (`v`'s
+      // `sb`) is recomputed from the stored rows, which the result rule
+      // judges whether or not the query reads its output.
       name: "a query-shaped source's numeric output (a control)",
-      query: "run: v -> { where: id > 2; select: id; order_by: id }",
+      query: "run: vn -> { where: id > 2; select: id; order_by: id }",
       leg: "materialized",
       strings: false,
    },

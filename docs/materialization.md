@@ -264,11 +264,18 @@ follow the same rule ([the served copy](#the-served-copy-materialization-v2-publ
     the queried source's own fields, and a caller's inline `extend` that adds its own `where:` or
     gate answer live too.
 
+    The same judgement holds the query's own filters and its result's string ordering and
+    grouping on a database table, each over the strings it reads, with one difference for the
+    result: a string of a source the answer reads live (the parent beside a joined rollup), which
+    no stored table holds under any name it goes by, is passed over, since no stored collation can
+    change it. A scope's and a gate's columns must each be held.
+
     **What it costs.** Unlike the source side of a `storage=` check, which is read once per
     compiled model, this is read on every answer, because a stored table is the one place that can
-    be altered after Publisher built it. Each time the served copy or a rollup would answer a gated
-    or scoped query from a database Postgres table, and the gates and scopes compare a string,
-    Publisher runs these queries on the warehouse, one after another, before the query itself:
+    be altered after Publisher built it. Each time an answer would be read from a database
+    Postgres table, and its gates, scopes, filters or result compare, order or group a string,
+    Publisher runs these queries on the warehouse, one after another, before the query itself
+    (each once per answer, however many of those ask):
 
     - for each string field the gates and scopes compare, one that names the field's collation
       (`pg_collation_for` over a one-row read through the queried source's own SQL, so a
@@ -1500,7 +1507,7 @@ table below says it is skipped.
 | --- | --- |
 | The row scope | For the served copy and a rollup: a `where:` the stored table re-applies at read reads only columns stored exactly (not a binary float or a 128-bit integer standing for an exact type; the served copy's rule, a rollup judges its own grain) and compared as its source compares them. Skipped when the entry point is gated, where the gate's rules below decide, and when the query lists no stored columns to judge. |
 | The caller's own filters | Each string comparison the query makes on the stored rows compares as live (its collation, on both sides). Fails closed when the filters, or a persisted result's table, cannot be read. |
-| The result's order and grouping | Over a `storage=` table, a string the query orders by needs its source to compare bytes, and one it groups or compares by equality needs equality to be byte equality there. Fails closed when the result cannot be read. |
+| The result's order and grouping | Over a `storage=` table, a string the query orders by needs its source to compare bytes, and one it groups or compares by equality needs equality to be byte equality there. On every table, a database one included, the stored side is judged as for a gate: the stored column must still compare as its source does (an `ALTER … COLLATE` after the build, or a destination's `default_collation`, answers live). Fails closed when the result cannot be read. |
 | Past an entry-point gate | The leg is one that may read past a gate, every table it read keeps the gate (by kind, tier and the deployment's switches), and no row filter is declared on a composite the entry point reads. |
 | The gate's columns | Past a gate: every column a gate reads, on every table the answer reads, is stored exactly, holds no zone the destination would compare in its own session zone, and compares as its source compares it. |
 

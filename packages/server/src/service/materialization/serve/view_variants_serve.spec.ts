@@ -292,8 +292,31 @@ describe("PersistedViewServe (database)", () => {
          reason: "as_of_build_access",
          detail: expect.any(String),
       });
+      // The view's ordering by a string is applied again to the stored rows,
+      // so the table's collation is read: one the catalog does not list is
+      // unknown and answers live.
+      expect(
+         (await admission.decide("view", answer, false)).verdict,
+      ).toMatchObject({ admit: false, reason: "result_order_comparison" });
+      const runtime = (
+         answer.runnable as unknown as {
+            runtime: {
+               connections: {
+                  lookupConnection(n: string): Promise<{
+                     runSQL(sql: string): Promise<unknown>;
+                  }>;
+               };
+            };
+         }
+      ).runtime;
+      await (
+         await runtime.connections.lookupConnection("duckdb")
+      ).runSQL(
+         `CREATE TABLE ${STORED} AS SELECT 'east' AS region, 10.0 AS total`,
+      );
       // The query reads no given and passes no gate: it reads the table.
-      expect((await admission.decide("view", answer, false)).verdict).toEqual({
+      const listed = new ReadAdmission(query, gateSwitches(), collationProbe);
+      expect((await listed.decide("view", answer, false)).verdict).toEqual({
          admit: true,
          pastEntryPointGate: false,
       });

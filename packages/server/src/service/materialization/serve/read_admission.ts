@@ -77,8 +77,14 @@ interface Gathered {
    readonly filterTables: readonly TableRead[];
    /** What the result orders and groups strings by, when it is judged. */
    readonly resultReads?: ResultReads;
-   /** The `storage=` tables the result is read from. */
+   /** The stored tables the result is read from. */
    readonly resultTables: readonly TableRead[];
+   /**
+    * The stored side's warehouse reads for this answer, shared by every
+    * comparison's stored probe, so the result's adds none the gates' or the
+    * filters' already made.
+    */
+   readonly storedReads: Map<string, Promise<unknown>>;
    /** The probes' answers so far, kept across this answer's decisions. */
    probes: NonNullable<ReadFacts["probes"]>;
 }
@@ -230,6 +236,7 @@ export class ReadAdmission {
          filterTables: filters.facts.applies ? filters.facts.tables : [],
          ...(result.reads ? { resultReads: result.reads } : {}),
          resultTables: result.tables,
+         storedReads: new Map(),
          probes: {},
          facts: {
             pastEntryPointGate: false,
@@ -307,11 +314,12 @@ export class ReadAdmission {
    }
 
    /**
-    * What the query's result orders and groups strings by, over the
-    * `storage=` tables the answer reads (a database table sits in its
-    * source's warehouse and compares as its source does), when the source's
-    * dialect's collation is read (Postgres per column, DuckDB per
-    * instance). Which stages count: every one on the served copy and a
+    * What the query's result orders and groups strings by, over the stored
+    * tables the answer reads, when the source's dialect's collation is read
+    * (Postgres per column, DuckDB per instance). A `storage=` table compares
+    * bytes, so the source's collation is judged against that; a database
+    * table sits in its source's warehouse, so its stored columns are judged
+    * against the source's (an `ALTER` after the build changes them). Which stages count: every one on the served copy and a
     * rollup; on a persisted view or named query, the later stages, and the
     * ordering its read applies again to its own last stage's stored rows.
     */
@@ -325,10 +333,14 @@ export class ReadAdmission {
    }> {
       const { queryString, authorRunnable } = this.query;
       const persisted = leg === "view" || leg === "query";
-      const read = persisted
-         ? (answer.tablesRead ?? [])
+      // A database view's or query's own table is its result's table.
+      const read: readonly TableRead[] = persisted
+         ? [
+              ...(answer.tablesRead ?? []),
+              ...(answer.resultTableRead ? [answer.resultTableRead] : []),
+           ]
          : (answer.gateTablesRead ?? answer.tablesRead ?? []);
-      const tables = read.filter((t) => t.tier === "storage");
+      const tables = read;
       if (tables.length === 0) return { facts: { applies: false }, tables };
       let fromStage = 0;
       let orderOnly: number | undefined;
@@ -347,19 +359,27 @@ export class ReadAdmission {
             fromStage = orderOnly + 1;
          }
       }
-      const reads = await resultReadsOfQuery(
-         authorRunnable,
-         storedSourceIDs(read),
-         { fromStage, ...(orderOnly !== undefined ? { orderOnly } : {}) },
-      );
+      // The sources whose tables the answer reads, by ID, for telling a
+      // read of a live source from one of a stored table: a database
+      // rollup's table names its base only through the answer.
+      const storedIDs = storedSourceIDs(read);
+      const storedSources = new Set(storedIDs);
+      if (answer.rollupBaseSourceID !== undefined) {
+         storedSources.add(answer.rollupBaseSourceID);
+      }
+      const reads = await resultReadsOfQuery(authorRunnable, storedIDs, {
+         fromStage,
+         ...(orderOnly !== undefined ? { orderOnly } : {}),
+         storedSources,
+      });
       if (reads === undefined) {
-         return { facts: { applies: true, reads: "unread" }, tables };
+         return { facts: { applies: true, reads: "unread", tables }, tables };
       }
       const collation = reads.stringCollation;
       if (collation !== "column" && collation !== "instance") {
          return { facts: { applies: false }, tables };
       }
-      return { facts: { applies: true, reads: "read" }, reads, tables };
+      return { facts: { applies: true, reads: "read", tables }, reads, tables };
    }
 
    /** `facts` with the answer to `request`, from the probe port. */
@@ -377,7 +397,12 @@ export class ReadAdmission {
               : request.comparison === "result_ordered"
                 ? g.resultReads?.ordered
                 : g.resultReads?.grouped;
-      const tables = request.comparison === "scope" ? g.tables : g.filterTables;
+      const tables =
+         request.comparison === "scope"
+            ? g.tables
+            : request.comparison === "filters"
+              ? g.filterTables
+              : g.resultTables;
       const givens = this.givens ? { givens: this.givens } : {};
       const refusal =
          request.side === "source"
@@ -392,6 +417,7 @@ export class ReadAdmission {
                  virtualMap: answer.virtualMap,
                  authorRunnable: this.query.authorRunnable,
                  reads,
+                 storedReads: g.storedReads,
                  ...givens,
               });
       const probes: Partial<Record<Comparison, ComparisonProbes>> = {
