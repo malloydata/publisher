@@ -4,13 +4,14 @@
 /**
  * @deprecated `.malloynb` only; deleted with the format.
  *
- * How a `.malloynb` cell is read: every code cell runs, and a cell's code is
- * shown without its `##` lines (the notebook's own annotations), which are not
- * part of the query. A `.malloy` report never reaches here: it is tiles.
+ * How a `.malloynb` cell is read: every code cell is handed to the runner,
+ * which sends the cell's served `runQuery`, and a cell's code is shown without
+ * its `##` lines (the notebook's own annotations), which are not part of the
+ * query. A `.malloy` report never reaches here: it is tiles.
  */
 import type { NotebookCell } from "../../../client";
 
-/** Whether the viewer sends a cell to the server to run: every code cell. */
+/** Whether the viewer hands a cell to its runner: every code cell. */
 export function cellRuns(cell: Pick<NotebookCell, "type">): boolean {
    return cell.type === "code";
 }

@@ -22,7 +22,6 @@ import * as connectionCommands from "./commands/connections.js";
 import * as materializationCommands from "./commands/materializations.js";
 import * as scheduleCommands from "./commands/schedule.js";
 import * as modelCommands from "./commands/models.js";
-import * as notebookCommands from "./commands/notebooks.js";
 import * as databaseCommands from "./commands/databases.js";
 
 const program = new Command();
@@ -69,7 +68,7 @@ function parseOptionalCount(
 program
   .command("list <resource>")
   .description(
-    "List resources (environment, package, connection, materialization, model, notebook, database)",
+    "List resources (environment, package, connection, materialization, model, database)",
   )
   .option(
     "--environment <n>",
@@ -77,7 +76,7 @@ program
   )
   .option(
     "--package <n>",
-    "Package name (required for model, notebook, database and materialization)",
+    "Package name (required for model, database and materialization)",
   )
   .option("--limit <n>", "Max materializations to return")
   .option("--offset <n>", "Materializations to skip")
@@ -132,17 +131,6 @@ program
             options.package,
           );
           break;
-        case "notebook":
-          if (!options.environment || !options.package) {
-            logError("--environment and --package are required");
-            process.exit(1);
-          }
-          await notebookCommands.listNotebooks(
-            client,
-            options.environment,
-            options.package,
-          );
-          break;
         case "database":
           if (!options.environment || !options.package) {
             logError("--environment and --package are required");
@@ -157,7 +145,7 @@ program
         default:
           logError(`Unknown resource: ${resource}`);
           logOutput(
-            "Valid types: environment, package, connection, materialization, model, notebook, database",
+            "Valid types: environment, package, connection, materialization, model, database",
           );
           process.exit(1);
       }
@@ -230,22 +218,10 @@ program
             name,
           );
           break;
-        case "notebook":
-          if (!options.environment || !options.package) {
-            logError("--environment and --package are required");
-            process.exit(1);
-          }
-          await notebookCommands.getNotebook(
-            client,
-            options.environment,
-            options.package,
-            name,
-          );
-          break;
         default:
           logError(`Unknown resource: ${resource}`);
           logOutput(
-            "Valid types: environment, package, connection, materialization, model, notebook",
+            "Valid types: environment, package, connection, materialization, model",
           );
           process.exit(1);
       }

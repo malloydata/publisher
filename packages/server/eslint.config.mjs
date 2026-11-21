@@ -155,7 +155,7 @@ const EXPLORER_CALLERS = [
    "packages/sdk/src/components/Model/ExplorerPage.tsx",
    "packages/sdk/src/components/Model/ModelExplorer.tsx",
    "packages/sdk/src/components/Model/ModelExplorerDialog.tsx",
-   "packages/sdk/src/components/legacy/malloynb/NotebookCell.tsx",
+   "packages/sdk/src/components/Report/malloynb/NotebookCell.tsx",
    "packages/sdk/src/**/*.spec.{ts,tsx}",
 ];
 // Files that load only the Explorer's stylesheet: that one import is allowed,
@@ -163,7 +163,7 @@ const EXPLORER_CALLERS = [
 const EXPLORER_STYLESHEET_FILES = [
    "packages/app/src/App.tsx",
    "packages/sdk/src/components/Model/ExplorerPage.tsx",
-   "packages/sdk/src/components/legacy/malloynb/CellRunnerView.tsx",
+   "packages/sdk/src/components/Report/malloynb/CellRunnerView.tsx",
 ];
 // The bare package goes in `paths`: a negated pattern cannot re-include
 // `styles.css` once a pattern matching its parent has excluded it.
@@ -184,11 +184,6 @@ const UNESCAPED_MALLOY_IMPORTS_BUT_STYLESHEET = {
       },
       UNESCAPED_MALLOY_IMPORTS[1],
    ],
-};
-const LEGACY_MALLOYNB_IMPORT = {
-   group: ["**/legacy/malloynb", "**/legacy/malloynb/**"],
-   message:
-      "legacy/malloynb is the deprecated .malloynb renderer: only legacy/ may import it. A .malloy report is tiles, drawn by DashboardView.",
 };
 
 // ---------------------------------------------------------------------------
@@ -647,31 +642,11 @@ export default [
       },
    },
    {
-      // `.malloynb` is deprecated and fenced off: its renderer lives in
-      // `legacy/malloynb/` and nothing outside `legacy/` may import it, so the
-      // format is deleted by deleting that folder and the legacy exports.
-      // Restates the unescaped-Malloy imports: a later block's rule replaces an
-      // earlier one's for the files both match, rather than adding to it.
-      files: ["packages/sdk/src/**/*.{ts,tsx}"],
-      ignores: ["packages/sdk/src/components/legacy/**"],
-      rules: {
-         "no-restricted-imports": [
-            "error",
-            {
-               patterns: [LEGACY_MALLOYNB_IMPORT, ...UNESCAPED_MALLOY_IMPORTS],
-            },
-         ],
-      },
-   },
-   {
       // The Explorer's own files (see EXPLORER_FILES). Last, so it replaces the
-      // blocks above for them; the legacy fence still holds.
+      // blocks above for them.
       files: EXPLORER_FILES,
       rules: {
-         "no-restricted-imports": [
-            "error",
-            { patterns: [LEGACY_MALLOYNB_IMPORT] },
-         ],
+         "no-restricted-imports": "off",
          "@typescript-eslint/no-restricted-imports": "off",
          "no-restricted-syntax": "off",
       },
@@ -686,10 +661,7 @@ export default [
             "error",
             {
                paths: UNESCAPED_MALLOY_IMPORTS_BUT_STYLESHEET.paths,
-               patterns: [
-                  LEGACY_MALLOYNB_IMPORT,
-                  ...UNESCAPED_MALLOY_IMPORTS_BUT_STYLESHEET.patterns,
-               ],
+               patterns: UNESCAPED_MALLOY_IMPORTS_BUT_STYLESHEET.patterns,
             },
          ],
       },

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { QueryKey } from "@tanstack/react-query";
-import { useServer } from "../components/ServerProvider";
+import { type ApiClients, useServer } from "../components/ServerProvider";
 import { CHART_RESULT_QUERY_OPTIONS } from "../utils/queryClient";
 import { keepPreviousData } from "@tanstack/react-query";
 import { useQueryWithApiError } from "./useQueryWithApiError";
@@ -70,6 +70,34 @@ export function modelResultsKey(
    ];
 }
 
+/**
+ * The request for `spec`, cancelled by `signal`: what {@link useQueryResult}
+ * sends for a tile and a `.malloynb` sends for a cell, so a result cached
+ * under {@link queryResultKey} is the same answer whichever of them asked.
+ */
+export function requestQueryResult(
+   apiClients: ApiClients,
+   spec: QueryRequestSpec,
+   signal?: AbortSignal,
+) {
+   return apiClients.models.executeQueryModel(
+      spec.environmentName,
+      spec.packageName,
+      spec.modelPath,
+      {
+         queryName: spec.queryName,
+         query: spec.query,
+         sourceName: spec.sourceName,
+         givens: spec.givens,
+         versionId: spec.versionId,
+      },
+      undefined,
+      // versionId: carried in the body.
+      undefined,
+      { signal },
+   );
+}
+
 export function useQueryResult(
    spec: QueryRequestSpec,
    { enabled = true }: { enabled?: boolean } = {},
@@ -82,23 +110,7 @@ export function useQueryResult(
       // changed under it, or one that unmounted. react-query reverts a
       // cancelled query to its previous state rather than to an error, so an
       // abort never reaches `ResultPanel`'s failed state.
-      queryFn: ({ signal }) =>
-         apiClients.models.executeQueryModel(
-            spec.environmentName,
-            spec.packageName,
-            spec.modelPath,
-            {
-               queryName: spec.queryName,
-               query: spec.query,
-               sourceName: spec.sourceName,
-               givens: spec.givens,
-               versionId: spec.versionId,
-            },
-            undefined,
-            // versionId: carried in the body.
-            undefined,
-            { signal },
-         ),
+      queryFn: ({ signal }) => requestQueryResult(apiClients, spec, signal),
       enabled,
       // A change of givens is a new key, and without this the surface drops to
       // "Running…" and back: every tile on a page blanked and redrew on each

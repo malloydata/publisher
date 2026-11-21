@@ -1,0 +1,18 @@
+>>>markdown
+A cell's query runs in restricted mode, and the way to keep each shape.
+>>>malloy
+##! experimental.sql_functions
+import "../models/orders.malloy"
+import "../models/sql_dims.malloy"
+>>>malloy
+run: duckdb.table('data/orders.csv') -> { aggregate: c is count() }
+>>>malloy
+run: orders -> { group_by: one is sql_number("1"); aggregate: order_count }
+>>>malloy
+source: from_table is duckdb.table('data/orders.csv')
+run: from_table -> { aggregate: c is count() }
+>>>malloy
+source: with_one is orders extend { dimension: one is sql_number("1") }
+run: with_one -> { group_by: one; aggregate: order_count }
+>>>malloy
+run: orders_sql -> { group_by: one; aggregate: order_count }

@@ -2,11 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * The execution core a model query and a notebook cell share once each has
- * decided WHAT to run: prepare, cap rows, run, then serialize within the row
- * and byte caps — and the mapping of a run failure onto the status the caller
- * sees. Everything before that (boundary, authorize, routing) differs between
- * the two and stays with the caller.
+ * The execution core of a model query once it has decided WHAT to run:
+ * prepare, cap rows, run, then serialize within the row and byte caps — and
+ * the mapping of a run failure onto the status the caller sees. Everything
+ * before that, the boundary, authorize and routing, stays with the caller.
  */
 
 import { withSpan } from "../telemetry";
@@ -264,11 +263,6 @@ interface RunErrorContext {
    passThrough: readonly ErrorClass[];
    /** Logs an unclassified failure just before it becomes the generic 400. */
    logFailure: (errorMessage: string, err: unknown) => void;
-   /**
-    * A message that is not a failure at all: when the error's trimmed message
-    * equals it, this returns instead of throwing.
-    */
-   benignMessage?: string;
 }
 
 /**
@@ -279,12 +273,7 @@ interface RunErrorContext {
  * pool) and any `passThrough` class keeps its own mapping; a database that could not be reached or refused the credentials is
  * a 502/424; anything else is a 400.
  */
-export function mapRunError(
-   err: unknown,
-   ctx: RunErrorContext & { benignMessage?: undefined },
-): never;
-export function mapRunError(err: unknown, ctx: RunErrorContext): void;
-export function mapRunError(err: unknown, ctx: RunErrorContext): void {
+export function mapRunError(err: unknown, ctx: RunErrorContext): never {
    // Duck-type on `.code`: MalloyCompileError is not a MalloyError and is not
    // root-exported. `runtime-given-` is pinned to Malloy's error codes
    // (given_binding.ts / runtime.ts); keep it in step with environment.ts, or
@@ -322,12 +311,6 @@ export function mapRunError(err: unknown, ctx: RunErrorContext): void {
    const storageFailure = storageAccessFailure(err, ctx.subject);
    if (storageFailure) throw storageFailure;
 
-   if (
-      ctx.benignMessage !== undefined &&
-      errorMessage.trim() === ctx.benignMessage
-   ) {
-      return;
-   }
    ctx.logFailure(errorMessage, err);
    // Driver text in a 4xx body names no storage path.
    throw new BadRequestError(

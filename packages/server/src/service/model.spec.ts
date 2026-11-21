@@ -14,7 +14,6 @@ import sinon from "sinon";
 
 import {
    BadRequestError,
-   ConnectionAuthError,
    ConnectionFailedError,
    ConnectionPoolExhaustedError,
    ModelNotFoundError,
@@ -187,18 +186,18 @@ describe("service/model", () => {
       });
 
       describe("getNotebook", () => {
-         it("should throw ModelCompilationError if a compilation error exists", async () => {
+         it("should throw a .malloynb's compilation error", async () => {
             const model = new Model({
                packageName,
-               modelPath: mockModelPath,
+               modelPath: "mockNotebook.malloynb",
                dataStyles: {},
                modelType: "notebook",
                compilationError: new Error("Compilation error"),
             });
 
-            await expect(async () => {
-               await model.getNotebook();
-            }).toThrowError(Error);
+            await expect(model.getNotebook()).rejects.toThrow(
+               "Compilation error",
+            );
 
             sinon.restore();
          });
@@ -829,297 +828,6 @@ describe("service/model", () => {
                   }),
                ).resolves.toBeDefined();
             });
-         });
-      });
-
-      // DEPRECATED FEATURE COVERAGE — delete together with
-      // `.malloynb` notebooks (see RELEASE_NOTES deprecations).
-      describe("deprecated: .malloynb — executeNotebookCell", () => {
-         it("forwards givens to runnable.getPreparedResult and .run", async () => {
-            const givensArg = { target_code: "AA" };
-            const preparedResultStub = sinon
-               .stub()
-               .resolves({ resultExplore: { limit: 10 } });
-            const runStub = sinon
-               .stub()
-               .rejects(new MalloyError("stub-stop", []));
-            const cellRunnable = {
-               getPreparedResult: preparedResultStub,
-               run: runStub,
-            };
-            const runnableCells = [
-               {
-                  type: "code" as const,
-                  text: "run: orders -> by_code",
-                  runnable: cellRunnable,
-               },
-            ];
-
-            const model = new Model({
-               packageName,
-               modelPath: "test.malloynb",
-               dataStyles: {},
-               modelType: "notebook",
-               // eslint-disable-next-line @typescript-eslint/no-explicit-any
-               runnableNotebookCells: runnableCells as any,
-               // Model surfaces `target_code` so filterGivensToModelSurface
-               // (see model.ts) forwards it rather than dropping it as unknown.
-               // eslint-disable-next-line @typescript-eslint/no-explicit-any
-               givens: [{ name: "target_code", type: "string" }] as any,
-            });
-
-            await expect(
-               model.executeNotebookCell(
-                  unrecordedAudit(),
-                  0,
-                  undefined,
-                  undefined,
-                  givensArg,
-               ),
-            ).rejects.toThrow(MalloyError);
-
-            expect(preparedResultStub.calledOnce).toBe(true);
-            // Never an undefined manifest: Malloy would read the Runtime's.
-            expect(preparedResultStub.firstCall.args[0]).toEqual({
-               givens: givensArg,
-               buildManifest: EMPTY_BUILD_MANIFEST,
-            });
-            expect(runStub.firstCall.args[0]).toMatchObject({
-               givens: givensArg,
-            });
-
-            sinon.restore();
-         });
-
-         it("maps a finalized-given rejection (code) to BadRequestError, not 500", async () => {
-            const finalizedErr = Object.assign(
-               new Error(
-                  "Given 'target_code' is finalized and cannot be overridden",
-               ),
-               { code: "runtime-given-finalized" },
-            );
-            const cellRunnable = {
-               getPreparedResult: sinon.stub().rejects(finalizedErr),
-               run: sinon.stub(),
-            };
-            const runnableCells = [
-               {
-                  type: "code" as const,
-                  text: "run: orders -> by_code",
-                  runnable: cellRunnable,
-               },
-            ];
-
-            const model = new Model({
-               packageName,
-               modelPath: "test.malloynb",
-               dataStyles: {},
-               modelType: "notebook",
-               // eslint-disable-next-line @typescript-eslint/no-explicit-any
-               runnableNotebookCells: runnableCells as any,
-            });
-
-            await expect(
-               model.executeNotebookCell(
-                  unrecordedAudit(),
-                  0,
-                  undefined,
-                  undefined,
-                  {
-                     target_code: "AA",
-                  },
-               ),
-            ).rejects.toThrow(BadRequestError);
-
-            sinon.restore();
-         });
-
-         it.each([
-            [
-               "an unreachable database as a connection failure",
-               Object.assign(new Error("connect ECONNREFUSED 10.0.0.5:5432"), {
-                  code: "ECONNREFUSED",
-               }),
-               ConnectionFailedError,
-            ],
-            [
-               "rejected credentials as a credential failure",
-               Object.assign(
-                  new Error('password authentication failed for user "x"'),
-                  { code: "28P01" },
-               ),
-               ConnectionAuthError,
-            ],
-         ])("answers %s, not a 400", async (_case, driverError, expected) => {
-            const cellRunnable = {
-               getPreparedResult: sinon
-                  .stub()
-                  .resolves({ resultExplore: { limit: 10 } }),
-               run: sinon.stub().rejects(driverError),
-            };
-            const model = new Model({
-               packageName,
-               modelPath: "test.malloynb",
-               dataStyles: {},
-               modelType: "notebook",
-               runnableNotebookCells: [
-                  {
-                     type: "code" as const,
-                     text: "run: orders -> by_code",
-                     runnable: cellRunnable,
-                  },
-                  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-               ] as any,
-            });
-
-            await expect(
-               model.executeNotebookCell(unrecordedAudit(), 0),
-            ).rejects.toThrow(expected);
-
-            sinon.restore();
-         });
-
-         it("embeds model-level givens in executed cell newSources", async () => {
-            const sourceInfo = { name: "carriers", schema: { fields: [] } };
-            const givens = [
-               {
-                  name: "region",
-                  type: "string",
-                  annotations: ["#(doc) Region"],
-               },
-            ];
-            // A source-only code cell (no runnable) still emits newSources.
-            const runnableCells = [
-               {
-                  type: "code" as const,
-                  text: "import 'carriers.malloy'",
-                  newSources: [sourceInfo],
-               },
-            ];
-
-            const model = new Model({
-               packageName,
-               modelPath: "test.malloynb",
-               dataStyles: {},
-               modelType: "notebook",
-               // eslint-disable-next-line @typescript-eslint/no-explicit-any
-               runnableNotebookCells: runnableCells as any,
-               givens,
-            });
-
-            const result = await model.executeNotebookCell(
-               unrecordedAudit(),
-               0,
-            );
-            const parsed = JSON.parse(result.newSources![0]);
-            expect(parsed.name).toBe("carriers");
-            expect(parsed.givens).toEqual(givens);
-         });
-
-         it("drops a given from the real query when the cell's own modelDef doesn't declare it", async () => {
-            const preparedResultStub = sinon
-               .stub()
-               .resolves({ resultExplore: { limit: 10 } });
-            const runStub = sinon
-               .stub()
-               .rejects(new MalloyError("stub-stop", []));
-            const cellRunnable = {
-               getPreparedResult: preparedResultStub,
-               run: runStub,
-            };
-            // The model surfaces GROUPS (below), so the drop is the cell's doing.
-            const runnableCells = [
-               {
-                  type: "code" as const,
-                  text: "run: plain -> by_code",
-                  runnable: cellRunnable,
-                  modelDef: { givens: {} },
-               },
-            ];
-
-            const model = new Model({
-               packageName,
-               modelPath: "test.malloynb",
-               dataStyles: {},
-               modelType: "notebook",
-               // eslint-disable-next-line @typescript-eslint/no-explicit-any
-               runnableNotebookCells: runnableCells as any,
-               // eslint-disable-next-line @typescript-eslint/no-explicit-any
-               givens: [{ name: "GROUPS", type: "number[]" }] as any,
-            });
-
-            await expect(
-               model.executeNotebookCell(
-                  unrecordedAudit(),
-                  0,
-                  undefined,
-                  undefined,
-                  {
-                     GROUPS: [1],
-                  },
-               ),
-            ).rejects.toThrow(MalloyError);
-
-            expect(preparedResultStub.firstCall.args[0]).toEqual({
-               givens: {},
-               buildManifest: EMPTY_BUILD_MANIFEST,
-            });
-            expect(runStub.firstCall.args[0]).toMatchObject({ givens: {} });
-
-            sinon.restore();
-         });
-
-         it("forwards a given the cell's own modelDef declares", async () => {
-            const preparedResultStub = sinon
-               .stub()
-               .resolves({ resultExplore: { limit: 10 } });
-            const runStub = sinon
-               .stub()
-               .rejects(new MalloyError("stub-stop", []));
-            const cellRunnable = {
-               getPreparedResult: preparedResultStub,
-               run: runStub,
-            };
-            const runnableCells = [
-               {
-                  type: "code" as const,
-                  text: "run: gated -> by_code",
-                  runnable: cellRunnable,
-                  modelDef: { givens: { g1: { name: "GROUPS" } } },
-               },
-            ];
-
-            const model = new Model({
-               packageName,
-               modelPath: "test.malloynb",
-               dataStyles: {},
-               modelType: "notebook",
-               // eslint-disable-next-line @typescript-eslint/no-explicit-any
-               runnableNotebookCells: runnableCells as any,
-               // eslint-disable-next-line @typescript-eslint/no-explicit-any
-               givens: [{ name: "GROUPS", type: "number[]" }] as any,
-            });
-
-            const groupsArg = { GROUPS: [1] };
-            await expect(
-               model.executeNotebookCell(
-                  unrecordedAudit(),
-                  0,
-                  undefined,
-                  undefined,
-                  groupsArg,
-               ),
-            ).rejects.toThrow(MalloyError);
-
-            expect(preparedResultStub.firstCall.args[0]).toEqual({
-               givens: groupsArg,
-               buildManifest: EMPTY_BUILD_MANIFEST,
-            });
-            expect(runStub.firstCall.args[0]).toMatchObject({
-               givens: groupsArg,
-            });
-
-            sinon.restore();
          });
       });
    });

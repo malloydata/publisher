@@ -24,6 +24,7 @@
 import { ParseUtil } from "@malloydata/malloy-tag";
 import type { LogMessage } from "@malloydata/malloy";
 import {
+   annotationsBefore,
    isNameCode,
    isSpaceCode,
    StringScan,
@@ -90,6 +91,71 @@ export function extractRunTargetSourceNames(query?: string): string[] {
       }
    }
    return [];
+}
+
+/** The words that open a top-level statement when a `:` follows them. */
+const COLON_STATEMENTS = ["run", "source", "query", "given", "sql", "type"];
+
+/**
+ * The last top-level `run:` statement of `text`, as written, up to the next
+ * top-level statement or `;`, with the `#` render tags written above it, or
+ * undefined when there is none. The tags are the `#` lines and `#|` … `|#`
+ * blocks between the statement before it and the `run:`, with any comment
+ * among them; a `##` line or `##|` block ends them, being the notebook's own.
+ *
+ * The reports read serves it as a `.malloynb` code cell's `runQuery`, which
+ * the SDK's `Report` sends as `query` unchanged, and the cell's `queryInfo`
+ * screen checks the same text.
+ */
+export function lastRunStatementText(text: string): string | undefined {
+   const tokens = tokenize(stripMalloyCommentsAndLiterals(text));
+   const colonStatement = (k: number, words: readonly string[]): boolean =>
+      words.some((word) => isWord(tokens, k, word)) &&
+      textIs(tokens, k + 1, ":");
+   let depth = 0;
+   let open = -1;
+   let last = -1;
+   let found: [number, number] | undefined;
+   for (let k = 0; k < tokens.count; k++) {
+      const opens =
+         depth === 0 &&
+         (textIs(tokens, k, ";") ||
+            isWord(tokens, k, "import") ||
+            isWord(tokens, k, "export") ||
+            colonStatement(k, COLON_STATEMENTS));
+      if (opens) {
+         if (open >= 0) found = [open, last];
+         open = colonStatement(k, ["run"]) ? k : -1;
+         last = k + 1;
+         if (open >= 0) k++;
+         continue;
+      }
+      last = k;
+      if (tokens.kind[k] !== PUNCT) continue;
+      const code = tokens.source.charCodeAt(tokens.start[k]);
+      if (code === 40 || code === 91 || code === 123) depth++;
+      else if (code === 41 || code === 93 || code === 125)
+         depth = Math.max(0, depth - 1);
+   }
+   if (open >= 0) found = [open, last];
+   if (!found) return undefined;
+   const [run, end] = found;
+   let from = tokens.start[run];
+   const before = annotationsBefore(
+      text,
+      run > 0 ? rawEnd(tokens, run - 1) : 0,
+      from,
+   );
+   for (const tag of before.reverse()) {
+      if (tag.model) break;
+      from = tag.from;
+   }
+   return text.slice(from, rawEnd(tokens, end));
+}
+
+/** Where token `k` ends in the text: past a backtick name's closing backtick. */
+function rawEnd(tokens: Tokens, k: number): number {
+   return tokens.end[k] + (tokens.kind[k] === QUOTED ? 1 : 0);
 }
 
 /**

@@ -129,7 +129,7 @@ function withoutProbeIds(message: string | undefined): string | undefined {
 
 /** What a load serves, as both paths can report it. */
 async function servedShape(model: Model): Promise<Record<string, unknown>> {
-   const cells = model.isNotebook()
+   const cells = model.getPath().endsWith(".malloynb")
       ? (await model.getNotebook()).notebookCells?.map((cell) => ({
            type: cell.type,
            newSources: cell.newSources?.map(sourceName),

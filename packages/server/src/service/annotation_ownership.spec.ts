@@ -46,11 +46,11 @@ import { writeTempPackage } from "../test_helpers/temp_package";
 
 /**
  * A shared include carrying a model-level `##(filters)`. This is the tag behind
- * the bug: its only consumer is the SDK's `parseNotebookFilterAnnotation`
- * (`packages/sdk/src/components/filter/utils.ts`, via `Notebook.tsx`), which
- * matches the literal `##(filters)` prefix on the notebook response's
- * `annotations`, so folding it across imports configured the filter panel of
- * every notebook that imported this file.
+ * the bug: the SDK reads it with `parseNotebookFilterAnnotation`
+ * (`packages/sdk/src/components/filter/utils.ts`), which matches the literal
+ * `##(filters)` prefix on the notebook response's `annotations`, so folding it
+ * across imports configured the filter panel of every notebook that imported
+ * this file.
  */
 const SHARED_MALLOY = `##(filters) ["orders.state"]
 ## title="Shared include"
