@@ -76,6 +76,7 @@ import {
    federateSourceForPassthrough,
    type FederatedSourceType,
 } from "../../dialects";
+import type { DestinationDialect } from "../../dialects/types";
 import {
    applySessionResourceLimits,
    escapeSQL,
@@ -200,10 +201,10 @@ export function passthroughSourceType(
    if ((PASSTHROUGH_SOURCE_TYPES as readonly string[]).includes(type ?? "")) {
       return type as FederatedSourceType;
    }
-   if (type === "ducklake") {
+   if (isCatalogDestination(sourceConnection)) {
       // Reached only when isSameCatalog said no: say why, not just "unsupported".
       throw new BadRequestError(
-         `Cannot materialize a 'ducklake' source into a storage destination ` +
+         `Cannot materialize a '${type}' source into a storage destination ` +
             `that is a different catalog. A DuckLake source builds only into its ` +
             `own catalog, matched by the catalog database's host, port and ` +
             `databaseName (a connectionString is never matched), its ` +
@@ -412,10 +413,9 @@ export async function withDestinationSession<T>(
             destinationName,
             destinationConnection,
          );
-         if (destinationConnection.type === "ducklake") {
-            await session.runSQL(
-               "SET ducklake_default_data_inlining_row_limit=0",
-            );
+         for (const setting of catalogDestinationOf(destinationConnection)
+            ?.buildSettings ?? []) {
+            await session.runSQL(setting);
          }
          await pinSessionToUTC(session);
       }
@@ -1379,6 +1379,28 @@ async function writeStackedTable(
    };
 }
 
+/**
+ * How a catalog of `connection`'s type is attached and set up for a build
+ * (its type's registry entry: DuckLake's), or undefined for a type that is
+ * no catalog, which a plain DuckDB file destination is not.
+ */
+function catalogDestinationOf(
+   connection: ApiConnection | undefined,
+): DestinationDialect | undefined {
+   return connectionDialectOf(connection?.type)?.destination;
+}
+
+/**
+ * Whether `connection` is a catalog a build writes into and a serve reads
+ * from (DuckLake's), rather than a plain DuckDB file destination or no
+ * destination at all.
+ */
+export function isCatalogDestination(
+   connection: ApiConnection | undefined,
+): boolean {
+   return catalogDestinationOf(connection) !== undefined;
+}
+
 /** A DuckLake destination's catalog config, or a clean 400 when it has none. */
 export function requireDuckLakeConfig(
    destinationName: string,
@@ -1412,7 +1434,7 @@ async function attachDestinationReadWrite(
    destinationConnection: ApiConnection,
    environmentPath: string,
 ): Promise<void> {
-   if (destinationConnection.type === "ducklake") {
+   if (isCatalogDestination(destinationConnection)) {
       const cfg = requireDuckLakeConfig(destinationName, destinationConnection);
       await attachDuckLakeReadWrite(session, destinationName, cfg);
       return;

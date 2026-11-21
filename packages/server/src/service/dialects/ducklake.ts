@@ -110,6 +110,11 @@ export const DUCKLAKE: ConnectionDialect = Object.freeze({
             mode,
          ),
       overlap: ducklakeOverlap,
+      // Every row a build writes lands in the catalog's data files, never
+      // inlined into its metadata database.
+      buildSettings: Object.freeze([
+         "SET ducklake_default_data_inlining_row_limit=0",
+      ]),
    }),
 });
 

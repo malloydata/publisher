@@ -207,22 +207,18 @@ export const RATCHET_CONNECTION_TYPE_LITERALS = {
    },
    // the package sandbox's connection name.
    "service/materialization/run/reclaimer.ts": { count: 1, step: "D4" },
-   // a destination's type.
-   "service/materialization/run/storage_admin.ts": { count: 3, step: "D4" },
+   // a refusal's message naming the destination type file cleanup applies to.
+   "service/materialization/run/storage_admin.ts": { count: 1, step: "D4" },
    // DECODED_PATH_DIALECTS and the server-version probe's dialect.
    "service/materialization/run/incremental_apply.ts": { count: 4, step: "D4" },
-   // the source and destination types' own rules.
+   // STORAGE_DESTINATION_TYPES, and a refusal's message naming a DuckLake
+   // destination's type.
    "service/materialization/run/materialization_build_session.ts": {
-      count: 7,
+      count: 3,
       step: "D4",
    },
    // the read-cost record's engine label.
    "service/materialization/run/build_read_cost.ts": { count: 4, step: "D4" },
-   // the DuckLake destination's load.
-   "service/materialization/run/storage_table_load.ts": {
-      count: 2,
-      step: "D4",
-   },
    // the DuckLake catalog read of a database table's columns.
    "service/materialization/run/database_column_read.ts": {
       count: 3,
@@ -232,11 +228,6 @@ export const RATCHET_CONNECTION_TYPE_LITERALS = {
    "service/materialization/run/passthrough_build.ts": {
       count: 3,
       step: "table",
-   },
-   // a DuckLake source's same-catalog build.
-   "service/materialization/run/storage_build_strategy.ts": {
-      count: 1,
-      step: "D4",
    },
    // the SQL half of the dialect table: comparisons on a dialect that shares a type's spelling.
    "service/materialization/run/warehouse_sql.ts": { count: 19, step: "table" },

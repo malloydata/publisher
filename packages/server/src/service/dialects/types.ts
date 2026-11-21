@@ -194,6 +194,11 @@ export interface DestinationDialect {
       connection: ApiConnection,
       destination: ApiConnection,
    ): string | undefined;
+   /**
+    * The settings a build session that writes into this catalog runs with,
+    * set after the catalog is attached and its schema checked.
+    */
+   readonly buildSettings: readonly string[];
 }
 
 /**

@@ -33,6 +33,7 @@ import {
 import { escapeSQL, installAndLoadExtension } from "../../duckdb_session_setup";
 import {
    createLocalDataPaths,
+   isCatalogDestination,
    lockDownDestinationSession,
    withIsolatedSession,
    writePartitionedTable,
@@ -167,7 +168,7 @@ export async function loadStorageTable(params: {
    const { destinationName, destinationConnection, schemaName, tableName } =
       params;
    if (
-      destinationConnection.type !== "ducklake" ||
+      !isCatalogDestination(destinationConnection) ||
       !destinationConnection.ducklakeConnection
    ) {
       throw new BadRequestError(
@@ -288,7 +289,7 @@ export async function copyStorageTable(params: {
 }> {
    const { destinationName, destinationConnection, source } = params;
    for (const conn of [destinationConnection, source.connection]) {
-      if (conn.type !== "ducklake" || !conn.ducklakeConnection) {
+      if (!isCatalogDestination(conn) || !conn.ducklakeConnection) {
          throw new BadRequestError(
             "Only a DuckLake catalog is a copy's source or destination.",
          );
