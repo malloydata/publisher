@@ -31,9 +31,7 @@ import { useModelData } from "./useModelData";
 /**
  * The model page on a server whose `PUBLISHER_MODEL_PAGE` is `explorer`, the
  * default: the Malloy Explorer over the model's sources, and its named
- * queries. The Explorer writes the queries it builds back to Malloy text
- * through `@malloydata/malloy-interfaces`, which puts a string value in
- * unescaped, so a drilled value holding a double quote rewrites its query.
+ * queries.
  */
 export function ExplorerPage({
    onChange,

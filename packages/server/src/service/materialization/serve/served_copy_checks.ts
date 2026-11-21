@@ -66,12 +66,46 @@ export async function readsRerootedTables(
       sqlReadsTable(sql, boundTablePath(b)),
    );
    if (tablesRead.length === 0) {
+      const asWritten = leftAsWritten(compiled);
       attempt.decline(
          "the query reads no re-rooted table",
          "served_copy_not_served",
+         asWritten?.detail,
+         asWritten?.tableIds,
       );
    }
    return { sql, tablesRead };
+}
+
+/**
+ * The database tables whose sources the copy left as written, each for a
+ * problem the package warns about (`served-copy-not-served`), and why in the
+ * caller's terms: what a decline for a query reading none of the re-rooted
+ * tables names, so the path report says why the queried source's own table
+ * did not answer rather than nothing. The report names it only against a
+ * table on the queried chain. The reason codes alone, never a column or a
+ * compiler message, since the tables may be other sources'.
+ */
+export function leftAsWritten(
+   compiled: Pick<Compiled, "over" | "rerooted" | "problems">,
+): { tableIds: string[]; detail: string } | undefined {
+   const rerooted = new Set(compiled.rerooted.map((b) => b.virtualHandle));
+   const tableIds: string[] = [];
+   const reasons = new Set<string>();
+   for (const b of compiled.over) {
+      if (b.tier !== "database" || rerooted.has(b.virtualHandle)) continue;
+      const problem = compiled.problems.find(
+         (p) => p.sourceID !== undefined && b.sourceIDs?.includes(p.sourceID),
+      );
+      if (!problem) continue;
+      tableIds.push(b.virtualHandle);
+      reasons.add(problem.reason);
+   }
+   if (tableIds.length === 0) return undefined;
+   return {
+      tableIds,
+      detail: `the served copy leaves the table's source as written (${[...reasons].sort().join(", ")}), as the package's served-copy-not-served warning says`,
+   };
 }
 
 /**

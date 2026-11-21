@@ -129,7 +129,7 @@ export const server = [
       default: "explorer",
       description:
          "The page the Console shows for a model, reported on /status as modelPage: explorer, or viewer, which builds no query and takes the Explorer out of the legacy notebook too.",
-      notes: "`explorer` or `viewer`: the page the Console shows for a model, reported on `/status` as `modelPage`. `explorer` is the [Explorer](explorer.md), which writes the queries it builds back to Malloy with string values unescaped (`escapeString` in `@malloydata/malloy-interfaces` is a TODO), so a drilled value holding a double quote rewrites its query; the server's restricted mode and `#(authorize)` still bound what that query can read. `viewer` shows the model viewer, which builds no query, and also takes the Explorer's \"Data sources\" dialog out of the legacy notebook; there a given's option list also quotes every name. The Console keeps both pages, and shows the viewer if `/status` cannot be read. Any other value fails startup.",
+      notes: "`explorer` or `viewer`: the page the Console shows for a model, reported on `/status` as `modelPage`. `explorer` is the [Explorer](explorer.md), which builds queries; the server's restricted mode and `#(authorize)` bound what those queries can read. `viewer` shows the model viewer, which builds no query, and also takes the Explorer's \"Data sources\" dialog out of the legacy notebook; there a given's option list also quotes every name. The Console keeps both pages, and shows the viewer if `/status` cannot be read. Any other value fails startup.",
       // The design gives modelPage no flag.
       noFlag: true,
       aliases: { env: ["PUBLISHER_MODEL_PAGE"] },
