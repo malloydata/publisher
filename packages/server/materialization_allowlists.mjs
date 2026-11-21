@@ -139,6 +139,11 @@ export const RATCHET_DIALECT_LITERALS = {
    // The dialect table itself: the DialectName union, its rows' keys,
    // standardsql's display name, and STORAGE_DIALECT.
    "service/materialization/domain/dialect.ts": { count: 20, step: "table" },
+   // The dialect table's evidence: one key per row.
+   "service/materialization/domain/dialect_evidence.ts": {
+      count: 9,
+      step: "table",
+   },
    // The SQL half of the dialect table: its comparisons of a narrowed
    // DialectName, CURRENT_SCHEMA_SQL's two keys and type, DuckDB's own
    // literal in duckdbNameMatch, and Snowflake's in its query-tag and cost
