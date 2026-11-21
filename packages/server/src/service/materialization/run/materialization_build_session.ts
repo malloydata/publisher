@@ -34,6 +34,7 @@ import { mkdirSync, mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { components } from "../../../api";
+import { duckDBByteSize, getDuckDBMemoryLimit } from "../../../config";
 import {
    BadRequestError,
    MaterializationEligibilityError,
@@ -328,33 +329,64 @@ export function passthroughSourceType(
 
 const BUILD_DIR_PREFIX = "malloy-build-";
 
+/** Whether a process with `pid` exists; EPERM is one this process may not signal. */
+function processAlive(pid: number): boolean {
+   try {
+      process.kill(pid, 0);
+      return true;
+   } catch (err) {
+      return (err as NodeJS.ErrnoException).code === "EPERM";
+   }
+}
+
 /**
- * Removes the working directories of sessions an earlier process of this pod
- * never disposed: an OOM kill restarts the container with its emptyDir, so their
- * spill still counts against the ephemeral-storage limit. Only a build directory
- * last modified before this process started, so a live session's is never
- * touched. Returns how many it removed.
+ * Removes the working directories of sessions an earlier process never
+ * disposed: an OOM kill restarts the container with its emptyDir, so their
+ * spill still counts against the ephemeral-storage limit. A directory is named
+ * for its process (`malloy-build-<pid>-…`), and goes when that process is gone.
+ * One named for this process's own pid goes only if it predates this process,
+ * since a restarted container reuses its pids (pid 1); a directory of another
+ * live process is never touched, nor a live session's. One with no pid in its
+ * name (an earlier release's) goes by the same age rule. Returns how many it
+ * removed.
  */
 export function removeStaleBuildDirs(
    root: string = os.tmpdir(),
    startedAtMs: number = Date.now() - process.uptime() * 1000,
+   ownPid: number = process.pid,
 ): number {
    let removed = 0;
-   for (const entry of readdirSync(root, { withFileTypes: true })) {
-      if (!entry.isDirectory() || !entry.name.startsWith(BUILD_DIR_PREFIX)) {
-         continue;
+   try {
+      for (const entry of readdirSync(root, { withFileTypes: true })) {
+         if (!entry.isDirectory() || !entry.name.startsWith(BUILD_DIR_PREFIX)) {
+            continue;
+         }
+         const dir = path.join(root, entry.name);
+         const owner = /^malloy-build-(\d+)-/.exec(entry.name)?.[1];
+         const pid = owner === undefined ? undefined : Number(owner);
+         const otherProcess = pid !== undefined && pid !== ownPid;
+         try {
+            if (
+               otherProcess
+                  ? processAlive(pid)
+                  : statSync(dir).mtimeMs >= startedAtMs
+            ) {
+               continue;
+            }
+            rmSync(dir, { recursive: true, force: true });
+            removed += 1;
+         } catch (err) {
+            logger.warn("Failed to remove a stale build working directory", {
+               dir,
+               code: errorCodeOf(err),
+            });
+         }
       }
-      const dir = path.join(root, entry.name);
-      try {
-         if (statSync(dir).mtimeMs >= startedAtMs) continue;
-         rmSync(dir, { recursive: true, force: true });
-         removed += 1;
-      } catch (err) {
-         logger.warn("Failed to remove a stale build working directory", {
-            dir,
-            code: errorCodeOf(err),
-         });
-      }
+   } catch (err) {
+      logger.warn("Failed to list stale build working directories", {
+         root,
+         code: errorCodeOf(err),
+      });
    }
    if (removed > 0) {
       logger.info("Removed stale build working directories", { removed });
@@ -391,7 +423,9 @@ export function createIsolatedBuildSession(sessionName: string): {
     */
    workDir: string;
 } {
-   const workDir = mkdtempSync(path.join(os.tmpdir(), BUILD_DIR_PREFIX));
+   const workDir = mkdtempSync(
+      path.join(os.tmpdir(), `${BUILD_DIR_PREFIX}${process.pid}-`),
+   );
    // The disposer that owns removing workDir does not exist until this function
    // returns, so a throw from the constructor would strand the directory with
    // nothing left holding a reference to it.
@@ -581,17 +615,27 @@ export async function withDestinationSession<T>(
    }
 }
 
+/** The most memory an admin table load or copy session may use. */
+const LOAD_MEMORY_LIMIT = "1.5GB";
+
 /**
  * The bounds for an admin table load or copy, which runs beside the server's
- * other work in a pod sized for it: a memory cap below the pod's, a spill cap
- * under its ephemeral storage, unordered output (so the writer streams), and
+ * other work in a pod sized for it: a memory cap below the pod's (the
+ * operator's own `duckdb.memoryLimit` when that is lower), a spill cap under
+ * its ephemeral storage, unordered output (so the writer streams), and
  * metadata caches for the many small reads of a Parquet scan.
  */
 export async function applyLoadSessionSettings(
    session: DuckDBConnection,
 ): Promise<void> {
+   const configured = getDuckDBMemoryLimit();
+   const memoryLimit =
+      configured !== undefined &&
+      duckDBByteSize(configured) < duckDBByteSize(LOAD_MEMORY_LIMIT)
+         ? configured
+         : LOAD_MEMORY_LIMIT;
    for (const setting of [
-      "memory_limit='1.5GB'",
+      `memory_limit='${escapeSQL(memoryLimit)}'`,
       "max_temp_directory_size='6GiB'",
       "preserve_insertion_order=false",
       "enable_http_metadata_cache=true",

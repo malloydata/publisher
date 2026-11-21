@@ -2,19 +2,21 @@
 // SPDX-License-Identifier: MIT
 
 import { BuildCancelledError } from "../domain/build_cancelled";
-import { describe, expect, it, spyOn } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { DuckDBInstance } from "@duckdb/node-api";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
+import { spawn, spawnSync } from "node:child_process";
 import {
    existsSync,
    mkdirSync,
    mkdtempSync,
+   readdirSync,
    rmSync,
    utimesSync,
    writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import {
    BadRequestError,
    MaterializationEligibilityError,
@@ -1417,5 +1419,68 @@ describe("removeStaleBuildDirs", () => {
       } finally {
          rmSync(root, { recursive: true, force: true });
       }
+   });
+
+   describe("a directory named for its process", () => {
+      const startedAt = Date.now();
+      const ownPid = process.pid;
+      let root: string;
+      const dir = (name: string, offsetMs: number) => {
+         mkdirSync(join(root, name));
+         const t = new Date(startedAt + offsetMs);
+         utimesSync(join(root, name), t, t);
+      };
+      const left = () => readdirSync(root).sort();
+      beforeEach(() => {
+         root = mkdtempSync(join(tmpdir(), "stale-sweep-pid-"));
+      });
+      afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+      it("names the process that created it", () => {
+         const { dispose, workDir } = createIsolatedBuildSession("pid_name");
+         try {
+            expect(basename(workDir)).toMatch(
+               new RegExp(`^malloy-build-${process.pid}-`),
+            );
+         } finally {
+            void dispose();
+         }
+      });
+
+      it("removes one whose process is gone, however recent, and keeps one whose process is alive, however old", async () => {
+         const live = spawn(process.execPath, [
+            "-e",
+            "setTimeout(() => {}, 60000)",
+         ]);
+         const dead = spawnSync(process.execPath, ["--version"]);
+         try {
+            dir(`malloy-build-${dead.pid}-x`, 60_000);
+            dir(`malloy-build-${live.pid}-x`, -60_000);
+            expect(removeStaleBuildDirs(root, startedAt)).toBe(1);
+            expect(left()).toEqual([`malloy-build-${live.pid}-x`]);
+         } finally {
+            live.kill();
+         }
+      });
+
+      it("removes one of its own pid only when it predates the process: a restarted container reuses pid 1", () => {
+         dir(`malloy-build-${ownPid}-old`, -60_000);
+         dir(`malloy-build-${ownPid}-live`, 60_000);
+         expect(removeStaleBuildDirs(root, startedAt)).toBe(1);
+         expect(left()).toEqual([`malloy-build-${ownPid}-live`]);
+      });
+
+      it("judges one with no pid in its name by its age", () => {
+         dir("malloy-build-abc123", -60_000);
+         dir("malloy-build-7x", 60_000);
+         expect(removeStaleBuildDirs(root, startedAt)).toBe(1);
+         expect(left()).toEqual(["malloy-build-7x"]);
+      });
+   });
+
+   it("does not throw when the temp root cannot be listed", () => {
+      expect(
+         removeStaleBuildDirs(join(tmpdir(), "no-such-root-for-sweep")),
+      ).toBe(0);
    });
 });
