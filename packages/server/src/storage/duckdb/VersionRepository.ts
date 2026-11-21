@@ -342,6 +342,38 @@ export class VersionRepository {
       });
    }
 
+   /**
+    * Delete a package: its row, its versions, its ledger and its runs. Kept,
+    * as deletePackageIfNoVersions keeps them: its versions' own auto-runs,
+    * which their reclaim drops and then deletes, and any run still going. The
+    * ledger is forgotten by the package tag on each boundary, which names
+    * whoever last advanced it, so a table shared across versions keeps its
+    * boundary if another version wrote it last (at most one seed). One
+    * transaction, so a publish
+    * of a further version, which does not take the package lock a package
+    * delete holds, commits either before it (and its version goes too) or
+    * after it (and is refused: the package has no row). A crash leaves all
+    * of it or none.
+    */
+   async deletePackage(id: string): Promise<void> {
+      await this.db.transaction(async (tx) => {
+         const pkg = await tx.get<{ environment_id: string; name: string }>(
+            "SELECT environment_id, name FROM packages WHERE id = ?",
+            [id],
+         );
+         if (!pkg) return;
+         const byPackage = "WHERE environment_id = ? AND package_name = ?";
+         const key = [pkg.environment_id, pkg.name];
+         await tx.run(`DELETE FROM incremental_ledger ${byPackage}`, key);
+         await tx.run(
+            `DELETE FROM materializations ${byPackage} AND NOT (${OWED_RECLAIM_RUN}) AND NOT (${RUNNING_VERSION_RUN})`,
+            key,
+         );
+         await tx.run(`DELETE FROM versions ${byPackage}`, key);
+         await tx.run("DELETE FROM packages WHERE id = ?", [id]);
+      });
+   }
+
    async setManifestPath(
       environmentId: string,
       packageName: string,
@@ -373,16 +405,6 @@ export class VersionRepository {
       await this.db.run(
          `UPDATE versions SET host_owned = TRUE, updated_at = ? WHERE ${KEY} AND host_owned IS NOT TRUE`,
          [new Date().toISOString(), environmentId, packageName, versionId],
-      );
-   }
-
-   async deleteByPackage(
-      environmentId: string,
-      packageName: string,
-   ): Promise<void> {
-      await this.db.run(
-         "DELETE FROM versions WHERE environment_id = ? AND package_name = ?",
-         [environmentId, packageName],
       );
    }
 

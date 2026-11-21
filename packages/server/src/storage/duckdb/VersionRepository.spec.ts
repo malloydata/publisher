@@ -669,6 +669,38 @@ describe("VersionRepository", () => {
       expect(await repo.listVersionsByEnvironment(ENV_ID)).toEqual([]);
    });
 
+   it("lets no publish commit between a package delete's statements", async () => {
+      // A further version publishes without the package lock a package
+      // delete holds, so only the database keeps its commit out of the
+      // middle of the delete. The commit is started the moment the delete
+      // has removed the versions: queued behind that statement on the
+      // connection, it runs before the delete's next one unless the delete
+      // is one transaction.
+      const { db, repo, packageId } = await freshRepo();
+      await repo.commitPublish(newVersion("1.0.0"), always);
+      const conn = db as unknown as {
+         runUnlocked(c: unknown, q: string, p?: unknown[]): Promise<void>;
+      };
+      const runUnlocked = conn.runUnlocked.bind(db);
+      let racing: Promise<unknown> | undefined;
+      conn.runUnlocked = async (c, q, p) => {
+         await runUnlocked(c, q, p);
+         if (!racing && /^DELETE FROM versions WHERE/.test(q.trim())) {
+            racing = repo
+               .commitPublish(newVersion("2.0.0"), always)
+               .catch((err: unknown) => err);
+         }
+      };
+      await repo.deletePackage(packageId);
+      expect(racing).toBeDefined();
+      // Refused: its package went, entirely, before it could commit.
+      const refused = await racing;
+      expect(await repo.listVersions(ENV_ID, PKG)).toEqual([]);
+      expect(await repo.getPackageByName(ENV_ID, PKG)).toBeNull();
+      expect(refused).toBeInstanceOf(Error);
+      expect((refused as Error).message).toMatch(/no registry row/);
+   });
+
    it("says whether a package has any version", async () => {
       const { repo } = await freshRepo();
       expect(await repo.hasVersions(ENV_ID, PKG)).toBe(false);

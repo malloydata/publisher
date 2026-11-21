@@ -179,15 +179,6 @@ describe("MaterializationRepository cascade deletes are records-only", () => {
       expect(runCalls[0].sql).not.toContain("DROP");
       expect(runCalls[0].params).toEqual(["env-1"]);
    });
-
-   it("deleteByPackage issues a single DELETE and no DDL", async () => {
-      const { repo, runCalls } = fakeRepo();
-      await repo.deleteByPackage("env-1", "pkg-a");
-      expect(runCalls.length).toBe(1);
-      expect(runCalls[0].sql).toContain("DELETE FROM materializations");
-      expect(runCalls[0].sql).not.toContain("DROP");
-      expect(runCalls[0].params).toEqual(["env-1", "pkg-a"]);
-   });
 });
 
 // The version a run built, and the slot it holds while active: one run per

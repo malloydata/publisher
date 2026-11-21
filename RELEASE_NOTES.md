@@ -21,6 +21,10 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — deleting a package is one transaction
+
+**Fixed: with package versions on, deleting a package while a further version of it published could leave that version's row with no package.** The delete removed the package's runs, ledger, versions and row as four separate statements, and a publish committing between the last two left a version no package owned: the package read as versioned but answered 404, a second `DELETE` could not remove it, and an unversioned publish of the name answered 409 `PACKAGE_IS_VERSIONED`. A crash during the delete left the same state. The delete is now one transaction: a publish that commits first is deleted with the package, and one that commits after is refused.
+
 ## [Unreleased] — a crash during a new package's first versioned publish leaves no broken package
 
 **Fixed: with package versions on, a server killed during a new package's first versioned publish came back with a package that could not load.** The package's row was written before the compile and its version only after, so a crash in between left a package with no version: after the restart it was listed in `/status` `loadErrors`, answered 404, and a `DELETE` of it left its version folder on disk. The row is now written in the same transaction as the package's first version, so a crash leaves neither, and the publish can simply be sent again. A package already left in that state by an earlier release is cleared by publishing it again.

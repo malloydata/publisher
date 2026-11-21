@@ -51,15 +51,7 @@ export function createDuckDBRepository(
          packages.getPackageByName(environmentId, name),
       createPackage: (pkg) => packages.createPackage(pkg),
       updatePackage: (id, updates) => packages.updatePackage(id, updates),
-      async deletePackage(id) {
-         const pkg = await packages.getPackageById(id);
-         if (pkg) {
-            await ledger.deleteByPackage(pkg.environmentId, pkg.name);
-            await materializations.deleteByPackage(pkg.environmentId, pkg.name);
-            await versions.deleteByPackage(pkg.environmentId, pkg.name);
-         }
-         await packages.deletePackage(id);
-      },
+      deletePackage: (id) => versions.deletePackage(id),
 
       listVersions: (environmentId, packageName) =>
          versions.list(environmentId, packageName),
