@@ -2411,7 +2411,8 @@ export class ServedCopyServe {
          problems.push({
             sourceName: l.declaration ?? l.name,
             reason: "cross_connection_join",
-            join: l.name,
+            join: l.join ?? l.name,
+            ...(l.join !== undefined ? { leftOutWhole: true as const } : {}),
          });
       }
       const unsafeIDs = classificationCeiling(
