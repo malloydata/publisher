@@ -78,6 +78,13 @@ source: crm_current is crm_raw -> {
 
 #@ persist storage="lake" name="gtmval_crm_unrelated"
 source: crm_unrelated is crm_raw -> { group_by: status; aggregate: n is count() }
+
+// A second cross-connection join, in the imported file: what made the
+// importing models' whole copies fail (cross_connection_unbuilt).
+source: crm_including_deleted is crm_raw extend {
+  join_one: cur is crm_current on category = cur.category and region = cur.region
+  measure: order_count is count()
+}
 `;
 
 const UNRELATED = `
@@ -233,6 +240,16 @@ for (const [shape, deals] of Object.entries(SHAPES)) {
                "run: crm_unrelated -> { group_by: status; aggregate: t is n.sum(); order_by: status }",
             ],
          ];
+         queries.push(
+            [
+               "deals.malloy",
+               "run: crm_including_deleted -> { group_by: region; aggregate: order_count }",
+            ],
+            [
+               "deals.malloy",
+               "run: d_raw -> { group_by: region; aggregate: c is count() }",
+            ],
+         );
          const key = (model: string, q: string) => `${model}\u0000${q}`;
 
          beforeAll(async () => {
@@ -358,6 +375,19 @@ for (const [shape, deals] of Object.entries(SHAPES)) {
             expect(s.servedFrom).toBeNull();
          });
 
+         for (const [name, i] of [
+            ["the imported joining source", 5],
+            ["the importer's joining source", 6],
+         ] as const) {
+            it(`answers ${name} live, equal to live`, async () => {
+               const [model, q] = queries[i];
+               const l = live.get(key(model, q))!;
+               const s = await ask(model, q);
+               expect(asStrings(s.rows)).toEqual(asStrings(l.rows));
+               expect(s.servedFrom).toBeNull();
+            });
+         }
+
          it("warns of the left-out join on its own source, not the model", async () => {
             const pkg = await env!.getPackage(parsePackageName(PKG), false);
             const problems = (await pkg
@@ -366,7 +396,10 @@ for (const [shape, deals] of Object.entries(SHAPES)) {
                sourceName?: string;
                reason: string;
             }[];
-            expect(problems.map((p) => [p.sourceName, p.reason])).toEqual([
+            expect(
+               problems.map((p) => [p.sourceName, p.reason]).sort(),
+            ).toEqual([
+               ["crm_including_deleted", "cross_connection_join"],
                ["d_raw", "cross_connection_join"],
             ]);
          });

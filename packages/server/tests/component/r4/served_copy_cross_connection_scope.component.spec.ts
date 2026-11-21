@@ -186,3 +186,149 @@ for (const [shape, body] of Object.entries(shapes)) {
       });
    });
 }
+
+// gtm-funnel finding 2 as found: the model's own leave-out-able join
+// (`d_raw`) and a second one in a file it imports (`crm_including_deleted`).
+// The imported file's refusal failed the import, so the first compile
+// reported the importer's own join only as what follows from that failure;
+// those follow-ons were then never left out, and the whole copy failed.
+const importedSeed = [
+   `CREATE TABLE orders AS SELECT * FROM (VALUES
+      ('a', 'east', 'shipped', 10.0), ('a', 'east', 'cancelled', 5.0),
+      ('b', 'west', 'shipped', 7.0), ('b', 'east', 'shipped', 3.0)
+    ) AS t(category, region, status, amount)`,
+];
+
+const importedCrm = `##! experimental { persistence }
+source: crm_raw is duckdb.table('orders')
+
+#@ persist storage="lake" name="gtmval_crm_current"
+source: crm_current is crm_raw -> {
+  group_by: category, region
+  aggregate: amt is amount.sum()
+}
+
+source: crm_including_deleted is crm_raw extend {
+  join_one: cur is crm_current on category = cur.category and region = cur.region
+  measure: order_count is count()
+}
+`;
+
+const importingDeals = `##! experimental { persistence }
+import "crm.malloy"
+
+source: d_raw is duckdb.table('orders') extend {
+  join_one: cur is crm_current on category = cur.category and region = cur.region
+  measure: deal_total is amount.sum()
+}
+
+source: d11_incl is d_raw -> {
+  group_by: category, region, is_deleted is status = 'cancelled', cur_amt is cur.amt
+  aggregate: amt is amount.sum()
+}
+
+#@ persist storage="lake" name="gtmval_deals11"
+source: deals11 is d11_incl extend { where: not is_deleted }
+
+#@ persist storage="lake" name="gtmval_d_unrelated"
+source: d_unrelated is duckdb.table('orders') -> {
+  group_by: region
+  aggregate: n is count()
+}
+`;
+
+const pipeline = `##! experimental { persistence }
+import "deals.malloy"
+`;
+
+describe("R4: a cross-connection join in the model and another in a file it imports", () => {
+   let fixture: R4Fixture;
+   useMaterializationOn();
+   beforeAll(async () => {
+      fixture = await buildScenario({
+         files: { "deals.malloy": importingDeals, "crm.malloy": importedCrm },
+         seedSql: importedSeed,
+      });
+   });
+   afterAll(async () => {
+      await disposeScenarios();
+   });
+
+   const served = [
+      [
+         "an unrelated stored source",
+         "run: d_unrelated -> { group_by: region; aggregate: t is n.sum() }",
+      ],
+      [
+         "the stored source over the joining stage",
+         "run: deals11 -> { group_by: category; aggregate: a is amt.sum() }",
+      ],
+      [
+         "the imported stored source both joins read",
+         "run: crm_current -> { group_by: category; aggregate: a is amt.sum() }",
+      ],
+   ] as const;
+   for (const [name, malloy] of served) {
+      it(`serves ${name}, equal to live`, async () => {
+         const run = await fixture.run({ name, malloy });
+         expect(run.servedVia).toBe("served_copy");
+         expect(rowDifference(run.live, run.served)).toBeUndefined();
+      });
+   }
+
+   const live = [
+      [
+         "the importer's joining source",
+         "run: d_raw -> { group_by: category; aggregate: deal_total }",
+      ],
+      [
+         "the imported joining source",
+         "run: crm_including_deleted -> { group_by: region; aggregate: order_count }",
+      ],
+   ] as const;
+   for (const [name, malloy] of live) {
+      it(`answers ${name} live, equal to live`, async () => {
+         const run = await fixture.run({ name, malloy });
+         expect(run.servedVia).toBeUndefined();
+         expect(rowDifference(run.live, run.served)).toBeUndefined();
+      });
+   }
+
+   it("warns of each left-out join on its own source", async () => {
+      const problems = await fixture.servedCopyProblems();
+      expect(
+         problems.map((p) => [p.sourceName, p.reason, p.join]).sort(),
+      ).toEqual([
+         ["crm_including_deleted", "cross_connection_join", "cur"],
+         ["d_raw", "cross_connection_join", "cur"],
+      ]);
+   });
+});
+
+describe("R4: an importer of a model whose imported file also refuses a join", () => {
+   let fixture: R4Fixture;
+   useMaterializationOn();
+   beforeAll(async () => {
+      fixture = await buildScenario({
+         files: {
+            "pipeline.malloy": pipeline,
+            "deals.malloy": importingDeals,
+            "crm.malloy": importedCrm,
+         },
+         seedSql: importedSeed,
+      });
+   });
+   afterAll(async () => {
+      await disposeScenarios();
+   });
+
+   it("serves the unrelated stored source, equal to live", async () => {
+      const run = await fixture.run({
+         name: "pipeline",
+         malloy:
+            "run: d_unrelated -> { group_by: region; aggregate: t is n.sum() }",
+      });
+      expect(run.servedVia).toBe("served_copy");
+      expect(rowDifference(run.live, run.served)).toBeUndefined();
+   });
+});

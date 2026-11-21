@@ -224,6 +224,39 @@ describe("leaving out joins across connections", () => {
       expect(out).toBe('##! experimental.x\n## doc="m"\n\n');
    });
 
+   it("leaves out an importer's own refused join, hidden on the first compile by its import's", async () => {
+      const base = "file:///p/base.malloy";
+      const files: Record<string, string> = {
+         [base]: model,
+         [URL_]: `import "base.malloy"
+source: own is product.sql("select 1 as account_id, 5 as events") extend {
+  join_one: v is accounts on v.id = account_id
+}
+source: reads_own is own -> { group_by: account_id, n is v.account_name }
+source: kept is accounts extend { measure: c is count() }
+`,
+      };
+      const compile = compileFiles(files);
+      const firstError = await compile(new Map()).catch((e) => e);
+      const view = await leaveOut({
+         firstError,
+         readText: (u) => files[u],
+         load: compile,
+      });
+      expect(
+         view?.leftOut
+            .filter((l) => l.crossConnection)
+            .map((l) => [l.url, l.name]),
+      ).toEqual([
+         [base, "u"],
+         [URL_, "v"],
+      ]);
+      expect(view?.leftOut.map((l) => l.name)).toContain("reads_own");
+      expect(Object.keys(view?.result._modelDef.contents ?? {})).toContain(
+         "kept",
+      );
+   });
+
    it("follows a join left out of an imported file into its importer", async () => {
       const base = "file:///p/base.malloy";
       const files: Record<string, string> = {

@@ -172,14 +172,16 @@ async function leaveOut(
    const overlay = new Map(args.overlay ?? []);
    const leftOut: LeftOutDefinition[] = [];
    const first = errorProblems(args.firstError) ?? [];
-   // What the first compile reported beside the refused joins must follow
-   // from them (an importer that could not find a source whose file failed),
-   // so it is never left out itself: each pass leaves out what fails anew,
-   // and once nothing else fails, one still there is the author's own error
-   // and the file is left to fail with it.
-   const followOn = new Set(
-      first.filter((p) => p.code !== JOIN_CONNECTION_MISMATCH).map(problemKey),
-   );
+   // What a compile reports beside refused joins must follow from them (an
+   // importer that could not find a source whose file failed), so it is
+   // never left out itself: each pass leaves out what fails anew, and once
+   // nothing else fails, one still there is the author's own error and the
+   // file is left to fail with it. Reset by each compile that reports refused
+   // joins: an imported file's refusal hides its importer's own refusals
+   // behind what follows from the failed import, and those follow-ons are
+   // answered by the importer's joins, refused only on a later pass.
+   let reported: ProblemLike[] = [];
+   let followOn = new Set<string>();
    let problems = first;
    const maxPasses = args.maxPasses ?? 8;
    for (let pass = 0; pass < maxPasses; pass++) {
@@ -187,6 +189,10 @@ async function leaveOut(
       const refusedJoins = problems.filter(
          (p) => p.code === JOIN_CONNECTION_MISMATCH,
       );
+      if (refusedJoins.length > 0) {
+         reported = problems.filter((p) => p.code !== JOIN_CONNECTION_MISMATCH);
+         followOn = new Set(reported.map(problemKey));
+      }
       const toCut =
          refusedJoins.length > 0
             ? refusedJoins
@@ -232,13 +238,12 @@ async function leaveOut(
                   : own;
             if (!cut) return undefined;
             // A declaration left out whole must not take with it a problem
-            // the first compile reported beside the refusal: that one must
-            // be gone because the join is out, not because its text is.
+            // its compile reported beside the refusal: that one must be gone
+            // because the join is out, not because its text is.
             if (
                cut !== own &&
-               first.some((q) => {
-                  if (q.code === JOIN_CONNECTION_MISMATCH || q.at?.url !== url)
-                     return false;
+               reported.some((q) => {
+                  if (q.at?.url !== url) return false;
                   const at = offsetOf(text, q.at?.range?.start ?? NOWHERE);
                   return at >= cut.start && at < cut.end;
                })

@@ -46,6 +46,17 @@ export function namesServedCopyAlias(text: string): boolean {
 }
 
 /**
+ * `text` with each served-copy alias (quoted or not) said as `the storage
+ * destination`, for a caller's view of a message that names one.
+ */
+export function withoutServedCopyAliases(text: string): string {
+   return text.replace(
+      new RegExp(`'?__publisher_storage_${TOKEN}_\\d+'?`, "g"),
+      "the storage destination",
+   );
+}
+
+/**
  * The package's connections, plus `destinations` (those in `allowed`) under
  * their aliases. The default connection is the package's.
  */
