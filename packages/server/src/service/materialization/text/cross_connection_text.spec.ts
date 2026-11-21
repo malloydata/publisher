@@ -173,6 +173,32 @@ describe("leaving out joins across connections", () => {
       );
    });
 
+   it("names the whole statement on a cut of one definition of several", () => {
+      const text =
+         "source: s is t extend {\n  join_one: a is u with k, b is u with k\n}\n";
+      const one = definitionCutAt(text, text.indexOf("a is"));
+      const other = definitionCutAt(text, text.indexOf("b is"));
+      expect(one?.statement).toEqual(other?.statement);
+      expect(one?.statement?.definitions).toBe(2);
+      const whole = one!.statement!;
+      expect(
+         (text.slice(0, whole.start) + text.slice(whole.end)).replace(
+            /\s+/g,
+            " ",
+         ),
+      ).toBe("source: s is t extend { } ");
+   });
+
+   it("cuts the top-level declaration around an offset when asked", () => {
+      const text =
+         "source: s is t extend {\n  join_one: a is u with k\n}\nsource: z is t\n";
+      const cut = definitionCutAt(text, text.indexOf("a is"), true);
+      expect(cut?.left).toEqual({ keyword: "source", name: "s" });
+      expect(text.slice(0, cut?.start) + text.slice(cut?.end)).toBe(
+         "\nsource: z is t\n",
+      );
+   });
+
    it("finds nothing to cut in a where:", () => {
       const text = "source: s is t extend {\n  where: x > 1\n}\n";
       const cut = definitionCutAt(text, text.indexOf("x > 1"));

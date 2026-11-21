@@ -960,6 +960,16 @@ function servedCopyProblemReasonMessage(
       case "fields_not_carried":
          return "This source inherits fields (a measure, view or join declared on the source it is built from) that its stored table does not carry, so the served copy leaves it as written.";
       case "cross_connection_join":
+         if (problem.leftOutWhole) {
+            return (
+               `This source's join${join ? ` \`${join}\`` : ""} reads a source the served copy moves to its ` +
+               "storage destination, so the join crosses connections there, and it cannot be left out alone " +
+               "(what reads it cannot be left out with it). The served copy leaves this source out, so its " +
+               "queries are answered live, and the model's other stored sources still serve. To serve it, " +
+               "store this source in the same destination, or build the joined source in its own database " +
+               "(drop `storage=`)."
+            );
+         }
          return (
             `This source is stored in a destination its join${join ? ` \`${join}\`` : ""} cannot reach: ` +
             "the joined source reads another connection. Queries that use the join are answered live; " +

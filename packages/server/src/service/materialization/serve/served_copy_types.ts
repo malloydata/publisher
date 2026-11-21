@@ -65,6 +65,12 @@ export interface ServedCopyProblem {
     * table instead.
     */
    servedFromDatabase?: true;
+   /**
+    * For `cross_connection_join`: the join could not be left out alone, so
+    * the served copy leaves out the whole source declaring it, and every
+    * query of that source is answered live.
+    */
+   leftOutWhole?: true;
 }
 
 export interface Compiled {
