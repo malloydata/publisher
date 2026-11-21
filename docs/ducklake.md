@@ -210,8 +210,8 @@ curl -s -X PUT $A/catalogs/sales/schemas/main/tables/orders_2025 -H 'Content-Typ
   -d '{"source": {"catalog": "sales_2025", "schema": "main", "table": "orders"}}'
 
 # Create a schema (201 created, 200 existed; `If-None-Match: *` refuses one that exists with
-# 412 SCHEMA_EXISTS). Lowercase names only; `main`, `information_schema`, `pg_catalog`, `temp`
-# and `system` answer 400 SCHEMA_RESERVED.
+# 412 SCHEMA_EXISTS). Lowercase names only; `main`, `memory`, `information_schema`,
+# `pg_catalog`, `temp` and `system` answer 400 SCHEMA_RESERVED.
 curl -s -X PUT $A/catalogs/sales/schemas/staging
 
 # What it holds: the catalog, one schema's tables, or every table of every schema.

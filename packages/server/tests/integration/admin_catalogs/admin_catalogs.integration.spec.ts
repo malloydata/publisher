@@ -886,6 +886,7 @@ describe.skipIf(!SUPERUSER)(
             }
             for (const reserved of [
                "main",
+               "memory",
                "information_schema",
                "pg_catalog",
                "temp",

@@ -66,8 +66,11 @@ const IDENT = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const ROLE = /^[A-Za-z_][A-Za-z0-9_-]*$/;
 /** Schemas the engine owns: never created, dropped or listed through the API. */
 const SYSTEM_SCHEMAS = ["information_schema", "pg_catalog", "temp", "system"];
-/** Reserved on a schema create or drop; `main` is DuckLake's default and cannot be dropped. */
-const RESERVED_SCHEMAS = ["main", ...SYSTEM_SCHEMAS];
+/**
+ * Reserved on a schema create or drop; `main` is DuckLake's default and cannot be dropped,
+ * and `memory` would make `memory.t` ambiguous with DuckDB's built-in catalog.
+ */
+const RESERVED_SCHEMAS = ["main", "memory", ...SYSTEM_SCHEMAS];
 /** DuckLake's interval spelling for `delete_older_than`, e.g. `1 day`, `12 hours`. */
 const INTERVAL = /^(\d+) (second|minute|hour|day|week)s?$/;
 /** Used by a snapshot delete when the catalog records no file-deletion grace. */
