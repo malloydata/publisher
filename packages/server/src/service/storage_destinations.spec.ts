@@ -840,13 +840,12 @@ describe("Environment: connections and storage destinations are disjoint", () =>
       });
    });
 
-   it("derives a destination's DuckDB file apart from a same-named connection's", () => {
-      // A pooled DuckDB instance is keyed on `databasePath` + `workingDirectory`
-      // and NOT on the connection name, while both lists derive that path from
-      // `<root>/<name>`. Same root plus the same name would be one shared
-      // instance, and the attach is `ATTACH OR REPLACE … AS <name>` — so one
-      // would replace the other's, across two namespaces that are allowed to
-      // reuse a name. Different roots is what makes that unreachable.
+   it("roots a destination apart from a same-named connection's", () => {
+      // A pooled DuckDB instance is keyed on its share key, which includes
+      // `workingDirectory` but not the connection name, and the attach is
+      // `ATTACH OR REPLACE … AS <name>`: one would replace the other's, across
+      // two namespaces that are allowed to reuse a name. Different roots is what
+      // makes that unreachable.
       const connectionSide = assembleEnvironmentConnections(
          [ducklakeDestination("shared", "tenant_lake")],
          envPath,
@@ -859,29 +858,31 @@ describe("Environment: connections and storage destinations are disjoint", () =>
       const connectionMeta = connectionSide.metadata.get("shared")!;
       const destinationMeta = destinationSide.metadata.get("shared")!;
 
-      expect(destinationMeta.databasePath).not.toBe(
-         connectionMeta.databasePath,
-      );
       expect(destinationMeta.workingDirectory).not.toBe(
          connectionMeta.workingDirectory,
       );
-      expect(destinationMeta.databasePath).toContain(STORAGE_DESTINATIONS_DIR);
-      expect(connectionMeta.databasePath).not.toContain(
+      expect(destinationMeta.workingDirectory).toContain(
          STORAGE_DESTINATIONS_DIR,
       );
+      expect(connectionMeta.workingDirectory).not.toContain(
+         STORAGE_DESTINATIONS_DIR,
+      );
+      // A lake keeps no database file of its own.
+      expect(destinationMeta.databasePath).toBeUndefined();
+      expect(connectionMeta.databasePath).toBeUndefined();
    });
 
-   it("opens two different database files for one name held by both lists", async () => {
-      // The filesystem consequence of the derivation above, through a real
-      // Environment: resolving the name on each side opens its own DuckDB file.
-      // Both lookups fail — neither catalog exists — but the local database each
-      // one opened is what the instance pool keys on, so two files is two
-      // instances.
+   it("opens two different instances for one name held by both lists", async () => {
+      // The consequence of the rooting above, through a real Environment:
+      // resolving the name on each side opens its own in-memory instance, and
+      // neither leaves a file behind. Both lookups fail (neither catalog
+      // exists), but the instance each one opened is what the pool keys on.
       const environment = makeEnvironment(
          [ducklakeDestination("shared", "tenant_lake")],
          [ducklakeDestination("shared", "org_a")],
       );
-
+      const keysBefore = new Set(Object.keys(DuckDBConnection.activeDBs));
+      const opened = new Set<string>();
       for (const config of [
          environment.getEnvironmentMalloyConfig(),
          environment.getStorageDestinationMalloyConfig(),
@@ -891,19 +892,15 @@ describe("Environment: connections and storage destinations are disjoint", () =>
          } catch {
             // Expected: the catalogs behind both are unreachable.
          }
+         for (const key of Object.keys(DuckDBConnection.activeDBs)) {
+            if (!keysBefore.has(key)) opened.add(key);
+         }
       }
 
-      expect(fs.existsSync(path.join(envPath, "shared_ducklake.duckdb"))).toBe(
-         true,
-      );
+      expect(opened.size).toBe(2);
       expect(
-         fs.existsSync(
-            path.join(
-               storageDestinationRoot(envPath),
-               "shared_ducklake.duckdb",
-            ),
-         ),
-      ).toBe(true);
+         fs.readdirSync(envPath).filter((file) => file.endsWith(".duckdb")),
+      ).toEqual([]);
    });
 
    it("reports a destination as name and type, and never its config", async () => {

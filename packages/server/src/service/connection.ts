@@ -35,6 +35,7 @@ import type { TrinoConnection } from "@malloydata/db-trino";
 import {
    Connection,
    contextOverlay,
+   makeDigest,
    MalloyConfig,
    type QueryRecord,
    TableSourceDef,
@@ -72,11 +73,7 @@ import {
 } from "../errors";
 import { logAxiosError, logger } from "../logger";
 import { redactConnectionSecretShapes, redactPgSecrets } from "../pg_helpers";
-import {
-   assertSafeEnvironmentPath,
-   assertSafePackageName,
-   safeJoinUnderRoot,
-} from "../path_safety";
+import { assertSafePackageName } from "../path_safety";
 import {
    assembleEnvironmentConnections,
    buildPostgresConnectionString,
@@ -3102,6 +3099,7 @@ const renewingStorageSecretOf = new AsyncLocalStorage<object>();
 
 class DuckLakeConnection extends DuckDBConnection {
    private connectionName: string;
+   private legacyDigest: string;
    private storageSecretRenewer?: () => Promise<void>;
    /**
     * The renewal in flight, shared by every statement that failed on the
@@ -3291,15 +3289,25 @@ class DuckLakeConnection extends DuckDBConnection {
 
    constructor(options: PublisherDuckDBOptions) {
       super(options);
-
-      if (!options.databasePath?.endsWith("_ducklake.duckdb")) {
-         throw new Error(
-            `DuckLakeConnection should only be used for DuckLake connections. ` +
-               `Expected database path ending with '_ducklake.duckdb', got: ${options.databasePath}`,
-         );
-      }
-
       this.connectionName = options.name;
+      this.legacyDigest = makeDigest(
+         "duckdb",
+         path.join(
+            options.workingDirectory ?? "",
+            `${options.name}_ducklake.duckdb`,
+         ),
+         options.workingDirectory,
+         undefined,
+      );
+   }
+
+   /**
+    * The digest Malloy computed when this connection opened a
+    * `<env>/<name>_ducklake.duckdb` file, which persisted-source addresses
+    * already embed and which, unlike an in-memory path, differs per lake.
+    */
+   getDigest(): string {
+      return this.legacyDigest;
    }
 
    /**
@@ -3362,36 +3370,6 @@ class DuckLakeConnection extends DuckDBConnection {
          );
       }
       return result;
-   }
-}
-
-export async function deleteDuckLakeConnectionFile(
-   connectionName: string,
-   environmentPath: string,
-): Promise<void> {
-   assertSafePackageName(connectionName);
-   assertSafeEnvironmentPath(environmentPath);
-   const ducklakePath = safeJoinUnderRoot(
-      environmentPath,
-      `${connectionName}_ducklake.duckdb`,
-   );
-   try {
-      await fs.access(ducklakePath);
-      await fs.rm(ducklakePath);
-      logger.info(
-         `Removed DuckLake connection file ${connectionName}_ducklake.duckdb from ${environmentPath}`,
-      );
-   } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-         logger.debug(
-            `DuckLake connection file ${connectionName}_ducklake.duckdb does not exist, skipping deletion`,
-         );
-      } else {
-         logger.error(
-            `Failed to remove DuckLake connection file ${connectionName}_ducklake.duckdb from ${environmentPath}`,
-            { error },
-         );
-      }
    }
 }
 
@@ -3683,7 +3661,7 @@ function statementTimeoutSetupSQL(
    return ms === undefined ? undefined : `SET statement_timeout = ${ms}`;
 }
 
-function buildDuckLakeConnection(
+export function buildDuckLakeConnection(
    metadata: EnvironmentConnectionMetadata,
    entry: CoreConnectionEntry,
 ): DuckLakeConnection {
@@ -3730,7 +3708,7 @@ function getMetadataForLookup(
  * application would risk divergence and a silent live-serving fallback. The
  * value is an opaque token: never re-hashed, logged or parsed.
  */
-function applyConnectionFingerprint(
+export function applyConnectionFingerprint(
    connection: Connection,
    metadata: EnvironmentConnectionMetadata | undefined,
 ): Connection {

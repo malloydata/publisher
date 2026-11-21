@@ -71,7 +71,6 @@ import { isDeepStrictEqual } from "util";
 import { pathToFileURL } from "url";
 import {
    buildEnvironmentMalloyConfig,
-   deleteDuckLakeConnectionFile,
    EnvironmentMalloyConfig,
    InternalConnection,
 } from "./connection";
@@ -5611,15 +5610,6 @@ export class Environment {
             { error },
          );
       }
-   }
-
-   public async deleteDuckLakeConnection(
-      connectionName: string,
-   ): Promise<void> {
-      await deleteDuckLakeConnectionFile(connectionName, this.environmentPath);
-      logger.info(
-         `Removed DuckLake connection ${connectionName} from environment ${this.environmentName}`,
-      );
    }
 }
 

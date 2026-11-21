@@ -21,6 +21,12 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — a DuckLake connection keeps no `<name>_ducklake.duckdb` file, and editing one no longer stalls queries
+
+**Changed: a DuckLake connection opens on an in-memory primary instead of an empty `<name>_ducklake.duckdb` file in the environment directory.** The file held nothing (the catalog is in Postgres and the data is in object storage). Because two instances of one file are not supported, an edit to a DuckLake connection made the new generation wait for the old one's fixed 30 s release, and queries on the connection stalled until it ended. The edited connection now answers at once while the old generation finishes its in-flight queries.
+
+**Who is affected:** an environment with a DuckLake connection. An existing `<name>_ducklake.duckdb` file is no longer used and may be deleted; deleting the connection no longer removes it. Persisted-source addresses do not change on upgrade. **What to do:** nothing.
+
 ## [Unreleased] — a `statement_usage` record carries `bytes_out`, and a notebook cell on a metered connection is recorded
 
 **New field on the `statement_usage` record: `bytes_out`.** It follows the fields 0.16.1 added (`statement_id`, `catalog`, `threads`, `worker`). `bytes_out` is the size in UTF-8 bytes of the statement's result as Publisher serialized it for the caller, in the shape asked for: a model query's `result` (full or compact; MCP's `execute_query` asks for compact), a notebook cell's `result`, raw SQL's `data`. The envelope around it (the HTTP response's other fields, an MCP answer's metadata) is not counted. For Publisher's own MCP `execute_query`, it is the compact result the query returned to the tool, before the tool wraps it and trims rows to fit its size budget: the agent can receive fewer bytes than it counts. It is absent on a build, a load or a copy (they return no rows), on a failed statement, and when a row or byte cap refused the result.

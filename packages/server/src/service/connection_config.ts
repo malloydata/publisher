@@ -975,15 +975,13 @@ export const DECLARABLE_STORAGE_DESTINATION_TYPES: ReadonlySet<string> =
    new Set(["ducklake"]);
 
 /**
- * Subdirectory of the environment root holding the local DuckDB files of
- * storage destinations, keeping them out of the directory connection
- * files derive into.
+ * Subdirectory of the environment root that storage destinations use as their
+ * working directory, apart from the directory connections use.
  *
- * Not cosmetic. A DuckDB instance is pooled by `databasePath` +
- * `workingDirectory`; the share key excludes the connection name
- * (`buildDuckDBShareKey`), and both lists derive the path as
- * `<root>/<name>…duckdb`. A connection and a destination may share a name, so
- * without separate roots they would share one pooled instance, and
+ * Not cosmetic. A DuckDB instance is pooled by its share key
+ * (`buildDuckDBShareKey`), which includes `workingDirectory` but excludes the
+ * connection name. A connection and a destination may share a name and a
+ * config, so without separate roots they would share one pooled instance, and
  * `ATTACH OR REPLACE … AS <name>` would let one replace the other's attach and
  * a query read across the two. (If malloydata/malloy#3006 changes the share
  * key, re-check that it still excludes the name.)
@@ -1504,23 +1502,21 @@ function buildMotherDuckEntry(
    };
 }
 
-function buildDuckLakeEntry(
-   connection: NamedConnection,
-   environmentPath: string,
-): CoreConnectionEntry {
+function buildDuckLakeEntry(connection: NamedConnection): CoreConnectionEntry {
    // Shape is validated up front by validateConnectionShape.
    return {
-      ...buildDuckdbEntry(
-         connection.name,
-         environmentPath,
-         `${connection.name}_ducklake.duckdb`,
-      ),
+      // The catalog is Postgres and the data remote, so the primary holds
+      // nothing: in memory, so a changed generation never waits on a file.
+      is: "duckdb",
+      databasePath: ":memory:",
       // Attached, then locked to its data path (duckdb_lockdown.ts). The key
       // digests the catalog config, so an edit opens a fresh instance rather
-      // than re-attaching on a locked one.
+      // than re-attaching on a locked one. The name keeps two lakes with
+      // identical config off one locked instance.
       ...networkedDuckDBOptions(
          "ducklake",
          setupIdentity({
+            name: connection.name,
             ducklakeConnection: connection.ducklakeConnection ?? null,
             managed: connection.managed === true,
          }),
@@ -1573,7 +1569,7 @@ function buildCoreEntry(
       case "motherduck":
          return buildMotherDuckEntry(connection);
       case "ducklake":
-         return buildDuckLakeEntry(connection, environmentPath);
+         return buildDuckLakeEntry(connection);
       case "publisher":
          return buildPublisherEntry(connection);
       default:
@@ -1617,11 +1613,9 @@ export function assembleEnvironmentConnections(
          connection.duckdbConnection?.attachedDatabases ?? [];
       const isDuckLake = connection.type === "ducklake";
       const isDuckdb = connection.type === "duckdb";
-      const databasePath = isDuckLake
-         ? path.join(environmentPath, `${connection.name}_ducklake.duckdb`)
-         : isDuckdb
-           ? path.join(environmentPath, `${connection.name}.duckdb`)
-           : undefined;
+      const databasePath = isDuckdb
+         ? path.join(environmentPath, `${connection.name}.duckdb`)
+         : undefined;
 
       metadata.set(connection.name, {
          apiConnection,
