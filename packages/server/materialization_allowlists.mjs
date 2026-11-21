@@ -187,6 +187,108 @@ export const RATCHET_DIALECT_LITERALS = {
       step: "table",
    },
 };
+/**
+ * Connection-type literals (a configured type spelled as a string literal or
+ * an object key), per file, over materialization and the connection modules
+ * the registry (service/dialects/) absorbs: frozen at their count before the
+ * branches move, each tagged with the step that moves them. `table`: a list
+ * of types kept as data (FederatedSourceType, PASSTHROUGH_SOURCE_TYPES).
+ */
+export const RATCHET_CONNECTION_TYPE_LITERALS = {
+   // READ_ONLY_DIALECTS' `sqlserver`, and the same-catalog gate's `ducklake`.
+   "service/materialization/plan/materialization_eligibility.ts": {
+      count: 2,
+      step: "table",
+   },
+   // the package sandbox's connection name.
+   "service/materialization/run/reclaimer.ts": { count: 1, step: "D4" },
+   // a destination's type.
+   "service/materialization/run/storage_admin.ts": { count: 3, step: "D4" },
+   // DECODED_PATH_DIALECTS and the server-version probe's dialect.
+   "service/materialization/run/incremental_apply.ts": { count: 4, step: "D4" },
+   // the passthrough's source types and the destination's.
+   "service/materialization/run/materialization_build_session.ts": {
+      count: 14,
+      step: "D4",
+   },
+   // the read-cost record's engine label.
+   "service/materialization/run/build_read_cost.ts": { count: 4, step: "D4" },
+   // the DuckLake destination's load.
+   "service/materialization/run/storage_table_load.ts": {
+      count: 2,
+      step: "D4",
+   },
+   // the DuckLake catalog read of a database table's columns.
+   "service/materialization/run/database_column_read.ts": {
+      count: 3,
+      step: "table",
+   },
+   // BigQuery's passthrough read of an incremental delta.
+   "service/materialization/run/incremental_storage.ts": {
+      count: 2,
+      step: "D4",
+   },
+   // a DuckLake source's same-catalog build.
+   "service/materialization/run/storage_build_strategy.ts": {
+      count: 1,
+      step: "D4",
+   },
+   // the SQL half of the dialect table: comparisons on a dialect that shares a type's spelling.
+   "service/materialization/run/warehouse_sql.ts": { count: 19, step: "table" },
+   // FederatedSourceType's `snowflake`.
+   "service/materialization/run/build_attribution.ts": { count: 3, step: "D4" },
+   // a read option named after the destination, not a branch.
+   "service/materialization/serve/storage_bindings.ts": {
+      count: 1,
+      step: "table",
+   },
+   // a read option named after the destination, not a branch.
+   "service/materialization/serve/view_variants.ts": {
+      count: 1,
+      step: "table",
+   },
+   // a read option named after the destination, not a branch.
+   "service/materialization/serve/served_copy_serve.ts": {
+      count: 2,
+      step: "table",
+   },
+   // a read option named after the destination, not a branch.
+   "service/materialization/serve/rollup_variants.ts": {
+      count: 1,
+      step: "table",
+   },
+   // the same-catalog rule's `ducklake`, data the registry agrees with.
+   "service/materialization/domain/same_catalog_build.ts": {
+      count: 2,
+      step: "table",
+   },
+   // the dialect table, whose keys share a type's spelling.
+   "service/materialization/domain/dialect.ts": { count: 15, step: "table" },
+   // the dialect table's evidence, keyed the same way.
+   "service/materialization/domain/dialect_evidence.ts": {
+      count: 7,
+      step: "table",
+   },
+   // PASSTHROUGH_SOURCE_TYPES, data the registry agrees with.
+   "service/materialization/domain/source_connection_type.ts": {
+      count: 7,
+      step: "table",
+   },
+   // attach handlers, the passthrough federation, the per-type core entries.
+   "service/connection.ts": { count: 56, step: "D3" },
+   // per-type shape validation and core entries.
+   "service/connection_config.ts": { count: 46, step: "D3" },
+   // a deleted connection's file cleanup.
+   "service/connection_service.ts": { count: 2, step: "D3" },
+   // the introspectors by type.
+   "service/db_utils.ts": { count: 16, step: "D3" },
+   // a DuckLake destination's catalog overlap.
+   "service/destination_overlap.ts": { count: 2, step: "D3" },
+   // the quoting sets, keyed by dialect.
+   "service/quoting.ts": { count: 7, step: "table" },
+   // per-type test and schema routes.
+   "controller/connection.controller.ts": { count: 28, step: "D3" },
+};
 /** Functions over 200 lines, "<file>#<function>": step. */
 export const RATCHET_LONG_FUNCTIONS = {};
 /** Switch reads outside config.ts, the facade and the query pipeline, per file. */
