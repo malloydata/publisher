@@ -24,4 +24,4 @@ After adding or changing one:
 - Write a `RELEASE_NOTES.md` section when users will see the change.
 - A test harness or script that starts this tree's server sets the derived names. One that also starts an older build, such as an A/B baseline, keeps the old names, which every release still reads.
 
-The design, and which old name maps to which key, is [docs/configuration-design.md](docs/configuration-design.md).
+The design, and which old name maps to which key, is Appendix C of [docs/publisher-v1.md](docs/publisher-v1.md#appendix-c-the-configuration-registry-and-mapping).

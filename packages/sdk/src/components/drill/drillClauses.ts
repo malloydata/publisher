@@ -11,16 +11,15 @@ import { escapeMalloyString } from "../../utils/malloyString";
  *
  * The rows query reads each dimension's value from here and writes it itself
  * (`literalText`), rather than taking the renderer's own `DrillData.query`,
- * which Malloy 0.0.435 cannot run as written: it puts a string between double
- * quotes without escaping it, it reads every hour as `00`, and it writes
- * quarter, week and minute literals (`@2026-Q1`) a filter refuses. What a
- * filter does accept for every truncation is the truncated value itself at
- * full precision, so that is what is written: a date as its day, a timestamp
- * to the second, or to its fraction when it has one.
+ * which Malloy cannot run as written for a truncated time: measured on 0.0.435,
+ * it reads every hour as `00`, and it writes quarter, week and minute literals
+ * (`@2026-Q1`) a filter refuses; 0.0.438 still writes a quarter that way.
+ * What a filter does accept for every truncation is the truncated value itself
+ * at full precision, so that is what is written: a date as its day, a
+ * timestamp to the second, or to its fraction when it has one.
  *
- * Remove these workarounds, and take `DrillData.query` as written, once a
- * Malloy release fixes the renderer's string quoting, hour digits and
- * truncated literals.
+ * Remove this workaround, and take `DrillData.query` as written, once a Malloy
+ * release fixes the renderer's hour digits and truncated literals.
  */
 export type DrillClause = Malloy.DrillOperation;
 

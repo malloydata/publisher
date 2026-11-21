@@ -298,6 +298,29 @@ const SHAPES: Shape[] = [
       query: "run: m -> { group_by: c is concat(cc, '!') }",
       want: { served: "materialized" },
    },
+   // A query's own filter comparing a C column with a literal compares
+   // under the column's collation (it outranks the literal's default), so
+   // it is judged by the column's, not by the en_US default.
+   {
+      name: "C: a query's own range filter on a C column, against a literal",
+      query: "run: m -> { where: cc > 'b'; select: id, cc; order_by: id }",
+      want: { served: "materialized" },
+   },
+   {
+      name: "C: a query's own pattern filter on a C column",
+      query: "run: m -> { where: cc ~ 'a%'; select: id, cc; order_by: id }",
+      want: { served: "materialized" },
+   },
+   {
+      name: "en_US: a query's own range filter on an en_US column, against a literal",
+      query: "run: m -> { where: cat > 'b'; select: id, cat; order_by: id }",
+      want: { live: DECLINED },
+   },
+   {
+      name: "C: a query's own range filter through a function, which is not followed",
+      query: "run: m -> { where: upper(cc) > 'B'; select: id, cc; order_by: id }",
+      want: { live: DECLINED },
+   },
    {
       name: "C.utf8: a group_by alone, in Malloy's implicit order",
       query: "run: m -> { group_by: cu }",

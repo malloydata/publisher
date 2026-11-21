@@ -42,6 +42,7 @@ import { capabilitiesOf } from "../domain/dialect";
 import {
    driftDeclaredType,
    driftedColumnRead,
+   spelledNativeType,
    storedColumnsOfOutput,
    storedMalloyType,
    storedTypeServesAs,
@@ -418,7 +419,12 @@ export function deriveDatabaseServeBindings(args: {
       const entry = entries[source.sourceEntityId];
       if (!entry?.tableName) continue;
       const schema = plan
-         ? plannedWithCaptured(plan.storedColumns, entry.schema)
+         ? plannedWithCaptured(
+              plan.storedColumns,
+              entry.schema?.length
+                 ? entry.schema
+                 : capturedOfNative(entry.nativeSchema, source.dialect),
+           )
          : // What its build captured, else what its compiled output derives
            // (a table built before the capture).
            entry.schema?.length
@@ -497,6 +503,29 @@ function plannedWithCaptured(
          (c) => !named.has(c.name) && ZONED_TIMESTAMP.test(c.type.trim()),
       ),
    ];
+}
+
+/**
+ * A table's columns from the warehouse types its build captured, spelled as
+ * a capture spells them (`spelledNativeType`): for a table whose build could
+ * not read its columns back (Postgres's schema reader refuses a name with no
+ * schema, which is how a build names its tables). Undefined with none to
+ * read.
+ */
+function capturedOfNative(
+   nativeSchema: readonly { name: string; type: string }[] | undefined,
+   dialect: string | undefined,
+): StoredColumn[] | undefined {
+   if (!nativeSchema?.length || !dialect) return undefined;
+   try {
+      return nativeSchema.flatMap((c) => {
+         const type = spelledNativeType(c.type, dialect);
+         return type ? [{ name: c.name, type }] : [];
+      });
+   } catch {
+      // A dialect Malloy does not know: no spelling to read them with.
+      return undefined;
+   }
 }
 
 /**
@@ -895,14 +924,20 @@ function declaredMoves(
 /**
  * Whether a build of a column the source declares as `declared` writes
  * `storedType` by design, though the type does not serve it: a warehouse
- * answers a `date` truncation (or `date + interval`) with a naive timestamp,
- * and a `boolean` over an integer flag with the integer.
+ * answers a `date` truncation (or `date + interval`) with a timestamp, and a
+ * `boolean` over an integer flag with the integer.
+ *
+ * Postgres answers `DATE_TRUNC` of a date with a `timestamptz`: midnight in
+ * the session's zone, which Malloy's driver sets to UTC for the build and
+ * every read alike. Its date is then exact with no query time zone, and the
+ * read casts it back ({@link driftedColumnRead}); under a query time zone the
+ * cast would take the date in that zone, so the column is left out and a
+ * query reading it answers live. Either way it is the type the build wrote,
+ * not drift, so it is not reported.
  */
 function byDesign(storedType: string, declared: string): boolean {
    const family = typeFamily(storedType);
-   if (declared === "date") {
-      return family === "timestamp" && !isZoned(storedType);
-   }
+   if (declared === "date") return family === "timestamp";
    if (declared === "boolean") {
       return family === "number" && /INT/i.test(storedType);
    }

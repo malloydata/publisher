@@ -128,6 +128,16 @@ export interface InstructedBuildOptions {
     * Absent: no such table is ever recognized, and every one refuses.
     */
    packageRuns?: () => Promise<Materialization[]>;
+   /**
+    * Told each instruction whose build is about to write its table, before
+    * the build starts, and whether the author chose its name (`name=`): a
+    * run cancelled because its package is retiring gives back the tables
+    * these builds may have written (Reclaimer.reclaimRetiredRunTables).
+    */
+   onBuildStarted?: (
+      instruction: BuildInstruction,
+      authorNamed: boolean,
+   ) => void;
 }
 
 /** The eligibility gate a source was cleared by. */
@@ -150,6 +160,7 @@ export interface InstructedRun
       | "packageRuns"
       | "uniqueness"
       | "freshness"
+      | "onBuildStarted"
    > {
    planFacts: ChainedPlanFacts;
    index: InstructionIndex;

@@ -176,11 +176,13 @@ export interface Capabilities {
     * `storage=` copy re-applies byte-exact (`serve/gate_collation.ts`):
     * `binary` (always byte-exact), `instance` (byte-exact unless the DuckDB
     * instance sets a `default_collation` or a `COLLATE` is written), `column`
-    * (the column's own collation, read with Postgres's `pg_collation_for`);
-    * absent when it
+    * (the column's own collation, read with Postgres's `pg_collation_for`),
+    * `dataset` (byte-exact unless a table the query reads holds a column or
+    * field with a collation, read from its BigQuery dataset's
+    * `INFORMATION_SCHEMA`, or a `COLLATE` is written); absent when it
     * cannot be read, which keeps no gate over a string column there.
     */
-   stringCollation: "binary" | "instance" | "column" | undefined;
+   stringCollation: "binary" | "instance" | "column" | "dataset" | undefined;
    /**
     * The column types its `GROUP BY` refuses. `malloy`: Malloy types
     * (`json`, `array`, `record`). `native`: a `sql native` field's raw type
@@ -299,7 +301,7 @@ export const CAPABILITIES: Record<DialectName, Capabilities> = {
       castsToIntegerType: true,
       onlyBigIntegerType: "INT64",
       leafBudget: 120,
-      stringCollation: "binary",
+      stringCollation: "dataset",
       ungroupableTypes: {
          malloy: ["json", "array", "record"],
          native: ["geography"],

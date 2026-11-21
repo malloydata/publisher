@@ -270,6 +270,29 @@ describe("the served copy's refusal codes", () => {
       ]);
    });
 
+   it("words a cross-connection join on a source that is not stored as the joined source's destination, not its own", () => {
+      // The source reads its own connection; only the joined source is
+      // stored, in a destination that connection cannot reach.
+      expect(
+         warningsFor([
+            { ...PROBLEMS.cross_connection_join, declarerNotStored: true },
+         ]).map((w) => ({
+            code: w.code,
+            reason: w.reason,
+            subject: w.subject ?? null,
+            message: w.message,
+         })),
+      ).toEqual([
+         {
+            code: "served-copy-not-served",
+            reason: "cross_connection_join",
+            subject: "s",
+            message:
+               "This source's join `j` reads a source the served copy reads from its storage destination, which this source's own connection cannot reach. Queries that use the join are answered live; the others are answered as before. To serve them too, store this source in the same destination, or build the joined source in its own database (drop its `storage=`).",
+         },
+      ]);
+   });
+
    it("words a compile failure that names a source as that source's kept blocks", () => {
       // An extension table that does not compile over its kept blocks: the
       // copy is compiled again with its own blocks only.

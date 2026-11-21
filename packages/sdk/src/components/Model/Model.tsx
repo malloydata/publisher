@@ -61,10 +61,7 @@ function CopyLinkButton() {
  * `viewer` server never flashes the Explorer.
  *
  * - `explorer`, the default: the Malloy Explorer over the model's sources
- *   ({@link ExplorerPage}), and its named queries. The Explorer writes the
- *   queries it builds back to Malloy text through
- *   `@malloydata/malloy-interfaces`, whose string escaping is a TODO, so a
- *   drilled value holding a double quote rewrites its query.
+ *   ({@link ExplorerPage}), and its named queries.
  * - `viewer`: the model viewer ({@link ModelViewer}) with a Copy link action
  *   on its heading. Each source's views, measures, calculations, dimensions
  *   and joins, the model's named queries, and the givens they read. It writes

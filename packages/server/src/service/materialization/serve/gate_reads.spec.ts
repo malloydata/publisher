@@ -154,6 +154,44 @@ describe("gateReads: the row scope", () => {
       expect(gateReads(scopedJoin, [], undefined, STORED).scoped).toBe(true);
    });
 
+   it("leaves out the query of a joined source the answer's compile re-rooted, read or not", () => {
+      const root = {
+         ...ACCOUNTS,
+         sourceID: "root@m",
+         fields: [...ACCOUNTS.fields, { ...stored, name: "s", join: "one" }],
+      };
+      const ON_TABLES = new Set(["stored@m"]);
+      // Unread and not re-rooted: its query is walked, to `amount`.
+      expect(gateReads(root, []).columns).toEqual([["amount"]]);
+      const reads = gateReads(root, [], undefined, new Set(), [], ON_TABLES);
+      expect(reads.scoped).toBe(false);
+      expect(reads.columns).toEqual([]);
+      // Its own `where:`, applied on read, is still judged.
+      const scopedJoin = {
+         ...root,
+         fields: [
+            ...ACCOUNTS.fields,
+            { ...stored, name: "s", join: "one", filterList: [termOn("acct")] },
+         ],
+      };
+      const own = gateReads(
+         scopedJoin,
+         [],
+         undefined,
+         new Set(),
+         [],
+         ON_TABLES,
+      );
+      expect(own.scoped).toBe(true);
+      expect(own.columns.flat()).toContain("s__acct");
+      expect(own.columns.flat()).not.toContain("amount");
+      // The entry point itself is not a join: re-rooted but unread, its own
+      // query is still walked.
+      expect(
+         gateReads(stored, [], undefined, new Set(), [], ON_TABLES).columns,
+      ).toEqual([["amount"]]);
+   });
+
    it("walks the whole query of a source extending a stored one", () => {
       const extended = { ...stored, sourceID: "extended@m" };
       const reads = gateReads(extended, [], undefined, STORED);
@@ -278,6 +316,84 @@ describe("gateReads: compares no string", () => {
       expect(gateReads(ORDERS, ["big = $FLAG"], MODEL).comparesNoString).toBe(
          true,
       );
+   });
+
+   it("holds for a where: that tests a string column for null, and only that", () => {
+      const scoped = (e: unknown) =>
+         gateReads({ ...ORDERS, filterList: [{ e }] }, [], MODEL);
+      for (const node of ["is-null", "is-not-null"]) {
+         const reads = scoped({ node, e: field(["region"]) });
+         expect(reads.scoped, node).toBe(true);
+         expect(reads.comparesNoString, node).toBe(true);
+         expect(reads.columns, node).toEqual([["region"]]);
+      }
+      const empty = { node: "stringLiteral", literal: "" };
+      for (const [what, e] of [
+         [
+            "an equality with ''",
+            { node: "=", kids: { left: field(["region"]), right: empty } },
+         ],
+         [
+            "a null test of a function of the column",
+            {
+               node: "is-null",
+               e: {
+                  node: "function_call",
+                  name: "nullif",
+                  kids: { args: [field(["region"]), M] },
+               },
+            },
+         ],
+         // `late is region > 'M'`: the null test reads `late`, which orders `region`.
+         [
+            "a null test of a dimension computed from a string",
+            { node: "is-null", e: field(["late"]) },
+         ],
+      ] as const) {
+         expect(scoped(e).comparesNoString, what).toBe(false);
+      }
+   });
+
+   it("does not hold for a where: on a field read through a join whose on: compares strings", () => {
+      const joined = (on: unknown) => ({
+         ...ORDERS,
+         fields: [
+            ...ORDERS.fields,
+            { ...ORDERS, name: "o", join: "one", onExpression: on },
+         ],
+      });
+      const byRegion = {
+         node: "=",
+         kids: { left: field(["region"]), right: field(["o", "region"]) },
+      };
+      const byAmount = {
+         node: "=",
+         kids: { left: field(["amount"]), right: field(["o", "amount"]) },
+      };
+      for (const [what, e] of [
+         ["a null test", { node: "is-null", e: field(["o", "amount"]) }],
+         [
+            "a number compared",
+            {
+               node: ">",
+               kids: {
+                  left: field(["o", "amount"]),
+                  right: { node: "numberLiteral" },
+               },
+            },
+         ],
+      ] as const) {
+         const where = (on: unknown) =>
+            gateReads({ ...joined(on), filterList: [{ e }] }, [], MODEL);
+         expect(where(byRegion).comparesNoString, what).toBe(false);
+         expect(where(byAmount).comparesNoString, what).toBe(true);
+      }
+      // A row filter on a joined field: whether the row is joined follows
+      // the on:, as for a where:.
+      const gate = (on: unknown) =>
+         gateReads(joined(on), ["o.big = $FLAG"], MODEL).comparesNoString;
+      expect(gate(byRegion)).toBe(false);
+      expect(gate(byAmount)).toBe(true);
    });
 
    it("does not hold for a gate over a dimension computed from a string", () => {
