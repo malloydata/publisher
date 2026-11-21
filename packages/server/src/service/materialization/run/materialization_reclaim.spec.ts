@@ -622,6 +622,19 @@ describe("reclaiming an archived version's tables", () => {
       await retire(gone);
       expect(await tablesIn(env)).toEqual(["only_aborted", "summary"]);
 
+      // Another run is writing `only_aborted` now (its record says so):
+      // kept, as it may hold that run's rows by now.
+      const writing = await repo.createMaterialization(
+         ENV_ID,
+         PKG,
+         "PENDING",
+         { scope: "package", mode: "auto", writesTables: ["only_aborted"] },
+         { version: "1.0.0", lockVersion: "1.0.0" },
+      );
+      await retire(aborted.id);
+      expect(await tablesIn(env)).toEqual(["only_aborted", "summary"]);
+      await repo.deleteMaterialization(writing.id);
+
       await retire(aborted.id);
       expect(await tablesIn(env)).toEqual(["summary"]);
       // 1.0.0 still serves the shared table its run built.

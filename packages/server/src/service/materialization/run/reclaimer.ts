@@ -995,7 +995,11 @@ export class Reclaimer {
     * Left in place, as every reclaim leaves them: a table any other
     * committed run of the package, of any version, names (in its place, or
     * by its table segment anywhere: a sibling version may serve it), and a
-    * table another package has marked since. Nothing is dropped when the
+    * table another package has marked since; a table another run of the
+    * package is writing now (`inFlightElsewhere`, or an active run's
+    * recorded WRITES_TABLES_KEY), which may hold that run's rows since. Nor
+    * anything once the run's own record is terminal: it committed before the
+    * abort reached it, and its record serves them. Nothing is dropped when the
     * run's own record is gone already (a retire that stopped waiting for
     * it removed the package's records), since what other runs named can no
     * longer be read. Best-effort: never throws.
@@ -1008,6 +1012,11 @@ export class Reclaimer {
       runId: string;
       targets: WriteTarget[];
       connectionFor: (name: string) => Promise<MalloyConnection | undefined>;
+      /**
+       * The tables other runs of the package in this process have started
+       * writing, which may hold their rows by now: kept.
+       */
+      inFlightElsewhere?: readonly string[];
    }): Promise<void> {
       const { environmentName, environmentId, packageName, runId } = request;
       if (request.targets.length === 0) return;
@@ -1038,6 +1047,17 @@ export class Reclaimer {
             listed,
             (other) => other.id !== runId,
          );
+         // What another run is writing now: a newer run may have rewritten
+         // a table at the same name since this one wrote it.
+         const writing = [
+            ...(request.inFlightElsewhere ?? []),
+            ...listed
+               .filter((m) => m.id !== runId && isActiveRun(m.status))
+               .flatMap((m) => tableNamesIn(m.metadata, WRITES_TABLES_KEY)),
+         ];
+         for (const table of writing) {
+            stillReferenced.add(leafReferenceKey(table));
+         }
          const owed = await this.deps.dropManifestEntries(
             request.environment,
             environmentName,

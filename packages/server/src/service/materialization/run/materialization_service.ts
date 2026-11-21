@@ -346,6 +346,15 @@ export class MaterializationService {
     */
    readonly reclaimer: Reclaimer;
    /**
+    * The tables each unsettled run in this process has started writing, by
+    * run, so a retired run's drop keeps a table another run may have
+    * rewritten since (Reclaimer.reclaimRetiredRunTables).
+    */
+   private readonly buildsInFlight = new Map<
+      string,
+      { environmentName: string; packageName: string; tables: string[] }
+   >();
+   /**
     * The steps a run takes: the constructor's, else the real ones. Specs
     * also drive a step through it.
     */
@@ -1186,7 +1195,20 @@ export class MaterializationService {
          }
          await this.reclaimIfRetired(run, state);
          throw err;
+      } finally {
+         this.buildsInFlight.delete(id);
       }
+   }
+
+   /** Record that `run` started writing `table` (see buildsInFlight). */
+   private buildInFlight(run: RunScope, table: string): void {
+      const { id, environmentName, packageName } = run;
+      let entry = this.buildsInFlight.get(id);
+      if (!entry) {
+         entry = { environmentName, packageName, tables: [] };
+         this.buildsInFlight.set(id, entry);
+      }
+      entry.tables.push(table);
    }
 
    /**
@@ -1238,6 +1260,14 @@ export class MaterializationService {
          ),
          // The package is still loaded: a retire stops its runs first.
          connectionFor: (name) => pkg.getMalloyConnection(name),
+         inFlightElsewhere: [...this.buildsInFlight]
+            .filter(
+               ([runId, other]) =>
+                  runId !== id &&
+                  other.environmentName === environmentName &&
+                  other.packageName === packageName,
+            )
+            .flatMap(([, other]) => other.tables),
       });
    }
 
@@ -1607,8 +1637,10 @@ export class MaterializationService {
                environmentId,
                packageName,
             )) ?? [],
-         onBuildStarted: (instruction, authorNamed) =>
-            state.buildsStarted.push({ instruction, authorNamed }),
+         onBuildStarted: (instruction, authorNamed) => {
+            state.buildsStarted.push({ instruction, authorNamed });
+            this.buildInFlight(run, instruction.physicalTableName);
+         },
       });
    }
 
