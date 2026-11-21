@@ -805,7 +805,7 @@ describe("a pending served copy a status poll compiles, with no query and no bin
       }
    }, 30_000);
 
-   it("a compile that throws clears the marker with compile_failed, and every query answers live", async () => {
+   it("a compile that throws clears the marker with compile_failed, answers live, and serves again on a later query with no bind", async () => {
       const { mz, model, database, copy } = parts();
       mz.bind({ database: {} });
       await model.prepareServedCopy();
@@ -835,6 +835,20 @@ describe("a pending served copy a status poll compiles, with no query and no bin
          }
       } finally {
          thrown.mockRestore();
+      }
+      // The failure was transient: the next query compiles again, with no
+      // bind, and serves; the verdict follows.
+      for (const [name, q] of Object.entries(SERVED_QUERIES)) {
+         const o = await s.fixture?.run(q.model, q.query);
+         expect([name, answer(o).servedBy]).toEqual([name, "materialized"]);
+         expect(answer(o).rows).toBe(answer(s.live[name]).rows);
+      }
+      expect(model.servedCopyProblems()).toEqual([]);
+      for (const name of ["acc_db", "acc_lake"]) {
+         const v = verdict(s.fixture, name);
+         expect(v.verdict).toBe("serves");
+         expect(v.notServedIn).toBeUndefined();
+         expect(v.servedCopyPending).toBeUndefined();
       }
    }, 30_000);
 });

@@ -249,6 +249,49 @@ describe("CompiledCopyLanes", () => {
       expect(serve.keepsFor(0, a)).toBe(false);
    });
 
+   it("keeps a compile that threw for the verdict, but never reuses it, and is not current once its backoff passes", async () => {
+      const calls: Array<() => void> = [];
+      let escaped = true;
+      const lanes = new CompiledCopyLanes<LaneCompiled>(
+         (key, generation, bindings) =>
+            new Promise((resolve) => {
+               calls.push(() =>
+                  resolve({
+                     key,
+                     generation,
+                     over: bindings,
+                     rerooted: [],
+                     aliased: [],
+                     ...(escaped ? { escaped: true } : {}),
+                  }),
+               );
+            }),
+      );
+      const a = [binding("a")];
+      const first = lanes.ensure(a, 0, 0);
+      await ticks();
+      calls[0]();
+      const failed = await first;
+      expect(lanes.keepsFor(0, a)).toBe(true);
+      escaped = false;
+      const second = lanes.ensure(a, 0, 0);
+      await ticks();
+      expect(calls).toHaveLength(2);
+      calls[1]();
+      expect((await second).escaped).toBeUndefined();
+      // A failed copy whose backoff passed is not current.
+      failed.retryDue = true;
+      expect(lanes.kept(0)).not.toBe(failed);
+      const third = lanes.ensure([binding("b")], 0, 0);
+      await ticks();
+      escaped = true;
+      calls[2]();
+      const again = await third;
+      expect(lanes.keepsFor(0, [binding("b")])).toBe(true);
+      again.retryDue = true;
+      expect(lanes.keepsFor(0, [binding("b")])).toBe(false);
+   });
+
    it("drops a failed compile from the in-flight set, so the next request compiles again", async () => {
       const { calls, compiled } = servedCopy();
       const pin = pinned([binding("a")]);

@@ -1127,7 +1127,8 @@ or reuses the copy over the tables bound when it starts. A read that finds a cop
 compile if nothing else has, one at a time per model, so polling clears the marker on its own: a
 freshness window that lapses changes the tables a query reads with no bind, and a model nobody
 queries would otherwise stay pending. A copy whose compile fails outright is recorded as
-`compile_failed`, not left pending.
+`compile_failed`, not left pending, and is retried: by the next query at once, and by a read
+30 seconds later.
 
 For example, a model whose copy fails across connections reports every table it holds, either
 kind, as:

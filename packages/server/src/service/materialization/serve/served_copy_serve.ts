@@ -417,6 +417,12 @@ const knownRerootFailures = new WeakMap<
    Map<string, { error: unknown; until: number }>
 >();
 const REROOT_FAILURE_TTL_MS = 10 * 60_000;
+
+/**
+ * How long a compile that threw is judged as failed before a verdict read
+ * compiles it again (a query does at once).
+ */
+const ESCAPED_FAILURE_RETRY_MS = 30_000;
 const REROOT_FAILURES_PER_CONFIG = 64;
 
 /** The key a copy's failure is remembered under. */
@@ -1924,15 +1930,18 @@ export class ServedCopyServe {
          );
       } catch (error) {
          // A failure the passes did not catch is the copy failing to compile,
-         // recorded like any other: kept, so a verdict reads it as current
-         // and judged (every source answers live), never pending forever.
-         return {
+         // recorded so a verdict judges it (every source answers live) rather
+         // than reading it pending forever. It may be transient, so the next
+         // request compiles again, and a verdict read does once the backoff
+         // has passed.
+         const failed: Compiled = {
             key,
             generation,
             over: bindings,
             lane,
             rerooted: [],
             aliased: [],
+            escaped: true,
             problems: [
                {
                   reason: "compile_failed",
@@ -1941,6 +1950,10 @@ export class ServedCopyServe {
                },
             ],
          };
+         setTimeout(() => {
+            failed.retryDue = true;
+         }, ESCAPED_FAILURE_RETRY_MS).unref?.();
+         return failed;
       }
    }
 

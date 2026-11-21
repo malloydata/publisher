@@ -26,6 +26,14 @@ export interface LaneCompiled {
    /** Bindings actually re-rooted, with their destination under its alias. */
    rerooted: Binding[];
    aliased: Binding[];
+   /**
+    * A compile that threw rather than recording why: kept, so a verdict
+    * judges it, but never reused by a request, which compiles again (the
+    * failure may be transient).
+    */
+   escaped?: boolean;
+   /** Set by the served copy's backoff timer: a verdict read retries it. */
+   retryDue?: boolean;
 }
 
 /** Compile a copy of `bindings` for `lane`, under `generation`. */
@@ -136,6 +144,7 @@ export class CompiledCopyLanes<C extends LaneCompiled> {
       const current = this.compiled.get(lane);
       return (
          !!current &&
+         !current.retryDue &&
          current.generation === this.generation &&
          (sameBindings(current.over, bindings) ||
             current.key === compileKeyOf(bindings))
@@ -169,6 +178,7 @@ export class CompiledCopyLanes<C extends LaneCompiled> {
       // read (a query's usual case).
       if (
          current &&
+         !current.escaped &&
          current.generation === generation &&
          sameBindings(current.over, bindings)
       ) {
@@ -178,7 +188,12 @@ export class CompiledCopyLanes<C extends LaneCompiled> {
          return current;
       }
       const key = compileKeyOf(bindings);
-      if (current && current.key === key && current.generation === generation) {
+      if (
+         current &&
+         !current.escaped &&
+         current.key === key &&
+         current.generation === generation
+      ) {
          const reused = reboundTo(current, bindings);
          if (reused) {
             keep(reused);

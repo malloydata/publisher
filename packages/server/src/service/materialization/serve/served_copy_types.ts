@@ -94,6 +94,10 @@ export interface Compiled {
     * {@link ServedCopyServe.ensureCompiled}); 0 for the copy compiled at bind.
     */
    lane: number;
+   /** A compile that threw: never reused by a request ({@link LaneCompiled.escaped}). */
+   escaped?: boolean;
+   /** Its backoff has passed, so a verdict read compiles it again. */
+   retryDue?: boolean;
    materializer?: ModelMaterializer;
    /** The served copy's compiled model, read (never edited) for source chains. */
    modelDef?: unknown;
