@@ -20,13 +20,19 @@
  * another source's table, or from live while claiming a table, is told apart.
  *
  * Each mechanism runs twice: over the whole table, and over a copy without
- * the one column that keeps it from being served at all on this branch. Both
- * are bugs (equal to live, but never served), held as `it.todo` below:
+ * the one column that kept it from being served at all in 0.17.0:
  *
- * - Bug A: a database `#(materialize)` over a TIMESTAMPTZ column is never
- *   served. Every query, one not reading the column included, answers live
- *   with `NOT_SERVED` ("column `ts` (declared `timestamptz`) is not in the
- *   stored table"); the column is in the table.
+ * - A database `#(materialize)` over a TIMESTAMPTZ column was never served:
+ *   Postgres's schema reader refuses a table name with no schema, so the
+ *   build captured no columns, and the zoned timestamp the plan cannot spell
+ *   was "not in the stored table". The bind now reads it from the
+ *   warehouse types the build captures beside its columns. The warehouse database's default
+ *   TimeZone is not UTC, and the zoned timestamp is also truncated in
+ *   query time zones other than UTC, so a read that took a wall-clock value
+ *   in the wrong zone shows.
+ *
+ * Bugs (equal to live, but never served), held as `it.todo` below:
+ *
  * - Bug B: a database `#@ persist` over a JSONB column is never served, and
  *   its path report gives no reason: nothing is considered ("no stored table
  *   is re-rooted in this model's served copy").
@@ -105,7 +111,7 @@ interface Source {
    tag: string;
    columns: string[];
    /** The bug that keeps it from being served on this branch, if any. */
-   bug?: "A" | "B";
+   bug?: "B";
 }
 
 /** Each mechanism over the whole table, and over a copy it serves. */
@@ -127,7 +133,6 @@ const SOURCES: Source[] = [
       model: "mat.malloy",
       tag: "_mts",
       columns: ALL,
-      bug: "A",
    },
    {
       source: "per_jb",
@@ -203,6 +208,22 @@ const QUERIES: Query[] = [
    {
       name: "a group-by on the zoned timestamp",
       body: "group_by: ts; order_by: ts",
+      reads: ["ts"],
+   },
+   {
+      name: "a day of the zoned timestamp in a query time zone east of UTC",
+      body: `timezone: 'Asia/Kolkata'
+  group_by: d is ts.day
+  aggregate: c is count()
+  order_by: d`,
+      reads: ["ts"],
+   },
+   {
+      name: "an hour of the zoned timestamp in a query time zone west of UTC",
+      body: `timezone: 'America/Los_Angeles'
+  group_by: h is ts.hour
+  aggregate: c is count()
+  order_by: h`,
       reads: ["ts"],
    },
    {
@@ -362,6 +383,11 @@ describe.skipIf(!POSTGRES_URL)(
          await admin.runSQL(
             `CREATE DATABASE ${warehouse} LOCALE 'C' ENCODING 'UTF8' TEMPLATE template0`,
          );
+         // A session default that is not UTC, at an offset no whole hour
+         // matches, for every session that does not set its own.
+         await admin.runSQL(
+            `ALTER DATABASE ${warehouse} SET TimeZone = 'Pacific/Chatham'`,
+         );
          const parsed = new URL(POSTGRES_URL!);
          const pg = {
             host: parsed.hostname,
@@ -492,6 +518,20 @@ describe.skipIf(!POSTGRES_URL)(
             );
          });
       }
+
+      it("serves every query on the zoned timestamp from its table, in every query time zone", () => {
+         const read = SOURCES.filter(
+            (s) => !s.bug && s.columns.includes("ts"),
+         ).flatMap((s) =>
+            queriesOf(s)
+               .filter((q) => q.reads.includes("ts"))
+               .map(
+                  (q) => `${s.source}: ${q.name}: ${answers(s, q).v.servedBy}`,
+               ),
+         );
+         expect(read.length).toBeGreaterThan(0);
+         expect(read.filter((r) => !r.endsWith(": materialized"))).toEqual([]);
+      });
 
       it("reads each source's own table: tampered apart, a served answer carries its own suffix", async () => {
          for (const s of SOURCES) {

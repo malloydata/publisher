@@ -124,6 +124,24 @@ describe("deriveDatabaseServeBindings", () => {
       ]);
    });
 
+   it("reads a zoned timestamp from the captured warehouse types when the build captured no columns (a Postgres table, whose name its schema reader refuses)", () => {
+      const [binding] = derive({
+         entry: {
+            nativeSchema: [
+               { name: "id", type: "bigint" },
+               { name: "region", type: "text" },
+               { name: "seen", type: "timestamp with time zone" },
+               { name: "tags", type: "text[]" },
+            ],
+         },
+      });
+      expect(binding?.schema).toEqual([
+         { name: "id", type: "BIGINT" },
+         { name: "region", type: "VARCHAR" },
+         { name: "seen", type: "TIMESTAMP WITH TIME ZONE" },
+      ]);
+   });
+
    it("binds nothing when the build's columns are unknown, so the source serves live", () => {
       expect(derive({ plan: { storedColumns: undefined } })).toEqual([]);
       expect(derive({ plan: { storedColumns: [] } })).toEqual([]);

@@ -42,6 +42,7 @@ import { capabilitiesOf } from "../domain/dialect";
 import {
    driftDeclaredType,
    driftedColumnRead,
+   spelledNativeType,
    storedColumnsOfOutput,
    storedMalloyType,
    storedTypeServesAs,
@@ -418,7 +419,12 @@ export function deriveDatabaseServeBindings(args: {
       const entry = entries[source.sourceEntityId];
       if (!entry?.tableName) continue;
       const schema = plan
-         ? plannedWithCaptured(plan.storedColumns, entry.schema)
+         ? plannedWithCaptured(
+              plan.storedColumns,
+              entry.schema?.length
+                 ? entry.schema
+                 : capturedOfNative(entry.nativeSchema, source.dialect),
+           )
          : // What its build captured, else what its compiled output derives
            // (a table built before the capture).
            entry.schema?.length
@@ -497,6 +503,29 @@ function plannedWithCaptured(
          (c) => !named.has(c.name) && ZONED_TIMESTAMP.test(c.type.trim()),
       ),
    ];
+}
+
+/**
+ * A table's columns from the warehouse types its build captured, spelled as
+ * a capture spells them (`spelledNativeType`): for a table whose build could
+ * not read its columns back (Postgres's schema reader refuses a name with no
+ * schema, which is how a build names its tables). Undefined with none to
+ * read.
+ */
+function capturedOfNative(
+   nativeSchema: readonly { name: string; type: string }[] | undefined,
+   dialect: string | undefined,
+): StoredColumn[] | undefined {
+   if (!nativeSchema?.length || !dialect) return undefined;
+   try {
+      return nativeSchema.flatMap((c) => {
+         const type = spelledNativeType(c.type, dialect);
+         return type ? [{ name: c.name, type }] : [];
+      });
+   } catch {
+      // A dialect Malloy does not know: no spelling to read them with.
+      return undefined;
+   }
 }
 
 /**
