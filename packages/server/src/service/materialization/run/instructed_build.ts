@@ -34,24 +34,17 @@ import {
    type UniquenessLedger,
 } from "./inline_uniqueness";
 import { movedSinceBuild } from "./database_column_read";
-import type {
-   OverStoredBase,
-   ParentKeyCheck,
-   RollupKeyCheck,
-} from "../domain/table_plans";
+import type { ParentKeyCheck, RollupKeyCheck } from "../domain/table_plans";
 import type { InlineUniquenessCheck } from "../domain/table_plans";
 import {
    assertPlacementNamed,
    assertTierEligible,
    buildSQLOf,
-   compilerBuildId,
    computeSourceEntityId,
    upstreamSchemasOfSource,
-   presentAs,
    type RunPlan,
    tierGateInputs,
 } from "./run_plan";
-import { outputColumnsOf } from "../../governance/ir/compiled_model";
 import type {
    Connection as MalloyConnection,
    PersistSource,
@@ -92,7 +85,7 @@ import {
 } from "../stored_column_types";
 import {
    materializePlansOf,
-   sourcesInBuildOrder,
+   sourcesInDependencyOrder,
 } from "../domain/compiled_build_plan";
 import {
    BuildInstruction,
@@ -754,35 +747,34 @@ export class InstructedBuild {
          connection: MalloyConnection;
       }[] = [];
       for (const build of builds) {
-         const connection = connections.get(build.connectionName);
-         if (!connection) {
+         if (!connections.get(build.connectionName)) {
             throw new BadRequestError(
                `Connection '${build.connectionName}' not found`,
             );
          }
-         for (const persistSource of sourcesInBuildOrder(build, tables)) {
-            // A rollup that may read its base's stored table builds once
-            // every other table has, so a base this run builds is there
-            // to read. Nothing a run builds reads a rollup's table.
-            const table = tables[persistSource.sourceID];
-            if (
-               table?.kind === "rollup" &&
-               (table.overStoredBase || table.storedBase)
-            ) {
-               deferred.push({
-                  persistSource,
-                  connectionName: build.connectionName,
-                  connection,
-               });
-               continue;
-            }
-            await this.buildInRun(
-               run,
-               persistSource,
-               build.connectionName,
-               connection,
-            );
+      }
+      // Each source after every source it reads, across builds: a
+      // downstream's edges (a persisted view, query or rollup) may name a
+      // source another build orders, and the instructions' own order is
+      // never read.
+      for (const { sourceID, connectionName } of sourcesInDependencyOrder(
+         builds,
+      )) {
+         const table = tables[sourceID];
+         if (!table) continue;
+         const persistSource = table.source;
+         const connection = connections.get(connectionName)!;
+         // A rollup that may read its base's stored table builds once
+         // every other table has, so a base this run builds is there
+         // to read. Nothing a run builds reads a rollup's table.
+         if (
+            table.kind === "rollup" &&
+            (table.overStoredBase || table.storedBase)
+         ) {
+            deferred.push({ persistSource, connectionName, connection });
+            continue;
          }
+         await this.buildInRun(run, persistSource, connectionName, connection);
       }
       for (const later of deferred) {
          await this.buildInRun(
@@ -893,14 +885,22 @@ export class InstructedBuild {
             stacked = true;
          },
       };
+      const overStored = overStoredUpstreamSource(run, persistSource, gated);
       const built = await this.buildGatedSource(
          run,
-         (await overStoredBaseSource(run, persistSource, gated, connection)) ??
+         overStored ??
+            (await overStoredBaseSource(
+               run,
+               persistSource,
+               gated,
+               connection,
+            )) ??
             persistSource,
          graphConnectionName,
          connection,
          gated,
          storedBase,
+         overStored !== undefined,
       );
       if (!built) return;
       // A `storage=` rollup that grouped its base's stored table is anchored
@@ -908,11 +908,10 @@ export class InstructedBuild {
       if (storedBase && stacked) {
          (run.readFrom ??= new Map()).set(sourceEntityId, [storedBase.address]);
       }
-      const entry = withRollupUpstreamReuse(
+      const entry = withBuiltProvenance(
          run,
-         persistSource,
          sourceEntityId,
-         built,
+         withRollupUpstreamReuse(run, persistSource, sourceEntityId, built),
       );
       run.builtSources.push(persistSource.name);
       reportSourceBuilt(
@@ -1098,6 +1097,8 @@ export class InstructedBuild {
       connection: MalloyConnection,
       { instruction, orchestrated, sourceEntityId, target }: GatedSource,
       storedBase?: StoredRollupBase,
+      /** `persistSource` is a view or query compiled over its upstreams' tables. */
+      overStoredUpstreams = false,
    ): Promise<ManifestEntry | undefined> {
       const { compiled } = run;
       // An auto-run's table at the author's own `name=`, which another
@@ -1173,6 +1174,7 @@ export class InstructedBuild {
             planFacts: run.planFacts,
             ...(replacesView ? { replacesView } : {}),
             ...(storedBase ? { storedBase } : {}),
+            ...(overStoredUpstreams ? { overStoredUpstreams } : {}),
             ...(compiled.tables[persistSource.sourceID]?.kind === "rollup"
                ? { rollup: true }
                : {}),
@@ -2187,6 +2189,27 @@ function baseFreshEnough(
 }
 
 /**
+ * The source a database persisted view or named query builds from when the
+ * plan decided it builds over its upstreams' tables: its build source
+ * compiled over them, proven at plan time to build the planned table
+ * (over_stored_proof.ts). Its build reads each upstream's table through the
+ * build manifest as any chained build does, so a moved, missing or
+ * wrong-tier upstream takes the ordinary chained path (recomputed, or under
+ * strict upstreams refused). Undefined when the plan did not decide so, or
+ * the instruction names a destination: it builds from its definition.
+ */
+function overStoredUpstreamSource(
+   run: InstructedRun,
+   persistSource: PersistSource,
+   gated: Pick<GatedSource, "instruction">,
+): PersistSource | undefined {
+   const table = run.compiled.tables[persistSource.sourceID];
+   if (table?.kind !== "view" || !table.overStoredBase) return undefined;
+   if (gated.instruction.destination) return undefined;
+   return table.overStoredBase.source;
+}
+
+/**
  * The source a database rollup builds from when this run holds its base's
  * table: the rollup compiled over that table (rollup_compile.ts), so its
  * build reads the table rather than the warehouse, through the build
@@ -2205,7 +2228,8 @@ function baseFreshEnough(
  *    ({@link baseFreshEnough}), whoever instructed the run;
  *  - a table this run did not build holds the columns its build recorded
  *    (`movedSinceBuild`);
- *  - the compiled source builds the planned table ({@link buildsPlannedTable}).
+ *  - the plan proved its compile over the base's table builds the planned
+ *    table (over_stored_proof.ts), and recorded it (`overStoredBase`).
  *
  * Records the base as what the rollup read, for its freshness anchor.
  */
@@ -2220,7 +2244,10 @@ async function overStoredBaseSource(
    const table = compiled.tables[persistSource.sourceID];
    if (table?.kind !== "rollup" || !table.overStoredBase) return undefined;
    if (gated.instruction.destination) return undefined;
-   const baseID = table.rollup.baseSourceID;
+   // The table it reads: its base's, or that of the `#(materialize)` source
+   // its base extends, which its compile re-roots.
+   const baseID =
+      table.overStoredBase.rerootedSourceID ?? table.rollup.baseSourceID;
    const base = baseID === undefined ? undefined : compiled.tables[baseID];
    if (!base || (base.kind !== "persist" && base.kind !== "materialize")) {
       return undefined;
@@ -2282,121 +2309,8 @@ async function overStoredBaseSource(
       (run.baseRecomputed ??= new Map()).set(gated.sourceEntityId, reason);
       return undefined;
    }
-   let variant: OverStoredBase | undefined;
-   try {
-      variant = await table.overStoredBase();
-   } catch {
-      return undefined;
-   }
-   if (
-      !variant ||
-      (base.kind === "materialize") !== (variant.baseBuildSource !== undefined)
-   ) {
-      return undefined;
-   }
-   try {
-      if (
-         !buildsPlannedTable(run, persistSource, variant, {
-            base: base.source,
-            baseAddress,
-            rollupAddress: gated.sourceEntityId,
-         })
-      ) {
-         return undefined;
-      }
-   } catch {
-      return undefined;
-   }
    (run.readFrom ??= new Map()).set(gated.sourceEntityId, [baseAddress]);
-   return variant.source;
-}
-
-/**
- * Whether `variant`, the rollup compiled over its base's stored table, builds
- * the table the plan gives the rollup `planned`:
- *
- *  - over a `#@ persist` base, it has the rollup's own planned address: its
- *    SQL, the base's inlined, is the plan's;
- *  - over a `#(materialize)` base, the base is re-rooted on its generated
- *    build source, which moves the rollup's SQL, so its own address cannot
- *    match. The build source must instead be at the base's planned address
- *    (the same build source, so the same table), the rollup's SQL rendered
- *    over the base's entry alone must read that table, and its columns must
- *    be the planned rollup's, by name, type and numeric subtype. The rows
- *    are the base's either way, as an extension's build over its parent's
- *    table.
- *
- * The three `#(materialize)` checks are defensive: a compile that re-roots
- * the base as planned passes all three, so none is false in practice. Each
- * guards a drift between the second compile and the plan (another build
- * source, a rollup that no longer reads the base's table, other columns) and
- * fails closed, to the warehouse build. Exported for its unit spec.
- */
-export function buildsPlannedTable(
-   run: InstructedRun,
-   planned: PersistSource,
-   variant: OverStoredBase,
-   at: { base: PersistSource; baseAddress: string; rollupAddress: string },
-): boolean {
-   const { compiled } = run;
-   if (!variant.baseBuildSource) {
-      return (
-         computeSourceEntityId(
-            variant.source,
-            compiled.connectionDigests,
-            undefined,
-            compiled.tableFolds,
-            compiled.upstreamSchemas,
-         ) === at.rollupAddress
-      );
-   }
-   const buildSource = presentAs(variant.baseBuildSource, {
-      name: at.base.name,
-      sourceID: at.base.sourceID,
-   });
-   if (
-      computeSourceEntityId(
-         buildSource,
-         compiled.connectionDigests,
-         undefined,
-         compiled.tableFolds,
-         compiled.upstreamSchemas,
-      ) !== at.baseAddress
-   ) {
-      return false;
-   }
-   const table = run.manifest.buildManifest.entries[at.baseAddress]?.tableName;
-   if (table === undefined) return false;
-   const only = new Manifest();
-   only.update(at.baseAddress, { tableName: table });
-   // Also under the compiler's own key for the base, which differs from
-   // its address when the address folds in a `name=`, projection or
-   // destination.
-   only.update(compilerBuildId(buildSource), { tableName: table });
-   if (!readsTable(buildSQLOf(variant.source, only.buildManifest), table)) {
-      return false;
-   }
-   return sameColumns(variant.source, planned);
-}
-
-/**
- * Whether `sql` reads the table `table` (a manifest's table path) by its whole
- * reference: not as the tail of another schema's path, nor as the head of a
- * longer one.
- */
-function readsTable(sql: string, table: string): boolean {
-   const escaped = table.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-   return new RegExp(`(?<![\\w.])${escaped}(?![\\w.])`).test(sql);
-}
-
-/**
- * Whether two sources output the same columns, by name, type and numeric
- * subtype, in order: an integer column where the plan has a float is drift.
- */
-function sameColumns(a: PersistSource, b: PersistSource): boolean {
-   return (
-      JSON.stringify(outputColumnsOf(a)) === JSON.stringify(outputColumnsOf(b))
-   );
+   return table.overStoredBase.source;
 }
 
 /**
@@ -2485,6 +2399,38 @@ function storedRollupBase(
       companion: table.storedBase.companion,
       grain: table.rollup.grainDimensions,
       measures: table.rollup.measures.map((m) => m.name),
+   };
+}
+
+/**
+ * A built entry with its provenance: `builtAt`, now, and in `builtFrom` each
+ * stored table a build read that the database build did not already name
+ * (a `storage=` rollup that grouped its base's table, `readFrom`).
+ */
+function withBuiltProvenance(
+   run: InstructedRun,
+   address: string,
+   entry: ManifestEntry,
+): ManifestEntry {
+   const builtFrom = [...(entry.builtFrom ?? [])];
+   for (const upstream of run.readFrom?.get(address) ?? []) {
+      if (builtFrom.some((b) => b.sourceEntityId === upstream)) continue;
+      const read = run.entries[upstream];
+      if (!read?.physicalTableName) continue;
+      builtFrom.push({
+         sourceEntityId: upstream,
+         physicalTableName: read.physicalTableName,
+         ...(read.storageDestinationName
+            ? { storageDestinationName: read.storageDestinationName }
+            : {}),
+         ...(read.builtAt ? { builtAt: read.builtAt } : {}),
+      });
+   }
+   const { builtFrom: _unset, ...rest } = entry;
+   return {
+      ...rest,
+      builtAt: new Date().toISOString(),
+      ...(builtFrom.length > 0 ? { builtFrom } : {}),
    };
 }
 

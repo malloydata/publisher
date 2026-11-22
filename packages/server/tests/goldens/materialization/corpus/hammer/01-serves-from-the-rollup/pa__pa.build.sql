@@ -5,6 +5,7 @@
 -- ==== source orders__rollup__category__389984bb
 -- sourceID: orders__rollup__category__389984bb@<hammer>/pa/pa.malloy.preaggregate.malloy
 -- connection: orders_pg
+-- reads: orders@<hammer>/pa/pa.malloy
 -- sourceEntityId: 04803cb53503036fdb1f5e6b1b64ca6941a7f419563f2b6f31e222f7825a5bdc
 -- compiler key: 04803cb53503036fdb1f5e6b1b64ca6941a7f419563f2b6f31e222f7825a5bdc (the sourceEntityId)
 -- build SQL:
@@ -26,6 +27,7 @@ ORDER BY 2 desc NULLS LAST
 -- ==== source orders__rollup__region__85a0fa84
 -- sourceID: orders__rollup__region__85a0fa84@<hammer>/pa/pa.malloy.preaggregate.malloy
 -- connection: orders_pg
+-- reads: orders@<hammer>/pa/pa.malloy
 -- sourceEntityId: 4f696de650cac5319e7ccbb2bf531fd7ba3c436d45ac7cea6a9ff42c8dce83f3
 -- compiler key: 4f696de650cac5319e7ccbb2bf531fd7ba3c436d45ac7cea6a9ff42c8dce83f3 (the sourceEntityId)
 -- build SQL:

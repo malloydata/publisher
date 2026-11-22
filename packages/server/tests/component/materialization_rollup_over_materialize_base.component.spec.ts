@@ -534,7 +534,7 @@ source: clipped is raw extend {
    });
 
    describe("with freshness", () => {
-      it("builds a windowed rollup from the warehouse over a carried base of unknown age, and serves it", async () => {
+      it("rebuilds a carried base of unknown age for a windowed rollup, builds the rollup from it, and serves it", async () => {
          const windowed = ' freshness.window="1h"';
          await setUp(modelOf("cat", windowed));
          const first = await build();
@@ -544,17 +544,18 @@ source: clipped is raw extend {
          await rewrite(modelOf("sub", windowed));
          const started = Date.now();
          const second = await build();
-         expect(second.metadata).toMatchObject({ sourcesReused: 2 });
+         // The rollup's edge to its base: a table of unknown age is rebuilt,
+         // not carried, and the rollup reads the rebuilt table.
          const rollup = rollupOf(second, "orders");
-         expect(rollup.upstreamReuse).toBeUndefined();
-         expect(createdBy(rollup.physicalTableName)).toContain(RAW_MARK);
+         expect(rollup.upstreamReuse).toBe("reused");
+         expect(createdBy(rollup.physicalTableName)).not.toContain(RAW_MARK);
          expect(Date.parse(rollup.dataAsOf!)).toBeGreaterThanOrEqual(
             started - 1000,
          );
          await expectBySubFromRollup(second);
       });
 
-      it("builds a rollup whose window is narrower than its carried base's age from the warehouse", async () => {
+      it("rebuilds a carried base older than a rollup's narrower window, and builds the rollup from it", async () => {
          const base = ' freshness.window="1h"';
          const rollupWindow = ' freshness.window="2s"';
          await setUp(modelOf("cat", rollupWindow, base));
@@ -562,12 +563,15 @@ source: clipped is raw extend {
          const baseAnchor = entryOf(first, "orders").dataAsOf!;
          await until(baseAnchor, 2500);
          await rewrite(modelOf("sub", rollupWindow, base));
+         const started = Date.now();
          const second = await build();
-         // The base is inside its own window, so it is carried.
-         expect(entryOf(second, "orders").dataAsOf).toBe(baseAnchor);
+         // Past the rollup's window, so rebuilt for it.
+         expect(
+            Date.parse(entryOf(second, "orders").dataAsOf!),
+         ).toBeGreaterThanOrEqual(started - 1000);
          const rollup = rollupOf(second, "orders");
-         expect(rollup.upstreamReuse).toBeUndefined();
-         expect(createdBy(rollup.physicalTableName)).toContain(RAW_MARK);
+         expect(rollup.upstreamReuse).toBe("reused");
+         expect(createdBy(rollup.physicalTableName)).not.toContain(RAW_MARK);
          await expectBySubFromRollup(second);
       });
 

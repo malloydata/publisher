@@ -415,7 +415,7 @@ describe("a database rollup over a database #@ persist base", () => {
             dataAsOf?: string;
          };
 
-      it("builds a windowed rollup from the warehouse over a carried base of unknown age, and serves it", async () => {
+      it("rebuilds a carried base of unknown age for a windowed rollup, builds the rollup from it, and serves it", async () => {
          await setUp(
             modelOf('#@ preaggregate grain="cat" freshness.window="1h"'),
          );
@@ -426,19 +426,20 @@ describe("a database rollup over a database #@ persist base", () => {
          await regrain('#@ preaggregate grain="sub" freshness.window="1h"');
          const started = Date.now();
          const second = await build();
-         expect(second.metadata).toMatchObject({ sourcesReused: 2 });
+         // The rollup's edge to its base: a table of unknown age is rebuilt,
+         // not carried, and the rollup reads the rebuilt table.
          const rollup = rollupOf(second, "daily") as Entry & {
             dataAsOf?: string;
          };
-         expect(rollup.upstreamReuse).toBeUndefined();
-         expect(createdBy(rollup.physicalTableName)).toContain(RAW_MARK);
+         expect(rollup.upstreamReuse).toBe("reused");
+         expect(createdBy(rollup.physicalTableName)).not.toContain(RAW_MARK);
          expect(Date.parse(rollup.dataAsOf!)).toBeGreaterThanOrEqual(
             started - 1000,
          );
          await expectBySubFromRollup(second);
       });
 
-      it("builds a rollup whose window is narrower than its carried base's age from the warehouse, so it is served fresh rather than stale on arrival", async () => {
+      it("rebuilds a carried base older than a rollup's narrower window, and builds the rollup from it, so it is served fresh rather than stale on arrival", async () => {
          const base = '#@ persist freshness.window="1h"';
          await setUp(
             modelOf('#@ preaggregate grain="cat" freshness.window="2s"', base),
@@ -452,13 +453,15 @@ describe("a database rollup over a database #@ persist base", () => {
          );
          const started = Date.now();
          const second = await build();
-         // The base is inside its own window, so it is carried.
-         expect(entryOf(second, "daily").dataAsOf).toBe(baseAnchor);
+         // Past the rollup's window, so rebuilt for it.
+         expect(
+            Date.parse(entryOf(second, "daily").dataAsOf!),
+         ).toBeGreaterThanOrEqual(started - 1000);
          const rollup = rollupOf(second, "daily") as Entry & {
             dataAsOf?: string;
          };
-         expect(rollup.upstreamReuse).toBeUndefined();
-         expect(createdBy(rollup.physicalTableName)).toContain(RAW_MARK);
+         expect(rollup.upstreamReuse).toBe("reused");
+         expect(createdBy(rollup.physicalTableName)).not.toContain(RAW_MARK);
          expect(Date.parse(rollup.dataAsOf!)).toBeGreaterThanOrEqual(
             started - 1000,
          );

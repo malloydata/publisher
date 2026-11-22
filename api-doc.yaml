@@ -10939,6 +10939,7 @@ components:
               given_where_over_unstored_field,
               unreadable_grain,
               upstream_unread,
+              upstream_table_unusable,
             ]
           description: >-
             The bounded refusal reason; `message` says the specifics.
@@ -11002,6 +11003,15 @@ components:
             and a host's instruction for it is refused, until a reload or a
             plan refresh reads the catalog and plans it at its address; the
             `*-not-built` warning names the table).
+            `upstream_table_unusable` (a database persisted view, named query
+            or rollup that is built from its upstream's stored table, and
+            never by recomputing the upstream from raw, in any build, when
+            that table cannot be read: an upstream declared `storage=`, whose
+            table lives in a storage destination a build in the warehouse
+            cannot read; or an upstream that declares a persisted table but is
+            itself refused, or not planned, so it has none. `message` names the
+            upstream and why. Terminal until the model changes; the
+            declaration is answered live).
 
 
             A persisted view or named query: `materialization_off` (persisted
@@ -11945,6 +11955,33 @@ components:
             boundary is never applied to a table whose definition has moved on
             since it was measured.
 
+    BuiltFromTable:
+      type: object
+      description: >-
+        One upstream table a build read (`ManifestEntry.builtFrom`).
+      required: [sourceEntityId, physicalTableName]
+      properties:
+        sourceEntityId:
+          type: string
+          description: >-
+            The upstream's CONTENT address: the key of its entry in the
+            manifest the build read.
+        physicalTableName:
+          type: string
+          description: The upstream table's logical (unquoted) name, as its entry holds it.
+        storageDestinationName:
+          type: string
+          description: >-
+            The `storage=` destination the upstream table lives in; absent for
+            a table in its source's own warehouse.
+        builtAt:
+          type: string
+          format: date-time
+          description: >-
+            The upstream entry's own `builtAt`: which build of that table was
+            read. Absent when its entry carries none (a reference, or an entry
+            written before 0.17.2).
+
     BuildManifest:
       type: object
       description:
@@ -12335,6 +12372,30 @@ components:
             0.15.0 every rollup over a persisted base reported `reused`. A
             `storage=` rollup reports `reused` only when it stacked on a stored
             table.
+        builtAt:
+          type: string
+          format: date-time
+          description: >-
+            When the run that produced this entry built its table: the instant
+            its build finished. Not a freshness anchor (that is `dataAsOf`).
+            A host that stores entries keeps it as written, so a downstream's
+            `builtFrom` can name the build of each table it read. Absent on an
+            entry written before 0.17.2, and on a reference.
+        builtFrom:
+          type: array
+          description: >-
+            The stored tables of other persisted sources this table's build
+            read in place of their definitions, each named as the run's
+            manifest held it, with that table's `builtAt`. Recorded for a
+            database build whose SQL read an upstream's table (a chained
+            `#@ persist` source, a persisted view or named query, or a rollup
+            built over its base's table) and for a `storage=` rollup that
+            grouped its base's stored table. Provenance, not a location the
+            entry is served from: the entry's own table is
+            `physicalTableName`. Absent, or empty (read the same), when the
+            build read no upstream's table.
+          items:
+            $ref: "#/components/schemas/BuiltFromTable"
         upstreamRecomputeReason:
           type: string
           description: >-

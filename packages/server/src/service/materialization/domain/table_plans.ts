@@ -747,6 +747,14 @@ export type TablePlan = TablePlanFacts &
            kind: Extract<TableKind, "persist" | "view">;
            materialize?: undefined;
            rollup?: undefined;
+           /**
+            * A database persisted view or named query compiled over its
+            * upstreams' stored tables (persisted_view_compile.ts), compiled
+            * and proven to build the planned table at plan time
+            * (over_stored_proof.ts): the plan's decision that it builds over
+            * its upstreams' tables, which a run reads (instructed_build.ts).
+            */
+           overStoredBase?: OverStoredBase;
         }
       | {
            kind: Extract<TableKind, "materialize" | "pair">;
@@ -760,11 +768,12 @@ export type TablePlan = TablePlanFacts &
            /**
             * The rollup as compiled over its base's stored table: set for a
             * database rollup over a database `#@ persist` or
-            * `#(materialize)` base, and compiled on the first call
-            * (rollup_compile.ts). A run builds from it only when its build
-            * manifest holds the base's table (instructed_build.ts).
+            * `#(materialize)` base, compiled and proven to build the planned
+            * table at plan time (rollup_compile.ts, over_stored_proof.ts). A
+            * run builds from it only when its build manifest holds the
+            * base's table (instructed_build.ts).
             */
-           overStoredBase?: () => Promise<OverStoredBase | undefined>;
+           overStoredBase?: OverStoredBase;
            /**
             * For a `storage=` rollup over a base stored in the same
             * destination: the base, and the rollup's own generated build
@@ -790,6 +799,19 @@ export type TablePlan = TablePlanFacts &
 export interface OverStoredBase {
    source: PersistSource;
    baseBuildSource?: PersistSource;
+   /**
+    * With `baseBuildSource`: the author's sourceID of the `#(materialize)`
+    * source the compile re-roots on it, whose table the downstream reads
+    * (the downstream's own base, or the one source it extends).
+    */
+   rerootedSourceID?: string;
+   /**
+    * The author's sourceIDs of the persisted upstreams whose tables the
+    * compile reads (their own `#@ persist` kept, or the re-rooted
+    * `#(materialize)` source): each must be planned and not refused, or
+    * the downstream is refused at plan (build_plan.ts).
+    */
+   upstreamSourceIDs?: readonly string[];
 }
 
 /** A `#(materialize)` plan's kind: `pair` when it stores an inlined join_many. */

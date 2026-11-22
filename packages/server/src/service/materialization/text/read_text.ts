@@ -69,15 +69,18 @@ export function generatePersistedViewFile(
    plans: readonly PersistedViewPlan[],
    importPath: string,
    extra?: { imports: string; sources: string },
+   /** Another file a build source's source is imported from, by build sourceID. */
+   importOf: (buildSourceID: string) => string | undefined = () => undefined,
 ): string | undefined {
    if (plans.length === 0 && !extra) return undefined;
    const sources = [...new Set(plans.map((p) => p.sourceName))].sort(
       byCodepoint,
    );
-   const viewImports = sources.map(
-      (s) =>
-         `import { ${identifier(baseAlias(s))} is ${identifier(s)} } from ${doubleQuotedString(importPath)}`,
-   );
+   const viewImports = sources.map((s) => {
+      const first = plans.find((p) => p.sourceName === s);
+      const from = (first && importOf(first.buildSourceID)) ?? importPath;
+      return `import { ${identifier(baseAlias(s))} is ${identifier(s)} } from ${doubleQuotedString(from)}`;
+   });
    const viewSources = plans.map(
       (p) =>
          // malloy-text: the author's own `#@` lines, verbatim (single lines, no `@env.`; see planSourcePersistedViews)
@@ -111,18 +114,27 @@ ${sourcesText}
 function persistedQueryCompanionParts(
    plans: readonly PersistedQueryPlan[],
    importPath: string,
+   importOf: (buildSourceID: string) => string | undefined = () => undefined,
 ): { imports: string; sources: string } | undefined {
    if (plans.length === 0) return undefined;
-   const names = [
-      ...new Set(
-         plans.flatMap((p) =>
-            p.sourceName !== undefined
-               ? [p.queryName, p.sourceName]
-               : [p.queryName],
-         ),
-      ),
-   ].sort(byCodepoint);
-   const imports = `import { ${names.map((n) => identifier(n)).join(", ")} } from ${doubleQuotedString(importPath)}`;
+   // One import per file, in the order each is first named.
+   const byFile = new Map<string, Set<string>>();
+   for (const p of plans) {
+      const from = importOf(p.buildSourceID) ?? importPath;
+      const names = byFile.get(from) ?? new Set<string>();
+      names.add(p.queryName);
+      if (p.sourceName !== undefined) names.add(p.sourceName);
+      byFile.set(from, names);
+   }
+   const imports = [...byFile]
+      .map(
+         ([from, names]) =>
+            `import { ${[...names]
+               .sort(byCodepoint)
+               .map((n) => identifier(n))
+               .join(", ")} } from ${doubleQuotedString(from)}`,
+      )
+      .join("\n");
    const sources = plans
       .map(
          (p) =>
@@ -143,11 +155,14 @@ export function generatePersistedResultFile(
    views: readonly PersistedViewPlan[],
    queries: readonly PersistedQueryPlan[],
    importPath: string,
+   /** Another file a build source's source is imported from, by build sourceID. */
+   importOf?: (buildSourceID: string) => string | undefined,
 ): string | undefined {
    return generatePersistedViewFile(
       views,
       importPath,
-      persistedQueryCompanionParts(queries, importPath),
+      persistedQueryCompanionParts(queries, importPath, importOf),
+      importOf,
    );
 }
 
