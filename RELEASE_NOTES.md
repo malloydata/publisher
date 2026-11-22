@@ -21,6 +21,47 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — a chained build never reads an upstream table altered since its build
+
+**Fixed (wrong answer): a database build over a stored upstream read the upstream's table even after the table was altered in the warehouse.** This applied to a `#@ persist` source over another persisted source, and to a `#(rollup)` over a stored base. Neither build checked that the upstream's table still held the columns its build recorded. After an `ALTER TABLE` (a column retyped from `DECIMAL(10,1)` to `DECIMAL(10,0)`, which rounds `2.4` to `2`, or a column dropped), the downstream computed from the altered rows and served those values from its own table. Queries on the upstream itself already answered live. Now, before a build reads an upstream table that this run did not build, it reads that table's columns from the warehouse and compares each with the native type the upstream's build captured. If a column changed, the columns cannot be read, or the build recorded no types, the build recomputes that upstream from its definition. A `#@ persist` downstream then reports `upstreamReuse: recomputed`, with an `upstreamRecomputeReason` naming the column. Under strict upstreams that build is refused with the same reason. The one exception is a strict build a host instructs over an untyped reference, described in the `nativeSchema` section. A run makes one catalog query per upstream table it checks; an upstream with no recorded types is not queried.
+
+**Who is affected:** packages whose chained database builds read upstream tables that are altered outside Publisher, or whose upstream entries carry no `nativeSchema` (built by an older release, or on a warehouse whose catalog cannot be read). Those builds now recompute their upstreams, and strict builds over them are refused. **What to do:** rebuild the upstream (`forceRefresh`) so its table and its recorded types agree again.
+
+## [Unreleased] — a rollup that cannot build over its stored base says why, and every upstream recompute is counted
+
+**Changed: a database rollup that cannot read its base's table now reports why.** When the base's table changed since its build, cannot be read, or has no recorded types, the rollup builds from the warehouse. That fallback was silent: no log line, no metric, no entry field. It now logs a warning, and its entry reports `upstreamReuse: recomputed` with an `upstreamRecomputeReason`. A rollup still builds from the warehouse under strict upstreams.
+
+**New metric: `publisher_materialization_upstream_recompute_total{reason,build,outcome}`.** It counts every build that could not check an upstream table against its recorded types.
+- `reason`: `moved`, `unreadable`, `types_unrecorded`, `reference_types_unrecorded`, or `persisted_result`.
+- `build`: `chained` (a build over the upstream) or `rollup` (a rollup over its stored base).
+- `outcome`: `recomputed` (from the upstream's definition) or `read_unchecked`.
+
+**Who is affected:** anyone who monitors materialization builds. **What to do:** watch `reason="types_unrecorded"` and `reason="reference_types_unrecorded"`. Each count is a build that could not verify its upstream.
+
+## [Unreleased] — a host's reference may carry its upstream's `nativeSchema`
+
+**New: a `referenceManifest` entry takes an optional `nativeSchema`.** It has the same shape as a manifest entry's `nativeSchema`, for example `[{ "name": "amt", "type": "DECIMAL(10,1)" }]`: send back what the upstream's build reported. A build checks the referenced table against it, as described in the altered-upstream section. An absent `nativeSchema` and an empty one both mean the reference carries no types, and such a reference cannot be checked. A strict build that a host instructs reads the table unchecked, as before, and logs a warning. It is counted with `reason="reference_types_unrecorded"` and `outcome="read_unchecked"`. Any other build recomputes the upstream. A `storage=` reference needs no `nativeSchema`. A malformed `nativeSchema` is a 400.
+
+**Who is affected:** hosts that pass `referenceManifest`. **What to do:** send `nativeSchema` on every database reference. Then a table altered in the warehouse is caught instead of read.
+
+## [Unreleased] — a host's reference to a stored upstream keeps its storage destination
+
+**Fixed: `POST …/materializations` dropped a `referenceManifest` entry's `storageDestinationName`.** The controller kept only `sourceEntityId`, `physicalTableName` and `connectionName`. A reference to a table in a `storage=` destination therefore read as a warehouse table whenever neither this worker's own run records nor the package's bound manifest held that upstream. A host-instructed build over such a reference then failed as an upstream supplied at the wrong tier (`… manifest entry is not a table a warehouse build can read`). The field is now kept. It must name a storage destination the environment configures; otherwise the request is a 400. With the field kept, a non-strict build recomputes such an upstream from its definition. A strict build is refused, because the reference carries no column list: stacking on a stored table needs that list, which only a bound manifest or this worker's own record supplies.
+
+**Who is affected:** hosts that reference stored upstreams that this worker has never recorded. Releases up to 0.17.1 are affected. **What to do:** upgrade. Make sure each reference's `storageDestinationName` names a destination the environment configures.
+
+## [Unreleased] — a persisted view or query over a persisted source reports that it recomputes it
+
+**Fixed: a persisted view or named query over a persisted source reported `upstreamReuse: reused`, though it never reads that source's table.** Its build blanks the source's `#@ persist`, so it reads the rows its live query reads, from the warehouse, as it always did. Its data is unchanged. Its entry now says so: `upstreamReuse: recomputed`, with an `upstreamRecomputeReason` naming the upstream. Each build is logged and counted with `reason="persisted_result"`. Like a database rollup over a stored base, such a view or query is exempt from strict upstreams, and it still builds under `strictUpstreams`.
+
+**Who is affected:** anyone who reads `upstreamReuse` on these entries. **What to do:** nothing; the label is now accurate.
+
+## [Unreleased] — a chained `storage=` build never truncates a stored timestamp a second time in another zone
+
+**Fixed (wrong answer): a chained `storage=` build whose downstream reads in another time zone stored timestamp truncations truncated twice.** When a downstream stacked on its upstream's stored table, the upstream's timestamp truncations were restated over their stored values (`d is d__stored.day`). A downstream that sets its own `timezone:` then truncated them again in its own zone. For example, `b is a -> { timezone: 'America/Los_Angeles'; group_by: dd is d }` over `a is raw -> { select: d is ts.day }` stored `2024-01-06 08:00` where live answers `2024-01-07 00:00`. Queries were already declined in this case, but builds were not, because a build runs no read checks. A chained build now declines to stack when the downstream reads an upstream that stores a zone-dependent value (a restated truncation, a computed dimension, a record of joined fields) in another zone than the one its table was built in. The downstream then recomputes from its source; under strict upstreams it is refused. A downstream that reads in the upstream's own zone still stacks.
+
+**Who is affected:** packages with chained `storage=` sources whose downstream sets a different `timezone:` from its upstream. **What to do:** upgrade. Such builds now recompute, which reads the warehouse.
+
 ## [Unreleased] — a rollup no longer truncates again a day its base's query computed in another zone
 
 **Fixed (wrong answer): a `#(rollup)` over a query-shaped source whose query sets a time zone could return its timestamp truncations shifted to UTC.** For `source: daily is raw -> { timezone: 'America/Los_Angeles'; group_by: d is ts.day … }` with a rollup grouping by `d` (in `daily`'s own `extend`, or on an extension of it such as `rolled is daily extend { … }`), the rollup's table held the right value (`2024-01-06 08:00` UTC, Los Angeles midnight), but a query served from a `storage=` rollup truncated it again in UTC and answered `2024-01-06 00:00` where live answers `08:00`. A `.week` or `.month` grain shifted the same way; `.hour` only in a zone whose offset is not whole hours. The same applied when the query inherits the zone from the source it runs on (`raw_la -> { group_by: d is ts.day }`). The rollup's zone check looked for a `timezone:` on the source itself, never in its query's stages. Only a `storage=` rollup restates a stored truncation in the reading query's zone, so a `storage=` rollup whose grain holds such a truncation is no longer built: it is reported as not built with `time_zone`, and its measure is answered live. A database rollup returns the stored value as it is, and keeps serving.

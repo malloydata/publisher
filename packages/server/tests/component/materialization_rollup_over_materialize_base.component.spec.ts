@@ -61,6 +61,17 @@ setDefaultTimeout(120_000);
 
 const ENV = "e1";
 const ENV_ID = "env-1";
+/** The destination a wrong-tier reference names: configured, never written. */
+const LAKE_DESTINATION = {
+   name: "lake",
+   type: "ducklake",
+   ducklakeConnection: {
+      catalog: {
+         postgresConnection: { host: "h", databaseName: "d", userName: "u" },
+      },
+      storage: { bucketUrl: "/nonexistent-lake" },
+   },
+} as never;
 const PKG = "pkg";
 
 /** The raw rows, read only through `raw`, so a build that reads them names RAW_MARK. */
@@ -144,7 +155,9 @@ describe("a database rollup over a database #(materialize) base", () => {
          { "m.malloy": model },
          { manifest: { name: PKG, description: "fixture" } },
       );
-      env = await Environment.create(ENV, envPath, []);
+      // A storage destination the host's references may name (the
+      // wrong-tier test); nothing here builds into it.
+      env = await Environment.create(ENV, envPath, [], [LAKE_DESTINATION]);
       await env.addPackage(PKG);
       service = serviceOverEnvironment(
          () => repo,
