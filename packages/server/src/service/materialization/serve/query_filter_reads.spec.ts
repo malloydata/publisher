@@ -474,6 +474,30 @@ describe("queryFilterReadsOfQuery: the caller's own filters", () => {
       }
    });
 
+   it("reads a numeric pick as comparing no string, and a pick comparing or yielding a string as comparing one", async () => {
+      for (const q of [
+         "run: tm -> { group_by: id; aggregate: x is sum(pick 1 when amt > 1 else 0); having: x > 0 }",
+         "run: tm -> { select: id, p is pick 1 when amt > 1 else 0 } -> { where: p > 0; select: id }",
+         "run: tm -> { select: id, p is pick amt when amt > 1 else 0 } -> { group_by: id; aggregate: x is p.sum(); having: x > 0 }",
+         "run: tm -> { group_by: id; aggregate: y is sum(pick 1 when amt > 1 else 0) } -> { group_by: id; aggregate: x is y.sum(); having: x > 0 }",
+         "run: tm -> { select: id, a2 is amt * 2 } -> { group_by: id; aggregate: x is a2.sum(); having: x > 0 }",
+      ]) {
+         expect((await reads(q)).comparesNoString, q).toBe(true);
+      }
+      for (const q of [
+         // A condition comparing a string, directly or through a dimension.
+         "run: tm -> { select: id, p is pick 1 when category > 'M' else 0 } -> { where: p > 0; select: id }",
+         "run: tm -> { select: id, p is pick 1 when is_books else 0 } -> { where: p > 0; select: id }",
+         // A branch yielding a string, or computed from one.
+         "run: tm -> { select: id, p is pick 'a' when amt > 1 else 'b' } -> { where: p > 'a'; select: id }",
+         "run: tm -> { select: id, p is pick 1 when amt > 1 else length(category) } -> { where: p > 0; select: id }",
+         "run: tm -> { group_by: id; aggregate: x is count(pick category when amt > 1 else null); having: x > 0 }",
+         "run: tm -> { select: id, big is pick 1 when category > 'M' else 0 } -> { select: id, b2 is big * 2 } -> { group_by: id; aggregate: x is b2.sum(); having: x > 0 }",
+      ]) {
+         expect((await reads(q)).comparesNoString, q).toBe(false);
+      }
+   });
+
    it("reads a field through a join whose on: compares strings as comparing one, a null test included", async () => {
       for (const q of [
          "run: tj -> { where: tt.category is null; select: oid }",

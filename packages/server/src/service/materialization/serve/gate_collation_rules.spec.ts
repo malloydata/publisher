@@ -492,6 +492,54 @@ describe("gateReads' probe allow-lists (NON_STRING_OPERATORS, comparesNoString)"
          { equalityOnly: false, comparesNoString: false },
       ],
       [
+         "a case on numbers alone",
+         op(
+            ">",
+            {
+               node: "case",
+               kids: {
+                  caseWhen: [op(">", field("amount"))],
+                  caseThen: [num],
+                  caseElse: num,
+               },
+            },
+            num,
+         ),
+         { equalityOnly: true, comparesNoString: true },
+      ],
+      [
+         "a case whose condition compares a string",
+         op(
+            ">",
+            {
+               node: "case",
+               kids: {
+                  caseWhen: [op(">", field("region"), str)],
+                  caseThen: [num],
+                  caseElse: num,
+               },
+            },
+            num,
+         ),
+         { equalityOnly: false, comparesNoString: false },
+      ],
+      [
+         "a case yielding a string",
+         op(
+            "=",
+            {
+               node: "case",
+               kids: {
+                  caseWhen: [op(">", field("amount"))],
+                  caseThen: [str],
+                  caseElse: str,
+               },
+            },
+            str,
+         ),
+         { equalityOnly: false, comparesNoString: false },
+      ],
+      [
          "a like pattern",
          op("like", field("region"), str),
          { equalityOnly: false, comparesNoString: false },

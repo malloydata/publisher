@@ -6,7 +6,8 @@
 type: sets_zone__served is {
    id::number,
    created_at::timestamp,
-   h::number
+   h::number,
+   d::timestamp
 }
 type: inherits_zone__served is {
    id::number,
@@ -43,8 +44,10 @@ source: inherits_zone is duckdb.virtual('2ea58d1747888cfe4c616813579a380b00f03d1
 source: sets_zone is duckdb.virtual('3cbd1059d9a03ac598fb3304141ff1896a1ff3cac14141df8d7ae75f46294a3a')::sets_zone__served extend {
   private rename:
     id__stored is id
+    d__stored is d
   dimension:
     id is id__stored::"BIGINT"
+    d is d__stored.day
  primary_key: id }
 
 source: reader is orders_raw extend {

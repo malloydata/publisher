@@ -548,6 +548,8 @@ class GateReadWalk {
          case "timestamptzLiteral":
          case "now":
             return true;
+         case "case":
+            return this.pickLeavesNotString(e, source, depth, throughJoins);
          case "is-null":
          case "is-not-null":
             // A null test of a field compares no value: a stored copy holds
@@ -593,6 +595,45 @@ class GateReadWalk {
          }
       }
       return true;
+   }
+
+   /**
+    * Whether a `pick` (`node: "case"`) has only non-string leaves: it
+    * compares only what its conditions (and a `pick … when` value) compare,
+    * and yields only what its branches yield, so `pick 1 when amt > 1 else
+    * 0` compares no string, while a condition or a branch holding one
+    * (`pick 1 when category > 'M' else 0`, `pick 'a' when … else 'b'`) does.
+    * A shape other than one or more conditions, each with its branch, and
+    * an optional value and `else`, reads false.
+    */
+   private pickLeavesNotString(
+      e: unknown,
+      source: unknown,
+      depth: number,
+      throughJoins: boolean,
+   ): boolean {
+      const kids = (e as { kids?: unknown }).kids;
+      if (kids === null || typeof kids !== "object") return false;
+      const { caseValue, caseWhen, caseThen, caseElse, ...rest } = kids as {
+         caseValue?: unknown;
+         caseWhen?: unknown;
+         caseThen?: unknown;
+         caseElse?: unknown;
+      };
+      if (
+         Object.keys(rest).length > 0 ||
+         !Array.isArray(caseWhen) ||
+         !Array.isArray(caseThen) ||
+         caseWhen.length === 0 ||
+         caseWhen.length !== caseThen.length
+      ) {
+         return false;
+      }
+      return [caseValue, ...caseWhen, ...caseThen, caseElse]
+         .filter((x) => x !== undefined)
+         .every((x) =>
+            this.leavesNotString(x, source, depth + 1, throughJoins),
+         );
    }
 
    /**
