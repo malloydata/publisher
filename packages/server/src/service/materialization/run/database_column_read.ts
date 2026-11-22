@@ -165,6 +165,103 @@ export async function readTableColumns(args: {
 }
 
 /**
+ * Each stored upstream's database table, of `tables` (by the caller's key),
+ * that no longer holds the columns its build recorded, with why: read now
+ * on `connection`, the one a build reads it through. A table is unmoved
+ * when it holds every column with the native type its build captured
+ * (`nativeSchema`). A chained
+ * build reads the table in place of its source only then: a column retyped,
+ * gone, or held as a DOUBLE in DuckLake since the build would feed the
+ * downstream other values than live computes, under an address that says
+ * otherwise. A table whose build captured no native types, or whose read
+ * failed, cannot be told unmoved, so it counts as moved (fail safe: the
+ * downstream recomputes it).
+ *
+ * Native types compare exactly, case and spacing aside: the read is the
+ * capture's own catalog query, so an unaltered table reads as captured. A
+ * stricter rule than the bind's (which reads a widened column as it is),
+ * since a build can always recompute instead.
+ */
+export async function movedSinceBuild(
+   tables: ReadonlyMap<
+      string,
+      {
+         physicalTableName: string;
+         nativeSchema?: readonly { name?: string; type?: string }[];
+      }
+   >,
+   connection: ReadConnection,
+): Promise<Map<string, string>> {
+   const read = await readTableColumns({
+      tables: [...tables].map(([key, entry]) => ({
+         key,
+         connectionName: "build",
+         tableName: entry.physicalTableName,
+      })),
+      connection: async () => connection,
+   });
+   const moved = new Map<string, string>();
+   for (const [key, entry] of tables) {
+      const reason = movedColumns(
+         entry,
+         read.get(key) ?? { unread: "not_read" },
+      );
+      if (reason !== undefined) moved.set(key, reason);
+   }
+   return moved;
+}
+
+/** {@link movedSinceBuild} for one table, as `read` found it. */
+function movedColumns(
+   built: { nativeSchema?: readonly { name?: string; type?: string }[] },
+   read: ObservedColumns,
+): string | undefined {
+   if ("unread" in read) {
+      return `its columns could not be read (${read.unread})`;
+   }
+   if (!built.nativeSchema?.length) {
+      return "its build recorded no column types to check it against";
+   }
+   for (const column of built.nativeSchema) {
+      if (column.name === undefined || column.type === undefined) {
+         return "its build recorded a column without a name or type";
+      }
+      const now = columnNamed(read.columns, column.name);
+      if (!now) return `its column '${column.name}' is gone`;
+      const nowType = now.nativeType ?? now.type ?? "";
+      if (now.storedAsDouble || spelled(nowType) !== spelled(column.type)) {
+         return (
+            `its column '${column.name}' was built as ${column.type} and ` +
+            `is now ${nowType || "of no readable type"}`
+         );
+      }
+   }
+   return undefined;
+}
+
+/** A native type spelled one way whatever its case and spacing. */
+function spelled(nativeType: string): string {
+   return nativeType
+      .replace(/\s+/g, " ")
+      .replace(/\s*([(),])\s*/g, "$1")
+      .trim()
+      .toUpperCase();
+}
+
+/** The column named `name`: exactly, else the one that matches it case-blind. */
+function columnNamed<C extends { name: string }>(
+   columns: readonly C[],
+   name: string,
+): C | undefined {
+   const exact = columns.find((c) => c.name === name);
+   if (exact) return exact;
+   const folded = columns.filter(
+      (c) => c.name.toLowerCase() === name.toLowerCase(),
+   );
+   return folded.length === 1 ? folded[0] : undefined;
+}
+
+/**
  * The keys of `tables` that live in a DuckLake catalog. Every table of a
  * `ducklake` connection does; on a DuckDB connection, a table does when its
  * catalog (its path's first part, else the session's current database) is

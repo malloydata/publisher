@@ -234,6 +234,11 @@ export function upstreamReuseFromManifest(params: {
    compilerMissing: readonly { name: string; sourceID: string }[];
    /** The content address of the source being built; a stop sharing it is its own table. */
    rootAddress?: string;
+   /**
+    * The upstreams left out because their table moved since its build, by
+    * address: why, for one the build reads, else undefined (not read).
+    */
+   moved?: ReadonlyMap<string, string | undefined>;
 }): {
    fields: Pick<ManifestEntry, "upstreamReuse" | "upstreamRecomputeReason">;
    inManifestOnly: string[];
@@ -250,6 +255,12 @@ export function upstreamReuseFromManifest(params: {
       if (address === undefined) continue;
       upstreams++;
       if (address in params.substituted) continue;
+      if (params.moved?.has(address)) {
+         // Its table moved since its build: recomputed if read, else unused.
+         const why = params.moved.get(address);
+         if (why !== undefined) reasons.push(why);
+         continue;
+      }
       if (address in params.full) {
          // Storage-held, excluded from the warehouse manifest. Read only if the
          // compare says a stored table was inlined; otherwise an unused join.

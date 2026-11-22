@@ -33,6 +33,7 @@ import {
    type StoredJoin,
    type UniquenessLedger,
 } from "./inline_uniqueness";
+import { movedSinceBuild } from "./database_column_read";
 import type {
    OverStoredBase,
    ParentKeyCheck,
@@ -888,7 +889,7 @@ export class InstructedBuild {
       };
       const built = await this.buildGatedSource(
          run,
-         (await overStoredBaseSource(run, persistSource, gated)) ??
+         (await overStoredBaseSource(run, persistSource, gated, connection)) ??
             persistSource,
          graphConnectionName,
          connection,
@@ -1156,6 +1157,7 @@ export class InstructedBuild {
             manifest: run.manifest,
             environment: run.environment,
             builtEntries: run.entries,
+            builtThisRun: run.builtAddresses,
             buildMetadata: run.buildMetadata,
             incremental: run.incremental,
             // The CONTENT address, distinct from the instruction's
@@ -2195,6 +2197,8 @@ function baseFreshEnough(
  *    do not depend on any gate: each is applied when a query reads it;
  *  - with a declared window, the base's table is new enough
  *    ({@link baseFreshEnough}), whoever instructed the run;
+ *  - a table this run did not build holds the columns its build recorded
+ *    (`movedSinceBuild`);
  *  - the compiled source builds the planned table ({@link buildsPlannedTable}).
  *
  * Records the base as what the rollup read, for its freshness anchor.
@@ -2203,6 +2207,8 @@ async function overStoredBaseSource(
    run: InstructedRun,
    persistSource: PersistSource,
    gated: Pick<GatedSource, "instruction" | "sourceEntityId">,
+   /** The rollup's connection, which its build reads the base's table on. */
+   connection: MalloyConnection,
 ): Promise<PersistSource | undefined> {
    const { compiled } = run;
    const table = compiled.tables[persistSource.sourceID];
@@ -2234,6 +2240,16 @@ async function overStoredBaseSource(
       return undefined;
    }
    if (!baseFreshEnough(run, gated.sourceEntityId, baseAddress, baseEntry)) {
+      return undefined;
+   }
+   // A table altered in its warehouse since its build (a column retyped or
+   // dropped) is not the base's rows: the rollup builds as planned, which
+   // recomputes the base (source_build.ts, movedUpstreams).
+   if (
+      !run.builtAddresses.has(baseAddress) &&
+      (await movedSinceBuild(new Map([[baseAddress, baseEntry]]), connection))
+         .size > 0
+   ) {
       return undefined;
    }
    let variant: OverStoredBase | undefined;
