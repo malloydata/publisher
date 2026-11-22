@@ -1241,13 +1241,17 @@ export class StorageBuildStrategy
          },
          stored: upstreams.flatMap((b) => b.sourceIDs ?? []),
       });
+      // No build over the parents gives live's rows, as for a downstream
+      // that reaches the warehouse: the one recompute strict permits
+      // (`warehouseReach` decides), reported with this reason.
       if (collation !== undefined) {
-         throw new ChainedShapeNotCarriedError(
-            `'${persistSource.name}' compares a string over its stored ` +
+         throw new MaterializationEligibilityError({
+            message:
+               `'${persistSource.name}' compares a string over its stored ` +
                `upstreams (${stops.map((p) => `'${p.name}'`).join(", ")}) ` +
                `that the destination, byte-exact, would compare otherwise ` +
                `than its source does: ${collation}`,
-         );
+         });
       }
       const byAddress = new Map<string, Record<string, string[] | undefined>>();
       for (const b of upstreams) {

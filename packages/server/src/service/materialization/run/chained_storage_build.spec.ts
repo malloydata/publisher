@@ -638,7 +638,11 @@ source: mixed is daily extend {
                stored: [chain.byName("daily").id],
             },
          ]);
-         expect(refused.error).toBeInstanceOf(ChainedShapeNotCarriedError);
+         // A shape no build over the parents gives live's rows for, as one
+         // that reaches the warehouse: the recompute strict permits (unless
+         // `warehouseReach: refuse`), never an uncarried shape strict refuses.
+         expect(refused.error).toBeInstanceOf(MaterializationEligibilityError);
+         expect(refused.error).not.toBeInstanceOf(ChainedShapeNotCarriedError);
          expect((refused.error as Error).message).toBe(
             "'monthly' compares a string over its stored upstreams ('daily') " +
                "that the destination, byte-exact, would compare otherwise " +
@@ -653,7 +657,8 @@ source: mixed is daily extend {
             parentEntry(chain, "daily"),
             null,
          );
-         expect(unasked.error).toBeInstanceOf(ChainedShapeNotCarriedError);
+         expect(unasked.error).toBeInstanceOf(MaterializationEligibilityError);
+         expect(unasked.error).not.toBeInstanceOf(ChainedShapeNotCarriedError);
          expect((unasked.error as Error).message).toEndWith(
             "this package cannot read its source's collation",
          );

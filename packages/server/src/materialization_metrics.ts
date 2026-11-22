@@ -263,8 +263,10 @@ export type EligibilityRefusalReason =
  * so the upstream was recomputed from raw against the warehouse (non-strict);
  * `strict_shape_fallback` = under `strictUpstreams`, the downstream reaches the
  * source warehouse (a table joined beside a stored parent, through a
- * non-persisted source), so no build over the parents exists and it was
- * recomputed from raw — the one recompute strict permits; `strict_refused` =
+ * non-persisted source), or the build over the parents would compare a string
+ * byte-exact that its source compares under a collation, so no build over the
+ * parents exists and it was recomputed from raw — the one recompute strict
+ * permits; `strict_refused` =
  * under `strictUpstreams`, a persisted upstream was neither built in the run
  * nor referenced, or the downstream reads only stored upstreams yet could not be
  * built over them, so the build failed loudly rather than recomputing a table
