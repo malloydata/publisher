@@ -333,7 +333,7 @@ for (const mechanism of MECHANISMS) {
 describe.skipIf(!url)(
    "a storage= view over an upstream whose stored type is not the plan's default",
    () => {
-      const QUERY = "run: s -> by_cat -> { select: *; order_by: total }";
+      const QUERY = "run: s -> by_cat -> { select: *; order_by: total, cat }";
       const f = lakeFixture(`${HEAD}#@ persist storage="lake" name="sdr_priced"
 source: base is raw -> { select: cat, price }
 source: s is base extend {
