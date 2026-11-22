@@ -269,6 +269,10 @@ async function withLoadSession<T>(
  * A missing local file counts only when the message names one of `uris`, since a
  * spill file can go missing too.
  */
+/** read_xlsx reports a workbook it cannot use (a sheet that isn't there, no rows, not a zip) as Binder or IO errors. */
+const XLSX_CONTENT =
+   /^Binder Error: (Sheet ".*" not found in xlsx file|Invalid range|No rows found in xlsx file|No sheets found|No \[Content_Types\]\.xml found)|^IO Error: Failed to open zip for reading/;
+
 function readerFault(
    error: Error,
    uris: readonly string[],
@@ -277,7 +281,8 @@ function readerFault(
    if (
       /^(Invalid Input|Conversion) Error:|^Invalid Error: TProtocolException/.test(
          message,
-      )
+      ) ||
+      XLSX_CONTENT.test(message)
    ) {
       return "content";
    }

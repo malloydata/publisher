@@ -182,6 +182,32 @@ describe("readerRefusal: what a person sent and the reader refused", () => {
       expect(readerRefusal("not an error", uri)).toBeNull();
    });
 
+   it("is a 400 for a workbook read_xlsx cannot use, so a retry is never spent on one", () => {
+      const book = "s3://lake/org_1/db_2/staging/orders/0e1f/book.xlsx";
+      for (const message of [
+         `Binder Error: Sheet "Sheet9" not found in xlsx file "${book}"`,
+         "Binder Error: Invalid range 'ZZ:A1' specified",
+         `Binder Error: No rows found in xlsx file "${book}"`,
+         `Binder Error: No sheets found in xlsx file "${book}"`,
+         `Binder Error: No [Content_Types].xml found in xlsx file "${book}"`,
+         "IO Error: Failed to open zip for reading",
+      ]) {
+         const refusal = readerRefusal(new Error(message), book);
+         expect([message, refusal instanceof BadRequestError]).toEqual([
+            message,
+            true,
+         ]);
+         expect(refusal?.message).not.toContain("s3://");
+      }
+      // Any other Binder Error is not the workbook's fault.
+      expect(
+         readerRefusal(
+            new Error('Binder Error: Referenced column "x" not found'),
+            book,
+         ),
+      ).toBeNull();
+   });
+
    // The message shapes the patterns above are written against, read from DuckDB
    // itself, so a DuckDB upgrade that rewords one fails here rather than quietly
    // answering 500 again.
@@ -244,6 +270,29 @@ describe("readerRefusal: what a person sent and the reader refused", () => {
          expect(refusal).toBeInstanceOf(BadRequestError);
          expect(refusal?.message).toContain('"absent.parquet"');
          expect(refusal?.message).not.toContain(dir);
+      });
+
+      it("for an xlsx sheet that is not in the workbook", async () => {
+         const book = path
+            .join(__dirname, "../../../../tests/fixtures/xlsx/database.xlsx")
+            .replaceAll(path.sep, "/");
+         const thrown = await readerError(
+            `read_xlsx('${book}', sheet = 'NoSuchSheet')`,
+         );
+         expect(thrown.message).toMatch(
+            /^Binder Error: Sheet "NoSuchSheet" not found in xlsx file/,
+         );
+         expect(readerRefusal(thrown, book)).toBeInstanceOf(BadRequestError);
+      });
+
+      it("for an xlsx object that is not a workbook", async () => {
+         const file = `${dir}/broken.xlsx`;
+         fs.writeFileSync(file, "this is not a workbook\n".repeat(64));
+         const thrown = await readerError(`read_xlsx('${file}')`);
+         expect(thrown.message).toMatch(
+            /^IO Error: Failed to open zip for reading/,
+         );
+         expect(readerRefusal(thrown, file)).toBeInstanceOf(BadRequestError);
       });
 
       it("for a CSV value the column's type cannot hold", async () => {
