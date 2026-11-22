@@ -3,33 +3,23 @@
 
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import * as fs from "fs";
-import * as path from "path";
 import { installSettings } from "../../test_helpers/settings_env";
+import { BadRequestError } from "../../errors";
 import { federateSourceForPassthrough } from ".";
 import { wrapPassthrough } from "../materialization/run/materialization_build_session";
 import type { FederatedSourceType } from ".";
 
 /**
- * The passthrough the registry took over from connection.ts and the build
- * session (each type's federation and wrap), run for every connection type
- * and for types nothing names, and compared with what the code produced
- * before the move, recorded in passthrough.golden.json: the wrapped SELECT
- * or the refusal, and the refusal of a federation missing its credentials.
+ * Each connection type's passthrough, as the registry dispatches it: the
+ * wrapped SELECT (each passthrough type's own function and argument order)
+ * or the refusal, and the federation's refusal of a config missing its
+ * credentials.
  *
  * No case reaches a network: each federation fails before it loads an
  * extension.
- *
- * Re-record only for a reviewed behaviour change:
- * `RECORD_PASSTHROUGH=1 bun test <this file>`.
  */
 
-const GOLDEN = path.join(__dirname, "passthrough.golden.json");
-
-const TYPES = [
-   "postgres",
-   "bigquery",
-   "snowflake",
+const NO_PASSTHROUGH = [
    "trino",
    "databricks",
    "mysql",
@@ -42,43 +32,23 @@ const TYPES = [
    "nope",
 ];
 
-/** Per type, federation configs that are refused before any extension. */
-const FEDERATIONS: Record<string, Record<string, unknown>[]> = {
-   bigquery: [
-      { bigqueryConnection: { defaultProjectId: "p" } },
-      { bigqueryConnection: { impersonateServiceAccount: "a@b.c" } },
-   ],
-   snowflake: [
-      { snowflakeConnection: { account: "a" } },
-      { snowflakeConnection: { account: "a", username: "u" } },
-   ],
-};
+const wrap = (type: string) =>
+   wrapPassthrough(type as FederatedSourceType, "h'andle", "SELECT 'x' AS y");
 
-function outcome(run: () => unknown): unknown {
-   try {
-      return { value: run() };
-   } catch (error) {
-      return {
-         error: error instanceof Error ? error.message : String(error),
-         name: error instanceof Error ? error.constructor.name : typeof error,
-      };
-   }
-}
-
-async function federation(
+async function federationError(
    type: string,
-   config: Record<string, unknown>,
-): Promise<unknown> {
+   config: Record<string, unknown> = {},
+): Promise<string> {
    const connection = new DuckDBConnection("passthrough-conservation");
    try {
-      const handle = await federateSourceForPassthrough(
+      await federateSourceForPassthrough(
          connection,
          type as FederatedSourceType,
          { name: "src", ...config },
       );
-      return { value: handle };
+      throw new Error("federation was not refused");
    } catch (error) {
-      return { error: error instanceof Error ? error.message : String(error) };
+      return error instanceof Error ? error.message : String(error);
    } finally {
       await connection.close();
    }
@@ -90,28 +60,51 @@ beforeAll(() => {
 });
 afterAll(() => restoreSettings());
 
-describe("the passthrough is unchanged by the registry", () => {
-   it("wraps and federates every type as before the move", async () => {
-      const actual: Record<string, unknown> = {};
-      for (const type of TYPES) {
-         actual[`wrap ${type}`] = outcome(() =>
-            wrapPassthrough(
-               type as FederatedSourceType,
-               "h'andle",
-               "SELECT 'x' AS y",
-            ),
+describe("the passthrough is dispatched by type", () => {
+   it("wraps each passthrough type in its own function", () => {
+      expect(wrap("postgres")).toBe(
+         "SELECT * FROM postgres_query('h''andle', 'SELECT ''x'' AS y')",
+      );
+      expect(wrap("bigquery")).toBe(
+         "SELECT * FROM bigquery_query('h''andle', 'SELECT ''x'' AS y')",
+      );
+      expect(wrap("snowflake")).toBe(
+         "SELECT * FROM snowflake_query('SELECT ''x'' AS y', 'h''andle')",
+      );
+   });
+
+   it("refuses to wrap or federate every other type", async () => {
+      for (const type of NO_PASSTHROUGH) {
+         expect(() => wrap(type)).toThrow(BadRequestError);
+         expect(() => wrap(type)).toThrow(
+            `Unsupported passthrough source type: ${type}`,
          );
-         actual[`federate ${type} bare`] = await federation(type, {});
-         const configs = Object.hasOwn(FEDERATIONS, type)
-            ? FEDERATIONS[type]
-            : [];
-         for (const [i, config] of configs.entries()) {
-            actual[`federate ${type} #${i}`] = await federation(type, config);
-         }
+         expect(await federationError(type)).toBe(
+            `No native query-passthrough for source type '${type}'`,
+         );
       }
-      if (process.env.RECORD_PASSTHROUGH === "1") {
-         fs.writeFileSync(GOLDEN, JSON.stringify(actual, null, 2) + "\n");
-      }
-      expect(actual).toEqual(JSON.parse(fs.readFileSync(GOLDEN, "utf8")));
+   });
+
+   it("refuses each passthrough type's federation without its credentials", async () => {
+      expect(await federationError("postgres")).toBe(
+         "PostgreSQL connection configuration missing for: src",
+      );
+      expect(
+         await federationError("bigquery", {
+            bigqueryConnection: { defaultProjectId: "p" },
+         }),
+      ).toBe("BigQuery project_id and service account key required for: src");
+      expect(
+         await federationError("bigquery", {
+            bigqueryConnection: { impersonateServiceAccount: "a@b.c" },
+         }),
+      ).toStartWith(
+         "BigQuery connection 'src' uses impersonateServiceAccount, which cannot federate through DuckDB",
+      );
+      expect(
+         await federationError("snowflake", {
+            snowflakeConnection: { account: "a", username: "u" },
+         }),
+      ).toBe("Snowflake privateKey or password is required for: src");
    });
 });

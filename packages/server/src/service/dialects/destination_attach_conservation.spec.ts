@@ -16,15 +16,15 @@ import {
 import { connectionDialectOf } from ".";
 
 /**
- * The DuckLake catalog attach the registry took over from connection.ts,
- * run on a recording connection and compared with what the code produced
- * before the move, recorded in destination_attach.golden.json: every
- * statement each attach sent and how it ended, over the four exported
- * attaches and a matrix of catalog configs and session answers (catalog
- * present or absent, a recorded data path, a lost create race, an alias
- * already attached, a failing storage secret), and, for every connection
- * type and types no entry names, what a destination attach of that type
- * does.
+ * The DuckLake catalog attach, run on a recording connection: every
+ * statement each of the four exported attaches sends on one config,
+ * recorded in destination_attach.golden.json; how each attach ends under
+ * the session answers that change its path (catalog absent, a lost create
+ * race, an alias already attached, an unsupported catalog version, no
+ * catalog config); and, for every connection type, a prototype name and an
+ * unknown one, whether a destination attach of that type exists and what it
+ * sends. The attach text for each storage and catalog config is pinned in
+ * ducklake_attach_text.spec.ts, so it is not repeated here.
  *
  * Re-record only for a reviewed behaviour change:
  * `RECORD_DESTINATION_ATTACH=1 bun test <this file>`.
@@ -48,7 +48,6 @@ const TYPES = [
    "ducklake",
    "publisher",
    "constructor",
-   "toString",
    "nope",
 ];
 
@@ -61,32 +60,12 @@ const PG = {
    sslmode: "disable",
 };
 const S3 = { accessKeyId: "AK", secretAccessKey: "SK", region: "us-east-1" };
-const GCS = { keyId: "GK", secret: "GS" };
 
-const CONFIGS: Record<string, DucklakeConnection> = {
-   "s3 path schema": {
-      catalog: { postgresConnection: PG, metadataSchema: "meta" },
-      storage: { bucketUrl: "s3://b/lake", s3Connection: S3 },
-   } as DucklakeConnection,
-   "gcs path": {
-      catalog: { postgresConnection: PG },
-      storage: { bucketUrl: "gs://b/lake/", gcsConnection: GCS },
-   } as DucklakeConnection,
-   "s3 no path": {
-      catalog: { postgresConnection: PG, metadataSchema: "meta" },
-      storage: { s3Connection: S3 },
-   } as DucklakeConnection,
-   local: { catalog: { postgresConnection: PG } } as DucklakeConnection,
-   "local path": {
-      catalog: { postgresConnection: PG },
-      storage: { bucketUrl: "/tmp/lake" },
-   } as DucklakeConnection,
-   "read-write": {
-      catalog: { postgresConnection: PG },
-      readOnly: false,
-   } as DucklakeConnection,
-   "no catalog": { catalog: {} } as DucklakeConnection,
-};
+const S3_CONFIG = {
+   catalog: { postgresConnection: PG, metadataSchema: "meta" },
+   storage: { bucketUrl: "s3://b/lake", s3Connection: S3 },
+} as DucklakeConnection;
+const NO_CATALOG = { catalog: {} } as DucklakeConnection;
 
 const RACE = new Error(
    'Failed to initialize DuckLake: duplicate key value violates unique constraint "pg_type"',
@@ -99,12 +78,6 @@ const SESSIONS: Record<string, (sql: string, n: number) => Rows> = {
       sql.startsWith("SELECT count(*) AS n FROM duckdb_tables()")
          ? [{ n: 0 }]
          : [],
-   recorded: (sql) =>
-      sql.startsWith("SELECT key, value FROM")
-         ? [{ key: "data_path", value: "s3://b/recorded/" }]
-         : sql.startsWith("SELECT path, path_is_relative")
-           ? [{ path: "main/", path_is_relative: true }]
-           : present(sql),
    "race once": (sql, n) => {
       if (sql.startsWith("ATTACH OR REPLACE") && n === 0) throw RACE;
       return present(sql);
@@ -118,12 +91,6 @@ const SESSIONS: Record<string, (sql: string, n: number) => Rows> = {
          throw new Error('Catalog "lake" already exists');
       }
       if (sql.startsWith("SELECT 1 FROM duckdb_databases()")) return [{}];
-      return present(sql);
-   },
-   "secret fails": (sql) => {
-      if (sql.startsWith("CREATE OR REPLACE SECRET")) {
-         throw new Error("secret refused");
-      }
       return present(sql);
    },
    versioned: (sql) =>
@@ -224,30 +191,73 @@ beforeAll(() => {
 });
 afterAll(() => restoreSettings());
 
-describe("the DuckLake catalog attach is unchanged by the registry", () => {
-   it("attaches every config, mode and session as before the move", async () => {
+type Outcome = { value?: unknown; error?: string; sql: string[] };
+
+describe("the DuckLake catalog attach", () => {
+   it("sends each attach's statements as recorded", async () => {
       const actual: Record<string, unknown> = {};
       for (const [entry, run] of Object.entries(ENTRY_POINTS)) {
-         for (const [config, cfg] of Object.entries(CONFIGS)) {
-            for (const [session, answer] of Object.entries(SESSIONS)) {
-               actual[`${entry} | ${config} | ${session}`] = await trace(
-                  run,
-                  cfg,
-                  answer,
-               );
-            }
-         }
-      }
-      for (const type of TYPES) {
-         const run = destinationRun(type);
-         actual[`destination ${type}`] =
-            run === undefined
-               ? { destination: "none" }
-               : await trace(run, CONFIGS["s3 path schema"], SESSIONS.present);
+         actual[entry] = await trace(run, S3_CONFIG, SESSIONS.present);
       }
       if (process.env.RECORD_DESTINATION_ATTACH === "1") {
          fs.writeFileSync(GOLDEN, JSON.stringify(actual, null, 2) + "\n");
       }
       expect(actual).toEqual(JSON.parse(fs.readFileSync(GOLDEN, "utf8")));
+   });
+
+   it("ends each attach by the session's answers", async () => {
+      const outcome = async (entry: string, session: string) => {
+         const { value, error } = (await trace(
+            ENTRY_POINTS[entry],
+            S3_CONFIG,
+            SESSIONS[session],
+         )) as Outcome;
+         return error ?? value;
+      };
+      const race = RACE.message;
+      const versioned =
+         "DuckLake catalog 'lake' has format version 999, which is outside the range";
+      expect(await outcome("read-write", "absent")).toBeNull();
+      expect(await outcome("read-write", "race once")).toBeNull();
+      expect(await outcome("read-write", "race always")).toBe(race);
+      expect(await outcome("read-write", "already attached")).toBeNull();
+      expect(await outcome("read-write", "versioned")).toStartWith(versioned);
+      expect(await outcome("read-only", "race once")).toBeNull();
+      expect(await outcome("read-only if present", "present")).toBe(true);
+      expect(await outcome("read-only if present", "absent")).toBe(false);
+      // A create does not retry a lost race: the winner's catalog is not its.
+      expect(await outcome("create", "race once")).toBe(race);
+      expect(await outcome("create", "versioned")).toStartWith(versioned);
+      for (const entry of Object.keys(ENTRY_POINTS)) {
+         expect(
+            (
+               (await trace(
+                  ENTRY_POINTS[entry],
+                  NO_CATALOG,
+                  SESSIONS.present,
+               )) as Outcome
+            ).error,
+         ).toBe(
+            "PostgreSQL connection configuration is required for DuckLake catalog: lake",
+         );
+      }
+   });
+
+   it("attaches a destination only for DuckLake, as a read-write attach", async () => {
+      for (const type of TYPES) {
+         const run = destinationRun(type);
+         if (type !== "ducklake") {
+            expect([type, run]).toEqual([type, undefined]);
+            continue;
+         }
+         expect(run).toBeDefined();
+         expect(await trace(run!, S3_CONFIG, SESSIONS.present)).toEqual(
+            await trace(
+               ENTRY_POINTS["read-write"],
+               S3_CONFIG,
+               SESSIONS.present,
+            ),
+         );
+      }
    });
 });

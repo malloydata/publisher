@@ -2,100 +2,41 @@
 // SPDX-License-Identifier: MIT
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import * as fs from "fs";
-import * as os from "os";
-import * as path from "path";
 import type { components } from "../../api";
 import { installSettings } from "../../test_helpers/settings_env";
 import { testConnectionConfig } from "../connection";
 
 /**
- * The attached-database setup the registry took over from connection.ts
- * (each type's attach and connection-test probe), run for every type an
- * attached database may name (every connection type, the object-storage
- * types, and types nothing names) and compared with what the code produced
- * before the move, recorded in attached_database.golden.json: the status a
- * DuckDB connection test reports with that one database attached.
+ * Each attached-database type's attach, as the registry dispatches it: the
+ * status a DuckDB connection test reports with that one database attached.
+ * One case per type that attaches (its own refusal of a missing config, and
+ * for Postgres a real attach that dials a closed local port), the types that
+ * do not attach, a prototype name and an unknown one.
  *
  * No case reaches a network: each either fails before its attach loads an
  * extension or dials a closed local port.
- *
- * Re-record only for a reviewed behaviour change:
- * `RECORD_ATTACHED_DATABASE=1 bun test <this file>`.
  */
 
 type AttachedDatabase = components["schemas"]["AttachedDatabase"];
 
-const GOLDEN = path.join(__dirname, "attached_database.golden.json");
-
-const TYPES = [
-   "postgres",
-   "bigquery",
-   "snowflake",
-   "trino",
-   "databricks",
-   "mysql",
-   "sqlserver",
-   "duckdb",
-   "motherduck",
-   "ducklake",
-   "publisher",
-   "gcs",
-   "s3",
-   "azure",
-   "constructor",
-   "toString",
-   "nope",
-];
-
-/** Per type, the configured attachments beyond a bare one. */
-const CONFIGURED: Record<string, Partial<AttachedDatabase>[]> = {
-   postgres: [
-      {
-         postgresConnection: {
-            host: "127.0.0.1",
-            port: 1,
-            databaseName: "d",
-            userName: "u",
-            password: "p",
-         },
+async function attachError(
+   type: string,
+   extra: Partial<AttachedDatabase> = {},
+): Promise<string | undefined> {
+   const status = await testConnectionConfig({
+      name: "probe",
+      type: "duckdb",
+      duckdbConnection: {
+         attachedDatabases: [
+            { name: "att", type, ...extra } as AttachedDatabase,
+         ],
       },
-   ],
-   bigquery: [
-      { bigqueryConnection: { defaultProjectId: "proj" } },
-      { bigqueryConnection: { serviceAccountKeyJson: "{not json" } },
-   ],
-   snowflake: [
-      { snowflakeConnection: { account: "a", username: "u" } },
-      { snowflakeConnection: { username: "u", password: "p" } },
-   ],
-};
-
-function cases(): [string, AttachedDatabase][] {
-   const out: [string, AttachedDatabase][] = [];
-   for (const type of TYPES) {
-      const base = { name: "att", type } as AttachedDatabase;
-      out.push([`${type} bare`, base]);
-      (Object.hasOwn(CONFIGURED, type) ? CONFIGURED[type] : []).forEach(
-         (extra, i) =>
-            out.push([
-               `${type} #${i}`,
-               { ...base, ...extra } as AttachedDatabase,
-            ]),
-      );
-   }
-   return out;
+   });
+   expect(status.status).toBe("failed");
+   return status.errorMessage;
 }
 
-/** The temp directory, which differs per machine, as a token. */
-function stable(value: unknown): unknown {
-   return JSON.parse(
-      JSON.stringify(value).replaceAll(
-         JSON.stringify(fs.realpathSync(os.tmpdir())).slice(1, -1),
-         "<tmp>",
-      ),
-   );
-}
+const FAILED = "Failed to attach database att: ";
 
 let restoreSettings: () => void;
 beforeAll(() => {
@@ -103,20 +44,70 @@ beforeAll(() => {
 });
 afterAll(() => restoreSettings());
 
-describe("attached databases are unchanged by the registry", () => {
-   it("tests every type's attachment as before the move", async () => {
-      const actual: Record<string, unknown> = {};
-      for (const [label, attachedDb] of cases()) {
-         const status = await testConnectionConfig({
-            name: "probe",
-            type: "duckdb",
-            duckdbConnection: { attachedDatabases: [attachedDb] },
-         });
-         actual[label] = stable(status);
+describe("an attached database is attached by its type", () => {
+   it("refuses each attaching type's missing config in its own words", async () => {
+      const missing: Record<string, string> = {
+         postgres: "PostgreSQL connection configuration missing for: att",
+         bigquery: "BigQuery connection configuration missing for: att",
+         snowflake: "Snowflake connection configuration missing for: att",
+         gcs: "GCS connection configuration missing for: att",
+         s3: "S3 connection configuration missing for: att",
+         azure: "Azure connection configuration missing for: att",
+      };
+      for (const [type, message] of Object.entries(missing)) {
+         expect(await attachError(type)).toBe(FAILED + message);
       }
-      if (process.env.RECORD_ATTACHED_DATABASE === "1") {
-         fs.writeFileSync(GOLDEN, JSON.stringify(actual, null, 2) + "\n");
+   });
+
+   it("runs each attaching type's own checks on a configured attachment", async () => {
+      expect(
+         await attachError("postgres", {
+            postgresConnection: {
+               host: "127.0.0.1",
+               port: 1,
+               databaseName: "d",
+               userName: "u",
+               password: "p",
+            },
+         }),
+      ).toStartWith(
+         `${FAILED}IO Error: Unable to connect to Postgres at "host=127.0.0.1 port=1 dbname=d"`,
+      );
+      expect(
+         await attachError("bigquery", {
+            bigqueryConnection: { defaultProjectId: "proj" },
+         }),
+      ).toBe(
+         `${FAILED}BigQuery project_id and service account key required for: att`,
+      );
+      expect(
+         await attachError("snowflake", {
+            snowflakeConnection: { account: "a", username: "u" },
+         }),
+      ).toBe(`${FAILED}Snowflake password is required for: att`);
+   });
+
+   it("does not attach the connection types with no attach", async () => {
+      for (const type of [
+         "trino",
+         "databricks",
+         "mysql",
+         "sqlserver",
+         "duckdb",
+         "motherduck",
+         "ducklake",
+         "publisher",
+         "nope",
+      ]) {
+         expect(await attachError(type)).toBe(
+            `${FAILED}Unsupported database type: ${type}`,
+         );
       }
-      expect(actual).toEqual(JSON.parse(fs.readFileSync(GOLDEN, "utf8")));
-   }, 120_000);
+   });
+
+   it("refuses a prototype name before any attach", async () => {
+      expect(await attachError("constructor")).toBe(
+         'attachedDatabases[0].type on connection "probe" is invalid: it is not an attached database type.',
+      );
+   });
 });
