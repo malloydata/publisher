@@ -720,21 +720,32 @@ async function compileOverStoredBases(args: {
             p.baseDeclaredName,
          ]),
       );
+      const baseIDOf = new Map(
+         args.plans.map((p) => [
+            `${p.rollupSourceName}@${url.href}`,
+            p.baseSourceID,
+         ]),
+      );
       for (const source of sources) {
          if (!overStored.rollups.has(source.sourceID)) continue;
          const base = baseOf.get(source.sourceID) as string;
          if (!overStored.stored.has(base)) {
-            out.set(source.sourceID, { source });
+            out.set(source.sourceID, {
+               source,
+               upstreamSourceIDs: [baseIDOf.get(source.sourceID) as string],
+            });
             continue;
          }
          const baseBuildSource = copies.has(base)
             ? buildSources.get(base)
             : undefined;
          if (baseBuildSource) {
+            const rerootedSourceID = overStored.stored.get(base)!.plan.sourceID;
             out.set(source.sourceID, {
                source,
                baseBuildSource,
-               rerootedSourceID: overStored.stored.get(base)!.plan.sourceID,
+               rerootedSourceID,
+               upstreamSourceIDs: [rerootedSourceID],
             });
          }
       }

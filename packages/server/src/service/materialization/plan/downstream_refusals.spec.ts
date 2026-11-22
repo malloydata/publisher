@@ -167,3 +167,40 @@ source: a is raw extend {
       expect(names.length).toBe(1);
    });
 });
+
+describe("a database downstream over a #@ persist upstream that is refused", () => {
+   it("is refused at plan as upstream_table_unusable, naming the upstream and why", async () => {
+      // The upstream joins a gated source its table could not keep, so it is
+      // refused; the view over it reads no gated field.
+      const { refused, names } = await refusedOf({
+         "m.malloy": `##! experimental { persistence givens }
+given: C :: string is 'a'
+source: raw is duckdb.sql("""
+  select * from (values ('a', 'x', 1.5), ('b', 'y', 2.5)) as t(cat, region, amt)
+""")
+
+#(access_filter) cat = $C
+source: cats is duckdb.sql("""select 'a' as cat, 'Alpha' as label""") extend {
+  primary_key: cat
+}
+
+#@ persist name="dr_a"
+source: a is raw -> { select: cat, amt } extend {
+  join_one: k is cats on cat = k.cat
+}
+
+source: s is a extend {
+  #@ persist name="dr_v"
+  view: by_cat is { group_by: cat; aggregate: total is amt.sum() }
+}
+`,
+      });
+      const ours = refused.filter((r) => r.name === "s__by_cat__view");
+      expect(ours.map((r) => r.reason)).toEqual(["upstream_table_unusable"]);
+      expect(names).not.toContain("s__by_cat__view");
+      // Its upstream (`a`, or `s`, which shares `a`'s table), and why.
+      expect(ours[0].message).toMatch(
+         /^.*its upstream '(a|s)' declares a persisted table, but it is refused \(access_filter: /,
+      );
+   });
+});

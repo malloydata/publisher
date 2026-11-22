@@ -805,6 +805,13 @@ export interface OverStoredBase {
     * (the downstream's own base, or the one source it extends).
     */
    rerootedSourceID?: string;
+   /**
+    * The author's sourceIDs of the persisted upstreams whose tables the
+    * compile reads (their own `#@ persist` kept, or the re-rooted
+    * `#(materialize)` source): each must be planned and not refused, or
+    * the downstream is refused at plan (build_plan.ts).
+    */
+   upstreamSourceIDs?: readonly string[];
 }
 
 /** A `#(materialize)` plan's kind: `pair` when it stores an inlined join_many. */

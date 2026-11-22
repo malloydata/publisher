@@ -704,12 +704,15 @@ function overStoredUpstreamNotes(
    keep: Map<string, Set<string>>;
    candidates: Set<string>;
    stored: Map<string, StoredMaterializeBase>;
+   /** By build sourceID: the persisted upstreams it reads the tables of. */
+   upstreams: Map<string, string[]>;
 } {
    const map = SourceMap.of(modelDef);
    const contents =
       (modelDef as { contents?: Record<string, unknown> }).contents ?? {};
    // By build sourceID: each candidate's own upstreams' notes.
    const keep = new Map<string, Set<string>>();
+   const upstreams = new Map<string, string[]>();
    const candidates = new Set<string>();
    const stored = new Map<string, StoredMaterializeBase>();
    const plans: {
@@ -723,6 +726,7 @@ function overStoredUpstreamNotes(
    for (const plan of plans) {
       if (plan.storage !== undefined || plan.root === undefined) continue;
       const spans: string[] = [];
+      const upstreamIDs: string[] = [];
       let chainable = true;
       for (const sourceID of reachedSourceIDsOf(plan.root, modelDef, map)) {
          const upstream = upstreamTableOf(map, sourceID);
@@ -732,6 +736,7 @@ function overStoredUpstreamNotes(
             break;
          }
          spans.push(...upstream);
+         upstreamIDs.push(sourceID);
       }
       const base = storedMaterializeUpstream(
          map,
@@ -743,10 +748,14 @@ function overStoredUpstreamNotes(
       if (!chainable || base === "unusable") continue;
       if (spans.length === 0 && base === undefined) continue;
       keep.set(plan.buildSourceID, new Set(spans));
+      upstreams.set(plan.buildSourceID, [
+         ...upstreamIDs,
+         ...(base ? [base.plan.sourceID] : []),
+      ]);
       if (base) stored.set(plan.buildSourceID, base);
       candidates.add(plan.buildSourceID);
    }
-   return { keep, candidates, stored };
+   return { keep, candidates, stored, upstreams };
 }
 
 /**
@@ -856,7 +865,8 @@ async function compileOneOverStored(
       );
       const source = sources.find((s) => s.sourceID === buildSourceID);
       if (!source) return undefined;
-      if (!base) return { source };
+      const upstreamSourceIDs = overStored.upstreams.get(buildSourceID) ?? [];
+      if (!base) return { source, upstreamSourceIDs };
       const declaring = pathToFileURL(
          path.join(path.dirname(modelFile), base.importFrom),
       ).href;
@@ -871,6 +881,7 @@ async function compileOneOverStored(
          source,
          baseBuildSource,
          rerootedSourceID: base.plan.sourceID,
+         upstreamSourceIDs,
       };
    } catch {
       return undefined;

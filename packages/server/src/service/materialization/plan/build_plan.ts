@@ -145,6 +145,7 @@ import {
 } from "./persisted_query";
 import { tryCompilePersistedViewCompanion } from "./persisted_view_compile";
 import { overStoredProven } from "./over_stored_proof";
+import { UPSTREAM_TABLE_UNUSABLE_REASON } from "./downstream_upstreams";
 import { deletingWindowsOf } from "./rolling_window";
 import {
    tryCompileRollupCompanion,
@@ -2192,9 +2193,65 @@ export function finishBuildPlan(
       }),
    );
    const known = refuseUpstreamUnread(refused);
-   return ctx.keepIncrementalUnbuildable
-      ? known
-      : refuseIncrementalUnbuildable(known);
+   return refuseOverMissingUpstreams(
+      ctx.keepIncrementalUnbuildable
+         ? known
+         : refuseIncrementalUnbuildable(known),
+   );
+}
+
+/**
+ * Refuse, as `upstream_table_unusable`, each downstream (a persisted view or
+ * query, or a rollup) planned to build over an upstream's table
+ * (`overStoredBase`) whose upstream is not planned, or is refused: the
+ * upstream's declaration is read from its notes, but it has no table to
+ * read, and a downstream is never built by recomputing its upstream from
+ * raw. Decided here, once every table and its eligibility is known, so a
+ * run never finds out.
+ */
+function refuseOverMissingUpstreams<
+   T extends Omit<FinishedBuildPlan, "connections">,
+>(compiled: T): T {
+   const verdicts = planVerdicts(compiled);
+   const findings: PackageAnnotationFinding[] = [];
+   const dropped = new Set<string>();
+   for (const [sourceID, table] of Object.entries(compiled.tables)) {
+      if (table.kind !== "view" && table.kind !== "rollup") continue;
+      for (const upstreamID of table.overStoredBase?.upstreamSourceIDs ?? []) {
+         const upstream = compiled.tables[upstreamID];
+         const verdict = verdicts.get(upstreamID)?.wire;
+         const refusedWhy =
+            verdict === undefined || "failed" in verdict
+               ? "it could not be planned"
+               : verdict.refused
+                 ? `it is refused (${verdict.refused.reason}: ${verdict.refused.message})`
+                 : undefined;
+         const why =
+            upstream === undefined
+               ? "it is not planned, so it has no table"
+               : refusedWhy;
+         if (why === undefined) continue;
+         const name =
+            upstream?.source.name ??
+            splitSourceID(upstreamID)?.name ??
+            upstreamID;
+         dropped.add(sourceID);
+         findings.push(
+            notBuiltFinding(
+               compiled,
+               sourceID,
+               UPSTREAM_TABLE_UNUSABLE_REASON,
+               `its upstream '${name}' declares a persisted table, but ${why}, ` +
+                  "and a downstream is never built by recomputing its " +
+                  "upstream from raw",
+            ),
+         );
+         break;
+      }
+   }
+   return dropped.size === 0
+      ? compiled
+      : withoutSources(compiled, findings, dropped);
 }
 
 /**
