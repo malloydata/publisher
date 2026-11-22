@@ -619,33 +619,34 @@ export class CatalogAdmin {
       identifier(schema, "schema");
       identifier(table, "table");
       const source = tableSource(request.source);
-      const { owner, sourceOwner } = await this.withCatalogDatabase(
-         async (pg) => {
-            await this.requireCatalog(pg, name);
-            const owner = await this.schemaOwner(pg, name);
-            if (source.kind !== "table")
-               return { owner, sourceOwner: undefined };
-            return {
-               owner,
-               sourceOwner: await this.copySource(pg, name, owner, source),
-            };
-         },
-      );
-      // A schema that does not exist answers 404 (SCHEMA_NOT_FOUND) here,
-      // before anything is read.
-      const existing = await this.listTables(name, schema);
-      const exists = existing.some((t) => t.name === table);
-      if (exists && ifAbsent) {
-         throw new CatalogAdminError(
-            412,
-            "TABLE_EXISTS",
-            `Table '${schema}.${table}' already exists in catalog '${name}'.`,
+      // Taken first, as a load takes it, so a busy server refuses before reading anything.
+      const created = await withLoadSlot(async () => {
+         const { owner, sourceOwner } = await this.withCatalogDatabase(
+            async (pg) => {
+               await this.requireCatalog(pg, name);
+               const owner = await this.schemaOwner(pg, name);
+               if (source.kind !== "table")
+                  return { owner, sourceOwner: undefined };
+               return {
+                  owner,
+                  sourceOwner: await this.copySource(pg, name, owner, source),
+               };
+            },
          );
-      }
-      const mode = ifAbsent ? "create" : "replace";
-      try {
-         await withLoadSlot(() =>
-            withStatementUsage(
+         // A schema that does not exist answers 404 (SCHEMA_NOT_FOUND) here,
+         // before anything is read.
+         const existing = await this.listTables(name, schema);
+         const exists = existing.some((t) => t.name === table);
+         if (exists && ifAbsent) {
+            throw new CatalogAdminError(
+               412,
+               "TABLE_EXISTS",
+               `Table '${schema}.${table}' already exists in catalog '${name}'.`,
+            );
+         }
+         const mode = ifAbsent ? "create" : "replace";
+         try {
+            await withStatementUsage(
                {
                   environment: "",
                   connection: name,
@@ -682,40 +683,38 @@ export class CatalogAdmin {
                           mode,
                        }),
                (r) => r.rowCount,
-            ),
-         );
-      } catch (error) {
-         // Another create-only PUT won the race between the existence check
-         // and the load: the same answer as if it had come first.
-         if (ifAbsent && error instanceof ConflictError) {
-            throw new CatalogAdminError(
-               412,
-               "TABLE_EXISTS",
-               `Table '${schema}.${table}' already exists in catalog '${name}'.`,
             );
+         } catch (error) {
+            // Another create-only PUT won the race between the existence check
+            // and the load: the same answer as if it had come first.
+            if (ifAbsent && error instanceof ConflictError) {
+               throw new CatalogAdminError(
+                  412,
+                  "TABLE_EXISTS",
+                  `Table '${schema}.${table}' already exists in catalog '${name}'.`,
+               );
+            }
+            throw this.redacted(error);
          }
-         throw this.redacted(error);
-      }
-      logger.info(
-         source.kind === "table"
-            ? "Copied a table into a DuckLake catalog"
-            : "Loaded a table into a DuckLake catalog",
-         {
-            catalog: name,
-            schema,
-            table,
-            ...(source.kind === "table"
-               ? {
-                    source: `${source.catalog}.${source.schema}.${source.table}`,
-                 }
-               : { format: source.format }),
-            created: !exists,
-         },
-      );
-      return {
-         table: await this.getTable(name, schema, table),
-         created: !exists,
-      };
+         logger.info(
+            source.kind === "table"
+               ? "Copied a table into a DuckLake catalog"
+               : "Loaded a table into a DuckLake catalog",
+            {
+               catalog: name,
+               schema,
+               table,
+               ...(source.kind === "table"
+                  ? {
+                       source: `${source.catalog}.${source.schema}.${source.table}`,
+                    }
+                  : { format: source.format }),
+               created: !exists,
+            },
+         );
+         return !exists;
+      });
+      return { table: await this.getTable(name, schema, table), created };
    }
 
    /** Drops a table. A table that does not exist is not an error. */
@@ -1507,7 +1506,7 @@ async function requireRecordedSchema(
    }
 }
 
-/** Drops a connection that has stopped answering: its socket is destroyed, since an orderly `end()` waits for a reply that never comes. */
+/** Drops a connection that has stopped answering by destroying its socket: node-pg has no public destroy, and `end()` waits for an `end` event a dead socket may never emit. */
 function destroyConnection(client: Client): void {
    (
       client as unknown as { connection?: { stream?: { destroy(): void } } }

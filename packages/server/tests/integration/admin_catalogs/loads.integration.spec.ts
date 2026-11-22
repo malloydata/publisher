@@ -34,7 +34,6 @@ import {
    mergeStatements,
    mergeStorageTable,
 } from "../../../src/service/materialization/run/storage_table_load";
-import { pollFor } from "../../../src/test_helpers/poll";
 import { SUPERUSER, superuser } from "./superuser";
 
 const DB = `loads_it_${process.pid}`;
@@ -157,14 +156,18 @@ describe.skipIf(!SUPERUSER)("loads", () => {
 
    const snapshotId = async () => (await admin.listSnapshots(CATALOG, 1))[0].id;
 
-   async function dataFiles(table: string): Promise<number> {
-      const [row] = await superuser(
-         `select count(*)::int as n from ${CATALOG}.ducklake_data_file f join ${CATALOG}.ducklake_table t ` +
-            `on f.table_id = t.table_id where t.table_name = '${table}' and t.end_snapshot is null and f.end_snapshot is null`,
-         DB,
-      );
-      return Number(row.n);
+   /** The ids of a table's live data files. */
+   async function dataFileIds(table: string): Promise<number[]> {
+      return (
+         await superuser(
+            `select f.data_file_id::int as id from ${CATALOG}.ducklake_data_file f join ${CATALOG}.ducklake_table t ` +
+               `on f.table_id = t.table_id where t.table_name = '${table}' and t.end_snapshot is null and f.end_snapshot is null order by 1`,
+            DB,
+         )
+      ).map((row) => Number(row.id));
    }
+
+   const dataFiles = async (table: string) => (await dataFileIds(table)).length;
 
    async function inlinedRows(catalog: string, table: string): Promise<number> {
       let rows = 0;
@@ -647,89 +650,109 @@ describe.skipIf(!SUPERUSER)("loads", () => {
          ]);
       });
 
-      it("accepts a narrower integer and FLOAT into DOUBLE, and refuses the reverse", async () => {
+      it("accepts a narrower type into the table's, keeping the table's type", async () => {
          await seed(
-            "c_widen",
-            "SELECT 1 AS id, 5::BIGINT AS big, 1.5::DOUBLE AS d",
+            "c_keep",
+            "SELECT 1 AS id, 5::BIGINT AS big, 1.5::DOUBLE AS d, 1.50::DECIMAL(7,2) AS dec, 5::DOUBLE AS x",
          );
          const narrow = await parquet(
-            "SELECT 1 AS id, 5::INTEGER AS big, 1.5::FLOAT AS d",
+            "SELECT 1 AS id, 5::INTEGER AS big, 1.5::FLOAT AS d, 1.50::DECIMAL(3,2) AS dec, 5::INTEGER AS x",
          );
-         expect(await merge("c_widen", [narrow])).toMatchObject({
+         expect(await merge("c_keep", [narrow])).toMatchObject({
+            rowsUnchanged: 1,
+            rowsReplaced: 0,
+         });
+         expect(
+            (await admin.getTable(CATALOG, "s", "c_keep")).columns.map(
+               (c) => c.type,
+            ),
+         ).toEqual(["INTEGER", "BIGINT", "DOUBLE", "DECIMAL(7,2)", "DOUBLE"]);
+      });
+
+      it("widens the table's column to the objects' wider type in one snapshot, rewriting no file, and a retry changes nothing", async () => {
+         await seed(
+            "c_widen",
+            "SELECT i AS id, i::INTEGER AS n, i::FLOAT / 2 AS f FROM range(1, 4) t(i)",
+         );
+         const filesBefore = await dataFileIds("c_widen");
+         const before = await snapshotId();
+         const wider = await parquet(
+            "SELECT * FROM (VALUES (1, 1::BIGINT, 0.5::DOUBLE), (4, 9007199254740993::BIGINT, 1.1::DOUBLE)) t(id, n, f)",
+         );
+         expect(await merge("c_widen", [wider])).toMatchObject({
+            rowsInserted: 1,
+            rowsReplaced: 0,
             rowsUnchanged: 1,
          });
+         expect(await snapshotId()).toBe(before + 1);
+         const filesAfter = await dataFileIds("c_widen");
+         expect(filesAfter).toEqual(expect.arrayContaining(filesBefore));
+         expect(filesAfter).toHaveLength(filesBefore.length + 1);
+         expect(
+            (await admin.getTable(CATALOG, "s", "c_widen")).columns.map((c) => [
+               c.name,
+               c.type,
+            ]),
+         ).toEqual([
+            ["id", "BIGINT"],
+            ["n", "BIGINT"],
+            ["f", "DOUBLE"],
+         ]);
+         expect(
+            await rowsOf("c_widen", "id::INTEGER AS id, n::VARCHAR AS n, f"),
+         ).toEqual([
+            { id: 1, n: "1", f: 0.5 },
+            { id: 2, n: "2", f: 1 },
+            { id: 3, n: "3", f: 1.5 },
+            { id: 4, n: "9007199254740993", f: 1.1 },
+         ]);
+         const settled = await snapshotId();
+         expect(await merge("c_widen", [wider])).toMatchObject({
+            rowsInserted: 0,
+            rowsReplaced: 0,
+            rowsUnchanged: 2,
+         });
+         expect(await snapshotId()).toBe(settled);
+      });
+
+      it("refuses a type the table's neither holds nor widens into without loss, and writes nothing", async () => {
          await seed(
             "c_narrow",
-            "SELECT 1 AS id, 5::INTEGER AS n, 1.5::FLOAT AS f",
+            "SELECT 1 AS id, 5::INTEGER AS n, 5::DOUBLE AS x",
          );
+         const before = await snapshotId();
          expect(
             await contract(
                merge("c_narrow", [
-                  await parquet(
-                     "SELECT 1 AS id, 5::BIGINT AS n, 1.5::FLOAT AS f",
-                  ),
+                  await parquet("SELECT 1 AS id, 'x' AS n, 5::DOUBLE AS x"),
                ]),
             ),
          ).toEqual({
             column: "n",
             tableType: "INTEGER",
-            loadType: "BIGINT",
+            loadType: "VARCHAR",
             detail: "type_change",
          });
-         expect(
-            (
-               await contract(
-                  merge("c_narrow", [
-                     await parquet(
-                        "SELECT 1 AS id, 5::INTEGER AS n, 1.5::DOUBLE AS f",
-                     ),
-                  ]),
-               )
-            ).detail,
-         ).toBe("type_change");
-         expect(
-            (
-               await contract(
-                  merge("c_narrow", [
-                     await parquet("SELECT 1 AS id, 'x' AS n, 1.5::FLOAT AS f"),
-                  ]),
-               )
-            ).detail,
-         ).toBe("type_change");
-      });
-
-      it("accepts a load that widens without loss, and refuses one that narrows", async () => {
-         await seed(
-            "c_lossless",
-            "SELECT 1 AS id, 1.50::DECIMAL(7,2) AS d, 5::INTEGER AS i, 5::INTEGER AS u",
-         );
-         const widened = await parquet(
-            "SELECT 1 AS id, 1.50::DECIMAL(3,2) AS d, 5::TINYINT AS i, 5::UTINYINT AS u",
-         );
-         expect(await merge("c_lossless", [widened])).toMatchObject({
-            rowsUnchanged: 1,
-            rowsReplaced: 0,
-         });
-         await seed("c_float", "SELECT 1 AS id, 5::DOUBLE AS x");
-         expect(
-            await merge("c_float", [
-               await parquet("SELECT 1 AS id, 5::INTEGER AS x"),
-            ]),
-         ).toMatchObject({ rowsUnchanged: 1 });
+         // BIGINT into DOUBLE rounds past 2^53, and DOUBLE into BIGINT drops fractions.
          expect(
             await contract(
-               merge("c_lossless", [
-                  await parquet("SELECT 1 AS id, 1.50::DECIMAL(10,2) AS d"),
-               ]),
-            ),
-         ).toMatchObject({ column: "d", detail: "type_change" });
-         expect(
-            await contract(
-               merge("c_float", [
-                  await parquet("SELECT 1 AS id, 5::BIGINT AS x"),
+               merge("c_narrow", [
+                  await parquet(
+                     "SELECT 1 AS id, 5::INTEGER AS n, 5::BIGINT AS x",
+                  ),
                ]),
             ),
          ).toMatchObject({ column: "x", detail: "type_change" });
+         expect(
+            await contract(
+               merge("c_narrow", [
+                  await parquet(
+                     "SELECT 1 AS id, 5::INTEGER AS n, 1.50::DECIMAL(10,2) AS x",
+                  ),
+               ]),
+            ),
+         ).toMatchObject({ column: "x", detail: "type_change" });
+         expect(await snapshotId()).toBe(before);
       });
 
       it("refuses a table that has a column named like the load's own helper", async () => {
@@ -1050,6 +1073,54 @@ describe.skipIf(!SUPERUSER)("loads", () => {
          expect(error.message).not.toContain(root);
       });
 
+      it("reads a column from the object, not from a k=v directory above it", async () => {
+         const dir = `hive_${counter++}`;
+         const objects = [
+            await parquet(
+               "SELECT 1 AS id, 5::INTEGER AS x",
+               dataPath,
+               `${dir}/x=1/a`,
+            ),
+            await parquet(
+               "SELECT 2 AS id, 6::INTEGER AS x",
+               dataPath,
+               `${dir}/x=2/b`,
+            ),
+         ];
+         expect(await merge("hive", objects)).toMatchObject({
+            rowsInserted: 2,
+         });
+         expect(await rowsOf("hive", "id::INTEGER AS id, x")).toEqual([
+            { id: 1, x: 5 },
+            { id: 2, x: 6 },
+         ]);
+         expect(
+            (await admin.getTable(CATALOG, "s", "hive")).columns.find(
+               (c) => c.name === "x",
+            )?.type,
+         ).toBe("INTEGER");
+         // Objects that type the column differently are described one by one, too.
+         const mixed = [
+            await parquet(
+               "SELECT 3 AS id, 7::SMALLINT AS x",
+               dataPath,
+               `${dir}/x=3/c`,
+            ),
+            await parquet(
+               "SELECT 4 AS id, 8::INTEGER AS x",
+               dataPath,
+               `${dir}/x=4/d`,
+            ),
+         ];
+         expect(await merge("hive", mixed)).toMatchObject({ rowsInserted: 2 });
+         expect(await rowsOf("hive", "id::INTEGER AS id, x")).toEqual([
+            { id: 1, x: 5 },
+            { id: 2, x: 6 },
+            { id: 3, x: 7 },
+            { id: 4, x: 8 },
+         ]);
+      });
+
       it("refuses an object outside the data path", async () => {
          const outside = join(root, "elsewhere.parquet");
          const error = await refusal(merge("outside", [outside]));
@@ -1089,81 +1160,11 @@ describe.skipIf(!SUPERUSER)("loads", () => {
    });
 
    describe("admission", () => {
-      it("refuses an overlapping load of the same table from another replica, and loads it once the first finishes", async () => {
-         const object = await parquet(
-            "SELECT i AS id, 'v' || i AS v FROM range(1, 200001) t(i)",
-         );
-         const other = new CatalogAdmin({ catalogDatabase: conninfo });
-         const first = merge("overlap", [object]);
-         await pollFor(
-            async () =>
-               Number(
-                  (
-                     await superuser(
-                        "select count(*)::int as n from pg_locks where locktype = 'advisory' and granted and database = (select oid from pg_database where datname = current_database())",
-                        DB,
-                     )
-                  )[0].n,
-               ),
-            (n) => n > 0,
-            15_000,
-            10,
-         );
-         const busy = await refusal(
-            other.loadTable(CATALOG, "s", "overlap", {
-               loadId: "second",
-               mode: "merge",
-               key: ["id"],
-               objects: [object],
-            }),
-         );
-         expect([busy.status, busy.reason]).toEqual([503, "LOAD_BUSY"]);
-         expect((await first).rowsInserted).toBe(200000);
-         expect(
-            await other.loadTable(CATALOG, "s", "overlap", {
-               loadId: "third",
-               mode: "merge",
-               key: ["id"],
-               objects: [object],
-            }),
-         ).toMatchObject({ rowsUnchanged: 200000, rowsInserted: 0 });
-      });
-
-      it("rolls back and answers 503 when the lock's connection dies before the commit", async () => {
-         const object = await parquet(
-            "SELECT i AS id, 'v' || i AS v FROM range(1, 200001) t(i)",
-         );
-         const before = await snapshotId();
-         const doomed = merge("killed", [object]);
-         const pid = await pollFor(
-            async () => {
-               const [row] = await superuser(
-                  "select pid from pg_locks where locktype = 'advisory' and granted and database = (select oid from pg_database where datname = current_database()) limit 1",
-                  DB,
-               );
-               return row ? Number(row.pid) : undefined;
-            },
-            (found) => found !== undefined,
-            15_000,
-            10,
-         );
-         await superuser(`select pg_terminate_backend(${pid})`);
-         const error = await refusal(doomed);
-         expect([error.status, error.reason]).toEqual([503, "LOAD_BUSY"]);
-         expect(await snapshotId()).toBe(before);
-         expect(await admin.listTables(CATALOG, "s")).not.toContainEqual(
-            expect.objectContaining({ name: "killed" }),
-         );
-         // The lock went with its connection: the retry loads.
-         expect((await merge("killed", [object])).rowsInserted).toBe(200000);
-      });
-
-      it("rolls back and answers 409 when another replica replaces the table before the commit", async () => {
-         const first = await parquet(
-            "SELECT i AS id, 'v' || i AS v FROM range(1, 4) t(i)",
-         );
-         await merge("raced", [first]);
-         const replacer = await attached("loads_replacer", "write");
+      /** Runs `run` with `hook` called while its load holds the table's lock, after it planned and right before it confirms the lock and commits. */
+      async function beforeCommit<T>(
+         hook: () => Promise<void>,
+         run: () => Promise<T>,
+      ): Promise<T> {
          const lock = spyOn(admin, "withTableLock");
          lock.mockImplementation(
             (catalog, schema, table, fn) =>
@@ -1175,29 +1176,108 @@ describe.skipIf(!SUPERUSER)("loads", () => {
                   (held) =>
                      fn({
                         ...held,
-                        // The table is replaced after the load planned against it and before it commits.
                         assertLockHeld: async () => {
-                           await sql(
-                              replacer,
-                              `CREATE OR REPLACE TABLE ${CATALOG}.s.raced AS SELECT 99 AS id, 'replaced' AS v`,
-                           );
+                           await hook();
                            await held.assertLockHeld();
                         },
                      }),
                ) as ReturnType<typeof fn>,
          );
          try {
-            const changed = await parquet(
-               "SELECT * FROM (VALUES (1, 'changed'), (7, 'new')) t(id, v)",
-            );
-            const error = await refusal(merge("raced", [changed]));
-            expect([error.status, error.reason]).toEqual([
-               409,
-               "LOAD_CONFLICT",
-            ]);
+            return await run();
          } finally {
             lock.mockRestore();
          }
+      }
+
+      it("refuses an overlapping load of the same table from another replica, and loads it once the first finishes", async () => {
+         const object = await parquet(
+            "SELECT i AS id, 'v' || i AS v FROM range(1, 4) t(i)",
+         );
+         const other = new CatalogAdmin({ catalogDatabase: conninfo });
+         let busy: CatalogAdminError | undefined;
+         const first = await beforeCommit(
+            async () => {
+               // Another replica has a load slot of its own: only the table's lock refuses it.
+               const slot = spyOn(loadSlots, "tryAcquire").mockReturnValue({
+                  release: () => undefined,
+               });
+               try {
+                  busy = await refusal(
+                     other.loadTable(CATALOG, "s", "overlap", {
+                        loadId: "second",
+                        mode: "merge",
+                        key: ["id"],
+                        objects: [object],
+                     }),
+                  );
+               } finally {
+                  slot.mockRestore();
+               }
+            },
+            () => merge("overlap", [object]),
+         );
+         expect([busy?.status, busy?.reason]).toEqual([503, "LOAD_BUSY"]);
+         expect(busy?.message).toContain("is already running");
+         expect(first.rowsInserted).toBe(3);
+         expect(
+            await other.loadTable(CATALOG, "s", "overlap", {
+               loadId: "third",
+               mode: "merge",
+               key: ["id"],
+               objects: [object],
+            }),
+         ).toMatchObject({ rowsUnchanged: 3, rowsInserted: 0 });
+      });
+
+      it("rolls back and answers 503 when the lock's connection dies before the commit", async () => {
+         const object = await parquet(
+            "SELECT i AS id, 'v' || i AS v FROM range(1, 4) t(i)",
+         );
+         const before = await snapshotId();
+         const error = await refusal(
+            beforeCommit(
+               async () => {
+                  const [row] = await superuser(
+                     "select pid from pg_locks where locktype = 'advisory' and granted and database = (select oid from pg_database where datname = current_database())",
+                     DB,
+                  );
+                  await superuser(
+                     `select pg_terminate_backend(${Number(row.pid)})`,
+                  );
+               },
+               () => merge("killed", [object]),
+            ),
+         );
+         expect([error.status, error.reason]).toEqual([503, "LOAD_BUSY"]);
+         expect(await snapshotId()).toBe(before);
+         expect(await admin.listTables(CATALOG, "s")).not.toContainEqual(
+            expect.objectContaining({ name: "killed" }),
+         );
+         // The lock went with its connection: the retry loads.
+         expect((await merge("killed", [object])).rowsInserted).toBe(3);
+      });
+
+      it("rolls back and answers 409 when another replica replaces the table before the commit", async () => {
+         const first = await parquet(
+            "SELECT i AS id, 'v' || i AS v FROM range(1, 4) t(i)",
+         );
+         await merge("raced", [first]);
+         const replacer = await attached("loads_replacer", "write");
+         const changed = await parquet(
+            "SELECT * FROM (VALUES (1, 'changed'), (7, 'new')) t(id, v)",
+         );
+         const error = await refusal(
+            beforeCommit(
+               () =>
+                  sql(
+                     replacer,
+                     `CREATE OR REPLACE TABLE ${CATALOG}.s.raced AS SELECT 99 AS id, 'replaced' AS v`,
+                  ).then(() => undefined),
+               () => merge("raced", [changed]),
+            ),
+         );
+         expect([error.status, error.reason]).toEqual([409, "LOAD_CONFLICT"]);
          // Only the replace landed; the load's rows did not.
          expect(await rowsOf("raced")).toEqual([{ id: 99, v: "replaced" }]);
          // The retry loads against the new table.
@@ -1207,6 +1287,56 @@ describe.skipIf(!SUPERUSER)("loads", () => {
             ]),
          ).toMatchObject({ rowsUnchanged: 1 });
       });
+
+      it.each(["merge into", "create"] as const)(
+         "rolls back and answers 409 when another replica drops the schema before a load would %s its table",
+         async (into) => {
+            const schema = `dropped_${counter++}`;
+            await admin.createSchema(CATALOG, schema, undefined, false);
+            const loadInto = (objects: string[]) =>
+               admin.loadTable(CATALOG, schema, "t", {
+                  loadId: `run:${counter++}`,
+                  mode: "merge",
+                  key: ["id"],
+                  objects,
+               });
+            if (into === "merge into") {
+               await loadInto([await parquet("SELECT 1 AS id, 'a' AS v")]);
+            }
+            const dropper = await attached(
+               `loads_dropper_${counter++}`,
+               "write",
+            );
+            const object = await parquet(
+               "SELECT * FROM (VALUES (1, 'changed'), (2, 'new')) t(id, v)",
+            );
+            let dropped = 0;
+            const error = await refusal(
+               beforeCommit(
+                  async () => {
+                     await sql(
+                        dropper,
+                        `DROP SCHEMA ${CATALOG}.${schema} CASCADE`,
+                     );
+                     dropped = await snapshotId();
+                  },
+                  () => loadInto([object]),
+               ),
+            );
+            expect([error.status, error.reason]).toEqual([
+               409,
+               "LOAD_CONFLICT",
+            ]);
+            // The drop is the last commit: the load wrote nothing after it.
+            expect(await snapshotId()).toBe(dropped);
+            expect(
+               await sql(
+                  reader,
+                  `SELECT schema_name FROM duckdb_schemas() WHERE database_name = '${CATALOG}' AND schema_name = '${schema}'`,
+               ),
+            ).toEqual([]);
+         },
+      );
 
       it("refuses a load while this process's load slot is held, and releases the table's lock", async () => {
          const object = await parquet("SELECT 1 AS id, 'x' AS v");

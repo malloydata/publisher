@@ -26,6 +26,7 @@ const ENV_VARIABLES = [
    "PGSSLKEY",
    "PGSERVICE",
    "PGHOSTADDR",
+   "NODE_EXTRA_CA_CERTS",
 ] as const;
 const priorEnv = new Map<string, string | undefined>();
 beforeEach(() => {
@@ -72,6 +73,31 @@ describe("pgClientConfig", () => {
          password: "p/w",
       });
    });
+
+   it("names itself to the server, so the lock's session reads as a load's in pg_stat_activity", () => {
+      expect(config("host=h application_name=other")).toMatchObject({
+         application_name: "publisher-load-lock",
+      });
+   });
+
+   it.each(["channel_binding", "require_auth", "gssencmode", "sslcrl"])(
+      "refuses %s, which node-pg would drop, naming the key and not the string",
+      (key) => {
+         const error = String(
+            (() => {
+               try {
+                  config(`host=h password=secret ${key}=require`);
+               } catch (e) {
+                  return e;
+               }
+            })(),
+         );
+         expect(error).toContain(
+            `test: the connection string sets '${key}', which the load lock's client cannot honor; remove it.`,
+         );
+         expect(error).not.toContain("secret");
+      },
+   );
 
    it("bounds a connection that goes quiet: keepalive, and a timeout on every query", () => {
       expect(config("host=h")).toMatchObject({
@@ -283,7 +309,32 @@ describe("pgClientConfig", () => {
       },
    );
 
-   it("trusts the runtime's ambient anchors when verify-* names no sslrootcert", () => {
+   describe("verify-ca with no sslrootcert, which checks no host name", () => {
+      it("trusts NODE_EXTRA_CA_CERTS alone, as the DuckDB attach does", () => {
+         process.env.NODE_EXTRA_CA_CERTS = ca;
+         expect(config("host=h sslmode=verify-ca").ssl).toMatchObject({
+            rejectUnauthorized: true,
+            ca: "PEM-BYTES",
+         });
+      });
+
+      it("refuses when NODE_EXTRA_CA_CERTS is unset, rather than trust the public roots", () => {
+         expect(() => config("host=h sslmode=verify-ca")).toThrow(
+            "test uses sslmode 'verify-ca' but no trusted CA bundle is available (NODE_EXTRA_CA_CERTS is unset).",
+         );
+         process.env.PGSSLMODE = "verify-ca";
+         expect(() => config("host=h")).toThrow(/NODE_EXTRA_CA_CERTS is unset/);
+      });
+
+      it("prefers a root the deployment names in PGSSLROOTCERT", () => {
+         process.env.PGSSLROOTCERT = ca;
+         expect(config("host=h sslmode=verify-ca").ssl).toMatchObject({
+            ca: "PEM-BYTES",
+         });
+      });
+   });
+
+   it("trusts the runtime's ambient anchors when verify-full names no sslrootcert", () => {
       const { ssl } = config("host=h sslmode=verify-full") as {
          ssl: { ca: string };
       };

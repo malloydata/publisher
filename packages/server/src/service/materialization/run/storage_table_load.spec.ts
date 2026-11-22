@@ -17,6 +17,7 @@ import {
    loadLayout,
    loadStorageTable,
    mergeStatements,
+   objectUnreadable,
    packColumnGroups,
    typeBytes,
    parquetRowBytes,
@@ -234,6 +235,94 @@ describe("readerRefusal: what a person sent and the reader refused", () => {
    });
 });
 
+describe("objectUnreadable: the reader failures a retry cannot cure", () => {
+   const uris = [
+      "gs://lake/org_1/staging/a.parquet",
+      "gs://lake/org_1/staging/b.parquet",
+   ];
+
+   it.each([
+      [
+         "a missing object",
+         `IO Error: No files found that match the pattern "${uris[1]}"`,
+      ],
+      [
+         "a local file that is not there",
+         `IO Error: Cannot open file "${uris[1]}": No such file or directory`,
+      ],
+      [
+         "an object storage answers 404 for",
+         `HTTP Error: HTTP GET error on '${uris[1]}' (HTTP 404)`,
+      ],
+      [
+         "a file that is not Parquet",
+         `Invalid Input Error: No magic bytes found at end of file '${uris[1]}'`,
+      ],
+      [
+         "a Parquet footer that does not parse",
+         "Invalid Error: TProtocolException: Invalid data",
+      ],
+      [
+         "a value its column cannot hold",
+         `Conversion Error: Could not convert string "N/A" to 'DOUBLE' in '${uris[1]}'`,
+      ],
+      [
+         "any other invalid input",
+         `Invalid Input Error: File '${uris[1]}' too small to be a Parquet file`,
+      ],
+   ])("is a 422 for %s, naming the object by its place", (_, message) => {
+      const refusal = objectUnreadable(
+         new Error(
+            `${message}\n\nLINE 1: SELECT * FROM read_parquet(['${uris[0]}'])`,
+         ),
+         uris,
+      );
+      expect(refusal).toBeInstanceOf(LoadRefusalError);
+      expect(refusal?.reason).toBe("LOAD_OBJECT_UNREADABLE");
+      expect(refusal?.message).not.toContain("gs://");
+      expect(refusal?.message).not.toContain("LINE 1");
+      if (message.includes(uris[1])) {
+         expect(refusal?.message).toStartWith("objects[1] could not be read: ");
+         expect(refusal?.message).toEndWith(
+            message.split("\n")[0].split(uris[1]).join("objects[1]"),
+         );
+         expect(refusal?.detail).toEqual({ object: 1 });
+      } else {
+         expect(refusal?.detail).toBeUndefined();
+      }
+   });
+
+   it.each([
+      [
+         "storage that is unavailable",
+         `IO Error: HTTP GET error on '${uris[0]}' (HTTP 503)`,
+      ],
+      [
+         "storage that throttles",
+         `HTTP Error: HTTP GET error on '${uris[0]}' (HTTP 429)`,
+      ],
+      [
+         "a credential storage refuses",
+         `HTTP Error: HTTP GET error on '${uris[0]}' (HTTP 403)`,
+      ],
+      [
+         "a full spill disk",
+         'IO Error: Could not write file "/tmp/duckdb_temp_storage-0.tmp": No space left on device',
+      ],
+      [
+         "a spill file that went missing",
+         'IO Error: Cannot open file "/tmp/duckdb_temp_storage-0.tmp": No such file or directory',
+      ],
+      ["a catalog failure", "Catalog Error: Table with name t does not exist!"],
+   ])("is null for %s, to answer a 500 the caller retries", (_, message) => {
+      expect(objectUnreadable(new Error(message), uris)).toBeNull();
+   });
+
+   it("is null for what is not an error", () => {
+      expect(objectUnreadable("IO Error: No files found", uris)).toBeNull();
+   });
+});
+
 /**
  * The write every load and copy ends in, on a file-catalog DuckLake attached
  * under the destination's name: the one part of either that runs without a
@@ -411,48 +500,63 @@ describe("loadLayout: the objects' columns against the table's", () => {
    });
 
    it.each([
-      ["TINYINT", "INTEGER", true],
-      ["INTEGER", "INTEGER", true],
-      ["BIGINT", "INTEGER", false],
-      ["UTINYINT", "UBIGINT", true],
-      ["UBIGINT", "UTINYINT", false],
-      ["UBIGINT", "INTEGER", false],
-      ["BIGINT", "UINTEGER", false],
-      ["FLOAT", "DOUBLE", true],
-      ["DOUBLE", "FLOAT", false],
-      ["DECIMAL(18,3)", "DECIMAL(18,3)", true],
-      ["DECIMAL(3,2)", "DECIMAL(7,2)", true],
-      ["DECIMAL(10,2)", "DECIMAL(18,3)", true],
-      ["DECIMAL(7,2)", "DECIMAL(3,2)", false],
-      ["DECIMAL(10,2)", "DECIMAL(10,3)", false],
-      ["INTEGER", "DOUBLE", true],
-      ["BIGINT", "DOUBLE", false],
-      ["UTINYINT", "INTEGER", true],
-      ["DOUBLE", "INTEGER", false],
-      ["INTEGER", "VARCHAR", false],
-      ["TIMESTAMP WITH TIME ZONE", "TIMESTAMP", false],
-      ["struct(A INTEGER)", "STRUCT(a INTEGER)", true],
-      ["STRUCT(a BIGINT)", "STRUCT(a INTEGER)", false],
-   ])("takes a %s load into a %s column: %s", (load, tableType, accepted) => {
-      const run = () =>
+      ["TINYINT", "INTEGER", "kept"],
+      ["INTEGER", "INTEGER", "kept"],
+      ["BIGINT", "INTEGER", "widened"],
+      ["UTINYINT", "UBIGINT", "kept"],
+      ["UBIGINT", "UTINYINT", "widened"],
+      ["UBIGINT", "INTEGER", "refused"],
+      ["BIGINT", "UINTEGER", "widened"],
+      ["FLOAT", "DOUBLE", "kept"],
+      ["DOUBLE", "FLOAT", "widened"],
+      ["DECIMAL(18,3)", "DECIMAL(18,3)", "kept"],
+      ["DECIMAL(3,2)", "DECIMAL(7,2)", "kept"],
+      ["DECIMAL(10,2)", "DECIMAL(18,3)", "kept"],
+      ["DECIMAL(7,2)", "DECIMAL(3,2)", "widened"],
+      ["DECIMAL(10,2)", "DECIMAL(10,3)", "refused"],
+      ["INTEGER", "DOUBLE", "kept"],
+      ["BIGINT", "DOUBLE", "refused"],
+      ["UTINYINT", "INTEGER", "kept"],
+      ["DOUBLE", "INTEGER", "widened"],
+      ["INTEGER", "VARCHAR", "refused"],
+      ["TIMESTAMP WITH TIME ZONE", "TIMESTAMP", "refused"],
+      ["struct(A INTEGER)", "STRUCT(a INTEGER)", "kept"],
+      ["STRUCT(a BIGINT)", "STRUCT(a INTEGER)", "refused"],
+   ])("takes a %s load into a %s column: %s", (load, tableType, outcome) => {
+      const run = (key = "id") =>
          loadLayout(
-            { key: ["id"] },
+            { key: [key] },
             [
                { name: "id", type: "BIGINT" },
                { name: "x", type: load },
             ],
             [
                { name: "id", type: "BIGINT" },
-               { name: "x", type: tableType },
+               { name: "X", type: tableType },
             ],
          );
-      if (accepted) return expect(run).not.toThrow();
-      expect(contract(run).detail).toEqual({
-         column: "x",
-         tableType,
-         loadType: load,
-         detail: "type_change",
+      if (outcome === "refused") {
+         expect(contract(run).detail).toEqual({
+            column: "X",
+            tableType,
+            loadType: load,
+            detail: "type_change",
+         });
+         return;
+      }
+      const widened = outcome === "widened";
+      const layout = run();
+      expect(layout.retyped).toEqual(
+         widened ? [{ name: "X", type: load }] : [],
+      );
+      expect(layout.columns).toContainEqual({
+         name: "X",
+         type: widened ? load : tableType,
+         inStage: true,
+         inTable: true,
       });
+      // A widened key is compared at its new type too.
+      expect(run("x").keyTypes).toEqual([widened ? load : tableType]);
    });
 
    it("refuses a key that is not a column of both sides", () => {

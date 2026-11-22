@@ -439,22 +439,26 @@ paths:
         is refused and writes nothing.
 
         Rows the objects do not change are left as they are, so a load repeated
-        after it committed finds nothing to do, writes nothing and takes no
-        snapshot. It reports the same `rowCount` and `cursorMax` as the first
-        call, with every row counted in `rowsUnchanged` and none inserted,
-        replaced or deleted, and still answers `201`. `loadId` is provenance
-        only (it goes in the commit message and the logs): a repeated one is
-        not detected, so a retry is safe because it finds nothing to change.
+        after it committed, with no other load of the same table committed in
+        between, finds nothing to do, writes nothing and takes no snapshot. It
+        reports the same `rowCount` and `cursorMax` as the first call, with
+        every row counted in `rowsUnchanged` and none inserted, replaced or
+        deleted, and still answers `201`. `loadId` is provenance only (it goes
+        in the commit message and the logs): a repeated one is not detected, so
+        a retry is safe because it finds nothing to change.
         Of two rows of one key, the later one wins: the later object in
         `objects`, then the later row of an object. A key stored more than once
         is rewritten once.
 
         The objects are checked against the table's columns before anything is
-        written. A column the table lacks is added, even when no row changes;
-        one it has must keep its type, or take a lossless widening of it: a
-        wider integer, a decimal with no fewer integer or fraction digits, an
-        integer into a decimal or DOUBLE that holds all its digits, FLOAT into
-        DOUBLE, a longer varying text. Objects that type one column differently
+        written. A column the table lacks is added, even when no row changes.
+        A column it has keeps its type when the objects type it the same or
+        narrower, losslessly, and is widened to the objects' type when that is
+        a lossless widening of the table's: a wider integer, a decimal with no
+        fewer integer or fraction digits, an integer into a decimal or DOUBLE
+        that holds all its digits, FLOAT into DOUBLE, a longer varying text.
+        The widening is recorded in the same commit as the rows and rewrites no
+        file already written; a table's type never narrows. Objects that type one column differently
         (BIGINT in one, DOUBLE in another) must each widen losslessly into the
         type they are read together as. Every `key` column must be a column of
         both; no key may be NULL; and `cursor`, when given, must be an integer,
@@ -487,7 +491,9 @@ paths:
         counts match (every retry) it compares whole rows of both sides, and a
         table larger than the session's memory can exceed the spill limit, so
         give a large stream a `key`. A load that outgrows either limit answers
-        `500` and nothing is written.
+        `500`. A `500` before the commit writes nothing; one from the flush
+        after it may follow a committed load. Either way a retry after any
+        `500` is safe.
 
         Synchronous: it answers `201` once the rows are committed, with the
         counts of what changed.
@@ -519,7 +525,7 @@ paths:
             The load was refused, and nothing was written: the objects break the table's
             contract (`LOAD_SCHEMA_CONTRACT`, with `detail`), a replace would delete more
             rows than allowed (`LOAD_ROW_DROP_GUARD`, with `detail`), or an object could
-            not be read (`LOAD_OBJECT_UNREADABLE`, with no URI in the message)
+            not be read (`LOAD_OBJECT_UNREADABLE`, naming the object by its index, not its URI)
           content:
             application/json:
               schema:
@@ -808,17 +814,13 @@ components:
           type: string
 
     CatalogTableSummary:
-      type: object
-      required: [schema, name, sizeBytes]
-      properties:
-        schema:
-          type: string
-        name:
-          type: string
-        sizeBytes:
-          type: integer
-          format: int64
-          description: Bytes its live files hold
+      allOf:
+        - type: object
+          required: [schema]
+          properties:
+            schema:
+              type: string
+        - $ref: "#/components/schemas/TableSummary"
 
     TableSummary:
       type: object
@@ -1107,8 +1109,11 @@ components:
             `maxDeletedRows`; `detail` is `{wouldDelete, rowsBefore,
             maxDeletedRows}`.
             `LOAD_OBJECT_UNREADABLE` (422): an object is missing, not Parquet,
-            or the store refused it; the message names no URI, and `detail` is
+            or holds a value its column's type cannot; the message is DuckDB's
+            with each URI replaced by `objects[i]`, and `detail` is
             `{object}`, the object's index in `objects`, when it can be told.
+            A storage failure (unavailable, throttled, a refused credential)
+            or a full spill disk is a `500` instead, to retry.
             Treat an unrecognized value as absent.
         detail:
           type: object

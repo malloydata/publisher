@@ -642,13 +642,22 @@ export function splitPgAttachCredentials(
    return { path: kept.join(" "), user, password, sslpassword };
 }
 
+/** libpq keys node-pg would silently drop, each able to demand more of the connection than node-pg gives: refused rather than ignored. */
+const UNHONORED_KEYS = [
+   "channel_binding",
+   "require_auth",
+   "gssencmode",
+   "sslcrl",
+] as const;
+
 /**
  * A node-pg client config for a libpq connection string, for work the DuckDB
  * attach cannot do (a session advisory lock). It reads the string as libpq
  * does, the deployment's PGSSLMODE and certificate files included (the string
  * wins), and refuses what it cannot follow: a `service`, a `hostaddr` (in the
  * string or as PGSERVICE / PGHOSTADDR), or a list of hosts, none of which a
- * single node-pg connection can take. The TLS mapping is {@link pgClientSsl}.
+ * single node-pg connection can take, and a security setting node-pg would
+ * ignore ({@link UNHONORED_KEYS}). The TLS mapping is {@link pgClientSsl}.
  * A dead connection is noticed by keepalive, and a query that stops
  * answering by its timeout. Exported for tests.
  */
@@ -675,6 +684,12 @@ export function pgClientConfig(
    if (unsupported || listed) {
       throw new Error(
          `${subject}: the connection string sets ${unsupported ? `'${unsupported}'` : `more than one '${listed}'`}, which loads cannot use; spell host, port and dbname.`,
+      );
+   }
+   const unhonored = UNHONORED_KEYS.find((key) => params.has(key));
+   if (unhonored) {
+      throw new Error(
+         `${subject}: the connection string sets '${unhonored}', which the load lock's client cannot honor; remove it.`,
       );
    }
    const port = params.get("port") || undefined;
@@ -704,6 +719,7 @@ export function pgClientConfig(
       database: params.get("dbname"),
       user: params.get("user"),
       password: params.get("password"),
+      application_name: "publisher-load-lock",
       ssl: pgClientSsl(subject, sslmode, params),
       plaintextFallback: TLS_OPTIONAL_SSLMODES.has(sslmode),
       connectionTimeoutMillis: 10_000,
@@ -759,8 +775,9 @@ const TLS_OPTIONAL_SSLMODES = new Set<string | undefined>([
  * passphrase). node-pg cannot fall back from TLS to plaintext itself, so the
  * TLS-optional modes ask for TLS and the caller retries in plaintext only on
  * the server's refusal (`plaintextFallback`). `require` with an `sslrootcert`
- * verifies the chain, as libpq does. `verify-*` trust `sslrootcert`, else the
- * runtime's ambient anchors.
+ * verifies the chain, as libpq does. `verify-*` trust `sslrootcert`; without
+ * one, `verify-full` trusts the runtime's ambient anchors and `verify-ca` only
+ * NODE_EXTRA_CA_CERTS, as the DuckDB attach does ({@link libpqSslmodeParts}).
  */
 export function pgClientSsl(
    subject: string,
@@ -781,7 +798,12 @@ export function pgClientSsl(
    const ca = () =>
       sslrootcert && sslrootcert !== "system"
          ? pem("sslrootcert", sslrootcert)
-         : readFileSync(ambientTrustBundlePath(), "utf8");
+         : sslmode === "verify-ca"
+           ? pem(
+                "NODE_EXTRA_CA_CERTS",
+                verifyCaBundle(subject, defaultProxiedAttachTrust()),
+             )
+           : readFileSync(ambientTrustBundlePath(), "utf8");
    const [sslcert, sslkey, passphrase] = [
       params.get("sslcert"),
       params.get("sslkey"),
@@ -985,6 +1007,20 @@ export function buildProxiedPgAttachString(
 }
 
 /**
+ * The root `verify-ca` trusts when no `sslrootcert` names one: the deployment's
+ * NODE_EXTRA_CA_CERTS alone, never the public roots, which would vouch for any
+ * server since verify-ca checks no hostname.
+ */
+function verifyCaBundle(subject: string, trust: ProxiedAttachTrust): string {
+   if (!trust.caBundle) {
+      throw new Error(
+         `${subject} uses sslmode 'verify-ca' but no trusted CA bundle is available (NODE_EXTRA_CA_CERTS is unset).`,
+      );
+   }
+   return trust.caBundle;
+}
+
+/**
  * The libpq conninfo pairs for an explicit sslmode, shared by the proxied and
  * the direct DuckDB attach so a mode means the same thing on both. `subject` is
  * the phrase an error leads with.
@@ -1001,17 +1037,11 @@ function libpqSslmodeParts(
          return ["sslmode=disable"];
       case "no-verify":
          return [`sslmode=${LIBPQ_NO_VERIFY_SSLMODE}`];
-      case "verify-ca": {
-         if (!trust.caBundle) {
-            throw new Error(
-               `${subject} uses sslmode 'verify-ca' but no trusted CA bundle is available (NODE_EXTRA_CA_CERTS is unset).`,
-            );
-         }
+      case "verify-ca":
          return [
             "sslmode=verify-ca",
-            pgConninfoPair("sslrootcert", trust.caBundle),
+            pgConninfoPair("sslrootcert", verifyCaBundle(subject, trust)),
          ];
-      }
       case "verify-full":
          return [
             "sslmode=verify-full",

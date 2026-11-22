@@ -13,6 +13,7 @@ import {
 } from "bun:test";
 import fs from "fs/promises";
 import path from "path";
+import { Client } from "pg";
 import { components } from "../../../src/api";
 import {
    createEnvironmentConnections,
@@ -94,16 +95,9 @@ describe("DuckLake Connection Tests", () => {
    });
 
    describe("Connection Creation", () => {
-      it(
+      it.skipIf(!hasPostgresCredentials() || !hasS3Credentials())(
          "should create DuckLake connection with S3 storage",
          async () => {
-            if (!hasPostgresCredentials() || !hasS3Credentials()) {
-               console.log(
-                  "Skipping: PostgreSQL and S3 credentials not configured",
-               );
-               return;
-            }
-
             const ducklakeConnection: ApiConnection = {
                name: "ducklake_s3_test",
                type: "ducklake",
@@ -667,54 +661,82 @@ describe("DuckLake Connection Tests", () => {
    });
 
    describe("Database File Management", () => {
-      it(
+      // A local data path: the primary's file, or its absence, needs no cloud storage.
+      it.skipIf(!hasPostgresCredentials())(
          "should keep no database file",
          async () => {
-            if (!hasPostgresCredentials() || !hasS3Credentials()) {
-               console.log(
-                  "Skipping: PostgreSQL and S3 credentials not configured",
+            const dataPath = path.join(testProjectPath, "lake-data");
+            await fs.mkdir(dataPath, { recursive: true });
+            const metadataSchema = `ducklake_file_test_${process.pid}`;
+            const env = process.env;
+            try {
+               // The connection attaches an existing catalog only, so one is created first.
+               const creator = new DuckDBConnection(
+                  "ducklake_file_test_creator",
+                  ":memory:",
+                  testProjectPath,
                );
-               return;
+               try {
+                  await creator.runSQL("INSTALL ducklake; LOAD ducklake;");
+                  await creator.runSQL(
+                     `ATTACH 'ducklake:postgres:host=${env.POSTGRES_TEST_HOST} port=${env.POSTGRES_TEST_PORT || "5432"} ` +
+                        `user=${env.POSTGRES_TEST_USER} password=${env.POSTGRES_TEST_PASSWORD}` +
+                        `${env.POSTGRES_TEST_DATABASE ? ` dbname=${env.POSTGRES_TEST_DATABASE}` : ""}' ` +
+                        `AS fresh (DATA_PATH '${dataPath}/', METADATA_SCHEMA '${metadataSchema}')`,
+                  );
+                  await creator.runSQL("DETACH fresh");
+               } finally {
+                  await creator.close();
+               }
+               const ducklakeConnection: ApiConnection = {
+                  name: "ducklake_file_test",
+                  type: "ducklake",
+                  ducklakeConnection: {
+                     catalog: {
+                        postgresConnection: {
+                           host: env.POSTGRES_TEST_HOST,
+                           port: parseInt(env.POSTGRES_TEST_PORT || "5432"),
+                           userName: env.POSTGRES_TEST_USER!,
+                           password: env.POSTGRES_TEST_PASSWORD!,
+                           databaseName: env.POSTGRES_TEST_DATABASE,
+                        },
+                        metadataSchema,
+                     },
+                     storage: { bucketUrl: dataPath },
+                  },
+               };
+
+               const { malloyConnections } = await createEnvironmentConnections(
+                  [ducklakeConnection],
+                  testProjectPath,
+               );
+               const connection = malloyConnections.get(
+                  "ducklake_file_test",
+               ) as DuckDBConnection;
+               createdConnections.push(connection);
+               const databases = await connection.runSQL("SHOW DATABASES");
+               expect(
+                  databases.rows.map((row) => Object.values(row)[0]),
+               ).toContain("ducklake_file_test");
+
+               expect(await duckdbFilesIn(testProjectPath)).toEqual([]);
+            } finally {
+               const pg = new Client({
+                  host: env.POSTGRES_TEST_HOST,
+                  port: parseInt(env.POSTGRES_TEST_PORT || "5432"),
+                  user: env.POSTGRES_TEST_USER,
+                  password: env.POSTGRES_TEST_PASSWORD,
+                  database: env.POSTGRES_TEST_DATABASE,
+               });
+               await pg.connect();
+               try {
+                  await pg.query(
+                     `DROP SCHEMA IF EXISTS ${metadataSchema} CASCADE`,
+                  );
+               } finally {
+                  await pg.end();
+               }
             }
-
-            const ducklakeConnection: ApiConnection = {
-               name: "ducklake_file_test",
-               type: "ducklake",
-               ducklakeConnection: {
-                  catalog: {
-                     postgresConnection: {
-                        host: process.env.POSTGRES_TEST_HOST,
-                        port: parseInt(
-                           process.env.POSTGRES_TEST_PORT || "5432",
-                        ),
-                        userName: process.env.POSTGRES_TEST_USER!,
-                        password: process.env.POSTGRES_TEST_PASSWORD!,
-                        databaseName: process.env.POSTGRES_TEST_DATABASE,
-                     },
-                  },
-                  storage: {
-                     bucketUrl:
-                        process.env.S3_TEST_BUCKET_URL || "s3://test-bucket",
-                     s3Connection: {
-                        accessKeyId: process.env.S3_TEST_ACCESS_KEY_ID!,
-                        secretAccessKey: process.env.S3_TEST_SECRET_ACCESS_KEY!,
-                        region: process.env.S3_TEST_REGION || "us-east-1",
-                     },
-                  },
-               },
-            };
-
-            const { malloyConnections } = await createEnvironmentConnections(
-               [ducklakeConnection],
-               testProjectPath,
-            );
-
-            const connection = malloyConnections.get(
-               "ducklake_file_test",
-            ) as DuckDBConnection;
-            createdConnections.push(connection);
-
-            expect(await duckdbFilesIn(testProjectPath)).toEqual([]);
          },
          { timeout: 30000 },
       );

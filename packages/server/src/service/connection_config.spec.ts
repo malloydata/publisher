@@ -1160,6 +1160,13 @@ describe("ducklake shape validation", () => {
       it("accepts an absent or empty field without a managed connection", () => {
          expect(() => assemble(valid)).not.toThrow();
          expect(() => assemble(withReadable(undefined, {}))).not.toThrow();
+         expect(() => assemble(withReadable([], {}))).not.toThrow();
+         expect(() =>
+            assemble(withReadable([], { managed: true }, false)),
+         ).not.toThrow();
+         expect(
+            validateStorageDestinations([withReadable([])]).rejected,
+         ).toEqual([]);
       });
    });
 

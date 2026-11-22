@@ -259,6 +259,57 @@ async function withLoadSession<T>(
 }
 
 /**
+ * What a reader's failure says of the objects it read: `missing` (nothing at
+ * the URI) or `content` (not Parquet, or a value its column's type cannot hold),
+ * neither of which a retry cures. Null for anything else -- a storage error, a
+ * refused credential, a full spill disk -- which a retry may cure, so it stays a 500.
+ * A missing local file counts only when the message names one of `uris`, since a
+ * spill file can go missing too.
+ */
+function readerFault(
+   error: Error,
+   uris: readonly string[],
+): "missing" | "content" | null {
+   const message = error.message;
+   if (
+      /^(Invalid Input|Conversion) Error:|^Invalid Error: TProtocolException/.test(
+         message,
+      )
+   ) {
+      return "content";
+   }
+   if (!/^(IO|HTTP) Error:/.test(message)) return null;
+   if (
+      /No files found that match the pattern|\bHTTP 404\b|\b404 \(Not Found\)/.test(
+         message,
+      ) ||
+      (/No such file or directory/.test(message) &&
+         uris.some((uri) => message.includes(uri)))
+   ) {
+      return "missing";
+   }
+   return null;
+}
+
+/** Where DuckDB starts echoing the statement it failed, which names every object it read. */
+const ECHOED_SQL = /\n\s*LINE \d+:/;
+
+/** DuckDB's words for a reader's failure, each URI replaced by its label and the SQL it echoes after `LINE` dropped. */
+function readerWords(
+   error: Error,
+   labels: readonly (readonly [uri: string, label: string])[],
+): string {
+   let words = error.message.split(ECHOED_SQL)[0];
+   // Longest first, so a URI that prefixes another never splits it.
+   for (const [uri, label] of [...labels].sort(
+      ([a], [b]) => b.length - a.length,
+   )) {
+      words = words.split(uri).join(label);
+   }
+   return words.trim();
+}
+
+/**
  * A load the file reader refused, as the person who sent the file should read it: a 400
  * carrying DuckDB's own words ("No magic bytes found", `Could not convert string "N/A" to
  * 'DOUBLE'`), which name the fix, rather than a 500 a caller can only retry. The object's URI,
@@ -277,16 +328,13 @@ export function readerRefusal(
    error: unknown,
    uri: string,
 ): BadRequestError | null {
-   if (!(error instanceof Error)) return null;
-   if (!/^(Invalid Input|Conversion) Error:/.test(error.message)) return null;
+   if (!(error instanceof Error) || readerFault(error, [uri]) !== "content") {
+      return null;
+   }
    logInternalFailure("Load refused by the file reader", error, "warn");
-   const fileName = path.posix.basename(uri);
-   const words = error.message
-      .split(/\n\s*LINE \d+:/)[0]
-      .split(uri)
-      .join(fileName)
-      .trim();
-   return new BadRequestError(words);
+   return new BadRequestError(
+      readerWords(error, [[uri, path.posix.basename(uri)]]),
+   );
 }
 
 /**
@@ -405,8 +453,8 @@ export async function copyStorageTable(params: {
       if (
          partitionedBy.length > 0 &&
          sameCatalog &&
-         sameIdentifier(source.schemaName, params.schemaName) &&
-         sameIdentifier(source.tableName, params.tableName)
+         fold(source.schemaName) === fold(params.schemaName) &&
+         fold(source.tableName) === fold(params.tableName)
       ) {
          // The partitioned write replaces the table empty before it reads the
          // source, so onto itself it would commit zero rows. DuckDB resolves
@@ -427,15 +475,6 @@ export async function copyStorageTable(params: {
          partitionedBy,
       };
    });
-}
-
-/**
- * Whether two names resolve to the same DuckDB object: DuckDB matches schema and
- * table names case-insensitively, quoted or not. Both are held to {@link IDENT}
- * (ASCII), so lowercasing is the whole comparison.
- */
-function sameIdentifier(a: string, b: string): boolean {
-   return a.toLowerCase() === b.toLowerCase();
 }
 
 /** The alias a copy attaches its source catalog under. */
@@ -595,6 +634,8 @@ interface LoadLayout {
    columns: LoadColumn[];
    /** Columns of the objects the table lacks, added before the rows are written. */
    added: Column[];
+   /** Columns of the table the objects type wider without loss, each with the objects' type, set before the rows are written. */
+   retyped: Column[];
    cursor?: { name: string; type: string; maxSql: string };
 }
 
@@ -608,6 +649,9 @@ export const quotedList = (values: readonly string[]) =>
    values.map((v) => `'${escapeSQL(v)}'`).join(", ");
 /** DuckDB matches names by ASCII case, so a collision is judged the same way. */
 const fold = (name: string) => name.replace(/[A-Z]/g, (c) => c.toLowerCase());
+/** A read of the objects: a `k=v` directory above one would otherwise replace column k with the path's text. */
+const readObjects = (uris: readonly string[], options: string[] = []) =>
+   `read_parquet(${[`[${quotedList(uris)}]`, "hive_partitioning = false", ...options].join(", ")})`;
 
 const SIGNED_INTEGERS = ["TINYINT", "SMALLINT", "INTEGER", "BIGINT", "HUGEINT"];
 const UNSIGNED_INTEGERS = [
@@ -672,8 +716,9 @@ function contractRefusal(
 
 /**
  * Settles a load's columns against the table's, or refuses it: a column the
- * table lacks is added; one it has must take the objects' type unchanged or
- * widened without loss ({@link losslessWidening}), because a narrowing insert
+ * table lacks is added; one it has keeps its type when the objects' type widens
+ * into it without loss ({@link losslessWidening}), takes the objects' type when
+ * that widens the table's, and is refused otherwise, because a narrowing insert
  * casts without error. Every key must be a column of both, and the cursor a
  * column of the objects the cursor kinds cover. A table column named like the
  * load's own helper columns is refused, since it would shadow them in the
@@ -696,20 +741,24 @@ export function loadLayout(
    const tableByName = new Map((table ?? []).map((c) => [fold(c.name), c]));
    const columns: LoadColumn[] = [];
    const added: Column[] = [];
+   const retyped = new Map<string, Column>();
    for (const s of stage) {
       const t = tableByName.get(fold(s.name));
       if (t && !losslessWidening(s.type, t.type)) {
-         throw contractRefusal(
-            "type_change",
-            t.name,
-            `Column '${t.name}' is ${t.type} in the table and ${s.type} in the objects.`,
-            { tableType: t.type, loadType: s.type },
-         );
+         if (!losslessWidening(t.type, s.type)) {
+            throw contractRefusal(
+               "type_change",
+               t.name,
+               `Column '${t.name}' is ${t.type} in the table and ${s.type} in the objects.`,
+               { tableType: t.type, loadType: s.type },
+            );
+         }
+         retyped.set(fold(s.name), { name: t.name, type: s.type });
       }
       if (!t && table) added.push(s);
       columns.push({
          name: t?.name ?? s.name,
-         type: t?.type ?? s.type,
+         type: retyped.get(fold(s.name))?.type ?? t?.type ?? s.type,
          inStage: true,
          inTable: !!t,
       });
@@ -735,7 +784,10 @@ export function loadLayout(
             { tableType: t?.type, loadType: s?.type },
          );
       }
-      return { name: t?.name ?? s.name, type: t?.type ?? s.type };
+      return {
+         name: t?.name ?? s.name,
+         type: retyped.get(fold(key))?.type ?? t?.type ?? s.type,
+      };
    });
    const keys = keyColumns.map((k) => k.name);
    const keyNames = new Set(keys.map(fold));
@@ -744,6 +796,7 @@ export function loadLayout(
       keyTypes: keyColumns.map((k) => k.type),
       columns: columns.filter((c) => !keyNames.has(fold(c.name))),
       added,
+      retyped: [...retyped.values()],
       cursor: cursorLayout(params.cursor, stageByName, tableByName),
    };
 }
@@ -953,13 +1006,8 @@ async function assertObjectTypesConvert(
    const described = rows(
       await session.runSQL(
          [
-            describe(
-               "",
-               `read_parquet([${quotedList(uris)}], union_by_name = true)`,
-            ),
-            ...objects.map((uri) =>
-               describe(uri, `read_parquet('${escapeSQL(uri)}')`),
-            ),
+            describe("", readObjects(uris, ["union_by_name = true"])),
+            ...objects.map((uri) => describe(uri, readObjects([uri]))),
          ].join(" UNION ALL "),
       ),
    );
@@ -985,26 +1033,28 @@ async function assertObjectTypesConvert(
    }
 }
 
-/** A failure to read an object (missing, not Parquet, a storage error), as a refusal that names no URI. */
-function objectUnreadable(
+/**
+ * A keyed load's objects the reader refused ({@link readerFault}), as a 422 in
+ * DuckDB's words with each URI named by its place in `objects`. Null for
+ * anything else, which stays a 500. Exported for tests.
+ */
+export function objectUnreadable(
    error: unknown,
    uris: readonly string[],
 ): LoadRefusalError | null {
-   if (
-      !(error instanceof Error) ||
-      !/^(IO|HTTP|Invalid Input|Conversion|Invalid) Error:|Failed to read Parquet file/.test(
-         error.message,
-      )
-   ) {
-      return null;
-   }
+   if (!(error instanceof Error) || !readerFault(error, uris)) return null;
    logInternalFailure("Load could not read an object", error, "warn");
-   const object = uris.findIndex((uri) => error.message.includes(uri));
+   const said = error.message.split(ECHOED_SQL)[0];
+   const object = uris.findIndex((uri) => said.includes(uri));
+   const words = readerWords(
+      error,
+      uris.map((uri, i) => [uri, `objects[${i}]`] as const),
+   );
    return new LoadRefusalError(
       "LOAD_OBJECT_UNREADABLE",
       object < 0
-         ? "An object of the load could not be read."
-         : `objects[${object}] could not be read.`,
+         ? `An object of the load could not be read: ${words}`
+         : `objects[${object}] could not be read: ${words}`,
       object < 0 ? undefined : { object },
    );
 }
@@ -1037,7 +1087,7 @@ async function createStage(
          await session.runSQL(
             `CREATE TEMP TABLE ${STAGE} AS SELECT ${columns.map((c) => `__r.${q(c)}`).join(", ")}, ` +
                "__u.pos AS __publisher_pos, __r.file_row_number AS __publisher_row " +
-               `FROM read_parquet([${quotedList(uris)}], union_by_name = true, filename = '__publisher_file', file_row_number = true) AS __r ` +
+               `FROM ${readObjects(uris, ["union_by_name = true", "filename = '__publisher_file'", "file_row_number = true"])} AS __r ` +
                `LEFT JOIN (VALUES ${positions}) AS __u(uri, pos) ON __r.__publisher_file = __u.uri`,
          );
       } finally {
@@ -1560,15 +1610,20 @@ async function planAndApply(
       );
    }
    const changesRows = plan.inserted + plan.replaced + plan.deleted > 0;
-   if (!exists || changesRows || layout.added.length > 0) {
+   if (
+      !exists ||
+      changesRows ||
+      layout.added.length > 0 ||
+      layout.retyped.length > 0
+   ) {
       await applyLoad(session, params, layout, target, exists, changesRows);
    }
    return { plan, layout, stats, rowsBefore };
 }
 
 /**
- * Writes the stage to the table inside the load's transaction: the new
- * columns, then, when rows change, the stale rows deleted and the new and
+ * Writes the stage to the table inside the load's transaction: the new and
+ * widened columns, then, when rows change, the stale rows deleted and the new and
  * changed rows inserted, and the commit message set.
  */
 async function applyLoad(
@@ -1609,6 +1664,27 @@ async function applyLoad(
          await session.runSQL(
             `ALTER TABLE ${target} ADD COLUMN ${q(column.name)} ${column.type}`,
          );
+      }
+      // DuckLake records a widening as metadata: files already written keep their type and read back cast.
+      for (const column of layout.retyped) {
+         await session
+            .runSQL(
+               `ALTER TABLE ${target} ALTER COLUMN ${q(column.name)} SET TYPE ${column.type}`,
+            )
+            .catch((error: unknown) => {
+               if (
+                  error instanceof Error &&
+                  /Cannot change type of column/.test(error.message)
+               ) {
+                  throw contractRefusal(
+                     "type_change",
+                     column.name,
+                     `Column '${column.name}' cannot be widened to ${column.type}.`,
+                     { loadType: column.type },
+                  );
+               }
+               throw error;
+            });
       }
       if (changesRows) {
          await session.runSQL(statements.delete);

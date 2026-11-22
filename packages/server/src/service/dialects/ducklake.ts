@@ -211,7 +211,12 @@ function validateDuckLakeShape(
    // Each name becomes a prefix of the view's storage secret scope, so anything
    // but a plain lowercase identifier would widen or break it.
    const readable = connection.ducklakeConnection.readableSchemas;
-   if (readable !== undefined && readable !== null) {
+   // An empty list grants nothing, and a client that defaults arrays to [] sends one on every connection.
+   if (
+      readable !== undefined &&
+      readable !== null &&
+      !(Array.isArray(readable) && readable.length === 0)
+   ) {
       if (origin === "storage-destination") {
          throw new Error(
             `DuckLake readableSchemas applies to a managed connection view, not a ` +

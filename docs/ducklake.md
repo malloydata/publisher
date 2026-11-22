@@ -295,17 +295,20 @@ stream in batches:
   and takes no snapshot. It reports the same `rowCount` and `cursorMax` as the first call, with every row
   counted in `rowsUnchanged` and none inserted, replaced or deleted, and it still answers `201`. `loadId` is
   provenance only (the commit message and the logs): the server does not recognize a repeated one, so a
-  retry is safe because it finds nothing to change. Of two rows with one key, the later object in
+  retry is safe because it finds nothing to change, provided no other load of the table committed in
+  between. Of two rows with one key, the later object in
   `objects` wins, then the later row of an object.
-- A new column is added, even when no row changes. An existing one keeps its type or takes a lossless
-  widening of it: a wider integer, a decimal with no fewer integer or fraction digits, an integer into a
-  decimal or `DOUBLE` that holds all its digits, `FLOAT` into `DOUBLE`, a longer varying text. Objects that
+- A new column is added, even when no row changes. An existing one keeps its type when the objects type
+  it the same or narrower, losslessly, and is widened to the objects' type when that is a lossless widening
+  of the table's: a wider integer, a decimal with no fewer integer or fraction digits, an integer into a
+  decimal or `DOUBLE` that holds all its digits, `FLOAT` into `DOUBLE`, a longer varying text. The widening
+  commits with the rows and rewrites no file already written; a table's type never narrows. Objects that
   type one column differently (`BIGINT` in one, `DOUBLE` in another) must each widen losslessly into the
   type they are read together as. A column that every object types NULL, as a Parquet writer writes an
   all-NULL column, is ignored; objects with no other column are refused. Anything else, a column of the
   table named `__publisher_…`, a NULL key, or a cursor that is not an integer, DATE or TIMESTAMP is `422
-  LOAD_SCHEMA_CONTRACT`, with a `detail` naming the column. An object that cannot be read is `422
-  LOAD_OBJECT_UNREADABLE`.
+  LOAD_SCHEMA_CONTRACT`, with a `detail` naming the column. An object that is missing, is not Parquet, or
+  holds a value its column cannot is `422 LOAD_OBJECT_UNREADABLE`; a storage failure is a `500` to retry.
 - One load of a table runs at a time across every replica (a Postgres advisory lock in the catalog
   database), and one load or copy runs at a time per server. Either busy is `503 LOAD_BUSY`, never
   queued: retry. A load whose lock connection is lost before it commits rolls back and answers the same.
