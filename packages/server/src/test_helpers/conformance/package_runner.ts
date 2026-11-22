@@ -72,6 +72,10 @@ import {
 import { queryTimezoneOf } from "../../service/governance/ir/compiled_model";
 import { planModelPersistedViews } from "../../service/materialization/plan/persisted_view";
 import { SourceMap } from "../../service/materialization/text/source_map";
+import {
+   captureTableContract,
+   liveCollationsOf,
+} from "../../service/materialization/run/column_contract_capture";
 import { recordConnectionsAsForConformanceHarness } from "../../service/connection_type";
 import {
    declinesOf,
@@ -886,6 +890,13 @@ async function buildAll(
                const described = await lake.runSQL(`DESCRIBE ${quoted}`, {
                   rowLimit: 10_000,
                });
+               // Its column contract, read back as a build records it.
+               const contract = await captureTableContract({
+                  connection: lake,
+                  tableName: table,
+                  tier: "storage",
+                  live: liveCollationsOf(warehouse, entry.sql),
+               });
                stored[entry.sourceEntityId] = {
                   sourceEntityId: entry.sourceEntityId,
                   sourceName: entry.name,
@@ -907,6 +918,7 @@ async function buildAll(
                   ...(entry.upstreamSchemas
                      ? { upstreamSchemas: entry.upstreamSchemas }
                      : {}),
+                  contract,
                };
                built.push({ name: entry.name, tier: "storage" });
             } else {
@@ -926,10 +938,20 @@ async function buildAll(
                           dialect: warehouse.dialectName,
                           sourceName: entry.name,
                        });
+               // Its column contract, as a build records it; a fixture whose
+               // point is a table with none records none (contract_missing).
+               const contract = options.captureNoNativeSchema
+                  ? undefined
+                  : await captureTableContract({
+                       connection: origin,
+                       tableName: table,
+                       tier: "database",
+                    });
                database[entry.sourceEntityId] = {
                   tableName: table,
                   connectionName: entry.connectionName ?? "duckdb",
                   ...(nativeSchema ? { nativeSchema } : {}),
+                  ...(contract ? { contract } : {}),
                   ...(await leafKeys(entry.sourceID, warehouse)),
                };
                built.push({ name: entry.name, tier: "database" });
@@ -950,7 +972,10 @@ async function buildAll(
       database: database as never,
       observed: await mz.readDatabaseColumns(database as never),
    });
-   pkg.materialization().bind({ storage: stored as never });
+   pkg.materialization().bind({
+      storage: stored as never,
+      storageObserved: await mz.readStorageColumns(stored as never),
+   });
    return { built, buildErrors, database, stored };
 }
 

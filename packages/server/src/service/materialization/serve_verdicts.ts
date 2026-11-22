@@ -41,6 +41,7 @@ import {
 } from "./serve/query_path";
 import {
    computeServeVerdicts,
+   type ContractVerdict,
    type PersistedResultOf,
    type NotServedIn,
    type ServedCopyOutcome,
@@ -99,6 +100,8 @@ interface ServeVerdictsHost {
    databaseEntries(): FreshnessManifest | undefined;
    /** The bound database tables the bind left out: no column types recorded. */
    typesUnrecorded(): readonly string[];
+   /** The bound tables the bind held to their contracts and left out, by address. */
+   contractVerdicts(): ReadonlyMap<string, ContractVerdict>;
    deploymentFacts(): DeploymentFacts | undefined;
    destinationSchema(destinationName: string): string | undefined;
    declarationOf(sourceID: string): unknown;
@@ -414,6 +417,7 @@ export class ServeVerdicts {
          boundEntityIds: new Set(Object.keys(host.databaseEntries() ?? {})),
          freshEntityIds: new Set(Object.keys(pinned.compilerManifest.entries)),
          typesUnrecordedEntityIds: new Set(host.typesUnrecorded()),
+         contractVerdicts: host.contractVerdicts(),
          boundStorageNames: new Set(storageBindings.map((b) => b.sourceName)),
          freshStorageIds: new Set(
             pinned.fresh
@@ -491,6 +495,7 @@ export class ServeVerdicts {
          plan.buildPlan,
          host.databaseEntries(),
          host.typesUnrecorded(),
+         host.contractVerdicts(),
          host.storageBindings(),
          plan.sourceEligibility,
          plan.databaseSourceEligibility,

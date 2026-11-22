@@ -8,6 +8,7 @@
  * Every answer is compared with live.
  */
 
+import { contractFor } from "../../../src/test_helpers/contract_fixture";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { DATA_FILES, RAW_MODEL } from "./conformance/data";
 import {
@@ -574,6 +575,7 @@ source: wide_tz is wide_raw -> { select: id, tz }
                entries[s.sourceEntityId] = {
                   tableName: table,
                   connectionName: s.connectionName ?? "duckdb",
+                  contract: contractFor(),
                   schema: (
                      d.rows as { column_name: string; column_type: string }[]
                   ).map((r) => ({ name: r.column_name, type: r.column_type })),
@@ -1246,6 +1248,7 @@ source: dropped is orders_raw -> {
                entries[s.sourceEntityId] = {
                   tableName: table,
                   connectionName: s.connectionName ?? "duckdb",
+                  contract: contractFor(),
                   schema: (
                      d.rows as { column_name: string; column_type: string }[]
                   ).map((r) => ({ name: r.column_name, type: r.column_type })),

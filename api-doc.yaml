@@ -4982,7 +4982,50 @@ components:
             `PERSIST_STORAGE_MODE`), `served_copy` (a source the served copy
             reads, `#(materialize)` or `#@ persist`, whose table is bound and
             built, but no model's served copy re-roots it, so its queries are
-            answered live; `notServedIn` says where and why). An open set.
+            answered live; `notServedIn` says where and why),
+            `contract_missing` (bound, but its manifest entry carries no
+            column contract, `ManifestEntry.contract`: built before contracts
+            were recorded, or by an older worker), `incompatible` (bound, but
+            the table no longer matches the contract its build recorded: a
+            column gone, retyped or recollated since, or the source of a
+            substituted table now declaring another type; `incompatibility`
+            says what). Both judge the table itself, never anything local to
+            one worker: a catalog read that failed or timed out leaves the
+            table unread (answered live, read again), never `incompatible`.
+            Both are non-terminal and never a plan-time refusal: a rebuild
+            fixes them, and a source with either counts as stale, so the next
+            build rebuilds it in full. Each names the generation it judged in
+            `table`, so a consumer drops a verdict about a table it has since
+            replaced. An open set.
+        table:
+          type: object
+          required: [physicalTableName]
+          description: >-
+            With `contract_missing` or `incompatible`: the table generation
+            the verdict judged, its `physicalTableName` and the `builtAt` its
+            entry carried (absent when the entry carried none).
+          properties:
+            physicalTableName:
+              type: string
+            builtAt:
+              type: string
+              format: date-time
+        incompatibility:
+          type: object
+          required: [code, columns]
+          description: >-
+            With `incompatible`: what changed (`column_gone`,
+            `column_retyped`, `collation_changed`, `declared_moved`, or
+            `upstream_altered`: a table an upstream it was built from
+            changed under, found when a reload could not recompile; an open
+            set) and the columns it changed (none for `upstream_altered`).
+          properties:
+            code:
+              type: string
+            columns:
+              type: array
+              items:
+                type: string
         notServedIn:
           type: array
           items:
@@ -12116,6 +12159,13 @@ components:
             from the stored table as live (a binary64 double read from a
             binary64 source, never a DECIMAL or float4 stored as a double, nor
             a 128-bit integer).
+        declaredType:
+          type: string
+          description: >-
+            The Malloy type the build source declared for this column when the
+            table was built. A bind whose source now declares another type
+            finds the table incompatible (`declared_moved`): its values are of
+            the type it was built for.
 
     BuildManifest:
       type: object

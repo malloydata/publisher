@@ -27,6 +27,7 @@
  * some tables.
  */
 
+import { contractFor } from "../../../src/test_helpers/contract_fixture";
 import {
    afterAll,
    beforeAll,
@@ -245,7 +246,12 @@ for (const variant of VARIANTS) {
                      {
                         tableName: tables[ids[n]],
                         connectionName: "duckdb",
-                        ...(nativeSchema ? { nativeSchema } : {}),
+                        ...(nativeSchema
+                           ? {
+                                nativeSchema,
+                                contract: contractFor(nativeSchema),
+                             }
+                           : {}),
                      },
                   ] as const;
                }),

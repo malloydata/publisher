@@ -20,6 +20,7 @@
  * it did, and the one whose gate is not is never read.
  */
 
+import { contractFor } from "../../../src/test_helpers/contract_fixture";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { FixedConnectionMap, MalloyConfig } from "@malloydata/malloy";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -262,6 +263,7 @@ async function loadAndBind(mode: string): Promise<{
             sourceEntityId: entry.sourceEntityId,
             sourceName: entry.name,
             physicalTableName: table,
+            contract: contractFor(),
             storageDestinationName: entry.annotationFields?.storage ?? "lake",
             ...(entry.origin === "rollup" ? { origin: "rollup" } : {}),
             schema: (

@@ -505,6 +505,22 @@ for (const [tier, mechanism] of tiers.flatMap((t) =>
          }
       });
 
+      it("binds every table a build wrote as its contract recorded it: none incompatible or missing its contract", async () => {
+         // The bind every run's commit, a manifest bind and a restart take.
+         await pkg.reloadAllModels(
+            pkg.materialization().boundDatabaseEntries() ?? {},
+         );
+         const judged = pkg
+            .materialization()
+            .serveVerdicts()
+            .filter(
+               (v) =>
+                  v.reason === "incompatible" ||
+                  v.reason === "contract_missing",
+            );
+         expect(judged).toEqual([]);
+      });
+
       it("serves its table, equal to live before the drop, as text", () => {
          // On Postgres the router may answer from the upstream's served
          // copy instead, at its read cost; the stored rows are compared

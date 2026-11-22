@@ -43,6 +43,7 @@ import { InstructedBuild } from "./instructed_build";
 import { type BuildEnvironment } from "./build_upstreams";
 import { buildSource } from "./source_build";
 import { deriveDatabaseServeBindings } from "../serve/bind";
+import { contractFor } from "../../../test_helpers/contract_fixture";
 
 const packages = tempBuildPlanPackages();
 let restore: () => void;
@@ -310,6 +311,7 @@ describe("a pair table's leaf key check, on a build", () => {
          database: {
             a: {
                tableName: "flights_pairs",
+               contract: contractFor(),
                connectionName: "duckdb",
                keyUniqueness: { parentKeys: { "segs@m": true } },
             },
@@ -325,6 +327,7 @@ describe("a pair table's leaf key check, on a build", () => {
          database: {
             a: {
                tableName: "flights_pairs",
+               contract: contractFor(),
                connectionName: "duckdb",
                keyUniqueness: { parentKeys: { "segs@m": false } },
             },

@@ -327,6 +327,10 @@ export class ManifestCommitter {
                ...boundNativeSchemaOf(entry.nativeSchema),
                ...(keyUniqueness ? { keyUniqueness } : {}),
                ...freshnessFactsOf(entry),
+               ...(entry.contract !== undefined
+                  ? { contract: entry.contract }
+                  : {}),
+               ...(entry.builtAt ? { builtAt: entry.builtAt } : {}),
             };
          }
       }

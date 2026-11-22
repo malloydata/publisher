@@ -34,6 +34,7 @@ import {
 } from "../domain/column_contract";
 import type { ManifestEntry } from "../domain/types";
 import { STORAGE_DIALECT } from "../domain/dialect";
+import type { Tier } from "../domain/vocabulary";
 import { recordContractCapture } from "../../../materialization_metrics";
 import { isStringNativeType } from "../stored_column_types";
 import { readTableCollations, readTableColumns } from "./database_column_read";
@@ -72,16 +73,24 @@ export function fakedCollations(): TableCollations | undefined {
 async function storedFacts(
    connection: ReadConnection,
    tableName: string,
+   /** Read types as the catalog names them (a `storage=` table's `DESCRIBE`). */
+   asDescribed = false,
 ): Promise<
    | { stored: Parameters<typeof deriveContract>[0]["stored"] }
    | { failed: string }
 > {
    const one = [{ key: "t", connectionName: "c", tableName }];
    const open = async () => connection;
-   const [columns, collations] = await Promise.all([
-      readTableColumns({ tables: one, connection: open }),
-      readTableCollations({ tables: one, connection: open }),
-   ]);
+   // One after the other: one connection runs one statement at a time.
+   const columns = await readTableColumns({
+      tables: one,
+      connection: open,
+      ...(asDescribed ? { asDescribed } : {}),
+   });
+   const collations = await readTableCollations({
+      tables: one,
+      connection: open,
+   });
    const read = columns.get("t");
    if (!read || "unread" in read) {
       return {
@@ -119,6 +128,8 @@ export async function captureDatabaseContract(args: {
    tableName: string;
    /** The served name, for the failure's message. */
    physicalTableName: string;
+   /** The Malloy type the build source declares for each column. */
+   declared?: readonly { name: string; type: string }[];
 }): Promise<ColumnContract> {
    if (fakeReads) {
       return deriveContract({
@@ -135,6 +146,41 @@ export async function captureDatabaseContract(args: {
       tier: "database",
       stored: read.stored,
       producer: SERVER_VERSION,
+      ...(args.declared ? { declared: args.declared } : {}),
+   });
+}
+
+/**
+ * The contract of a table read whole on `connection`, the engine that holds
+ * it, as a bind reads it: the capture of a build that writes a table outside
+ * a build session (the conformance runner's stand-in build). A `storage=`
+ * table reads its types as described and takes its strings' live judgement
+ * from `live`. Throws {@link ContractCaptureFailedError} when it does not read.
+ */
+export async function captureTableContract(args: {
+   connection: ReadConnection;
+   tableName: string;
+   tier: Tier;
+   live?: (columns: string[]) => Promise<Map<string, Collation>>;
+}): Promise<ColumnContract> {
+   const read = await storedFacts(
+      args.connection,
+      args.tableName,
+      args.tier === "storage",
+   );
+   if (!("stored" in read)) {
+      throw new ContractCaptureFailedError(args.tableName, read.failed);
+   }
+   if (args.tier === "database") {
+      return deriveContract({ tier: "database", stored: read.stored });
+   }
+   const live = await args.live?.(
+      read.stored.columns.filter((c) => c.isString).map((c) => c.name),
+   );
+   return deriveContract({
+      tier: "storage",
+      stored: read.stored,
+      ...(live ? { live } : {}),
    });
 }
 
@@ -152,6 +198,8 @@ export async function storageContract(args: {
    collations: TableCollations | undefined;
    stackedOn?: readonly (ManifestEntry | undefined)[];
    live?: (columns: string[]) => Promise<Map<string, Collation>>;
+   /** The Malloy type the build source declares for each column. */
+   declared?: readonly { name: string; type: string }[];
 }): Promise<ColumnContract> {
    const columns = args.schema.flatMap((c) =>
       c.name && c.type
@@ -185,6 +233,7 @@ export async function storageContract(args: {
             args.stackedOn.map((e) => parseContract(e?.contract)),
          ),
          producer: SERVER_VERSION,
+         ...(args.declared ? { declared: args.declared } : {}),
       });
    }
    const live = await args.live?.(
@@ -195,6 +244,7 @@ export async function storageContract(args: {
       stored,
       ...(live ? { live } : {}),
       producer: SERVER_VERSION,
+      ...(args.declared ? { declared: args.declared } : {}),
    });
 }
 

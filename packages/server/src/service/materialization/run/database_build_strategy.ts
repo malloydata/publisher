@@ -11,6 +11,7 @@
 
 import type { ColumnContract } from "../domain/column_contract";
 import { captureDatabaseContract } from "./column_contract_capture";
+import { persistSourceDeclaredColumns } from "../stored_column_types";
 import { BuildCancelledError } from "../domain/build_cancelled";
 import type { Connection as MalloyConnection } from "@malloydata/malloy";
 import { logger } from "../../../logger";
@@ -192,6 +193,7 @@ export class DatabaseTier
             },
             tableName: stagingTableName,
             physicalTableName,
+            declared: persistSourceDeclaredColumns(persistSource),
          });
       } catch (err) {
          await dropStagingAfterFailure({

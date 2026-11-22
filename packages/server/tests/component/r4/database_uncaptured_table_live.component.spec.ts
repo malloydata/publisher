@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * A database table whose build captured neither its columns nor their
- * native types (a catalog read that failed), altered in its warehouse after
- * the build. With nothing captured, the bind has no built type to compare
+ * A database table whose entry carries no column contract (built before
+ * contracts were recorded, or by a worker that predates them), altered in
+ * its warehouse after the build. With nothing captured, the bind has no built type to compare
  * the table's columns with, so no alter can be seen: a column altered to a
  * float, or to an exact type that changes its values (DECIMAL(20,1) to
  * DECIMAL(20,0) rounds 1.4 to 1), reads as unmoved. A gate re-applied to the
@@ -12,8 +12,8 @@
  * values. Such a table now answers live on every leg: served copy, rollup,
  * persisted view. Each answer equals live, compared as strings, per caller,
  * and every surface names why: the serve verdict and the path report say
- * `types_unrecorded`, and the package warns `materialization-types-unrecorded`.
- * This is how a host's typeless manifest entry is read too.
+ * `contract_missing`, and the package warns `materialization-contract-missing`.
+ * This is how a host's manifest entry with no contract is read too.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -145,7 +145,7 @@ describe("a database table whose build captured nothing, altered after its build
       ).toBe(true);
    });
 
-   it("gives each table the types_unrecorded verdict and warning, on every leg", () => {
+   it("gives each table the contract_missing verdict and warning, on every leg", () => {
       const verdicts = fixture.pkg
          .materialization()
          .serveVerdicts()
@@ -154,17 +154,17 @@ describe("a database table whose build captured nothing, altered after its build
       for (const origin of ["materialize", "rollup", "view"]) {
          expect(byOrigin.get(origin as never), origin).toMatchObject({
             verdict: "live",
-            reason: "types_unrecorded",
+            reason: "contract_missing",
          });
       }
       const codes = (fixture.pkg.getPackageMetadata().warnings ?? []).map(
          (w) => (w as { code?: string }).code,
       );
-      expect(codes).toContain("materialization-types-unrecorded");
+      expect(codes).toContain("materialization-contract-missing");
    });
 
    for (const c of CASES) {
-      it(`${c.name}: the path report says types_unrecorded`, async () => {
+      it(`${c.name}: the path report says contract_missing`, async () => {
          const result = await fixture.pkg.getModel("m.malloy")!.runQuery(
             unrecordedAudit(),
             {
@@ -177,7 +177,7 @@ describe("a database table whose build captured nothing, altered after its build
          const codes = (result.path?.considered ?? []).map(
             (x) => (x as { code?: string }).code,
          );
-         expect(codes).toContain("types_unrecorded");
+         expect(codes).toContain("contract_missing");
       });
    }
 

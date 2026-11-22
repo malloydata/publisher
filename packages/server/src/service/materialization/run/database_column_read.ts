@@ -40,6 +40,7 @@ import {
    type CatalogTable,
    collationCatalogBatches,
    nativeTypeCatalogBatches,
+   readsCollations,
 } from "./warehouse_sql";
 
 /**
@@ -66,15 +67,58 @@ export async function observedDatabaseColumns(args: {
    /** Overrides {@link BIND_READ_TIMEOUT_MS} (a test's). */
    timeoutMs?: number;
 }): Promise<Map<string, ObservedColumns>> {
-   return readTableColumns({
-      tables: Object.entries(args.entries).map(([id, entry]) => ({
-         key: id,
-         connectionName: args.connectionNameOf(id),
-         tableName: entry.tableName,
-      })),
+   const tables = Object.entries(args.entries).map(([id, entry]) => ({
+      key: id,
+      connectionName: args.connectionNameOf(id),
+      tableName: entry.tableName,
+   }));
+   const timeout =
+      args.timeoutMs !== undefined ? { timeoutMs: args.timeoutMs } : {};
+   // One after the other: one connection runs one statement at a time.
+   const columns = await readTableColumns({
+      tables,
       connection: args.connection,
-      ...(args.timeoutMs !== undefined ? { timeoutMs: args.timeoutMs } : {}),
+      ...timeout,
    });
+   const collations = await readTableCollations({
+      tables,
+      connection: args.connection,
+      ...timeout,
+   });
+   return withCollations(tables, columns, collations);
+}
+
+/**
+ * Each read table with its collations, as a build's contract records them.
+ * On an engine whose collations are read, a table whose collations did not
+ * read is unread (`catalog_query_failed`): it stays on the unread path,
+ * answered live and read again, and is never judged incompatible.
+ */
+export function withCollations(
+   tables: readonly { key: string }[],
+   columns: Map<string, ObservedColumns>,
+   collations: Map<string, TableCollations>,
+): Map<string, ObservedColumns> {
+   const out = new Map<string, ObservedColumns>();
+   for (const t of tables) {
+      const read = columns.get(t.key);
+      if (!read || "unread" in read) {
+         if (read) out.set(t.key, read);
+         continue;
+      }
+      const own = collations.get(t.key);
+      if (own) {
+         out.set(t.key, { ...read, collations: own });
+      } else if (read.dialect && readsCollations(read.dialect)) {
+         out.set(t.key, {
+            unread: "catalog_query_failed",
+            detail: "its column collations did not read",
+         });
+      } else {
+         out.set(t.key, read);
+      }
+   }
+   return out;
 }
 
 /**
@@ -100,6 +144,17 @@ export async function readTableColumns(args: {
     * created quoted, so read with its case kept.
     */
    foldUnquoted?: boolean;
+   /**
+    * Read each type as the catalog names it, never rewriting a DuckLake
+    * 128-bit integer as the DOUBLE its files hold: the read a `storage=`
+    * table's contract recorded from its build's `DESCRIBE`.
+    */
+   asDescribed?: boolean;
+   /**
+    * Catalog reads in flight at once; a `storage=` destination's one DuckDB
+    * connection reads one at a time.
+    */
+   concurrency?: number;
    /** Overrides {@link BIND_READ_TIMEOUT_MS} (a test's). */
    timeoutMs?: number;
 }): Promise<Map<string, ObservedColumns>> {
@@ -148,7 +203,9 @@ export async function readTableColumns(args: {
       }
       // DuckLake writes a 128-bit integer to Parquet as a DOUBLE: decided
       // per table, from the catalog it is in.
-      const ducklake = await ducklakeTablesOf(connection, batches);
+      const ducklake = args.asDescribed
+         ? new Set<string>()
+         : await ducklakeTablesOf(connection, batches);
       for (const batch of batches) {
          tasks.push(() =>
             readBatch(
@@ -162,7 +219,7 @@ export async function readTableColumns(args: {
          );
       }
    }
-   await runBounded(tasks, BIND_READ_CONCURRENCY);
+   await runBounded(tasks, args.concurrency ?? BIND_READ_CONCURRENCY);
    return out;
 }
 
@@ -181,6 +238,8 @@ export async function readTableCollations(args: {
       tableName: string;
    }[];
    connection: (connectionName: string) => Promise<ReadConnection>;
+   /** See {@link readTableColumns}'s. */
+   concurrency?: number;
    /** Overrides {@link BIND_READ_TIMEOUT_MS} (a test's). */
    timeoutMs?: number;
 }): Promise<Map<string, TableCollations>> {
@@ -229,7 +288,7 @@ export async function readTableCollations(args: {
          });
       }
    }
-   await runBounded(tasks, BIND_READ_CONCURRENCY);
+   await runBounded(tasks, args.concurrency ?? BIND_READ_CONCURRENCY);
    return out;
 }
 

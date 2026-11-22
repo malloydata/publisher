@@ -27,6 +27,7 @@
  * through {@link R4Fixture.duckdb} reaches the origin instead under the switch.
  */
 
+import { captureTableContract } from "../../../src/service/materialization/run/column_contract_capture";
 import { storedKeyCheckSql } from "../../../src/service/materialization/text/key_check_text";
 import { expect, it } from "bun:test";
 import { tryCompileMaterializeCompanion } from "../../../src/service/materialization/plan/materialize_compile";
@@ -366,6 +367,12 @@ export interface R4Fixture {
    observeDatabaseColumns(): Promise<{
       drifted: ObservedDrift[];
       unread: { sourceEntityId: string; reason: string }[];
+      /** Tables that no longer match their column contracts, left out. */
+      incompatible: {
+         sourceEntityId: string;
+         code: string;
+         columns: string[];
+      }[];
    }>;
    /** Rows of a stored table, by its physical name, with SQL over it. */
    storedSQL(
@@ -704,6 +711,12 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
          databaseEntries[target.buildId] = {
             tableName: table,
             ...(rollupSchema ? { schema: rollupSchema } : {}),
+            // Its column contract, as a build records it.
+            contract: await captureTableContract({
+               connection: duckdb,
+               tableName: table,
+               tier: "database",
+            }),
          };
          const check = plan.keyCheck;
          const checks = scenario.rollupKeyChecks ?? true;
@@ -948,6 +961,12 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
             ...(schema ? { schema } : {}),
             ...(nativeSchema ? { nativeSchema } : {}),
             ...(leafKeys ? { keyUniqueness: { parentKeys: leafKeys } } : {}),
+            // Its column contract, as a build records it.
+            contract: await captureTableContract({
+               connection: builder,
+               tableName: table,
+               tier: "database",
+            }),
          };
          continue;
       }
@@ -974,6 +993,12 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
          });
          databaseServeEntries[entityIdOf(source, i)] = {
             tableName: table,
+            // Its column contract, as a build records it.
+            contract: await captureTableContract({
+               connection: duckdb,
+               tableName: table,
+               tier: "database",
+            }),
             // The connection the build wrote it on, as a build's entry
             // records it, so the bind's connection check runs.
             connectionName: source.connectionName,
@@ -1455,7 +1480,11 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
                ...(leftOutColumns ? { leftOutColumns } : {}),
             });
          }
-         return { drifted: applied.drifted, unread: applied.unread };
+         return {
+            drifted: applied.drifted,
+            unread: applied.unread,
+            incompatible: applied.incompatible,
+         };
       },
       async storedSQL(sql) {
          const text = sql((sourceName) => {

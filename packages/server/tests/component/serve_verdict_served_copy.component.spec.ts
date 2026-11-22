@@ -28,6 +28,7 @@
  * answer equals live's, compared as text.
  */
 
+import { contractFor } from "../../src/test_helpers/contract_fixture";
 import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
 import { installSettings } from "../../src/test_helpers/settings_env";
 import {
@@ -485,6 +486,7 @@ describe("a package that serves every table, then one gone stale", () => {
             [entry.sourceEntityId]: {
                tableName,
                connectionName: "duckdb",
+               contract: contractFor(),
                dataAsOf: "2020-01-01T00:00:00Z",
                freshnessWindowSeconds: 60,
                freshnessFallback: "live",

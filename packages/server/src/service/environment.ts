@@ -2367,7 +2367,13 @@ export class Environment {
             storageWritable(getPersistStorageMode()) &&
             Object.keys(storageEntries).length > 0
          ) {
-            pkg.materialization().bind({ storage: storageEntries });
+            pkg.materialization().bind({
+               storage: storageEntries,
+               storageObserved: await pkg
+                  .materialization()
+                  .readStorageColumns(storageEntries, this),
+               storageSite: this,
+            });
          }
       } catch (err) {
          logger.warn(
@@ -3337,7 +3343,13 @@ export class Environment {
          reloaded = true;
       }
       if (storageWritable(getPersistStorageMode())) {
-         pkg.materialization().bind({ storage: storageEntries });
+         pkg.materialization().bind({
+            storage: storageEntries,
+            storageObserved: await pkg
+               .materialization()
+               .readStorageColumns(storageEntries, this),
+            storageSite: this,
+         });
       }
       if (pkg.getVersionId() !== undefined) {
          this.storeBindingReads.set(pkg, signature);
@@ -4483,7 +4495,13 @@ export class Environment {
             return { loaded: false, step: "reload", error: errMessage(err) };
          }
          try {
-            pkg.materialization().bind({ storage: params.storage });
+            pkg.materialization().bind({
+               storage: params.storage,
+               storageObserved: await pkg
+                  .materialization()
+                  .readStorageColumns(params.storage, this),
+               storageSite: this,
+            });
          } catch (err) {
             return { loaded: false, step: "bind", error: errMessage(err) };
          }
@@ -4577,7 +4595,15 @@ export class Environment {
             ) {
                await pkg.reloadAllModels(database);
             }
-            if (storage) pkg.materialization().bind({ storage: storage });
+            if (storage) {
+               pkg.materialization().bind({
+                  storage: storage,
+                  storageObserved: await pkg
+                     .materialization()
+                     .readStorageColumns(storage, this),
+                  storageSite: this,
+               });
+            }
          }),
       );
    }
@@ -4640,7 +4666,13 @@ export class Environment {
             }));
 
          if (hasStorage || hadStorage) {
-            pkg.materialization().bind({ storage: storageEntries });
+            pkg.materialization().bind({
+               storage: storageEntries,
+               storageObserved: await pkg
+                  .materialization()
+                  .readStorageColumns(storageEntries, this),
+               storageSite: this,
+            });
          }
 
          // Unconditionally bound, even for a manifest that binds nothing:

@@ -161,6 +161,8 @@ describe.skipIf(process.platform === "win32")(
       const spies: { mockRestore(): void }[] = [];
       /** Every catalog attach the run layer asked for, in order. */
       const attaches: { fn: string; dbName: string }[] = [];
+      /** The bind's read-only reads of its stored tables (their contracts). */
+      const bindReads: { fn: string; dbName: string }[] = [];
 
       const catalogFile = () => path.join(lakeDir, "catalog.ducklake");
 
@@ -307,7 +309,9 @@ describe.skipIf(process.platform === "win32")(
                connection,
                "attachDuckLakeReadOnlyIfPresent",
             ).mockImplementation(async (session, dbName) => {
-               attaches.push({ fn: "readOnlyIfPresent", dbName });
+               // A bind's read-only read of its stored tables, kept apart
+               // from the builds' attaches.
+               bindReads.push({ fn: "readOnlyIfPresent", dbName });
                if (!fs.existsSync(catalogFile())) return false;
                await attachFileLake(session as never, dbName, true);
                return true;
@@ -528,6 +532,12 @@ describe.skipIf(process.platform === "win32")(
          expect(attaches).toEqual(
             NAMES.map(() => ({ fn: "readWrite", dbName: LAKE })),
          );
+         // And the bind's read-only reads of the tables it binds, for their
+         // contracts: never a read-write attach.
+         expect(bindReads.length).toBeGreaterThan(0);
+         for (const read of bindReads) {
+            expect(read).toEqual({ fn: "readOnlyIfPresent", dbName: LAKE });
+         }
 
          const tables = [daily, orders, sales]
             .map((e) => e.physicalTableName)
@@ -728,6 +738,8 @@ class LakeFixture {
    service!: MaterializationService;
    /** Every catalog attach the run layer asked for, in order. */
    readonly attaches: { fn: string; dbName: string }[] = [];
+   /** The bind's read-only reads of its stored tables (their contracts). */
+   readonly bindReads: { fn: string; dbName: string }[] = [];
    /** Every statement a build session ran after its source was federated. */
    readonly statements: string[] = [];
    /** Called before each recorded statement runs; throwing fails it. */
@@ -920,7 +932,9 @@ class LakeFixture {
             connection,
             "attachDuckLakeReadOnlyIfPresent",
          ).mockImplementation(async (session, dbName) => {
-            this.attaches.push({ fn: "readOnlyIfPresent", dbName });
+            // A bind's read-only read of its stored tables, kept apart from
+            // the builds' attaches.
+            this.bindReads.push({ fn: "readOnlyIfPresent", dbName });
             if (!fs.existsSync(this.catalogFile())) return false;
             await this.attachFileLake(session as never, dbName, true);
             return true;
@@ -1811,7 +1825,15 @@ source: plain is raw extend { measure: total is amt.sum() }
             // The mark names the table at its site: the destination's.
             shared_t: `${OWN_MARK} table=${LAKE}.main.shared_t`,
          });
-         const answer = await lake.ask(OWNED);
+         // The bind's read of the new table through the destination may
+         // meet the catalog mid-change ("No snapshot found"): unread, it
+         // answers live and is read again until it reads.
+         let answer = await lake.ask(OWNED);
+         const deadline = Date.now() + 20_000;
+         while (answer.servedFrom !== "storage" && Date.now() < deadline) {
+            await new Promise((r) => setTimeout(r, 250));
+            answer = await lake.ask(OWNED);
+         }
          expect(answer.servedFrom).toBe("storage");
          expect(answer.servedBy.tableId).toBe(
             lake.entriesByName(builtRun).owned.sourceEntityId,

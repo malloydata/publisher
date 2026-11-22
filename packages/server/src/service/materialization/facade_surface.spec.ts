@@ -104,6 +104,7 @@ const FACADE_SURFACE = [
    "pushServeDestinationConfigToModels",
    "pushServedCopyContextToModels",
    "readDatabaseColumns",
+   "readStorageColumns",
    "refreshBuildPlan",
    "repeatedJoinOneKeyWarnings",
    "serveVerdicts",

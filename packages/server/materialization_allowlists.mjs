@@ -360,7 +360,7 @@ export const RATCHET_TABLE_IDENTITY = {
 export const RATCHET_STORED_TYPE_PATTERNS = {
    "service/materialization/domain/admission.ts": { count: 1, step: "2r" },
    "service/materialization/domain/gate_policy.ts": { count: 1, step: "2r" },
-   "service/materialization/serve/bind.ts": { count: 4, step: "2r" },
+   "service/materialization/serve/bind.ts": { count: 1, step: "2r" },
    "service/materialization/serve/leg.ts": { count: 1, step: "2r" },
    "service/materialization/serve/rollup_variants.ts": { count: 1, step: "2r" },
    "service/materialization/serve/served_copy_serve.ts": {

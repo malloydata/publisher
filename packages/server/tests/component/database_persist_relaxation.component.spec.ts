@@ -26,6 +26,7 @@
 // either — a pre-existing property of how `run:` resolves a raw source type,
 // unrelated to this relaxation. Every persist fixture elsewhere in this
 // codebase already uses the query_source shape for exactly this reason.
+import { contractFor } from "../../src/test_helpers/contract_fixture";
 import { unrecordedAudit } from "../../src/service/access_record";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
@@ -150,6 +151,7 @@ async function buildAndBindDatabase(
          [source.sourceEntityId]: {
             tableName: physicalTableName,
             connectionName: "duckdb",
+            contract: contractFor(),
          },
       },
    });

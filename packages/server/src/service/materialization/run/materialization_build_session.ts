@@ -30,7 +30,7 @@ import {
 } from "@malloydata/malloy";
 import { leaveOutDefinitionAt } from "../text/declarations_kept";
 import { inMemoryRuntime } from "../text/generated_files";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { components } from "../../../api";
@@ -76,7 +76,10 @@ import {
    type PassthroughRead,
 } from "./passthrough_build";
 import type { QueryMetadata } from "../../query_metadata";
-import { attachDuckLakeReadWrite } from "../../connection";
+import {
+   attachDuckLakeReadOnlyIfPresent,
+   attachDuckLakeReadWrite,
+} from "../../connection";
 import { managedSearchPathSql } from "../../dialects/ducklake";
 import type { PartitionKey } from "../../dialects/ducklake_catalog";
 import {
@@ -388,6 +391,11 @@ export async function withDestinationSession<T>(
        * session is confined to the destination before `fn` runs.
        */
       lockdown?: "caller";
+      /**
+       * Attach the destination read-only, for a read that only looks (a
+       * bind's read of its tables). Never with `build`.
+       */
+      readOnly?: boolean;
    },
    fn: (session: DuckDBConnection) => Promise<T>,
 ): Promise<T> {
@@ -408,12 +416,21 @@ export async function withDestinationSession<T>(
    );
 
    async function onDestinationSession(session: DuckDBConnection): Promise<T> {
-      await attachDestinationReadWrite(
-         session,
-         alias,
-         destinationConnection,
-         environmentPath,
-      );
+      if (options.readOnly) {
+         await attachDestinationReadOnly(
+            session,
+            alias,
+            destinationConnection,
+            environmentPath,
+         );
+      } else {
+         await attachDestinationReadWrite(
+            session,
+            alias,
+            destinationConnection,
+            environmentPath,
+         );
+      }
       if (options.build) {
          await assertDestinationSchemaExists(
             session,
@@ -1466,6 +1483,30 @@ function destinationDatabasePath(
    return path.join(
       storageDestinationRoot(environmentPath),
       `${destinationName}.duckdb`,
+   );
+}
+
+/**
+ * {@link attachDestinationReadWrite}, read-only: a DuckLake catalog through
+ * its read-only attach, a plain DuckDB destination's file `READ_ONLY`. A
+ * destination nothing has written yet attaches nothing (its tables then
+ * read as not found).
+ */
+async function attachDestinationReadOnly(
+   session: DuckDBConnection,
+   destinationName: string,
+   destinationConnection: ApiConnection,
+   environmentPath: string,
+): Promise<void> {
+   if (isCatalogDestination(destinationConnection)) {
+      const cfg = requireDuckLakeConfig(destinationName, destinationConnection);
+      await attachDuckLakeReadOnlyIfPresent(session, destinationName, cfg);
+      return;
+   }
+   const dbPath = destinationDatabasePath(environmentPath, destinationName);
+   if (!existsSync(dbPath)) return;
+   await session.runSQL(
+      `ATTACH '${escapeSQL(dbPath)}' AS ${quoteIdentifier(destinationName, STORAGE_DIALECT)} (READ_ONLY)`,
    );
 }
 

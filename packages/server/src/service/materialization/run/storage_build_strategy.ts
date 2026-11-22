@@ -842,6 +842,7 @@ export class StorageBuildStrategy
       const durationMs = Math.round(performance.now() - startTime);
       const contract = await storageContract({
          table: physicalTableName,
+         declared: declaredColumns,
          schema: result.schema,
          collations: result.collations,
          ...(stackedOnBase && params.storedBase

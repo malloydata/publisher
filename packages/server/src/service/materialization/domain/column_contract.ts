@@ -53,6 +53,12 @@ type ContractColumn = {
    compare: ContractCompare;
    /** Whether a row-level gate over it reads the same rows as live (R-10). */
    gateExact: boolean;
+   /**
+    * The Malloy type the build source declared for it when it was built: a
+    * later bind whose source declares another type finds the table's values
+    * read as a type they no longer are (`declared_moved`).
+    */
+   declaredType?: string;
 };
 
 /** One pair-table key check a build ran (`ColumnContract.keys`). */
@@ -108,6 +114,9 @@ export function parseContract(raw: unknown): ColumnContract | undefined {
                ? (c.compare as ContractCompare)
                : "none",
          gateExact: c.gateExact === true,
+         ...(typeof c.declaredType === "string" && c.declaredType !== ""
+            ? { declaredType: c.declaredType }
+            : {}),
       });
    }
    const keys: Record<string, ContractKeyCheck> = {};
@@ -256,9 +265,14 @@ export function deriveContract(args: {
    stackedOn?: ContractCompare;
    keys?: Record<string, ContractKeyCheck>;
    producer?: string;
+   /** The Malloy type the build source declares for each column, by name. */
+   declared?: readonly { name: string; type: string }[];
 }): ColumnContract {
    const { tier, stored } = args;
    const columns = stored.columns.map((c): ContractColumn => {
+      const declaredType = args.declared
+         ? columnNamed(args.declared, c.name)?.type
+         : undefined;
       const collation =
          c.isString && stored.collations
             ? collationOf(stored.collations, c.name)
@@ -272,6 +286,7 @@ export function deriveContract(args: {
             tier === "database"
                ? c.storedAsDouble !== true
                : !gateTypeInexact(c.nativeType),
+         ...(declaredType ? { declaredType } : {}),
       };
    });
    return {
@@ -326,4 +341,96 @@ export function weakestStringCompare(
       }
    }
    return out;
+}
+
+/** Why a stored table no longer matches its contract. */
+export type IncompatibleCode =
+   | "column_gone"
+   | "column_retyped"
+   | "collation_changed"
+   /** A `.sql()` or substituted table's source now declares another type. */
+   | "declared_moved";
+
+/** A table as a bind reads it now (`ObservedColumns`, with its collations). */
+interface ObservedTable {
+   columns: readonly { name: string; nativeType?: string; type?: string }[];
+   /** Its collations; undefined when its engine's are not read. */
+   collations?: TableCollations;
+}
+
+/** What {@link compatible} found. */
+type Compatibility =
+   | { ok: true }
+   | { ok: false; code: IncompatibleCode; columns: string[] };
+
+/**
+ * Whether a stored table, as a bind reads it now, still matches the contract
+ * its build recorded: the one comparator every drift trigger asks. A column
+ * the contract records that is gone, holds another native type (case and
+ * spacing aside), or, on an engine whose collations are read, another
+ * collation, is incompatible; a column the table gained is not. The first
+ * of gone, retyped and collation reports, naming every such column.
+ *
+ * Never asked of a table whose read failed: that table is unread, on its own
+ * path, and never incompatible.
+ */
+export function compatible(
+   contract: ColumnContract,
+   observed: ObservedTable,
+): Compatibility {
+   const gone: string[] = [];
+   const retyped: string[] = [];
+   const recollated: string[] = [];
+   for (const c of contract.columns) {
+      const now = columnNamed(observed.columns, c.name);
+      if (!now) {
+         gone.push(c.name);
+         continue;
+      }
+      const type = now.nativeType ?? now.type;
+      if (
+         type === undefined ||
+         spelledType(type) !== spelledType(c.nativeType)
+      ) {
+         retyped.push(c.name);
+         continue;
+      }
+      if (
+         c.collation !== null &&
+         observed.collations !== undefined &&
+         collationOf(observed.collations, now.name) !== c.collation
+      ) {
+         recollated.push(c.name);
+      }
+   }
+   if (gone.length > 0)
+      return { ok: false, code: "column_gone", columns: gone };
+   if (retyped.length > 0) {
+      return { ok: false, code: "column_retyped", columns: retyped };
+   }
+   if (recollated.length > 0) {
+      return { ok: false, code: "collation_changed", columns: recollated };
+   }
+   return { ok: true };
+}
+
+/**
+ * The columns whose build source now declares another Malloy type than the
+ * one the contract recorded at build (`declaredType`): the table holds values
+ * of the type it was built for, which a query would read as the type the
+ * source declares now. Compares only columns the contract recorded a declared
+ * type for, and that the declaration still names; a contract that recorded
+ * none (an entry written by a stand-in build) is never judged here.
+ */
+export function declaredMoves(
+   contract: ColumnContract,
+   declared: readonly { name: string; type?: string }[],
+): string[] {
+   return contract.columns.flatMap((c) => {
+      if (c.declaredType === undefined) return [];
+      const now = columnNamed(declared, c.name)?.type;
+      return now !== undefined && now !== "" && now !== c.declaredType
+         ? [c.name]
+         : [];
+   });
 }

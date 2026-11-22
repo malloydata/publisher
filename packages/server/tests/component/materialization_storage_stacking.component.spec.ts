@@ -279,6 +279,7 @@ describe.skipIf(process.platform === "win32")(
       let service: MaterializationService;
       let restore: () => void;
       let serve: MalloyDuckDBConnection | undefined;
+      const retired: MalloyDuckDBConnection[] = [];
       let opened = 0;
       let statements: string[];
       const spies: { mockRestore(): void }[] = [];
@@ -298,9 +299,14 @@ describe.skipIf(process.platform === "win32")(
          );
       }
 
-      /** A fresh serve connection, so the catalog is read as it now is. */
+      /**
+       * A fresh serve connection, so the catalog is read as it now is. The
+       * previous one is retired, not closed: a bind's read of the stored
+       * tables, or a served copy compiling in the background, may still be
+       * on it. Every one is closed after the test.
+       */
       async function reopenServe(): Promise<void> {
-         await serve?.close().catch(() => undefined);
+         if (serve) retired.push(serve);
          serve = undefined;
          const config = new MalloyConfig({ connections: {} });
          config.wrapConnections(() => ({
@@ -456,6 +462,9 @@ describe.skipIf(process.platform === "win32")(
          for (const spy of spies.splice(0)) spy.mockRestore();
          await serve?.close().catch(() => undefined);
          serve = undefined;
+         for (const c of retired.splice(0)) {
+            await c.close().catch(() => undefined);
+         }
          await env?.closeAllConnections().catch(() => undefined);
          await db?.close();
          fs.rmSync(root, { recursive: true, force: true });
@@ -637,6 +646,7 @@ describe.skipIf(process.platform === "win32")(
             collation: "binary",
             compare: "exact",
             gateExact: true,
+            declaredType: "string",
          });
          // A double: no gate over it is exact, since the build does not
          // name each column's source.
@@ -651,6 +661,28 @@ describe.skipIf(process.platform === "win32")(
             collation: "binary",
             compare: "exact",
          });
+      });
+
+      it("binds every stored table a build wrote as its contract recorded it: none incompatible or missing its contract", async () => {
+         await setUp({ "m.malloy": ROLLUP_MODEL });
+         const m = await build();
+         expect([m.status, m.error]).toEqual(["MANIFEST_FILE_READY", null]);
+         const pkg = await env.getPackage(parsePackageName(PKG), false);
+         const judged = pkg
+            .materialization()
+            .serveVerdicts()
+            .filter(
+               (v) =>
+                  v.reason === "incompatible" ||
+                  v.reason === "contract_missing",
+            );
+         expect(judged).toEqual([]);
+         expect(
+            pkg
+               .materialization()
+               .serveVerdicts()
+               .some((v) => v.tier === "storage" && v.verdict === "serves"),
+         ).toBe(true);
       });
 
       it("builds a storage= rollup from the warehouse when the run holds no table of its base", async () => {

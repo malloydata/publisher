@@ -3,8 +3,10 @@
 
 import { describe, expect, it } from "bun:test";
 import {
+   compatible,
    contractColumn,
    contractDigest,
+   declaredMoves,
    deriveContract,
    keyCheckPassed,
    parseContract,
@@ -267,5 +269,104 @@ describe("weakestStringCompare", () => {
       expect(weakestStringCompare([exact])).toBe("exact");
       expect(weakestStringCompare([exact, equality])).toBe("equality");
       expect(weakestStringCompare([exact, undefined])).toBe("none");
+   });
+});
+
+describe("compatible: the one comparator", () => {
+   const contract = parseContract({
+      v: 1,
+      dialect: "postgres",
+      columns: [
+         {
+            name: "id",
+            nativeType: "bigint",
+            collation: null,
+            compare: "exact",
+         },
+         {
+            name: "name",
+            nativeType: "text",
+            collation: "postgres:db|en_US",
+            compare: "exact",
+         },
+      ],
+   })!;
+   const collations = {
+      byColumn: new Map([["name", "postgres:db|en_US"]]),
+      otherwise: null,
+   };
+
+   it("passes a table as recorded, and one that gained a column", () => {
+      expect(
+         compatible(contract, {
+            columns: [
+               { name: "id", nativeType: "BIGINT" },
+               { name: "name", nativeType: "text" },
+               { name: "more", nativeType: "int" },
+            ],
+            collations,
+         }),
+      ).toEqual({ ok: true });
+   });
+
+   it("reports gone before retyped before recollated, naming every such column", () => {
+      expect(
+         compatible(contract, {
+            columns: [{ name: "name", nativeType: "integer" }],
+            collations,
+         }),
+      ).toEqual({ ok: false, code: "column_gone", columns: ["id"] });
+      expect(
+         compatible(contract, {
+            columns: [
+               { name: "id", nativeType: "numeric" },
+               { name: "name", nativeType: "integer" },
+            ],
+            collations,
+         }),
+      ).toEqual({ ok: false, code: "column_retyped", columns: ["id", "name"] });
+      expect(
+         compatible(contract, {
+            columns: [
+               { name: "id", nativeType: "bigint" },
+               { name: "name", nativeType: "text" },
+            ],
+            collations: {
+               byColumn: new Map([["name", "binary"]]),
+               otherwise: null,
+            },
+         }),
+      ).toEqual({ ok: false, code: "collation_changed", columns: ["name"] });
+   });
+
+   it("does not judge collations its engine did not read", () => {
+      expect(
+         compatible(contract, {
+            columns: [
+               { name: "id", nativeType: "bigint" },
+               { name: "name", nativeType: "text" },
+            ],
+         }),
+      ).toEqual({ ok: true });
+   });
+});
+
+describe("declaredMoves", () => {
+   it("names a column whose source now declares another type than was built", () => {
+      const contract = parseContract({
+         v: 1,
+         columns: [
+            { name: "d", nativeType: "TIMESTAMP", declaredType: "date" },
+            { name: "n", nativeType: "BIGINT", declaredType: "number" },
+            { name: "x", nativeType: "VARCHAR" },
+         ],
+      })!;
+      expect(
+         declaredMoves(contract, [
+            { name: "d", type: "date" },
+            { name: "n", type: "string" },
+            { name: "x", type: "number" },
+         ]),
+      ).toEqual(["n"]);
    });
 });

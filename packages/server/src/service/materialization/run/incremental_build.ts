@@ -937,6 +937,7 @@ export async function refreshOneSourceIncrementally(params: {
               },
               tableName: target.logicalTablePath,
               physicalTableName: lineage.physicalTableName,
+              declared: persistSourceDeclaredColumns(persistSource),
            })
          : undefined;
    return {
