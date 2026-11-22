@@ -22,11 +22,33 @@ const recorded = new WeakMap<object, string>();
  */
 const managed = new WeakMap<object, ReadonlySet<string>>();
 /**
- * What a connection recorded `managed` without its schemas may name: `main`
- * alone, as managed_catalog_scope.ts's `managedSchemas()` gives. Not imported
- * from there, which would load DuckDB into the package-load worker.
+ * The schemas a managed read-only DuckLake view may read besides `main`, as one
+ * canonical list: sorted, deduplicated, `main` dropped, undefined when empty. The
+ * one place that decides which lists mean the same, so a reordering never
+ * reopens the connection, and the attach scopes, and the SQL check allows, what
+ * the identity names.
  */
-const MAIN_ONLY: ReadonlySet<string> = new Set(["main"]);
+export function normalizeReadableSchemas(
+   list?: string[],
+): string[] | undefined {
+   const names = [...new Set(list ?? [])]
+      .filter((name) => name !== "main")
+      .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+   return names.length > 0 ? names : undefined;
+}
+
+/** The schemas SQL on a managed connection may name: `main` and its normalized readable schemas. */
+export function managedSchemas(
+   readableSchemas?: string[],
+): ReadonlySet<string> {
+   return new Set([
+      "main",
+      ...(normalizeReadableSchemas(readableSchemas) ?? []),
+   ]);
+}
+
+/** Kept here, not in managed_catalog_scope.ts, which would load DuckDB into the package-load worker. */
+export const MAIN_ONLY: ReadonlySet<string> = managedSchemas();
 
 /** Test seam layers: connection name -> the type to record instead. */
 const overrides: Map<string, string>[] = [];
@@ -122,8 +144,7 @@ function overrideOf(connection: object): string | undefined {
 
 /**
  * Record `connection`'s configured type, and whether it is configured
- * `managed`, with the schemas SQL on it may name (managed_catalog_scope.ts,
- * `managedSchemas`); returns `connection`.
+ * `managed`, with the schemas SQL on it may name (`managedSchemas`); returns `connection`.
  */
 export function recordConnectionType<T extends object>(
    connection: T,

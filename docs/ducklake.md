@@ -73,8 +73,12 @@ Two consequences for models:
   is always readable): its storage secret, or on a local data path its file allowlist. A listed schema
   the catalog does not record, or whose path is not under the data path, is left out and logged. A read
   outside the scope goes out unsigned, so the bucket must not allow anonymous reads. Changing the list
-  opens the connection afresh at once; the previous instance finishes its in-flight queries. Its SQL is
-  also held to those schemas before it runs, since DuckLake answers columns, row counts, file statistics
+  opens the connection afresh at once; the previous instance finishes its in-flight queries. Create a
+  schema in the catalog before listing it: a schema listed before it exists gets no file access until
+  the connection is next edited or the server restarts. Removing a schema from the list takes effect
+  for already-loaded packages only after they reload. `memory`, `information_schema`, `pg_catalog`,
+  `temp`, `system` and any name starting with `__ducklake_metadata_` are refused (`main` is implicit).
+  Its SQL is also held to those schemas before it runs, since DuckLake answers columns, row counts, file statistics
   and inlined rows from the catalog without opening a file: a model, or raw SQL, on a managed connection
   may name only `t`, `main.t`, `<connection>.t` or `<connection>.main.t`, or `s.t` or `<connection>.s.t`
   for a listed schema `s`, with a plain name (no path, glob or dot, so nothing a replacement scan reads

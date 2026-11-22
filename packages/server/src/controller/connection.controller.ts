@@ -51,10 +51,10 @@ import {
    validateConnectionSqlFields,
    validateDuckdbApiSurface,
 } from "../service/connection_config";
+import { managedSchemas } from "../service/connection_type";
 import {
    managedCatalogMessage,
    managedCatalogRefusal,
-   managedSchemas,
 } from "../service/managed_catalog_scope";
 import { assertSingleSelect } from "../service/single_select";
 import {
@@ -436,7 +436,7 @@ export class ConnectionController {
    }
 
    /** The schemas raw SQL on a managed connection may name (managed_catalog_scope.ts). */
-   private managedSchemasOf(
+   private configuredManagedSchemas(
       environment: Environment,
       connectionName: string,
    ): ReadonlySet<string> {
@@ -776,7 +776,7 @@ export class ConnectionController {
          await assertManagedCatalogScope(
             connectionName,
             sqlStatement,
-            this.managedSchemasOf(environment, connectionName),
+            this.configuredManagedSchemas(environment, connectionName),
          );
       }
 
@@ -995,7 +995,10 @@ export class ConnectionController {
          await assertManagedCatalogScope(
             connectionName,
             sqlStatement,
-            this.managedSchemasOf(environmentForAdmission, connectionName),
+            this.configuredManagedSchemas(
+               environmentForAdmission,
+               connectionName,
+            ),
          );
       }
       // A managed connection is metered (statement_usage.ts): the statement

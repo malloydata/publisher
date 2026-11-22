@@ -3,9 +3,9 @@
 
 import { DuckDBInstance } from "@duckdb/node-api";
 import { describe, expect, it } from "bun:test";
+import { managedSchemas } from "./connection_type";
 import {
    managedCatalogRefusal,
-   managedSchemas,
    scrubCatalogSuggestions,
    withoutCatalogSuggestions,
    managedTablePathRefusal,

@@ -36,35 +36,8 @@
  * inlined rows from a read-only attach, so this check is the control.
  */
 
+import { MAIN_ONLY } from "./connection_type";
 import { serializeSQL } from "./single_select";
-
-/**
- * The schemas a managed read-only DuckLake view may read besides `main`, as one
- * canonical list: sorted, deduplicated, `main` dropped, undefined when empty. The
- * one place that decides which lists mean the same, so a reordering never
- * reopens the connection, and the attach scopes, and this module allows, what
- * the identity names.
- */
-export function normalizeReadableSchemas(
-   list?: string[],
-): string[] | undefined {
-   const names = [...new Set(list ?? [])]
-      .filter((name) => name !== "main")
-      .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
-   return names.length > 0 ? names : undefined;
-}
-
-/** The schemas SQL on a managed connection may name: `main` and its normalized readable schemas. */
-export function managedSchemas(
-   readableSchemas?: string[],
-): ReadonlySet<string> {
-   return new Set([
-      "main",
-      ...(normalizeReadableSchemas(readableSchemas) ?? []),
-   ]);
-}
-
-const MAIN_ONLY = managedSchemas();
 
 /**
  * The prefixes every relation in DuckDB's `system` catalog (its `main` and

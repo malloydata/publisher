@@ -83,6 +83,33 @@ describe("destinationOverlap", () => {
       ).toBeUndefined();
    });
 
+   it("flags a connection that lists the destination's own schema in readableSchemas", () => {
+      const withReadable = (
+         readableSchemas: string[],
+         destinationSchema?: string,
+      ) => {
+         const dest = lake(
+            "dest",
+            { host: "pg", databaseName: "cat", metadataSchema: "lake" },
+            "s3://bucket/lake",
+         );
+         dest.ducklakeConnection!.destinationSchema = destinationSchema;
+         const view = lake("c", {
+            host: "pg",
+            databaseName: "cat",
+            metadataSchema: "lake",
+         });
+         view.ducklakeConnection!.readableSchemas = readableSchemas;
+         return destinationOverlaps([view], [dest])[0].listsDestinationSchema;
+      };
+      expect(withReadable(["stripe", "materialized"], "materialized")).toBe(
+         "materialized",
+      );
+      expect(withReadable(["stripe"], "materialized")).toBeUndefined();
+      // `main` is readable already; listing it adds no exposure.
+      expect(withReadable(["stripe", "main"])).toBeUndefined();
+   });
+
    it("lists every overlapping pair", () => {
       expect(
          destinationOverlaps(

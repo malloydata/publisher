@@ -94,13 +94,13 @@ import { gcpImpersonationOverlay } from "./gcp_impersonation";
 import { assertGoogleCredentialsIsNotADirectory } from "./google_credentials";
 import {
    isManagedConnection,
+   managedSchemas,
    managedSchemasOf,
    recordConnectionType,
 } from "./connection_type";
 import {
    managedCatalogMessage,
    managedCatalogRefusal,
-   managedSchemas,
    managedTablePathRefusal,
    scrubCatalogSuggestions,
 } from "./managed_catalog_scope";
@@ -919,7 +919,7 @@ class DuckLakeConnection extends DuckDBConnection {
    constructor(options: PublisherDuckDBOptions) {
       super(options);
       this.connectionName = options.name;
-      // Malloy's DuckDB digest is tagged with its dialect name.
+      // Malloy hard-codes 'duckdb' as the digest's first part; dialectName is that same string.
       this.legacyDigest = makeDigest(
          this.dialectName,
          path.join(

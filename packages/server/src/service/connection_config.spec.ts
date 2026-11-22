@@ -17,7 +17,7 @@ import {
    validateStorageDestinations,
 } from "./connection_config";
 import { normalizeSnowflakePrivateKey } from "./dialects/snowflake";
-import { normalizeReadableSchemas } from "./managed_catalog_scope";
+import { normalizeReadableSchemas } from "./connection_type";
 import { installSettings } from "../test_helpers/settings_env";
 import { toPublicConnection } from "./connection_public_view";
 
@@ -1109,13 +1109,15 @@ describe("ducklake shape validation", () => {
          );
       });
 
-      it("rejects the names a schema create refuses: the engine's own, and memory", () => {
+      it("rejects the names a schema create refuses, and the metadata catalog's prefix", () => {
          for (const name of [
             "memory",
             "information_schema",
             "pg_catalog",
             "temp",
             "system",
+            "__ducklake_metadata_",
+            "__ducklake_metadata_lake",
          ]) {
             expect(() => assemble(withReadable(["sync_a", name]))).toThrow(
                new RegExp(`readableSchemas names '${name}', a reserved schema`),
@@ -1123,7 +1125,9 @@ describe("ducklake shape validation", () => {
          }
          // Only the whole name is reserved.
          expect(() =>
-            assemble(withReadable(["memory_x", "system_a"])),
+            assemble(
+               withReadable(["memory_x", "system_a", "_ducklake_metadata"]),
+            ),
          ).not.toThrow();
       });
 

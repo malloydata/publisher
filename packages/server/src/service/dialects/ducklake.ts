@@ -51,11 +51,8 @@ import {
    createPgAttachSecret,
    validatePostgresSslmode,
 } from "../postgres_conninfo";
-import {
-   managedCatalogMessage,
-   managedSchemas,
-   normalizeReadableSchemas,
-} from "../managed_catalog_scope";
+import { managedSchemas, normalizeReadableSchemas } from "../connection_type";
+import { managedCatalogMessage } from "../managed_catalog_scope";
 import { quoteIdentifier } from "../quoting";
 import {
    recordedCatalogSettings,
@@ -137,6 +134,9 @@ export const SYSTEM_SCHEMAS = [
 
 /** Names no catalog schema may take: the engine's own, and `memory`, which would make `memory.t` ambiguous with DuckDB's built-in catalog. */
 export const RESERVED_SCHEMA_NAMES = ["memory", ...SYSTEM_SCHEMAS];
+
+/** The prefix of the attached metadata catalog's name (catalog_admin.ts), whose tables hold every schema's file lists. */
+const METADATA_CATALOG_PREFIX = "__ducklake_metadata_";
 
 function validateDuckLakeShape(
    connection: ApiConnection,
@@ -239,8 +239,10 @@ function validateDuckLakeShape(
                `([a-z_][a-z0-9_]*) for connection: ${connection.name}`,
          );
       }
-      const reserved = readable.find((name) =>
-         RESERVED_SCHEMA_NAMES.includes(name),
+      const reserved = readable.find(
+         (name) =>
+            RESERVED_SCHEMA_NAMES.includes(name) ||
+            name.startsWith(METADATA_CATALOG_PREFIX),
       );
       if (reserved !== undefined) {
          throw new Error(

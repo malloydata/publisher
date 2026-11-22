@@ -3,8 +3,11 @@
 
 import { quotedIdentifier, quotedPath, stringLiteral } from "./malloy_text";
 import { INCREMENTAL_NO_MERGE_KEY_CODE } from "./materialization/plan/incremental_policy";
-import { managedSchemasOf, recordConnectionType } from "./connection_type";
-import { managedSchemas } from "./managed_catalog_scope";
+import {
+   managedSchemas,
+   managedSchemasOf,
+   recordConnectionType,
+} from "./connection_type";
 import { readUpstreamSchemas, withNameProblems } from "./materialization";
 import {
    type UpstreamSchemaReadings,

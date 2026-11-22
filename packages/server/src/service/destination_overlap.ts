@@ -23,7 +23,9 @@
  */
 
 import type { components } from "../api";
+import { normalizeReadableSchemas } from "./connection_type";
 import { connectionDialectOf } from "./dialects";
+import { destinationSchemaOf } from "./materialization/domain/storage_table_path";
 
 type ApiConnection = components["schemas"]["Connection"];
 
@@ -43,21 +45,35 @@ export function destinationOverlap(
    return overlap(connection, destination);
 }
 
-/** Every connection that reaches a destination, with why. */
+/**
+ * Every connection that reaches a destination, with why, and
+ * `listsDestinationSchema` when its `readableSchemas` names the destination's
+ * own schema, which makes that schema's stored copies readable by name.
+ */
 export function destinationOverlaps(
    connections: readonly ApiConnection[],
    destinations: readonly ApiConnection[],
-): { connection: string; destination: string; reason: string }[] {
-   const out: { connection: string; destination: string; reason: string }[] =
-      [];
+): {
+   connection: string;
+   destination: string;
+   reason: string;
+   listsDestinationSchema?: string;
+}[] {
+   const out: ReturnType<typeof destinationOverlaps> = [];
    for (const connection of connections) {
       for (const destination of destinations) {
          const reason = destinationOverlap(connection, destination);
          if (reason) {
+            const schema = destinationSchemaOf(destination);
             out.push({
                connection: connection.name ?? "",
                destination: destination.name ?? "",
                reason,
+               ...(normalizeReadableSchemas(
+                  connection.ducklakeConnection?.readableSchemas,
+               )?.includes(schema)
+                  ? { listsDestinationSchema: schema }
+                  : {}),
             });
          }
       }

@@ -21,9 +21,8 @@ import { join } from "path";
 import { Client } from "pg";
 import type { components } from "../api";
 import { buildEnvironmentMalloyConfig } from "./connection";
-import { managedSchemasOf } from "./connection_type";
 import { getSchemasForConnection, listTablesForSchema } from "./db_utils";
-import { authorSqlRefusals } from "./duckdb_lockdown";
+import { Package } from "./package";
 
 type ApiConnection = components["schemas"]["Connection"];
 type Env = ReturnType<typeof buildEnvironmentMalloyConfig>;
@@ -43,11 +42,18 @@ describe.skipIf(!PG_URL)(
       let readable: Env;
       let destination: Env;
       let orders: { n: string; total: string };
-      let charges: string;
+      let charges: { n: string; total: string };
+      let pgConn: {
+         host: string;
+         port: number;
+         databaseName: string;
+         userName: string;
+         password: string;
+      };
 
       beforeAll(async () => {
          const u = new URL(PG_URL!);
-         const pgConn = {
+         pgConn = {
             host: u.hostname,
             port: Number(u.port || 5432),
             databaseName: u.pathname.slice(1),
@@ -62,14 +68,7 @@ describe.skipIf(!PG_URL)(
          // The host's writer: people's table in main; stored copies in
          // `materialized`, one in files and one small enough to sit inline
          // (the catalog records an inlining limit, as DuckLake defaults to).
-         const writer = await DuckDBInstance.create(":memory:");
-         const w = await writer.connect();
-         await w.run(
-            "INSTALL ducklake; LOAD ducklake; INSTALL postgres; LOAD postgres;",
-         );
-         await w.run(
-            `ATTACH 'ducklake:postgres:host=${pgConn.host} port=${pgConn.port} dbname=${pgConn.databaseName} user=${pgConn.userName} password=${pgConn.password}' AS c (DATA_PATH '${dataPath}', METADATA_SCHEMA '${schema}')`,
-         );
+         const { w, close } = await openWriter();
          await w.run("SET ducklake_default_data_inlining_row_limit = 0");
          await w.run(
             "CREATE TABLE c.main.orders AS SELECT i AS id, i * 25 AS amount FROM range(1, 41) t(i)",
@@ -90,15 +89,12 @@ describe.skipIf(!PG_URL)(
             "SELECT count(*)::VARCHAR AS n, sum(amount)::VARCHAR AS total FROM c.main.orders",
          );
          orders = reader.getRowObjectsJson()[0] as typeof orders;
-         charges = String(
-            (
-               await w.runAndReadAll(
-                  "SELECT count(*)::VARCHAR AS n FROM c.stripe.charges",
-               )
-            ).getRowObjectsJson()[0].n,
-         );
-         w.closeSync();
-         writer.closeSync();
+         charges = (
+            await w.runAndReadAll(
+               "SELECT count(*)::VARCHAR AS n, sum(cents)::VARCHAR AS total FROM c.stripe.charges",
+            )
+         ).getRowObjectsJson()[0] as typeof charges;
+         close();
 
          const ducklakeConnection = {
             catalog: { postgresConnection: pgConn, metadataSchema: schema },
@@ -161,6 +157,25 @@ describe.skipIf(!PG_URL)(
          rmSync(root, { recursive: true, force: true });
       });
 
+      /** A separate writer on the shared catalog, as the host's would be. */
+      async function openWriter() {
+         const instance = await DuckDBInstance.create(":memory:");
+         const w = await instance.connect();
+         await w.run(
+            "INSTALL ducklake; LOAD ducklake; INSTALL postgres; LOAD postgres;",
+         );
+         await w.run(
+            `ATTACH 'ducklake:postgres:host=${pgConn.host} port=${pgConn.port} dbname=${pgConn.databaseName} user=${pgConn.userName} password=${pgConn.password}' AS c (DATA_PATH '${dataPath}', METADATA_SCHEMA '${schema}')`,
+         );
+         return {
+            w,
+            close: () => {
+               w.closeSync();
+               instance.closeSync();
+            },
+         };
+      }
+
       function runtime(model: string, env: Env = managed): Runtime {
          return new Runtime({
             urlReader: new InMemoryURLReader(
@@ -181,18 +196,22 @@ describe.skipIf(!PG_URL)(
             .getModel();
       }
 
-      /** The load-time check, as a package load asks it. */
+      /** The load-time check, through the method a package load calls. */
       async function loadRefusals(
          model: string,
          env: Env = managed,
       ): Promise<string[]> {
          const compiled = await compile(model, env);
-         return authorSqlRefusals("m.malloy", compiled._modelDef, {
-            managedSchemas: async (name) =>
-               managedSchemasOf(
-                  await env.malloyConfig.connections.lookupConnection(name),
-               ),
+         const pkg = Object.create(Package.prototype) as Package;
+         Object.assign(pkg, {
+            models: new Map([
+               ["m.malloy", { getModelDef: () => compiled._modelDef }],
+            ]),
+            getMalloyConnection: (name: string) =>
+               env.malloyConfig.connections.lookupConnection(name),
          });
+         const refusals = await pkg.formatAuthorSqlRefusals();
+         return refusals === "" ? [] : refusals.split("\n");
       }
 
       it("serves main's tables to a model, answering as the catalog does", async () => {
@@ -436,13 +455,16 @@ describe.skipIf(!PG_URL)(
          ])("serves a listed schema's table, %s", async (_label, expr) => {
             const rows = await runtime(
                `source: s is ${expr}
-                run: s -> { aggregate: n is count() }`,
+                run: s -> { aggregate: n is count(), total is sum(cents) }`,
                readable,
             )
                .loadQuery(new URL(`${ROOT}m.malloy`))
                .run();
             const row = rows.data.toObject()[0] as Record<string, unknown>;
-            expect(String(row.n)).toBe(charges);
+            // Summing a column opens the data files, which count() does not.
+            expect({ n: String(row.n), total: String(row.total) }).toEqual(
+               charges,
+            );
          });
 
          it("passes a raw SQL expression reading a listed schema at load", async () => {
@@ -525,10 +547,63 @@ describe.skipIf(!PG_URL)(
             const listed = await conn.runSQL(
                `SELECT count(*) AS n FROM read_parquet('${dataPath}stripe/**/*.parquet')`,
             );
-            expect(String(listed.rows[0].n)).toBe(charges);
+            expect(String(listed.rows[0].n)).toBe(charges.n);
             await expect(
                conn.runSQL(
                   `SELECT count(*) AS n FROM read_parquet('${dataPath}materialized/**/*.parquet')`,
+               ),
+            ).rejects.toThrow();
+         });
+
+         it("reads a table created in a listed schema after the connection opened, and refuses one created in materialized", async () => {
+            await runtime(
+               `source: s is lake2.table('stripe.charges')
+                run: s -> { aggregate: n is count() }`,
+               readable,
+            )
+               .loadQuery(new URL(`${ROOT}m.malloy`))
+               .run();
+            const { w, close } = await openWriter();
+            try {
+               await w.run("CALL c.set_option('data_inlining_row_limit', 0)");
+               await w.run(
+                  "CREATE TABLE c.stripe.refunds AS SELECT i AS id, i * 10 AS amount FROM range(1, 5) t(i)",
+               );
+               await w.run(
+                  "CREATE TABLE c.materialized.fresh AS SELECT i AS id FROM range(3) t(i)",
+               );
+            } finally {
+               close();
+            }
+            const rows = await runtime(
+               `source: r is lake2.table('stripe.refunds')
+                run: r -> { aggregate: total is sum(amount) }`,
+               readable,
+            )
+               .loadQuery(new URL(`${ROOT}m.malloy`))
+               .run();
+            expect(
+               String(
+                  (rows.data.toObject()[0] as Record<string, unknown>).total,
+               ),
+            ).toBe("100");
+            const failure = await compile(
+               `source: f is lake2.table('materialized.fresh')`,
+               readable,
+            ).then(
+               () => undefined,
+               (error: Error) => error.message,
+            );
+            expect(failure).toContain("reads only its own catalog's tables");
+            const conn =
+               (await readable.malloyConfig.connections.lookupConnection(
+                  "lake2",
+               )) as unknown as {
+                  runSQL(sql: string): Promise<unknown>;
+               };
+            await expect(
+               conn.runSQL(
+                  `SELECT sum(id) FROM read_parquet('${dataPath}materialized/fresh/**/*.parquet')`,
                ),
             ).rejects.toThrow();
          });

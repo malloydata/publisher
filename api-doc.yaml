@@ -9611,7 +9611,14 @@ components:
             data path the view's file allowlist is scoped the same way. SQL on
             the connection may name a listed schema's tables as it does
             `main`'s, its schema and table listings show the listed schemas
-            beside `main`, and every other schema stays refused.
+            beside `main`, and every other schema stays refused. `main` is
+            implicit, and the request is refused with a 400 when it lists
+            `memory`, `information_schema`, `pg_catalog`, `temp`, `system` or a
+            name starting with `__ducklake_metadata_`. Create a schema in the
+            catalog before listing it: a schema listed before it exists gets no
+            file access until the connection is next edited or the server
+            restarts. Removing a schema from the list takes effect for
+            already-loaded packages only after they reload.
         readOnly:
           type: boolean
           default: true

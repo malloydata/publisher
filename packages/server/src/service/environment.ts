@@ -932,6 +932,16 @@ export class Environment {
                destinationName: overlap.destination,
             },
          );
+         if (overlap.listsDestinationSchema) {
+            logger.warn(
+               `Connection "${overlap.connection}" lists storage destination "${overlap.destination}"'s schema "${overlap.listsDestinationSchema}" in readableSchemas: that destination's stored copies, gated sources' rows among them, become readable by name without their gate. Remove it from readableSchemas.`,
+               {
+                  environmentName: this.environmentName,
+                  connection: overlap.connection,
+                  destinationName: overlap.destination,
+               },
+            );
+         }
       }
    }
 
