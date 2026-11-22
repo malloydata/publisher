@@ -36,6 +36,7 @@ import {
 import { authorModelLiftContext } from "../text/author_model";
 import { reachPersisted } from "../text/source_map";
 import { BuildInstruction, ManifestEntry } from "../domain/types";
+import { isPersistedResultSourceID } from "../domain/table_plans";
 import type { DatabaseBuildRequest } from "./tier";
 import { DatabaseTier } from "./database_build_strategy";
 import {
@@ -565,8 +566,21 @@ function classifyStoredUpstreams(
            ),
            // The content address: orchestrators may assign their own ids.
            rootAddress: contentSourceEntityId ?? instruction.sourceEntityId,
+           readsDefinitions: isPersistedResultSourceID(persistSource.sourceID),
         })
-      : { fields: {}, inManifestOnly: [], missing: [] };
+      : { fields: {}, inManifestOnly: [], missing: [], definitionsRead: [] };
+   // A persisted view or query reads every upstream through its definition:
+   // the recompute strict upstreams forbid, so it is refused there.
+   if (manifest.strict && reuse.definitionsRead.length > 0) {
+      throw new ChainedUpstreamMissingError(
+         reuse.definitionsRead,
+         `Failed to materialize source '${persistSource.name}': persisted ` +
+            `upstream ${reuse.definitionsRead.map((n) => `'${n}'`).join(", ")} ` +
+            `is not read from its table, since a persisted view or query ` +
+            `builds from its source's definition, and strict upstreams ` +
+            `forbid recomputing it from raw`,
+      );
+   }
    // A database build that recomputes an upstream because its entry is at
    // the wrong tier reads the warehouse for it: logged and counted once per
    // run per upstream, since the entry fields alone hide the cost.

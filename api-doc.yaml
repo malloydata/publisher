@@ -12298,8 +12298,9 @@ components:
             or whose shape does not compile in the destination; on the
             database tier, an upstream whose table holds other columns than
             its build recorded (retyped or dropped since), could not be read,
-            or whose build recorded no column types.
-            `upstreamRecomputeReason` says which. Such a table reflects the
+            or whose build recorded no column types; and always, for a
+            persisted view or named query, which builds from its source's
+            definition. `upstreamRecomputeReason` says which. Such a table reflects the
             warehouse at THIS build's time rather than the upstream's
             snapshot, so the two can disagree when their refresh cadences
             differ.

@@ -239,13 +239,23 @@ export function upstreamReuseFromManifest(params: {
     * address: why, for one the build reads, else undefined (not read).
     */
    moved?: ReadonlyMap<string, string | undefined>;
+   /**
+    * The source is a persisted view's or named query's build source, whose
+    * companion blanks every source-level `#@` line: the compiler substitutes
+    * no upstream's table, so each upstream is read through its definition
+    * (`definitionsRead`), whatever the manifest holds.
+    */
+   readsDefinitions?: boolean;
 }): {
    fields: Pick<ManifestEntry, "upstreamReuse" | "upstreamRecomputeReason">;
    inManifestOnly: string[];
    missing: string[];
+   /** With `readsDefinitions`: each upstream read through its definition. */
+   definitionsRead: string[];
 } {
    const inManifestOnly: string[] = [];
    const missing: string[] = [];
+   const definitionsRead: string[] = [];
    const reasons: string[] = [];
    let upstreams = 0;
    for (const { name, sourceID } of params.reached) {
@@ -254,6 +264,17 @@ export function upstreamReuseFromManifest(params: {
       // No address: had this build read it, its own render would have failed.
       if (address === undefined) continue;
       upstreams++;
+      if (params.readsDefinitions) {
+         if (!definitionsRead.includes(name)) {
+            definitionsRead.push(name);
+            reasons.push(
+               `persisted upstream '${name}' is not read from its table: a ` +
+                  `persisted view or query builds from its source's ` +
+                  `definition, as its live query does`,
+            );
+         }
+         continue;
+      }
       if (address in params.substituted) continue;
       if (params.moved?.has(address)) {
          // Its table moved since its build: recomputed if read, else unused.
@@ -321,7 +342,7 @@ export function upstreamReuseFromManifest(params: {
                    `${reasons.join("; ")}; recomputed from its definition in ` +
                    `the warehouse`,
              };
-   return { fields, inManifestOnly, missing };
+   return { fields, inManifestOnly, missing, definitionsRead };
 }
 
 /**
