@@ -360,3 +360,13 @@ export function tableNamesMeet(a: string, b: string): boolean {
    const offset = longer.length - shorter.length;
    return shorter.every((segment, i) => segment === longer[offset + i]);
 }
+
+/**
+ * Whether `sql` reads the table `table` (a manifest's table path) by its whole
+ * reference: not as the tail of another schema's path, nor as the head of a
+ * longer one.
+ */
+export function readsTable(sql: string, table: string): boolean {
+   const escaped = table.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+   return new RegExp(`(?<![\\w.])${escaped}(?![\\w.])`).test(sql);
+}

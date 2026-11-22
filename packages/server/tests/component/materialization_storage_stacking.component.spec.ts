@@ -633,7 +633,7 @@ describe.skipIf(process.platform === "win32")(
          );
       });
 
-      it("reads the base's table carried from an earlier run, and a windowed rollup never reads one of unknown age", async () => {
+      it("reads the base's table carried from an earlier run, and a windowed rollup rebuilds one of unknown age and reads it", async () => {
          await setUp({ "m.malloy": ROLLUP_MODEL });
          const first = await build();
          expect(first.status).toBe("MANIFEST_FILE_READY");
@@ -662,7 +662,8 @@ describe.skipIf(process.platform === "win32")(
             await plannedRows(rollup),
          );
          // A windowed rollup over that base, whose table is of unknown age
-         // (it declares no window): built from the warehouse, as planned, so
+         // (it declares no window): the rollup's edge to its base rebuilds
+         // the base (its one warehouse read), and the rollup reads it, so
          // it is never fresher than the rows it holds.
          await regrain(
             '#@ preaggregate grain="sub" storage=lake freshness.window="1h"',
@@ -673,9 +674,9 @@ describe.skipIf(process.platform === "win32")(
             null,
          ]);
          const windowed = entryOf(third, /^daily__rollup__/);
-         expect(windowed.upstreamReuse).toBeUndefined();
+         expect(windowed.upstreamReuse).toBe("reused");
          expect(warehouseReads()).toHaveLength(1);
-         expect(createdBy(windowed.physicalTableName)).toContain(RAW_MARK);
+         expect(createdBy(windowed.physicalTableName)).not.toContain(RAW_MARK);
          expect(await storedRows(windowed.physicalTableName)).toEqual(
             await plannedRows(windowed),
          );
@@ -1118,7 +1119,7 @@ source: monthly is daily -> { group_by: cat; aggregate: grand is total.sum() }
          expect(asStrings(served.rows)).toEqual(asStrings(live.rows));
       });
 
-      it("builds a windowed storage= rollup from the warehouse over a #(materialize) base's table of unknown age", async () => {
+      it("rebuilds a #(materialize) base's table of unknown age for a windowed storage= rollup, and builds the rollup from it", async () => {
          await setUp({ "m.malloy": materializeRollupModel() });
          const first = await build();
          expect(first.status).toBe("MANIFEST_FILE_READY");
@@ -1134,8 +1135,8 @@ source: monthly is daily -> { group_by: cat; aggregate: grand is total.sum() }
             null,
          ]);
          const rollup = entryOf(second, /^orders__rollup__/);
-         expect(rollup.upstreamReuse).toBeUndefined();
-         expect(createdBy(rollup.physicalTableName)).toContain(RAW_MARK);
+         expect(rollup.upstreamReuse).toBe("reused");
+         expect(createdBy(rollup.physicalTableName)).not.toContain(RAW_MARK);
          expect(await storedRows(rollup.physicalTableName)).toEqual(
             await plannedRows(rollup),
          );

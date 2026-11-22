@@ -31,35 +31,6 @@ SELECT
    base."amount" as "amount"
 FROM __stage0 as base
 
--- ==== source pv_base__by_region__view
--- sourceID: pv_base__by_region__view@<pkg>/m.malloy.persist-view.malloy
--- connection: duckdb
--- sourceEntityId: a634b528cb34b67c79aaa476de57cdfa5f64b1c47abd877843a927606a776a4b
--- compiler key: a634b528cb34b67c79aaa476de57cdfa5f64b1c47abd877843a927606a776a4b (the sourceEntityId)
--- build SQL:
-WITH __stage0 AS (
-  SELECT 
-     base."id" as "id",
-     base."region" as "region",
-     base."status" as "status",
-     base."amount" as "amount"
-  FROM (
-    SELECT CAST(id AS BIGINT) AS id, CAST(customer_id AS BIGINT) AS customer_id,
-           region, status,
-           CAST(amount AS DOUBLE) AS amount, CAST(discount AS DOUBLE) AS discount,
-           CAST(order_date AS DATE) AS order_date,
-           CAST(created_at AS TIMESTAMP) AS created_at,
-           CAST("order" AS BIGINT) AS "order"
-    FROM read_csv('data/orders.csv', header=true, all_varchar=true)
-  ) as base
-)
-SELECT 
-   base."region" as "region",
-   COALESCE(SUM(base."amount"),0) as "total"
-FROM __stage0 as base
-GROUP BY 1
-ORDER BY 2 desc NULLS LAST
-
 -- generated files
 
 -- ==== <pkg>/m.malloy.materialize.malloy
@@ -74,10 +45,3 @@ source: pv_base__mat is pv_base__mat__base -> {
     status,
     amount
 }
-
--- ==== <pkg>/m.malloy.persist-view.malloy
-##! experimental.persistence
-import { pv_base__pv_base is pv_base } from "m.malloy"
-
-#@ persist name="pv_base_by_region"
-source: pv_base__by_region__view is pv_base__pv_base -> by_region

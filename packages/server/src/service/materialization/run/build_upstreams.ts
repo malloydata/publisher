@@ -17,8 +17,10 @@
 
 import { declaredDestination, storageWritable } from "../domain/placement";
 import { underCompilerKeys } from "../domain/binding";
+import { readsTable } from "../domain/table_name";
 import {
    buildSQLOf,
+   compiledSourceIDOf,
    compilerBuildId,
    computeSourceEntityId,
    declaredStorage,
@@ -473,6 +475,16 @@ export function chainedPlanFacts(
       planSources.push({ name: source.name, sourceEntityId });
       planSourcesById[sourceID] = { name: source.name, sourceEntityId };
       addressBySourceId[sourceID] = sourceEntityId;
+      // A `#(materialize)` table under the sourceID its build source was
+      // compiled under too, which a downstream compiled over the table reads
+      // it by (a view or rollup re-rooting it), so its chained build finds
+      // the upstream's address and key as for any other.
+      const compiledID = compiledSourceIDOf(source);
+      if (compiledID !== undefined && !(compiledID in tables)) {
+         planSourcesById[compiledID] = { name: source.name, sourceEntityId };
+         addressBySourceId[compiledID] = sourceEntityId;
+         compilerKeyBySourceId[compiledID] = compilerKeyBySourceId[sourceID];
+      }
       if (sourceEntityId !== undefined) {
          let tier: string | null = null;
          if (storageOn) {
@@ -494,7 +506,8 @@ export function chainedPlanFacts(
       }
    }
    return {
-      persistSourceIds: new Set(Object.keys(tables)),
+      // With each `#(materialize)` table's compiled sourceID, as above.
+      persistSourceIds: new Set(Object.keys(planSourcesById)),
       aliasesBySourceName: groupAliasesByName(planSources),
       addressBySourceId,
       compilerKeyBySourceId,
@@ -861,4 +874,42 @@ export function packageRelativeRun(
          typeof r.message === "string" ? { ...r, message: rel(r.message) } : r,
       ),
    };
+}
+
+/**
+ * The stored upstream tables a database build's SQL reads, as
+ * `ManifestEntry.builtFrom` records them: each entry of the run's manifest,
+ * other than the table being built (`rootAddress`), whose table the SQL reads
+ * by its whole name ({@link readsTable}), with its entry's `builtAt`. Sorted
+ * by address. Undefined when it reads none.
+ */
+export function builtFromOf(
+   buildSQL: string,
+   manifest: Manifest["buildManifest"],
+   builtEntries: Readonly<Record<string, ManifestEntry>>,
+   rootAddress: string | undefined,
+): ManifestEntry["builtFrom"] {
+   const out: NonNullable<ManifestEntry["builtFrom"]> = [];
+   for (const [address, { tableName }] of Object.entries(manifest.entries)) {
+      if (address === rootAddress) continue;
+      const entry = builtEntries[address];
+      if (!entry?.physicalTableName || !tableName) continue;
+      if (!readsTable(buildSQL, tableName)) continue;
+      out.push({
+         sourceEntityId: address,
+         physicalTableName: entry.physicalTableName,
+         ...(entry.storageDestinationName
+            ? { storageDestinationName: entry.storageDestinationName }
+            : {}),
+         ...(entry.builtAt ? { builtAt: entry.builtAt } : {}),
+      });
+   }
+   out.sort((a, b) =>
+      a.sourceEntityId < b.sourceEntityId
+         ? -1
+         : a.sourceEntityId > b.sourceEntityId
+           ? 1
+           : 0,
+   );
+   return out.length > 0 ? out : undefined;
 }
