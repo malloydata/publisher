@@ -147,6 +147,11 @@ source: b_lower is a -> { group_by: l is lower(ci); aggregate: n is count() }
 #@ persist storage="lake"
 source: b_binary is a -> { group_by: cc; aggregate: n is count(); order_by: cc; limit: 2 }
 
+// Unpersisted: answered by a served copy over the table of a, or live.
+source: x_mf is a -> { aggregate: n is count() { where: ci = 'apple' } }
+source: x_where is a -> { where: ci = 'apple'; aggregate: n is count() }
+source: x_cat is a -> { aggregate: n is count() { where: cat > 'B' } }
+
 #@ persist storage="lake"
 source: b_number is a -> { group_by: big is amt > 50; aggregate: n is count() }
 `;
@@ -160,6 +165,20 @@ interface Shape {
 }
 
 const SHAPES: Shape[] = [
+   // A query, or an unpersisted query-shaped source, comparing `ci` over
+   // `a`'s table: live, each filtered measure's `{ where: }` judged as a
+   // `where:` is (a served copy over the table compared it byte-exact).
+   {
+      query: "run: a -> { aggregate: n is count() { where: ci = 'apple' } }",
+      servedBy: "live",
+   },
+   {
+      query: "run: a -> { where: ci = 'apple'; aggregate: n is count() }",
+      servedBy: "live",
+   },
+   { query: "run: x_mf -> { aggregate: t is sum(n) }", servedBy: "live" },
+   { query: "run: x_where -> { aggregate: t is sum(n) }", servedBy: "live" },
+   { query: "run: x_cat -> { aggregate: t is sum(n) }", servedBy: "live" },
    // Stacked builds that compare a non-binary string: built from the
    // warehouse instead, so the table holds live's rows and answers.
    {
