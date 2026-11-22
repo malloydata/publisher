@@ -755,6 +755,15 @@ export type TablePlan = TablePlanFacts &
             * its upstreams' tables, which a run reads (instructed_build.ts).
             */
            overStoredBase?: OverStoredBase;
+           /**
+            * A `storage=` persisted view or named query over upstreams stored
+            * in its own destination: the text it builds from there, each
+            * upstream re-rooted on a stand-in of its table, compiled and
+            * proven to build the planned table at plan time
+            * (plan/storage_over_stored.ts). A run builds it from this text
+            * over the upstreams' real tables, or not at all.
+            */
+           storedInDestination?: StoredInDestination;
         }
       | {
            kind: Extract<TableKind, "materialize" | "pair">;
@@ -796,6 +805,33 @@ export type TablePlan = TablePlanFacts &
  * and `baseBuildSource` is that build source as the same compile holds it:
  * the table the rollup reads, which a run checks is the base's table.
  */
+/**
+ * The text a `storage=` view or named query builds from in its destination,
+ * over its upstreams' stored tables there, as the plan proved it
+ * (plan/storage_over_stored.ts). Plain data.
+ */
+export interface StoredInDestination {
+   /** Every file the build compiles, by URL. */
+   files: readonly (readonly [string, string])[];
+   /** The generated build file, which declares {@link downstreamName}. */
+   entry: string;
+   downstreamName: string;
+   /** The connection the re-rooted upstreams read the destination by. */
+   connection: string;
+   /** Where each re-rooted upstream's declaration lies in `files`. */
+   rerootedSpans: readonly { url: string; start: number; end: number }[];
+   /**
+    * Each upstream it reads: its author sourceID, the virtual handle its
+    * table is read by, and the stored columns the proof stood in for it.
+    * A run builds only over a table whose recorded columns read as these.
+    */
+   upstreams: readonly {
+      sourceID: string;
+      handle: string;
+      columns: readonly { name: string; type: string }[];
+   }[];
+}
+
 export interface OverStoredBase {
    source: PersistSource;
    baseBuildSource?: PersistSource;

@@ -722,6 +722,12 @@ export interface BuildEnvironment {
     * to the files the model compiled from alone.
     */
    getPackagePath?(): string;
+   /**
+    * The drift handler, for a build that found an upstream's table not as
+    * its plan recorded it (SchemaIncompatibleError): the package reads its
+    * tables and derives its plan again. Absent in test doubles.
+    */
+   reportIncompatible?(handles: readonly string[]): void;
 }
 
 /**
@@ -737,6 +743,7 @@ export function withChainBuildText<E extends BuildEnvironment>(
          request: ChainCollationRequest,
       ): Promise<string | undefined>;
       getPackagePath(): string;
+      reportIncompatible?(handles: readonly string[]): void;
    },
    /**
     * Whether the package serves a model older than its files (a reload that
@@ -760,6 +767,9 @@ export function withChainBuildText<E extends BuildEnvironment>(
          : pkg.chainBuildText(request);
    scoped.chainCollationRefusal = (request) =>
       pkg.chainCollationRefusal(request);
+   if (pkg.reportIncompatible) {
+      scoped.reportIncompatible = (handles) => pkg.reportIncompatible!(handles);
+   }
    return scoped;
 }
 

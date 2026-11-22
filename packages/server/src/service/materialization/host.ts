@@ -73,6 +73,11 @@ interface MaterializationPackage extends BuildPlanPackage {
     */
    chainBuildText(request: ChainBuildRequest): ChainBuildText;
    /**
+    * The drift handler, for a build that found an upstream's table not as
+    * its plan recorded it: read the tables and derive the plan again.
+    */
+   reportIncompatible?(handles: readonly string[]): void;
+   /**
     * Why a chained `storage=` build must not be computed over its stored
     * upstreams in its destination, which compares strings byte-exact, or
     * undefined when it may: what it groups, compares or orders of a string

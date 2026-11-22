@@ -1,6 +1,11 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { planChainBuildText } from "./materialization";
+import type {
+   BoundStorageColumns,
+   PlanChainBuildText,
+} from "./materialization/domain/chain_build";
 import { quotedIdentifier, quotedPath, stringLiteral } from "./malloy_text";
 import { INCREMENTAL_NO_MERGE_KEY_CODE } from "./materialization/plan/incremental_policy";
 import { isManagedConnection, recordConnectionType } from "./connection_type";
@@ -1745,6 +1750,11 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    }
 
    /** The host port's `chainBuildText` (see PackageMaterialization.chainBuildText). */
+   /** See {@link BuildEnvironment.reportIncompatible}. */
+   public reportIncompatible(handles: readonly string[]): void {
+      this.mz.reportIncompatible(handles);
+   }
+
    public chainBuildText(request: ChainBuildRequest): ChainBuildText {
       return this.mz.chainBuildText(request);
    }
@@ -2956,6 +2966,19 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    public getMalloyConfig(): MalloyConfig {
       return this.malloyConfig;
    }
+
+   /** See {@link BuildPlanPackage.boundStorageColumns}. */
+   public readonly boundStorageColumns: BoundStorageColumns = (
+      sourceID,
+      destination,
+   ) => this.mz.boundStorageColumns(sourceID, destination);
+
+   /** See {@link BuildPlanPackage.planChainBuildText}. */
+   public readonly planChainBuildText: PlanChainBuildText = (request, model) =>
+      planChainBuildText(this.getPackagePath(), this.getMalloyConfig())(
+         request,
+         model,
+      );
 
    public getPackagePath(): string {
       return this.packagePath;

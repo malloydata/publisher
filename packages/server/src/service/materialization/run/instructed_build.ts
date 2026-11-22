@@ -35,7 +35,11 @@ import {
    type UniquenessLedger,
 } from "./inline_uniqueness";
 import { movedSinceBuild } from "./database_column_read";
-import type { ParentKeyCheck, RollupKeyCheck } from "../domain/table_plans";
+import type {
+   StoredInDestination,
+   ParentKeyCheck,
+   RollupKeyCheck,
+} from "../domain/table_plans";
 import type { InlineUniquenessCheck } from "../domain/table_plans";
 import {
    assertPlacementNamed,
@@ -1185,6 +1189,7 @@ export class InstructedBuild {
             ...(replacesView ? { replacesView } : {}),
             ...(storedBase ? { storedBase } : {}),
             ...(overStoredUpstreams ? { overStoredUpstreams } : {}),
+            ...storedInDestinationOf(compiled.tables[persistSource.sourceID]),
             ...(compiled.tables[persistSource.sourceID]?.kind === "rollup"
                ? { rollup: true }
                : {}),
@@ -2517,4 +2522,13 @@ function withRollupUpstreamReuse(
    return run.readFrom?.has(address)
       ? { ...rest, upstreamReuse: "reused" }
       : rest;
+}
+
+/** A view's or query's proven build in its destination, as a build option. */
+function storedInDestinationOf(
+   table: InstructedRun["compiled"]["tables"][string] | undefined,
+): { storedInDestination?: StoredInDestination } {
+   return table?.kind === "view" && table.storedInDestination
+      ? { storedInDestination: table.storedInDestination }
+      : {};
 }

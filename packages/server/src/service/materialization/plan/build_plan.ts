@@ -144,11 +144,17 @@ import {
    type DeclaredPersistQuery,
 } from "./persisted_query";
 import { tryCompilePersistedViewCompanion } from "./persisted_view_compile";
-import { overStoredProven } from "./over_stored_proof";
+import { overStoredProven, sameColumnsOverStandIn } from "./over_stored_proof";
 import {
    placementReason,
    UPSTREAM_TABLE_UNUSABLE_REASON,
 } from "./downstream_upstreams";
+import type {
+   BoundStorageColumns,
+   PlanChainBuildText,
+} from "../domain/chain_build";
+import type { PersistedViewPlan } from "../domain/table_plans";
+import type { StorageOverStored } from "./storage_over_stored";
 import { deletingWindowsOf } from "./rolling_window";
 import {
    tryCompileRollupCompanion,
@@ -1120,12 +1126,20 @@ async function collectGeneratedPersistedViews(
       materializer: ModelMaterializer;
       /** The model's `#(materialize)` companion, when it compiled one. */
       materialized?: MaterializedBases;
+      chainBuildText?: PlanChainBuildText;
+      boundStorageColumns?: BoundStorageColumns;
    },
 ): Promise<void> {
    const authorDef: ModelDef = modelDefOf(args.malloyModel);
    const { generated, refused, refusedQueries, omitted, failure } =
       await tryCompilePersistedViewCompanion({
          ...(args.materialized ? { materialized: args.materialized } : {}),
+         ...(args.chainBuildText
+            ? { chainBuildText: args.chainBuildText }
+            : {}),
+         ...(args.boundStorageColumns
+            ? { boundStorageColumns: args.boundStorageColumns }
+            : {}),
          packagePath: args.packagePath,
          modelPath: args.modelPath,
          modelDef: authorDef,
@@ -1240,6 +1254,22 @@ async function collectGeneratedPersistedViews(
             continue;
          }
       }
+      // A `storage=` view or query over upstreams in its own destination:
+      // built from its text there, proven here, or refused (never
+      // recomputed from raw).
+      const inDestination = generated.storageOverStored.get(source.sourceID);
+      const unbuildable =
+         inDestination &&
+         storageOverStoredRefusal(
+            inDestination,
+            source,
+            query ?? plan!,
+            args.modelPath,
+         );
+      if (unbuildable) {
+         addAnnotationFinding(parts, unbuildable);
+         continue;
+      }
       kept++;
       // A persisted query's table is a view's, built from the same
       // companion and read by an exact call.
@@ -1247,6 +1277,9 @@ async function collectGeneratedPersistedViews(
          kind: "view",
          ...plannedFacts(source, args.modelPath),
          ...(overStoredBase ? { overStoredBase } : {}),
+         ...(inDestination && "stored" in inDestination
+            ? { storedInDestination: inDestination.stored }
+            : {}),
          gate: query
             ? await persistedQueryGate(source, query, ctx)
             : // The view's rows are its source's: its gate is the source's.
@@ -1461,6 +1494,14 @@ export async function collectModelBuildPlan(
        * absent, each model compiles its own.
        */
       crossFileCompanions?: CrossFileCompanions;
+      /**
+       * The served copy's chain text, for a `storage=` view or query over
+       * upstreams in its own destination (storage_over_stored.ts); absent,
+       * such a view or query is refused.
+       */
+      chainBuildText?: PlanChainBuildText;
+      /** The stored columns bound for an upstream (storage_over_stored.ts). */
+      boundStorageColumns?: BoundStorageColumns;
    },
 ): Promise<void> {
    addAccessReads(parts, args.malloyModel);
@@ -1501,6 +1542,8 @@ async function collectGeneratedTables(
       getRuntime,
       keyCheckCompilers,
       crossFileCompanions,
+      chainBuildText,
+      boundStorageColumns,
    } = args;
    // The model's own load-failure lines, read off the author's model as the
    // load reads them (Model.preaggregateViolations, annotationNearMisses).
@@ -1573,6 +1616,8 @@ async function collectGeneratedTables(
          malloyModel,
          materializer,
          ...(materialized ? { materialized } : {}),
+         ...(chainBuildText ? { chainBuildText } : {}),
+         ...(boundStorageColumns ? { boundStorageColumns } : {}),
       });
    }
    // Rollups: v1 `#@ preaggregate` lines are read as their declarations, and
@@ -2859,4 +2904,51 @@ export function collectIncrementalDeclarations(
       }
    }
    return declarations;
+}
+
+/**
+ * The refusal of a `storage=` view or query over upstreams in its own
+ * destination whose build there was not proven (storage_over_stored.ts), as
+ * `upstream_table_unusable`, or undefined when it was: it is built from the
+ * proven text, or not at all, never by recomputing its upstreams from raw.
+ */
+function storageOverStoredRefusal(
+   inDestination: StorageOverStored,
+   source: PersistSource,
+   planned: PersistedViewPlan | PersistedQueryPlan,
+   modelPath: string,
+): PackageAnnotationFinding | undefined {
+   const why =
+      "refused" in inDestination
+         ? inDestination.refused
+         : sameColumnsOverStandIn(inDestination.source, source)
+           ? undefined
+           : "its build over them did not compile to the planned table (a Publisher bug worth reporting)";
+   if (why === undefined) return undefined;
+   const reason =
+      `its upstreams are stored in its storage= destination ` +
+      `'${planned.storage}', where it is built over their tables, and ` +
+      `${why}; a view or query is never built by recomputing its ` +
+      `upstreams from raw`;
+   return planned.kind === "query"
+      ? persistedQueryRefusalFinding(
+           {
+              queryName: planned.queryName,
+              reason,
+              refusal: UPSTREAM_TABLE_UNUSABLE_REASON,
+              declaringURL: planned.declaringURL,
+              ...(planned.storage !== undefined
+                 ? { storage: planned.storage }
+                 : {}),
+           },
+           modelPath,
+        )
+      : persistedViewRefusalFinding(
+           {
+              ...planned,
+              reason,
+              outcome: { refused: UPSTREAM_TABLE_UNUSABLE_REASON },
+           },
+           modelPath,
+        );
 }

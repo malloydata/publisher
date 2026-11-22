@@ -15,6 +15,7 @@ import {
    ChainedShapeNotCarriedError,
    WarehouseRecomputeRefusedError,
    ContractCaptureFailedError,
+   SchemaIncompatibleError,
    ChainedUpstreamMissingError,
    CompileRefusedError,
    ConflictError,
@@ -374,6 +375,13 @@ const CASES: Array<[string, () => unknown]> = [
          new ContractCaptureFailedError(
             "lake.orders_t",
             "its collations did not read",
+         ),
+   ],
+   [
+      "SchemaIncompatibleError",
+      () =>
+         new SchemaIncompatibleError(
+            "'v' was not built over its upstream 'a''s table a_t in 'lake'",
          ),
    ],
    [

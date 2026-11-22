@@ -99,6 +99,14 @@ import {
    UPSTREAM_TABLE_UNUSABLE_REASON,
 } from "./downstream_upstreams";
 import type { Omission } from "../domain/omitted_sources";
+import type {
+   BoundStorageColumns,
+   PlanChainBuildText,
+} from "../domain/chain_build";
+import {
+   compileStorageOverStored,
+   type StorageOverStored,
+} from "./storage_over_stored";
 import type { RefusedReason } from "../domain/types";
 import { gateRefusalReason } from "../domain/gate_refusal";
 
@@ -124,6 +132,13 @@ interface GeneratedPersistedViews {
    overStoredSources: ReadonlyMap<string, OverStoredBase>;
    /** The build sourceIDs offered the compile: the candidates. */
    overStoredCandidates: ReadonlySet<string>;
+   /**
+    * The `storage=` views and queries over upstreams stored in their own
+    * destination, by build sourceID: each compiled over its upstreams'
+    * stand-ins, or why not (storage_over_stored.ts). build_plan.ts proves
+    * each against its planned table, or refuses it.
+    */
+   storageOverStored: ReadonlyMap<string, StorageOverStored>;
 }
 
 interface StageLike {
@@ -531,6 +546,9 @@ export async function tryCompilePersistedViewCompanion(args: {
    getRuntime: SynthesizedRuntimeFactory;
    /** The model's `#(materialize)` companion, when it compiled one. */
    materialized?: MaterializedBases;
+   /** The served copy's chain text (storage_over_stored.ts). */
+   chainBuildText?: PlanChainBuildText;
+   boundStorageColumns?: BoundStorageColumns;
 }): Promise<{
    generated?: GeneratedPersistedViews;
    refused: PersistedViewRefusal[];
@@ -655,6 +673,26 @@ export async function tryCompilePersistedViewCompanion(args: {
          overStored,
          materialized: args.materialized,
       });
+      const storageOverStored = await compileStorageOverStored({
+         modelDef: args.modelDef,
+         modelPath: args.modelPath,
+         modelFile,
+         plans,
+         queries,
+         ...(args.chainBuildText
+            ? { chainBuildText: args.chainBuildText }
+            : {}),
+         ...(args.boundStorageColumns
+            ? { boundStorageColumns: args.boundStorageColumns }
+            : {}),
+         ...(args.materialized
+            ? {
+                 materializePlans: Object.fromEntries(
+                    args.materialized.plans.map((p) => [p.sourceID, p]),
+                 ),
+              }
+            : {}),
+      });
       return {
          generated: {
             plans,
@@ -665,6 +703,7 @@ export async function tryCompilePersistedViewCompanion(args: {
             text,
             overStoredSources,
             overStoredCandidates: overStored.candidates,
+            storageOverStored,
          },
          refused,
          refusedQueries,

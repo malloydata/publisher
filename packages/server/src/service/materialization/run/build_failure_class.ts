@@ -27,6 +27,7 @@ import {
    UnconfiguredConnectionError,
    WarehouseRecomputeRefusedError,
    ContractCaptureFailedError,
+   SchemaIncompatibleError,
 } from "../../../errors";
 import {
    causeChain,
@@ -243,6 +244,9 @@ export function classifyBuildError(err: unknown): BuildRetryable {
    if (err instanceof WarehouseRecomputeRefusedError) return false;
    // A table's contract did not read back: a retry reads it again.
    if (err instanceof ContractCaptureFailedError) return true;
+   // The plan was stale: the package derives it again, and a retry builds
+   // or the plan refuses.
+   if (err instanceof SchemaIncompatibleError) return true;
    // An upstream no manifest holds: unclassified on its own (see above).
    if (isUpstreamMissingError(err)) return undefined;
    // A property of the model, the package or the environment's configuration.

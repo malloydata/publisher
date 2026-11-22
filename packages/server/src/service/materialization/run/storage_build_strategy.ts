@@ -14,6 +14,7 @@
  * not keep. Never writes the source or serve connection.
  */
 
+import { splitSourceID, type StoredInDestination } from "../domain/table_plans";
 import {
    plannedModelDefOf,
    sourceDefOf,
@@ -28,6 +29,7 @@ import {
    ChainedUpstreamMissingError,
    ConnectionNotFoundError,
    MaterializationEligibilityError,
+   SchemaIncompatibleError,
 } from "../../../errors";
 import { logger } from "../../../logger";
 import { errorCodeOf } from "../../../error_code";
@@ -121,6 +123,7 @@ import {
    storageTablePath,
 } from "../domain/storage_table_path";
 import { STORAGE_DIALECT } from "../domain/dialect";
+import { parseContract } from "../domain/column_contract";
 import type { Collation } from "../domain/collation";
 import { storageContract } from "./column_contract_capture";
 import { ContractCaptureFailedError } from "../../../errors";
@@ -216,6 +219,8 @@ export interface StorageBuildRequest {
    replacesView?: string[];
    /** See SourceBuildOptions.storedBase. */
    storedBase?: StoredRollupBase;
+   /** See SourceBuildOptions.storedInDestination. */
+   storedInDestination?: StoredInDestination;
    /**
     * How each of the given string columns compares where live reads this
     * source, for the column contract of a table built from its source
@@ -782,7 +787,12 @@ export class StorageBuildStrategy
       // refuse (`strictUpstreams`).
       // A rollup over its base's stored table: grouped there when it can be.
       let stackedOnBase = false;
-      if (dependsOnStorageUpstream) {
+      if (params.storedInDestination) {
+         result = await this.buildInDestination(
+            ctx,
+            params.storedInDestination,
+         );
+      } else if (dependsOnStorageUpstream) {
          ({ result, upstreamRecomputeReason } = await this.stackOnParents(ctx));
       } else if (params.storedBase) {
          ({ result, stacked: stackedOnBase } =
@@ -871,7 +881,7 @@ export class StorageBuildStrategy
                     ? { upstreamRecomputeReason }
                     : {}),
               }
-            : stackedOnBase
+            : stackedOnBase || params.storedInDestination
               ? { upstreamReuse: "reused" as const }
               : // A rollup that did not stack read the warehouse, whatever
                 // the classification of its author's text says.
@@ -1328,6 +1338,104 @@ export class StorageBuildStrategy
    }
 
    /**
+    * Build a `storage=` view or query from the text its plan proved over
+    * its upstreams' stored tables in this destination
+    * ({@link StoredInDestination}), each stand-in read as that upstream's
+    * table in this run. An upstream with no current table here is
+    * {@link ChainedUpstreamMissingError}; one whose recorded columns are not
+    * the ones the plan stood in for it is {@link SchemaIncompatibleError},
+    * reported to the drift handler, which derives the plan again from the
+    * tables as they are. Never recomputed from raw.
+    */
+   async buildInDestination(
+      ctx: StorageBuildContext,
+      stored: StoredInDestination,
+   ): Promise<StorageBuildResult> {
+      const { params, destinationName, destinationConnection } = ctx;
+      const { persistSource, builtEntries, environment } = params;
+      const planFacts = params.planFacts ?? NO_PLAN_FACTS;
+      const handles = new Map<string, string>();
+      const addresses: string[] = [];
+      for (const u of stored.upstreams) {
+         const address = planFacts.addressBySourceId[u.sourceID];
+         const entry =
+            address === undefined ? undefined : builtEntries[address];
+         const name =
+            (address && planFacts.namesByAddress?.[address]?.[0]) ??
+            splitSourceID(u.sourceID)?.name ??
+            u.sourceID;
+         if (
+            address === undefined ||
+            entry === undefined ||
+            !entry.physicalTableName ||
+            !upstreamEntryIsCurrent(address, entry, planFacts) ||
+            entry.storageDestinationName !== destinationName
+         ) {
+            const detail = upstreamPlacement(
+               name,
+               address,
+               entry,
+               destinationName,
+               planFacts,
+            );
+            throw new ChainedUpstreamMissingError(
+               [name],
+               `persisted upstream of '${persistSource.name}': ${detail} — ` +
+                  `it is built over that table or not at all, never by ` +
+                  `recomputing its upstreams from raw`,
+               [{ name, detail }],
+            );
+         }
+         const moved = standInMoved(entry, u.columns);
+         if (moved !== undefined) {
+            environment.reportIncompatible?.([address]);
+            throw new SchemaIncompatibleError(
+               `'${persistSource.name}' was not built over its upstream ` +
+                  `'${name}''s table ${entry.physicalTableName} in ` +
+                  `'${destinationName}': ${moved}, not what its plan was ` +
+                  `proven over. The plan is derived again from the table as ` +
+                  `it is; a later build proves it or refuses it at plan.`,
+            );
+         }
+         handles.set(
+            u.handle,
+            quoteManifestTablePath(
+               storageTablePath(
+                  destinationName,
+                  entry.physicalTableName,
+                  destinationSchemaOf(destinationConnection),
+               ),
+               STORAGE_DIALECT,
+            ),
+         );
+         addresses.push(address);
+      }
+      return await withReadFrom(
+         { readFrom: addresses },
+         buildDownstreamIntoStorage({
+            destinationName,
+            destinationConnection,
+            model: {
+               files: new Map(stored.files),
+               entry: stored.entry,
+               leaveOutWithin: stored.rerootedSpans,
+            },
+            connectionName: stored.connection,
+            downstreamName: stored.downstreamName,
+            recomputes: persistSource,
+            sameDeclaredTypes: true,
+            givenFree: true,
+            virtualMap: new Map([[stored.connection, handles]]),
+            physicalTableName: ctx.physicalTableName,
+            environmentPath: environment.getEnvironmentPath(),
+            ...(params.replacesView
+               ? { replacesView: params.replacesView }
+               : {}),
+         }),
+      );
+   }
+
+   /**
     * Build a `storage=` extension table over its parent's stored table in the
     * same destination: the parent's build source declared as the
     * virtual source of that table, the extension's chain over it
@@ -1608,4 +1716,33 @@ async function withReadFrom(
    built: Promise<StorageBuildResult>,
 ): Promise<StorageBuildResult> {
    return { ...(await built), ...readFrom };
+}
+
+/**
+ * How an upstream's recorded columns (its contract, else its schema) differ
+ * from the ones a plan stood in for it, or undefined when each stand-in
+ * column is recorded, of the same type.
+ */
+function standInMoved(
+   entry: ManifestEntry,
+   standIn: readonly { name: string; type: string }[],
+): string | undefined {
+   const contract = parseContract(entry.contract);
+   const recorded = new Map(
+      (contract
+         ? contract.columns.map((c) => [c.name, c.nativeType] as const)
+         : (entry.schema ?? []).flatMap((c) =>
+              c.name && c.type ? [[c.name, c.type] as const] : [],
+           )
+      ).map(([n, t]) => [n.toLowerCase(), t.toUpperCase()]),
+   );
+   const moved = standIn.flatMap((c) => {
+      const got = recorded.get(c.name.toLowerCase());
+      return got === c.type.toUpperCase()
+         ? []
+         : [
+              `'${c.name}' is ${got ?? "not recorded"} (the plan stood in ${c.type})`,
+           ];
+   });
+   return moved.length > 0 ? moved.join(", ") : undefined;
 }

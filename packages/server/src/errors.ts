@@ -1225,6 +1225,28 @@ export class ContractCaptureFailedError extends Error {
 }
 
 /**
+ * A build's upstream table is not what the plan it was planned from recorded
+ * for it (its stored columns read otherwise than the plan's proof assumed):
+ * the plan is stale, or the upstream incompatible. The source fails with
+ * SourceFailure code `schema_incompatible` (non-terminal), and the package
+ * reads its tables and derives its plan again, which then proves the build
+ * against the upstream's recorded columns or refuses it at plan.
+ */
+export class SchemaIncompatibleError extends Error {
+   get kind(): "schema_incompatible" {
+      return "schema_incompatible";
+   }
+
+   /** The SourceFailure `code`. */
+   readonly code = "schema_incompatible";
+
+   constructor(message: string) {
+      super(message);
+      this.name = "SchemaIncompatibleError";
+   }
+}
+
+/**
  * The config file exists but cannot be read (malformed JSON, a rejected shape,
  * an unset `${VAR}`). Unlike an absent file, which falls back to the bundled
  * default, this must not degrade to serving nothing while reporting healthy.
@@ -1716,6 +1738,7 @@ interface ErrorByKind {
    chained_shape_not_carried: ChainedShapeNotCarriedError;
    warehouse_recompute_refused: WarehouseRecomputeRefusedError;
    contract_capture_failed: ContractCaptureFailedError;
+   schema_incompatible: SchemaIncompatibleError;
    publisher_config: PublisherConfigError;
    server_configuration: ServerConfigurationError;
    frozen_config: FrozenConfigError;
@@ -1806,6 +1829,7 @@ const ERROR_CLASSES: {
    chained_shape_not_carried: ChainedShapeNotCarriedError,
    warehouse_recompute_refused: WarehouseRecomputeRefusedError,
    contract_capture_failed: ContractCaptureFailedError,
+   schema_incompatible: SchemaIncompatibleError,
    publisher_config: PublisherConfigError,
    server_configuration: ServerConfigurationError,
    frozen_config: FrozenConfigError,
@@ -2334,6 +2358,7 @@ export const ERROR_TABLE: { [K in ErrorKind]: ErrorMapping<ErrorByKind[K]> } = {
    chained_shape_not_carried: UNHANDLED,
    warehouse_recompute_refused: UNHANDLED,
    contract_capture_failed: UNHANDLED,
+   schema_incompatible: UNHANDLED,
    publisher_config: UNHANDLED,
    write_verify: UNHANDLED,
    unknown: UNHANDLED,

@@ -22,6 +22,7 @@ import {
    MaterializationEligibilityError,
    TableOwnershipError,
    ContractCaptureFailedError,
+   SchemaIncompatibleError,
 } from "../../../errors";
 import { logger } from "../../../logger";
 import type {
@@ -669,7 +670,8 @@ export function recordInstructedBuildFailure(
          : {}),
       // A bounded code beside the prose, for a refusal a client branches on.
       ...(buildErr instanceof TableOwnershipError ||
-      buildErr instanceof ContractCaptureFailedError
+      buildErr instanceof ContractCaptureFailedError ||
+      buildErr instanceof SchemaIncompatibleError
          ? { code: buildErr.code }
          : {}),
    };

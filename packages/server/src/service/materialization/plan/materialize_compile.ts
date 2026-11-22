@@ -858,7 +858,7 @@ const STORED_TYPES: Readonly<Record<string, string>> = {
  * is DuckDB or DuckLake), and no table or SQL to read, so anything a chain
  * names but its parent's stored table fails to compile.
  */
-function destinationStandIn(name: string): Connection {
+export function destinationStandIn(name: string): Connection {
    const none = "not available to an extension table's build";
    const standIn = {
       name,

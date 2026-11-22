@@ -456,6 +456,7 @@ describe("a stored read that finds its table gone since the bind (the drift hand
    let drop: (() => Promise<void>) | undefined;
    const live: Record<string, Answer> = {};
    let dropped = "";
+   let staleMarks = 0;
    const QUERY = QUERIES["view num"];
    beforeAll(async () => {
       restore = installSettings({
@@ -484,6 +485,13 @@ describe("a stored read that finds its table gone since the bind (the drift hand
          .map((e) => e.physicalTableName)
          .find((t) => t.includes("v_num") || t.includes("q_num"))!;
       await warehouse.runSQL(`DROP TABLE ${dropped}`);
+      // Every drift report marks the build plan stale and derives it again.
+      const plan = f.pkg.materialization().plan;
+      const markStale = plan.markStale.bind(plan);
+      plan.markStale = (changed) => {
+         staleMarks++;
+         markStale(changed);
+      };
    }, 300_000);
    afterAll(async () => {
       await f?.cleanup();
@@ -514,6 +522,10 @@ describe("a stored read that finds its table gone since the bind (the drift hand
       }
       // Gone at the rebind's read: unread (not_found), or failed closed.
       expect(["incompatible", "stale", undefined]).toContain(verdict.reason);
+      // And the build plan was derived again, from what the rebind bound.
+      expect(staleMarks).toBeGreaterThan(0);
+      await f.pkg.materialization().whenBuildPlanCurrent(20_000);
+      expect(f.pkg.materialization().isBuildPlanStale()).toBe(false);
       const again = await ask(f, QUERY);
       expect(again.rows).toEqual(live.before.rows);
       expect(again.kind).toBe("live");

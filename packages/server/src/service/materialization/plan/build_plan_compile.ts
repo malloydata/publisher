@@ -205,6 +205,12 @@ async function collectPackageParts(
             ? { keyCheckCompilers: keyChecks.keyCheckCompilers }
             : {}),
          crossFileCompanions,
+         ...(pkg.planChainBuildText
+            ? { chainBuildText: pkg.planChainBuildText }
+            : {}),
+         ...(pkg.boundStorageColumns
+            ? { boundStorageColumns: pkg.boundStorageColumns }
+            : {}),
       });
    }
    return parts;

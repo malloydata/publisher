@@ -12,6 +12,7 @@
  * Types only.
  */
 
+import type { BoundStorageColumns, PlanChainBuildText } from "./chain_build";
 import type {
    Connection as MalloyConnection,
    MalloyConfig,
@@ -61,4 +62,16 @@ export interface BuildPlanPackage {
       tables: UpstreamTable[],
       use: "load" | "run",
    ): Promise<UpstreamSchemaReadings>;
+   /**
+    * The served copy's chain text, for a `storage=` view or query over
+    * upstreams in its own destination (plan/storage_over_stored.ts). Absent
+    * (a spec's package), such a view or query is refused at plan.
+    */
+   planChainBuildText?: PlanChainBuildText;
+   /**
+    * The stored columns bound for an upstream, which a plan stands in for
+    * its table in place of the ones its build would write by default.
+    * Absent (the load worker, a spec's package): the defaults.
+    */
+   boundStorageColumns?: BoundStorageColumns;
 }

@@ -24,3 +24,4 @@ export { MaterializationScheduler } from "./run/materialization_scheduler";
 export { readUpstreamSchemas } from "./run/upstream_schema_read";
 export type * from "./host";
 export type { SynthesizedRuntimeFactory } from "./text/generated_files";
+export { planChainBuildText } from "./serve/served_copy_serve";

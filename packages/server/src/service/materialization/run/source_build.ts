@@ -12,6 +12,7 @@
  * miss by the author's source. Counts each chained storage build.
  */
 
+import type { StoredInDestination } from "../domain/table_plans";
 import { errorCodeOf } from "../../../error_code";
 import { instructionTier } from "../domain/placement";
 import { plannedModelDefOf } from "../../governance/ir/compiled_model";
@@ -702,6 +703,11 @@ export interface SourceBuildOptions {
     */
    storedBase?: StoredRollupBase;
    /**
+    * A `storage=` view or query over upstreams in its own destination: the
+    * text the plan proved it builds from there (storage_over_stored.ts).
+    */
+   storedInDestination?: StoredInDestination;
+   /**
     * The source is a rollup: a `storage=` build reports `upstreamReuse`
     * only when it stacked on a stored table, never from the manifest's
     * classification of its author's text (which names the base).
@@ -749,6 +755,7 @@ export async function buildSource(
       planFacts = NO_PLAN_FACTS,
       replacesView,
       storedBase,
+      storedInDestination,
       rollup,
       signal,
       builtThisRun,
@@ -856,6 +863,7 @@ export async function buildSource(
          lift,
          ...(replacesView ? { replacesView } : {}),
          ...(storedBase ? { storedBase } : {}),
+         ...(storedInDestination ? { storedInDestination } : {}),
          ...(rollup ? { rollup } : {}),
          ...(signal ? { signal } : {}),
          // How its source's strings compare live, for its column contract.

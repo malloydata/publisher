@@ -20,6 +20,7 @@
  * Types only.
  */
 
+import type { MaterializePlan } from "./table_plans";
 import type { ManifestEntry } from "./types";
 
 /** The downstream, its destination, and the stored upstreams it may read. */
@@ -45,6 +46,19 @@ export interface ChainBuildRequest {
     */
    rollup?: {
       baseSourceID: string;
+      companion: { url: string; text: string };
+   };
+   /**
+    * Set for a persisted view or named query, whose build source no author
+    * file declares: the author's declaration it runs (`authorName`: the
+    * view's source, or the query), kept with its path to the stored
+    * upstreams, and its generated build file (`downstream.name` declares
+    * it), served at `url` beside the author's model and importing from it.
+    */
+   view?: {
+      authorName: string;
+      /** More of the author's declarations to keep as written (a query). */
+      keepAlso?: readonly string[];
       companion: { url: string; text: string };
    };
 }
@@ -105,3 +119,28 @@ export interface ChainCollationRequest {
    /** The sourceIDs of the upstreams whose stored tables the build reads. */
    stored: readonly string[];
 }
+
+/**
+ * The served copy's `chainBuildText`, as the plan is handed it (plan may not
+ * read the served copy): the text a downstream of `model` builds from in its
+ * destination, or undefined when `model` does not declare it.
+ */
+export type PlanChainBuildText = (
+   request: ChainBuildRequest,
+   model: {
+      modelPath: string;
+      modelDef: unknown;
+      materializePlans?: Readonly<Record<string, MaterializePlan>>;
+   },
+) => ChainBuildText | undefined;
+
+/**
+ * The stored columns the package has bound for the upstream `sourceID` in
+ * `destination` (its recorded contract's native types, else its schema), or
+ * undefined when none is bound there: what a plan stands in for that
+ * upstream's table (plan/storage_over_stored.ts).
+ */
+export type BoundStorageColumns = (
+   sourceID: string,
+   destination: string,
+) => { name: string; type: string }[] | undefined;

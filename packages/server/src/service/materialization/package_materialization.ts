@@ -26,6 +26,7 @@
  * Effects: logs, and the bind metrics.
  */
 
+import { parseContract } from "./domain/column_contract";
 import type { Connection, MalloyConfig } from "@malloydata/malloy";
 import { components } from "../../api";
 import type {
@@ -476,15 +477,53 @@ export class PackageMaterialization {
 
    /**
     * The drift handler, for a stored read that found its tables not as their
-    * bind found them (a column or the table gone): fail them closed at once,
+    * bind found them (a column or the table gone), or a build that found an
+    * upstream not as its plan recorded it: fail them closed at once,
     * so every leg declines them and their queries answer live, then read
     * and bind every bound table again, where the one comparator judges each
-    * against its contract (an incompatible one stays out, `incompatible`).
+    * against its contract (an incompatible one stays out, `incompatible`),
+    * and derive the build plan again from what that bind holds.
     * One rebind at a time; reports during it start one more after it.
     * Per replica: each finds drift at its own next bind or failed read.
     */
+   /**
+    * The stored columns bound for the upstream `sourceID` in `destination`
+    * (its contract's native types, else its schema), or undefined: what a
+    * plan stands in for its table (plan/storage_over_stored.ts).
+    */
+   boundStorageColumns(
+      sourceID: string,
+      destination: string,
+   ): { name: string; type: string }[] | undefined {
+      const binding = this.storageBindings.find(
+         (b) =>
+            b.destinationName === destination &&
+            (b.sourceIDs ?? []).includes(sourceID),
+      );
+      const entry = binding && this.storageEntries[binding.virtualHandle];
+      if (!entry) return undefined;
+      const contract = parseContract(entry.contract);
+      const columns = contract
+         ? contract.columns.map((c) => ({ name: c.name, type: c.nativeType }))
+         : (entry.schema ?? []).flatMap((c) =>
+              c.name && c.type ? [{ name: c.name, type: c.type }] : [],
+           );
+      return columns.length > 0 ? columns : undefined;
+   }
+
+   /**
+    * A build's report that an upstream's table is not what the plan it was
+    * planned from recorded (SchemaIncompatibleError): the drift handler.
+    */
+   reportIncompatible(handles: readonly string[]): void {
+      this.onIncompatible(handles);
+   }
+
    private onIncompatible(handles: readonly string[]): void {
       if (this.disposed) return;
+      // The plan was derived from the tables as they were: derived again
+      // after the rebind, from what it then binds.
+      this.plan.markStale();
       const known = handles.filter((h) => !this.readFailed.has(h));
       if (known.length > 0) {
          this.readFailed = new Set([...this.readFailed, ...known]);
@@ -502,6 +541,7 @@ export class PackageMaterialization {
             do {
                run.again = false;
                await this.rebindFromCatalog();
+               await this.plan.refresh(async () => undefined);
             } while (run.again && !this.disposed);
          } catch (err) {
             logger.warn(
