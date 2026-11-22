@@ -20,6 +20,7 @@ import { underCompilerKeys } from "../domain/binding";
 import { readsTable } from "../domain/table_name";
 import {
    buildSQLOf,
+   compiledSourceIDOf,
    compilerBuildId,
    computeSourceEntityId,
    declaredStorage,
@@ -470,6 +471,16 @@ export function chainedPlanFacts(
       planSources.push({ name: source.name, sourceEntityId });
       planSourcesById[sourceID] = { name: source.name, sourceEntityId };
       addressBySourceId[sourceID] = sourceEntityId;
+      // A `#(materialize)` table under the sourceID its build source was
+      // compiled under too, which a downstream compiled over the table reads
+      // it by (a view or rollup re-rooting it), so its chained build finds
+      // the upstream's address and key as for any other.
+      const compiledID = compiledSourceIDOf(source);
+      if (compiledID !== undefined && !(compiledID in tables)) {
+         planSourcesById[compiledID] = { name: source.name, sourceEntityId };
+         addressBySourceId[compiledID] = sourceEntityId;
+         compilerKeyBySourceId[compiledID] = compilerKeyBySourceId[sourceID];
+      }
       if (sourceEntityId !== undefined) {
          let tier: string | null = null;
          if (storageOn) {
@@ -491,7 +502,8 @@ export function chainedPlanFacts(
       }
    }
    return {
-      persistSourceIds: new Set(Object.keys(tables)),
+      // With each `#(materialize)` table's compiled sourceID, as above.
+      persistSourceIds: new Set(Object.keys(planSourcesById)),
       aliasesBySourceName: groupAliasesByName(planSources),
       addressBySourceId,
       compilerKeyBySourceId,

@@ -123,4 +123,41 @@ source: t is b extend {
          (table as { overStoredBase?: unknown }).overStoredBase,
       ).toBeUndefined();
    });
+
+   it("re-roots a database #(materialize) source, and declines one read in another zone", async () => {
+      const { c } = await packages.plan({
+         "m.malloy": `${RAW}
+#(materialize)
+source: a is raw extend { dimension: cat2 is cat }
+
+source: s is a extend {
+  #@ persist name="os_v"
+  view: by_cat is { group_by: cat; aggregate: total is amt.sum() }
+}
+
+source: z is a extend {
+  timezone: 'America/New_York'
+  #@ persist name="os_z"
+  view: by_cat is { group_by: cat; aggregate: total is amt.sum() }
+}
+`,
+      });
+      const tableOf = (name: string) =>
+         Object.values(c.tables).find((t) => t.source.name === name) as
+            | {
+                 overStoredBase?: {
+                    baseBuildSource?: unknown;
+                    rerootedSourceID?: string;
+                 };
+              }
+            | undefined;
+      const a = Object.values(c.tables).find((t) => t.source.name === "a")!;
+      const s = tableOf("s__by_cat__view")!.overStoredBase!;
+      expect(s.baseBuildSource).toBeDefined();
+      expect(s.rerootedSourceID).toBe(a.source.sourceID);
+      // Another zone would truncate the stored values again: it builds from
+      // its definition.
+      expect(tableOf("z__by_cat__view")).toBeDefined();
+      expect(tableOf("z__by_cat__view")!.overStoredBase).toBeUndefined();
+   });
 });

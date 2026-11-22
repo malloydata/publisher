@@ -114,6 +114,7 @@ export { buildSQLOf, upstreamSchemasOfSource } from "../plan/addressing";
 export {
    addressSQL,
    collectIncrementalDeclarations,
+   compiledSourceIDOf,
    compilerBuildId,
    computeSourceEntityId,
    deriveAnnotationFields,

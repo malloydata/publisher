@@ -86,6 +86,13 @@ import {
 } from "../text/generated_files";
 import { SourceMap } from "../text/source_map";
 import {
+   storedBaseCopies,
+   storedMaterializeUpstream,
+   type MaterializedBases,
+   type StoredMaterializeBase,
+} from "./stored_base_copy";
+import { overlayKey } from "../../overlay_key";
+import {
    reachedSourceIDsOf,
    reachedUpstreams,
    storedElsewhereReason,
@@ -521,6 +528,8 @@ export async function tryCompilePersistedViewCompanion(args: {
    modelDef: unknown;
    materializer: ModelMaterializer;
    getRuntime: SynthesizedRuntimeFactory;
+   /** The model's `#(materialize)` companion, when it compiled one. */
+   materialized?: MaterializedBases;
 }): Promise<{
    generated?: GeneratedPersistedViews;
    refused: PersistedViewRefusal[];
@@ -628,13 +637,22 @@ export async function tryCompilePersistedViewCompanion(args: {
          url,
          overlay,
       );
-      const overStored = overStoredUpstreamNotes(args.modelDef, plans, queries);
+      const overStored = overStoredUpstreamNotes(
+         args.modelDef,
+         plans,
+         queries,
+         modelFile,
+         args.materialized,
+      );
       const overStoredSources = await compileOverStoredUpstreams({
          files,
          modelDef: args.modelDef,
+         modelFile,
          url,
-         text,
+         plans,
+         queries,
          overStored,
+         materialized: args.materialized,
       });
       return {
          generated: {
@@ -665,25 +683,33 @@ export async function tryCompilePersistedViewCompanion(args: {
 
 /**
  * The persisted views and queries that may be built over their upstreams'
- * stored tables, and the notes their second compile keeps: a database view or
- * query (no `storage=`) whose definition reaches at least one source whose
- * own notes declare a database `#@ persist`, each such note kept (`keep`),
- * and no source whose own notes declare a `storage=` `#@ persist` or a
- * `#(materialize)` (a destination's table cannot be read from the view's
- * warehouse, and a `#(materialize)` table is read through its build source,
- * not its author's notes). The rest build from their definitions, as
- * planned.
+ * stored tables, and what their second compile needs: a database view or
+ * query (no `storage=`) whose definition reaches a source whose own notes
+ * declare a database `#@ persist` (each such note kept, `keep`), or one
+ * database `#(materialize)` source planned as a plain table in this model
+ * ({@link storedMaterializeUpstream}: its copy re-rooted on its build
+ * source, `stored`, by the build sourceID), and no source stored where the
+ * view cannot read it in place (a `storage=` destination, a second
+ * `#(materialize)`, another zone). The rest build from their definitions,
+ * as planned.
  */
 function overStoredUpstreamNotes(
    modelDef: unknown,
    views: readonly PersistedViewPlan[],
    queries: readonly PersistedQueryPlan[],
-): { keep: Set<string>; candidates: Set<string> } {
+   modelFile: string,
+   materialized: MaterializedBases | undefined,
+): {
+   keep: Set<string>;
+   candidates: Set<string>;
+   stored: Map<string, StoredMaterializeBase>;
+} {
    const map = SourceMap.of(modelDef);
    const contents =
       (modelDef as { contents?: Record<string, unknown> }).contents ?? {};
    const keep = new Set<string>();
    const candidates = new Set<string>();
+   const stored = new Map<string, StoredMaterializeBase>();
    const plans: {
       buildSourceID: string;
       storage?: string;
@@ -705,19 +731,28 @@ function overStoredUpstreamNotes(
          }
          spans.push(...upstream);
       }
-      if (!chainable || spans.length === 0) continue;
+      const base = storedMaterializeUpstream(
+         map,
+         plan.root,
+         modelDef,
+         modelFile,
+         materialized,
+      );
+      if (!chainable || base === "unusable") continue;
+      if (spans.length === 0 && base === undefined) continue;
       for (const span of spans) keep.add(span);
+      if (base) stored.set(plan.buildSourceID, base);
       candidates.add(plan.buildSourceID);
    }
-   return { keep, candidates };
+   return { keep, candidates, stored };
 }
 
 /**
  * What the source `sourceID` is as an upstream a view or query may read the
  * table of: the spans of its own database `#@ persist` notes; `unreadable`
- * when it is stored where the view cannot read it in place (`storage=`, a
- * `#(materialize)`) or its notes cannot be placed; undefined when it is not
- * persisted by its own notes.
+ * when it is stored where the view cannot read it in place (`storage=`) or
+ * its notes cannot be placed; undefined when its own notes do not declare
+ * `#@ persist`.
  */
 function upstreamTableOf(
    map: SourceMap,
@@ -726,11 +761,11 @@ function upstreamTableOf(
    const def = map.node(sourceID)?.def as
       | { annotations?: AnnotationsDef }
       | undefined;
-   const notes = ownLevelNotes(def?.annotations);
-   if (notes.some((n) => routeOfNote(n.text) === "materialize")) {
-      return "unreadable";
-   }
-   const own = notes.filter((n) => routeOfNote(n.text) === "@");
+   // A `#(materialize)` upstream is read through its build source
+   // (storedMaterializeUpstream), never its author's notes.
+   const own = ownLevelNotes(def?.annotations).filter(
+      (n) => routeOfNote(n.text) === "@",
+   );
    if (!notesDeclarePersist(own)) return undefined;
    const tag = readNotesIfAny(own, "@");
    const placed = tag ? placementOf(tag, "persist") : undefined;
@@ -752,29 +787,82 @@ function upstreamTableOf(
 async function compileOverStoredUpstreams(args: {
    files: GeneratedFiles;
    modelDef: unknown;
+   modelFile: string;
    url: URL;
-   text: string;
+   plans: readonly PersistedViewPlan[];
+   queries: readonly PersistedQueryPlan[];
    overStored: ReturnType<typeof overStoredUpstreamNotes>;
+   materialized: MaterializedBases | undefined;
 }): Promise<ReadonlyMap<string, OverStoredBase>> {
    const out = new Map<string, OverStoredBase>();
-   if (args.overStored.candidates.size === 0) return out;
+   const { overStored, files, modelFile } = args;
+   if (overStored.candidates.size === 0) return out;
    try {
-      const kept = await args.files.blanked(
-         args.modelDef,
-         args.overStored.keep,
-      );
+      const kept = await files.blanked(args.modelDef, overStored.keep);
       if (!kept) return out;
-      kept.set(args.url.href, args.text);
-      const compiled = await args.files.compile(args.url, kept);
-      for (const source of plannedSources(
+      // One copy of the model per `#(materialize)` upstream, re-rooted on
+      // its build source, by that source's name.
+      const bases = new Map<string, StoredMaterializeBase>();
+      for (const base of overStored.stored.values()) {
+         bases.set(base.plan.sourceName, base);
+      }
+      const modelURL = pathToFileURL(modelFile);
+      const copies = storedBaseCopies(
+         bases,
+         kept.get(overlayKey(modelURL)) ?? (await files.readIfAny(modelURL)),
+         modelFile,
+      );
+      const importOf = (buildSourceID: string) => {
+         const base = overStored.stored.get(buildSourceID);
+         const copy = base && copies.get(base.plan.sourceName);
+         return copy ? path.basename(new URL(copy.url).pathname) : undefined;
+      };
+      const text = generatePersistedResultFile(
+         args.plans,
+         args.queries,
+         path.basename(modelFile),
+         importOf,
+      );
+      if (text === undefined) return out;
+      const overlay = new Map(kept);
+      for (const [file, fileText] of args.materialized?.files ?? []) {
+         overlay.set(file, fileText);
+      }
+      for (const { url, text: copyText } of copies.values()) {
+         overlay.set(url, copyText);
+      }
+      overlay.set(args.url.href, text);
+      const compiled = await files.compile(args.url, overlay);
+      const sources = plannedSources(
          await compiled.runtime.getBuildTargets(compiled.model),
-      )) {
-         if (args.overStored.candidates.has(source.sourceID)) {
+      );
+      for (const source of sources) {
+         if (!overStored.candidates.has(source.sourceID)) continue;
+         const base = overStored.stored.get(source.sourceID);
+         if (!base) {
             out.set(source.sourceID, { source });
+            continue;
          }
+         // Its upstream's copy was not made: it builds from its definition.
+         if (!copies.has(base.plan.sourceName)) continue;
+         const declaring = pathToFileURL(
+            path.join(path.dirname(modelFile), base.importFrom),
+         ).href;
+         const baseBuildSource = sources.find(
+            (s) =>
+               s.name === base.plan.buildSourceName &&
+               overlayKey(splitSourceID(s.sourceID)?.url ?? "") ===
+                  overlayKey(declaring),
+         );
+         if (!baseBuildSource) continue;
+         out.set(source.sourceID, {
+            source,
+            baseBuildSource,
+            rerootedSourceID: base.plan.sourceID,
+         });
       }
    } catch {
-      // Each candidate is then missing: the plan refuses it (build_plan.ts).
+      // Each candidate is then missing, and builds from its definition.
       out.clear();
    }
    return out;

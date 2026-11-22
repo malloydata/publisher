@@ -247,6 +247,7 @@ export {
    addressText,
    buildSQLOf,
    buildTargetOf,
+   compiledSourceIDOf,
    compilerBuildId,
    computeSourceEntityId,
    foldDistinctTableNames,
@@ -1085,8 +1086,8 @@ function provenRollupOverStored(
          ? { overStoredBase: variant }
          : {};
    }
-   const base =
-      plan.baseSourceID === undefined ? undefined : tables[plan.baseSourceID];
+   const baseID = variant.rerootedSourceID ?? plan.baseSourceID;
+   const base = baseID === undefined ? undefined : tables[baseID];
    if (base?.kind !== "materialize") return {};
    return overStoredProven(source, variant, base.source)
       ? { overStoredBase: variant }
@@ -1113,11 +1114,14 @@ async function collectGeneratedPersistedViews(
       getRuntime: SynthesizedRuntimeFactory;
       malloyModel: MalloyModel;
       materializer: ModelMaterializer;
+      /** The model's `#(materialize)` companion, when it compiled one. */
+      materialized?: MaterializedBases;
    },
 ): Promise<void> {
    const authorDef: ModelDef = modelDefOf(args.malloyModel);
    const { generated, refused, refusedQueries, omitted, failure } =
       await tryCompilePersistedViewCompanion({
+         ...(args.materialized ? { materialized: args.materialized } : {}),
          packagePath: args.packagePath,
          modelPath: args.modelPath,
          modelDef: authorDef,
@@ -1186,10 +1190,20 @@ async function collectGeneratedPersistedViews(
       // Offered a build over its upstreams' tables: decided here, once,
       // and recorded. A compile that is not the planned table refuses it:
       // strict upstreams forbid recomputing its upstreams from raw.
-      let overStoredBase: OverStoredBase | undefined;
-      if (generated.overStoredCandidates.has(source.sourceID)) {
-         overStoredBase = generated.overStoredSources.get(source.sourceID);
-         if (!overStoredBase || !overStoredProven(source, overStoredBase)) {
+      // A candidate whose second compile failed builds from its definition.
+      const overStoredBase = generated.overStoredSources.get(source.sourceID);
+      if (overStoredBase) {
+         const rerooted =
+            overStoredBase.rerootedSourceID === undefined
+               ? undefined
+               : parts.tables[overStoredBase.rerootedSourceID];
+         if (
+            !overStoredProven(
+               source,
+               overStoredBase,
+               rerooted?.kind === "materialize" ? rerooted.source : undefined,
+            )
+         ) {
             const reason =
                "its build over its upstreams' stored tables did not compile " +
                "to the planned table (a Publisher bug worth reporting), and " +
@@ -1553,6 +1567,7 @@ async function collectGeneratedTables(
          getRuntime,
          malloyModel,
          materializer,
+         ...(materialized ? { materialized } : {}),
       });
    }
    // Rollups: v1 `#@ preaggregate` lines are read as their declarations, and

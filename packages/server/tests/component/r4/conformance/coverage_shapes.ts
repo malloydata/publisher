@@ -457,8 +457,8 @@ source: pv_base is orders_raw -> {
             expect: {
                database: "view",
                storage: "view",
-               // Over a database `#(materialize)` source it builds from its
-               // definition still, and the view leg answers.
+               // Over a database `#(materialize)` source it builds from the
+               // source's table, re-rooted, and the view leg answers.
                materialize_database: "view",
                materialize: "served",
             },

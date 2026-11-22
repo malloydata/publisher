@@ -799,6 +799,12 @@ export type TablePlan = TablePlanFacts &
 export interface OverStoredBase {
    source: PersistSource;
    baseBuildSource?: PersistSource;
+   /**
+    * With `baseBuildSource`: the author's sourceID of the `#(materialize)`
+    * source the compile re-roots on it, whose table the downstream reads
+    * (the downstream's own base, or the one source it extends).
+    */
+   rerootedSourceID?: string;
 }
 
 /** A `#(materialize)` plan's kind: `pair` when it stores an inlined join_many. */

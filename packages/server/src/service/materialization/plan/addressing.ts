@@ -258,7 +258,20 @@ export function presentAs(
    if (target !== undefined) buildTargets.set(presented, target);
    const problem = unkeyable.get(source);
    if (problem !== undefined) unkeyable.set(presented, problem);
+   presentedSourceIDs.set(presented, source.sourceID);
    return presented;
+}
+
+/** Each presented source's own sourceID ({@link presentAs}). */
+const presentedSourceIDs = new WeakMap<PersistSource, string>();
+
+/**
+ * The sourceID `source` was compiled under, when {@link presentAs} presents
+ * it under another (a `#(materialize)` build source's `<src>__mat@…`, which
+ * a downstream compiled over its table names), else undefined.
+ */
+export function compiledSourceIDOf(source: PersistSource): string | undefined {
+   return presentedSourceIDs.get(source);
 }
 
 /** `build` with each sourceID `rename` maps replaced, everywhere it appears. */

@@ -2244,7 +2244,10 @@ async function overStoredBaseSource(
    const table = compiled.tables[persistSource.sourceID];
    if (table?.kind !== "rollup" || !table.overStoredBase) return undefined;
    if (gated.instruction.destination) return undefined;
-   const baseID = table.rollup.baseSourceID;
+   // The table it reads: its base's, or that of the `#(materialize)` source
+   // its base extends, which its compile re-roots.
+   const baseID =
+      table.overStoredBase.rerootedSourceID ?? table.rollup.baseSourceID;
    const base = baseID === undefined ? undefined : compiled.tables[baseID];
    if (!base || (base.kind !== "persist" && base.kind !== "materialize")) {
       return undefined;
