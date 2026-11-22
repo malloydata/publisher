@@ -28,6 +28,7 @@ import { requireUnique, verdictOf } from "../domain/key_check";
 import {
    hiddenAccess,
    modelDefOf,
+   queryStageZone,
    queryTimezoneOf,
 } from "../../governance/ir/compiled_model";
 import {
@@ -176,7 +177,6 @@ import {
    readsRerootedTables,
    readZonesOf,
    recordJoinsRead,
-   sameZone,
    ZONED_TRUNCATION_REASON,
 } from "./served_copy_checks";
 
@@ -4919,45 +4919,4 @@ function zonedTruncations(
       leftOut: truncated,
       restated: [],
    };
-}
-
-/**
- * The one zone a query-shaped source's query computes every timestamp
- * truncation it outputs in: each stage's own `timezone:`, and, for a stage
- * that sets none, the zone of the base the query runs on, written inline (as
- * Malloy compiles a query-shaped source, carrying the zone it inherits).
- * Only over a base that is not itself query-shaped, so each truncation is
- * computed by one of these stages: a base's query may pass through a
- * truncation it computed in its own zone. Undefined when the base is
- * query-shaped or not inline, or the zones are not all one.
- */
-function queryStageZone(
-   def: unknown,
-): { zone: string | undefined } | undefined {
-   const query = (
-      def as { query?: { structRef?: unknown; pipeline?: unknown } } | undefined
-   )?.query;
-   const stages = Array.isArray(query?.pipeline) ? query.pipeline : [];
-   if (stages.length === 0) return undefined;
-   const zoneOf = (x: unknown) => {
-      const z = (x as { queryTimezone?: unknown } | null)?.queryTimezone;
-      return typeof z === "string" && z !== "" ? z : undefined;
-   };
-   const base = query?.structRef as
-      | { query?: unknown; type?: unknown }
-      | null
-      | undefined;
-   if (
-      base === null ||
-      typeof base !== "object" ||
-      base.query !== undefined ||
-      base.type === "query_source"
-   ) {
-      return undefined;
-   }
-   const own = stages.map(zoneOf);
-   const zones = own.filter((z) => z !== undefined) as (string | undefined)[];
-   if (own.some((z) => z === undefined)) zones.push(zoneOf(base));
-   const [first, ...rest] = zones;
-   return rest.every((z) => sameZone(z, first)) ? { zone: first } : undefined;
 }
