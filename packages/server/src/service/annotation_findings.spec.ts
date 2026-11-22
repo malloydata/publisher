@@ -373,26 +373,17 @@ describe("a source over author SQL on a managed connection", () => {
    );
 
    it(
-      "names the joined .sql() source, not every possible cause, for a source that joins one",
+      "names a source's own .sql() as its cause",
       async () => {
          managed();
          const pkg = await loadPackage(
-            `${RAW}source: status_names is duckdb.sql("""SELECT 'A' AS category, 'Alpha' AS label""")
-#@ persist name="j"
-source: lab_joined is duckdb.table('information_schema.schemata') extend {
-   join_one: sn is status_names on schema_name = sn.category
-} -> { group_by: schema_name, sn.label }
-#@ persist name="s"
+            `${RAW}#@ persist name="s"
 source: lab_sql is duckdb.sql("""SELECT 'A' AS category""")
 `,
          );
-         const bySubject = new Map(
-            coded(pkg, "persist-not-built").map((w) => [w.subject, w.message]),
-         );
-         expect(bySubject.get("lab_joined")).toContain(
-            "cannot be materialized: its join 'sn' reads source 'status_names', which is an .sql() source, and its connection",
-         );
-         expect(bySubject.get("lab_sql")).toContain(
+         const [warning] = coded(pkg, "persist-not-built");
+         expect(warning.subject).toBe("lab_sql");
+         expect(warning.message).toContain(
             "cannot be materialized: it is an .sql() source, and its connection",
          );
       },

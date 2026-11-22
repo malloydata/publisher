@@ -1829,6 +1829,27 @@ source: stored is base -> { group_by: region; aggregate: c is count() }`)
       ).not.toThrow();
    });
 
+   it("names a joined .sql() source, not every possible cause, on a managed connection", async () => {
+      const duckdb = await connections.lookupConnection("duckdb");
+      await duckdb.runSQL(
+         "CREATE TABLE IF NOT EXISTS lab AS SELECT 'A' AS category",
+      );
+      const source = (
+         await persistSources(`##! experimental.persistence
+source: status_names is duckdb.sql("SELECT 'A' AS category, 'Alpha' AS label")
+#@ persist name="j"
+source: stored is duckdb.table('lab') extend {
+   join_one: sn is status_names on category = sn.category
+} -> { group_by: category, sn.label }`)
+      ).stored;
+      const err = refusalOf(() =>
+         assertTierEligible(source, false, { managedConnections: ["duckdb"] }),
+      );
+      expect(err.message).toContain(
+         "Source 'stored' cannot be materialized: its join 'sn' reads source 'status_names', which is an .sql() source, and its connection 'duckdb' is a managed database",
+      );
+   });
+
    it("leaves a connection with no recorded type to the build", async () => {
       const source = (await persistSources(model)).stored;
       expect(() => assertTierEligible(source, true, {})).not.toThrow();
