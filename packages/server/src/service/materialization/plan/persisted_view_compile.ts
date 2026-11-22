@@ -790,12 +790,17 @@ function upstreamTableOf(
 }
 
 /**
- * Each candidate compiled a second time, alone, in a companion of its own
- * over the author's files with its own upstreams' notes kept and, over a
- * `#(materialize)` upstream, its source imported from a copy of the model
- * that re-roots that upstream ({@link overStoredUpstreamNotes}): its build
- * source by its sourceID. One candidate's compile never decides another's.
- * A candidate whose compile fails, or whose copy or upstream build source
+ * Each candidate compiled a second time over the author's files with its own
+ * upstreams' notes kept and, over a `#(materialize)` upstream, its source
+ * imported from a copy of the model that re-roots that upstream
+ * ({@link overStoredUpstreamNotes}): its build source by its sourceID.
+ *
+ * Candidates that keep the same notes and re-root the same upstream read
+ * their sources from the same files, so they share one blanking, one copy
+ * and one companion compile: a model with N views over one upstream
+ * compiles once. When that compile fails, each of its candidates is
+ * compiled alone, so one candidate's failure never decides another's. A
+ * candidate whose own compile fails, or whose copy or upstream build source
  * cannot be made, is left out, and builds from its definition, as planned.
  */
 async function compileOverStoredUpstreams(args: {
@@ -808,24 +813,51 @@ async function compileOverStoredUpstreams(args: {
    overStored: ReturnType<typeof overStoredUpstreamNotes>;
    materialized: MaterializedBases | undefined;
 }): Promise<ReadonlyMap<string, OverStoredBase>> {
+   const { overStored } = args;
+   const groups = new Map<string, string[]>();
+   for (const id of overStored.candidates) {
+      const key = JSON.stringify([
+         [...(overStored.keep.get(id) ?? [])].sort(),
+         overStored.stored.get(id)?.plan.sourceID ?? null,
+      ]);
+      groups.set(key, [...(groups.get(key) ?? []), id]);
+   }
    const out = new Map<string, OverStoredBase>();
-   for (const buildSourceID of args.overStored.candidates) {
-      const found = await compileOneOverStored(args, buildSourceID);
-      if (found) out.set(buildSourceID, found);
+   for (const ids of groups.values()) {
+      const inputs = await overStoredInputs(args, ids[0] as string);
+      if (!inputs) continue;
+      let found = await compileOverStoredGroup(args, inputs, ids);
+      if (!found && ids.length > 1) {
+         // Together they failed: each alone, over the same inputs.
+         found = new Map();
+         for (const id of ids) {
+            const one = await compileOverStoredGroup(args, inputs, [id]);
+            for (const [k, v] of one ?? []) found.set(k, v);
+         }
+      }
+      for (const [k, v] of found ?? []) out.set(k, v);
    }
    return out;
 }
 
-/** One candidate's compile ({@link compileOverStoredUpstreams}), or undefined. */
-async function compileOneOverStored(
+/**
+ * What a group of candidates compiles over, made once for the group: the
+ * author's files with its upstreams' notes kept, and, over a
+ * `#(materialize)` upstream, the re-rooted copy of the model. Undefined
+ * when either cannot be made.
+ */
+async function overStoredInputs(
    args: Parameters<typeof compileOverStoredUpstreams>[0],
    buildSourceID: string,
-): Promise<OverStoredBase | undefined> {
+): Promise<
+   | {
+        kept: Map<string, string>;
+        base?: StoredMaterializeBase;
+        copy?: { url: string; text: string };
+     }
+   | undefined
+> {
    const { overStored, files, modelFile } = args;
-   const views = args.plans.filter((p) => p.buildSourceID === buildSourceID);
-   const queries = args.queries.filter(
-      (p) => p.buildSourceID === buildSourceID,
-   );
    try {
       const kept = await files.blanked(
          args.modelDef,
@@ -833,22 +865,36 @@ async function compileOneOverStored(
       );
       if (!kept) return undefined;
       const base = overStored.stored.get(buildSourceID);
-      // Over a `#(materialize)` upstream: a copy of the model, re-rooted on
-      // the upstream's build source, which its source is imported from.
-      let copy: { url: string; text: string } | undefined;
-      if (base) {
-         const modelURL = pathToFileURL(modelFile);
-         copy = storedBaseCopies(
-            new Map([[base.plan.sourceName, base]]),
-            kept.get(overlayKey(modelURL)) ?? (await files.readIfAny(modelURL)),
-            modelFile,
-         ).get(base.plan.sourceName);
-         if (!copy) return undefined;
-      }
+      if (!base) return { kept };
+      const modelURL = pathToFileURL(modelFile);
+      const copy = storedBaseCopies(
+         new Map([[base.plan.sourceName, base]]),
+         kept.get(overlayKey(modelURL)) ?? (await files.readIfAny(modelURL)),
+         modelFile,
+      ).get(base.plan.sourceName);
+      return copy ? { kept, base, copy } : undefined;
+   } catch {
+      return undefined;
+   }
+}
+
+/**
+ * One companion compile of the candidates `ids` over `inputs`: each one's
+ * build source by its sourceID, or undefined when the compile fails.
+ */
+async function compileOverStoredGroup(
+   args: Parameters<typeof compileOverStoredUpstreams>[0],
+   inputs: NonNullable<Awaited<ReturnType<typeof overStoredInputs>>>,
+   ids: readonly string[],
+): Promise<Map<string, OverStoredBase> | undefined> {
+   const { overStored, files, modelFile } = args;
+   const { kept, base, copy } = inputs;
+   const wanted = new Set(ids);
+   try {
       const from = copy ? path.basename(new URL(copy.url).pathname) : undefined;
       const text = generatePersistedResultFile(
-         views,
-         queries,
+         args.plans.filter((p) => wanted.has(p.buildSourceID)),
+         args.queries.filter((p) => wanted.has(p.buildSourceID)),
          path.basename(modelFile),
          () => from,
       );
@@ -863,26 +909,37 @@ async function compileOneOverStored(
       const sources = plannedSources(
          await compiled.runtime.getBuildTargets(compiled.model),
       );
-      const source = sources.find((s) => s.sourceID === buildSourceID);
-      if (!source) return undefined;
-      const upstreamSourceIDs = overStored.upstreams.get(buildSourceID) ?? [];
-      if (!base) return { source, upstreamSourceIDs };
-      const declaring = pathToFileURL(
-         path.join(path.dirname(modelFile), base.importFrom),
-      ).href;
-      const baseBuildSource = sources.find(
-         (s) =>
-            s.name === base.plan.buildSourceName &&
-            overlayKey(splitSourceID(s.sourceID)?.url ?? "") ===
-               overlayKey(declaring),
-      );
-      if (!baseBuildSource) return undefined;
-      return {
-         source,
-         baseBuildSource,
-         rerootedSourceID: base.plan.sourceID,
-         upstreamSourceIDs,
-      };
+      const baseBuildSource = base
+         ? sources.find(
+              (s) =>
+                 s.name === base.plan.buildSourceName &&
+                 overlayKey(splitSourceID(s.sourceID)?.url ?? "") ===
+                    overlayKey(
+                       pathToFileURL(
+                          path.join(path.dirname(modelFile), base.importFrom),
+                       ).href,
+                    ),
+           )
+         : undefined;
+      if (base && !baseBuildSource) return new Map();
+      const out = new Map<string, OverStoredBase>();
+      for (const source of sources) {
+         if (!wanted.has(source.sourceID)) continue;
+         const upstreamSourceIDs =
+            overStored.upstreams.get(source.sourceID) ?? [];
+         out.set(
+            source.sourceID,
+            base
+               ? {
+                    source,
+                    baseBuildSource,
+                    rerootedSourceID: base.plan.sourceID,
+                    upstreamSourceIDs,
+                 }
+               : { source, upstreamSourceIDs },
+         );
+      }
+      return out;
    } catch {
       return undefined;
    }
