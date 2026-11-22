@@ -113,6 +113,7 @@ export function jsonToolError(
       {
          error: details.message,
          suggestions: details.suggestions,
+         ...(details.reason ? { reason: details.reason } : {}),
          ...extraPayload,
       },
       { isError: true, text: formatErrorText(details) },

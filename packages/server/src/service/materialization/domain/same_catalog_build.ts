@@ -86,23 +86,61 @@ const MAX_DEPTH = 200;
  * counts as carrying author SQL.
  */
 export function carriesAuthorSql(def: unknown): boolean {
+   return authorSqlCause(def) !== undefined;
+}
+
+/** Where, inside a source, the walk is: a join, a source a query reads, a field. */
+type Frame =
+   | { kind: "join"; as: string; source: string }
+   | { kind: "reads"; source: string }
+   | { kind: "field"; name: string };
+
+/** What {@link authorSqlCause} found, before it is put in words. */
+type Found =
+   | { kind: "sql_source" | "sql_expression" | "unreadable" }
+   | { kind: "file_table"; path: string };
+
+/**
+ * What {@link carriesAuthorSql} found and where, in words that complete "the
+ * source …": `it is an .sql() source`, `its join 'sn' reads source
+ * 'status_names', which is an .sql() source`, `its field 'x' uses a sql_*
+ * expression`, `it reads '/x.csv' as a table`. Undefined exactly when
+ * {@link carriesAuthorSql} is false.
+ */
+export function authorSqlCause(def: unknown): string | undefined {
    const seen = new Set<object>();
-   const walk = (node: unknown, depth: number): boolean => {
-      if (depth > MAX_DEPTH) return true;
-      if (node === null || typeof node !== "object") return false;
-      if (seen.has(node)) return false;
+   const walk = (
+      node: unknown,
+      depth: number,
+      frames: readonly Frame[],
+   ): { found: Found; frames: readonly Frame[] } | undefined => {
+      if (depth > MAX_DEPTH) return { found: UNREADABLE, frames };
+      if (node === null || typeof node !== "object") return undefined;
+      if (seen.has(node)) return undefined;
       seen.add(node);
       if (Array.isArray(node)) {
-         return node.some((child) => walk(child, depth + 1));
+         for (const child of node) {
+            const hit = walk(child, depth + 1, frames);
+            if (hit) return hit;
+         }
+         return undefined;
       }
       const record = node as Record<string, unknown>;
-      if (record.type === "sql_select" || record.node === "genericSQLExpr") {
-         return true;
+      if (typeof record.join === "string") {
+         frames = [
+            ...frames,
+            {
+               kind: "join",
+               as: String(record.as ?? record.name ?? ""),
+               source: sourceNameOf(record),
+            },
+         ];
       }
-      if (record.node === "function_call") {
-         return Object.entries(record).some(
-            ([key, child]) => key !== "overload" && walk(child, depth + 1),
-         );
+      if (record.type === "sql_select") {
+         return { found: { kind: "sql_source" }, frames };
+      }
+      if (record.node === "genericSQLExpr") {
+         return { found: { kind: "sql_expression" }, frames };
       }
       // DuckDB reads a file or URL named as a table (`lake.table('/x.csv')`,
       // `lake.table('s3://other/y.parquet')`), which on this session would run
@@ -113,14 +151,127 @@ export function carriesAuthorSql(def: unknown): boolean {
          typeof record.tablePath === "string" &&
          !CATALOG_TABLE_PATH.test(record.tablePath)
       ) {
-         return true;
+         return {
+            found: { kind: "file_table", path: record.tablePath },
+            frames,
+         };
       }
-      return Object.values(record).some((child) => walk(child, depth + 1));
+      for (const [key, child] of Object.entries(record)) {
+         // A call's overload is the compiler's own SQL; its arguments are walked.
+         if (record.node === "function_call" && key === "overload") continue;
+         const hit =
+            key === "fields" && Array.isArray(child)
+               ? walkFields(child, depth + 1, frames)
+               : walk(
+                    child,
+                    depth + 1,
+                    key === "structRef" &&
+                       child !== null &&
+                       typeof child === "object"
+                       ? [
+                            ...frames,
+                            {
+                               kind: "reads",
+                               source: sourceNameOf(
+                                  child as Record<string, unknown>,
+                               ),
+                            },
+                         ]
+                       : frames,
+                 );
+         if (hit) return hit;
+      }
+      return undefined;
+   };
+   /** A source's fields, each walked in a frame naming it (a join names itself). */
+   const walkFields = (
+      fields: unknown[],
+      depth: number,
+      frames: readonly Frame[],
+   ): ReturnType<typeof walk> => {
+      if (depth > MAX_DEPTH) return { found: UNREADABLE, frames };
+      if (seen.has(fields)) return undefined;
+      seen.add(fields);
+      for (const field of fields) {
+         const f = field as Record<string, unknown> | null;
+         const named =
+            f !== null &&
+            typeof f === "object" &&
+            typeof f.name === "string" &&
+            typeof f.join !== "string";
+         const hit = walk(
+            field,
+            depth + 1,
+            named
+               ? [...frames, { kind: "field", name: String(f.name) }]
+               : frames,
+         );
+         if (hit) return hit;
+      }
+      return undefined;
    };
    try {
-      if (def === null || typeof def !== "object") return true;
-      return walk(def, 0);
+      if (def === null || typeof def !== "object")
+         return describe([], UNREADABLE);
+      const hit = walk(def, 0, []);
+      return hit ? describe(hit.frames, hit.found) : undefined;
    } catch {
-      return true;
+      return describe([], UNREADABLE);
    }
+}
+
+const UNREADABLE: Found = { kind: "unreadable" };
+
+/** A source's name as its author wrote it: its sourceID before the `@`. */
+function sourceNameOf(record: Record<string, unknown>): string {
+   const id = typeof record.sourceID === "string" ? record.sourceID : "";
+   const name = typeof record.name === "string" ? record.name : "";
+   return id.split("@")[0] || (name.startsWith("sql://") ? "" : name);
+}
+
+/** {@link authorSqlCause}'s words for a finding beneath `frames`. */
+function describe(frames: readonly Frame[], found: Found): string {
+   if (found.kind === "unreadable") {
+      return "its definition could not be read to check for SQL its author wrote";
+   }
+   // A source a query reads is named only when it is what carries the SQL
+   // (an .sql() source, a file read as a table): its joins and fields are the
+   // query's own, and read as such.
+   frames = frames.filter(
+      (frame, i) =>
+         frame.kind !== "reads" ||
+         (i === frames.length - 1 && found.kind !== "sql_expression"),
+   );
+   const parts: string[] = [];
+   let lead = true;
+   for (const frame of frames) {
+      const possessive = lead ? "its" : "whose";
+      const subject = lead ? "it" : "which";
+      lead = false;
+      if (frame.kind === "join") {
+         parts.push(
+            `${possessive} join '${frame.as}'` +
+               (frame.source ? ` reads source '${frame.source}'` : ""),
+         );
+      } else if (frame.kind === "reads") {
+         parts.push(
+            frame.source
+               ? `${subject} reads source '${frame.source}'`
+               : `${subject} reads a source`,
+         );
+      } else {
+         parts.push(`${possessive} field '${frame.name}'`);
+      }
+   }
+   const last = frames[frames.length - 1];
+   const subject = frames.length === 0 ? "it" : ", which";
+   const what =
+      found.kind === "sql_source"
+         ? `${subject} is an .sql() source`
+         : found.kind === "file_table"
+           ? `${subject} reads '${found.path.replace(/^'|'$/g, "")}' as a table`
+           : last?.kind === "field"
+             ? " uses a sql_* expression"
+             : `${subject} uses a sql_* expression`;
+   return (parts.join(", ") + what).replace(/^ /, "");
 }

@@ -28,6 +28,7 @@ import {
    preaggregateGateLines,
    refusalCodeOf,
 } from "./plan/load_gate_text";
+import { DUCKLAKE_DATA_INLINING_ON } from "../dialects/ducklake_inlining";
 import { CronEvaluator } from "./run/cron_evaluator";
 import type { Binding } from "./domain/binding";
 import { INCREMENTAL_LATE_ROWS_CODE } from "./domain/incremental";
@@ -366,6 +367,45 @@ export function keptTableWarnings(
                  `table serves now. `) + KEPT_REASON_TEXT[table.reason],
       };
    });
+}
+
+/**
+ * One warning per materialized source whose table is written into a DuckLake
+ * catalog that records data inlining on ({@link DUCKLAKE_DATA_INLINING_ON}):
+ * its `storage=` destination, or its own connection. A small table is then
+ * kept as rows in the catalog database, which a read-only view scoped to the
+ * catalog's files does not protect. Known once Publisher has attached the
+ * catalog; cleared when an attach finds it recording 0.
+ */
+export function dataInliningWarnings(
+   plan: BuildPlan | null,
+   limitOf: (name: string) => number | undefined,
+): ApiPackageWarning[] {
+   const warnings: ApiPackageWarning[] = [];
+   for (const source of Object.values(plan?.sources ?? {})) {
+      const storage = source.annotationFields?.storage?.trim();
+      const target = storage || source.connectionName;
+      const limit = target ? limitOf(target) : undefined;
+      if (!target || !limit) continue;
+      const where = storage
+         ? `storage destination \`${target}\``
+         : `connection \`${target}\``;
+      warnings.push({
+         ...(source.modelPath ? { model: source.modelPath } : {}),
+         subject: source.preaggregate?.baseSourceName ?? source.name,
+         code: DUCKLAKE_DATA_INLINING_ON,
+         severity: "warn",
+         message:
+            `is stored in ${where}, whose DuckLake catalog records ` +
+            `data_inlining_row_limit ${limit}: a stored table of ${limit} rows ` +
+            `or fewer can be kept as rows in the catalog database rather than ` +
+            `a file, and inlined rows bypass read access scoped to the ` +
+            `catalog's files. Record 0 on the catalog ` +
+            `(set_option('data_inlining_row_limit', 0), or the admin API's ` +
+            `PATCH /catalogs/{catalog}).`,
+      });
+   }
+   return warnings;
 }
 
 /**

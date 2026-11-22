@@ -79,6 +79,11 @@ export interface DeploymentFacts {
    destinationNames(): readonly string[] | undefined;
    /** Whether a connection's configured type can create a table. */
    connectionCanHoldTable(connectionName: string): boolean | undefined;
+   /**
+    * The `data_inlining_row_limit` above zero that the DuckLake catalog a
+    * destination or connection names was found recording at its last attach.
+    */
+   dataInliningLimit?(name: string): number | undefined;
 }
 
 /** What the verdicts read of the facade that holds them. */

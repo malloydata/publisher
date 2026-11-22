@@ -322,6 +322,14 @@ a source that should not answer schema questions to outsiders wants a lock as we
   not exhaustive (a DuckDB connection attaching the destination in its `setupSQL` is not caught),
   so treat it as a backstop, not the control. The destination's own credentials are the control.
 
+- **Inlined rows are not files.** A DuckLake catalog that records a `data_inlining_row_limit` above 0
+  keeps a small table as rows in its catalog database, where a read-only view or storage secret
+  scoped to the catalog's files does not reach to keep a reader out, so a stored copy of a gated
+  source could be read past the gate. Publisher records 0 on every catalog it creates and warns
+  (`ducklake-data-inlining-on`, in the log and on each package storing there) about an existing one
+  that records more; it never changes an existing catalog's setting. See
+  [DuckLake](ducklake.md#how-publisher-attaches-a-ducklake-catalog).
+
 ### Stored tables read past a gate
 
 A gated query answered from a stored table is held, by one decision (`admitRead`), to the rules

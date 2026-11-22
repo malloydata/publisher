@@ -331,7 +331,7 @@ describe.skipIf(!url)(
          expect(refused.map((r) => [r.name, r.reason])).toEqual([
             ["lk_stored", "storage_source_unsupported"],
          ]);
-         expect(refused[0].message).toContain("carries SQL its author wrote");
+         expect(refused[0].message).toContain("which is an .sql() source");
       });
 
       it("builds the Postgres sibling and the database source, and fails nothing", () => {
