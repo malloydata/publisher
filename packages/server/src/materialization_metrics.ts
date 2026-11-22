@@ -501,7 +501,8 @@ const upstreamRecomputeCounter = lazyCounter(
       "column retyped or dropped since its build; 'unreadable', its columns " +
       "could not be read; 'types_unrecorded', its build recorded no column " +
       "types; 'reference_types_unrecorded', a host's reference carried no " +
-      "nativeSchema), build ('chained' for a build over the upstream, " +
+      "nativeSchema; 'persisted_result', a persisted view or query, which " +
+      "builds from its source's definition by design), build ('chained' for a build over the upstream, " +
       "'rollup' for a database rollup over its stored base), and outcome " +
       "('recomputed' from its definition, or 'read_unchecked': a strict " +
       "host-instructed build read the referenced table as before).",
@@ -902,7 +903,8 @@ export function recordUpstreamRecompute(
       | "moved"
       | "unreadable"
       | "types_unrecorded"
-      | "reference_types_unrecorded",
+      | "reference_types_unrecorded"
+      | "persisted_result",
    build: "chained" | "rollup",
    outcome: "recomputed" | "read_unchecked",
 ): void {

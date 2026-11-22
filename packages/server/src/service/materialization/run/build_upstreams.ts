@@ -243,7 +243,8 @@ export function upstreamReuseFromManifest(params: {
     * The source is a persisted view's or named query's build source, whose
     * companion blanks every source-level `#@` line: the compiler substitutes
     * no upstream's table, so each upstream is read through its definition
-    * (`definitionsRead`), whatever the manifest holds.
+    * (`definitionsRead`), whatever the manifest holds, and recomputed even
+    * under strict upstreams.
     */
    readsDefinitions?: boolean;
 }): {

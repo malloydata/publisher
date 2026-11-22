@@ -608,17 +608,16 @@ function classifyStoredUpstreams(
            readsDefinitions: isPersistedResultSourceID(persistSource.sourceID),
         })
       : { fields: {}, inManifestOnly: [], missing: [], definitionsRead: [] };
-   // A persisted view or query reads every upstream through its definition:
-   // the recompute strict upstreams forbid, so it is refused there.
-   if (manifest.strict && reuse.definitionsRead.length > 0) {
-      throw new ChainedUpstreamMissingError(
-         reuse.definitionsRead,
-         `Failed to materialize source '${persistSource.name}': persisted ` +
-            `upstream ${reuse.definitionsRead.map((n) => `'${n}'`).join(", ")} ` +
-            `is not read from its table, since a persisted view or query ` +
-            `builds from its source's definition, and strict upstreams ` +
-            `forbid recomputing it from raw`,
+   // A persisted view or query reads every upstream through its
+   // definition, by design (its companion blanks the source's `#@` lines):
+   // labelled `recomputed`, logged and counted, and exempt from strict
+   // upstreams, as a database rollup over a stored base is.
+   for (const upstream of reuse.definitionsRead) {
+      logger.info(
+         "A persisted view or query builds from its persisted source's definition, not its table",
+         { sourceName: persistSource.name, upstream },
       );
+      recordUpstreamRecompute("persisted_result", "chained", "recomputed");
    }
    // A database build that recomputes an upstream because its entry is at
    // the wrong tier reads the warehouse for it: logged and counted once per

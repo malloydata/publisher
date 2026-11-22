@@ -5,9 +5,10 @@
  * A persisted view or named query over a persisted source builds in a
  * companion that blanks every source-level `#@` line, so it never reads its
  * source's table: it reads the rows its live query reads. Its entry says so
- * (`upstreamReuse: "recomputed"`, never `"reused"`), and under strict
- * upstreams, which forbid recomputing a stored upstream from raw, it is
- * refused. Its stored rows still answer as live does, as text.
+ * (`upstreamReuse: "recomputed"`, never `"reused"`) and counts it, and,
+ * as a database rollup over a stored base, it is exempt from strict
+ * upstreams: it builds there too. Its stored rows answer as live does, as
+ * text.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -29,6 +30,11 @@ import { createDuckDBRepository } from "../../src/storage/duckdb/DuckDBRepositor
 import { initializeSchema } from "../../src/storage/duckdb/schema";
 import { freshLoadPool } from "../../src/test_helpers/conformance/package_runner";
 import { serviceOverEnvironment } from "../../src/test_helpers/materialization_service_harness";
+import { resetMaterializationTelemetryForTesting } from "../../src/materialization_metrics";
+import {
+   startMetricsHarness,
+   type MetricsHarness,
+} from "../../src/test_helpers/metrics_harness";
 import { installSettings } from "../../src/test_helpers/settings_env";
 import { writePackageFiles } from "../../src/test_helpers/temp_package";
 
@@ -76,6 +82,8 @@ describe("a persisted view or query over a persisted source says it recomputes i
    let pkg: Package;
    let strict: Materialization;
    let relaxed: Materialization;
+   let metrics: MetricsHarness;
+   let recomputes: number;
 
    const ask = async (query: string) => {
       const result = await pkg
@@ -123,6 +131,7 @@ describe("a persisted view or query over a persisted source says it recomputes i
          },
       }).restore;
       await freshLoadPool();
+      metrics = await startMetricsHarness();
       root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "pr-")));
       const envPath = path.join(root, "env");
       fs.mkdirSync(envPath);
@@ -159,11 +168,23 @@ describe("a persisted view or query over a persisted source says it recomputes i
       );
       // `a` first, so each result has a stored upstream to (not) read.
       await build({ sourceNames: ["a"] });
+      resetMaterializationTelemetryForTesting();
       strict = await build({ strictUpstreams: true });
-      relaxed = await build({});
+      recomputes = await metrics.collectCounter(
+         "publisher_materialization_upstream_recompute_total",
+         {
+            reason: "persisted_result",
+            build: "chained",
+            outcome: "recomputed",
+         },
+      );
+      // Rebuilt, so the relaxed run's entries are its own.
+
+      relaxed = await build({ forceRefresh: true });
    }, 300_000);
 
    afterAll(async () => {
+      await metrics?.shutdown();
       await env?.closeAllConnections().catch(() => undefined);
       await db?.close();
       fs.rmSync(root, { recursive: true, force: true });
@@ -171,18 +192,15 @@ describe("a persisted view or query over a persisted source says it recomputes i
       await freshLoadPool();
    });
 
-   it("refuses each under strict upstreams, since it would recompute its upstream", () => {
-      const failures = Object.values(
-         (strict.manifest as { failures?: Record<string, { reason: string }> })
-            .failures ?? {},
-      );
-      expect(failures).toHaveLength(2);
-      for (const f of failures) {
-         // The companion's name for the upstream (`s__pv_base`), or `a`.
-         expect(f.reason).toMatch(
-            /persisted upstream '\w+' is not read from its table, since a persisted view or query builds from its source's definition, and strict upstreams forbid recomputing it from raw$/,
-         );
-      }
+   it("builds each under strict upstreams too, labelled and counted as recomputed", () => {
+      expect([strict.status, (strict as { error?: unknown }).error]).toEqual([
+         "MANIFEST_FILE_READY",
+         null,
+      ]);
+      const entries = results(strict);
+      expect(entries).toHaveLength(2);
+      for (const e of entries) expect(e.upstreamReuse).toBe("recomputed");
+      expect(recomputes).toBe(2);
    });
 
    it("records each as recomputed, never reused", () => {
