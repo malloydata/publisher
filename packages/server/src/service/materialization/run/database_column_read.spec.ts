@@ -7,7 +7,10 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { capturedDatabaseSchema } from "./database_build_strategy";
-import { observedDatabaseColumns } from "./database_column_read";
+import {
+   movedSinceBuild,
+   observedDatabaseColumns,
+} from "./database_column_read";
 import { recordConnectionType } from "../../connection_type";
 
 /**
@@ -458,5 +461,69 @@ describe("observedDatabaseColumns: a DuckLake catalog on a duckdb connection (P4
          await c.close();
          fs.rmSync(dir, { recursive: true, force: true });
       }
+   });
+});
+
+describe("movedSinceBuild on DuckDB", () => {
+   let connection: DuckDBConnection;
+   beforeAll(async () => {
+      connection = new DuckDBConnection(
+         "moved_since_build",
+         path.join(
+            fs.mkdtempSync(path.join(os.tmpdir(), "moved-")),
+            "db.duckdb",
+         ),
+      );
+      await connection.runSQL(
+         `CREATE TABLE t AS SELECT 'east' AS cat, 2.4::DECIMAL(10,1) AS amt`,
+      );
+   });
+   afterAll(async () => {
+      await connection.close();
+   });
+
+   it("tells a table as built from one moved, unreadable, or with no recorded types", async () => {
+      const built = [
+         { name: "cat", type: "VARCHAR" },
+         { name: "amt", type: "DECIMAL(10,1)" },
+      ];
+      const moved = await movedSinceBuild(
+         new Map([
+            ["as_built", { physicalTableName: "t", nativeSchema: built }],
+            [
+               "retyped",
+               {
+                  physicalTableName: "t",
+                  nativeSchema: [built[0], { name: "amt", type: "DOUBLE" }],
+               },
+            ],
+            [
+               "gone",
+               {
+                  physicalTableName: "t",
+                  nativeSchema: [...built, { name: "x", type: "INTEGER" }],
+               },
+            ],
+            ["missing", { physicalTableName: "nope", nativeSchema: built }],
+            ["unrecorded", { physicalTableName: "t" }],
+         ]),
+         connection,
+      );
+      expect(Object.fromEntries(moved)).toEqual({
+         retyped: {
+            kind: "moved",
+            reason:
+               "its column 'amt' was built as DOUBLE and is now DECIMAL(10,1)",
+         },
+         gone: { kind: "moved", reason: "its column 'x' is gone" },
+         missing: {
+            kind: "unreadable",
+            reason: "its columns could not be read (catalog_query_failed)",
+         },
+         unrecorded: {
+            kind: "types_unrecorded",
+            reason: "its build recorded no column types to check it against",
+         },
+      });
    });
 });

@@ -701,6 +701,124 @@ source: weird is daily -> {
          expect(models.length).toBe(1);
       });
 
+      describe("a parent's timestamp truncations, read in a zone", () => {
+         // `a` truncates in the default zone; its table stores `d` and `m`,
+         // which its re-root restates (`d is d__stored.day`) and so truncates
+         // again in the zone the downstream reads in.
+         const zoned = (downstreamZone: string) => `##! experimental.persistence
+source: raw is duckdb.sql("""
+  SELECT * FROM (VALUES
+    (1, TIMESTAMP '2024-01-07 03:30:00'),
+    (2, TIMESTAMP '2024-01-01 02:00:00'),
+    (3, TIMESTAMP '2024-03-31 23:30:00')
+  ) AS t(id, ts)
+""")
+
+#@ persist storage="lake"
+source: a is raw -> { select: id, ts, d is ts.day, m is ts.month }
+
+#@ persist storage="lake"
+source: b is a -> {
+  ${downstreamZone}
+  group_by: id, dd is d, dm is d.month, mm is m, tday is ts.day
+}
+
+source: a_live is raw -> { select: id, ts, d is ts.day, m is ts.month }
+source: b_live is a_live -> {
+  ${downstreamZone}
+  group_by: id, dd is d, dm is d.month, mm is m, tday is ts.day
+}
+`;
+         /** What `a`'s build wrote: each truncation in the default zone. */
+         const A_ROWS =
+            'CREATE TABLE "daily_t" AS SELECT id, ts, ' +
+            "date_trunc('day', ts) AS d, date_trunc('month', ts) AS m " +
+            "FROM (VALUES (1, TIMESTAMP '2024-01-07 03:30:00'), " +
+            "(2, TIMESTAMP '2024-01-01 02:00:00'), " +
+            "(3, TIMESTAMP '2024-03-31 23:30:00')) AS t(id, ts)";
+         const A_SCHEMA = [
+            { name: "id", type: "INTEGER" },
+            { name: "ts", type: "TIMESTAMP" },
+            { name: "d", type: "TIMESTAMP" },
+            { name: "m", type: "TIMESTAMP" },
+         ];
+         const COLUMNS = ["dd", "dm", "mm", "tday"];
+
+         /** `b_live`'s rows, each value as text. */
+         async function live(chain: Chain): Promise<unknown[]> {
+            const base = pathToFileURL(chain.dir + "/");
+            const runtime = new Runtime({ urlReader: reader(), connections });
+            const result = await runtime
+               .loadModel(new URL("m.malloy", base), { importBaseURL: base })
+               .loadQuery(
+                  `run: b_live -> { select: id, ${COLUMNS.map(
+                     (c) => `${c} is ${c}::string`,
+                  ).join(", ")}; order_by: id }`,
+               )
+               .run();
+            return result.data
+               .toObject()
+               .map((row) =>
+                  Object.fromEntries(
+                     Object.entries(row).map(([k, v]) => [
+                        k,
+                        k === "id" ? Number(v) : String(v),
+                     ]),
+                  ),
+               );
+         }
+
+         /** `b`'s stored rows, each value as text. */
+         async function stored(chain: Chain): Promise<unknown[]> {
+            return (
+               (await readLake(
+                  chain.dir,
+                  `SELECT id, ${COLUMNS.map(
+                     (c) => `${c}::VARCHAR AS ${c}`,
+                  ).join(", ")} FROM "b_t" ORDER BY id`,
+               )) as Record<string, unknown>[]
+            ).map((row) => ({ ...row, id: Number(row.id) }));
+         }
+
+         it("declines a downstream that reads them in another zone, which a stored value truncated twice would answer wrong", async () => {
+            const chain = await planChain(
+               zoned("timezone: 'America/Los_Angeles'"),
+            );
+            await writeLake(chain.dir, A_ROWS);
+            const { error } = await stack(
+               chain,
+               "b",
+               parentEntry(chain, "a", { schema: A_SCHEMA, rowCount: 3 }),
+            );
+            if (error === undefined) {
+               // Stacked: what it stored must be live's, which it is not.
+               expect(await stored(chain)).toEqual(await live(chain));
+            }
+            expect(error).toBeInstanceOf(ChainedShapeNotCarriedError);
+            expect((error as Error).message).toContain(
+               "the downstream reads 'a' in another time zone than its table was built in",
+            );
+         });
+
+         for (const [label, zone] of [
+            ["sets no zone", ""],
+            ["sets the zone they were truncated in", "timezone: 'UTC'"],
+         ] as const) {
+            it(`stacks a downstream that ${label}, storing live's rows`, async () => {
+               const chain = await planChain(zoned(zone));
+               await writeLake(chain.dir, A_ROWS);
+               const { error, result } = await stack(
+                  chain,
+                  "b",
+                  parentEntry(chain, "a", { schema: A_SCHEMA, rowCount: 3 }),
+               );
+               expect(error).toBeUndefined();
+               expect(result).toMatchObject({ upstreamReuse: "reused" });
+               expect(await stored(chain)).toEqual(await live(chain));
+            });
+         }
+      });
+
       it("keeps a gated parent's gates on its re-root, as the author wrote them", async () => {
          const chain = await planChain(`${RAW.replace(
             "##! experimental.persistence",

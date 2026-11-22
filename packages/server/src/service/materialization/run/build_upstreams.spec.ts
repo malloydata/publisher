@@ -305,6 +305,7 @@ describe("upstreamReuseFromManifest", () => {
          fields: { upstreamReuse: "reused" },
          inManifestOnly: [],
          missing: [],
+         definitionsRead: [],
       });
    });
 
@@ -445,7 +446,12 @@ describe("upstreamReuseFromManifest", () => {
          sqlInlinesStored: false,
          compilerMissing: [],
       });
-      expect(out).toEqual({ fields: {}, inManifestOnly: [], missing: [] });
+      expect(out).toEqual({
+         fields: {},
+         inManifestOnly: [],
+         missing: [],
+         definitionsRead: [],
+      });
    });
 
    it("two models' same-named sources resolve by id, not by name", () => {
@@ -529,7 +535,12 @@ describe("upstreamReuseFromManifest", () => {
          compilerMissing: [],
          rootAddress: "addr-daily",
       });
-      expect(out).toEqual({ fields: {}, inManifestOnly: [], missing: [] });
+      expect(out).toEqual({
+         fields: {},
+         inManifestOnly: [],
+         missing: [],
+         definitionsRead: [],
+      });
    });
 });
 
