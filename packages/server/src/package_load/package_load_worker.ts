@@ -12,7 +12,7 @@
  * Bundled separately by `build.ts` as `dist/package_load_worker.mjs` so
  * `new Worker(...)` does not load the whole server module graph.
  */
-import { planChainBuildText } from "../service/materialization";
+import { planChainBuildText } from "../service/materialization/serve/served_copy_serve";
 import {
    type CacheManager,
    contextOverlay,
