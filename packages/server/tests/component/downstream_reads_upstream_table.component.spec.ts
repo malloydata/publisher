@@ -46,7 +46,7 @@ const RAW_ROWS = `SELECT * FROM (VALUES
   ) AS t(cat, amt)`;
 
 const HEAD = `##! experimental { persistence }
-source: raw is warehouse.table('dr_raw')
+source: raw is warehouse.table('__RAW__')
 `;
 
 /** Each total as the warehouse renders it, so rows compare as text. */
@@ -63,6 +63,8 @@ interface Mechanism {
    downstream: RegExp;
    query: string;
    servedBy: string;
+   /** Its table holds `cat` and `total`, compared directly. */
+   storesTotal?: boolean;
 }
 
 const PERSIST_A = `#@ persist name="dr_a"
@@ -82,6 +84,7 @@ source: b is a -> { group_by: cat; aggregate: total is amt.sum() }
       downstream: /^b$/,
       query: `run: b ${AS_TEXT}`,
       servedBy: "materialized",
+      storesTotal: true,
    },
    {
       label: "persisted view",
@@ -97,6 +100,7 @@ source: s is a extend {
       downstream: /^s__by_cat__view$/,
       query: `run: s -> by_cat ${AS_TEXT}`,
       servedBy: "view",
+      storesTotal: true,
    },
    {
       label: "persisted query",
@@ -110,6 +114,7 @@ query: q is a -> { group_by: cat; aggregate: total is amt.sum() }
       downstream: /^q__query$/,
       query: `run: q ${AS_TEXT}`,
       servedBy: "query",
+      storesTotal: true,
    },
    {
       label: "rollup over an inherited #@ persist",
@@ -184,6 +189,9 @@ interface Answer {
 const tiers = [
    {
       label: "DuckDB",
+      raw: "main.dr_raw",
+      tablePrefix: "",
+      rowsSQL: (sql: string) => sql,
       warehouse: async () => ({
          config: {
             name: "warehouse",
@@ -197,6 +205,12 @@ const tiers = [
       ? [
            {
               label: "Postgres",
+              raw: "public.dr_raw",
+              // Postgres reads a table's columns only by a qualified name.
+              tablePrefix: "public.",
+              // Its runSQL reads each row from a `row` JSON column.
+              rowsSQL: (sql: string) =>
+                 `SELECT row_to_json(t) AS row FROM (${sql}) t`,
               warehouse: async () => {
                  const db = `dr_${process.pid}_${Date.now()}`;
                  const admin = new PostgresConnection({
@@ -310,9 +324,20 @@ for (const [tier, mechanism] of tiers.flatMap((t) =>
          root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "dr-")));
          const envPath = path.join(root, "env");
          fs.mkdirSync(envPath);
-         writePackageFiles(path.join(envPath, PKG), mechanism.files, {
-            manifest: { name: PKG, description: "fixture" },
-         });
+         writePackageFiles(
+            path.join(envPath, PKG),
+            Object.fromEntries(
+               Object.entries(mechanism.files).map(([f, text]) => [
+                  f,
+                  text
+                     .replace("__RAW__", tier.raw)
+                     .replace(/name="dr_/g, `name="${tier.tablePrefix}dr_`),
+               ]),
+            ),
+            {
+               manifest: { name: PKG, description: "fixture" },
+            },
+         );
          db = new DuckDBConnection(":memory:");
          await db.initialize();
          await initializeSchema(db);
@@ -325,7 +350,7 @@ for (const [tier, mechanism] of tiers.flatMap((t) =>
          drop = w.drop;
          env = await Environment.create(ENV, envPath, [w.config as never], []);
          const warehouse = await env.getMalloyConnection("warehouse");
-         await warehouse.runSQL(`CREATE TABLE dr_raw AS ${RAW_ROWS}`);
+         await warehouse.runSQL(`CREATE TABLE ${tier.raw} AS ${RAW_ROWS}`);
          await env.addPackage(PKG);
          pkg = await env.getPackage(parsePackageName(PKG), false);
          service = serviceOverEnvironment(
@@ -336,7 +361,7 @@ for (const [tier, mechanism] of tiers.flatMap((t) =>
          first = await build({ sourceNames: [mechanism.upstream] });
          // Out of band: the raw rows are gone. A downstream that recomputed
          // its upstream from raw would hold no rows.
-         await warehouse.runSQL(`DELETE FROM dr_raw`);
+         await warehouse.runSQL(`DELETE FROM ${tier.raw}`);
          second = await build({ strictUpstreams: true });
          served = await ask(mechanism.query);
       }, 300_000);
@@ -382,9 +407,35 @@ for (const [tier, mechanism] of tiers.flatMap((t) =>
       });
 
       it("serves its table, equal to live before the drop, as text", () => {
-         expect(served.kind).toBe(mechanism.servedBy);
+         // On Postgres the router may answer from the upstream's served
+         // copy instead, at its read cost; the stored rows are compared
+         // directly below.
+         expect(
+            tier.label === "DuckDB"
+               ? [mechanism.servedBy]
+               : [mechanism.servedBy, "materialized"],
+         ).toContain(served.kind);
          expect(served.rows).toEqual(liveBefore.rows);
          expect((liveBefore.rows as unknown[]).length).toBe(2);
+      });
+
+      it("holds live's rows in its own table, read directly, as text", async () => {
+         if (!mechanism.storesTotal) return;
+         const downstream = Object.values(entriesOf(second)).find((e) =>
+            mechanism.downstream.test(e.sourceName ?? ""),
+         )!;
+         const warehouse = await env.getMalloyConnection("warehouse");
+         const result = await warehouse.runSQL(
+            tier.rowsSQL(
+               `SELECT cat, CAST(total AS VARCHAR) AS total_text FROM ${downstream.physicalTableName} ORDER BY cat`,
+            ),
+         );
+         expect(
+            (result.rows as Record<string, unknown>[]).map((r) => ({
+               cat: String(r["cat"]),
+               total_text: String(r["total_text"]),
+            })),
+         ).toEqual(liveBefore.rows);
       });
    });
 }
@@ -412,9 +463,18 @@ describe("a host's instructions listing a view before its upstream", () => {
       root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "dr-")));
       const envPath = path.join(root, "env");
       fs.mkdirSync(envPath);
-      writePackageFiles(path.join(envPath, PKG), MECHANISMS[1].files, {
-         manifest: { name: PKG, description: "fixture" },
-      });
+      writePackageFiles(
+         path.join(envPath, PKG),
+         {
+            "m.malloy": MECHANISMS[1].files["m.malloy"].replace(
+               "__RAW__",
+               "main.dr_raw",
+            ),
+         },
+         {
+            manifest: { name: PKG, description: "fixture" },
+         },
+      );
       db = new DuckDBConnection(":memory:");
       await db.initialize();
       await initializeSchema(db);
@@ -436,7 +496,7 @@ describe("a host's instructions listing a view before its upstream", () => {
          [],
       );
       const warehouse = await env.getMalloyConnection("warehouse");
-      await warehouse.runSQL(`CREATE TABLE dr_raw AS ${RAW_ROWS}`);
+      await warehouse.runSQL(`CREATE TABLE main.dr_raw AS ${RAW_ROWS}`);
       await env.addPackage(PKG);
       pkg = await env.getPackage(parsePackageName(PKG), false);
       service = serviceOverEnvironment(
