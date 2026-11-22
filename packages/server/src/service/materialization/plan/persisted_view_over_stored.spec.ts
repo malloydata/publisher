@@ -160,4 +160,33 @@ source: z is a extend {
       expect(tableOf("z__by_cat__view")).toBeDefined();
       expect(tableOf("z__by_cat__view")!.overStoredBase).toBeUndefined();
    });
+
+   it("declines a #(materialize) pair table (an inlined join_many): it holds a row per pair, not the source's rows", async () => {
+      const { c } = await packages.plan({
+         "m.malloy": `${RAW}
+source: picks is duckdb.sql("""select 'a' as cat, 1 as pick_id""") extend {
+  primary_key: pick_id
+}
+
+#(materialize) inline=["p"]
+source: a is raw extend {
+  primary_key: cat
+  join_many: p is picks on p.cat = cat
+}
+
+source: s is a extend {
+  #@ persist name="os_v"
+  view: by_cat is { group_by: cat; aggregate: total is amt.sum() }
+}
+`,
+      });
+      const a = Object.values(c.tables).find((t) => t.source.name === "a");
+      expect(a?.kind).toBe("pair");
+      const view = Object.values(c.tables).find(
+         (t) => t.source.name === "s__by_cat__view",
+      ) as { overStoredBase?: unknown } | undefined;
+      // Built from its definition, as before, never over the pair table.
+      expect(view).toBeDefined();
+      expect(view!.overStoredBase).toBeUndefined();
+   });
 });

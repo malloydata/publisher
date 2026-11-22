@@ -155,6 +155,33 @@ query: q is a -> { group_by: cat; aggregate: total is amt.sum() }
       storesTotal: true,
    },
    {
+      label: "persisted view over a #(materialize) source that inlines a join_one",
+      files: {
+         "m.malloy": `${HEAD}source: cats is warehouse.sql("""
+  SELECT 'a' AS cat, 'Alpha' AS label UNION ALL SELECT 'b', 'Beta'
+""") extend { primary_key: cat }
+
+#(materialize) inline=["k"]
+source: a is raw extend {
+  join_one: k is cats on cat = k.cat
+}
+
+source: s is a extend {
+  #@ persist name="dr_v"
+  view: by_cat is {
+    group_by: cat is k.label
+    aggregate: total is amt.sum()
+  }
+}
+`,
+      },
+      upstream: "a",
+      downstream: /^s__by_cat__view$/,
+      query: `run: s -> by_cat ${AS_TEXT}`,
+      servedBy: "view",
+      storesTotal: true,
+   },
+   {
       label: "rollup over an inherited #@ persist",
       files: {
          "m.malloy": `${HEAD}${PERSIST_A}
