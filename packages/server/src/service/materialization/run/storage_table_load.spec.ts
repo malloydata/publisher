@@ -45,10 +45,10 @@ const dest = {
 describe("readerSql renders only allowlisted, typed options", () => {
    it("reads each format with its own reader", () => {
       expect(readerSql("gs://b/x.parquet", "parquet")).toBe(
-         "read_parquet('gs://b/x.parquet')",
+         "read_parquet('gs://b/x.parquet', hive_partitioning = false)",
       );
       expect(readerSql("gs://b/x.json", "json")).toBe(
-         "read_json_auto('gs://b/x.json')",
+         "read_json_auto('gs://b/x.json', hive_partitioning = false)",
       );
       expect(
          readerSql("gs://b/x.csv", "csv", {
@@ -56,7 +56,9 @@ describe("readerSql renders only allowlisted, typed options", () => {
             delimiter: ";",
             skip: 2,
          }),
-      ).toBe("read_csv('gs://b/x.csv', header = true, delim = ';', skip = 2)");
+      ).toBe(
+         "read_csv('gs://b/x.csv', header = true, delim = ';', skip = 2, hive_partitioning = false)",
+      );
       expect(readerSql("gs://b/x.xlsx", "xlsx", { sheet: "Q3 '24" })).toBe(
          "read_xlsx('gs://b/x.xlsx', sheet = 'Q3 ''24')",
       );
@@ -73,8 +75,29 @@ describe("readerSql renders only allowlisted, typed options", () => {
 
    it("escapes a quote in the object path", () => {
       expect(readerSql("gs://b/o'brien.csv", "csv")).toBe(
-         "read_csv('gs://b/o''brien.csv')",
+         "read_csv('gs://b/o''brien.csv', hive_partitioning = false)",
       );
+   });
+
+   it("keeps an object's own column k when it sits under a k=v directory", async () => {
+      const lake = openTempDuckDB("reader-hive-", "reader_hive");
+      try {
+         const dir = path.join(lake.dir, "k=v").replaceAll(path.sep, "/");
+         fs.mkdirSync(dir);
+         fs.writeFileSync(`${dir}/x.csv`, "k,a\n1,2\n");
+         fs.writeFileSync(`${dir}/x.json`, '{"k":1,"a":2}\n');
+         await lake.connection.runSQL(
+            `COPY (SELECT 1 AS k, 2 AS a) TO '${dir}/x.parquet' (FORMAT parquet)`,
+         );
+         for (const format of ["csv", "json", "parquet"] as const) {
+            const { rows } = await lake.connection.runSQL(
+               `SELECT CAST(k AS VARCHAR) AS k FROM ${readerSql(`${dir}/x.${format}`, format)}`,
+            );
+            expect(rows).toEqual([{ k: "1" }]);
+         }
+      } finally {
+         await lake.dispose();
+      }
    });
 });
 
@@ -303,6 +326,28 @@ describe("objectUnreadable: the reader failures a retry cannot cure", () => {
          expect(refusal?.detail).toBeUndefined();
       }
    });
+
+   it.each([
+      [
+         "an https spelling",
+         "https://storage.googleapis.com/lake/org_1/staging/b.parquet",
+      ],
+      ["a percent-encoded spelling", "gs://lake/org_1/staging/b%2Eparquet%20x"],
+   ])(
+      "names no object it was not sent when the reader respells a URI as %s",
+      (_, respelled) => {
+         const refusal = objectUnreadable(
+            new Error(
+               `HTTP Error: HTTP GET error on '${respelled}' (HTTP 404)\n\nLINE 1: SELECT * FROM read_parquet(['${uris[0]}'])`,
+            ),
+            uris,
+         );
+         expect(refusal?.message).toBe(
+            "An object of the load could not be read: HTTP Error: HTTP GET error on 'the object' (HTTP 404)",
+         );
+         expect(refusal?.detail).toBeUndefined();
+      },
+   );
 
    it.each([
       [

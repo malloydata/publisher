@@ -893,6 +893,7 @@ describe.skipIf(!SUPERUSER)(
                "pg_catalog",
                "temp",
                "system",
+               "__ducklake_metadata_x",
             ]) {
                const put = await refusal(
                   admin.createSchema(catalog, reserved, {}, false),

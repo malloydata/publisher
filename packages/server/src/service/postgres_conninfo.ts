@@ -21,7 +21,7 @@ import { Client, type ClientConfig } from "pg";
 import tls from "tls";
 import { components } from "../api";
 import { logger } from "../logger";
-import { externalEnv } from "../settings";
+import { externalEnv, type ExternalVariable } from "../settings";
 import { escapeSQL } from "./duckdb_session_setup";
 import type { ProxyEndpoint } from "./proxy";
 
@@ -642,13 +642,36 @@ export function splitPgAttachCredentials(
    return { path: kept.join(" "), user, password, sslpassword };
 }
 
-/** libpq keys node-pg would silently drop, each able to demand more of the connection than node-pg gives: refused rather than ignored. */
-const UNHONORED_KEYS = [
-   "channel_binding",
-   "require_auth",
-   "gssencmode",
-   "sslcrl",
-] as const;
+/**
+ * libpq settings node-pg cannot follow, each with the variable libpq falls back
+ * to and the values that demand more than node-pg gives; `disable`, `prefer`,
+ * `allow` and a TLS minimum Node already meets (its default is TLSv1.2) ask for
+ * nothing it lacks.
+ */
+const UNHONORED_SETTINGS: ReadonlyArray<{
+   key: string;
+   env: ExternalVariable;
+   demands: (value: string) => boolean;
+}> = [
+   {
+      key: "channel_binding",
+      env: "PGCHANNELBINDING",
+      demands: (v) => v.toLowerCase() === "require",
+   },
+   { key: "require_auth", env: "PGREQUIREAUTH", demands: (v) => v !== "" },
+   {
+      key: "gssencmode",
+      env: "PGGSSENCMODE",
+      demands: (v) => v.toLowerCase() === "require",
+   },
+   { key: "sslcrl", env: "PGSSLCRL", demands: (v) => v !== "" },
+   { key: "sslcrldir", env: "PGSSLCRLDIR", demands: (v) => v !== "" },
+   {
+      key: "ssl_min_protocol_version",
+      env: "PGSSLMINPROTOCOLVERSION",
+      demands: (v) => v.toLowerCase() === "tlsv1.3",
+   },
+];
 
 /**
  * A node-pg client config for a libpq connection string, for work the DuckDB
@@ -657,8 +680,8 @@ const UNHONORED_KEYS = [
  * wins), and refuses what it cannot follow: a `service`, a `hostaddr` (in the
  * string or as PGSERVICE / PGHOSTADDR), or a list of hosts, none of which a
  * single node-pg connection can take, and a security setting node-pg would
- * ignore ({@link UNHONORED_KEYS}). The TLS mapping is {@link pgClientSsl}.
- * A dead connection is noticed by keepalive, and a query that stops
+ * ignore ({@link UNHONORED_SETTINGS}), from the string or the environment. The
+ * TLS mapping is {@link pgClientSsl}. A dead connection is noticed by keepalive, and a query that stops
  * answering by its timeout. Exported for tests.
  */
 export function pgClientConfig(
@@ -686,11 +709,16 @@ export function pgClientConfig(
          `${subject}: the connection string sets ${unsupported ? `'${unsupported}'` : `more than one '${listed}'`}, which loads cannot use; spell host, port and dbname.`,
       );
    }
-   const unhonored = UNHONORED_KEYS.find((key) => params.has(key));
-   if (unhonored) {
-      throw new Error(
-         `${subject}: the connection string sets '${unhonored}', which the load lock's client cannot honor; remove it.`,
-      );
+   for (const { key, env, demands } of UNHONORED_SETTINGS) {
+      const inString = params.has(key);
+      const value = inString ? params.get(key) : externalEnv(env);
+      if (value && demands(value)) {
+         throw new Error(
+            inString
+               ? `${subject}: the connection string sets '${key}', which the load lock's client cannot honor; remove it.`
+               : `${subject}: ${env} is set in the environment, which the load lock's client cannot honor; unset it.`,
+         );
+      }
    }
    const port = params.get("port") || undefined;
    for (const [key, name] of [

@@ -18,7 +18,13 @@ export type ExternalVariable =
    | "PGSSLCERT"
    | "PGSSLKEY"
    | "PGSERVICE"
-   | "PGHOSTADDR";
+   | "PGHOSTADDR"
+   | "PGCHANNELBINDING"
+   | "PGREQUIREAUTH"
+   | "PGGSSENCMODE"
+   | "PGSSLCRL"
+   | "PGSSLCRLDIR"
+   | "PGSSLMINPROTOCOLVERSION";
 
 export function externalEnv(name: ExternalVariable): string | undefined {
    return process.env[name];

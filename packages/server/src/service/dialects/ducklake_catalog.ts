@@ -13,6 +13,9 @@ import { runInternalSQL } from "../duckdb_lockdown";
 import { escapeSQL, runSQLRows } from "../duckdb_session_setup";
 import { quoteIdentifier } from "../quoting";
 
+/** The prefix of an attached catalog's metadata catalog name, whose tables hold every schema's file lists. */
+export const METADATA_CATALOG_PREFIX = "__ducklake_metadata_";
+
 /**
  * The metadata catalog of a DuckLake catalog attached as `alias`: DuckLake
  * exposes it as `__ducklake_metadata_<alias>`, with the `ducklake_*` tables in
@@ -24,7 +27,7 @@ export function metadataCatalogRef(
    metadataSchema: string | undefined,
 ): string {
    return [
-      `__ducklake_metadata_${alias}`,
+      `${METADATA_CATALOG_PREFIX}${alias}`,
       ...(metadataSchema ? [metadataSchema] : []),
    ]
       .map((part) => quoteIdentifier(part, "duckdb"))

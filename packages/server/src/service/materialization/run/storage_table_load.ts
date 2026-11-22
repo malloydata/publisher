@@ -65,6 +65,8 @@ export interface LoadOptions {
 }
 
 const IDENT = /^[A-Za-z_][A-Za-z0-9_]*$/;
+/** A `k=v` directory above an object would otherwise replace its column k with the path's text; read_xlsx has no such parameter. */
+const NO_HIVE = "hive_partitioning = false";
 
 /** The reader call for one object, with only allowlisted, typed options. */
 export function readerSql(
@@ -95,7 +97,7 @@ export function readerSql(
          }
          args.push(`skip = ${options.skip}`);
       }
-      return `read_csv(${[path, ...args].join(", ")})`;
+      return `read_csv(${[path, ...args, NO_HIVE].join(", ")})`;
    }
    if (format === "xlsx") {
       if (options.header !== undefined) {
@@ -110,9 +112,9 @@ export function readerSql(
       return `read_xlsx(${[path, ...args].join(", ")})`;
    }
    if (format === "json") {
-      return `read_json_auto(${path})`;
+      return `read_json_auto(${[path, NO_HIVE].join(", ")})`;
    }
-   return `read_parquet(${path})`;
+   return `read_parquet(${[path, NO_HIVE].join(", ")})`;
 }
 
 /**
@@ -294,18 +296,29 @@ function readerFault(
 /** Where DuckDB starts echoing the statement it failed, which names every object it read. */
 const ECHOED_SQL = /\n\s*LINE \d+:/;
 
-/** DuckDB's words for a reader's failure, each URI replaced by its label and the SQL it echoes after `LINE` dropped. */
+/** An object address in a message, as httpfs may respell it (`https://storage.googleapis.com/…`, percent-encoded). */
+const OBJECT_ADDRESS = /\b(?:gs|s3|gcs|r2|az|abfss|https?):\/\/[^\s'"]+/g;
+
+/**
+ * DuckDB's words for a reader's failure, each URI replaced by its label and the
+ * SQL it echoes after `LINE` dropped. When no sent URI appears, the reader
+ * respelled it, so any object address left is replaced by a generic label
+ * rather than shown.
+ */
 function readerWords(
    error: Error,
    labels: readonly (readonly [uri: string, label: string])[],
 ): string {
    let words = error.message.split(ECHOED_SQL)[0];
+   let named = false;
    // Longest first, so a URI that prefixes another never splits it.
    for (const [uri, label] of [...labels].sort(
       ([a], [b]) => b.length - a.length,
    )) {
+      if (words.includes(uri)) named = true;
       words = words.split(uri).join(label);
    }
+   if (!named) words = words.replace(OBJECT_ADDRESS, "the object");
    return words.trim();
 }
 
@@ -650,9 +663,8 @@ export const quotedList = (values: readonly string[]) =>
    values.map((v) => `'${escapeSQL(v)}'`).join(", ");
 /** DuckDB matches names by ASCII case, so a collision is judged the same way. */
 const fold = (name: string) => name.replace(/[A-Z]/g, (c) => c.toLowerCase());
-/** A read of the objects: a `k=v` directory above one would otherwise replace column k with the path's text. */
 const readObjects = (uris: readonly string[], options: string[] = []) =>
-   `read_parquet(${[`[${quotedList(uris)}]`, "hive_partitioning = false", ...options].join(", ")})`;
+   `read_parquet(${[`[${quotedList(uris)}]`, NO_HIVE, ...options].join(", ")})`;
 
 const SIGNED_INTEGERS = ["TINYINT", "SMALLINT", "INTEGER", "BIGINT", "HUGEINT"];
 const UNSIGNED_INTEGERS = [

@@ -106,6 +106,12 @@ describe("destinationOverlap", () => {
          "materialized",
       );
       expect(withReadable(["stripe"], "materialized")).toBeUndefined();
+      expect(withReadable(["materialized"], "Materialized")).toBe(
+         "Materialized",
+      );
+      expect(withReadable(["Materialized"], "materialized")).toBe(
+         "materialized",
+      );
       // `main` is readable already; listing it adds no exposure.
       expect(withReadable(["stripe", "main"])).toBeUndefined();
    });

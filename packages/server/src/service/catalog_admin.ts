@@ -35,6 +35,7 @@ import {
    SYSTEM_SCHEMAS,
 } from "./dialects/ducklake";
 import {
+   METADATA_CATALOG_PREFIX,
    type PartitionKey,
    tablePartitionKeys,
 } from "./dialects/ducklake_catalog";
@@ -532,7 +533,7 @@ export class CatalogAdmin {
          )) as { schema_name: string; table_name: string }[];
          // ducklake_table_info names a table's schema by id; the catalog's own
          // schema table maps the name to it (the live row, end_snapshot null).
-         const meta = `${q(`__ducklake_metadata_${name}`)}.${q(name)}`;
+         const meta = `${q(`${METADATA_CATALOG_PREFIX}${name}`)}.${q(name)}`;
          const sizes = new Map<string, number>();
          for (const r of (await rows(
             s,
@@ -1526,9 +1527,13 @@ function identifier(value: unknown, what: string): string {
    return value;
 }
 
-/** Refuses a name the engine owns or DuckLake needs, whatever its case. */
+/** Refuses a name the engine owns or DuckLake needs, whatever its case, and the metadata catalogs' prefix, as `readableSchemas` does. */
 function refuseReserved(schema: string): void {
-   if (RESERVED_SCHEMAS.includes(schema.toLowerCase())) {
+   const folded = schema.toLowerCase();
+   if (
+      RESERVED_SCHEMAS.includes(folded) ||
+      folded.startsWith(METADATA_CATALOG_PREFIX)
+   ) {
       throw new CatalogAdminError(
          400,
          "SCHEMA_RESERVED",

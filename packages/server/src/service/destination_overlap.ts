@@ -69,9 +69,10 @@ export function destinationOverlaps(
                connection: connection.name ?? "",
                destination: destination.name ?? "",
                reason,
+               // DuckDB matches schema names regardless of case.
                ...(normalizeReadableSchemas(
                   connection.ducklakeConnection?.readableSchemas,
-               )?.includes(schema)
+               )?.some((name) => name.toLowerCase() === schema.toLowerCase())
                   ? { listsDestinationSchema: schema }
                   : {}),
             });

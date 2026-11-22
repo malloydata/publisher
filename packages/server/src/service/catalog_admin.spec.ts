@@ -39,6 +39,26 @@ async function refusal(body: unknown): Promise<CatalogAdminError> {
    return error as CatalogAdminError;
 }
 
+describe("a schema name", () => {
+   it("may not start with the metadata catalogs' prefix, on a create or a drop", async () => {
+      for (const attempt of [
+         () => admin.createSchema("c", "__ducklake_metadata_x", {}, false),
+         () => admin.deleteSchema("c", "__ducklake_metadata_x"),
+         () => admin.deleteSchema("c", "__DuckLake_Metadata_x"),
+      ]) {
+         const error = await attempt().then(
+            () => undefined,
+            (e) => e,
+         );
+         expect(error).toBeInstanceOf(CatalogAdminError);
+         expect([
+            (error as CatalogAdminError).status,
+            (error as CatalogAdminError).reason,
+         ]).toEqual([400, "SCHEMA_RESERVED"]);
+      }
+   });
+});
+
 describe("a load's request body", () => {
    it("passes validation when every rule is met, and only then reaches the catalog database", async () => {
       const error = await admin

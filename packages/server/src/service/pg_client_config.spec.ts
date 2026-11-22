@@ -26,6 +26,12 @@ const ENV_VARIABLES = [
    "PGSSLKEY",
    "PGSERVICE",
    "PGHOSTADDR",
+   "PGCHANNELBINDING",
+   "PGREQUIREAUTH",
+   "PGGSSENCMODE",
+   "PGSSLCRL",
+   "PGSSLCRLDIR",
+   "PGSSLMINPROTOCOLVERSION",
    "NODE_EXTRA_CA_CERTS",
 ] as const;
 const priorEnv = new Map<string, string | undefined>();
@@ -80,24 +86,79 @@ describe("pgClientConfig", () => {
       });
    });
 
-   it.each(["channel_binding", "require_auth", "gssencmode", "sslcrl"])(
-      "refuses %s, which node-pg would drop, naming the key and not the string",
-      (key) => {
-         const error = String(
-            (() => {
-               try {
-                  config(`host=h password=secret ${key}=require`);
-               } catch (e) {
-                  return e;
-               }
-            })(),
-         );
+   const refusal = (conninfo: string) =>
+      String(
+         (() => {
+            try {
+               config(conninfo);
+            } catch (e) {
+               return e;
+            }
+         })(),
+      );
+
+   it.each([
+      ["channel_binding", "require"],
+      ["gssencmode", "require"],
+      ["require_auth", "scram-sha-256"],
+      ["sslcrl", "/etc/crl.pem"],
+      ["sslcrldir", "/etc/crl"],
+      ["ssl_min_protocol_version", "TLSv1.3"],
+   ])(
+      "refuses %s=%s, which node-pg would drop, naming the key and not the string",
+      (key, value) => {
+         const error = refusal(`host=h password=secret ${key}=${value}`);
          expect(error).toContain(
             `test: the connection string sets '${key}', which the load lock's client cannot honor; remove it.`,
          );
          expect(error).not.toContain("secret");
       },
    );
+
+   it.each([
+      ["PGCHANNELBINDING", "require"],
+      ["PGGSSENCMODE", "require"],
+      ["PGREQUIREAUTH", "scram-sha-256"],
+      ["PGSSLCRL", "/etc/crl.pem"],
+      ["PGSSLCRLDIR", "/etc/crl"],
+      ["PGSSLMINPROTOCOLVERSION", "TLSv1.3"],
+   ] as const)(
+      "refuses %s=%s in the environment, naming the variable and not the string",
+      (name, value) => {
+         process.env[name] = value;
+         const error = refusal("host=h password=secret");
+         expect(error).toContain(
+            `test: ${name} is set in the environment, which the load lock's client cannot honor; unset it.`,
+         );
+         expect(error).not.toContain("secret");
+      },
+   );
+
+   it.each([
+      "gssencmode=disable",
+      "gssencmode=prefer",
+      "channel_binding=disable",
+      "channel_binding=prefer",
+      "ssl_min_protocol_version=TLSv1.2",
+      "ssl_min_protocol_version=TLSv1",
+      "require_auth=",
+   ])("accepts %s, which asks for nothing node-pg lacks", (setting) => {
+      expect(config(`host=h ${setting}`)).toMatchObject({ host: "h" });
+   });
+
+   it("accepts the same relaxed values from the environment", () => {
+      process.env.PGCHANNELBINDING = "prefer";
+      process.env.PGGSSENCMODE = "disable";
+      process.env.PGSSLMINPROTOCOLVERSION = "TLSv1.2";
+      expect(config("host=h")).toMatchObject({ host: "h" });
+   });
+
+   it("lets the connection string override a demanding variable, as libpq does", () => {
+      process.env.PGCHANNELBINDING = "require";
+      expect(config("host=h channel_binding=disable")).toMatchObject({
+         host: "h",
+      });
+   });
 
    it("bounds a connection that goes quiet: keepalive, and a timeout on every query", () => {
       expect(config("host=h")).toMatchObject({
