@@ -410,11 +410,11 @@ for (const [tier, mechanism] of tiers.flatMap((t) =>
          // On Postgres the router may answer from the upstream's served
          // copy instead, at its read cost; the stored rows are compared
          // directly below.
-         expect(
+         const kinds: (string | undefined)[] =
             tier.label === "DuckDB"
                ? [mechanism.servedBy]
-               : [mechanism.servedBy, "materialized"],
-         ).toContain(served.kind);
+               : [mechanism.servedBy, "materialized"];
+         expect(kinds).toContain(served.kind);
          expect(served.rows).toEqual(liveBefore.rows);
          expect((liveBefore.rows as unknown[]).length).toBe(2);
       });
@@ -435,7 +435,7 @@ for (const [tier, mechanism] of tiers.flatMap((t) =>
                cat: String(r["cat"]),
                total_text: String(r["total_text"]),
             })),
-         ).toEqual(liveBefore.rows);
+         ).toEqual(liveBefore.rows as { cat: string; total_text: string }[]);
       });
    });
 }
