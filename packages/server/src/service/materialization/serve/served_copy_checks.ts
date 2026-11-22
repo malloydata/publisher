@@ -12,7 +12,7 @@
  * (served_copy_serve.ts).
  */
 
-import { queryTimezoneOf } from "../../governance/ir/compiled_model";
+import { queryTimezoneOf, sameZone } from "../../governance/ir/compiled_model";
 import { annotatedJoinedOutput } from "../../governance/ir/joined_field_output";
 import {
    joinGrainAggregatePaths,
@@ -653,18 +653,4 @@ function readsColumn(
             /^\d+$/.test(field.slice(internal.length + 1)))
       );
    });
-}
-
-/**
- * Whether two query time zones are one: unset is `'UTC'`, Malloy's default,
- * which compiles to the same SQL. Only that spelling: an alias such as
- * `'Etc/UTC'` is another zone, since a dialect may not know it (MySQL without
- * its time zone tables converts it to NULL).
- */
-export function sameZone(
-   a: string | undefined,
-   b: string | undefined,
-): boolean {
-   const utc = (z: string | undefined) => (z === "UTC" ? undefined : z);
-   return utc(a) === utc(b);
 }
