@@ -107,11 +107,7 @@ import {
 } from "./build_file_generator";
 import { rollupStoredBaseCopyName } from "../text/read_text";
 import type { RefusedReason } from "../domain/types";
-import {
-   reachedUpstreams,
-   storedElsewhereReason,
-   UPSTREAM_TABLE_UNUSABLE_REASON,
-} from "./downstream_upstreams";
+import { reachedUpstreams } from "./downstream_upstreams";
 
 /**
  * A model's `#(materialize)` companion, as rollup_compile reads it: its plans
@@ -465,18 +461,18 @@ function rollupBuildCopies(
 /**
  * The database rollups whose base is persisted and whose base's table they
  * cannot be built from, each refused at plan time with which upstream and
- * why, since strict upstreams forbid recomputing the base from raw:
- *
- *  - an upstream stored in a `storage=` destination, whose table a build
- *    in the warehouse cannot read (`UPSTREAM_TABLE_UNUSABLE_REASON`);
- *  - a base read through a build copy ({@link readsBuildCopy}): a
+ * why, since strict upstreams forbid recomputing the base from raw: a base
+ * read through a build copy ({@link readsBuildCopy}): a
  *    given-reading term the base re-applies at read (`reads_given` on the
  *    base's rows, refused as `inherited_where_with_given`) or a private
  *    grain dimension (`hidden_field`), which the base's table cannot serve
  *    a rollup grouped from it exactly.
  *
  * A rollup over a base no persisted source is under is not a downstream,
- * and builds from its rows as planned. A `storage=` rollup is unchanged.
+ * and builds from its rows as planned. A `storage=` rollup is unchanged, and
+ * so, for now, is a database rollup over a `storage=` base, which builds
+ * over its author's rows (v1 `#@ preaggregate` plans a database grain
+ * beside a `storage=` one); refusing it awaits a decision.
  */
 function strictRollupRefusals(
    plans: readonly RollupVariantPlan[],
@@ -490,13 +486,9 @@ function strictRollupRefusals(
       if (base === undefined) continue;
       const upstreams = reachedUpstreams(base, modelDef, map);
       if (upstreams.length === 0) continue;
-      const stored = storedElsewhereReason(upstreams);
       let why: string | undefined;
       let reason: RefusedReason | undefined;
-      if (stored !== undefined) {
-         why = stored;
-         reason = UPSTREAM_TABLE_UNUSABLE_REASON;
-      } else if ((plan.readTimeTerms ?? []).length > 0) {
+      if ((plan.readTimeTerms ?? []).length > 0) {
          why =
             `its base reads a given in a term it re-applies at read, so its ` +
             `upstream '${upstreams[0].name}''s table holds rows the rollup ` +

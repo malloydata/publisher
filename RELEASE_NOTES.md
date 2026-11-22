@@ -23,9 +23,9 @@ Two consequences worth knowing. A section merged to `main` ships in the **next**
 
 ## [Unreleased] — a database downstream that cannot read its upstream's table is refused when the package is planned
 
-**Changed: under strict upstreams, a downstream is classified when its package is planned.** A database persisted view, named query or rollup over a persisted source is either built from that source's table, or refused at plan with a `*-not-built` warning (`persist-view-not-built`, `persist-query-not-built`, `rollup-not-built`) and an entry in `refusedSources` whose `message` names the upstream and why. A refused downstream is answered live, which reads its upstream's stored table through the served copy. Refused:
+**Changed: under strict upstreams, a downstream is classified when its package is planned.** A database persisted view, named query or rollup over a persisted source is built from that source's table, or, in the cases below, refused at plan with a `*-not-built` warning (`persist-view-not-built`, `persist-query-not-built`, `rollup-not-built`) and an entry in `refusedSources` whose `message` names the upstream and why. A refused downstream is answered live, which reads its upstream's stored table through the served copy. Refused:
 
-- a database view, query or rollup whose upstream is declared `storage=`: the warehouse build cannot read that table (with `PERSIST_STORAGE_MODE=off` the upstream has no table at all, and both answer live). Its `reason` is `storage_source_unsupported` for now; a dedicated value is proposed.
+- a database view or query whose upstream is declared `storage=`: the warehouse build cannot read that table (with `PERSIST_STORAGE_MODE=off` the upstream has no table at all, and both answer live). Its `reason` is `storage_source_unsupported` for now; a dedicated value is proposed.
 - a database rollup over a persisted base whose `where:` reads a given and is re-applied at read (`inherited_where_with_given`), or whose grain reads a private dimension (`hidden_field`).
 
 **Who is affected:** packages with such views, queries or rollups, which were built before by recomputing their upstream from the warehouse and are now answered live. A rollup over a base no persisted source is under is not affected.
