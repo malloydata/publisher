@@ -41,6 +41,10 @@ export const MATERIALIZATION_IMPORT_ALLOWLIST = {
       "2n",
    "package_load/package_load_worker.ts -> service/materialization/plan/build_plan":
       "2n",
+   // The barrel would load package_materialization, and with it db-duckdb,
+   // which a worker thread must never open (duckdb_instance_sharing.spec.ts).
+   "package_load/package_load_worker.ts -> service/materialization/serve/served_copy_serve":
+      "2n",
    "service/catalog_admin.ts -> service/materialization/run/materialization_build_session":
       "2n",
    "service/catalog_admin.ts -> service/materialization/run/storage_admin":
