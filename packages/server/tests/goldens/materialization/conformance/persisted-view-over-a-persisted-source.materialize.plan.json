@@ -1,6 +1,21 @@
 {
   "internal": {
-    "annotationFindings": [],
+    "annotationFindings": [
+      {
+        "code": "persist-view-not-built",
+        "message": "#@ persist on view \"by_region\" of source \"pv_base\" is not built, so the view is served live: its upstream 'pv_base' is stored in the storage= destination 'lake', whose table a build in the warehouse cannot read, and strict upstreams forbid recomputing it from raw; it is answered live, over 'pv_base''s table.",
+        "model": "m.malloy",
+        "refused": {
+          "name": "pv_base__by_region__view",
+          "reason": "storage_source_unsupported",
+          "sourceID": "pv_base__by_region__view@<pkg>/m.malloy.persist-view.malloy",
+          "tier": "database"
+        },
+        "route": "@",
+        "subject": "pv_base -> by_region",
+        "tier": "unservable"
+      }
+    ],
     "builds": [
       {
         "connectionName": "duckdb",
@@ -10,21 +25,11 @@
         "order": [
           "pv_base@<pkg>/m.malloy"
         ]
-      },
-      {
-        "connectionName": "duckdb",
-        "dependsOn": {
-          "pv_base__by_region__view@<pkg>/m.malloy.persist-view.malloy": []
-        },
-        "order": [
-          "pv_base__by_region__view@<pkg>/m.malloy.persist-view.malloy"
-        ]
       }
     ],
     "droppedPersistSources": [],
     "kinds": {
-      "pv_base@<pkg>/m.malloy": "materialize",
-      "pv_base__by_region__view@<pkg>/m.malloy.persist-view.malloy": "view"
+      "pv_base@<pkg>/m.malloy": "materialize"
     },
     "materializePlans": {
       "pv_base@<pkg>/m.malloy": {
@@ -84,18 +89,22 @@
       "pv_base@<pkg>/m.malloy": {
         "attributed": true,
         "classification": "row_level"
-      },
-      "pv_base__by_region__view@<pkg>/m.malloy.persist-view.malloy": {
-        "attributed": true,
-        "classification": "row_level"
       }
     },
     "sourceModelPaths": {
-      "pv_base@<pkg>/m.malloy": "m.malloy",
-      "pv_base__by_region__view@<pkg>/m.malloy.persist-view.malloy": "m.malloy"
+      "pv_base@<pkg>/m.malloy": "m.malloy"
     }
   },
-  "loadWarnings": [],
+  "loadWarnings": [
+    {
+      "code": "persist-view-not-built",
+      "message": "#@ persist on view \"by_region\" of source \"pv_base\" is not built, so the view is served live: its upstream 'pv_base' is stored in the storage= destination 'lake', whose table a build in the warehouse cannot read, and strict upstreams forbid recomputing it from raw; it is answered live, over 'pv_base''s table.",
+      "model": "m.malloy",
+      "reason": "storage_source_unsupported",
+      "severity": "warn",
+      "subject": "pv_base -> by_region"
+    }
+  ],
   "wirePlan": {
     "graphs": [
       {
@@ -108,22 +117,21 @@
             }
           ]
         ]
-      },
-      {
-        "connectionName": "duckdb",
-        "nodes": [
-          [
-            {
-              "dependsOn": [],
-              "sourceID": "pv_base__by_region__view@<pkg>/m.malloy.persist-view.malloy"
-            }
-          ]
-        ]
       }
     ],
     "omittedFiles": [],
     "omittedSources": [],
-    "refusedSources": {},
+    "refusedSources": {
+      "pv_base__by_region__view@<pkg>/m.malloy.persist-view.malloy": {
+        "message": "#@ persist on view \"by_region\" of source \"pv_base\" is not built, so the view is served live: its upstream 'pv_base' is stored in the storage= destination 'lake', whose table a build in the warehouse cannot read, and strict upstreams forbid recomputing it from raw; it is answered live, over 'pv_base''s table.",
+        "modelPath": "m.malloy",
+        "name": "pv_base__by_region__view",
+        "origin": "view",
+        "reason": "storage_source_unsupported",
+        "sourceID": "pv_base__by_region__view@<pkg>/m.malloy.persist-view.malloy",
+        "tier": "database"
+      }
+    },
     "sources": {
       "pv_base@<pkg>/m.malloy": {
         "annotationFields": {
@@ -160,33 +168,6 @@
         "sourceEntityId": "cca1df00b9373e067e5ea94d46dc1396e1ca1d6841cf3b625670efbda19b4da2",
         "sourceID": "pv_base@<pkg>/m.malloy",
         "sql": "sha256:39c379d1a9e6f2cd"
-      },
-      "pv_base__by_region__view@<pkg>/m.malloy.persist-view.malloy": {
-        "annotationFields": {
-          "name": "pv_base_by_region"
-        },
-        "columns": [
-          {
-            "name": "region",
-            "type": "string"
-          },
-          {
-            "name": "total",
-            "type": "number"
-          }
-        ],
-        "connectionName": "duckdb",
-        "dialect": "duckdb",
-        "freshness": null,
-        "modelPath": "m.malloy",
-        "name": "pv_base__by_region__view",
-        "origin": "view",
-        "preaggregate": null,
-        "queryMetadata": null,
-        "refresh": null,
-        "sourceEntityId": "a634b528cb34b67c79aaa476de57cdfa5f64b1c47abd877843a927606a776a4b",
-        "sourceID": "pv_base__by_region__view@<pkg>/m.malloy.persist-view.malloy",
-        "sql": "sha256:f27d084b1f69793b"
       }
     }
   }

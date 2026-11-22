@@ -451,7 +451,17 @@ source: pv_base is orders_raw -> {
          {
             name: "the view called",
             malloy: "run: pv_base -> by_region",
-            expect: "view",
+            // v2's view is a database view over a `storage=` source: refused
+            // at plan under strict upstreams, so answered from the source's
+            // stored table by its served copy.
+            expect: {
+               database: "view",
+               storage: "view",
+               // Over a database `#(materialize)` source it builds from its
+               // definition still, and the view leg answers.
+               materialize_database: "view",
+               materialize: "served",
+            },
          },
          {
             name: "the persisted source itself",
