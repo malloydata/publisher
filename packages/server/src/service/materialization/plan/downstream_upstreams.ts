@@ -25,7 +25,8 @@ import {
 /**
  * The refusal reason of a database downstream whose upstream's table lives
  * in a `storage=` destination, which a database build cannot read in place
- * of the upstream (and strict upstreams forbid recomputing it). `message`
+ * of the upstream (a downstream is never built by recomputing its upstream
+ * from raw, in a standalone build or a host's). `message`
  * names the upstream and its destination.
  */
 export const UPSTREAM_TABLE_UNUSABLE_REASON: RefusedReason =
@@ -142,7 +143,8 @@ export function storedElsewhereReason(
    return stored
       ? `its upstream '${stored.name}' is stored in the storage= destination ` +
            `'${stored.storage}', whose table a build in the warehouse cannot ` +
-           `read, and strict upstreams forbid recomputing it from raw; it is ` +
+           `read, and a downstream is never built by recomputing its upstream ` +
+           `from raw; it is ` +
            `answered live, over '${stored.name}''s table`
       : undefined;
 }

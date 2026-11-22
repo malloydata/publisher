@@ -3,7 +3,7 @@
     "annotationFindings": [
       {
         "code": "persist-view-not-built",
-        "message": "#@ persist on view \"by_region\" of source \"pv_base\" is not built, so the view is served live: its upstream 'pv_base' is stored in the storage= destination 'lake', whose table a build in the warehouse cannot read, and strict upstreams forbid recomputing it from raw; it is answered live, over 'pv_base''s table.",
+        "message": "#@ persist on view \"by_region\" of source \"pv_base\" is not built, so the view is served live: its upstream 'pv_base' is stored in the storage= destination 'lake', whose table a build in the warehouse cannot read, and a downstream is never built by recomputing its upstream from raw; it is answered live, over 'pv_base''s table.",
         "model": "m.malloy",
         "refused": {
           "name": "pv_base__by_region__view",
@@ -98,7 +98,7 @@
   "loadWarnings": [
     {
       "code": "persist-view-not-built",
-      "message": "#@ persist on view \"by_region\" of source \"pv_base\" is not built, so the view is served live: its upstream 'pv_base' is stored in the storage= destination 'lake', whose table a build in the warehouse cannot read, and strict upstreams forbid recomputing it from raw; it is answered live, over 'pv_base''s table.",
+      "message": "#@ persist on view \"by_region\" of source \"pv_base\" is not built, so the view is served live: its upstream 'pv_base' is stored in the storage= destination 'lake', whose table a build in the warehouse cannot read, and a downstream is never built by recomputing its upstream from raw; it is answered live, over 'pv_base''s table.",
       "model": "m.malloy",
       "reason": "upstream_table_unusable",
       "severity": "warn",
@@ -123,7 +123,7 @@
     "omittedSources": [],
     "refusedSources": {
       "pv_base__by_region__view@<pkg>/m.malloy.persist-view.malloy": {
-        "message": "#@ persist on view \"by_region\" of source \"pv_base\" is not built, so the view is served live: its upstream 'pv_base' is stored in the storage= destination 'lake', whose table a build in the warehouse cannot read, and strict upstreams forbid recomputing it from raw; it is answered live, over 'pv_base''s table.",
+        "message": "#@ persist on view \"by_region\" of source \"pv_base\" is not built, so the view is served live: its upstream 'pv_base' is stored in the storage= destination 'lake', whose table a build in the warehouse cannot read, and a downstream is never built by recomputing its upstream from raw; it is answered live, over 'pv_base''s table.",
         "modelPath": "m.malloy",
         "name": "pv_base__by_region__view",
         "origin": "view",

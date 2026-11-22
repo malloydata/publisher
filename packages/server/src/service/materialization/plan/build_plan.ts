@@ -1189,7 +1189,7 @@ async function collectGeneratedPersistedViews(
       if (!query && !plan) continue;
       // Offered a build over its upstreams' tables: decided here, once,
       // and recorded. A compile that is not the planned table refuses it:
-      // strict upstreams forbid recomputing its upstreams from raw.
+      // a downstream is never built by recomputing its upstreams from raw.
       // A candidate whose second compile failed builds from its definition.
       const overStoredBase = generated.overStoredSources.get(source.sourceID);
       if (overStoredBase) {
@@ -1207,7 +1207,8 @@ async function collectGeneratedPersistedViews(
             const reason =
                "its build over its upstreams' stored tables did not compile " +
                "to the planned table (a Publisher bug worth reporting), and " +
-               "strict upstreams forbid recomputing them from raw";
+               "a view or query is never built by recomputing its upstreams " +
+               "from raw";
             addAnnotationFinding(
                parts,
                query

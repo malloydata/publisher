@@ -483,7 +483,7 @@ async function persistedQueryRefusalReason(
 /**
  * The plan-time refusal of a database view or query (`storage` absent) an
  * upstream of which is stored in a `storage=` destination: its build in
- * the warehouse cannot read that table, and strict upstreams forbid
+ * the warehouse cannot read that table, and a downstream is never built by
  * recomputing the upstream from raw. Undefined otherwise.
  */
 function storedUpstreamRefusal(

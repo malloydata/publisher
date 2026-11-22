@@ -358,7 +358,8 @@ function rollupBuildCopies(
 /**
  * The database rollups whose base is persisted and whose base's table they
  * cannot be built from, each refused at plan time with which upstream and
- * why, since strict upstreams forbid recomputing the base from raw:
+ * why, since a rollup is never built by recomputing its base from raw, in
+ * any build:
  *
  *  - an upstream declared `storage=`, whose table lives in a storage
  *    destination a build in the warehouse cannot read
@@ -394,15 +395,15 @@ function strictRollupRefusals(
          why =
             `its base reads a given in a term it re-applies at read, so its ` +
             `upstream '${upstreams[0].name}''s table holds rows the rollup ` +
-            `cannot be grouped from exactly, and strict upstreams forbid ` +
-            `recomputing it from raw`;
+            `cannot be grouped from exactly, and a rollup is never built by ` +
+            `recomputing its base from raw`;
          reason = "inherited_where_with_given";
       } else if ((plan.privateGrain ?? []).length > 0) {
          why =
             `its grain reads ${plan.privateGrain!.map((g) => `'${g}'`).join(", ")}, ` +
             `which its upstream '${upstreams[0].name}' keeps private, so ` +
-            `its table cannot be grouped from exactly, and strict upstreams ` +
-            `forbid recomputing it from raw`;
+            `its table cannot be grouped from exactly, and a rollup is never ` +
+            `built by recomputing its base from raw`;
          reason = "hidden_field";
       }
       if (why === undefined || reason === undefined) continue;
@@ -496,7 +497,7 @@ export async function tryCompileRollupCompanion(args: {
          (p) => !copies.refused.some((r) => r.plan === p),
       );
       // Classified once, here: a database rollup over a persisted base is
-      // built from its base's table, or refused (strict upstreams).
+      // built from its base's table, or refused, in every build.
       const strict = strictRollupRefusals(planned.plans, args.modelDef);
       refused = [...refused, ...strict];
       planned.plans = planned.plans.filter(

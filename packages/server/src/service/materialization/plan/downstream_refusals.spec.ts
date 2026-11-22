@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * Plan-time classification under strict upstreams: a database downstream
+ * Plan-time classification, in every build (standalone or a host's): a database downstream
  * that cannot be built from its upstream's table is refused when the
  * package is planned, with a reason and a message naming which upstream and
  * why, and answered live: a persisted view, named query or rollup over a
