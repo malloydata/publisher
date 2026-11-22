@@ -11062,15 +11062,17 @@ components:
             and a host's instruction for it is refused, until a reload or a
             plan refresh reads the catalog and plans it at its address; the
             `*-not-built` warning names the table).
-            `upstream_table_unusable` (a database persisted view, named query
+            `upstream_table_unusable` (a persisted source, view, named query
             or rollup that is built from its upstream's stored table, and
             never by recomputing the upstream from raw, in any build, when
-            that table cannot be read: an upstream declared `storage=`, whose
-            table lives in a storage destination a build in the warehouse
-            cannot read; or an upstream that declares a persisted table but is
-            itself refused, or not planned, so it has none. `message` names the
-            upstream and why. Terminal until the model changes; the
-            declaration is answered live).
+            that table cannot be read where it is built: a database one over
+            an upstream declared `storage=`, whose table lives in a storage
+            destination a build in the warehouse cannot read; a `storage=` one
+            over an upstream stored in another destination; or one over an
+            upstream that declares a persisted table but is itself refused,
+            or not planned, so it has none. `message` names the upstream and
+            why. Terminal until the model changes; the declaration is
+            answered live).
 
 
             A persisted view or named query: `materialization_off` (persisted
@@ -12596,11 +12598,13 @@ components:
           description: >-
             The stored tables of other persisted sources this table's build
             read in place of their definitions, each named as the run's
-            manifest held it, with that table's `builtAt`. Recorded for a
-            database build whose SQL read an upstream's table (a chained
-            `#@ persist` source, a persisted view or named query, or a rollup
-            built over its base's table) and for a `storage=` rollup that
-            grouped its base's stored table. Provenance, not a location the
+            manifest held it, with that table's `builtAt`. Recorded for every
+            build that read an upstream's table: a database or `storage=`
+            build whose warehouse SQL read it (a chained `#@ persist` source,
+            a persisted view or named query, or a rollup built over its
+            base's table), and a `storage=` build that read its upstreams'
+            tables in its destination (a chained source, an extension, or a
+            rollup that grouped its base's stored table). Provenance, not a location the
             entry is served from: the entry's own table is
             `physicalTableName`. Absent, or empty (read the same), when the
             build read no upstream's table.

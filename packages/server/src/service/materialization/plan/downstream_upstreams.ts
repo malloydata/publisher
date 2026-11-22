@@ -148,3 +148,30 @@ export function storedElsewhereReason(
            `answered live, over '${stored.name}''s table`
       : undefined;
 }
+
+/**
+ * Why a planned table placed at `downstream` (a `storage=` destination's
+ * name, or undefined for its own warehouse) cannot be built over the table
+ * of an upstream placed at `upstream.storage`, or undefined when it can: a
+ * warehouse build cannot read a `storage=` table, and a `storage=` build
+ * reads only its own destination's tables (or the warehouse's). Neither is
+ * ever answered by recomputing the upstream from raw.
+ */
+export function placementReason(
+   downstream: string | undefined,
+   upstream: { name: string; storage?: string },
+): string | undefined {
+   if (upstream.storage === undefined || upstream.storage === downstream) {
+      return undefined;
+   }
+   if (downstream === undefined) {
+      return storedElsewhereReason([upstream as ReachedUpstream]);
+   }
+   return (
+      `its upstream '${upstream.name}' is stored in the storage= destination ` +
+      `'${upstream.storage}', and it is built into the storage= destination ` +
+      `'${downstream}', which cannot read that table; a downstream is never ` +
+      `built by recomputing its upstream from raw, so it is answered live, ` +
+      `over '${upstream.name}''s table`
+   );
+}

@@ -21,6 +21,14 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — breaking: a table whose upstream's table it cannot read is refused at plan, and a `storage=` view reads its warehouse upstream's table
+
+**Changed: a persisted table whose build would read an upstream's table it cannot read where it is built is refused when the package is planned, as `upstream_table_unusable`, naming the upstream and both placements.** That is a database `#@ persist` or `#(materialize)` source over a `storage=` upstream, and a `storage=` table over an upstream stored in another destination. Before, the first failed at build under `strictUpstreams` and was otherwise recomputed from raw, and the second failed at build as a missing upstream. Both are now absent from the plan and answered live, and a host's instruction for one is refused. **Who is affected:** a package declaring either shape.
+
+**Changed: a `storage=` persisted view or named query over a database `#@ persist` or `#(materialize)` upstream is built over that upstream's table.** Its build runs in the warehouse, reads the upstream's table, and copies the result into its destination, as a database view's build already did; before, it recomputed the upstream from raw. Its entry reports `upstreamReuse: "reused"`.
+
+**Added: `builtFrom` on every `storage=` build that read an upstream's table**, in its destination or in the warehouse, with that table's `builtAt`. Before, only a `storage=` rollup that grouped its base's table recorded it.
+
 ## [Unreleased] — fixed: a query-shaped source's filtered measure over a stored table compares as live
 
 **Fixed: an unpersisted query-shaped source whose stage filters a measure on a string (`count() { where: name = 'x' }`) over a stored upstream was answered from the upstream's table, comparing that string byte-exact, even where the origin compares it under a case-insensitive or other non-binary collation.** The filtered measure's `where:` is now judged as a stage's `where:` already was, so such a query is answered live, equal to live.

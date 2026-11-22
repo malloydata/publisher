@@ -7,8 +7,8 @@
  * kept, so its build reads the source's table. Its content address is
  * unchanged by the kept line (Malloy keys a target on its fully inlined
  * SQL), and its build SQL reads the upstream's table once the manifest
- * holds it. A view in a `storage=` destination, or over a `storage=`
- * source, is not offered the compile.
+ * holds it. A view in a `storage=` destination is offered it too (its build
+ * runs in the warehouse); one over a `storage=` source is not.
  */
 
 import { describe, expect, it } from "bun:test";
@@ -85,7 +85,7 @@ query: q is a -> { group_by: cat; aggregate: total is amt.sum() }
       }
    });
 
-   it("is not offered for a storage= view", async () => {
+   it("is offered for a storage= view over a database table, whose build runs in the warehouse", async () => {
       packages.settings({
          PUBLISHER_MATERIALIZE: "true",
          PERSIST_STORAGE_MODE: "on",
@@ -121,7 +121,7 @@ source: t is b extend {
       expect(table).toBeDefined();
       expect(
          (table as { overStoredBase?: unknown }).overStoredBase,
-      ).toBeUndefined();
+      ).toBeDefined();
    });
 
    it("re-roots a database #(materialize) source, and declines one read in another zone", async () => {

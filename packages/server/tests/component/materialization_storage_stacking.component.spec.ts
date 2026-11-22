@@ -611,6 +611,12 @@ describe.skipIf(process.platform === "win32")(
          const rollup = entryOf(m, /^daily__rollup__/);
          expect(rollup.storageDestinationName).toBe(LAKE);
          expect(rollup.upstreamReuse).toBe("reused");
+         // The base's table it grouped, named as what it was built from.
+         expect(
+            (
+               rollup as Entry & { builtFrom?: { sourceEntityId: string }[] }
+            ).builtFrom?.map((b) => b.sourceEntityId),
+         ).toEqual([base.sourceEntityId]);
          // Only the base's build read the warehouse.
          expect(warehouseReads()[0]).toContain(base.physicalTableName);
          expect(createdBy(rollup.physicalTableName)).not.toContain(RAW_MARK);

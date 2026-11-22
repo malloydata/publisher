@@ -145,7 +145,10 @@ import {
 } from "./persisted_query";
 import { tryCompilePersistedViewCompanion } from "./persisted_view_compile";
 import { overStoredProven } from "./over_stored_proof";
-import { UPSTREAM_TABLE_UNUSABLE_REASON } from "./downstream_upstreams";
+import {
+   placementReason,
+   UPSTREAM_TABLE_UNUSABLE_REASON,
+} from "./downstream_upstreams";
 import { deletingWindowsOf } from "./rolling_window";
 import {
    tryCompileRollupCompanion,
@@ -2194,10 +2197,56 @@ export function finishBuildPlan(
    );
    const known = refuseUpstreamUnread(refused);
    return refuseOverMissingUpstreams(
-      ctx.keepIncrementalUnbuildable
-         ? known
-         : refuseIncrementalUnbuildable(known),
+      refuseAcrossPlacements(
+         ctx.keepIncrementalUnbuildable
+            ? known
+            : refuseIncrementalUnbuildable(known),
+      ),
    );
+}
+
+/**
+ * Refuse, as `upstream_table_unusable`, each table whose build reads an
+ * upstream's table it cannot read where it is built ({@link
+ * placementReason}): a warehouse table over a `storage=` table, or a
+ * `storage=` table over one in another destination. Read from the build
+ * graph's edges, once, so a run never finds out; the refusal names the
+ * upstream and both placements.
+ */
+function refuseAcrossPlacements<
+   T extends Omit<FinishedBuildPlan, "connections">,
+>(compiled: T): T {
+   const findings: PackageAnnotationFinding[] = [];
+   const dropped = new Set<string>();
+   for (const build of compiled.builds) {
+      for (const [sourceID, reads] of Object.entries(build.dependsOn)) {
+         const table = compiled.tables[sourceID];
+         if (!table || dropped.has(sourceID)) continue;
+         const placed = declaredStorage(table.source)?.trim() || undefined;
+         for (const upstreamID of reads) {
+            const upstream = compiled.tables[upstreamID];
+            if (!upstream) continue;
+            const why = placementReason(placed, {
+               name: upstream.source.name,
+               storage: declaredStorage(upstream.source)?.trim() || undefined,
+            });
+            if (why === undefined) continue;
+            dropped.add(sourceID);
+            findings.push(
+               notBuiltFinding(
+                  compiled,
+                  sourceID,
+                  UPSTREAM_TABLE_UNUSABLE_REASON,
+                  why,
+               ),
+            );
+            break;
+         }
+      }
+   }
+   return dropped.size === 0
+      ? compiled
+      : withoutSources(compiled, findings, dropped);
 }
 
 /**

@@ -883,7 +883,7 @@ export class InstructedBuild {
             stacked = true;
          },
       };
-      const overStored = overStoredUpstreamSource(run, persistSource, gated);
+      const overStored = overStoredUpstreamSource(run, persistSource);
       const built = await this.buildGatedSource(
          run,
          overStored ??
@@ -2229,23 +2229,22 @@ function baseFreshEnough(
 }
 
 /**
- * The source a database persisted view or named query builds from when the
- * plan decided it builds over its upstreams' tables: its build source
+ * The source a persisted view or named query builds from when the plan
+ * decided it builds over its upstreams' warehouse tables: its build source
  * compiled over them, proven at plan time to build the planned table
- * (over_stored_proof.ts). Its build reads each upstream's table through the
- * build manifest as any chained build does, so a moved, missing or
- * wrong-tier upstream takes the ordinary chained path (recomputed, or under
- * strict upstreams refused). Undefined when the plan did not decide so, or
- * the instruction names a destination: it builds from its definition.
+ * (over_stored_proof.ts). In either tier its build runs in the warehouse and
+ * reads each upstream's table through the build manifest as any chained
+ * build does (a `storage=` one then copies the result into its
+ * destination), so a moved, missing or wrong-tier upstream takes the
+ * ordinary chained path, which refuses it. Undefined when the plan did not
+ * decide so: it builds from its definition.
  */
 function overStoredUpstreamSource(
    run: InstructedRun,
    persistSource: PersistSource,
-   gated: Pick<GatedSource, "instruction">,
 ): PersistSource | undefined {
    const table = run.compiled.tables[persistSource.sourceID];
    if (table?.kind !== "view" || !table.overStoredBase) return undefined;
-   if (gated.instruction.destination) return undefined;
    return table.overStoredBase.source;
 }
 

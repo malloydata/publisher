@@ -684,8 +684,9 @@ export async function tryCompilePersistedViewCompanion(args: {
 
 /**
  * The persisted views and queries that may be built over their upstreams'
- * stored tables, and what their second compile needs: a database view or
- * query (no `storage=`) whose definition reaches a source whose own notes
+ * stored tables, and what their second compile needs: a view or query,
+ * database or `storage=` (whose build runs in the warehouse too, and copies
+ * its result into its destination), whose definition reaches a source whose own notes
  * declare a database `#@ persist` (each such note kept, `keep`), or one
  * database `#(materialize)` source planned as a plain table in this model
  * ({@link storedMaterializeUpstream}: its copy re-rooted on its build
@@ -724,7 +725,7 @@ function overStoredUpstreamNotes(
       ...queries.map((p) => ({ ...p, root: contents[p.queryName] })),
    ];
    for (const plan of plans) {
-      if (plan.storage !== undefined || plan.root === undefined) continue;
+      if (plan.root === undefined) continue;
       const spans: string[] = [];
       const upstreamIDs: string[] = [];
       let chainable = true;

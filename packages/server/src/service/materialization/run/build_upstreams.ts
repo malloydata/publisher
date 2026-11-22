@@ -889,12 +889,30 @@ export function builtFromOf(
    builtEntries: Readonly<Record<string, ManifestEntry>>,
    rootAddress: string | undefined,
 ): ManifestEntry["builtFrom"] {
+   return builtFromAddresses(
+      Object.entries(manifest.entries).flatMap(([address, { tableName }]) =>
+         address !== rootAddress && tableName && readsTable(buildSQL, tableName)
+            ? [address]
+            : [],
+      ),
+      builtEntries,
+   );
+}
+
+/**
+ * `ManifestEntry.builtFrom` for the stored tables at `addresses` a build
+ * read (a `storage=` build that read its upstreams' tables in its
+ * destination names them itself), each with its entry's `builtAt`. Sorted by
+ * address. Undefined when none has a table.
+ */
+export function builtFromAddresses(
+   addresses: readonly string[],
+   builtEntries: Readonly<Record<string, ManifestEntry>>,
+): ManifestEntry["builtFrom"] {
    const out: NonNullable<ManifestEntry["builtFrom"]> = [];
-   for (const [address, { tableName }] of Object.entries(manifest.entries)) {
-      if (address === rootAddress) continue;
+   for (const address of new Set(addresses)) {
       const entry = builtEntries[address];
-      if (!entry?.physicalTableName || !tableName) continue;
-      if (!readsTable(buildSQL, tableName)) continue;
+      if (!entry?.physicalTableName) continue;
       out.push({
          sourceEntityId: address,
          physicalTableName: entry.physicalTableName,

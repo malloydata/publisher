@@ -8,8 +8,9 @@
  * the downstream groups, filters, counts distinct or orders a string whose
  * collation is not binary, a build over the upstream's table writes other
  * rows than live computes, and a query over the downstream that reads none
- * of those strings is served from that table. So such a build is taken from
- * the warehouse instead: every answer over the downstream equals live.
+ * of those strings is served from that table. So such a build is refused,
+ * never recomputed from raw, and the downstream is answered live: every
+ * answer over it equals live.
  *
  * Opt-in: set PUBLISHER_TEST_POSTGRES_URL to a server the test may create and
  * drop databases on.
@@ -147,6 +148,10 @@ source: b_lower is a -> { group_by: l is lower(ci); aggregate: n is count() }
 #@ persist storage="lake"
 source: b_binary is a -> { group_by: cc; aggregate: n is count(); order_by: cc; limit: 2 }
 
+// Unpersisted: answered by a served copy over the table of a, or live.
+source: x_mf is a -> { aggregate: n is count() { where: ci = 'apple' } }
+source: x_where is a -> { where: ci = 'apple'; aggregate: n is count() }
+
 #@ persist storage="lake"
 source: b_number is a -> { group_by: big is amt > 50; aggregate: n is count() }
 `;
@@ -160,47 +165,60 @@ interface Shape {
 }
 
 const SHAPES: Shape[] = [
-   // Stacked builds that compare a non-binary string: built from the
-   // warehouse instead, so the table holds live's rows and answers.
+   // A query, or an unpersisted query-shaped source, comparing `ci` over
+   // `a`'s table: live, each filtered measure's `{ where: }` judged as a
+   // `where:` is (a served copy over the table compared it byte-exact).
+   {
+      query: "run: a -> { aggregate: n is count() { where: ci = 'apple' } }",
+      servedBy: "live",
+   },
+   {
+      query: "run: a -> { where: ci = 'apple'; aggregate: n is count() }",
+      servedBy: "live",
+   },
+   { query: "run: x_mf -> { aggregate: t is sum(n) }", servedBy: "live" },
+   { query: "run: x_where -> { aggregate: t is sum(n) }", servedBy: "live" },
+   // Stacked builds that compare a non-binary string: refused, never
+   // recomputed from raw, so live answers.
    {
       query: "run: b_group -> { aggregate: g is count() }",
-      servedBy: "materialized",
+      servedBy: "live",
    },
    {
       query: "run: b_group -> { group_by: n; aggregate: g is count(); order_by: n }",
-      servedBy: "materialized",
+      servedBy: "live",
    },
    {
       query: "run: b_where -> { aggregate: c is count() }",
-      servedBy: "materialized",
+      servedBy: "live",
    },
    {
       query: "run: b_distinct -> { aggregate: d is max(d) }",
-      servedBy: "materialized",
+      servedBy: "live",
    },
    {
       query: "run: b_top -> { aggregate: t is sum(n) }",
-      servedBy: "materialized",
+      servedBy: "live",
    },
    {
       query: "run: b_lower -> { aggregate: g is count() }",
-      servedBy: "materialized",
+      servedBy: "live",
    },
    {
       query: "run: b_mf -> { aggregate: t is sum(n) }",
-      servedBy: "materialized",
+      servedBy: "live",
    },
    {
       query: "run: b_having -> { aggregate: t is sum(n) }",
-      servedBy: "materialized",
+      servedBy: "live",
    },
    {
       query: "run: b_ext -> { aggregate: t is sum(n) }",
-      servedBy: "materialized",
+      servedBy: "live",
    },
    {
       query: "run: b_join -> { aggregate: t is sum(n) }",
-      servedBy: "materialized",
+      servedBy: "live",
    },
    {
       query: "run: b_nest -> { select: total, apples.n }",
@@ -226,20 +244,23 @@ const SHAPES: Shape[] = [
    { query: "run: a -> { group_by: ci; aggregate: rn }", servedBy: "live" },
 ];
 
-/** Each stored table's build: stacked on its upstream, or from the warehouse. */
-const BUILT: Record<string, "reused" | "warehouse"> = {
-   b_group: "warehouse",
-   b_where: "warehouse",
-   b_distinct: "warehouse",
-   b_top: "warehouse",
-   b_lower: "warehouse",
+/**
+ * Each stored table's build: stacked on its upstream, from the warehouse (a
+ * rollup), or refused (never recomputed from raw).
+ */
+const BUILT: Record<string, "reused" | "warehouse" | "refused"> = {
+   b_group: "refused",
+   b_where: "refused",
+   b_distinct: "refused",
+   b_top: "refused",
+   b_lower: "refused",
    b_binary: "reused",
    b_number: "reused",
-   b_mf: "warehouse",
-   b_having: "warehouse",
-   b_ext: "warehouse",
-   b_join: "warehouse",
-   b_nest: "warehouse",
+   b_mf: "refused",
+   b_having: "refused",
+   b_ext: "refused",
+   b_join: "refused",
+   b_nest: "refused",
    a3__rollup__cc: "warehouse",
    a__rollup__ci: "warehouse",
    a2__rollup__cc: "reused",
@@ -427,15 +448,26 @@ describe.skipIf(!POSTGRES_URL)(
          await freshLoadPool();
       });
 
-      it("builds every stored table", () => {
+      it("builds every stored table but those it refuses, each refused as never recomputed from raw", () => {
          expect([run?.status, run?.error ?? null]).toEqual([
             "MANIFEST_FILE_READY",
             null,
          ]);
          const manifest = run?.manifest as {
-            failures?: Record<string, unknown>;
+            failures?: Record<string, { sourceName?: string; reason?: string }>;
          };
-         expect(manifest.failures ?? {}).toEqual({});
+         const failures = Object.values(manifest.failures ?? {});
+         expect(failures.map((f) => f.sourceName).sort()).toEqual(
+            Object.entries(BUILT)
+               .filter(([, how]) => how === "refused")
+               .map(([name]) => name)
+               .sort(),
+         );
+         for (const f of failures) {
+            expect(f.reason).toContain(
+               "a downstream is never built by recomputing its upstreams from raw",
+            );
+         }
       });
 
       it("stacks only a build that compares no string its source compares otherwise", () => {
@@ -444,8 +476,11 @@ describe.skipIf(!POSTGRES_URL)(
          for (const name of Object.keys(BUILT)) {
             const entry = got[name];
             if (entry === undefined) throw new Error(`no entry for ${name}`);
-            built[name] =
-               entry.upstreamReuse === "reused" ? "reused" : "warehouse";
+            built[name] = entry.error
+               ? "refused"
+               : entry.upstreamReuse === "reused"
+                 ? "reused"
+                 : "warehouse";
          }
          expect(built).toEqual(BUILT);
       });

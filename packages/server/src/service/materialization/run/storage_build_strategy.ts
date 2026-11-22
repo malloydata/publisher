@@ -102,6 +102,8 @@ import { dropStorageTable } from "./storage_admin";
 import { backupSuffix } from "./build_table_names";
 import {
    BuildEnvironment,
+   builtFromAddresses,
+   builtFromOf,
    ChainedPackageStaleError,
    ChainedPlanFacts,
    currentUpstreamEntries,
@@ -460,8 +462,11 @@ function recomputeAfterStackFailure(
    // the run, or a shape no retry carries (a source that reaches the
    // warehouse through a non-persisted source has no build over its
    // stored upstreams, and is refused, not retried).
-   throw err instanceof ChainedUpstreamMissingError
-      ? new ChainedUpstreamMissingError(err.missing, message, err.details)
+   if (err instanceof ChainedUpstreamMissingError) {
+      throw new ChainedUpstreamMissingError(err.missing, message, err.details);
+   }
+   throw err instanceof ChainedPackageStaleError
+      ? new ChainedPackageStaleError(message)
       : new ChainedShapeNotCarriedError(message);
 }
 
@@ -815,6 +820,22 @@ export class StorageBuildStrategy
                 ? { live: params.liveCollations }
                 : {}),
       });
+      // The stored tables it read: in its destination when it stacked on
+      // them, else the warehouse tables its SQL read.
+      const builtFrom =
+         stackedOnBase && params.storedBase
+            ? builtFromAddresses(
+                 [params.storedBase.address],
+                 params.builtEntries,
+              )
+            : result.readFrom
+              ? builtFromAddresses(result.readFrom, params.builtEntries)
+              : builtFromOf(
+                   params.buildSQL,
+                   manifest.buildManifest,
+                   params.builtEntries,
+                   sourceEntityId,
+                );
       return {
          sourceEntityId,
          sourceName: persistSource.name,
@@ -863,6 +884,7 @@ export class StorageBuildStrategy
          // bag, since the label is what makes BigQuery's read report.
          queryCostBytes: result.readCost?.bytesScanned ?? null,
          contract,
+         ...(builtFrom ? { builtFrom } : {}),
       };
    }
 
