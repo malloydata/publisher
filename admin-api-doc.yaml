@@ -88,7 +88,8 @@ paths:
         Creates a DuckLake catalog in the schema `name`, with its data under
         `dataPath`. Encryption is fixed now and cannot be changed later; the
         inlining limit and file-deletion grace are recorded in the catalog and
-        can be changed with PATCH. Each schema named is created. The schema may
+        can be changed with PATCH. With no `dataInliningRowLimit` the catalog
+        records 0, so every table is written as files. Each schema named is created. The schema may
         already exist, empty (created by whoever provisioned its owner role); the
         catalog's tables are then owned by that role. `409 CATALOG_EXISTS` when a
         catalog is already there.

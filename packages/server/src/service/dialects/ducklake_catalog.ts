@@ -19,7 +19,7 @@ import { quoteIdentifier } from "../quoting";
  * the catalog's metadata schema when one is configured, and in its default
  * schema otherwise.
  */
-function metadataCatalogRef(
+export function metadataCatalogRef(
    alias: string,
    metadataSchema: string | undefined,
 ): string {

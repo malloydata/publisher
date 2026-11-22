@@ -2180,6 +2180,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             severity: "warn" as const,
          })),
          ...this.mz.storageWarnings(),
+         ...this.mz.dataInliningWarnings(),
          ...this.mz.storedColumnTypeWarnings(),
          ...this.mz.nativeSchemaWarnings(),
          ...this.mz.databaseTableUnreadWarnings(),

@@ -95,7 +95,7 @@ import {
    destinationSchemaOf,
    storageTablePath,
 } from "../domain/storage_table_path";
-import { carriesAuthorSql, isSameCatalog } from "../domain/same_catalog_build";
+import { authorSqlCause, isSameCatalog } from "../domain/same_catalog_build";
 import { PASSTHROUGH_SOURCE_TYPES } from "../domain/source_connection_type";
 import { capabilitiesOf, STORAGE_DIALECT } from "../domain/dialect";
 
@@ -777,7 +777,7 @@ export async function buildSourceIntoStorage(params: {
    buildSQL: string;
    /**
     * Whether the source's compiled definition carries SQL its author wrote
-    * ({@link carriesAuthorSql}). Read only for a same-catalog build, which runs
+    * ({@link authorSqlCause}). Read only for a same-catalog build, which runs
     * on a read-write session and must refuse author SQL; absent counts as true.
     */
    sourceCarriesAuthorSql?: boolean;
@@ -1313,12 +1313,13 @@ export async function planChainedDownstream(params: {
    // downstream's own definition. Marked eligible, so the caller recomputes
    // from raw, where author SQL runs in the source warehouse (or a
    // same-catalog source is refused).
-   if (carriesAuthorSql(sourceDefOf(downstream))) {
+   const cause = authorSqlCause(sourceDefOf(downstream));
+   if (cause !== undefined) {
       throw new MaterializationEligibilityError({
          message:
             `Chained source '${downstreamName}' carries SQL its author wrote ` +
-            `(an .sql() source, a sql_* expression, or a file or URL table), ` +
-            `which does not run on the destination's read-write session.`,
+            `(${cause}), which does not run on the destination's read-write ` +
+            `session.`,
       });
    }
    // Projected to the columns the source declares, hidden ones included, as

@@ -79,19 +79,23 @@ export function unreadableSourceConnectionMessage(
  * (`storage_source_unsupported`) when its table would be built inside a
  * catalog, on a read-write session that runs only SQL Malloy generated: a
  * `storage=` source on a DuckLake connection, or any source on a connection
- * configured `managed`.
+ * configured `managed`. `cause` names what carries it and where
+ * (`authorSqlCause`), so a source refused for a joined source's SQL is told
+ * apart from one refused for its own.
  */
 export function catalogAuthorSqlMessage(
    source: { name: string; connectionName: string },
+   cause: string,
    { managed = false }: { managed?: boolean } = {},
 ): string {
    return (
-      `Source '${source.name}' cannot be materialized: its connection ` +
-      `'${source.connectionName}' is a ${managed ? "managed database" : "DuckLake catalog"}, whose tables are ` +
-      `built inside the catalog by SQL Malloy generates, and the source ` +
-      `carries SQL its author wrote (an .sql() source or a sql_* ` +
-      `expression, its own or a joined source's) or reads a file or URL as a ` +
-      `table. The source is not built and is answered live. Express it in ` +
-      `Malloy over the catalog's tables to build it.`
+      `Source '${source.name}' cannot be materialized: ${cause}, and its ` +
+      `connection '${source.connectionName}' is a ` +
+      `${managed ? "managed database" : "DuckLake catalog"}, whose tables are ` +
+      `built inside the catalog by SQL Malloy generates alone: no SQL an ` +
+      `author wrote (an .sql() source or a sql_* expression, its own or a ` +
+      `joined source's) and no file or URL read as a table. The source is ` +
+      `not built and is answered live. Express it in Malloy over the ` +
+      `catalog's tables to build it.`
    );
 }

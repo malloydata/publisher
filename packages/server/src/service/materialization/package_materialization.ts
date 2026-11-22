@@ -1312,6 +1312,15 @@ export class PackageMaterialization {
       );
    }
 
+   /** The `ducklake-data-inlining-on` warnings, read live from the facts. */
+   dataInliningWarnings(): ApiPackageWarning[] {
+      const facts = this.deploymentFacts;
+      if (!facts?.dataInliningLimit) return [];
+      return warnings.dataInliningWarnings(this.plan.buildPlan, (name) =>
+         facts.dataInliningLimit?.(name),
+      );
+   }
+
    servedCopyWarnings(): ApiPackageWarning[] {
       const materialized = this.plan.materializePlans;
       return warnings.servedCopyWarnings(this.owner.models(), (sourceID) =>

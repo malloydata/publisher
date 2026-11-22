@@ -11,6 +11,7 @@ import { relaxedCollision } from "./plan/load_gate_text";
 import {
    annotationFindingWarnings,
    asOfBuildWarnings,
+   dataInliningWarnings,
    PERSIST_READS_CURRENT_TIME_CODE,
    storageWarnings,
    verdictWarnings,
@@ -155,5 +156,47 @@ describe("a table stored as of its build", () => {
       expect(warnings[0].message).toContain("own extend block");
       expect(warnings[1].message).toContain('view "last7" of source "orders"');
       expect(warnings[2].message).toContain('query "daily"');
+   });
+});
+
+describe("ducklake-data-inlining-on", () => {
+   const plan = {
+      graphs: [],
+      sources: {
+         "orders@file:///m.malloy": {
+            name: "orders",
+            modelPath: "m.malloy",
+            connectionName: "warehouse",
+            annotationFields: { storage: "lake" },
+         },
+         "items@file:///m.malloy": {
+            name: "items",
+            modelPath: "m.malloy",
+            connectionName: "managed_db",
+         },
+         "users@file:///m.malloy": {
+            name: "users",
+            modelPath: "m.malloy",
+            connectionName: "warehouse",
+         },
+      },
+   } as unknown as BuildPlan;
+
+   it("warns for each source stored where the catalog records inlining on, naming the limit", () => {
+      const limits: Record<string, number> = { lake: 10, managed_db: 5 };
+      const found = dataInliningWarnings(plan, (name) => limits[name]);
+      expect(found.map((w) => [w.subject, w.code, w.severity])).toEqual([
+         ["orders", "ducklake-data-inlining-on", "warn"],
+         ["items", "ducklake-data-inlining-on", "warn"],
+      ]);
+      expect(found[0].message).toContain(
+         "storage destination `lake`, whose DuckLake catalog records data_inlining_row_limit 10",
+      );
+      expect(found[1].message).toContain("connection `managed_db`");
+   });
+
+   it("warns nothing where no catalog was found recording a limit above 0", () => {
+      expect(dataInliningWarnings(plan, () => undefined)).toEqual([]);
+      expect(dataInliningWarnings(null, () => 10)).toEqual([]);
    });
 });

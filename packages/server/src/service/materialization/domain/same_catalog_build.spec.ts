@@ -18,7 +18,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { components } from "../../../api";
 import { plannedSources } from "../plan/build_plan";
-import { carriesAuthorSql, isSameCatalog } from "./same_catalog_build";
+import {
+   authorSqlCause,
+   carriesAuthorSql,
+   isSameCatalog,
+} from "./same_catalog_build";
 
 type ApiConnection = components["schemas"]["Connection"];
 
@@ -138,6 +142,67 @@ source: daily is orders -> { group_by: id }`);
       };
       for (let i = 0; i < 250; i++) deep = { inner: deep };
       expect(carriesAuthorSql(deep)).toBe(true);
+   });
+});
+
+describe("authorSqlCause names what carries author SQL, and where", () => {
+   it("names a source's own .sql()", async () => {
+      const s = await persisted(`##! experimental.persistence
+#@ persist name="daily"
+source: lab_sql is lake.sql("SELECT * FROM orders")`);
+      expect(authorSqlCause(s._sourceDef)).toBe("it is an .sql() source");
+   });
+
+   it("names the join and the joined .sql() source of a plain table source", async () => {
+      const s = await persisted(`##! experimental.persistence
+source: status_names is lake.sql("SELECT 1 AS id, 'x' AS tag")
+#@ persist name="daily"
+source: lab_joined is lake.table('orders') extend {
+   join_one: sn is status_names on id = sn.id
+} -> { group_by: id, sn.tag }`);
+      expect(authorSqlCause(s._sourceDef)).toBe(
+         "its join 'sn' reads source 'status_names', which is an .sql() source",
+      );
+   });
+
+   it("names the source a query reads when that source is an .sql() source", async () => {
+      const s = await persisted(`##! experimental.persistence
+source: raw is lake.sql("SELECT * FROM orders")
+#@ persist name="daily"
+source: daily is raw -> { group_by: id }`);
+      expect(authorSqlCause(s._sourceDef)).toBe(
+         "it reads source 'raw', which is an .sql() source",
+      );
+   });
+
+   it("names the field whose expression is a sql_* function", async () => {
+      const s = await persisted(`##! experimental { persistence sql_functions }
+#@ persist name="daily"
+source: daily is lake.table('orders') extend {
+   dimension: doubled is sql_number("\${amount} * 2")
+} -> { group_by: doubled }`);
+      expect(authorSqlCause(s._sourceDef)).toBe(
+         "its field 'doubled' uses a sql_* expression",
+      );
+   });
+
+   it("names a file read as a table", async () => {
+      const s = await persisted(`##! experimental.persistence
+source: orders is lake.table('${csvPath}')
+#@ persist name="daily"
+source: daily is orders -> { group_by: id }`);
+      expect(authorSqlCause(s._sourceDef)).toBe(
+         `it reads source 'orders', which reads '${csvPath}' as a table`,
+      );
+   });
+
+   it("is undefined exactly when carriesAuthorSql is false, and says an unreadable definition is unreadable", async () => {
+      const s = await persisted(`##! experimental.persistence
+source: orders is lake.table('orders')
+#@ persist name="daily"
+source: daily is orders -> { group_by: id }`);
+      expect(authorSqlCause(s._sourceDef)).toBeUndefined();
+      expect(authorSqlCause(undefined)).toContain("could not be read");
    });
 });
 

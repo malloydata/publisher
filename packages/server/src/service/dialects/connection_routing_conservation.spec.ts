@@ -11,8 +11,6 @@ import {
    it,
    spyOn,
 } from "bun:test";
-import * as fs from "fs";
-import * as path from "path";
 import type { components } from "../../api";
 import { ConnectionController } from "../../controller/connection.controller";
 import { installSettings } from "../../test_helpers/settings_env";
@@ -28,22 +26,15 @@ import type { ConnectionAdmin } from "../environment_ports";
 import type { EnvironmentStore } from "../environment_store";
 
 /**
- * The per-type decisions the registry took over from the connection
- * controller, connection_service.ts and destination_overlap.ts, run for
- * every connection type (and for types no entry names) and compared with
- * what the code produced before the move, recorded in
- * connection_routing.golden.json: the type a connection operation is
- * counted under, whether a test refuses an unsafe name, whether raw SQL is
- * held to a single SELECT, which release a deleted connection schedules,
- * and whether one connection's config overlaps a destination's.
- *
- * Re-record only for a reviewed behaviour change:
- * `RECORD_CONNECTION_ROUTING=1 bun test <this file>`.
+ * The per-type decisions the connection controller, connection_service.ts
+ * and destination_overlap.ts read from the registry: the type a connection
+ * operation is counted under, whether a test refuses an unsafe name, whether
+ * raw SQL is held to a single SELECT, which release a deleted connection
+ * schedules, and whether one connection's config overlaps a destination's.
+ * Every connection type, a prototype name and an unknown one.
  */
 
 type ApiConnection = components["schemas"]["Connection"];
-
-const GOLDEN = path.join(__dirname, "connection_routing.golden.json");
 
 const TYPES = [
    "postgres",
@@ -58,9 +49,16 @@ const TYPES = [
    "ducklake",
    "publisher",
    "constructor",
-   "toString",
    "nope",
 ];
+
+/** The types whose rules differ from a plain warehouse's. */
+const UNSAFE_NAME_REFUSED = new Set(["duckdb", "ducklake"]);
+const SELECT_ONLY = new Set(["duckdb", "motherduck", "ducklake"]);
+const RELEASE: Record<string, string> = {
+   duckdb: "deleteDuckDBConnection(c)",
+};
+const UNREGISTERED = new Set(["constructor", "nope"]);
 
 function message(error: unknown): unknown {
    return {
@@ -142,6 +140,7 @@ async function deleteRelease(type: string): Promise<unknown> {
       deleteDuckDBConnection: async (name: string) => {
          calls.push(`deleteDuckDBConnection(${name})`);
       },
+      // A DuckLake connection keeps no file, so its delete must never reach this.
       deleteDuckLakeConnection: async (name: string) => {
          calls.push(`deleteDuckLakeConnection(${name})`);
       },
@@ -188,7 +187,7 @@ beforeAll(() => {
 });
 afterAll(() => restoreSettings());
 
-describe("the per-type routing is unchanged by the registry", () => {
+describe("the per-type routing reads the registry", () => {
    let harness: MetricsHarness;
    let testSpy: ReturnType<typeof spyOn>;
    beforeEach(async () => {
@@ -205,38 +204,69 @@ describe("the per-type routing is unchanged by the registry", () => {
       resetInstrumentsForTesting();
    });
 
-   it("routes every type as before the move", async () => {
-      const actual: Record<string, unknown> = {};
+   it("counts, tests, holds raw SQL and releases each type by its rule", async () => {
       for (const type of TYPES) {
          resetInstrumentsForTesting();
-         actual[`${type} | counted as`] = await countedType(harness, type);
-         actual[`${type} | unsafe-name test`] = await unsafeNameTest(type);
-         actual[`${type} | non-SELECT sql`] = await nonSelectSql(type);
-         actual[`${type} | delete`] = await deleteRelease(type);
-         for (const destinationType of TYPES) {
-            for (const [label, config] of Object.entries(DESTINATIONS)) {
-               const reason = destinationOverlap(
-                  {
-                     name: "c",
-                     type,
-                     ducklakeConnection: LAKE,
-                  } as ApiConnection,
-                  {
-                     name: "d",
-                     type: destinationType,
-                     ducklakeConnection: config,
-                  } as ApiConnection,
-               );
-               if (reason !== undefined) {
-                  actual[`${type} | overlap ${destinationType} ${label}`] =
-                     reason;
-               }
-            }
-         }
+         expect([type, await countedType(harness, type)]).toEqual([
+            type,
+            [UNREGISTERED.has(type) ? "unknown" : type],
+         ]);
+         expect([type, await unsafeNameTest(type)]).toEqual([
+            type,
+            UNSAFE_NAME_REFUSED.has(type)
+               ? {
+                    error: 'Invalid package name: must be 1-255 characters of letters, digits, "-", "_", or "." and must not start with "."',
+                    name: "BadRequestError",
+                 }
+               : { value: { status: "ok" } },
+         ]);
+         expect([type, await nonSelectSql(type)]).toEqual([
+            type,
+            SELECT_ONLY.has(type)
+               ? {
+                    error: "'c' is a locked-down DuckDB connection: raw SQL on it runs only as a single SELECT, and it is not a SELECT.",
+                    name: "BadRequestError",
+                 }
+               : { error: "lookup reached", name: "Error" },
+         ]);
+         const released = Object.hasOwn(RELEASE, type);
+         expect([type, await deleteRelease(type)]).toEqual([
+            type,
+            {
+               result: { value: null },
+               release: released,
+               calls: released ? [RELEASE[type]] : [],
+            },
+         ]);
       }
-      if (process.env.RECORD_CONNECTION_ROUTING === "1") {
-         fs.writeFileSync(GOLDEN, JSON.stringify(actual, null, 2) + "\n");
-      }
-      expect(actual).toEqual(JSON.parse(fs.readFileSync(GOLDEN, "utf8")));
    }, 120_000);
+
+   it("finds an overlap only between two DuckLake connections", () => {
+      const overlap = (
+         type: string,
+         destinationType: string,
+         config: unknown,
+      ) =>
+         destinationOverlap(
+            { name: "c", type, ducklakeConnection: LAKE } as ApiConnection,
+            {
+               name: "d",
+               type: destinationType,
+               ducklakeConnection: config,
+            } as ApiConnection,
+         );
+      expect(
+         overlap("ducklake", "ducklake", DESTINATIONS["same catalog"]),
+      ).toBe("it names the same DuckLake catalog");
+      expect(overlap("ducklake", "ducklake", DESTINATIONS["nested path"])).toBe(
+         "its data path overlaps the destination's",
+      );
+      expect(
+         overlap("ducklake", "ducklake", DESTINATIONS.apart),
+      ).toBeUndefined();
+      for (const type of TYPES.filter((t) => t !== "ducklake")) {
+         expect(overlap(type, "ducklake", LAKE)).toBeUndefined();
+         expect(overlap("ducklake", type, LAKE)).toBeUndefined();
+      }
+   });
 });

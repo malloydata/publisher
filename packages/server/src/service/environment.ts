@@ -126,6 +126,7 @@ import {
 } from "./configured_publish_retry";
 import { VersionRegistry, VersionService } from "./versions/version_service";
 import { StatusSnapshot } from "./status_snapshot";
+import { recordedInliningLimit } from "./dialects/ducklake_inlining";
 import { getPackageLoadWorkerCount } from "../package_load/package_load_pool";
 import { readManifestVersion, VersionStore } from "./versions/version_store";
 import {
@@ -997,6 +998,13 @@ export class Environment {
                ? getStaticConnectionAttributes(connection.type)?.canPersist
                : undefined;
          },
+         dataInliningLimit: (name) =>
+            recordedInliningLimit(
+               (
+                  this.destinations.find((d) => d.name === name) ??
+                  this.apiConnections.find((c) => c.name === name)
+               )?.ducklakeConnection,
+            ),
       });
       // Live, like the config: a destination list swap needs no reload.
       _package
