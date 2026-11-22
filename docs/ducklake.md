@@ -69,8 +69,15 @@ Two consequences for models:
   through a `duckdb` connection whose `attachedDatabases` entry holds a credential for it; those secrets
   are not scoped.
 - A `managed: true` connection attached read-only is scoped narrower, to its `main` schema's recorded
-  path, so a model reads only the catalog's own tables. Tables a build wrote to a `destinationSchema` are
-  served through the storage destination's own session, as before.
+  path: its storage secret, or on a local data path its file allowlist. Its SQL is also held to `main` before it runs, since DuckLake answers columns, row counts, file
+  statistics and inlined rows from the catalog without opening a file: a model, or raw SQL, on a managed
+  connection may name only `t`, `main.t`, `<connection>.t` or `<connection>.main.t` with a plain name (no
+  path, glob or dot, so nothing a replacement scan reads as a file), and is refused for
+  another schema or catalog, the metadata catalog, DuckDB's catalog views and functions, `DESCRIBE`,
+  `SHOW`, `SUMMARIZE`, and table functions other than `range`, `generate_series` and `unnest`
+  ([security posture](security-posture.md)). So a model reads only the catalog's own tables. Tables a
+  build wrote to a `destinationSchema` are served through the storage destination's own session, as
+  before.
 
 A catalog with nothing to scope to, a config with no `bucketUrl` whose catalog records no data path, is
 not attached: the attach fails naming the catalog, and the next lookup retries it. A `publisher` proxy

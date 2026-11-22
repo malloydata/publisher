@@ -2279,6 +2279,59 @@ describe("raw SQL on a managed database", () => {
       },
    );
 
+   // A managed connection reads only its catalog's `main` schema: what the
+   // catalog's metadata answers about another schema (a destination's stored
+   // tables) is refused before anything runs (managed_catalog_scope.ts).
+   it.each([
+      ["another schema's row count", "SELECT count(*) FROM materialized.t"],
+      ["another schema, qualified", "SELECT * FROM sales.materialized.t"],
+      ["a DESCRIBE", "DESCRIBE materialized.t"],
+      ["a catalog listing", "SELECT * FROM duckdb_columns()"],
+      ["information_schema", "SELECT * FROM information_schema.tables"],
+   ])(
+      "refuses %s with a 400 on the query and schema routes, before the connection runs it",
+      async (_label, sql) => {
+         const { controller, runSQL, fetchSelectSchema } =
+            controllerOn(managed);
+         const refused = controller.getConnectionQueryData(
+            "env",
+            "sales",
+            sql,
+            "",
+            undefined,
+            undefined,
+            undefined,
+            {},
+         );
+         await expect(refused).rejects.toBeInstanceOf(BadRequestError);
+         await expect(refused).rejects.toThrow(
+            "reads only its own catalog's tables",
+         );
+         expect(runSQL.called).toBe(false);
+         const schema = controller.getConnectionSqlSource("env", "sales", sql);
+         await expect(schema).rejects.toBeInstanceOf(BadRequestError);
+         expect(fetchSelectSchema.called).toBe(false);
+      },
+   );
+
+   it("still runs another schema's read on a DuckDB connection that is not managed", async () => {
+      const { controller, runSQL } = controllerOn({
+         name: "sales",
+         type: "duckdb",
+      });
+      await controller.getConnectionQueryData(
+         "env",
+         "sales",
+         "SELECT count(*) FROM materialized.t",
+         "",
+         undefined,
+         undefined,
+         undefined,
+         {},
+      );
+      expect(runSQL.calledOnce).toBe(true);
+   });
+
    it("refuses a temporary table, which is a CREATE", async () => {
       const { controller, manifestTemporaryTable } = controllerOn(managed);
       const refused = controller.getConnectionTemporaryTable(
