@@ -40,6 +40,10 @@ import {
 } from "../service/access_record";
 import { testConnectionConfig } from "../service/connection";
 import {
+   connectionDialectOf,
+   registeredConnectionType,
+} from "../service/dialects";
+import {
    toPublicConnection,
    toPublicConnections,
 } from "../service/connection_public_view";
@@ -295,20 +299,6 @@ async function withDatabaseAccessClassified<T>(
    }
 }
 
-const CONNECTION_TYPES = new Set<string>([
-   "postgres",
-   "bigquery",
-   "snowflake",
-   "trino",
-   "databricks",
-   "mysql",
-   "sqlserver",
-   "duckdb",
-   "motherduck",
-   "ducklake",
-   "publisher",
-]);
-
 const connectionOperations = lazyCounter(
    "publisher_connection_operations_total",
    "Connection create/update/delete/test requests. Labels: operation ('create'|'update'|'delete'|'test'), type (the connection type, 'unknown' when absent or unrecognised), outcome ('success'|'failed'|'refused'). 'failed' is a test that ran and could not connect; 'refused' threw (a 4xx or 5xx).",
@@ -329,10 +319,7 @@ async function metered<T>(
 ): Promise<T> {
    const label = {
       operation,
-      type:
-         typeof type === "string" && CONNECTION_TYPES.has(type)
-            ? type
-            : "unknown",
+      type: registeredConnectionType(type) ?? "unknown",
    };
    const startedAt = performance.now();
    const record = (outcome: string) => {
@@ -417,7 +404,7 @@ export class ConnectionController {
          if (error instanceof ConnectionNotFoundError) return undefined;
          throw error;
       }
-      return type === "duckdb" || type === "ducklake" || type === "motherduck"
+      return connectionDialectOf(type)?.lockedDown === true
          ? "locked-down DuckDB connection"
          : undefined;
    }
@@ -1333,8 +1320,7 @@ export class ConnectionController {
       // is a 400 rather than a failed test. Other types accept any name; an
       // empty name falls through to the service's missing-name failure.
       if (
-         (connectionConfig.type === "duckdb" ||
-            connectionConfig.type === "ducklake") &&
+         connectionDialectOf(connectionConfig.type)?.fileNamed === true &&
          connectionConfig.name
       ) {
          assertSafePackageName(connectionConfig.name);

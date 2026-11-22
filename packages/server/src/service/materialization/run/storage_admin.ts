@@ -20,8 +20,8 @@ import { BadRequestError, StorageCatalogNotFoundError } from "../../../errors";
 import {
    attachDuckLakeReadOnlyIfPresent,
    attachDuckLakeReadWrite,
-   escapeSQL,
 } from "../../connection";
+import { escapeSQL } from "../../duckdb_session_setup";
 import { storageDestinationRoot } from "../../connection_config";
 import { quoteIdentifier, quoteManifestTablePath } from "../../quoting";
 import { STORAGE_DIALECT } from "../domain/dialect";
@@ -34,6 +34,7 @@ import {
    assertSupportedDestination,
    destinationAllowlist,
    lockDownDestinationSession,
+   isCatalogDestination,
    requireDuckLakeConfig,
    withDestinationSession,
    withIsolatedSession,
@@ -129,7 +130,7 @@ export async function listStorageTables(params: {
    assertSupportedDestination(destinationName, destinationConnection);
 
    return withIsolatedSession(`list_${destinationName}`, async (session) => {
-      if (destinationConnection.type === "ducklake") {
+      if (isCatalogDestination(destinationConnection)) {
          const cfg = requireDuckLakeConfig(
             destinationName,
             destinationConnection,
@@ -213,7 +214,7 @@ export async function cleanupStorageFiles(params: {
       snapshotsOlderThan,
       filesOlderThan,
    } = params;
-   if (destinationConnection.type !== "ducklake") {
+   if (!isCatalogDestination(destinationConnection)) {
       throw new BadRequestError(
          `Storage destination '${destinationName}' is type ` +
             `'${destinationConnection.type ?? ""}'; file cleanup applies only to ` +

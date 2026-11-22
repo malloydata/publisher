@@ -6,7 +6,7 @@
  * `main` schema, and nothing else.
  *
  * A managed connection's storage secret and file allowlist reach only the
- * `main` schema's files (connection.ts, `storageSecretScope`), but DuckLake
+ * `main` schema's files (dialects/ducklake_catalog.ts, `storageSecretScope`), but DuckLake
  * answers a good deal without opening a file: a table's columns and types, its
  * row count, unfiltered min and max from file statistics, the catalog listing,
  * and every row of a table small enough that the catalog keeps it inline. When

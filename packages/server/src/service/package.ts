@@ -67,7 +67,7 @@ import {
    PackageNotFoundError,
    ServiceUnavailableError,
 } from "../errors";
-import { applyExtensionSessionSettings } from "./connection";
+import { applyExtensionSessionSettings } from "./duckdb_session_setup";
 import { authorSqlRefusals, sandboxedDuckDBOptions } from "./duckdb_lockdown";
 import { closeMalloyConfig, ownDuckDBConnection } from "./duckdb_hard_close";
 import { formatDuration, logger } from "../logger";

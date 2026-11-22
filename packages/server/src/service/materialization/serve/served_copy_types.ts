@@ -159,6 +159,17 @@ export interface Compiled {
     */
    zonedLeftOut?: ReadonlyMap<string, ReadonlySet<string>>;
    /**
+    * Each query-shaped re-root's timestamp truncations its query computed in
+    * a zone (`zonedTruncations`), by its `sourceID`, with the one zone its
+    * query's stages computed them in: restated over the stored value, so a
+    * query reads one only where it truncates it again in that same zone
+    * (`checkZonedColumns`).
+    */
+   stageZonedTruncations?: ReadonlyMap<
+      string,
+      { zone: string | undefined; names: ReadonlySet<string> }
+   >;
+   /**
     * The join_ones each table answers from stored columns (an inlined join,
     * {@link InlinedJoin}), by table path, each with the joined fields the
     * author annotated: a query that aggregates at one's grain is declined

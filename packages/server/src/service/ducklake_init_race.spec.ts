@@ -14,12 +14,11 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { Client } from "pg";
 import type { components } from "../api";
+import { attachDuckLakeForCreate, attachDuckLakeReadWrite } from "./connection";
 import {
-   attachDuckLakeForCreate,
-   attachDuckLakeReadWrite,
    DUCKLAKE_INIT_RACE_ATTEMPTS,
    isDuckLakeInitRace,
-} from "./connection";
+} from "./dialects/ducklake";
 import { createIsolatedBuildSession } from "./materialization/run/materialization_build_session";
 
 type DucklakeConnection = components["schemas"]["DucklakeConnection"];

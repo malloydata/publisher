@@ -11,7 +11,7 @@ import {
    createPgAttachSecret,
    pgAttachSecretName,
    splitPgAttachCredentials,
-} from "./connection";
+} from "./postgres_conninfo";
 
 const split = (conninfo: string) =>
    splitPgAttachCredentials("Connection 'c'", conninfo);

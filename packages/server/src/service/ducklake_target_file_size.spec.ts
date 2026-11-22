@@ -11,7 +11,7 @@ import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {
    applyDuckLakeRowGroupBound,
    applyDuckLakeTargetFileSize,
-} from "./connection";
+} from "./dialects/ducklake";
 import { assertDuckDBResourceConfig } from "../config";
 import { installSettings } from "../test_helpers/settings_env";
 

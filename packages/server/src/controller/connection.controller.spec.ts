@@ -1108,6 +1108,29 @@ describe("ConnectionController.getConnectionTemporaryTable guards", () => {
    });
 });
 
+describe("ConnectionController: an attached database type naming an Object.prototype member is a 400", () => {
+   afterEach(() => sinon.restore());
+
+   const withType = (type: string) => ({
+      name: "lake",
+      type: "duckdb" as const,
+      duckdbConnection: {
+         attachedDatabases: [{ name: "att", type }],
+      },
+   });
+
+   it("refuses it on test, rather than attaching nothing and reporting ok", async () => {
+      const controller = new ConnectionController(fakeOf<ConnectionAdmin>({}));
+      for (const type of ["constructor", "toString"]) {
+         const refused = controller.testConnectionConfiguration(
+            withType(type) as never,
+         );
+         await expect(refused).rejects.toBeInstanceOf(BadRequestError);
+         await expect(refused).rejects.toThrow("attachedDatabases[0].type");
+      }
+   });
+});
+
 describe("ConnectionController: an attached database name off its pattern is a 400", () => {
    afterEach(() => sinon.restore());
 

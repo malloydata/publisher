@@ -13,8 +13,10 @@
  *  - The five ratchets: annotation payload reads outside the declaration
  *    reader, reads of the compiler's IR outside governance/ir, clock reads in
  *    serve/ and domain/, a registered dialect spelled as a string literal
- *    or an object key (or a dialect compared to any literal), and a
- *    function over 200 lines.
+ *    or an object key (or a dialect compared to any literal), a connection
+ *    type spelled the same way (in materialization and the connection
+ *    modules the registry in service/dialects/ absorbs), and a function over
+ *    200 lines.
  *
  * Every list lives in materialization_allowlists.mjs, each entry tagged with
  * the step that removes it, and only shrinks: an entry whose violation is gone
@@ -26,6 +28,7 @@ import * as fs from "fs";
 import * as path from "path";
 import * as ts from "typescript";
 import * as lists from "../../../materialization_allowlists.mjs";
+import { CONNECTION_DIALECTS } from "../dialects";
 import { CAPABILITIES } from "./domain/dialect";
 import { LEGS, TABLE_KINDS, TIERS } from "./domain/vocabulary";
 
@@ -35,11 +38,12 @@ const MZ_DIR = __dirname;
 const LAYERS = ["domain", "text", "plan", "run", "serve"] as const;
 
 /**
- * A step of the plan, as an entry's tag names it, or `table`: a count frozen
- * as part of the dialect table, which no step removes and only a reviewed
- * change grows.
+ * A step of the plan, as an entry's tag names it (`D2` to `D4`: the dialect
+ * abstraction's collation readers, connection registry, and passthrough
+ * builds), or `table`: a count frozen as part of the dialect table, which no
+ * step removes and only a reviewed change grows.
  */
-const STEP = /^(L|R|2[a-r]|2g\.[1-4]|5|table)$/;
+const STEP = /^(L|R|2[a-r]|2g\.[1-4]|5|D[2-4]|table)$/;
 
 function walk(dir: string): string[] {
    return fs
@@ -541,6 +545,56 @@ function dialectLiterals(lines: string[], caseLabels = false): number {
    );
 }
 
+/** Every configured connection type, the registry's keys, as alternatives. */
+const CONNECTION_TYPES = Object.keys(CONNECTION_DIALECTS).join("|");
+
+/** A string literal exactly a connection type, quoted any way. */
+const CONNECTION_TYPE_LITERAL = new RegExp(`["'\`](${CONNECTION_TYPES})["'\`]`);
+
+/** A connection type as a bare object key (`{ ducklake: ... }`). */
+const CONNECTION_TYPE_KEY = new RegExp(
+   `(?<![\\w$."'\`-])(${CONNECTION_TYPES})\\s*:(?!:)`,
+);
+
+/** A connection type as a `case` label. */
+const CONNECTION_TYPE_CASE = new RegExp(
+   `\\bcase\\s+["'\`](${CONNECTION_TYPES})["'\`]`,
+   "g",
+);
+
+/**
+ * How many connection-type literals `lines` hold: every string literal that
+ * is exactly a configured connection type (a `case` label, an element, a
+ * comparison, a type) and every bare object key that is one. Counted apart
+ * from the dialect literals, since `duckdb`, `motherduck` and `ducklake` share
+ * one dialect and the branches keyed on them are keyed on the type.
+ * `caseLabels` frees `case` labels, for the SQL half of the dialect table,
+ * whose switches are over a dialect that shares a type's spelling.
+ */
+function connectionTypeLiterals(lines: string[], caseLabels = false): number {
+   const code = caseLabels
+      ? lines.map((l) => l.replace(CONNECTION_TYPE_CASE, ""))
+      : lines;
+   return (
+      matchesIn(code, CONNECTION_TYPE_LITERAL) +
+      matchesIn(code, CONNECTION_TYPE_KEY)
+   );
+}
+
+/**
+ * The connection modules whose branches on a connection type move into the
+ * registry (service/dialects/), counted beside materialization's own files.
+ */
+const CONNECTION_MODULES = [
+   "service/connection.ts",
+   "service/connection_config.ts",
+   "service/connection_service.ts",
+   "service/db_utils.ts",
+   "service/destination_overlap.ts",
+   "service/quoting.ts",
+   "controller/connection.controller.ts",
+];
+
 function expectCounts(
    name: string,
    actual: Record<string, number>,
@@ -616,6 +670,39 @@ describe("the ratchets", () => {
          if (n > 0) actual[srcRel(file)] = n;
       }
       expectCounts("dialect literals", actual, lists.RATCHET_DIALECT_LITERALS);
+   });
+
+   it("a connection-type literal is counted wherever it is", () => {
+      const actual: Record<string, number> = {};
+      const files = [
+         ...mzFiles(),
+         ...CONNECTION_MODULES.map((f) => path.join(SRC_DIR, f)),
+      ];
+      const sqlHalf = "service/materialization/run/warehouse_sql.ts";
+      for (const file of files) {
+         const n = connectionTypeLiterals(
+            codeLines(file),
+            srcRel(file) === sqlHalf,
+         );
+         if (n > 0) actual[srcRel(file)] = n;
+      }
+      expectCounts(
+         "connection-type literals",
+         actual,
+         lists.RATCHET_CONNECTION_TYPE_LITERALS,
+      );
+   });
+
+   it("the connection-type count reads literals and keys, not longer words", () => {
+      expect(connectionTypeLiterals([`case "ducklake":`])).toBe(1);
+      expect(connectionTypeLiterals([`case "ducklake":`], true)).toBe(0);
+      expect(connectionTypeLiterals([`type === 'motherduck'`])).toBe(1);
+      expect(connectionTypeLiterals([`["bigquery", "postgres"]`])).toBe(2);
+      expect(connectionTypeLiterals([`{ bigquery: 1, ducklake: 2 }`])).toBe(2);
+      expect(connectionTypeLiterals([`a.bigquery: 1`, `"bigquery_x"`])).toBe(0);
+      expect(connectionTypeLiterals([`"malloy-publisher:table"`])).toBe(0);
+      // A dialect name that is no connection type is not counted here.
+      expect(connectionTypeLiterals([`"standardsql"`, `"presto"`])).toBe(0);
    });
 
    it("the dialect-literal count reads a type test as no dialect", () => {
