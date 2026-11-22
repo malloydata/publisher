@@ -106,6 +106,12 @@ import {
    MATERIALIZE_COMPANION_SUFFIX,
 } from "./build_file_generator";
 import { rollupStoredBaseCopyName } from "../text/read_text";
+import type { RefusedReason } from "../domain/types";
+import {
+   reachedUpstreams,
+   storedElsewhereReason,
+   UPSTREAM_TABLE_UNUSABLE_REASON,
+} from "./downstream_upstreams";
 
 /**
  * A model's `#(materialize)` companion, as rollup_compile reads it: its plans
@@ -456,6 +462,74 @@ function rollupBuildCopies(
    return { files, refused };
 }
 
+/**
+ * The database rollups whose base is persisted and whose base's table they
+ * cannot be built from, each refused at plan time with which upstream and
+ * why, since strict upstreams forbid recomputing the base from raw:
+ *
+ *  - an upstream stored in a `storage=` destination, whose table a build
+ *    in the warehouse cannot read (`UPSTREAM_TABLE_UNUSABLE_REASON`);
+ *  - a base read through a build copy ({@link readsBuildCopy}): a
+ *    given-reading term the base re-applies at read (`reads_given` on the
+ *    base's rows, refused as `inherited_where_with_given`) or a private
+ *    grain dimension (`hidden_field`), which the base's table cannot serve
+ *    a rollup grouped from it exactly.
+ *
+ * A rollup over a base no persisted source is under is not a downstream,
+ * and builds from its rows as planned. A `storage=` rollup is unchanged.
+ */
+function strictRollupRefusals(
+   plans: readonly RollupVariantPlan[],
+   modelDef: unknown,
+): (RollupRefusal & { plan: RollupVariantPlan })[] {
+   const map = SourceMap.of(modelDef);
+   const out: (RollupRefusal & { plan: RollupVariantPlan })[] = [];
+   for (const plan of plans) {
+      if (plan.storage !== undefined) continue;
+      const base = map.node(plan.baseSourceID)?.def;
+      if (base === undefined) continue;
+      const upstreams = reachedUpstreams(base, modelDef, map);
+      if (upstreams.length === 0) continue;
+      const stored = storedElsewhereReason(upstreams);
+      let why: string | undefined;
+      let reason: RefusedReason | undefined;
+      if (stored !== undefined) {
+         why = stored;
+         reason = UPSTREAM_TABLE_UNUSABLE_REASON;
+      } else if ((plan.readTimeTerms ?? []).length > 0) {
+         why =
+            `its base reads a given in a term it re-applies at read, so its ` +
+            `upstream '${upstreams[0].name}''s table holds rows the rollup ` +
+            `cannot be grouped from exactly, and strict upstreams forbid ` +
+            `recomputing it from raw`;
+         reason = "inherited_where_with_given";
+      } else if ((plan.privateGrain ?? []).length > 0) {
+         why =
+            `its grain reads ${plan.privateGrain!.map((g) => `'${g}'`).join(", ")}, ` +
+            `which its upstream '${upstreams[0].name}' keeps private, so ` +
+            `its table cannot be grouped from exactly, and strict upstreams ` +
+            `forbid recomputing it from raw`;
+         reason = "hidden_field";
+      }
+      if (why === undefined || reason === undefined) continue;
+      out.push({
+         plan,
+         tier: "unservable",
+         code: ROLLUP_NOT_BUILT_CODE,
+         message: `#(rollup) rollup of source "${plan.baseSourceName}" at (${plan.grainDimensions.join(", ")}) is not built, so its measures are served live: ${why}.`,
+         sourceName: plan.baseSourceName,
+         refused: measureRefusalKey(
+            plan.baseSourceID,
+            plan.baseDeclaredName,
+            undefined,
+            reason,
+            { grain: plan.grainDimensions, storage: plan.storage },
+         ),
+      });
+   }
+   return out;
+}
+
 /** Where the rollup companion for `modelPath` lives, as an absolute URL. */
 function rollupCompanionURL(packagePath: string, modelPath: string): URL {
    return pathToFileURL(
@@ -526,6 +600,13 @@ export async function tryCompileRollupCompanion(args: {
       refused = [...refused, ...copies.refused];
       planned.plans = planned.plans.filter(
          (p) => !copies.refused.some((r) => r.plan === p),
+      );
+      // Classified once, here: a database rollup over a persisted base is
+      // built from its base's table, or refused (strict upstreams).
+      const strict = strictRollupRefusals(planned.plans, args.modelDef);
+      refused = [...refused, ...strict];
+      planned.plans = planned.plans.filter(
+         (p) => !strict.some((r) => r.plan === p),
       );
       const text = generateRollupBuildFile(
          planned.plans,

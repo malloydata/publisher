@@ -84,7 +84,13 @@ import {
    GeneratedFiles,
    type SynthesizedRuntimeFactory,
 } from "../text/generated_files";
-import { reachableSourceIDs, SourceMap } from "../text/source_map";
+import { SourceMap } from "../text/source_map";
+import {
+   reachedSourceIDsOf,
+   reachedUpstreams,
+   storedElsewhereReason,
+   UPSTREAM_TABLE_UNUSABLE_REASON,
+} from "./downstream_upstreams";
 import type { Omission } from "../domain/omitted_sources";
 import type { RefusedReason } from "../domain/types";
 import { gateRefusalReason } from "../domain/gate_refusal";
@@ -466,6 +472,25 @@ async function persistedQueryRefusalReason(
    return undefined;
 }
 
+/**
+ * The plan-time refusal of a database view or query (`storage` absent) an
+ * upstream of which is stored in a `storage=` destination: its build in
+ * the warehouse cannot read that table, and strict upstreams forbid
+ * recomputing the upstream from raw. Undefined otherwise.
+ */
+function storedUpstreamRefusal(
+   storage: string | undefined,
+   root: unknown,
+   modelDef: unknown,
+   map: SourceMap,
+): { reason: string; refusal: RefusedReason } | undefined {
+   if (storage !== undefined || root === undefined) return undefined;
+   const reason = storedElsewhereReason(reachedUpstreams(root, modelDef, map));
+   return reason === undefined
+      ? undefined
+      : { reason, refusal: UPSTREAM_TABLE_UNUSABLE_REASON };
+}
+
 /** A planned query's refusal record. */
 function queryRefusalOf(
    plan: PersistedQueryPlan,
@@ -518,12 +543,20 @@ export async function tryCompilePersistedViewCompanion(args: {
       const planned = planModelPersistedViews(args.modelDef, declaredHere);
       refused.push(...planned.refused);
       const plans: PersistedViewPlan[] = [];
+      const map = SourceMap.of(args.modelDef);
       for (const plan of planned.plans) {
-         const reason = await persistedViewRefusalReason(
-            plan,
-            args.modelDef,
-            args.materializer,
-         );
+         const reason =
+            storedUpstreamRefusal(
+               plan.storage,
+               map.node(plan.sourceID)?.def,
+               args.modelDef,
+               map,
+            ) ??
+            (await persistedViewRefusalReason(
+               plan,
+               args.modelDef,
+               args.materializer,
+            ));
          if (reason === undefined) plans.push(plan);
          else {
             refused.push({
@@ -546,11 +579,21 @@ export async function tryCompilePersistedViewCompanion(args: {
                  reason: `its generated build source \`${plan.buildSourceName}\` collides with a persisted view's; rename one of them`,
                  refusal: "build_name_collision" as const,
               }
-            : await persistedQueryRefusalReason(
+            : (storedUpstreamRefusal(
+                 plan.storage,
+                 (
+                    args.modelDef as {
+                       contents?: Record<string, unknown>;
+                    }
+                 ).contents?.[plan.queryName],
+                 args.modelDef,
+                 map,
+              ) ??
+              (await persistedQueryRefusalReason(
                  plan,
                  args.modelDef,
                  args.materializer,
-              );
+              )));
          if (refusal === undefined) queries.push(plan);
          else refusedQueries.push(queryRefusalOf(plan, refusal));
       }
@@ -657,7 +700,7 @@ function overStoredUpstreamNotes(
       if (plan.storage !== undefined || plan.root === undefined) continue;
       const spans: string[] = [];
       let chainable = true;
-      for (const sourceID of reachedSourceIDs(plan.root, modelDef, map)) {
+      for (const sourceID of reachedSourceIDsOf(plan.root, modelDef, map)) {
          const upstream = upstreamTableOf(map, sourceID);
          if (upstream === undefined) continue;
          if (upstream === "unreadable") {
@@ -671,37 +714,6 @@ function overStoredUpstreamNotes(
       candidates.add(plan.buildSourceID);
    }
    return { keep, candidates };
-}
-
-/**
- * The sourceIDs `root` reaches ({@link reachableSourceIDs}), with a source a
- * named query refers to by its name in the model (its `structRef`) resolved
- * to that source's sourceID, and its own reach added.
- */
-function reachedSourceIDs(
-   root: unknown,
-   modelDef: unknown,
-   map: SourceMap,
-): Set<string> {
-   const contents =
-      (modelDef as { contents?: Record<string, unknown> }).contents ?? {};
-   const out = new Set<string>();
-   const pending = [root];
-   const seen = new Set<unknown>();
-   while (pending.length > 0) {
-      const next = pending.pop();
-      if (seen.has(next)) continue;
-      seen.add(next);
-      for (const id of reachableSourceIDs([next], modelDef)) {
-         if (map.node(id)) {
-            out.add(id);
-            continue;
-         }
-         const named = contents[id] as { sourceID?: unknown } | undefined;
-         if (named && typeof named.sourceID === "string") pending.push(named);
-      }
-   }
-   return out;
 }
 
 /**

@@ -82,7 +82,7 @@ query: q is a -> { group_by: cat; aggregate: total is amt.sum() }
       }
    });
 
-   it("is not offered for a storage= view or over a storage= source", async () => {
+   it("is not offered for a storage= view", async () => {
       packages.settings({
          PUBLISHER_MATERIALIZE: "true",
          PERSIST_STORAGE_MODE: "on",
@@ -106,16 +106,18 @@ source: t is b extend {
 }
 `,
       });
-      for (const name of ["s__by_cat__view", "t__by_cat__view"]) {
-         expect(
-            Object.values(c.tables).some((t) => t.source.name === name),
-         ).toBe(true);
-         const table = Object.values(c.tables).find(
-            (t) => t.source.name === name,
-         );
-         expect(
-            (table as { overStoredBase?: unknown } | undefined)?.overStoredBase,
-         ).toBeUndefined();
-      }
+      // Over a `storage=` source: refused at plan (downstream_refusals.spec).
+      expect(
+         Object.values(c.tables).some(
+            (t) => t.source.name === "s__by_cat__view",
+         ),
+      ).toBe(false);
+      const table = Object.values(c.tables).find(
+         (t) => t.source.name === "t__by_cat__view",
+      );
+      expect(table).toBeDefined();
+      expect(
+         (table as { overStoredBase?: unknown }).overStoredBase,
+      ).toBeUndefined();
    });
 });

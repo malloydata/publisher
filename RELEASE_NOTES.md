@@ -21,6 +21,15 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — a database downstream that cannot read its upstream's table is refused when the package is planned
+
+**Changed: under strict upstreams, a downstream is classified when its package is planned.** A database persisted view, named query or rollup over a persisted source is either built from that source's table, or refused at plan with a `*-not-built` warning (`persist-view-not-built`, `persist-query-not-built`, `rollup-not-built`) and an entry in `refusedSources` whose `message` names the upstream and why. A refused downstream is answered live, which reads its upstream's stored table through the served copy. Refused:
+
+- a database view, query or rollup whose upstream is declared `storage=`: the warehouse build cannot read that table (with `PERSIST_STORAGE_MODE=off` the upstream has no table at all, and both answer live). Its `reason` is `storage_source_unsupported` for now; a dedicated value is proposed.
+- a database rollup over a persisted base whose `where:` reads a given and is re-applied at read (`inherited_where_with_given`), or whose grain reads a private dimension (`hidden_field`).
+
+**Who is affected:** packages with such views, queries or rollups, which were built before by recomputing their upstream from the warehouse and are now answered live. A rollup over a base no persisted source is under is not affected.
+
 ## [Unreleased] — a persisted view or query is built from its upstream's stored table
 
 **Changed: a database persisted view or named query over a database `#@ persist` source is built from that source's stored table**, as a `#@ persist` source over another persisted source always has been, rather than by recomputing the source from the warehouse. Its rows are the same (the table holds what the source computes), its table's address is unchanged, and its build no longer re-reads the raw tables under the source. Its entry reports `upstreamReuse: reused` and names the source's table in `builtFrom`. It now takes the ordinary chained path in every other respect: a source whose table is not in the run's manifest is recomputed, or under strict upstreams refused (it is no longer exempt from `strictUpstreams`), and a source table altered since its build is handled as for any chained build. A view or query over a `storage=` or `#(materialize)` source still builds from its definition. If the build over the source's table cannot be compiled as planned (the package's files changed since its plan), the build fails rather than recomputing; reload the package. **Who is affected:** a strict run that instructs such a view or query without its source, which now fails instead of recomputing the source.
@@ -60,9 +69,9 @@ Two consequences worth knowing. A section merged to `main` ships in the **next**
 
 **Who is affected:** hosts that reference stored upstreams that this worker has never recorded. Releases up to 0.17.1 are affected. **What to do:** upgrade. Make sure each reference's `storageDestinationName` names a destination the environment configures.
 
-## [Unreleased] — a persisted view or query over a persisted source reports that it recomputes it
+## [Unreleased] — a persisted view or query that recomputes its source says so
 
-**Fixed: a persisted view or named query over a persisted source reported `upstreamReuse: reused`, though it never reads that source's table.** Its build blanks the source's `#@ persist`, so it reads the rows its live query reads, from the warehouse, as it always did. Its data is unchanged. Its entry now says so: `upstreamReuse: recomputed`, with an `upstreamRecomputeReason` naming the upstream. Each build is logged and counted with `reason="persisted_result"`. Like a database rollup over a stored base, such a view or query is exempt from strict upstreams, and it still builds under `strictUpstreams`.
+**Fixed: a persisted view or named query that recomputes a persisted source reported `upstreamReuse: reused`, though it never read that source's table.** This is now the case only for a view or query over a `#(materialize)` source (one over a database `#@ persist` source is built from that source's table, and one over a `storage=` source is refused; see the sections above). Such a build reads the rows its live query reads, from the warehouse, as it always did; its data is unchanged. Its entry now says so: `upstreamReuse: recomputed`, with an `upstreamRecomputeReason` naming the upstream. Each build is also logged and counted in `publisher_materialization_upstream_recompute_total` with `reason="persisted_result"`. Like a database rollup over a stored base, such a view or query is exempt from strict upstreams: it builds under `strictUpstreams` as before.
 
 **Who is affected:** anyone who reads `upstreamReuse` on these entries. **What to do:** nothing; the label is now accurate.
 
