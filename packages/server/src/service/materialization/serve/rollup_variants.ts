@@ -99,10 +99,8 @@ import {
    givenWhereCodes,
    primaryKeyOf,
    modelDefOf,
-   queryStageZone,
    queryTimezoneOf,
    recordedTimezoneOf,
-   sameZone,
    timezoneOf,
 } from "../../governance/ir/compiled_model";
 import type {
@@ -140,7 +138,6 @@ import {
    queryFieldUsagePaths,
    queryLevelFacts,
    readPreparedQuery,
-   queryTimezones,
    readsRawSql,
    resolveStructRefSource,
    setsTimezone,
@@ -379,13 +376,6 @@ interface RollupQuery {
     * expanded (undefined when one could not be read), for `zoneDecline`.
     */
    zoned?: { usage: string[][] | undefined };
-   /**
-    * The zones the query reads in: its first stage's own `timezone:`, and
-    * every one it sets anywhere. For `stagedZoneDecline`.
-    */
-   readZones: { first: string | undefined; set: string[] };
-   /** Every field path the query reads, expanded (undefined when unreadable). */
-   usage(): string[][] | undefined;
 }
 
 /** An extension's dimension, re-declared on the variant. */
@@ -558,9 +548,8 @@ export class RollupVariantServe {
       // evaluated the grain's dimensions and the measures in the model's
       // zone, so a zoned query is read from a rollup only where nothing the
       // build evaluated depends on the zone (`zoneDecline`).
-      const reads = queryReads(prepared);
       const zoned = setsTimezone(prepared.query)
-         ? { usage: reads.usage() }
+         ? { usage: queryFieldUsagePaths(prepared) }
          : undefined;
       // The reason reported is the first rollup's that got past the grain
       // and measure check (the one closest to answering), else the first's.
@@ -602,7 +591,6 @@ export class RollupVariantServe {
          ...(gates ? { gates } : {}),
          ...(zoned ? { zoned } : {}),
          ...(extension ? { extension } : {}),
-         ...reads,
       };
       for (const plan of ownPlans) {
          try {
@@ -616,14 +604,8 @@ export class RollupVariantServe {
       }
       // Then a joined source's rollup, read through the join: the
       // join branches, inside the rollup step.
-      const joinUsage = branches.length > 0 ? reads.usage() : [];
+      const usage = branches.length > 0 ? queryFieldUsagePaths(prepared) : [];
       for (const { branch, refusal } of branches) {
-         const staged = stagedJoinDecline(branch.plan, modelDef, reads);
-         if (staged) {
-            first ??= staged;
-            members.set(branch.plan.rollupSourceName, staged);
-            continue;
-         }
          // Through a join, a zoned query is read from the joined source's
          // rollup by the same rule as its own: what the query reads
          // through the join, and the grain the join meets, must not depend
@@ -633,9 +615,9 @@ export class RollupVariantServe {
                branch.plan,
                SourceMap.of(this.host.modelDef()).node(branch.plan.baseSourceID)
                   ?.def as object | undefined,
-               joinUsage === undefined
+               usage === undefined
                   ? undefined
-                  : joinUsage
+                  : usage
                        .filter((p) => p[0] === branch.join.name)
                        .map((p) => p.slice(1)),
                // A join branch past an entry point's gate declines below.
@@ -673,7 +655,7 @@ export class RollupVariantServe {
                shape,
                prepared,
                struct,
-               usage: joinUsage,
+               usage,
                args,
                ...(gates ? { gates } : {}),
             });
@@ -1370,9 +1352,6 @@ export class RollupVariantServe {
             { shapeCheck: true },
          );
       }
-      // A truncation its base's query computed in a zone (`stagedTruncations`).
-      const staged = stagedZoneDecline(plan, this.host.modelDef(), query);
-      if (staged) throw staged;
       // A view's `where: sql_boolean("${TABLE}.region = …")` reads a column
       // no field reference names, so no grain check sees it.
       if (query.rawSql) {
@@ -3679,182 +3658,6 @@ export function joinCoverageDecline(
       );
    }
    return undefined;
-}
-
-/**
- * A rollup's grain columns that its base's query truncated in a zone of its
- * own (a stage's `timezone:`, or one the stage inherits from the base it
- * runs on), as the served copy finds a re-root's (`zonedTruncations`): each
- * is stored as computed there, and restated on the variant over the stored
- * value (`d is d__stored.day`) in the model's zone, which truncates it again
- * there. `zone` is the one zone every truncation was computed in, when
- * {@link queryStageZone} knows it; `known` is false when it does not, and no
- * read matches. Undefined when the base computes its truncations in the
- * model's zone, or truncates none the rollup groups by.
- */
-function stagedTruncations(
-   plan: RollupVariantPlan,
-   modelDef: unknown,
-):
-   | { zone: string | undefined; known: boolean; names: Set<string> }
-   | undefined {
-   const def = SourceMap.of(modelDef).node(plan.baseSourceID)?.def as
-      | {
-           query?: unknown;
-           fields?: {
-              name?: unknown;
-              as?: unknown;
-              type?: unknown;
-              e?: unknown;
-              timeframe?: unknown;
-           }[];
-        }
-      | undefined;
-   if (def?.query === undefined) return undefined;
-   if (queryTimezoneOf(def) === undefined && !setsTimezone(def.query)) {
-      return undefined;
-   }
-   const stage = queryStageZone(def);
-   if (stage !== undefined && sameZone(stage.zone, undefined)) return undefined;
-   const grain = new Set(plan.grainDimensions);
-   const names = new Set(
-      (def.fields ?? [])
-         .filter(
-            (f) =>
-               typeof f.timeframe === "string" &&
-               f.e === undefined &&
-               (f.type === "timestamp" || f.type === "timestamptz"),
-         )
-         .map((f) => String(f.as ?? f.name))
-         .filter((n) => grain.has(n)),
-   );
-   if (names.size === 0) return undefined;
-   return { zone: stage?.zone, known: stage !== undefined, names };
-}
-
-/**
- * What `stagedZoneDecline` reads of a query: the zones it reads in (its
- * first stage's own `timezone:`, and every one it sets anywhere), and every
- * field path it reads, expanded, computed once when first asked for
- * (undefined when one could not be read).
- */
-function queryReads(
-   prepared: Awaited<ReturnType<typeof readPreparedQuery>>,
-): Pick<RollupQuery, "readZones" | "usage"> {
-   let paths: { of: string[][] | undefined } | undefined;
-   const first = Array.isArray(prepared.pipeline)
-      ? (prepared.pipeline[0] as unknown)
-      : undefined;
-   return {
-      readZones: {
-         first: timezoneOf(first),
-         set: queryTimezones(prepared.query),
-      },
-      usage: () => (paths ??= { of: queryFieldUsagePaths(prepared) }).of,
-   };
-}
-
-/**
- * Whether a query reads in the one zone `staged`'s truncations were computed
- * in: its first stage sets it, and every zone it sets is it, so the
- * variant's restatement truncates each stored value again in its own zone,
- * which leaves it as it is (the served copy's rule, `checkZonedColumns`).
- */
-function readsInStagedZone(
-   staged: { zone: string | undefined; known: boolean },
-   zones: RollupQuery["readZones"],
-): boolean {
-   return (
-      staged.known &&
-      zones.first !== undefined &&
-      sameZone(zones.first, staged.zone) &&
-      zones.set.every((z) => sameZone(z, staged.zone))
-   );
-}
-
-function stagedZoneDeclineOf(
-   staged: { zone: string | undefined; known: boolean },
-   name: string,
-): LegDecline {
-   const where = staged.known
-      ? `in \`${staged.zone}\``
-      : "in a zone of its own";
-   return new LegDecline(
-      "rollup_time_zone",
-      `the query reads \`${name}\`, which its source's query truncated ${where}, in another zone, where the rollup's stored value would be truncated again`,
-   );
-}
-
-/**
- * Why a query is not read through a join from `plan`, whose grain holds
- * truncations its base's query computed in a zone of its own
- * ({@link stagedTruncations}), or undefined: the join meets the grain, so
- * any read but one in that zone is answered live.
- */
-function stagedJoinDecline(
-   plan: RollupVariantPlan,
-   modelDef: unknown,
-   reads: Pick<RollupQuery, "readZones">,
-): LegDecline | undefined {
-   const staged = stagedTruncations(plan, modelDef);
-   if (!staged || readsInStagedZone(staged, reads.readZones)) return undefined;
-   const [some] = staged.names;
-   return stagedZoneDeclineOf(staged, some);
-}
-
-/**
- * Why a query is not read from `plan`, whose grain holds truncations its
- * base's query computed in a zone of its own ({@link stagedTruncations}),
- * or undefined: one read in another zone reads none of them, directly,
- * through a dimension computed from one, in the base's `where:` (a
- * re-applied term) or in a gate grafted on the variant. Fails closed on
- * usage that could not be read.
- */
-function stagedZoneDecline(
-   plan: RollupVariantPlan,
-   modelDef: unknown,
-   query: RollupQuery,
-): LegDecline | undefined {
-   const staged = stagedTruncations(plan, modelDef);
-   if (!staged || readsInStagedZone(staged, query.readZones)) return undefined;
-   const [some] = staged.names;
-   const usage = query.usage();
-   if (usage === undefined) return stagedZoneDeclineOf(staged, some);
-   const def = query.struct as { fields?: unknown[]; filterList?: unknown[] };
-   const fields = new Map(
-      (def.fields ?? []).map((f) => {
-         const field = f as { name?: unknown; as?: unknown; e?: unknown };
-         return [String(field.as ?? field.name), field];
-      }),
-   );
-   const memo = new Map<string, string | undefined>();
-   // The staged truncation a field of one name reads, itself or through
-   // its expression.
-   const reads = (path: readonly string[]): string | undefined => {
-      if (path.length !== 1) return undefined;
-      const [name] = path;
-      if (staged.names.has(name)) return name;
-      if (memo.has(name)) return memo.get(name);
-      memo.set(name, undefined);
-      const e = fields.get(name)?.e;
-      const read =
-         e === undefined
-            ? undefined
-            : fieldPathsIn(e)
-                 .map(reads)
-                 .find((r) => r !== undefined);
-      memo.set(name, read);
-      return read;
-   };
-   const gated = gateIdentifiers(
-      query.gates
-         ? [...query.gates.authorize, ...query.gates.accessFilter]
-         : [],
-   ).map((id) => [id]);
-   const read = [...usage, ...fieldPathsIn(def.filterList), ...gated]
-      .map(reads)
-      .find((r) => r !== undefined);
-   return read === undefined ? undefined : stagedZoneDeclineOf(staged, read);
 }
 
 /** A zoned query's decline: the rollup was built in the model's zone. */

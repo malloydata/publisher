@@ -5,10 +5,10 @@
  * rollup_stage_zone on a Postgres warehouse, through the real build and
  * bind: a rollup over a base whose query stage truncates in Los Angeles,
  * built in Postgres (database) or into a DuckLake destination (`storage=`).
- * A read of one of those truncations in another zone than Los Angeles was
- * truncated again in UTC from the `storage=` rollup; every read must now
- * equal live as strings, and one that reads none is still read from the
- * rollup.
+ * A read of one of those truncations with no zone was truncated again in
+ * UTC from the `storage=` rollup, which is now not planned; the database
+ * rollup keeps serving reads with no zone. Every read equals live as
+ * strings.
  *
  * Opt-in: set PUBLISHER_TEST_POSTGRES_URL.
  */
@@ -42,12 +42,12 @@ const CASES = READ_ZONES.flatMap(([zoneName, z]) => [
    ...STAGE_ZONE_QUERIES.map(([name, q]) => ({
       name: `${name}, ${zoneName}`,
       query: q(z),
-      zoned: true,
+      readsTruncation: true,
    })),
    ...UNZONED_READS.map(([name, q]) => ({
       name: `${name}, ${zoneName}`,
       query: q(z),
-      zoned: false,
+      readsTruncation: false,
    })),
 ]);
 
@@ -92,10 +92,16 @@ for (const [placement, persist, p] of [
          });
 
          for (const c of CASES) {
-            it(`${c.name}: equal to live, ${c.zoned ? "not " : ""}read from the rollup`, () => {
+            // A database rollup returns the stored truncation as it is (a
+            // zoned query is declined by the caller-zone rule); a
+            // `storage=` one is never planned.
+            const fromRollup =
+               placement === "database" &&
+               (!c.readsTruncation || !c.query.includes("timezone:"));
+            it(`${c.name}: equal to live, ${fromRollup ? "" : "not "}read from the rollup`, () => {
                expect(served[c.name].rows).toEqual(live[c.name].rows);
-               if (c.zoned) expect(served[c.name].kind).not.toBe("rollup");
-               else expect(served[c.name].kind).toBe("rollup");
+               if (fromRollup) expect(served[c.name].kind).toBe("rollup");
+               else expect(served[c.name].kind).not.toBe("rollup");
             });
          }
       },

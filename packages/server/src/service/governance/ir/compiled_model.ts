@@ -182,6 +182,60 @@ export function queryStageZone(
    return rest.every((z) => sameZone(z, first)) ? { zone: first } : undefined;
 }
 
+/**
+ * The timestamp truncations a query-shaped source outputs that its query
+ * computed in a zone other than the default (a stage's own `timezone:`, or
+ * one the query inherits from the source it runs on), by name: each holds
+ * the value truncated there, which a truncation again in another zone
+ * changes. When {@link queryStageZone} cannot name the zone, every one is
+ * listed. Empty for a source that is not query-shaped, or whose query
+ * computes in the default zone.
+ */
+export function stageZonedTruncations(def: unknown): Set<string> {
+   const d = def as
+      | {
+           query?: unknown;
+           fields?: {
+              name?: unknown;
+              as?: unknown;
+              type?: unknown;
+              e?: unknown;
+              timeframe?: unknown;
+           }[];
+        }
+      | undefined;
+   if (d?.query === undefined) return new Set();
+   if (queryTimezoneOf(d) === undefined && !anyTimezone(d.query)) {
+      return new Set();
+   }
+   const stage = queryStageZone(d);
+   if (stage !== undefined && sameZone(stage.zone, undefined)) {
+      return new Set();
+   }
+   return new Set(
+      (d.fields ?? [])
+         .filter(
+            (f) =>
+               typeof f.timeframe === "string" &&
+               f.e === undefined &&
+               (f.type === "timestamp" || f.type === "timestamptz"),
+         )
+         .map((f) => String(f.as ?? f.name)),
+   );
+}
+
+/** Whether any part of a compiled query sets a `queryTimezone`. */
+function anyTimezone(node: unknown, depth = 0): boolean {
+   if (!node || typeof node !== "object" || depth > MAX_WALK_DEPTH) {
+      return depth > MAX_WALK_DEPTH;
+   }
+   return Object.entries(node).some(([k, v]) =>
+      k === "queryTimezone"
+         ? typeof v === "string" && v !== ""
+         : anyTimezone(v, depth + 1),
+   );
+}
+
 /** Max IR depth to walk; deep enough for real sources, a hang backstop. */
 const MAX_WALK_DEPTH = 200;
 

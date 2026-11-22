@@ -39,6 +39,11 @@ export function stageZoneModel(
    const r = (grain: string) => ROUTES[route](grain, p);
    return `##! experimental { persistence }
 source: raw is ${table}
+// A rollup no zone touches, so every placement plans at least one.
+source: plain is raw extend {
+  ${r("category")}
+  measure: plain_total is amount.sum()
+}
 ${persist}
 source: daily is raw -> {
   timezone: 'America/Los_Angeles'
