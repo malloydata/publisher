@@ -232,6 +232,12 @@ export interface InstructedRun
     * anchor (freshness_stamp.ts).
     */
    readFrom?: Map<string, string[]>;
+   /**
+    * Database rollups that could not build over their base's table because
+    * it moved since its build, could not be read, or recorded no column
+    * types, by address: the reason their entry reports.
+    */
+   baseRecomputed?: Map<string, string>;
 }
 
 /** One source the database gate refuses, as databaseRefusalOn reports it. */

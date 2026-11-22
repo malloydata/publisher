@@ -8,9 +8,10 @@
  * live, but a downstream built after the alter (a `#@ persist` over it, a
  * `#(rollup)` over it) read the rounded values, and served them from its own
  * table under an address and recorded types that say it is built from the
- * source. Each now recomputes the upstream from its definition, its served
- * rows equal live's as text, and under strict upstreams it is refused,
- * naming the column. DuckDB, and Postgres when
+ * source. Each now recomputes the upstream from its definition, says why in
+ * its entry, counts it (`publisher_materialization_upstream_recompute_total`),
+ * and its served rows equal live's as text; under strict upstreams a
+ * `#@ persist` downstream is refused, naming the column. DuckDB, and Postgres when
  * `PUBLISHER_TEST_POSTGRES_URL` names one.
  */
 
@@ -34,6 +35,11 @@ import { createDuckDBRepository } from "../../src/storage/duckdb/DuckDBRepositor
 import { initializeSchema } from "../../src/storage/duckdb/schema";
 import { freshLoadPool } from "../../src/test_helpers/conformance/package_runner";
 import { serviceOverEnvironment } from "../../src/test_helpers/materialization_service_harness";
+import { resetMaterializationTelemetryForTesting } from "../../src/materialization_metrics";
+import {
+   startMetricsHarness,
+   type MetricsHarness,
+} from "../../src/test_helpers/metrics_harness";
 import { installSettings } from "../../src/test_helpers/settings_env";
 import { writePackageFiles } from "../../src/test_helpers/temp_package";
 
@@ -156,6 +162,8 @@ for (const [tier, mechanism] of tiers.flatMap((t) =>
       let service: MaterializationService;
       let pkg: Package;
       let drop: (() => Promise<void>) | undefined;
+      let metrics: MetricsHarness;
+      let recomputes: number;
       let first: Materialization;
       let strict: Materialization;
       let second: Materialization;
@@ -206,6 +214,7 @@ for (const [tier, mechanism] of tiers.flatMap((t) =>
             },
          }).restore;
          await freshLoadPool();
+         metrics = await startMetricsHarness();
          root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "cd-")));
          const envPath = path.join(root, "env");
          fs.mkdirSync(envPath);
@@ -248,13 +257,25 @@ for (const [tier, mechanism] of tiers.flatMap((t) =>
          pkg = await env.getPackage(parsePackageName(PKG), true, {
             refreshSchemas: true,
          });
+         // Counted across both runs: a rollup builds from the warehouse in
+         // the strict one, and the second carries its table; a persist
+         // source is refused in the first and recomputed in the second.
+         resetMaterializationTelemetryForTesting();
          strict = await build({ strictUpstreams: true });
          second = await build({});
+         recomputes = await metrics.collectCounter(
+            "publisher_materialization_upstream_recompute_total",
+            {
+               reason: "moved",
+               build: mechanism.servedBy === "rollup" ? "rollup" : "chained",
+            },
+         );
 
          served = await ask(mechanism.query);
          live = await ask(LIVE);
       }, 300_000);
       afterAll(async () => {
+         await metrics?.shutdown();
          await env?.closeAllConnections().catch(() => undefined);
          await db?.close();
          await drop?.();
@@ -310,16 +331,14 @@ for (const [tier, mechanism] of tiers.flatMap((t) =>
          );
          const downstream = entries.filter((e) => e.sourceName !== "a");
          expect(downstream).toHaveLength(1);
-         if (mechanism.servedBy === "rollup") {
-            // A database rollup says `reused` only when it built from its
-            // base's table; built from the warehouse, it says nothing.
-            expect(downstream[0].upstreamReuse).toBeUndefined();
-         } else {
-            expect(downstream[0].upstreamReuse).toBe("recomputed");
-            expect(downstream[0].upstreamRecomputeReason).toContain(
-               "persisted upstream 'a' was not read from its table, since its column 'amt' was built as",
-            );
-         }
+         expect(downstream[0].upstreamReuse).toBe("recomputed");
+         expect(downstream[0].upstreamRecomputeReason).toMatch(
+            /^persisted upstream '\w+' was not read from its table, since its column 'amt' was built as (DECIMAL|numeric)\(10,1\) and is now (DECIMAL|numeric)\(10,0\); recomputed from its definition in the warehouse$/,
+         );
+      });
+
+      it("counts the recompute, by reason and build", () => {
+         expect(recomputes).toBe(1);
       });
 
       it("serves its table, equal to live as text", () => {

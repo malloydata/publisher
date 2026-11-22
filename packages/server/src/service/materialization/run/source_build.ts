@@ -22,7 +22,10 @@ import type {
 } from "@malloydata/malloy";
 import { ChainedUpstreamMissingError } from "../../../errors";
 import { logger } from "../../../logger";
-import { recordChainedStorageBuild } from "../../../materialization_metrics";
+import {
+   recordChainedStorageBuild,
+   recordUpstreamRecompute,
+} from "../../../materialization_metrics";
 import { getPersistStorageMode } from "../../../config";
 import { mergeQueryMetadata, type QueryMetadata } from "../../query_metadata";
 import {
@@ -63,7 +66,7 @@ import type {
    StoredRollupBase,
 } from "./storage_build_strategy";
 import { compiledTextReader } from "../../../utils";
-import { movedSinceBuild } from "./database_column_read";
+import { movedSinceBuild, type UpstreamMove } from "./database_column_read";
 
 /**
  * The persisted sources `persistSource` reads, from the author's model
@@ -156,15 +159,15 @@ async function movedUpstreams(args: {
       args.connection,
    );
    return new Map(
-      [...reasons].map(([address, reason]) => [
+      [...reasons].map(([address, move]) => [
          address,
-         { name: tables.get(address)!.name, reason },
+         { name: tables.get(address)!.name, ...move },
       ]),
    );
 }
 
 /** {@link movedUpstreams}: each moved upstream's name and why, by address. */
-type MovedUpstreams = ReadonlyMap<string, { name: string; reason: string }>;
+type MovedUpstreams = ReadonlyMap<string, { name: string } & UpstreamMove>;
 
 /** What a build says of a stored upstream whose table moved since its build. */
 function movedDetail(name: string, reason: string): string {
@@ -442,7 +445,7 @@ function movedUpstreamsRead(
    } catch {
       // Unrenderable: every moved upstream counts as read (fail safe).
    }
-   const read = new Map<string, { name: string; reason: string }>();
+   const read = new Map<string, { name: string } & UpstreamMove>();
    for (const [address, upstream] of moved) {
       let withEntry: string | undefined;
       try {
@@ -697,12 +700,6 @@ export async function buildSource(
       ...(builtThisRun ? { builtThisRun } : {}),
       rootAddress: contentSourceEntityId ?? instruction.sourceEntityId,
    });
-   for (const { name, reason } of moved.values()) {
-      logger.warn(
-         "A stored upstream's table moved since its build; a build that reads it recomputes it from its definition",
-         { sourceName: persistSource.name, upstream: name, reason },
-      );
-   }
    const rendered = renderBuildSQL(
       persistSource,
       instruction,
@@ -713,6 +710,15 @@ export async function buildSource(
       moved,
    );
    const { isStorageBuild, buildSQL } = rendered;
+   // Strict refused these above: here each is recomputed. A rollup's own
+   // fallback is counted where it is decided (instructed_build.ts).
+   for (const { name, reason, cause } of rendered.movedRead.values()) {
+      logger.warn(
+         "A stored upstream's table could not be read in place of it; the build recomputes it from its definition",
+         { sourceName: persistSource.name, upstream: name, reason, cause },
+      );
+      if (!rollup) recordUpstreamRecompute(cause, "chained");
+   }
 
    const { reuse, sqlInlinesStored, lift } = classifyStoredUpstreams(
       persistSource,

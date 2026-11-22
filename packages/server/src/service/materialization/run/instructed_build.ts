@@ -72,6 +72,7 @@ import {
    recordDuplicateTargetSkipped,
    recordKeyCheck,
    recordManifestBindDegraded,
+   recordUpstreamRecompute,
 } from "../../../materialization_metrics";
 import { getPersistStorageMode } from "../../../config";
 import { withSpan } from "../../../telemetry";
@@ -2245,11 +2246,30 @@ async function overStoredBaseSource(
    // A table altered in its warehouse since its build (a column retyped or
    // dropped) is not the base's rows: the rollup builds as planned, which
    // recomputes the base (source_build.ts, movedUpstreams).
-   if (
-      !run.builtAddresses.has(baseAddress) &&
-      (await movedSinceBuild(new Map([[baseAddress, baseEntry]]), connection))
-         .size > 0
-   ) {
+   const move = run.builtAddresses.has(baseAddress)
+      ? undefined
+      : (
+           await movedSinceBuild(
+              new Map([[baseAddress, baseEntry]]),
+              connection,
+           )
+        ).get(baseAddress);
+   if (move) {
+      const reason =
+         `persisted upstream '${base.source.name}' was not read from its ` +
+         `table, since ${move.reason}; recomputed from its definition in the ` +
+         `warehouse`;
+      logger.warn(
+         "A rollup's stored base could not be read in place of it; the rollup builds from the warehouse",
+         {
+            sourceName: persistSource.name,
+            upstream: base.source.name,
+            reason: move.reason,
+            cause: move.cause,
+         },
+      );
+      recordUpstreamRecompute(move.cause, "rollup");
+      (run.baseRecomputed ??= new Map()).set(gated.sourceEntityId, reason);
       return undefined;
    }
    let variant: OverStoredBase | undefined;
@@ -2459,7 +2479,10 @@ function storedRollupBase(
 /**
  * A database rollup's entry with `upstreamReuse` saying what its build read: `reused`
  * when it built from its base's stored table ({@link overStoredBaseSource}),
- * absent when it built from the warehouse. Its build source names the base
+ * `recomputed`, with why, when it could not because that table moved since
+ * its build, could not be read, or recorded no column types
+ * (`baseRecomputed`), and absent when it built from the warehouse for any
+ * other reason. Its build source names the base
  * only in the author's text, which the classification reads, so the
  * classification alone would say `reused` either way, and the key checks
  * over the base's rows (checkRollupKeys) would be skipped for a build that
@@ -2484,6 +2507,14 @@ function withRollupUpstreamReuse(
       upstreamRecomputeReason: _reason,
       ...rest
    } = entry;
+   const recomputed = run.baseRecomputed?.get(address);
+   if (recomputed !== undefined) {
+      return {
+         ...rest,
+         upstreamReuse: "recomputed",
+         upstreamRecomputeReason: recomputed,
+      };
+   }
    return run.readFrom?.has(address)
       ? { ...rest, upstreamReuse: "reused" }
       : rest;

@@ -183,60 +183,95 @@ export async function readTableColumns(args: {
  * since a build can always recompute instead.
  */
 export async function movedSinceBuild(
-   tables: ReadonlyMap<
-      string,
-      {
-         physicalTableName: string;
-         nativeSchema?: readonly { name?: string; type?: string }[];
-      }
-   >,
+   tables: ReadonlyMap<string, MovedTable>,
    connection: ReadConnection,
-): Promise<Map<string, string>> {
+): Promise<Map<string, UpstreamMove>> {
+   const moved = new Map<string, UpstreamMove>();
+   const toRead = new Map<string, MovedTable>();
+   for (const [key, entry] of tables) {
+      const unrecorded = unrecordedTypes(entry);
+      if (unrecorded !== undefined) moved.set(key, unrecorded);
+      else toRead.set(key, entry);
+   }
+   if (toRead.size === 0) return moved;
    const read = await readTableColumns({
-      tables: [...tables].map(([key, entry]) => ({
+      tables: [...toRead].map(([key, entry]) => ({
          key,
          connectionName: "build",
          tableName: entry.physicalTableName,
       })),
       connection: async () => connection,
    });
-   const moved = new Map<string, string>();
-   for (const [key, entry] of tables) {
-      const reason = movedColumns(
-         entry,
-         read.get(key) ?? { unread: "not_read" },
-      );
-      if (reason !== undefined) moved.set(key, reason);
+   for (const [key, entry] of toRead) {
+      const move = movedColumns(entry, read.get(key) ?? { unread: "not_read" });
+      if (move !== undefined) moved.set(key, move);
    }
    return moved;
 }
 
-/** {@link movedSinceBuild} for one table, as `read` found it. */
+/**
+ * Why a stored upstream's table cannot be read in place of its source, by
+ * class, for the metric (`publisher_materialization_upstream_recompute_total`),
+ * and in words, for the entry and the log: a column `moved`, the table's
+ * columns `unreadable` now, or `types_unrecorded` by its build.
+ */
+export interface UpstreamMove {
+   cause: "moved" | "unreadable" | "types_unrecorded";
+   reason: string;
+}
+
+/** A build that recorded no native type for some column: nothing to compare. */
+function unrecordedTypes(built: {
+   nativeSchema?: readonly { name?: string; type?: string }[];
+}): UpstreamMove | undefined {
+   if (
+      !built.nativeSchema?.length ||
+      built.nativeSchema.some(
+         (c) => c.name === undefined || c.type === undefined,
+      )
+   ) {
+      return {
+         cause: "types_unrecorded",
+         reason: "its build recorded no column types to check it against",
+      };
+   }
+   return undefined;
+}
+
+/** {@link movedSinceBuild} for one table with recorded types, as `read` found it. */
 function movedColumns(
    built: { nativeSchema?: readonly { name?: string; type?: string }[] },
    read: ObservedColumns,
-): string | undefined {
+): UpstreamMove | undefined {
    if ("unread" in read) {
-      return `its columns could not be read (${read.unread})`;
+      return {
+         cause: "unreadable",
+         reason: `its columns could not be read (${read.unread})`,
+      };
    }
-   if (!built.nativeSchema?.length) {
-      return "its build recorded no column types to check it against";
-   }
-   for (const column of built.nativeSchema) {
-      if (column.name === undefined || column.type === undefined) {
-         return "its build recorded a column without a name or type";
-      }
-      const now = columnNamed(read.columns, column.name);
-      if (!now) return `its column '${column.name}' is gone`;
+   for (const column of built.nativeSchema ?? []) {
+      const name = column.name ?? "";
+      const type = column.type ?? "";
+      const now = columnNamed(read.columns, name);
+      if (!now)
+         return { cause: "moved", reason: `its column '${name}' is gone` };
       const nowType = now.nativeType ?? now.type ?? "";
-      if (now.storedAsDouble || spelled(nowType) !== spelled(column.type)) {
-         return (
-            `its column '${column.name}' was built as ${column.type} and ` +
-            `is now ${nowType || "of no readable type"}`
-         );
+      if (now.storedAsDouble || spelled(nowType) !== spelled(type)) {
+         return {
+            cause: "moved",
+            reason:
+               `its column '${name}' was built as ${type} and is now ` +
+               `${nowType || "of no readable type"}`,
+         };
       }
    }
    return undefined;
+}
+
+/** A table {@link movedSinceBuild} checks, as its manifest entry names it. */
+interface MovedTable {
+   physicalTableName: string;
+   nativeSchema?: readonly { name?: string; type?: string }[];
 }
 
 /** A native type spelled one way whatever its case and spacing. */

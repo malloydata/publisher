@@ -494,6 +494,16 @@ const chainedStorageBuildCounter = lazyCounter(
       "parent_reuse share is the headline signal for how far the " +
       "stack-on-the-parent path gets us vs recompute-from-raw.",
 );
+const upstreamRecomputeCounter = lazyCounter(
+   "publisher_materialization_upstream_recompute_total",
+   "Builds that recomputed a stored upstream from its definition because " +
+      "its database table could not be read in place of it: a column " +
+      "retyped or dropped since its build ('moved'), its columns could not " +
+      "be read ('unreadable'), or its build recorded no column types " +
+      "('types_unrecorded'). Labels: reason, and build ('chained' for a " +
+      "persist or materialize build over the upstream, 'rollup' for a " +
+      "database rollup over its stored base).",
+);
 const staleUpstreamEntryCounter = lazyCounter(
    "publisher_materialization_stale_upstream_entry_total",
    "Builds that could not use an upstream's manifest entry because it is at a " +
@@ -878,6 +888,18 @@ export function recordChainedStorageBuild(
  */
 export function recordStaleUpstreamEntry(tier: "database" | "storage"): void {
    staleUpstreamEntryCounter().add(1, { tier });
+}
+
+/**
+ * Record a build that recomputed a stored upstream whose database table it
+ * could not read in place of it (see {@link upstreamRecomputeCounter}). Once
+ * per build per upstream.
+ */
+export function recordUpstreamRecompute(
+   reason: "moved" | "unreadable" | "types_unrecorded",
+   build: "chained" | "rollup",
+): void {
+   upstreamRecomputeCounter().add(1, { reason, build });
 }
 
 /** Visible for tests. Drops cached instruments so a fresh MeterProvider can capture emissions. */

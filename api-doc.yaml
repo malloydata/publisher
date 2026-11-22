@@ -12295,7 +12295,10 @@ components:
             handed by reference; for a database build, an upstream that
             landed in a `storage=` destination; for a `storage=` build, a
             source that reaches the warehouse through a non-persisted source,
-            or whose shape does not compile in the destination.
+            or whose shape does not compile in the destination; on the
+            database tier, an upstream whose table holds other columns than
+            its build recorded (retyped or dropped since), could not be read,
+            or whose build recorded no column types.
             `upstreamRecomputeReason` says which. Such a table reflects the
             warehouse at THIS build's time rather than the upstream's
             snapshot, so the two can disagree when their refresh cadences
@@ -12306,8 +12309,10 @@ components:
             way to build and no choice to report.
 
             A database rollup reports what its build actually read: `reused`
-            only when it built from its base's materialized table, and absent
-            when it built from the warehouse, even over a persisted base. Before
+            only when it built from its base's materialized table, `recomputed`
+            when it could not because that table holds other columns than its
+            build recorded, could not be read, or recorded no column types,
+            and absent when it built from the warehouse for any other reason. Before
             0.15.0 every rollup over a persisted base reported `reused`. A
             `storage=` rollup reports `reused` only when it stacked on a stored
             table.
