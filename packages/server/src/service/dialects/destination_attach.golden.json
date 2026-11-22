@@ -23,6 +23,7 @@
       "SELECT value FROM \"lake_fmt_preflight_N\".\"meta\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH 's3://b/lake', OVERRIDE_DATA_PATH true, METADATA_SCHEMA 'meta', METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".\"meta\".ducklake_metadata WHERE scope IS NULL",
       "INSTALL httpfs;",
       "LOAD httpfs;",
       "SET GLOBAL enable_global_s3_configuration=false",
@@ -56,6 +57,8 @@
       "SELECT count(*) AS n FROM duckdb_tables() WHERE database_name = 'lake_fmt_preflight_N' AND schema_name = 'meta' AND table_name = 'ducklake_metadata';",
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH 's3://b/lake', OVERRIDE_DATA_PATH true, METADATA_SCHEMA 'meta', METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".\"meta\".ducklake_metadata WHERE scope IS NULL",
+      "CALL \"lake\".set_option('data_inlining_row_limit', 0)",
       "INSTALL httpfs;",
       "LOAD httpfs;",
       "SET GLOBAL enable_global_s3_configuration=false",
@@ -90,6 +93,7 @@
       "SELECT value FROM \"lake_fmt_preflight_N\".\"meta\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH 's3://b/lake', OVERRIDE_DATA_PATH true, METADATA_SCHEMA 'meta', METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".\"meta\".ducklake_metadata WHERE scope IS NULL",
       "INSTALL httpfs;",
       "LOAD httpfs;",
       "SET GLOBAL enable_global_s3_configuration=false",
@@ -125,6 +129,7 @@
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH 's3://b/lake', OVERRIDE_DATA_PATH true, METADATA_SCHEMA 'meta', METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH 's3://b/lake', OVERRIDE_DATA_PATH true, METADATA_SCHEMA 'meta', METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".\"meta\".ducklake_metadata WHERE scope IS NULL",
       "INSTALL httpfs;",
       "LOAD httpfs;",
       "SET GLOBAL enable_global_s3_configuration=false",
@@ -189,6 +194,7 @@
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH 's3://b/lake', OVERRIDE_DATA_PATH true, METADATA_SCHEMA 'meta', METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
       "SELECT 1 FROM duckdb_databases() WHERE lower(database_name) = lower('lake')",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".\"meta\".ducklake_metadata WHERE scope IS NULL",
       "INSTALL httpfs;",
       "LOAD httpfs;",
       "SET GLOBAL enable_global_s3_configuration=false",
@@ -223,6 +229,7 @@
       "SELECT value FROM \"lake_fmt_preflight_N\".\"meta\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH 's3://b/lake', OVERRIDE_DATA_PATH true, METADATA_SCHEMA 'meta', METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".\"meta\".ducklake_metadata WHERE scope IS NULL",
       "INSTALL httpfs;",
       "LOAD httpfs;",
       "SET GLOBAL enable_global_s3_configuration=false",
@@ -282,6 +289,7 @@
       "SELECT value FROM \"lake_fmt_preflight_N\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH 'gs://b/lake/', OVERRIDE_DATA_PATH true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL",
       "INSTALL httpfs;",
       "LOAD httpfs;",
       "SET GLOBAL enable_global_s3_configuration=false",
@@ -314,6 +322,7 @@
       "SELECT value FROM \"lake_fmt_preflight_N\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH 'gs://b/lake/', OVERRIDE_DATA_PATH true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL",
       "INSTALL httpfs;",
       "LOAD httpfs;",
       "SET GLOBAL enable_global_s3_configuration=false",
@@ -346,6 +355,7 @@
       "SELECT value FROM \"lake_fmt_preflight_N\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH 'gs://b/lake/', OVERRIDE_DATA_PATH true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL",
       "INSTALL httpfs;",
       "LOAD httpfs;",
       "SET GLOBAL enable_global_s3_configuration=false",
@@ -379,6 +389,7 @@
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH 'gs://b/lake/', OVERRIDE_DATA_PATH true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH 'gs://b/lake/', OVERRIDE_DATA_PATH true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL",
       "INSTALL httpfs;",
       "LOAD httpfs;",
       "SET GLOBAL enable_global_s3_configuration=false",
@@ -439,6 +450,7 @@
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH 'gs://b/lake/', OVERRIDE_DATA_PATH true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
       "SELECT 1 FROM duckdb_databases() WHERE lower(database_name) = lower('lake')",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL",
       "INSTALL httpfs;",
       "LOAD httpfs;",
       "SET GLOBAL enable_global_s3_configuration=false",
@@ -471,6 +483,7 @@
       "SELECT value FROM \"lake_fmt_preflight_N\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH 'gs://b/lake/', OVERRIDE_DATA_PATH true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL",
       "INSTALL httpfs;",
       "LOAD httpfs;",
       "SET GLOBAL enable_global_s3_configuration=false",
@@ -532,6 +545,7 @@
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (CREATE_IF_NOT_EXISTS false, METADATA_SCHEMA 'meta', METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
       "SELECT key, value FROM \"__ducklake_metadata_lake\".\"meta\".ducklake_metadata WHERE scope IS NULL",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".\"meta\".ducklake_metadata WHERE scope IS NULL",
       "DETACH \"lake\";"
     ]
   },
@@ -560,6 +574,8 @@
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (CREATE_IF_NOT_EXISTS false, METADATA_SCHEMA 'meta', METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
       "SELECT key, value FROM \"__ducklake_metadata_lake\".\"meta\".ducklake_metadata WHERE scope IS NULL",
+      "CALL \"lake\".set_option('data_inlining_row_limit', 0)",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".\"meta\".ducklake_metadata WHERE scope IS NULL",
       "DETACH \"lake\";"
     ]
   },
@@ -587,6 +603,7 @@
       "SELECT value FROM \"lake_fmt_preflight_N\".\"meta\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (CREATE_IF_NOT_EXISTS false, METADATA_SCHEMA 'meta', METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".\"meta\".ducklake_metadata WHERE scope IS NULL",
       "SELECT key, value FROM \"__ducklake_metadata_lake\".\"meta\".ducklake_metadata WHERE scope IS NULL",
       "INSTALL httpfs;",
       "LOAD httpfs;",
@@ -624,6 +641,7 @@
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (CREATE_IF_NOT_EXISTS false, METADATA_SCHEMA 'meta', METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (CREATE_IF_NOT_EXISTS false, METADATA_SCHEMA 'meta', METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".\"meta\".ducklake_metadata WHERE scope IS NULL",
       "SELECT key, value FROM \"__ducklake_metadata_lake\".\"meta\".ducklake_metadata WHERE scope IS NULL",
       "DETACH \"lake\";"
     ]
@@ -684,6 +702,7 @@
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (CREATE_IF_NOT_EXISTS false, METADATA_SCHEMA 'meta', METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
       "SELECT 1 FROM duckdb_databases() WHERE lower(database_name) = lower('lake')",
       "SELECT key, value FROM \"__ducklake_metadata_lake\".\"meta\".ducklake_metadata WHERE scope IS NULL",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".\"meta\".ducklake_metadata WHERE scope IS NULL",
       "DETACH \"lake\";"
     ]
   },
@@ -712,6 +731,7 @@
       "SELECT value FROM \"lake_fmt_preflight_N\".\"meta\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (CREATE_IF_NOT_EXISTS false, METADATA_SCHEMA 'meta', METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".\"meta\".ducklake_metadata WHERE scope IS NULL",
       "SELECT key, value FROM \"__ducklake_metadata_lake\".\"meta\".ducklake_metadata WHERE scope IS NULL",
       "DETACH \"lake\";"
     ]
@@ -765,6 +785,7 @@
       "SELECT value FROM \"lake_fmt_preflight_N\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (CREATE_IF_NOT_EXISTS false, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL",
       "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL"
     ]
   },
@@ -790,6 +811,7 @@
       "SELECT value FROM \"lake_fmt_preflight_N\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (CREATE_IF_NOT_EXISTS false, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL",
       "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL"
     ]
   },
@@ -815,6 +837,7 @@
       "SELECT value FROM \"lake_fmt_preflight_N\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (CREATE_IF_NOT_EXISTS false, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL",
       "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL"
     ]
   },
@@ -841,6 +864,7 @@
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (CREATE_IF_NOT_EXISTS false, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (CREATE_IF_NOT_EXISTS false, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL",
       "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL"
     ]
   },
@@ -894,6 +918,7 @@
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (CREATE_IF_NOT_EXISTS false, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
       "SELECT 1 FROM duckdb_databases() WHERE lower(database_name) = lower('lake')",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL",
       "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL"
     ]
   },
@@ -919,6 +944,7 @@
       "SELECT value FROM \"lake_fmt_preflight_N\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (CREATE_IF_NOT_EXISTS false, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL",
       "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL"
     ]
   },
@@ -968,7 +994,8 @@
       "ATTACH 'host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake_fmt_preflight_N\" (TYPE postgres, READ_ONLY, SECRET pg_attach_lake_6f021f0268d5);",
       "SELECT value FROM \"lake_fmt_preflight_N\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
-      "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH '/tmp/lake', OVERRIDE_DATA_PATH true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});"
+      "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH '/tmp/lake', OVERRIDE_DATA_PATH true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL"
     ]
   },
   "read-write | local path | absent": {
@@ -992,7 +1019,8 @@
       "ATTACH 'host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake_fmt_preflight_N\" (TYPE postgres, READ_ONLY, SECRET pg_attach_lake_6f021f0268d5);",
       "SELECT value FROM \"lake_fmt_preflight_N\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
-      "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH '/tmp/lake', OVERRIDE_DATA_PATH true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});"
+      "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH '/tmp/lake', OVERRIDE_DATA_PATH true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL"
     ]
   },
   "read-write | local path | recorded": {
@@ -1016,7 +1044,8 @@
       "ATTACH 'host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake_fmt_preflight_N\" (TYPE postgres, READ_ONLY, SECRET pg_attach_lake_6f021f0268d5);",
       "SELECT value FROM \"lake_fmt_preflight_N\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
-      "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH '/tmp/lake', OVERRIDE_DATA_PATH true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});"
+      "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH '/tmp/lake', OVERRIDE_DATA_PATH true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL"
     ]
   },
   "read-write | local path | race once": {
@@ -1041,7 +1070,8 @@
       "SELECT value FROM \"lake_fmt_preflight_N\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH '/tmp/lake', OVERRIDE_DATA_PATH true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
-      "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH '/tmp/lake', OVERRIDE_DATA_PATH true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});"
+      "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH '/tmp/lake', OVERRIDE_DATA_PATH true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL"
     ]
   },
   "read-write | local path | race always": {
@@ -1093,7 +1123,8 @@
       "SELECT value FROM \"lake_fmt_preflight_N\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH '/tmp/lake', OVERRIDE_DATA_PATH true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
-      "SELECT 1 FROM duckdb_databases() WHERE lower(database_name) = lower('lake')"
+      "SELECT 1 FROM duckdb_databases() WHERE lower(database_name) = lower('lake')",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL"
     ]
   },
   "read-write | local path | secret fails": {
@@ -1117,7 +1148,8 @@
       "ATTACH 'host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake_fmt_preflight_N\" (TYPE postgres, READ_ONLY, SECRET pg_attach_lake_6f021f0268d5);",
       "SELECT value FROM \"lake_fmt_preflight_N\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
-      "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH '/tmp/lake', OVERRIDE_DATA_PATH true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});"
+      "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH '/tmp/lake', OVERRIDE_DATA_PATH true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL"
     ]
   },
   "read-write | local path | versioned": {
@@ -1167,6 +1199,7 @@
       "SELECT value FROM \"lake_fmt_preflight_N\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (CREATE_IF_NOT_EXISTS false, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL",
       "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL"
     ]
   },
@@ -1192,6 +1225,7 @@
       "SELECT value FROM \"lake_fmt_preflight_N\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (CREATE_IF_NOT_EXISTS false, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL",
       "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL"
     ]
   },
@@ -1217,6 +1251,7 @@
       "SELECT value FROM \"lake_fmt_preflight_N\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (CREATE_IF_NOT_EXISTS false, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL",
       "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL"
     ]
   },
@@ -1243,6 +1278,7 @@
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (CREATE_IF_NOT_EXISTS false, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (CREATE_IF_NOT_EXISTS false, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL",
       "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL"
     ]
   },
@@ -1296,6 +1332,7 @@
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (CREATE_IF_NOT_EXISTS false, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
       "SELECT 1 FROM duckdb_databases() WHERE lower(database_name) = lower('lake')",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL",
       "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL"
     ]
   },
@@ -1321,6 +1358,7 @@
       "SELECT value FROM \"lake_fmt_preflight_N\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (CREATE_IF_NOT_EXISTS false, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL",
       "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL"
     ]
   },
@@ -1533,6 +1571,7 @@
       "SELECT value FROM \"lake_fmt_preflight_N\".\"meta\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH 's3://b/lake', OVERRIDE_DATA_PATH true, READ_ONLY true, METADATA_SCHEMA 'meta', METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".\"meta\".ducklake_metadata WHERE scope IS NULL",
       "INSTALL httpfs;",
       "LOAD httpfs;",
       "SET GLOBAL enable_global_s3_configuration=false",
@@ -1566,6 +1605,7 @@
       "SELECT count(*) AS n FROM duckdb_tables() WHERE database_name = 'lake_fmt_preflight_N' AND schema_name = 'meta' AND table_name = 'ducklake_metadata';",
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH 's3://b/lake', OVERRIDE_DATA_PATH true, READ_ONLY true, METADATA_SCHEMA 'meta', METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".\"meta\".ducklake_metadata WHERE scope IS NULL",
       "INSTALL httpfs;",
       "LOAD httpfs;",
       "SET GLOBAL enable_global_s3_configuration=false",
@@ -1600,6 +1640,7 @@
       "SELECT value FROM \"lake_fmt_preflight_N\".\"meta\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH 's3://b/lake', OVERRIDE_DATA_PATH true, READ_ONLY true, METADATA_SCHEMA 'meta', METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".\"meta\".ducklake_metadata WHERE scope IS NULL",
       "INSTALL httpfs;",
       "LOAD httpfs;",
       "SET GLOBAL enable_global_s3_configuration=false",
@@ -1635,6 +1676,7 @@
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH 's3://b/lake', OVERRIDE_DATA_PATH true, READ_ONLY true, METADATA_SCHEMA 'meta', METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH 's3://b/lake', OVERRIDE_DATA_PATH true, READ_ONLY true, METADATA_SCHEMA 'meta', METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".\"meta\".ducklake_metadata WHERE scope IS NULL",
       "INSTALL httpfs;",
       "LOAD httpfs;",
       "SET GLOBAL enable_global_s3_configuration=false",
@@ -1699,6 +1741,7 @@
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH 's3://b/lake', OVERRIDE_DATA_PATH true, READ_ONLY true, METADATA_SCHEMA 'meta', METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
       "SELECT 1 FROM duckdb_databases() WHERE lower(database_name) = lower('lake')",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".\"meta\".ducklake_metadata WHERE scope IS NULL",
       "INSTALL httpfs;",
       "LOAD httpfs;",
       "SET GLOBAL enable_global_s3_configuration=false",
@@ -1733,6 +1776,7 @@
       "SELECT value FROM \"lake_fmt_preflight_N\".\"meta\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH 's3://b/lake', OVERRIDE_DATA_PATH true, READ_ONLY true, METADATA_SCHEMA 'meta', METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".\"meta\".ducklake_metadata WHERE scope IS NULL",
       "INSTALL httpfs;",
       "LOAD httpfs;",
       "SET GLOBAL enable_global_s3_configuration=false",
@@ -1792,6 +1836,7 @@
       "SELECT value FROM \"lake_fmt_preflight_N\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH 'gs://b/lake/', OVERRIDE_DATA_PATH true, READ_ONLY true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL",
       "INSTALL httpfs;",
       "LOAD httpfs;",
       "SET GLOBAL enable_global_s3_configuration=false",
@@ -1824,6 +1869,7 @@
       "SELECT value FROM \"lake_fmt_preflight_N\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH 'gs://b/lake/', OVERRIDE_DATA_PATH true, READ_ONLY true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL",
       "INSTALL httpfs;",
       "LOAD httpfs;",
       "SET GLOBAL enable_global_s3_configuration=false",
@@ -1856,6 +1902,7 @@
       "SELECT value FROM \"lake_fmt_preflight_N\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH 'gs://b/lake/', OVERRIDE_DATA_PATH true, READ_ONLY true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL",
       "INSTALL httpfs;",
       "LOAD httpfs;",
       "SET GLOBAL enable_global_s3_configuration=false",
@@ -1889,6 +1936,7 @@
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH 'gs://b/lake/', OVERRIDE_DATA_PATH true, READ_ONLY true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH 'gs://b/lake/', OVERRIDE_DATA_PATH true, READ_ONLY true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL",
       "INSTALL httpfs;",
       "LOAD httpfs;",
       "SET GLOBAL enable_global_s3_configuration=false",
@@ -1949,6 +1997,7 @@
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH 'gs://b/lake/', OVERRIDE_DATA_PATH true, READ_ONLY true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
       "SELECT 1 FROM duckdb_databases() WHERE lower(database_name) = lower('lake')",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL",
       "INSTALL httpfs;",
       "LOAD httpfs;",
       "SET GLOBAL enable_global_s3_configuration=false",
@@ -1981,6 +2030,7 @@
       "SELECT value FROM \"lake_fmt_preflight_N\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH 'gs://b/lake/', OVERRIDE_DATA_PATH true, READ_ONLY true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL",
       "INSTALL httpfs;",
       "LOAD httpfs;",
       "SET GLOBAL enable_global_s3_configuration=false",
@@ -2042,6 +2092,7 @@
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (READ_ONLY true, METADATA_SCHEMA 'meta', METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
       "SELECT key, value FROM \"__ducklake_metadata_lake\".\"meta\".ducklake_metadata WHERE scope IS NULL",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".\"meta\".ducklake_metadata WHERE scope IS NULL",
       "DETACH \"lake\";"
     ]
   },
@@ -2070,6 +2121,7 @@
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (READ_ONLY true, METADATA_SCHEMA 'meta', METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
       "SELECT key, value FROM \"__ducklake_metadata_lake\".\"meta\".ducklake_metadata WHERE scope IS NULL",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".\"meta\".ducklake_metadata WHERE scope IS NULL",
       "DETACH \"lake\";"
     ]
   },
@@ -2097,6 +2149,7 @@
       "SELECT value FROM \"lake_fmt_preflight_N\".\"meta\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (READ_ONLY true, METADATA_SCHEMA 'meta', METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".\"meta\".ducklake_metadata WHERE scope IS NULL",
       "SELECT key, value FROM \"__ducklake_metadata_lake\".\"meta\".ducklake_metadata WHERE scope IS NULL",
       "INSTALL httpfs;",
       "LOAD httpfs;",
@@ -2134,6 +2187,7 @@
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (READ_ONLY true, METADATA_SCHEMA 'meta', METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (READ_ONLY true, METADATA_SCHEMA 'meta', METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".\"meta\".ducklake_metadata WHERE scope IS NULL",
       "SELECT key, value FROM \"__ducklake_metadata_lake\".\"meta\".ducklake_metadata WHERE scope IS NULL",
       "DETACH \"lake\";"
     ]
@@ -2194,6 +2248,7 @@
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (READ_ONLY true, METADATA_SCHEMA 'meta', METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
       "SELECT 1 FROM duckdb_databases() WHERE lower(database_name) = lower('lake')",
       "SELECT key, value FROM \"__ducklake_metadata_lake\".\"meta\".ducklake_metadata WHERE scope IS NULL",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".\"meta\".ducklake_metadata WHERE scope IS NULL",
       "DETACH \"lake\";"
     ]
   },
@@ -2222,6 +2277,7 @@
       "SELECT value FROM \"lake_fmt_preflight_N\".\"meta\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (READ_ONLY true, METADATA_SCHEMA 'meta', METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".\"meta\".ducklake_metadata WHERE scope IS NULL",
       "SELECT key, value FROM \"__ducklake_metadata_lake\".\"meta\".ducklake_metadata WHERE scope IS NULL",
       "DETACH \"lake\";"
     ]
@@ -2275,6 +2331,7 @@
       "SELECT value FROM \"lake_fmt_preflight_N\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (READ_ONLY true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL",
       "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL"
     ]
   },
@@ -2300,6 +2357,7 @@
       "SELECT value FROM \"lake_fmt_preflight_N\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (READ_ONLY true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL",
       "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL"
     ]
   },
@@ -2325,6 +2383,7 @@
       "SELECT value FROM \"lake_fmt_preflight_N\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (READ_ONLY true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL",
       "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL"
     ]
   },
@@ -2351,6 +2410,7 @@
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (READ_ONLY true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (READ_ONLY true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL",
       "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL"
     ]
   },
@@ -2404,6 +2464,7 @@
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (READ_ONLY true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
       "SELECT 1 FROM duckdb_databases() WHERE lower(database_name) = lower('lake')",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL",
       "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL"
     ]
   },
@@ -2429,6 +2490,7 @@
       "SELECT value FROM \"lake_fmt_preflight_N\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (READ_ONLY true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL",
       "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL"
     ]
   },
@@ -2478,7 +2540,8 @@
       "ATTACH 'host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake_fmt_preflight_N\" (TYPE postgres, READ_ONLY, SECRET pg_attach_lake_6f021f0268d5);",
       "SELECT value FROM \"lake_fmt_preflight_N\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
-      "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH '/tmp/lake', OVERRIDE_DATA_PATH true, READ_ONLY true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});"
+      "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH '/tmp/lake', OVERRIDE_DATA_PATH true, READ_ONLY true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL"
     ]
   },
   "read-only | local path | absent": {
@@ -2502,7 +2565,8 @@
       "ATTACH 'host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake_fmt_preflight_N\" (TYPE postgres, READ_ONLY, SECRET pg_attach_lake_6f021f0268d5);",
       "SELECT value FROM \"lake_fmt_preflight_N\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
-      "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH '/tmp/lake', OVERRIDE_DATA_PATH true, READ_ONLY true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});"
+      "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH '/tmp/lake', OVERRIDE_DATA_PATH true, READ_ONLY true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL"
     ]
   },
   "read-only | local path | recorded": {
@@ -2526,7 +2590,8 @@
       "ATTACH 'host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake_fmt_preflight_N\" (TYPE postgres, READ_ONLY, SECRET pg_attach_lake_6f021f0268d5);",
       "SELECT value FROM \"lake_fmt_preflight_N\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
-      "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH '/tmp/lake', OVERRIDE_DATA_PATH true, READ_ONLY true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});"
+      "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH '/tmp/lake', OVERRIDE_DATA_PATH true, READ_ONLY true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL"
     ]
   },
   "read-only | local path | race once": {
@@ -2551,7 +2616,8 @@
       "SELECT value FROM \"lake_fmt_preflight_N\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH '/tmp/lake', OVERRIDE_DATA_PATH true, READ_ONLY true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
-      "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH '/tmp/lake', OVERRIDE_DATA_PATH true, READ_ONLY true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});"
+      "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH '/tmp/lake', OVERRIDE_DATA_PATH true, READ_ONLY true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL"
     ]
   },
   "read-only | local path | race always": {
@@ -2603,7 +2669,8 @@
       "SELECT value FROM \"lake_fmt_preflight_N\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH '/tmp/lake', OVERRIDE_DATA_PATH true, READ_ONLY true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
-      "SELECT 1 FROM duckdb_databases() WHERE lower(database_name) = lower('lake')"
+      "SELECT 1 FROM duckdb_databases() WHERE lower(database_name) = lower('lake')",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL"
     ]
   },
   "read-only | local path | secret fails": {
@@ -2627,7 +2694,8 @@
       "ATTACH 'host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake_fmt_preflight_N\" (TYPE postgres, READ_ONLY, SECRET pg_attach_lake_6f021f0268d5);",
       "SELECT value FROM \"lake_fmt_preflight_N\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
-      "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH '/tmp/lake', OVERRIDE_DATA_PATH true, READ_ONLY true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});"
+      "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH '/tmp/lake', OVERRIDE_DATA_PATH true, READ_ONLY true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL"
     ]
   },
   "read-only | local path | versioned": {
@@ -2677,6 +2745,7 @@
       "SELECT value FROM \"lake_fmt_preflight_N\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (CREATE_IF_NOT_EXISTS false, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL",
       "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL"
     ]
   },
@@ -2702,6 +2771,7 @@
       "SELECT value FROM \"lake_fmt_preflight_N\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (CREATE_IF_NOT_EXISTS false, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL",
       "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL"
     ]
   },
@@ -2727,6 +2797,7 @@
       "SELECT value FROM \"lake_fmt_preflight_N\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (CREATE_IF_NOT_EXISTS false, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL",
       "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL"
     ]
   },
@@ -2753,6 +2824,7 @@
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (CREATE_IF_NOT_EXISTS false, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (CREATE_IF_NOT_EXISTS false, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL",
       "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL"
     ]
   },
@@ -2806,6 +2878,7 @@
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (CREATE_IF_NOT_EXISTS false, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
       "SELECT 1 FROM duckdb_databases() WHERE lower(database_name) = lower('lake')",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL",
       "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL"
     ]
   },
@@ -2831,6 +2904,7 @@
       "SELECT value FROM \"lake_fmt_preflight_N\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (CREATE_IF_NOT_EXISTS false, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL",
       "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL"
     ]
   },
@@ -3043,6 +3117,7 @@
       "SELECT value FROM \"lake_fmt_preflight_N\".\"meta\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH 's3://b/lake', OVERRIDE_DATA_PATH true, READ_ONLY true, METADATA_SCHEMA 'meta', METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".\"meta\".ducklake_metadata WHERE scope IS NULL",
       "INSTALL httpfs;",
       "LOAD httpfs;",
       "SET GLOBAL enable_global_s3_configuration=false",
@@ -3101,6 +3176,7 @@
       "SELECT value FROM \"lake_fmt_preflight_N\".\"meta\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH 's3://b/lake', OVERRIDE_DATA_PATH true, READ_ONLY true, METADATA_SCHEMA 'meta', METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".\"meta\".ducklake_metadata WHERE scope IS NULL",
       "INSTALL httpfs;",
       "LOAD httpfs;",
       "SET GLOBAL enable_global_s3_configuration=false",
@@ -3136,6 +3212,7 @@
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH 's3://b/lake', OVERRIDE_DATA_PATH true, READ_ONLY true, METADATA_SCHEMA 'meta', METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH 's3://b/lake', OVERRIDE_DATA_PATH true, READ_ONLY true, METADATA_SCHEMA 'meta', METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".\"meta\".ducklake_metadata WHERE scope IS NULL",
       "INSTALL httpfs;",
       "LOAD httpfs;",
       "SET GLOBAL enable_global_s3_configuration=false",
@@ -3200,6 +3277,7 @@
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH 's3://b/lake', OVERRIDE_DATA_PATH true, READ_ONLY true, METADATA_SCHEMA 'meta', METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
       "SELECT 1 FROM duckdb_databases() WHERE lower(database_name) = lower('lake')",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".\"meta\".ducklake_metadata WHERE scope IS NULL",
       "INSTALL httpfs;",
       "LOAD httpfs;",
       "SET GLOBAL enable_global_s3_configuration=false",
@@ -3234,6 +3312,7 @@
       "SELECT value FROM \"lake_fmt_preflight_N\".\"meta\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH 's3://b/lake', OVERRIDE_DATA_PATH true, READ_ONLY true, METADATA_SCHEMA 'meta', METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".\"meta\".ducklake_metadata WHERE scope IS NULL",
       "INSTALL httpfs;",
       "LOAD httpfs;",
       "SET GLOBAL enable_global_s3_configuration=false",
@@ -3293,6 +3372,7 @@
       "SELECT value FROM \"lake_fmt_preflight_N\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH 'gs://b/lake/', OVERRIDE_DATA_PATH true, READ_ONLY true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL",
       "INSTALL httpfs;",
       "LOAD httpfs;",
       "SET GLOBAL enable_global_s3_configuration=false",
@@ -3325,6 +3405,7 @@
       "SELECT value FROM \"lake_fmt_preflight_N\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH 'gs://b/lake/', OVERRIDE_DATA_PATH true, READ_ONLY true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL",
       "INSTALL httpfs;",
       "LOAD httpfs;",
       "SET GLOBAL enable_global_s3_configuration=false",
@@ -3357,6 +3438,7 @@
       "SELECT value FROM \"lake_fmt_preflight_N\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH 'gs://b/lake/', OVERRIDE_DATA_PATH true, READ_ONLY true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL",
       "INSTALL httpfs;",
       "LOAD httpfs;",
       "SET GLOBAL enable_global_s3_configuration=false",
@@ -3390,6 +3472,7 @@
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH 'gs://b/lake/', OVERRIDE_DATA_PATH true, READ_ONLY true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH 'gs://b/lake/', OVERRIDE_DATA_PATH true, READ_ONLY true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL",
       "INSTALL httpfs;",
       "LOAD httpfs;",
       "SET GLOBAL enable_global_s3_configuration=false",
@@ -3450,6 +3533,7 @@
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH 'gs://b/lake/', OVERRIDE_DATA_PATH true, READ_ONLY true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
       "SELECT 1 FROM duckdb_databases() WHERE lower(database_name) = lower('lake')",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL",
       "INSTALL httpfs;",
       "LOAD httpfs;",
       "SET GLOBAL enable_global_s3_configuration=false",
@@ -3482,6 +3566,7 @@
       "SELECT value FROM \"lake_fmt_preflight_N\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH 'gs://b/lake/', OVERRIDE_DATA_PATH true, READ_ONLY true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL",
       "INSTALL httpfs;",
       "LOAD httpfs;",
       "SET GLOBAL enable_global_s3_configuration=false",
@@ -3543,6 +3628,7 @@
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (READ_ONLY true, METADATA_SCHEMA 'meta', METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
       "SELECT key, value FROM \"__ducklake_metadata_lake\".\"meta\".ducklake_metadata WHERE scope IS NULL",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".\"meta\".ducklake_metadata WHERE scope IS NULL",
       "DETACH \"lake\";"
     ]
   },
@@ -3595,6 +3681,7 @@
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (READ_ONLY true, METADATA_SCHEMA 'meta', METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
       "SELECT key, value FROM \"__ducklake_metadata_lake\".\"meta\".ducklake_metadata WHERE scope IS NULL",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".\"meta\".ducklake_metadata WHERE scope IS NULL",
       "INSTALL httpfs;",
       "LOAD httpfs;",
       "SET GLOBAL enable_global_s3_configuration=false",
@@ -3631,6 +3718,7 @@
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (READ_ONLY true, METADATA_SCHEMA 'meta', METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (READ_ONLY true, METADATA_SCHEMA 'meta', METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".\"meta\".ducklake_metadata WHERE scope IS NULL",
       "SELECT key, value FROM \"__ducklake_metadata_lake\".\"meta\".ducklake_metadata WHERE scope IS NULL",
       "DETACH \"lake\";"
     ]
@@ -3691,6 +3779,7 @@
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (READ_ONLY true, METADATA_SCHEMA 'meta', METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
       "SELECT 1 FROM duckdb_databases() WHERE lower(database_name) = lower('lake')",
       "SELECT key, value FROM \"__ducklake_metadata_lake\".\"meta\".ducklake_metadata WHERE scope IS NULL",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".\"meta\".ducklake_metadata WHERE scope IS NULL",
       "DETACH \"lake\";"
     ]
   },
@@ -3719,6 +3808,7 @@
       "SELECT value FROM \"lake_fmt_preflight_N\".\"meta\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (READ_ONLY true, METADATA_SCHEMA 'meta', METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".\"meta\".ducklake_metadata WHERE scope IS NULL",
       "SELECT key, value FROM \"__ducklake_metadata_lake\".\"meta\".ducklake_metadata WHERE scope IS NULL",
       "DETACH \"lake\";"
     ]
@@ -3772,6 +3862,7 @@
       "SELECT value FROM \"lake_fmt_preflight_N\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (READ_ONLY true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL",
       "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL"
     ]
   },
@@ -3797,6 +3888,7 @@
       "SELECT value FROM \"lake_fmt_preflight_N\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (READ_ONLY true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL",
       "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL"
     ]
   },
@@ -3822,6 +3914,7 @@
       "SELECT value FROM \"lake_fmt_preflight_N\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (READ_ONLY true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL",
       "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL"
     ]
   },
@@ -3848,6 +3941,7 @@
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (READ_ONLY true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (READ_ONLY true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL",
       "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL"
     ]
   },
@@ -3901,6 +3995,7 @@
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (READ_ONLY true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
       "SELECT 1 FROM duckdb_databases() WHERE lower(database_name) = lower('lake')",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL",
       "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL"
     ]
   },
@@ -3926,6 +4021,7 @@
       "SELECT value FROM \"lake_fmt_preflight_N\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (READ_ONLY true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL",
       "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL"
     ]
   },
@@ -3975,7 +4071,8 @@
       "ATTACH 'host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake_fmt_preflight_N\" (TYPE postgres, READ_ONLY, SECRET pg_attach_lake_6f021f0268d5);",
       "SELECT value FROM \"lake_fmt_preflight_N\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
-      "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH '/tmp/lake', OVERRIDE_DATA_PATH true, READ_ONLY true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});"
+      "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH '/tmp/lake', OVERRIDE_DATA_PATH true, READ_ONLY true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL"
     ]
   },
   "read-only if present | local path | absent": {
@@ -3999,7 +4096,8 @@
       "ATTACH 'host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake_fmt_preflight_N\" (TYPE postgres, READ_ONLY, SECRET pg_attach_lake_6f021f0268d5);",
       "SELECT value FROM \"lake_fmt_preflight_N\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
-      "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH '/tmp/lake', OVERRIDE_DATA_PATH true, READ_ONLY true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});"
+      "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH '/tmp/lake', OVERRIDE_DATA_PATH true, READ_ONLY true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL"
     ]
   },
   "read-only if present | local path | recorded": {
@@ -4023,7 +4121,8 @@
       "ATTACH 'host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake_fmt_preflight_N\" (TYPE postgres, READ_ONLY, SECRET pg_attach_lake_6f021f0268d5);",
       "SELECT value FROM \"lake_fmt_preflight_N\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
-      "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH '/tmp/lake', OVERRIDE_DATA_PATH true, READ_ONLY true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});"
+      "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH '/tmp/lake', OVERRIDE_DATA_PATH true, READ_ONLY true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL"
     ]
   },
   "read-only if present | local path | race once": {
@@ -4048,7 +4147,8 @@
       "SELECT value FROM \"lake_fmt_preflight_N\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH '/tmp/lake', OVERRIDE_DATA_PATH true, READ_ONLY true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
-      "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH '/tmp/lake', OVERRIDE_DATA_PATH true, READ_ONLY true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});"
+      "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH '/tmp/lake', OVERRIDE_DATA_PATH true, READ_ONLY true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL"
     ]
   },
   "read-only if present | local path | race always": {
@@ -4100,7 +4200,8 @@
       "SELECT value FROM \"lake_fmt_preflight_N\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH '/tmp/lake', OVERRIDE_DATA_PATH true, READ_ONLY true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
-      "SELECT 1 FROM duckdb_databases() WHERE lower(database_name) = lower('lake')"
+      "SELECT 1 FROM duckdb_databases() WHERE lower(database_name) = lower('lake')",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL"
     ]
   },
   "read-only if present | local path | secret fails": {
@@ -4124,7 +4225,8 @@
       "ATTACH 'host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake_fmt_preflight_N\" (TYPE postgres, READ_ONLY, SECRET pg_attach_lake_6f021f0268d5);",
       "SELECT value FROM \"lake_fmt_preflight_N\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
-      "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH '/tmp/lake', OVERRIDE_DATA_PATH true, READ_ONLY true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});"
+      "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH '/tmp/lake', OVERRIDE_DATA_PATH true, READ_ONLY true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL"
     ]
   },
   "read-only if present | local path | versioned": {
@@ -4174,6 +4276,7 @@
       "SELECT value FROM \"lake_fmt_preflight_N\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (READ_ONLY true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL",
       "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL"
     ]
   },
@@ -4199,6 +4302,7 @@
       "SELECT value FROM \"lake_fmt_preflight_N\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (READ_ONLY true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL",
       "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL"
     ]
   },
@@ -4224,6 +4328,7 @@
       "SELECT value FROM \"lake_fmt_preflight_N\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (READ_ONLY true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL",
       "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL"
     ]
   },
@@ -4250,6 +4355,7 @@
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (READ_ONLY true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (READ_ONLY true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL",
       "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL"
     ]
   },
@@ -4303,6 +4409,7 @@
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (READ_ONLY true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
       "SELECT 1 FROM duckdb_databases() WHERE lower(database_name) = lower('lake')",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL",
       "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL"
     ]
   },
@@ -4328,6 +4435,7 @@
       "SELECT value FROM \"lake_fmt_preflight_N\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (READ_ONLY true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL",
       "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL"
     ]
   },
@@ -4540,6 +4648,7 @@
       "SELECT value FROM \"lake_fmt_preflight_N\".\"meta\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH 's3://b/lake', OVERRIDE_DATA_PATH true, METADATA_SCHEMA 'meta', METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'}, ENCRYPTED true, DATA_INLINING_ROW_LIMIT 10);",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".\"meta\".ducklake_metadata WHERE scope IS NULL",
       "INSTALL httpfs;",
       "LOAD httpfs;",
       "SET GLOBAL enable_global_s3_configuration=false",
@@ -4573,6 +4682,8 @@
       "SELECT count(*) AS n FROM duckdb_tables() WHERE database_name = 'lake_fmt_preflight_N' AND schema_name = 'meta' AND table_name = 'ducklake_metadata';",
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH 's3://b/lake', OVERRIDE_DATA_PATH true, METADATA_SCHEMA 'meta', METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'}, ENCRYPTED true, DATA_INLINING_ROW_LIMIT 10);",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".\"meta\".ducklake_metadata WHERE scope IS NULL",
+      "CALL \"lake\".set_option('data_inlining_row_limit', 0)",
       "INSTALL httpfs;",
       "LOAD httpfs;",
       "SET GLOBAL enable_global_s3_configuration=false",
@@ -4607,6 +4718,7 @@
       "SELECT value FROM \"lake_fmt_preflight_N\".\"meta\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH 's3://b/lake', OVERRIDE_DATA_PATH true, METADATA_SCHEMA 'meta', METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'}, ENCRYPTED true, DATA_INLINING_ROW_LIMIT 10);",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".\"meta\".ducklake_metadata WHERE scope IS NULL",
       "INSTALL httpfs;",
       "LOAD httpfs;",
       "SET GLOBAL enable_global_s3_configuration=false",
@@ -4696,6 +4808,7 @@
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH 's3://b/lake', OVERRIDE_DATA_PATH true, METADATA_SCHEMA 'meta', METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'}, ENCRYPTED true, DATA_INLINING_ROW_LIMIT 10);",
       "SELECT 1 FROM duckdb_databases() WHERE lower(database_name) = lower('lake')",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".\"meta\".ducklake_metadata WHERE scope IS NULL",
       "INSTALL httpfs;",
       "LOAD httpfs;",
       "SET GLOBAL enable_global_s3_configuration=false",
@@ -4730,6 +4843,7 @@
       "SELECT value FROM \"lake_fmt_preflight_N\".\"meta\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH 's3://b/lake', OVERRIDE_DATA_PATH true, METADATA_SCHEMA 'meta', METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'}, ENCRYPTED true, DATA_INLINING_ROW_LIMIT 10);",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".\"meta\".ducklake_metadata WHERE scope IS NULL",
       "INSTALL httpfs;",
       "LOAD httpfs;",
       "SET GLOBAL enable_global_s3_configuration=false",
@@ -4789,6 +4903,7 @@
       "SELECT value FROM \"lake_fmt_preflight_N\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH 'gs://b/lake/', OVERRIDE_DATA_PATH true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'}, ENCRYPTED true, DATA_INLINING_ROW_LIMIT 10);",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL",
       "INSTALL httpfs;",
       "LOAD httpfs;",
       "SET GLOBAL enable_global_s3_configuration=false",
@@ -4821,6 +4936,7 @@
       "SELECT value FROM \"lake_fmt_preflight_N\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH 'gs://b/lake/', OVERRIDE_DATA_PATH true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'}, ENCRYPTED true, DATA_INLINING_ROW_LIMIT 10);",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL",
       "INSTALL httpfs;",
       "LOAD httpfs;",
       "SET GLOBAL enable_global_s3_configuration=false",
@@ -4853,6 +4969,7 @@
       "SELECT value FROM \"lake_fmt_preflight_N\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH 'gs://b/lake/', OVERRIDE_DATA_PATH true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'}, ENCRYPTED true, DATA_INLINING_ROW_LIMIT 10);",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL",
       "INSTALL httpfs;",
       "LOAD httpfs;",
       "SET GLOBAL enable_global_s3_configuration=false",
@@ -4936,6 +5053,7 @@
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH 'gs://b/lake/', OVERRIDE_DATA_PATH true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'}, ENCRYPTED true, DATA_INLINING_ROW_LIMIT 10);",
       "SELECT 1 FROM duckdb_databases() WHERE lower(database_name) = lower('lake')",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL",
       "INSTALL httpfs;",
       "LOAD httpfs;",
       "SET GLOBAL enable_global_s3_configuration=false",
@@ -4968,6 +5086,7 @@
       "SELECT value FROM \"lake_fmt_preflight_N\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH 'gs://b/lake/', OVERRIDE_DATA_PATH true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'}, ENCRYPTED true, DATA_INLINING_ROW_LIMIT 10);",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL",
       "INSTALL httpfs;",
       "LOAD httpfs;",
       "SET GLOBAL enable_global_s3_configuration=false",
@@ -5029,6 +5148,7 @@
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (CREATE_IF_NOT_EXISTS false, METADATA_SCHEMA 'meta', METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'}, ENCRYPTED true, DATA_INLINING_ROW_LIMIT 10);",
       "SELECT key, value FROM \"__ducklake_metadata_lake\".\"meta\".ducklake_metadata WHERE scope IS NULL",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".\"meta\".ducklake_metadata WHERE scope IS NULL",
       "DETACH \"lake\";"
     ]
   },
@@ -5057,6 +5177,8 @@
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (CREATE_IF_NOT_EXISTS false, METADATA_SCHEMA 'meta', METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'}, ENCRYPTED true, DATA_INLINING_ROW_LIMIT 10);",
       "SELECT key, value FROM \"__ducklake_metadata_lake\".\"meta\".ducklake_metadata WHERE scope IS NULL",
+      "CALL \"lake\".set_option('data_inlining_row_limit', 0)",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".\"meta\".ducklake_metadata WHERE scope IS NULL",
       "DETACH \"lake\";"
     ]
   },
@@ -5084,6 +5206,7 @@
       "SELECT value FROM \"lake_fmt_preflight_N\".\"meta\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (CREATE_IF_NOT_EXISTS false, METADATA_SCHEMA 'meta', METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'}, ENCRYPTED true, DATA_INLINING_ROW_LIMIT 10);",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".\"meta\".ducklake_metadata WHERE scope IS NULL",
       "SELECT key, value FROM \"__ducklake_metadata_lake\".\"meta\".ducklake_metadata WHERE scope IS NULL",
       "INSTALL httpfs;",
       "LOAD httpfs;",
@@ -5176,6 +5299,7 @@
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (CREATE_IF_NOT_EXISTS false, METADATA_SCHEMA 'meta', METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'}, ENCRYPTED true, DATA_INLINING_ROW_LIMIT 10);",
       "SELECT 1 FROM duckdb_databases() WHERE lower(database_name) = lower('lake')",
       "SELECT key, value FROM \"__ducklake_metadata_lake\".\"meta\".ducklake_metadata WHERE scope IS NULL",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".\"meta\".ducklake_metadata WHERE scope IS NULL",
       "DETACH \"lake\";"
     ]
   },
@@ -5204,6 +5328,7 @@
       "SELECT value FROM \"lake_fmt_preflight_N\".\"meta\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (CREATE_IF_NOT_EXISTS false, METADATA_SCHEMA 'meta', METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'}, ENCRYPTED true, DATA_INLINING_ROW_LIMIT 10);",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".\"meta\".ducklake_metadata WHERE scope IS NULL",
       "SELECT key, value FROM \"__ducklake_metadata_lake\".\"meta\".ducklake_metadata WHERE scope IS NULL",
       "DETACH \"lake\";"
     ]
@@ -5257,6 +5382,7 @@
       "SELECT value FROM \"lake_fmt_preflight_N\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (CREATE_IF_NOT_EXISTS false, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'}, ENCRYPTED true, DATA_INLINING_ROW_LIMIT 10);",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL",
       "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL"
     ]
   },
@@ -5282,6 +5408,7 @@
       "SELECT value FROM \"lake_fmt_preflight_N\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (CREATE_IF_NOT_EXISTS false, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'}, ENCRYPTED true, DATA_INLINING_ROW_LIMIT 10);",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL",
       "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL"
     ]
   },
@@ -5307,6 +5434,7 @@
       "SELECT value FROM \"lake_fmt_preflight_N\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (CREATE_IF_NOT_EXISTS false, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'}, ENCRYPTED true, DATA_INLINING_ROW_LIMIT 10);",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL",
       "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL"
     ]
   },
@@ -5383,6 +5511,7 @@
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (CREATE_IF_NOT_EXISTS false, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'}, ENCRYPTED true, DATA_INLINING_ROW_LIMIT 10);",
       "SELECT 1 FROM duckdb_databases() WHERE lower(database_name) = lower('lake')",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL",
       "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL"
     ]
   },
@@ -5408,6 +5537,7 @@
       "SELECT value FROM \"lake_fmt_preflight_N\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (CREATE_IF_NOT_EXISTS false, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'}, ENCRYPTED true, DATA_INLINING_ROW_LIMIT 10);",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL",
       "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL"
     ]
   },
@@ -5457,7 +5587,8 @@
       "ATTACH 'host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake_fmt_preflight_N\" (TYPE postgres, READ_ONLY, SECRET pg_attach_lake_6f021f0268d5);",
       "SELECT value FROM \"lake_fmt_preflight_N\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
-      "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH '/tmp/lake', OVERRIDE_DATA_PATH true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'}, ENCRYPTED true, DATA_INLINING_ROW_LIMIT 10);"
+      "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH '/tmp/lake', OVERRIDE_DATA_PATH true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'}, ENCRYPTED true, DATA_INLINING_ROW_LIMIT 10);",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL"
     ]
   },
   "create | local path | absent": {
@@ -5481,7 +5612,8 @@
       "ATTACH 'host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake_fmt_preflight_N\" (TYPE postgres, READ_ONLY, SECRET pg_attach_lake_6f021f0268d5);",
       "SELECT value FROM \"lake_fmt_preflight_N\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
-      "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH '/tmp/lake', OVERRIDE_DATA_PATH true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'}, ENCRYPTED true, DATA_INLINING_ROW_LIMIT 10);"
+      "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH '/tmp/lake', OVERRIDE_DATA_PATH true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'}, ENCRYPTED true, DATA_INLINING_ROW_LIMIT 10);",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL"
     ]
   },
   "create | local path | recorded": {
@@ -5505,7 +5637,8 @@
       "ATTACH 'host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake_fmt_preflight_N\" (TYPE postgres, READ_ONLY, SECRET pg_attach_lake_6f021f0268d5);",
       "SELECT value FROM \"lake_fmt_preflight_N\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
-      "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH '/tmp/lake', OVERRIDE_DATA_PATH true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'}, ENCRYPTED true, DATA_INLINING_ROW_LIMIT 10);"
+      "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH '/tmp/lake', OVERRIDE_DATA_PATH true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'}, ENCRYPTED true, DATA_INLINING_ROW_LIMIT 10);",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL"
     ]
   },
   "create | local path | race once": {
@@ -5580,7 +5713,8 @@
       "SELECT value FROM \"lake_fmt_preflight_N\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH '/tmp/lake', OVERRIDE_DATA_PATH true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'}, ENCRYPTED true, DATA_INLINING_ROW_LIMIT 10);",
-      "SELECT 1 FROM duckdb_databases() WHERE lower(database_name) = lower('lake')"
+      "SELECT 1 FROM duckdb_databases() WHERE lower(database_name) = lower('lake')",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL"
     ]
   },
   "create | local path | secret fails": {
@@ -5604,7 +5738,8 @@
       "ATTACH 'host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake_fmt_preflight_N\" (TYPE postgres, READ_ONLY, SECRET pg_attach_lake_6f021f0268d5);",
       "SELECT value FROM \"lake_fmt_preflight_N\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
-      "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH '/tmp/lake', OVERRIDE_DATA_PATH true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'}, ENCRYPTED true, DATA_INLINING_ROW_LIMIT 10);"
+      "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH '/tmp/lake', OVERRIDE_DATA_PATH true, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'}, ENCRYPTED true, DATA_INLINING_ROW_LIMIT 10);",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL"
     ]
   },
   "create | local path | versioned": {
@@ -5654,6 +5789,7 @@
       "SELECT value FROM \"lake_fmt_preflight_N\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (CREATE_IF_NOT_EXISTS false, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'}, ENCRYPTED true, DATA_INLINING_ROW_LIMIT 10);",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL",
       "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL"
     ]
   },
@@ -5679,6 +5815,7 @@
       "SELECT value FROM \"lake_fmt_preflight_N\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (CREATE_IF_NOT_EXISTS false, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'}, ENCRYPTED true, DATA_INLINING_ROW_LIMIT 10);",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL",
       "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL"
     ]
   },
@@ -5704,6 +5841,7 @@
       "SELECT value FROM \"lake_fmt_preflight_N\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (CREATE_IF_NOT_EXISTS false, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'}, ENCRYPTED true, DATA_INLINING_ROW_LIMIT 10);",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL",
       "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL"
     ]
   },
@@ -5780,6 +5918,7 @@
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (CREATE_IF_NOT_EXISTS false, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'}, ENCRYPTED true, DATA_INLINING_ROW_LIMIT 10);",
       "SELECT 1 FROM duckdb_databases() WHERE lower(database_name) = lower('lake')",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL",
       "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL"
     ]
   },
@@ -5805,6 +5944,7 @@
       "SELECT value FROM \"lake_fmt_preflight_N\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (CREATE_IF_NOT_EXISTS false, METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'}, ENCRYPTED true, DATA_INLINING_ROW_LIMIT 10);",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL",
       "SELECT key, value FROM \"__ducklake_metadata_lake\".ducklake_metadata WHERE scope IS NULL"
     ]
   },
@@ -6044,6 +6184,7 @@
       "SELECT value FROM \"lake_fmt_preflight_N\".\"meta\".ducklake_metadata WHERE key = 'version' LIMIT 1;",
       "DETACH \"lake_fmt_preflight_N\";",
       "ATTACH OR REPLACE 'ducklake:postgres:host=catalog.test port=5433 dbname=lakemeta sslmode=disable' AS \"lake\" (DATA_PATH 's3://b/lake', OVERRIDE_DATA_PATH true, METADATA_SCHEMA 'meta', METADATA_PARAMETERS MAP {'SECRET': 'pg_attach_lake_6f021f0268d5'});",
+      "SELECT key, value FROM \"__ducklake_metadata_lake\".\"meta\".ducklake_metadata WHERE scope IS NULL",
       "INSTALL httpfs;",
       "LOAD httpfs;",
       "SET GLOBAL enable_global_s3_configuration=false",

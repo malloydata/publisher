@@ -137,6 +137,23 @@ with no re-attach and no package reload — the catalog is consulted per transac
 at attach time. Note that this is a property of a **Postgres-backed** catalog, which is the supported
 configuration; a DuckDB-file catalog attached read-only does not behave this way.
 
+**Data inlining off on the catalogs Publisher creates.** DuckLake's default keeps a table of up to 10
+rows as rows in the catalog database rather than as a file, and a reader confined to the catalog's files
+(a managed connection's read-only view, a storage secret scoped to a prefix) still reads those rows. A
+build session's `ducklake_default_data_inlining_row_limit=0` does not override a limit the catalog
+records. So whenever Publisher creates a catalog, at a destination's first build or through the admin
+API's `POST /catalogs`, it records `data_inlining_row_limit` 0 in the catalog
+(`CALL <catalog>.set_option('data_inlining_row_limit', 0)`), and every writer's small tables land in
+files. A `dataInliningRowLimit` on the `POST` is recorded after it, so an explicit limit still wins.
+
+An existing catalog is the host's, and Publisher never changes its setting. An attach that finds it
+recording a limit above 0 logs a warning with code `ducklake-data-inlining-on`, and each package that
+stores a table there (its `storage=` destination, or its own DuckLake connection) carries a package
+warning of the same code, from the attach on. Record 0 to clear it: `CALL <catalog>.set_option(
+'data_inlining_row_limit', 0)`, or `PATCH /catalogs/{catalog}` with `"dataInliningRowLimit": 0`. A
+catalog that records no limit is not warned about: Publisher's own builds and loads then write files,
+but another writer using DuckLake's default would inline, so record 0 on it as well.
+
 **The catalog's credentials live in a DuckDB secret.** Publisher puts the catalog role's user,
 password and any client-key password (`sslpassword`) in a temporary DuckDB secret (never persisted, redacted when listed) and attaches with a
 path that carries only the host, port, database and connection options. A `connectionString` in
