@@ -86,7 +86,7 @@ import {
    TABLE_TYPES,
 } from "./collation/bigquery";
 import { fieldPathsIn } from "./gate_paths";
-import { entryGates } from "./gate_reads";
+import { entryGates, queryFilterReadsOfQuery } from "./gate_reads";
 import { chainBuildBaseOf, chainBuildReadsOfQuery } from "./result_reads";
 
 /** What the probe reads through: the author's compile and its connections. */
@@ -315,7 +315,15 @@ export async function chainBuildCollationRefusal(args: {
       rollup ? undefined : args.downstream,
    );
    if (reads === undefined) return "a build whose string reads are unread";
-   for (const comparison of [reads.ordered, reads.grouped]) {
+   // What its stages' filters compare: a `where:`, a `having:`, a filtered
+   // measure's own or one it names.
+   const filters = await queryFilterReadsOfQuery(runnable, stored, {
+      fromStage: 0,
+      namedMeasures: true,
+      pipeline: reads.stages,
+   });
+   if (filters === undefined) return "a build whose filters are unread";
+   for (const comparison of [reads.ordered, reads.grouped, filters]) {
       const refusal = await stringGateCollationRefusal({
          authorRunnable: runnable,
          reads: comparison,

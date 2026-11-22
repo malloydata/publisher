@@ -25,6 +25,9 @@ const MODEL = `
 source: nocase is ${rows(" COLLATE NOCASE")} -> { select: id, v }
 source: nocase_group is nocase -> { group_by: v; aggregate: n is count() }
 source: nocase_where is nocase -> { where: v = 'apple'; select: id }
+source: nocase_mf is nocase -> { aggregate: n is count() { where: v = 'apple' } }
+source: nocase_only is nocase extend { where: v = 'apple' }
+source: nocase_base_where is nocase_only -> { aggregate: n is count() }
 source: nocase_number is nocase -> { group_by: odd is id % 2; aggregate: n is count() }
 source: bytes is ${rows("")} -> { select: id, v } extend {
   measure: lo is min(v)
@@ -68,6 +71,9 @@ describe("chainBuildCollationRefusal over a DuckDB source", () => {
    it("refuses a build that groups or compares a NOCASE string", async () => {
       expect(await refusal("nocase_group")).toBeString();
       expect(await refusal("nocase_where")).toBeString();
+      // A filtered measure's filter, and its base's own `where:`.
+      expect(await refusal("nocase_mf")).toBeString();
+      expect(await refusal("nocase_base_where")).toBeString();
    });
 
    it("stacks a build over a NOCASE source that compares no string", async () => {

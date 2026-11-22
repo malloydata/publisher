@@ -100,6 +100,36 @@ source: a2 is pg.table('public.items') -> { select: id, cc, amt } extend {
 }
 
 #@ persist storage="lake"
+source: a3 is pg.table('public.items') -> { select: id, cc, ci } extend {
+  #@ preaggregate grain="cc" storage=lake
+  measure: apple3 is count() { where: ci = 'apple' }
+}
+
+#@ persist storage="lake"
+source: b_mf is a -> { aggregate: n is count() { where: ci = 'apple' } }
+
+#@ persist storage="lake"
+source: b_having is a -> { group_by: cc; aggregate: n is count(); having: max(ci) = 'cherry' }
+
+source: a_apple is a extend { where: ci = 'apple' }
+
+source: a_joined is a extend {
+  join_one: k is a_apple on id = k.id
+}
+
+#@ persist storage="lake"
+source: b_join is a_joined -> { aggregate: n is k.count() }
+
+#@ persist storage="lake"
+source: b_nest is a -> {
+  aggregate: total is count()
+  nest: apples is { where: ci = 'apple'; aggregate: n is count() }
+}
+
+#@ persist storage="lake"
+source: b_ext is a_apple -> { group_by: big is amt > 50; aggregate: n is count() }
+
+#@ persist storage="lake"
 source: b_group is a -> { group_by: ci; aggregate: n is count() }
 
 #@ persist storage="lake"
@@ -156,6 +186,26 @@ const SHAPES: Shape[] = [
       query: "run: b_lower -> { aggregate: g is count() }",
       servedBy: "materialized",
    },
+   {
+      query: "run: b_mf -> { aggregate: t is sum(n) }",
+      servedBy: "materialized",
+   },
+   {
+      query: "run: b_having -> { aggregate: t is sum(n) }",
+      servedBy: "materialized",
+   },
+   {
+      query: "run: b_ext -> { aggregate: t is sum(n) }",
+      servedBy: "materialized",
+   },
+   {
+      query: "run: b_join -> { aggregate: t is sum(n) }",
+      servedBy: "materialized",
+   },
+   {
+      query: "run: b_nest -> { select: total, apples.n }",
+      servedBy: "live",
+   },
    // Stacked builds that compare a binary string, or none: still stacked.
    {
       query: "run: b_binary -> { aggregate: t is sum(n) }",
@@ -171,6 +221,7 @@ const SHAPES: Shape[] = [
    { query: "run: a -> { aggregate: apple_n }", servedBy: "rollup" },
    { query: "run: a -> { aggregate: amt_sum }", servedBy: "rollup" },
    { query: "run: a2 -> { aggregate: amt_total }", servedBy: "rollup" },
+   { query: "run: a3 -> { aggregate: apple3 }", servedBy: "rollup" },
    { query: "run: a -> { aggregate: mn }", servedBy: "live" },
    { query: "run: a -> { group_by: ci; aggregate: rn }", servedBy: "live" },
 ];
@@ -184,6 +235,12 @@ const BUILT: Record<string, "reused" | "warehouse"> = {
    b_lower: "warehouse",
    b_binary: "reused",
    b_number: "reused",
+   b_mf: "warehouse",
+   b_having: "warehouse",
+   b_ext: "warehouse",
+   b_join: "warehouse",
+   b_nest: "warehouse",
+   a3__rollup__cc: "warehouse",
    a__rollup__ci: "warehouse",
    a2__rollup__cc: "reused",
 };

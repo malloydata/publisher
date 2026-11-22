@@ -1935,11 +1935,17 @@ export async function queryFilterReadsOfQuery(
       fromStage: number;
       /** Follow the filters of the measures the query names (not on a rollup). */
       namedMeasures: boolean;
+      /**
+       * The stages to read in place of the query's own, on its entry point:
+       * a chained build's downstream query (`chainBuildCollationRefusal`).
+       */
+      pipeline?: readonly unknown[];
    },
 ): Promise<GateReads | undefined> {
    try {
       const prepared = await readPreparedQuery(runnable);
-      if (!Array.isArray(prepared.pipeline)) return undefined;
+      const pipeline = options.pipeline ?? prepared.pipeline;
+      if (!Array.isArray(pipeline)) return undefined;
       // A query with no filter needs no source to judge it by; one whose
       // source is unread reads each field it compares as unresolved.
       const struct =
@@ -1952,7 +1958,7 @@ export async function queryFilterReadsOfQuery(
       const walk = new GateReadWalk(prepared.modelDef, stored);
       walk.queryFilters(
          struct,
-         prepared.pipeline,
+         pipeline,
          Math.max(0, options.fromStage),
          options.namedMeasures,
       );

@@ -709,6 +709,34 @@ class ResultReadWalk {
    }
 
    /**
+    * The `where:`s of `source` and of every source joined to it, however
+    * deep, each judged in its own scope, used by the query or not: a chained
+    * build applies them over the stored tables, and a join a measure counts
+    * through (`k.count()`) reads none of its fields, so is not otherwise
+    * reached.
+    */
+   sourceFilters(source: unknown, prefix: readonly string[], depth = 0): void {
+      if (depth > 16 || this.tooDeep()) {
+         this.unresolved = true;
+         return;
+      }
+      const at: Scope = { kind: "source", source, prefix, entry: true };
+      for (const f of asArray(
+         (source as { filterList?: unknown }).filterList,
+      )) {
+         this.expr((f as { e?: unknown }).e, at, "judge", undefined);
+      }
+      for (const j of fieldsOf(source).values()) {
+         if (j.join === undefined) continue;
+         this.inner(j);
+         if (j.onExpression !== undefined) {
+            this.expr(j.onExpression, at, "judge", undefined);
+         }
+         this.sourceFilters(j, [...prefix, activeName(j)], depth + 1);
+      }
+   }
+
+   /**
     * A query-shaped source's own query, computed when its base is read
     * unless its own table is: judged once, however it is reached (the entry
     * point, a join, a field).
@@ -1063,13 +1091,16 @@ export async function resultReadsOfQuery(
  * `runnable` is a query on the base (by name). With `downstream`, the build
  * computes that query-shaped source's own query, which must run on the same
  * base; without, the runnable's own pipeline (a rollup's grouping). Either is
- * read as an inner query: its last stage's order is not a table's.
+ * read as an inner query: its last stage's order is not a table's. The
+ * filters inside its stages (a `where:`, a `having:`, a filtered measure's)
+ * are the query-filter check's, over the returned `stages`; the base's own
+ * `where:`s, and every joined source's and `on`, are read here.
  */
 export async function chainBuildReadsOfQuery(
    runnable: QueryMaterializer,
    stored: ReadonlySet<string>,
    downstream?: string,
-): Promise<ResultReads | undefined> {
+): Promise<(ResultReads & { stages: readonly unknown[] }) | undefined> {
    try {
       const prepared = await readPreparedQuery(runnable);
       if (prepared.modelDef === undefined) return undefined;
@@ -1099,13 +1130,20 @@ export async function chainBuildReadsOfQuery(
       }
       if (!Array.isArray(stages)) return undefined;
       const walk = new ResultReadWalk(prepared.modelDef, stored, stored);
+      const scope: Scope = {
+         kind: "source",
+         source: entry,
+         prefix: [],
+         entry: true,
+      };
       walk.inner(entry);
-      walk.pipeline(
-         stages as Stage[],
-         { kind: "source", source: entry, prefix: [], entry: true },
-         { fromStage: 0, inner: true },
-      );
+      // The base's own `where:`s and its joins', which the build applies
+      // again over the stored tables (a stored base's too: its re-root
+      // keeps them).
+      walk.sourceFilters(entry, []);
+      walk.pipeline(stages as Stage[], scope, { fromStage: 0, inner: true });
       return {
+         stages,
          ordered: readsOf(walk.ordered, walk.unresolved, false),
          grouped: readsOf(walk.grouped, walk.unresolved, true),
          stringCollation: capabilitiesOf(
