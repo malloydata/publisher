@@ -11793,6 +11793,24 @@ components:
             content address): a stored upstream is stacked on in its
             destination, and never rendered into warehouse SQL. Optional and
             additive: a reference without it still serves a database upstream.
+        nativeSchema:
+          type: array
+          description: >-
+            For a database upstream (no `storageDestinationName`): the
+            `nativeSchema` the upstream's build reported on its manifest
+            entry, sent back as it came. Before a build reads the referenced
+            table in place of its source, it reads the table's columns from
+            the warehouse and compares each with this type (case and spacing
+            aside). If a column was retyped or dropped since, or cannot be
+            read, a strict build is refused and any other build recomputes
+            the upstream from its definition. Without it nothing can be
+            checked: a strict build reads the table unchecked, with a warning
+            and a count (`publisher_materialization_upstream_recompute_total`,
+            `reason="reference_types_unrecorded"`), and any other build
+            recomputes the upstream. Ignored for a `storage=` upstream: omit
+            it there. Optional and additive.
+          items:
+            $ref: "#/components/schemas/Column"
 
     BuildInstruction:
       type: object
@@ -12323,8 +12341,12 @@ components:
             handed by reference; for a database build, an upstream that
             landed in a `storage=` destination; for a `storage=` build, a
             source that reaches the warehouse through a non-persisted source,
-            or whose shape does not compile in the destination.
-            `upstreamRecomputeReason` says which. Such a table reflects the
+            or whose shape does not compile in the destination; on the
+            database tier, an upstream whose table holds other columns than
+            its build recorded (retyped or dropped since), could not be read,
+            or whose build recorded no column types; and always, for a
+            persisted view or named query, which builds from its source's
+            definition. `upstreamRecomputeReason` says which. Such a table reflects the
             warehouse at THIS build's time rather than the upstream's
             snapshot, so the two can disagree when their refresh cadences
             differ.
@@ -12334,8 +12356,10 @@ components:
             way to build and no choice to report.
 
             A database rollup reports what its build actually read: `reused`
-            only when it built from its base's materialized table, and absent
-            when it built from the warehouse, even over a persisted base. Before
+            only when it built from its base's materialized table, `recomputed`
+            when it could not because that table holds other columns than its
+            build recorded, could not be read, or recorded no column types,
+            and absent when it built from the warehouse for any other reason. Before
             0.15.0 every rollup over a persisted base reported `reused`. A
             `storage=` rollup reports `reused` only when it stacked on a stored
             table.

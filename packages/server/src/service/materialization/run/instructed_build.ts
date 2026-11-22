@@ -33,6 +33,7 @@ import {
    type StoredJoin,
    type UniquenessLedger,
 } from "./inline_uniqueness";
+import { movedSinceBuild } from "./database_column_read";
 import type {
    OverStoredBase,
    ParentKeyCheck,
@@ -71,6 +72,7 @@ import {
    recordDuplicateTargetSkipped,
    recordKeyCheck,
    recordManifestBindDegraded,
+   recordUpstreamRecompute,
 } from "../../../materialization_metrics";
 import { getPersistStorageMode } from "../../../config";
 import { withSpan } from "../../../telemetry";
@@ -148,7 +150,12 @@ import {
    TableOwnershipError,
    type OwnedTableTarget,
 } from "./table_ownership";
-import { persistedReach, type SourceBuildOptions } from "./source_build";
+import {
+   noteUntypedReference,
+   persistedReach,
+   readsUntypedReferences,
+   type SourceBuildOptions,
+} from "./source_build";
 import type { KeyCheckRecord } from "./tier";
 import {
    buildKindOf,
@@ -888,7 +895,7 @@ export class InstructedBuild {
       };
       const built = await this.buildGatedSource(
          run,
-         (await overStoredBaseSource(run, persistSource, gated)) ??
+         (await overStoredBaseSource(run, persistSource, gated, connection)) ??
             persistSource,
          graphConnectionName,
          connection,
@@ -1156,6 +1163,7 @@ export class InstructedBuild {
             manifest: run.manifest,
             environment: run.environment,
             builtEntries: run.entries,
+            builtThisRun: run.builtAddresses,
             buildMetadata: run.buildMetadata,
             incremental: run.incremental,
             // The CONTENT address, distinct from the instruction's
@@ -2195,6 +2203,8 @@ function baseFreshEnough(
  *    do not depend on any gate: each is applied when a query reads it;
  *  - with a declared window, the base's table is new enough
  *    ({@link baseFreshEnough}), whoever instructed the run;
+ *  - a table this run did not build holds the columns its build recorded
+ *    (`movedSinceBuild`);
  *  - the compiled source builds the planned table ({@link buildsPlannedTable}).
  *
  * Records the base as what the rollup read, for its freshness anchor.
@@ -2203,6 +2213,8 @@ async function overStoredBaseSource(
    run: InstructedRun,
    persistSource: PersistSource,
    gated: Pick<GatedSource, "instruction" | "sourceEntityId">,
+   /** The rollup's connection, which its build reads the base's table on. */
+   connection: MalloyConnection,
 ): Promise<PersistSource | undefined> {
    const { compiled } = run;
    const table = compiled.tables[persistSource.sourceID];
@@ -2234,6 +2246,40 @@ async function overStoredBaseSource(
       return undefined;
    }
    if (!baseFreshEnough(run, gated.sourceEntityId, baseAddress, baseEntry)) {
+      return undefined;
+   }
+   // A table altered in its warehouse since its build (a column retyped or
+   // dropped) is not the base's rows: the rollup builds as planned, which
+   // recomputes the base (source_build.ts, movedUpstreams).
+   const move = run.builtAddresses.has(baseAddress)
+      ? undefined
+      : (
+           await movedSinceBuild(
+              new Map([[baseAddress, baseEntry]]),
+              connection,
+           )
+        ).get(baseAddress);
+   if (
+      move?.kind === "types_unrecorded" &&
+      readsUntypedReferences(run.manifest, run.planFacts)
+   ) {
+      noteUntypedReference(persistSource.name, base.source.name, "rollup");
+   } else if (move) {
+      const reason =
+         `persisted upstream '${base.source.name}' was not read from its ` +
+         `table, since ${move.reason}; recomputed from its definition in the ` +
+         `warehouse`;
+      logger.warn(
+         "A rollup's stored base could not be read in place of it; the rollup builds from the warehouse",
+         {
+            sourceName: persistSource.name,
+            upstream: base.source.name,
+            reason: move.reason,
+            kind: move.kind,
+         },
+      );
+      recordUpstreamRecompute(move.kind, "rollup", "recomputed");
+      (run.baseRecomputed ??= new Map()).set(gated.sourceEntityId, reason);
       return undefined;
    }
    let variant: OverStoredBase | undefined;
@@ -2443,7 +2489,10 @@ function storedRollupBase(
 /**
  * A database rollup's entry with `upstreamReuse` saying what its build read: `reused`
  * when it built from its base's stored table ({@link overStoredBaseSource}),
- * absent when it built from the warehouse. Its build source names the base
+ * `recomputed`, with why, when it could not because that table moved since
+ * its build, could not be read, or recorded no column types
+ * (`baseRecomputed`), and absent when it built from the warehouse for any
+ * other reason. Its build source names the base
  * only in the author's text, which the classification reads, so the
  * classification alone would say `reused` either way, and the key checks
  * over the base's rows (checkRollupKeys) would be skipped for a build that
@@ -2468,6 +2517,14 @@ function withRollupUpstreamReuse(
       upstreamRecomputeReason: _reason,
       ...rest
    } = entry;
+   const recomputed = run.baseRecomputed?.get(address);
+   if (recomputed !== undefined) {
+      return {
+         ...rest,
+         upstreamReuse: "recomputed",
+         upstreamRecomputeReason: recomputed,
+      };
+   }
    return run.readFrom?.has(address)
       ? { ...rest, upstreamReuse: "reused" }
       : rest;

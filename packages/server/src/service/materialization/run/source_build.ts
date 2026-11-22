@@ -22,7 +22,10 @@ import type {
 } from "@malloydata/malloy";
 import { ChainedUpstreamMissingError } from "../../../errors";
 import { logger } from "../../../logger";
-import { recordChainedStorageBuild } from "../../../materialization_metrics";
+import {
+   recordChainedStorageBuild,
+   recordUpstreamRecompute,
+} from "../../../materialization_metrics";
 import { getPersistStorageMode } from "../../../config";
 import { mergeQueryMetadata, type QueryMetadata } from "../../query_metadata";
 import {
@@ -33,6 +36,7 @@ import {
 import { authorModelLiftContext } from "../text/author_model";
 import { reachPersisted } from "../text/source_map";
 import { BuildInstruction, ManifestEntry } from "../domain/types";
+import { isPersistedResultSourceID } from "../domain/table_plans";
 import type { DatabaseBuildRequest } from "./tier";
 import { DatabaseTier } from "./database_build_strategy";
 import {
@@ -63,6 +67,7 @@ import type {
    StoredRollupBase,
 } from "./storage_build_strategy";
 import { compiledTextReader } from "../../../utils";
+import { movedSinceBuild, type UpstreamMove } from "./database_column_read";
 
 /**
  * The persisted sources `persistSource` reads, from the author's model
@@ -105,6 +110,114 @@ export function persistedReach(
 }
 
 /**
+ * The stored upstreams, by address, whose database table holds other columns
+ * than its build recorded ({@link movedSinceBuild}): retyped or dropped in
+ * the warehouse since, or never checkable. A build must not read such a
+ * table in place of its source, whose address and recorded types say it is
+ * built from what that source computes, so the render leaves its entry out
+ * and the build recomputes it from its definition, or, under strict
+ * upstreams, is refused.
+ *
+ * Only the database-tier entries the source can read are checked
+ * (`reachedIds`), each table once, on the build's own connection, which is
+ * the one its SQL reads them through; never one this run built
+ * (`builtThisRun`), whose columns were captured moments ago.
+ */
+async function movedUpstreams(args: {
+   reach: ReturnType<typeof persistedReach>;
+   manifest: Manifest;
+   builtEntries: Record<string, ManifestEntry>;
+   planFacts: ChainedPlanFacts;
+   connection: MalloyConnection;
+   builtThisRun?: ReadonlySet<string>;
+   rootAddress?: string;
+   sourceName: string;
+}): Promise<MovedUpstreams> {
+   const { reach, manifest, builtEntries, planFacts } = args;
+   const tables = new Map<string, { name: string; entry: ManifestEntry }>();
+   for (const sourceID of reach.reachedIds) {
+      const address = planFacts.addressBySourceId[sourceID];
+      if (address === undefined || address === args.rootAddress) continue;
+      if (tables.has(address) || args.builtThisRun?.has(address)) continue;
+      const entry = builtEntries[address];
+      if (
+         !entry ||
+         entry.storageDestinationName ||
+         !(address in manifest.buildManifest.entries)
+      ) {
+         continue;
+      }
+      tables.set(address, {
+         name:
+            reach.lift.sourceNameById.get(sourceID) ??
+            entry.sourceName ??
+            address,
+         entry,
+      });
+   }
+   if (tables.size === 0) return new Map();
+   const reasons = await movedSinceBuild(
+      new Map([...tables].map(([address, { entry }]) => [address, entry])),
+      args.connection,
+   );
+   const moved = new Map<string, { name: string } & UpstreamMove>();
+   for (const [address, move] of reasons) {
+      const { name } = tables.get(address)!;
+      if (
+         move.kind === "types_unrecorded" &&
+         readsUntypedReferences(manifest, planFacts)
+      ) {
+         noteUntypedReference(args.sourceName, name, "chained");
+         continue;
+      }
+      moved.set(address, { name, ...move });
+   }
+   return moved;
+}
+
+/**
+ * Whether a build reads an upstream table whose entry carries no column types
+ * unchecked: a strict build a host instructed, whose upstream entries are the
+ * host's references. A reference without `nativeSchema` cannot be checked,
+ * and strict forbids the recompute, so the table is read as before, with a
+ * warning and a count. Any other build recomputes it (movedUpstreams).
+ */
+export function readsUntypedReferences(
+   manifest: Pick<Manifest, "strict">,
+   planFacts: Pick<ChainedPlanFacts, "hostInstructed">,
+): boolean {
+   return manifest.strict === true && planFacts.hostInstructed === true;
+}
+
+/** Logs and counts an untyped reference read unchecked ({@link readsUntypedReferences}). */
+export function noteUntypedReference(
+   sourceName: string,
+   upstream: string,
+   build: "chained" | "rollup",
+): void {
+   logger.warn(
+      "A strict build reads a referenced upstream table unchecked: the reference carries no nativeSchema, so a column altered since its build cannot be seen; send nativeSchema on each reference",
+      { sourceName, upstream },
+   );
+   recordUpstreamRecompute(
+      "reference_types_unrecorded",
+      build,
+      "read_unchecked",
+   );
+}
+
+/** {@link movedUpstreams}: each moved upstream's name and why, by address. */
+type MovedUpstreams = ReadonlyMap<string, { name: string } & UpstreamMove>;
+
+/** What a build says of a stored upstream whose table moved since its build. */
+function movedDetail(name: string, reason: string): string {
+   return (
+      `persisted upstream '${name}' was not read from its table, since ` +
+      `${reason}`
+   );
+}
+
+/**
  * Render a source's build SQL over the run's manifest, refusing an upstream a
  * host supplied at the wrong tier and naming a strict miss by the author's
  * source; with what the later stages read from the render.
@@ -113,9 +226,10 @@ function renderBuildSQL(
    persistSource: PersistSource,
    instruction: BuildInstruction,
    manifest: Manifest,
-   environment: BuildEnvironment,
    builtEntries: Record<string, ManifestEntry>,
    planFacts: ChainedPlanFacts,
+   reach: ReturnType<typeof persistedReach>,
+   moved: MovedUpstreams,
 ) {
    const isStorageBuild =
       instructionTier(instruction, getPersistStorageMode()) === "storage";
@@ -141,15 +255,12 @@ function renderBuildSQL(
    // `_model._modelDef` is compiler-internal. If a compiler bump removes it,
    // the walk below finds nothing and the entry carries no
    // `upstreamReuse`: a visible gap, not a wrong answer.
-   const { lift, reached, reachedIds } = persistedReach(
-      persistSource,
-      environment,
-      planFacts,
-   );
-   const reducedManifest = manifestExcludingStorage(
-      manifest,
-      builtEntries,
-      planFacts,
+   const { lift, reached, reachedIds } = reach;
+   // An upstream whose table moved since its build is left out too, so the
+   // render recomputes it from its definition (movedUpstreams).
+   const reducedManifest = withoutEntries(
+      manifestExcludingStorage(manifest, builtEntries, planFacts),
+      moved,
    );
    const buildManifest = manifestForCompiler(
       isStorageBuild ? { ...reducedManifest, strict: false } : reducedManifest,
@@ -244,6 +355,15 @@ function renderBuildSQL(
       }
       return undefined;
    };
+   const movedRead = movedUpstreamsRead(
+      persistSource,
+      manifest,
+      reducedManifest,
+      planFacts,
+      reachedIds,
+      moved,
+   );
+   if (manifest.strict) refuseMovedRead(persistSource.name, movedRead);
    let buildSQL: string;
    try {
       buildSQL = buildSQLOf(persistSource, buildManifest);
@@ -296,7 +416,94 @@ function renderBuildSQL(
       reachedIds,
       presentedMiss,
       buildSQL,
+      moved,
+      movedRead,
    };
+}
+
+/**
+ * A strict build that reads a moved upstream is refused, naming each and
+ * why: recomputing it from raw is what strict upstreams forbid.
+ */
+function refuseMovedRead(sourceName: string, movedRead: MovedUpstreams): void {
+   if (movedRead.size === 0) return;
+   const details = [...movedRead.values()].map(({ name, reason }) => ({
+      name,
+      detail: movedDetail(name, reason),
+   }));
+   throw new ChainedUpstreamMissingError(
+      details.map((d) => d.name),
+      `Failed to materialize source '${sourceName}': ` +
+         details.map((d) => d.detail).join("; ") +
+         `, and strict upstreams forbid recomputing it from raw`,
+      details,
+   );
+}
+
+/** `manifest` without the entries at `addresses`. */
+function withoutEntries(
+   manifest: Manifest["buildManifest"],
+   addresses: ReadonlyMap<string, unknown>,
+): Manifest["buildManifest"] {
+   if (addresses.size === 0) return manifest;
+   return {
+      ...manifest,
+      entries: Object.fromEntries(
+         Object.entries(manifest.entries).filter(([id]) => !addresses.has(id)),
+      ),
+   };
+}
+
+/**
+ * The moved upstreams the build actually reads, by address: those whose
+ * entry, put back, changes the permissive render (its table would replace
+ * the SQL inlined for it). A moved upstream the source does not read (a join
+ * the query never uses) changes nothing, and is neither recomputed nor, under
+ * strict upstreams, refused.
+ */
+function movedUpstreamsRead(
+   persistSource: PersistSource,
+   manifest: Manifest,
+   reducedManifest: Manifest["buildManifest"],
+   planFacts: ChainedPlanFacts,
+   reachedIds: ReadonlySet<string>,
+   moved: MovedUpstreams,
+): MovedUpstreams {
+   if (moved.size === 0) return moved;
+   const render = (entries: Manifest["buildManifest"]["entries"]) =>
+      buildSQLOf(
+         persistSource,
+         manifestForCompiler(
+            { ...reducedManifest, entries, strict: false },
+            planFacts,
+            reachedIds,
+         ),
+      );
+   let base: string | undefined;
+   try {
+      base = render(reducedManifest.entries);
+   } catch {
+      // Unrenderable: every moved upstream counts as read (fail safe).
+   }
+   const read = new Map<string, { name: string } & UpstreamMove>();
+   for (const [address, upstream] of moved) {
+      let withEntry: string | undefined;
+      try {
+         withEntry =
+            base === undefined
+               ? undefined
+               : render({
+                    ...reducedManifest.entries,
+                    [address]: manifest.buildManifest.entries[address],
+                 });
+      } catch {
+         // As above.
+      }
+      if (withEntry === undefined || withEntry !== base) {
+         read.set(address, upstream);
+      }
+   }
+   return read;
 }
 
 /**
@@ -324,6 +531,8 @@ function classifyStoredUpstreams(
       reachedIds,
       presentedMiss,
       buildSQL,
+      moved,
+      movedRead,
    } = rendered;
    // The compiler's reach, rendered twice over the full manifest.
    // Permissively, compared with the build SQL: a difference means a stored
@@ -339,9 +548,13 @@ function classifyStoredUpstreams(
       planFacts,
       reachedIds,
    );
+   // A moved upstream is left out of the render for a reason of its own
+   // (`movedRead`), not because a storage destination holds it: compared
+   // without it, so `sqlInlinesStored` still means a stored table inlined.
+   const fullWithoutMoved = withoutEntries(manifest.buildManifest, moved);
    const excludedSomething =
       Object.keys(reducedManifest.entries).length !==
-      Object.keys(manifest.buildManifest.entries).length;
+      Object.keys(fullWithoutMoved.entries).length;
    let sqlInlinesStored = false;
    let compilerMissing: { name: string; sourceID: string }[] = [];
    let classified = true;
@@ -349,7 +562,7 @@ function classifyStoredUpstreams(
       if (excludedSomething) {
          sqlInlinesStored =
             buildSQLOf(persistSource, {
-               ...fullForCompiler,
+               ...manifestForCompiler(fullWithoutMoved, planFacts, reachedIds),
                strict: false,
             }) !== buildSQL;
       }
@@ -384,10 +597,28 @@ function classifyStoredUpstreams(
            tier: isStorageBuild ? "storage" : "database",
            sqlInlinesStored,
            compilerMissing,
+           moved: new Map(
+              [...moved].map(([address, { name, reason }]) => [
+                 address,
+                 movedRead.has(address) ? movedDetail(name, reason) : undefined,
+              ]),
+           ),
            // The content address: orchestrators may assign their own ids.
            rootAddress: contentSourceEntityId ?? instruction.sourceEntityId,
+           readsDefinitions: isPersistedResultSourceID(persistSource.sourceID),
         })
-      : { fields: {}, inManifestOnly: [], missing: [] };
+      : { fields: {}, inManifestOnly: [], missing: [], definitionsRead: [] };
+   // A persisted view or query reads every upstream through its
+   // definition, by design (its companion blanks the source's `#@` lines):
+   // labelled `recomputed`, logged and counted, and exempt from strict
+   // upstreams, as a database rollup over a stored base is.
+   for (const upstream of reuse.definitionsRead) {
+      logger.info(
+         "A persisted view or query builds from its persisted source's definition, not its table",
+         { sourceName: persistSource.name, upstream },
+      );
+      recordUpstreamRecompute("persisted_result", "chained", "recomputed");
+   }
    // A database build that recomputes an upstream because its entry is at
    // the wrong tier reads the warehouse for it: logged and counted once per
    // run per upstream, since the entry fields alone hide the cost.
@@ -471,6 +702,12 @@ export interface SourceBuildOptions {
     * classification of its author's text (which names the base).
     */
    rollup?: boolean;
+   /**
+    * The addresses this run built so far: their tables' columns were
+    * captured by their own builds, so a chained build does not read them
+    * again ({@link movedUpstreams}).
+    */
+   builtThisRun?: ReadonlySet<string>;
 }
 
 /**
@@ -502,17 +739,39 @@ export async function buildSource(
       storedBase,
       rollup,
       signal,
+      builtThisRun,
    } = options;
    const physicalTableName = instruction.physicalTableName;
+   const reach = persistedReach(persistSource, environment, planFacts);
+   const moved = await movedUpstreams({
+      reach,
+      manifest,
+      builtEntries,
+      planFacts,
+      connection,
+      ...(builtThisRun ? { builtThisRun } : {}),
+      rootAddress: contentSourceEntityId ?? instruction.sourceEntityId,
+      sourceName: persistSource.name,
+   });
    const rendered = renderBuildSQL(
       persistSource,
       instruction,
       manifest,
-      environment,
       builtEntries,
       planFacts,
+      reach,
+      moved,
    );
    const { isStorageBuild, buildSQL } = rendered;
+   // Strict refused these above: here each is recomputed. A rollup's own
+   // fallback is counted where it is decided (instructed_build.ts).
+   for (const { name, reason, kind } of rendered.movedRead.values()) {
+      logger.warn(
+         "A stored upstream's table could not be read in place of it; the build recomputes it from its definition",
+         { sourceName: persistSource.name, upstream: name, reason, kind },
+      );
+      if (!rollup) recordUpstreamRecompute(kind, "chained", "recomputed");
+   }
 
    const { reuse, sqlInlinesStored, lift } = classifyStoredUpstreams(
       persistSource,

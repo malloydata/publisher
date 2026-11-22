@@ -34,4 +34,12 @@ describe("referenceManifestToEntries", () => {
          connectionName: "warehouse",
       });
    });
+
+   it("carries a reference's nativeSchema onto the seeded entry, for the altered-upstream check", () => {
+      const nativeSchema = [{ name: "amt", type: "DECIMAL(10,1)" }];
+      const entries = referenceManifestToEntries([
+         { sourceEntityId: "up", physicalTableName: "up_t", nativeSchema },
+      ]);
+      expect(entries.up.nativeSchema).toEqual(nativeSchema);
+   });
 });

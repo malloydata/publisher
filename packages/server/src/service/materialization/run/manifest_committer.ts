@@ -675,6 +675,9 @@ export function referenceManifestToEntries(
          ...(ref.storageDestinationName
             ? { storageDestinationName: ref.storageDestinationName }
             : {}),
+         // What the altered-upstream check compares the table against
+         // (database_column_read.ts, movedSinceBuild).
+         ...(ref.nativeSchema ? { nativeSchema: ref.nativeSchema } : {}),
       };
    }
    return entries;

@@ -39,6 +39,7 @@ import * as dialects from "../../src/service/dialects";
 import { recordConnectionsAsForTests } from "../../src/service/connection_type";
 import { Environment } from "../../src/service/environment";
 import { parsePackageName } from "../../src/service/identity";
+import { MaterializationController } from "../../src/controller/materialization.controller";
 import { MaterializationService } from "../../src/service/materialization/run/materialization_service";
 import * as numericPrecision from "../../src/service/materialization/run/passthrough/postgres";
 import { StorageBuildStrategy } from "../../src/service/materialization/run/storage_build_strategy";
@@ -491,6 +492,30 @@ describe.skipIf(process.platform === "win32")(
          }
       }
 
+      /** A run another caller started, to its settled record. */
+      async function settled(id: string): Promise<Materialization> {
+         const deadline = Date.now() + 120_000;
+         for (;;) {
+            const m = await repo.getMaterializationById(id);
+            if (
+               m &&
+               ["MANIFEST_FILE_READY", "FAILED", "CANCELLED"].includes(m.status)
+            ) {
+               const running = (
+                  service as unknown as {
+                     runningAbortControllers: Map<string, unknown>;
+                  }
+               ).runningAbortControllers;
+               while (running.has(id)) {
+                  await new Promise((resolve) => setTimeout(resolve, 10));
+               }
+               return (await repo.getMaterializationById(id))!;
+            }
+            if (Date.now() > deadline) throw new Error("run never settled");
+            await new Promise((resolve) => setTimeout(resolve, 20));
+         }
+      }
+
       const entriesOf = (m: Materialization) =>
          Object.values(
             (m.manifest as { entries: Record<string, Entry> }).entries,
@@ -922,6 +947,133 @@ source: mid is parent extend {
          const served = await answer("m.malloy", EXTEND_ONLY_QUERY);
          expect(served.servedBy).toBe("materialized");
          expect(asStrings(served.rows)).toEqual(asStrings(live.rows));
+      });
+
+      it("reads a host's reference to a stored upstream as stored, through the controller: recomputed, equal to live, or refused under strict for the column list it lacks", async () => {
+         await setUp({
+            "m.malloy": `##! experimental.persistence
+source: raw is ${RAW}
+
+#@ persist storage="${LAKE}" name="ref_daily_t"
+source: daily is raw -> { group_by: cat, sub; aggregate: total is amt.sum() }
+
+#@ persist storage="${LAKE}" name="ref_monthly_t"
+source: monthly is daily -> { group_by: cat; aggregate: grand is total.sum() }
+
+source: monthly_live is raw -> {
+  group_by: cat, sub; aggregate: total is amt.sum()
+} -> { group_by: cat; aggregate: grand is total.sum() }
+`,
+         });
+         const first = await build();
+         expect([first.status, first.error]).toEqual([
+            "MANIFEST_FILE_READY",
+            null,
+         ]);
+         const daily = entryOf(first, "daily");
+         const monthly = entryOf(first, "monthly");
+         expect(daily.storageDestinationName).toBe(LAKE);
+         // No run on record holds `daily` here, as on a host's worker that
+         // never built it and binds no manifest: the reference alone says
+         // where its table is.
+         await repo.deleteMaterialization(first.id);
+         // The host rebuilds `monthly` alone, `daily` by reference, as
+         // Credible's control plane sends it: through the HTTP controller,
+         // which must keep the reference's destination. Before, it dropped
+         // it, so the reference read as a warehouse table and the build
+         // failed as a host-supplied upstream at the wrong tier.
+         const host = async (table: string, strictUpstreams: boolean) => {
+            const created = await new MaterializationController(
+               service,
+            ).createMaterialization(ENV, PKG, {
+               buildInstructions: {
+                  sources: [
+                     {
+                        sourceEntityId: monthly.sourceEntityId,
+                        materializedTableId: `host-${table}`,
+                        physicalTableName: table,
+                        realization: "COPY",
+                        destination: LAKE,
+                     },
+                  ],
+                  referenceManifest: [
+                     {
+                        sourceEntityId: daily.sourceEntityId,
+                        physicalTableName: daily.physicalTableName,
+                        connectionName: "warehouse",
+                        storageDestinationName: LAKE,
+                     },
+                  ],
+                  strictUpstreams,
+               },
+            });
+            return settled(created.id);
+         };
+         const relaxed = await host("host_monthly_t", false);
+         expect([relaxed.status, relaxed.error]).toEqual([
+            "MANIFEST_FILE_READY",
+            null,
+         ]);
+         const rebuilt = entryOf(relaxed, "monthly");
+         const live = await answer(
+            "m.malloy",
+            "run: monthly_live -> { group_by: cat, grand }",
+         );
+         expect(asStrings(await storedRows(rebuilt.physicalTableName))).toEqual(
+            asStrings(live.rows),
+         );
+         // A reference carries no column list, which stacking on a stored
+         // table needs (a bound manifest or this worker's own record fills
+         // it): strict refuses, and says why.
+         const strict = await host("host_monthly_strict_t", true);
+         expect(strict.status).toBe("FAILED");
+         expect(strict.error).toContain(
+            "'daily' is materialized in destination 'lake', but by a reference that carries no column list",
+         );
+      });
+
+      it("refuses a host's reference to a storage destination the environment does not configure", async () => {
+         await setUp({
+            "m.malloy": `##! experimental.persistence
+source: raw is ${RAW}
+
+#@ persist storage="${LAKE}"
+source: daily is raw -> { group_by: cat; aggregate: total is amt.sum() }
+
+#@ persist storage="${LAKE}"
+source: monthly is daily -> { group_by: cat; aggregate: grand is total.sum() }
+`,
+         });
+         const pkg = await env.getPackage(parsePackageName(PKG), false);
+         const sources = Object.values(pkg.getBuildPlan()!.sources);
+         const of = (name: string) => sources.find((s) => s.name === name)!;
+         await expect(
+            new MaterializationController(service).createMaterialization(
+               ENV,
+               PKG,
+               {
+                  buildInstructions: {
+                     sources: [
+                        {
+                           sourceEntityId: of("monthly").sourceEntityId,
+                           materializedTableId: "host-monthly",
+                           physicalTableName: "host_monthly_t",
+                           destination: LAKE,
+                        },
+                     ],
+                     referenceManifest: [
+                        {
+                           sourceEntityId: of("daily").sourceEntityId,
+                           physicalTableName: "daily_t",
+                           storageDestinationName: "nowhere",
+                        },
+                     ],
+                  },
+               },
+            ),
+         ).rejects.toThrow(
+            "names storage destination 'nowhere', which this environment does not configure",
+         );
       });
 
       it("builds gtm-funnel's shape (an include over a query stage, joins through a join, a name= on each) from the warehouse, strict, equal to live", async () => {

@@ -200,6 +200,104 @@ describe("MaterializationController.createMaterialization validation", () => {
       });
    });
 
+   it("carries a reference's nativeSchema, and refuses a malformed one", async () => {
+      const nativeSchema = [
+         { name: "cat", type: "VARCHAR" },
+         { name: "amt", type: "DECIMAL(10,1)" },
+      ];
+      const body = (schema: unknown) => ({
+         buildInstructions: {
+            sources: [
+               {
+                  sourceEntityId: "b2",
+                  materializedTableId: "mt-2",
+                  physicalTableName: "downstream_v1",
+               },
+            ],
+            referenceManifest: [
+               {
+                  sourceEntityId: "b1",
+                  physicalTableName: "upstream_table",
+                  nativeSchema: schema,
+               },
+            ],
+         },
+      });
+      const parsed = (await parse(body(nativeSchema))) as {
+         referenceManifest: unknown[];
+      };
+      expect(parsed.referenceManifest).toEqual([
+         {
+            sourceEntityId: "b1",
+            physicalTableName: "upstream_table",
+            nativeSchema,
+         },
+      ]);
+      for (const bad of [
+         "DECIMAL",
+         [{ name: "amt" }],
+         [{ name: "", type: "INT" }],
+         [{ name: "amt", type: 7 }],
+         [null],
+      ]) {
+         const { controller } = build();
+         let err: unknown;
+         try {
+            await controller.createMaterialization("env", "pkg", body(bad));
+         } catch (e) {
+            err = e;
+         }
+         expect(err).toBeInstanceOf(BadRequestError);
+         expect(String((err as Error).message)).toContain(
+            "Manifest reference 'nativeSchema'",
+         );
+      }
+   });
+
+   it("keeps a reference's storageDestinationName, reads an empty nativeSchema as none, and refuses an empty destination", async () => {
+      const body = (ref: Record<string, unknown>) => ({
+         buildInstructions: {
+            sources: [
+               {
+                  sourceEntityId: "b2",
+                  materializedTableId: "mt-2",
+                  physicalTableName: "downstream_v1",
+               },
+            ],
+            referenceManifest: [
+               { sourceEntityId: "b1", physicalTableName: "up_t", ...ref },
+            ],
+         },
+      });
+      const parsed = (await parse(
+         body({ storageDestinationName: "lake", nativeSchema: [] }),
+      )) as { referenceManifest: unknown[] };
+      expect(parsed.referenceManifest).toEqual([
+         {
+            sourceEntityId: "b1",
+            physicalTableName: "up_t",
+            storageDestinationName: "lake",
+         },
+      ]);
+      for (const bad of ["", 7]) {
+         const { controller } = build();
+         let err: unknown;
+         try {
+            await controller.createMaterialization(
+               "env",
+               "pkg",
+               body({ storageDestinationName: bad }),
+            );
+         } catch (e) {
+            err = e;
+         }
+         expect(err).toBeInstanceOf(BadRequestError);
+         expect(String((err as Error).message)).toContain(
+            "Manifest reference 'storageDestinationName'",
+         );
+      }
+   });
+
    it("preserves the storage `destination` on a build instruction", async () => {
       // Regression: `destination` is the orchestrated `storage=` axis. Dropping it
       // here silently downgrades an orchestrated build to a database
