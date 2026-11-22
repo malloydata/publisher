@@ -26,7 +26,11 @@ import {
    type TableFolds,
 } from "./run_plan";
 import { type MaterializePlan } from "../domain/table_plans";
-import type { ChainBuildRequest, ChainBuildText } from "../domain/chain_build";
+import type {
+   ChainBuildRequest,
+   ChainBuildText,
+   ChainCollationRequest,
+} from "../domain/chain_build";
 import type { PersistSource } from "@malloydata/malloy";
 import { Manifest } from "@malloydata/malloy";
 import { ChainedShapeNotCarriedError } from "../../../errors";
@@ -691,6 +695,15 @@ export interface BuildEnvironment {
     */
    chainBuildText?(request: ChainBuildRequest): ChainBuildText;
    /**
+    * Why a chained `storage=` build must not stack on its stored upstreams
+    * (the host port's `chainCollationRefusal`), or undefined when it may.
+    * Absent, it never stacks: it recomputes, or under strict upstreams
+    * refuses.
+    */
+   chainCollationRefusal?(
+      request: ChainCollationRequest,
+   ): Promise<string | undefined>;
+   /**
     * The root of the package being built, which the build's reads of author
     * files stay inside. Absent in test doubles: those reads are then confined
     * to the files the model compiled from alone.
@@ -699,13 +712,17 @@ export interface BuildEnvironment {
 }
 
 /**
- * `environment` with the package's `chainBuildText`, for one run of that
- * package. The environment itself is left as it is.
+ * `environment` with the package's `chainBuildText` and
+ * `chainCollationRefusal`, for one run of that package. The environment
+ * itself is left as it is.
  */
 export function withChainBuildText<E extends BuildEnvironment>(
    environment: E,
    pkg: {
       chainBuildText(request: ChainBuildRequest): ChainBuildText;
+      chainCollationRefusal(
+         request: ChainCollationRequest,
+      ): Promise<string | undefined>;
       getPackagePath(): string;
    },
    /**
@@ -728,6 +745,8 @@ export function withChainBuildText<E extends BuildEnvironment>(
               code: "package_stale",
            }
          : pkg.chainBuildText(request);
+   scoped.chainCollationRefusal = (request) =>
+      pkg.chainCollationRefusal(request);
    return scoped;
 }
 

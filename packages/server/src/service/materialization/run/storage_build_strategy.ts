@@ -68,6 +68,7 @@ import {
    storedColumnTypeMismatches,
 } from "../stored_column_types";
 import { BuildInstruction, ManifestEntry } from "../domain/types";
+import type { ChainCollationRequest } from "../domain/chain_build";
 import type {
    DroppedTable,
    KeyCheck,
@@ -228,6 +229,9 @@ export interface StoredRollupBase {
    address: string;
    entry: ManifestEntry;
    companion: { url: string; text: string };
+   /** The rollup's grain and measures, by their names on the base. */
+   grain: readonly string[];
+   measures: readonly string[];
    /** Called when the build grouped the base's stored table. */
    onStacked?: () => void;
 }
@@ -623,6 +627,26 @@ function storedParentsReached(
       );
    }
    return { reached, stops };
+}
+
+/**
+ * Why a chained build must not be computed over its stored upstreams in the
+ * destination (the host port's `chainCollationRefusal`), or undefined when it
+ * may: the destination compares strings byte-exact, its source may not. Fails
+ * closed: no port, or a port that throws, refuses.
+ */
+async function stackCollationRefusal(
+   environment: BuildEnvironment,
+   request: ChainCollationRequest,
+): Promise<string | undefined> {
+   if (!environment.chainCollationRefusal) {
+      return "this package cannot read its source's collation";
+   }
+   try {
+      return await environment.chainCollationRefusal(request);
+   } catch {
+      return "its source's collation could not be read";
+   }
 }
 
 /**
@@ -1037,6 +1061,23 @@ export class StorageBuildStrategy
       if (!environment.chainBuildText) {
          return declined("no_served_copy");
       }
+      if (
+         await stackCollationRefusal(environment, {
+            downstream: {
+               sourceID: persistSource.sourceID,
+               name: persistSource.name,
+            },
+            rollup: {
+               baseSourceID: base.baseSourceID,
+               baseName: base.baseName,
+               grain: base.grain,
+               measures: base.measures,
+            },
+            stored: [base.baseSourceID],
+         })
+      ) {
+         return declined("string_collation");
+      }
       const text = environment.chainBuildText({
          downstream: {
             sourceID: persistSource.sourceID,
@@ -1192,6 +1233,25 @@ export class StorageBuildStrategy
       // here as a query would read it, from this run's entries alone.
       if (!environment.chainBuildText) {
          throw notCarried("this package has no served copy to write it from");
+      }
+      const collation = await stackCollationRefusal(environment, {
+         downstream: {
+            sourceID: persistSource.sourceID,
+            name: persistSource.name,
+         },
+         stored: upstreams.flatMap((b) => b.sourceIDs ?? []),
+      });
+      // No build over the parents gives live's rows, as for a downstream
+      // that reaches the warehouse: the one recompute strict permits
+      // (`warehouseReach` decides), reported with this reason.
+      if (collation !== undefined) {
+         throw new MaterializationEligibilityError({
+            message:
+               `'${persistSource.name}' compares a string over its stored ` +
+               `upstreams (${stops.map((p) => `'${p.name}'`).join(", ")}) ` +
+               `that the destination, byte-exact, would compare otherwise ` +
+               `than its source does: ${collation}`,
+         });
       }
       const byAddress = new Map<string, Record<string, string[] | undefined>>();
       for (const b of upstreams) {
