@@ -297,15 +297,17 @@ export async function chainBuildCollationRefusal(args: {
       );
    }
    if (base === undefined) return "a downstream whose base is not named";
+   const clauses: string[] = [];
+   if (rollup && rollup.grain.length > 0) {
+      clauses.push(`group_by: ${rollup.grain.map(quotedPath).join(", ")}`);
+   }
+   if (rollup) {
+      clauses.push(`aggregate: ${rollup.measures.map(quotedPath).join(", ")}`);
+   } else {
+      clauses.push("select: *");
+   }
    const runnable = load(
-      rollup
-         ? `run: ${quotedIdentifier(base)} -> { ${[
-              ...(rollup.grain.length > 0
-                 ? [`group_by: ${rollup.grain.map(quotedPath).join(", ")}`]
-                 : []),
-              `aggregate: ${rollup.measures.map(quotedPath).join(", ")}`,
-           ].join("; ")} }`
-         : `run: ${quotedIdentifier(base)} -> { select: * }`,
+      `run: ${quotedIdentifier(base)} -> { ${clauses.join("; ")} }`,
    );
    const reads = await chainBuildReadsOfQuery(
       runnable,
