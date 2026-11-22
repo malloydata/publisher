@@ -59,6 +59,7 @@ import {
    recordedSchemaPath,
    storageSecretScope,
 } from "./ducklake_catalog";
+import { catalogKey, reconcileDataInlining } from "./ducklake_inlining";
 import type { Connection } from "@malloydata/malloy";
 import { standardizeRunSQLResult } from "../gcs_s3_utils";
 import { runIntrospectionSQL, sqlLiteral } from "../introspection_sql";
@@ -78,7 +79,6 @@ import type {
 } from "./types";
 
 type AttachedDatabase = components["schemas"]["AttachedDatabase"];
-type PostgresConnection = components["schemas"]["PostgresConnection"];
 
 export const DUCKLAKE: ConnectionDialect = Object.freeze({
    type: "ducklake",
@@ -609,15 +609,15 @@ async function attachDuckLakeWithMode(
    logger.debug(
       `Attaching DuckLake database using command: ${redactPgSecrets(attachCommand)}`,
    );
+   // A create (the admin API's, the only caller with first-attach settings)
+   // that lost is not tried again: the retry would open the other creator's
+   // catalog, with that creator's settings and data path, and the create
+   // would report it as its own. It fails, and the caller answers that the
+   // catalog exists.
+   const creating =
+      options.encrypted !== undefined ||
+      options.dataInliningRowLimit !== undefined;
    try {
-      // A create (the admin API's, the only caller with first-attach settings)
-      // that lost is not tried again: the retry would open the other creator's
-      // catalog, with that creator's settings and data path, and the create
-      // would report it as its own. It fails, and the caller answers that the
-      // catalog exists.
-      const creating =
-         options.encrypted !== undefined ||
-         options.dataInliningRowLimit !== undefined;
       await runDuckLakeAttach(
          connection,
          dbName,
@@ -657,6 +657,13 @@ async function attachDuckLakeWithMode(
          throw error;
       }
    }
+   await reconcileDataInlining(connection, dbName, ducklakeConfig, {
+      created: preflight === "unknown" ? "unknown" : preflight === "absent",
+      readOnly: options.readOnly,
+      // The create records its own settings next.
+      settingsFollow: creating,
+      origin: options.origin ?? "connection",
+   });
    await secureCatalogStorage(connection, dbName, storage, {
       dataPath,
       metadataSchema,
@@ -1009,14 +1016,6 @@ function ducklakeOverlap(
       return "its data path overlaps the destination's";
    }
    return undefined;
-}
-
-/** The catalog database a DuckLake config names, normalized. */
-function catalogKey(pg: PostgresConnection | undefined): string | undefined {
-   if (!pg) return undefined;
-   if (pg.connectionString?.trim()) return pg.connectionString.trim();
-   if (!pg.databaseName) return undefined;
-   return `${(pg.host ?? "localhost").toLowerCase()}:${pg.port ?? 5432}/${pg.databaseName}`;
 }
 
 /** A data path, normalized for a prefix comparison. */

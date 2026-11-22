@@ -201,6 +201,8 @@ describe("the DuckLake ATTACH text: a Postgres catalog with a metadata schema an
          attach(
             `DATA_PATH 's3://test-bucket/lake', OVERRIDE_DATA_PATH true, METADATA_SCHEMA 'lake_meta', ${META_SECRET}`,
          ),
+         // The inlining limit the catalog records (ducklake_inlining.ts): a read.
+         'SELECT key, value FROM "__ducklake_metadata_lake"."lake_meta".ducklake_metadata WHERE scope IS NULL',
          ...s3Secret("s3://test-bucket/lake/"),
       ]);
    });
@@ -215,6 +217,8 @@ describe("the DuckLake ATTACH text: a Postgres catalog with a metadata schema an
          attach(
             `DATA_PATH 's3://test-bucket/lake', OVERRIDE_DATA_PATH true, READ_ONLY true, METADATA_SCHEMA 'lake_meta', ${META_SECRET}`,
          ),
+         // The inlining limit the catalog records (ducklake_inlining.ts): a read.
+         'SELECT key, value FROM "__ducklake_metadata_lake"."lake_meta".ducklake_metadata WHERE scope IS NULL',
          ...s3Secret("s3://test-bucket/lake/"),
       ]);
    });
@@ -231,6 +235,8 @@ describe("the DuckLake ATTACH text: a Postgres catalog with a metadata schema an
          attach(
             `DATA_PATH 's3://test-bucket/lake', OVERRIDE_DATA_PATH true, READ_ONLY true, METADATA_SCHEMA 'lake_meta', ${META_SECRET}`,
          ),
+         // The inlining limit the catalog records (ducklake_inlining.ts): a read.
+         'SELECT key, value FROM "__ducklake_metadata_lake"."lake_meta".ducklake_metadata WHERE scope IS NULL',
          ...s3Secret("s3://test-bucket/lake/"),
       ]);
    });
@@ -264,6 +270,7 @@ describe("the DuckLake ATTACH text: a Postgres catalog with no metadata schema a
          ...EXTENSIONS,
          ...preflight(CONNINFO_VERIFY_FULL),
          `ATTACH OR REPLACE 'ducklake:postgres:${CONNINFO_VERIFY_FULL}' AS "lake" (DATA_PATH 'gs://test-bucket/lake/', OVERRIDE_DATA_PATH true, ${META_SECRET});`,
+         'SELECT key, value FROM "__ducklake_metadata_lake".ducklake_metadata WHERE scope IS NULL',
          ...gcsSecret("gs://test-bucket/lake/"),
       ]);
    });
@@ -275,6 +282,7 @@ describe("the DuckLake ATTACH text: a Postgres catalog with no metadata schema a
          ...EXTENSIONS,
          ...preflight(CONNINFO_VERIFY_FULL),
          `ATTACH OR REPLACE 'ducklake:postgres:${CONNINFO_VERIFY_FULL}' AS "lake" (DATA_PATH 'gs://test-bucket/lake/', OVERRIDE_DATA_PATH true, READ_ONLY true, ${META_SECRET});`,
+         'SELECT key, value FROM "__ducklake_metadata_lake".ducklake_metadata WHERE scope IS NULL',
          ...gcsSecret("gs://test-bucket/lake/"),
       ]);
    });
@@ -288,6 +296,7 @@ describe("the DuckLake ATTACH text: a Postgres catalog with no metadata schema a
          ...EXTENSIONS,
          ...preflight(CONNINFO_VERIFY_FULL),
          `ATTACH OR REPLACE 'ducklake:postgres:${CONNINFO_VERIFY_FULL}' AS "lake" (DATA_PATH 'gs://test-bucket/lake/', OVERRIDE_DATA_PATH true, READ_ONLY true, ${META_SECRET});`,
+         'SELECT key, value FROM "__ducklake_metadata_lake".ducklake_metadata WHERE scope IS NULL',
          ...gcsSecret("gs://test-bucket/lake/"),
       ]);
    });
@@ -303,6 +312,7 @@ describe("the DuckLake ATTACH text: no configured data path", () => {
          ...EXTENSIONS,
          ...preflight(CONNINFO_DISABLE),
          `ATTACH OR REPLACE 'ducklake:postgres:${CONNINFO_DISABLE}' AS "lake" (CREATE_IF_NOT_EXISTS false, ${META_SECRET});`,
+         'SELECT key, value FROM "__ducklake_metadata_lake".ducklake_metadata WHERE scope IS NULL',
          // The recorded data path, which the lock allows (duckdb_lockdown.ts).
          `SELECT key, value FROM "__ducklake_metadata_lake".ducklake_metadata WHERE scope IS NULL`,
       ]);
@@ -317,6 +327,7 @@ describe("the DuckLake ATTACH text: no configured data path", () => {
          ...EXTENSIONS,
          ...preflight(CONNINFO_DISABLE),
          `ATTACH OR REPLACE 'ducklake:postgres:${CONNINFO_DISABLE}' AS "lake" (READ_ONLY true, ${META_SECRET});`,
+         'SELECT key, value FROM "__ducklake_metadata_lake".ducklake_metadata WHERE scope IS NULL',
          // The recorded data path, which the lock allows (duckdb_lockdown.ts).
          `SELECT key, value FROM "__ducklake_metadata_lake".ducklake_metadata WHERE scope IS NULL`,
       ]);
@@ -341,6 +352,7 @@ describe("the DuckLake ATTACH text: no configured data path", () => {
          ...preflight(CONNINFO_DISABLE, "lake_meta"),
          `ATTACH OR REPLACE 'ducklake:postgres:${CONNINFO_DISABLE}' AS "lake" (CREATE_IF_NOT_EXISTS false, METADATA_SCHEMA 'lake_meta', ${META_SECRET});`,
          'SELECT key, value FROM "__ducklake_metadata_lake"."lake_meta".ducklake_metadata WHERE scope IS NULL',
+         'SELECT key, value FROM "__ducklake_metadata_lake"."lake_meta".ducklake_metadata WHERE scope IS NULL',
          ...s3Secret("s3://test-bucket/recorded/"),
       ]);
    });
@@ -356,8 +368,10 @@ describe("the DuckLake ATTACH text: no configured data path", () => {
             storage: { s3Connection: S3 },
          } as DucklakeConnection),
       ).rejects.toThrow(/No storage secret could be scoped/);
-      expect(r.statements().slice(-3)).toEqual([
+      expect(r.statements().slice(-4)).toEqual([
          `ATTACH OR REPLACE 'ducklake:postgres:${CONNINFO_DISABLE}' AS "lake" (CREATE_IF_NOT_EXISTS false, METADATA_SCHEMA 'lake_meta', ${META_SECRET});`,
+         // The inlining limit the catalog records (ducklake_inlining.ts): a read.
+         'SELECT key, value FROM "__ducklake_metadata_lake"."lake_meta".ducklake_metadata WHERE scope IS NULL',
          'SELECT key, value FROM "__ducklake_metadata_lake"."lake_meta".ducklake_metadata WHERE scope IS NULL',
          'DETACH "lake";',
       ]);

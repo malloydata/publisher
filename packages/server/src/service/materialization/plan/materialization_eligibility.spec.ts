@@ -1792,7 +1792,9 @@ source: stored is base -> { group_by: region; aggregate: c is count() }`;
       expect(err.message).toContain(
          "connection 'duckdb' is a DuckLake catalog",
       );
-      expect(err.message).toContain("carries SQL its author wrote");
+      expect(err.message).toContain(
+         "cannot be materialized: it reads source 'base', which is an .sql() source, and its connection 'duckdb'",
+      );
    });
 
    it("admits a DuckLake source over the catalog's own tables", async () => {
@@ -1825,6 +1827,27 @@ source: stored is base -> { group_by: region; aggregate: c is count() }`)
       expect(() =>
          assertTierEligible(source, false, { managedConnections: ["other"] }),
       ).not.toThrow();
+   });
+
+   it("names a joined .sql() source, not every possible cause, on a managed connection", async () => {
+      const duckdb = await connections.lookupConnection("duckdb");
+      await duckdb.runSQL(
+         "CREATE TABLE IF NOT EXISTS lab AS SELECT 'A' AS category",
+      );
+      const source = (
+         await persistSources(`##! experimental.persistence
+source: status_names is duckdb.sql("SELECT 'A' AS category, 'Alpha' AS label")
+#@ persist name="j"
+source: stored is duckdb.table('lab') extend {
+   join_one: sn is status_names on category = sn.category
+} -> { group_by: category, sn.label }`)
+      ).stored;
+      const err = refusalOf(() =>
+         assertTierEligible(source, false, { managedConnections: ["duckdb"] }),
+      );
+      expect(err.message).toContain(
+         "Source 'stored' cannot be materialized: its join 'sn' reads source 'status_names', which is an .sql() source, and its connection 'duckdb' is a managed database",
+      );
    });
 
    it("leaves a connection with no recorded type to the build", async () => {
