@@ -432,8 +432,12 @@ export class ServeVerdicts {
             servedCopy.on && !servedCopy.pending
                ? servedCopy.databaseOnly.has(sourceID)
                : undefined,
+         // Judged per source: a model still compiling (or holding a copy over
+         // the previous bind's bindings) blanks the judgement only of the
+         // sources it holds, and marks those pending.
+         servedCopyPending: (sourceID) => servedCopy.pendingHolds(sourceID),
          servedCopyOutcome: (sourceID) =>
-            servedCopy.on && !servedCopy.pending
+            servedCopy.on && !servedCopy.pendingHolds(sourceID)
                ? servedCopyOutcomeOf(
                     sourceID,
                     buildPlan?.sources?.[sourceID]?.modelPath,
@@ -824,6 +828,8 @@ export class ServeVerdicts {
  * What the models' served copies answer from storage, by author `sourceID`:
  * `on` when any model's served copy is enabled, `pending` when one has yet to
  * compile, and a `signature` that changes whenever either does.
+ * `pendingHolds` says whether a pending model holds a source, so its
+ * judgement waits for that model's compile.
  */
 function servedCopyState(models: ReadonlyMap<string, Model>): {
    on: boolean;
@@ -833,6 +839,7 @@ function servedCopyState(models: ReadonlyMap<string, Model>): {
    databaseOnly: ReadonlySet<string>;
    /** Each model whose served copy has compiled, and what it left. */
    compiled: readonly CompiledServedCopy[];
+   pendingHolds: (sourceID: string) => boolean;
    signature: string;
 } {
    let on = false;
@@ -842,12 +849,14 @@ function servedCopyState(models: ReadonlyMap<string, Model>): {
    const onStorage = new Set<string>();
    const compiled: CompiledServedCopy[] = [];
    const parts: string[] = [];
+   const pendingModels: Model[] = [];
    for (const [modelPath, model] of models) {
       const reread = model.servedCopySourceIDs?.();
       if (reread === undefined) continue;
       on = true;
       if (reread === "pending") {
          pending = true;
+         pendingModels.push(model);
          continue;
       }
       const databaseOnly = model.servedCopyDatabaseOnlyIDs?.() ?? new Set();
@@ -876,7 +885,35 @@ function servedCopyState(models: ReadonlyMap<string, Model>): {
    const signature = on
       ? `${pending ? "pending" : "compiled"}:${[...ids].sort().join(",")}:${[...databaseOnly].sort().join(",")}:${parts.join("|")}`
       : "off";
-   return { on, pending, ids, databaseOnly, compiled, signature };
+   // Holds as `servedCopyOutcomeOf` reads it: the model declares or
+   // imports the source.
+   const pendingHolds = (sourceID: string) =>
+      pendingModels.some(
+         (model) => sourceMapOf(model).node(sourceID) !== undefined,
+      );
+   return {
+      on,
+      pending,
+      ids,
+      databaseOnly,
+      compiled,
+      pendingHolds,
+      signature,
+   };
+}
+
+/**
+ * A model's source map, read once per model: its IR never changes, and
+ * `/status` reads the verdicts on every poll.
+ */
+const sourceMaps = new WeakMap<Model, SourceMap>();
+function sourceMapOf(model: Model): SourceMap {
+   let map = sourceMaps.get(model);
+   if (!map) {
+      map = SourceMap.of(model.getModelDef?.());
+      sourceMaps.set(model, map);
+   }
+   return map;
 }
 
 /** One model's compiled served copy, as the verdicts read it. */

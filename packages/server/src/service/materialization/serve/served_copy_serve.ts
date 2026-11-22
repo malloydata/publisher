@@ -424,6 +424,12 @@ const knownRerootFailures = new WeakMap<
    Map<string, { error: unknown; until: number }>
 >();
 const REROOT_FAILURE_TTL_MS = 10 * 60_000;
+
+/**
+ * How long a compile that threw is judged as failed before a verdict read
+ * compiles it again (a query does at once).
+ */
+const ESCAPED_FAILURE_RETRY_MS = 30_000;
 const REROOT_FAILURES_PER_CONFIG = 64;
 
 /** The key a copy's failure is remembered under. */
@@ -517,6 +523,17 @@ export class ServedCopyServe {
    /** Drop the compiled copy (bindings, destinations or the model changed). */
    invalidate(): void {
       this.lanes.invalidate();
+   }
+
+   /**
+    * Whether the compiled copy is the one a query pinned now reads: compiled
+    * over the bindings fresh at the pin. Right after a bind it is not: the
+    * compile at bind runs in the background, and until it lands the copy
+    * kept is the previous bindings' (a query compiles its own, so it never
+    * reads that one).
+    */
+   isCurrent(pinned: Pinned = this.current()): boolean {
+      return this.lanes.keepsFor(0, this.freshBindings(pinned));
    }
 
    /**
@@ -1922,6 +1939,50 @@ export class ServedCopyServe {
       lane = 0,
       /** The pin's time, which a remembered failure is held against. */
       asOf = 0,
+   ): Promise<Compiled> {
+      try {
+         return await this.compileWithFallbacks(
+            key,
+            generation,
+            bindings,
+            lane,
+            asOf,
+         );
+      } catch (error) {
+         // A failure the passes did not catch is the copy failing to compile,
+         // recorded so a verdict judges it (every source answers live) rather
+         // than reading it pending forever. It may be transient, so the next
+         // request compiles again, and a verdict read does once the backoff
+         // has passed.
+         const failed: Compiled = {
+            key,
+            generation,
+            over: bindings,
+            lane,
+            rerooted: [],
+            aliased: [],
+            escaped: true,
+            problems: [
+               {
+                  reason: "compile_failed",
+                  detail:
+                     error instanceof Error ? error.message : String(error),
+               },
+            ],
+         };
+         setTimeout(() => {
+            failed.retryDue = true;
+         }, ESCAPED_FAILURE_RETRY_MS).unref?.();
+         return failed;
+      }
+   }
+
+   private async compileWithFallbacks(
+      key: string,
+      generation: number,
+      bindings: Binding[],
+      lane: number,
+      asOf: number,
    ): Promise<Compiled> {
       const passedOver = new Set<Binding>();
       // Why each storage table passed over was dropped, from the compile

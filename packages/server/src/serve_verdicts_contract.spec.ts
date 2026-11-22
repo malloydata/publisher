@@ -73,4 +73,14 @@ describe("the serveVerdicts contract", () => {
          /`served_copy` \(a source the served copy\s+reads, `#\(materialize\)` or `#@ persist`/,
       );
    });
+
+   // A verdict read between a bind and the served copy's compile at bind
+   // says so, and tells a host to read it again.
+   it("declares the served copy's pending marker", () => {
+      const pending = schemas.ServeVerdict.properties?.servedCopyPending;
+      expect(pending?.type).toBe("boolean");
+      expect(pending?.description).toContain("always `true`");
+      expect(pending?.description).toContain("must re-read");
+      expect(pending?.description).toContain("#@ persist");
+   });
 });

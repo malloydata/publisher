@@ -192,6 +192,13 @@ export interface ServeVerdict {
     * verdict the models that answer it live while another serves it.
     */
    notServedIn?: NotServedIn[];
+   /**
+    * Some model that holds this source, which its served copy reads, has
+    * yet to compile its copy over the tables bound now (a bind returns
+    * before that compile), so the verdict carries no served-copy judgement
+    * yet: re-read it. Absent once every such model's copy is current.
+    */
+   servedCopyPending?: true;
    /** What the verdict means for this source, in a sentence. */
    message: string;
    /** For a `live` verdict, the changes that would let it serve. */
@@ -288,6 +295,12 @@ export interface ServeVerdictFacts {
     * nothing. Absent: never judged.
     */
    servedCopyOutcome?(sourceID: string): ServedCopyOutcome | undefined;
+   /**
+    * Whether a model holding this source has a served copy that is not yet
+    * compiled over the bindings bound now ({@link ServeVerdict.servedCopyPending}).
+    * Absent: never.
+    */
+   servedCopyPending?(sourceID: string): boolean;
    /**
     * A persisted view's generated build source (`#@ persist` on a view),
     * by its plan sourceID: the source and view it stores. A query reaches it
@@ -679,10 +692,16 @@ function boundVerdict(
    // `served-copy-not-served` warnings are read from; a compile still
    // pending judges nothing.
    const copy = s.servedCopy ? facts.servedCopyOutcome?.(sourceID) : undefined;
-   const where =
-      copy && copy.notServedIn.length > 0
-         ? { notServedIn: copy.notServedIn }
+   const pending =
+      s.servedCopy && facts.servedCopyPending?.(sourceID) === true
+         ? { servedCopyPending: true as const }
          : {};
+   const where = {
+      ...pending,
+      ...(copy && copy.notServedIn.length > 0
+         ? { notServedIn: copy.notServedIn }
+         : {}),
+   };
    const base = { ...s.base, ...where };
    const notServed = (): ServeVerdict => ({
       ...live(
