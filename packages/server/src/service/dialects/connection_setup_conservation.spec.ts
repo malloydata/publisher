@@ -20,7 +20,8 @@ type ApiConnection = components["schemas"]["Connection"];
 
 /**
  * The temp directory and the digest a locked DuckDB tier names its private
- * directory with, which differ per machine, as tokens.
+ * directory with, which differ per machine, as tokens, and every path
+ * separator as `/`, so the expectations hold on Windows too.
  */
 function stable(value: unknown): unknown {
    return JSON.parse(
@@ -29,7 +30,9 @@ function stable(value: unknown): unknown {
             JSON.stringify(fs.realpathSync(os.tmpdir())).slice(1, -1),
             "<tmp>",
          )
-         .replace(/(locked-[a-z]+-)[0-9a-f]{16,}/g, "$1<digest>"),
+         .replace(/(locked-[a-z]+-)[0-9a-f]{16,}/g, "$1<digest>")
+         // Windows joins paths with a backslash (JSON-escaped here).
+         .replaceAll("\\\\", "/"),
    );
 }
 

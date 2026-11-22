@@ -62,8 +62,14 @@ const TYPES = [
 /** The source types a `storage=` build passes through. */
 const PASSTHROUGH = new Set(["postgres", "bigquery", "snowflake"]);
 
-/** A local data path, fixed so the statements naming it are comparable. */
-const DATA_PATH = path.join(tmpdir(), "storage-destination-conservation/");
+/**
+ * A local data path, fixed so the statements naming it are comparable. Spelled
+ * with `/` on every platform: the load's containment check reads a data path
+ * as `/`-separated, and DuckDB reads either separator on Windows.
+ */
+const DATA_PATH = `${path
+   .join(tmpdir(), "storage-destination-conservation")
+   .replaceAll("\\", "/")}/`;
 
 const DUCKLAKE_CONFIG = {
    catalog: {
@@ -130,7 +136,7 @@ let restoreSettings: () => void;
 beforeAll(() => {
    restoreSettings = installSettings().restore;
    mkdirSync(DATA_PATH, { recursive: true });
-   fs.writeFileSync(path.join(DATA_PATH, "in.csv"), "x\n1\n");
+   fs.writeFileSync(`${DATA_PATH}in.csv`, "x\n1\n");
 });
 afterAll(() => {
    restoreSettings();
@@ -226,7 +232,7 @@ const load = (dest: ApiConnection) =>
          destinationConnection: dest,
          schemaName: "main",
          tableName: "t",
-         uri: path.join(DATA_PATH, "in.csv"),
+         uri: `${DATA_PATH}in.csv`,
          format: "csv",
          mode: "create",
       }),
