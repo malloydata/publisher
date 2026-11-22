@@ -7,7 +7,7 @@
         "model": "m.malloy",
         "refused": {
           "name": "pv_base__by_region__view",
-          "reason": "storage_source_unsupported",
+          "reason": "upstream_table_unusable",
           "sourceID": "pv_base__by_region__view@<pkg>/m.malloy.persist-view.malloy",
           "tier": "database"
         },
@@ -100,7 +100,7 @@
       "code": "persist-view-not-built",
       "message": "#@ persist on view \"by_region\" of source \"pv_base\" is not built, so the view is served live: its upstream 'pv_base' is stored in the storage= destination 'lake', whose table a build in the warehouse cannot read, and strict upstreams forbid recomputing it from raw; it is answered live, over 'pv_base''s table.",
       "model": "m.malloy",
-      "reason": "storage_source_unsupported",
+      "reason": "upstream_table_unusable",
       "severity": "warn",
       "subject": "pv_base -> by_region"
     }
@@ -127,7 +127,7 @@
         "modelPath": "m.malloy",
         "name": "pv_base__by_region__view",
         "origin": "view",
-        "reason": "storage_source_unsupported",
+        "reason": "upstream_table_unusable",
         "sourceID": "pv_base__by_region__view@<pkg>/m.malloy.persist-view.malloy",
         "tier": "database"
       }

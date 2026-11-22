@@ -10939,6 +10939,7 @@ components:
               given_where_over_unstored_field,
               unreadable_grain,
               upstream_unread,
+              upstream_table_unusable,
             ]
           description: >-
             The bounded refusal reason; `message` says the specifics.
@@ -11002,6 +11003,13 @@ components:
             and a host's instruction for it is refused, until a reload or a
             plan refresh reads the catalog and plans it at its address; the
             `*-not-built` warning names the table).
+            `upstream_table_unusable` (a database persisted view, named query
+            or rollup whose upstream's table it cannot be built from, since
+            strict upstreams forbid recomputing the upstream from raw: an
+            upstream declared `storage=`, whose table lives in a storage
+            destination a build in the warehouse cannot read; `message` names
+            the upstream. Terminal until the model changes; the declaration
+            is answered live, which reads the upstream's stored table).
 
 
             A persisted view or named query: `materialization_off` (persisted

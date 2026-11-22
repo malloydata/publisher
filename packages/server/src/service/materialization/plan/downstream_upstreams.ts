@@ -25,14 +25,11 @@ import {
 /**
  * The refusal reason of a database downstream whose upstream's table lives
  * in a `storage=` destination, which a database build cannot read in place
- * of the upstream (and strict upstreams forbid recomputing it). The value
- * this case is meant to carry, `upstream_table_unusable`, is a new
- * `RefusedReason` awaiting sign-off (a host's client degrades an unknown
- * value), so until it is approved the refusal carries the nearest existing
- * value; `message` names the upstream and its destination.
+ * of the upstream (and strict upstreams forbid recomputing it). `message`
+ * names the upstream and its destination.
  */
 export const UPSTREAM_TABLE_UNUSABLE_REASON: RefusedReason =
-   "storage_source_unsupported";
+   "upstream_table_unusable";
 
 /** A persisted source a downstream's definition reaches. */
 interface ReachedUpstream {
