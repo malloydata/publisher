@@ -23,13 +23,13 @@
  */
 
 import { runAsInternalStatement } from "../../duckdb_lockdown";
-import { getDialect, type Connection } from "@malloydata/malloy";
+import type { Connection } from "@malloydata/malloy";
 import { errMessage } from "../../../utils";
 import { foldedTablePathParts, tablePathParts } from "../../quoting";
 import { connectionTypeOf } from "../../connection_type";
 import {
    ducklakeStoresAsDouble,
-   storedColumnsOfOutput,
+   spelledNativeType,
 } from "../stored_column_types";
 import type { FreshnessManifest, ObservedColumns } from "../domain/types";
 import { NATIVE_SCHEMA_ROW_LIMIT } from "./database_native_types";
@@ -239,7 +239,6 @@ async function readBatch(
       return;
    }
    const columns = batch.columnsOf(rows);
-   const malloy = getDialect(dialect);
    for (const key of batch.keys) {
       const read = columns.get(key);
       if (read === undefined) {
@@ -268,28 +267,10 @@ async function readBatch(
                              storedAsDouble: true as const,
                           };
                        }
-                       // Spelled as the build's capture spells it; a type
-                       // Malloy reads as no basic type has no spelling. An
-                       // array is one, though the dialect maps `DATE[]` to
-                       // its element's `date`.
-                       const [spelled] = isArrayType(c.type)
-                          ? []
-                          : storedColumnsOfOutput(
-                               [
-                                  {
-                                     name: c.name,
-                                     ...malloy.sqlTypeToMalloyType(c.type),
-                                  },
-                               ],
-                               {
-                                  nested: false,
-                                  bigint: true,
-                                  timestamptz: true,
-                               },
-                            );
+                       const spelled = spelledNativeType(c.type, dialect);
                        return {
                           name: c.name,
-                          ...(spelled ? { type: spelled.type } : {}),
+                          ...(spelled ? { type: spelled } : {}),
                           nativeType: c.type,
                        };
                     }),
@@ -300,10 +281,6 @@ async function readBatch(
 }
 
 /** An array type as a catalog names it: `DATE[]`, `integer[3]`, `ARRAY<INT64>`. */
-function isArrayType(type: string): boolean {
-   return /\[\s*\d*\s*\]\s*$/.test(type) || /^\s*ARRAY\b/i.test(type);
-}
-
 /** A catalog read that outlived its bound. */
 class CatalogReadTimeout extends Error {
    constructor(ms: number) {

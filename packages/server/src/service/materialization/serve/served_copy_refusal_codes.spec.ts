@@ -20,13 +20,30 @@ import {
 } from "../package_materialization";
 import type { ServedCopyProblem } from "./served_copy_serve";
 import { SERVED_COPY_WARNING_CODE } from "./served_copy_serve";
+import { servedCopyAlias } from "./served_copy_config";
+
+// A compile refusing a join in an imported file, as Malloy words it: the
+// warning names the file and the join, never the server's path, the
+// served-copy alias, the source excerpt or another diagnostic.
+const alias = servedCopyAlias("lake");
+const UNBUILT_DETAIL = [
+   "Error(s) compiling model:",
+   "FILE: file:///srv/publisher_data/env/pkg/crm.malloy",
+   `line 13: Cannot join 'cur', which is on connection '${alias}', into a source on connection 'e2e_pg'`,
+   "  |   join_one: cur is crm_current on category = cur.category and region = 'secret-value'",
+   "FILE: file:///srv/publisher_data/env/pkg/deals.malloy",
+   "line 17: Reference to undefined object 'crm_current'",
+].join("\n");
 
 type Reason = ServedCopyProblem["reason"];
 
 /** One problem per reason, as the served copy reports it. */
 const PROBLEMS = {
    compile_failed: { reason: "compile_failed", detail: "line 1: boom" },
-   cross_connection_unbuilt: { reason: "cross_connection_unbuilt" },
+   cross_connection_unbuilt: {
+      reason: "cross_connection_unbuilt",
+      detail: UNBUILT_DETAIL,
+   },
    column_types: { reason: "column_types", sourceName: "s" },
    no_declaration: { reason: "no_declaration", sourceName: "s" },
    definition_not_parsed: { reason: "definition_not_parsed", sourceName: "s" },
@@ -71,7 +88,7 @@ const WARNINGS: Record<
          code: "served-copy-not-served",
          subject: null,
          message:
-            "This model's served copy re-roots a source onto its storage destination, which moves a join of it across connections, and the join cannot be left out; the copy compiles once both sides are built into one destination, and serves live until then.",
+            "This model's served copy re-roots a source onto its storage destination, which moves a join of it across connections, and the join cannot be left out; the copy compiles once both sides are built into one destination, and serves live until then: crm.malloy line 13: Cannot join 'cur', which is on connection the storage destination, into a source on connection 'e2e_pg'.",
       },
    ],
    column_types: [
@@ -250,6 +267,29 @@ describe("the served copy's refusal codes", () => {
          ]).map((w) => w.message),
       ).toEqual([
          "This source's stored column types differ from the types the model declares, or one cannot be declared on its table, so the served copy leaves it as written and it answers live: column `v` (declared `string[]`) is not in the stored table.",
+      ]);
+   });
+
+   it("words a cross-connection join on a source that is not stored as the joined source's destination, not its own", () => {
+      // The source reads its own connection; only the joined source is
+      // stored, in a destination that connection cannot reach.
+      expect(
+         warningsFor([
+            { ...PROBLEMS.cross_connection_join, declarerNotStored: true },
+         ]).map((w) => ({
+            code: w.code,
+            reason: w.reason,
+            subject: w.subject ?? null,
+            message: w.message,
+         })),
+      ).toEqual([
+         {
+            code: "served-copy-not-served",
+            reason: "cross_connection_join",
+            subject: "s",
+            message:
+               "This source's join `j` reads a source the served copy reads from its storage destination, which this source's own connection cannot reach. Queries that use the join are answered live; the others are answered as before. To serve them too, store this source in the same destination, or build the joined source in its own database (drop its `storage=`).",
+         },
       ]);
    });
 

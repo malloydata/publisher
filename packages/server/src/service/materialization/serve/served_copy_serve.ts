@@ -171,6 +171,7 @@ import {
    checkSourceZone,
    checkZonedColumns,
    inlineBaseZoneOf,
+   leftAsWritten,
    readsInAnotherZone,
    readsRerootedTables,
    readZonesOf,
@@ -661,6 +662,8 @@ export class ServedCopyServe {
       tablesRead: Binding[];
       /** What the answer is judged to read for its gates (tablesReadForGates). */
       gateTablesRead: Binding[];
+      /** The author sources the copy re-rooted on their tables, by `sourceID`. */
+      rerootedSourceIDs: ReadonlySet<string>;
       /**
        * The served copy's compiled model, where a row-level gate is grafted
        * when this answer runs: the gate's text is the author's, kept in
@@ -687,17 +690,22 @@ export class ServedCopyServe {
       givens: Record<string, unknown> | undefined,
    ): Promise<AnswerAttempt & { materializer: ModelMaterializer }> {
       if (!compiled.materializer || compiled.rerooted.length === 0) {
+         const crossConnection = compiled.problems.some(
+            (p) => p.reason === "cross_connection_unbuilt",
+         );
+         const asWritten = crossConnection
+            ? undefined
+            : leftAsWritten(compiled);
          throw new LegDecline(
-            compiled.problems.some(
-               (p) => p.reason === "cross_connection_unbuilt",
-            )
+            crossConnection
                ? "served_copy_cross_connection"
                : "served_copy_not_served",
-            undefined,
+            asWritten?.detail,
             {
                message:
                   compiled.problems[0]?.detail ??
                   "no stored table is re-rooted in this model's served copy",
+               ...(asWritten ? { tableIds: asWritten.tableIds } : {}),
             },
          );
       }
@@ -878,6 +886,7 @@ export class ServedCopyServe {
          bindings: compiled.rerooted,
          tablesRead,
          gateTablesRead: tablesReadForGates(sql, compiled.rerooted, tablesRead),
+         rerootedSourceIDs: compiled.rerootedSourceIDs ?? new Set(),
          graftScope: {
             modelDef: compiled.modelDef as ModelDef,
             materializer: attempt.materializer,
@@ -957,9 +966,33 @@ export class ServedCopyServe {
             if (zonedOnly) {
                decline(ZONED_TRUNCATION_REASON, "served_copy_time_zone");
             }
+            // The tables read that leave a column out, and why for each
+            // column live's result has and the copy's lacks: a column of the
+            // caller's own result, named as a query naming it would be.
+            const leaving = tablesRead.filter((b) =>
+               compiled.leftOutTables?.has(b.tablePath),
+            );
+            const lacking =
+               live === undefined ? [] : namesLacking(live, served);
+            const why = [
+               ...new Set(
+                  leaving.flatMap((b) =>
+                     lacking.flatMap((n) => {
+                        const phrase = compiled.leftOutWhy
+                           ?.get(b.sourceIDs?.[0] ?? "")
+                           ?.get(n);
+                        return phrase === undefined ? [] : [phrase];
+                     }),
+                  ),
+               ),
+            ];
             decline(
                "the query's result includes a column the served copy leaves out of a stored table's type",
                "served_copy_not_served",
+               why.length > 0
+                  ? `the stored table cannot answer with live's columns: ${why.join("; ")}`
+                  : "the query's result includes a column the stored table leaves out",
+               leaving.map((b) => b.virtualHandle),
             );
          }
       }
@@ -2406,12 +2439,19 @@ export class ServedCopyServe {
             optOutIDs.add(node.sourceID);
          }
       }
+      // The sources stored at all: a binding the copy was compiled over.
+      const storedNames = new Set(over.map((b) => b.sourceName));
       for (const l of leftOut) {
          if (!l.crossConnection) continue;
+         const sourceName = l.declaration ?? l.name;
          problems.push({
-            sourceName: l.declaration ?? l.name,
+            sourceName,
             reason: "cross_connection_join",
-            join: l.name,
+            join: l.join ?? l.name,
+            ...(l.join !== undefined ? { leftOutWhole: true as const } : {}),
+            ...(storedNames.has(sourceName)
+               ? {}
+               : { declarerNotStored: true as const }),
          });
       }
       const unsafeIDs = classificationCeiling(
@@ -2508,6 +2548,7 @@ export class ServedCopyServe {
          optOutIDs,
          unsafeIDs,
          rerooted,
+         rerootedSourceIDs: rerootedSourceIDsOf(candidates, throughBase),
          ...(throughBase.length > 0 ? { throughBase } : {}),
          aliased,
          problems,
@@ -2556,6 +2597,26 @@ interface LoadedCopy {
    servedRuntime: GraftRuntime;
    leftOut: LeftOutDefinition[];
    files: ReadonlyMap<string, string>;
+}
+
+/**
+ * The author sources a compiled copy reads from a stored table: each one
+ * still re-rooted past the passes, and each extension left as written whose
+ * base is one of those (by its chain, or the base name its text declares).
+ * An extension whose base a pass dropped reads that base as written.
+ */
+export function rerootedSourceIDsOf(
+   candidates: readonly { reroot: { sourceID: string; sourceName: string } }[],
+   throughBase: NonNullable<Compiled["throughBase"]>,
+): ReadonlySet<string> {
+   const ids = new Set(candidates.map((c) => c.reroot.sourceID));
+   const names = new Set(candidates.map((c) => c.reroot.sourceName));
+   const kept = throughBase.filter(
+      (t) =>
+         t.chain.some((id) => ids.has(id)) ||
+         (t.baseName !== undefined && names.has(t.baseName)),
+   );
+   return new Set([...ids, ...kept.map((t) => t.sourceID)]);
 }
 
 /** What a compiled copy is built from, past its last pass. */
@@ -2774,6 +2835,23 @@ function rerootsLosing(
          givenTerms: givenReadingFilterTerms,
       });
    };
+   // A source this model does not name (only a join reaches it, an import
+   // of an import) that the served compile holds nowhere: the joins that
+   // reach it were left out (a join across connections, answered live and
+   // warned on its own), so nothing in this model reads it and its re-root
+   // is moot. Left as written, with no warning of its own: it loses nothing
+   // a caller can read here.
+   const unreached = state.candidates.filter(
+      (c) =>
+         map.node(c.reroot.sourceID)?.name === undefined &&
+         servedMap.node(c.reroot.sourceID) === undefined &&
+         servedDefOf(servedMap, c.reroot.sourceID) === undefined,
+   );
+   if (unreached.length > 0) {
+      for (const c of unreached) withoutKept.delete(c);
+      state.candidates = state.candidates.filter((c) => !unreached.includes(c));
+      return true;
+   }
    const losses = new Map(state.candidates.map((c) => [c, lossOf(c)]));
    const lost = state.candidates.filter((c) => {
       const loss = losses.get(c);
@@ -3406,6 +3484,38 @@ function v1ColumnsOf(
             leftOutPhrase(subject.columnRef(name), f, undefined),
          );
       }
+   }
+   // A column the table holds whose field live types as `json` or `sql
+   // native` (a Postgres `jsonb`, DuckDB's MAP, BLOB, INTERVAL, UUID or
+   // JSON): no stored type spells it, so the table's captured columns, and
+   // those derived from its source, leave it out. Left out like a column no
+   // type reads, so only a query reading it answers live, with the type the
+   // warehouse holds it as for the reason.
+   const nativeTypeOf = nativeTypeLookup(binding.nativeSchema);
+   for (const f of (def.fields ?? []) as {
+      name?: unknown;
+      as?: unknown;
+      join?: unknown;
+      type?: unknown;
+      e?: unknown;
+   }[]) {
+      if (
+         typeof f.name !== "string" ||
+         f.join !== undefined ||
+         f.e !== undefined ||
+         !liveTypesAsNative(f)
+      ) {
+         continue;
+      }
+      const name = typeof f.as === "string" ? f.as : f.name;
+      if (stored.has(f.name.toLowerCase()) || stored.has(name.toLowerCase())) {
+         continue;
+      }
+      columnsLeftOut.push(name);
+      subject.leftOutWhy.set(
+         name,
+         leftOutPhrase(subject.columnRef(name), f, nativeTypeOf(f.name)),
+      );
    }
    // Each with its field's annotations (`#(doc)`, `# label`, `#
    // percent` on the query's output field), as a `#(materialize)` column
@@ -4455,6 +4565,32 @@ export function refinesUnfilteredBase(
  * place, in order. Two compiles of one query that agree on it return the
  * same columns.
  */
+/**
+ * The top-level field names of one result shape ({@link resultShapeOf}) the
+ * other lacks: `live`'s names not in `served`. Empty when either does not
+ * parse.
+ */
+function namesLacking(live: string, served: string): string[] {
+   const names = (shape: string): string[] | undefined => {
+      try {
+         const parsed: unknown = JSON.parse(shape);
+         if (!Array.isArray(parsed)) return undefined;
+         return parsed.flatMap((f) =>
+            typeof f === "string"
+               ? [f]
+               : f !== null && typeof f === "object"
+                 ? Object.keys(f)
+                 : [],
+         );
+      } catch {
+         return undefined;
+      }
+   };
+   const had = names(served);
+   if (had === undefined) return [];
+   return (names(live) ?? []).filter((n) => !had.includes(n));
+}
+
 export function resultShapeOf(prepared: { resultExplore: unknown }): string {
    type Field = {
       name: string;

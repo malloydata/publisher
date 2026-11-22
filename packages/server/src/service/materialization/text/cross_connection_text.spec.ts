@@ -173,6 +173,32 @@ describe("leaving out joins across connections", () => {
       );
    });
 
+   it("names the whole statement on a cut of one definition of several", () => {
+      const text =
+         "source: s is t extend {\n  join_one: a is u with k, b is u with k\n}\n";
+      const one = definitionCutAt(text, text.indexOf("a is"));
+      const other = definitionCutAt(text, text.indexOf("b is"));
+      expect(one?.statement).toEqual(other?.statement);
+      expect(one?.statement?.definitions).toBe(2);
+      const whole = one!.statement!;
+      expect(
+         (text.slice(0, whole.start) + text.slice(whole.end)).replace(
+            /\s+/g,
+            " ",
+         ),
+      ).toBe("source: s is t extend { } ");
+   });
+
+   it("cuts the top-level declaration around an offset when asked", () => {
+      const text =
+         "source: s is t extend {\n  join_one: a is u with k\n}\nsource: z is t\n";
+      const cut = definitionCutAt(text, text.indexOf("a is"), true);
+      expect(cut?.left).toEqual({ keyword: "source", name: "s" });
+      expect(text.slice(0, cut?.start) + text.slice(cut?.end)).toBe(
+         "\nsource: z is t\n",
+      );
+   });
+
    it("finds nothing to cut in a where:", () => {
       const text = "source: s is t extend {\n  where: x > 1\n}\n";
       const cut = definitionCutAt(text, text.indexOf("x > 1"));
@@ -196,6 +222,39 @@ describe("leaving out joins across connections", () => {
       const cut = definitionCutAt(text, text.indexOf("s is"));
       const out = text.slice(0, cut?.start) + text.slice(cut?.end);
       expect(out).toBe('##! experimental.x\n## doc="m"\n\n');
+   });
+
+   it("leaves out an importer's own refused join, hidden on the first compile by its import's", async () => {
+      const base = "file:///p/base.malloy";
+      const files: Record<string, string> = {
+         [base]: model,
+         [URL_]: `import "base.malloy"
+source: own is product.sql("select 1 as account_id, 5 as events") extend {
+  join_one: v is accounts on v.id = account_id
+}
+source: reads_own is own -> { group_by: account_id, n is v.account_name }
+source: kept is accounts extend { measure: c is count() }
+`,
+      };
+      const compile = compileFiles(files);
+      const firstError = await compile(new Map()).catch((e) => e);
+      const view = await leaveOut({
+         firstError,
+         readText: (u) => files[u],
+         load: compile,
+      });
+      expect(
+         view?.leftOut
+            .filter((l) => l.crossConnection)
+            .map((l) => [l.url, l.name]),
+      ).toEqual([
+         [base, "u"],
+         [URL_, "v"],
+      ]);
+      expect(view?.leftOut.map((l) => l.name)).toContain("reads_own");
+      expect(Object.keys(view?.result._modelDef.contents ?? {})).toContain(
+         "kept",
+      );
    });
 
    it("follows a join left out of an imported file into its importer", async () => {

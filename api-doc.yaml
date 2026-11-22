@@ -4541,9 +4541,7 @@ components:
           description: >-
             Which page the Console shows for a model (`PUBLISHER_MODEL_PAGE`,
             "explorer" by default). "explorer" is the Malloy Explorer, which
-            writes the queries it builds back to Malloy text with string
-            values unescaped, so a drilled value holding a double quote
-            rewrites its query. "viewer" shows a page that builds no query,
+            builds queries. "viewer" shows a page that builds no query,
             and takes the Explorer out of the legacy notebook too. Absent from
             a server that predates the setting, which reads as "explorer".
         emptyReason:
@@ -4975,12 +4973,35 @@ components:
             another source), `destination_missing` (`storage=` names a
             destination the environment does not configure),
             `connection_cannot_hold_table` (database, on a connection whose
-            type creates no tables), `materialization_off` (a `#(materialize)`
+            type creates no tables), `types_unrecorded` (database, bound, but
+            its manifest entry records no column types, neither `schema` nor
+            `nativeSchema`, so a change since the build cannot be ruled out;
+            rebuild it), `materialization_off` (a `#(materialize)`
             source, which only the served copy reads, and the served copy is
             off: `PUBLISHER_MATERIALIZE`, and for `storage=`
-            `PERSIST_STORAGE_MODE`), `served_copy` (a `#(materialize)` source
-            whose table is bound, but no model's served copy re-roots it; the
-            `served-copy-not-served` warning says why). An open set.
+            `PERSIST_STORAGE_MODE`), `served_copy` (a source the served copy
+            reads, `#(materialize)` or `#@ persist`, whose table is bound and
+            built, but no model's served copy re-roots it, so its queries are
+            answered live; `notServedIn` says where and why). An open set.
+        notServedIn:
+          type: array
+          items:
+            $ref: "#/components/schemas/NotServedIn"
+          description: >-
+            Each model file whose served copy holds this source (declares or
+            imports it) but does not read its table, sorted by model, the same
+            for a `#(materialize)` source and a `#@ persist` one. Present
+            exactly when some model that holds the source does not read its
+            table. With a `served_copy` reason it lists every such model (a
+            model whose whole copy is off lists every stored source it holds,
+            not only the one whose join failed it; a source no model's copy
+            holds lists its declaring model, `not_rerooted`). On a `serves`
+            verdict it lists the models that answer the source's queries
+            live while another model serves it, so a consumer must read it:
+            `serves` alone does not mean every model reads the table. Absent
+            while a served copy has yet to compile. Read from the same compile
+            of record as the `served-copy-not-served` warnings, never by
+            running a query.
         message:
           type: string
           description: What the verdict means for this source, in a sentence.
@@ -5035,6 +5056,35 @@ components:
           items:
             $ref: "#/components/schemas/ViewServeVerdict"
 
+    NotServedIn:
+      type: object
+      description: >-
+        One model whose served copy holds a materialized source but does not
+        read its table, and why.
+      required: [model, reasons]
+      properties:
+        model:
+          type: string
+          description: The model file.
+        reasons:
+          type: array
+          items:
+            type: string
+          description: >-
+            Every reason the served copy gives for not reading the source's
+            table in this model: the `reason` of each `served-copy-not-served`
+            package warning on that model that names the source or the model's
+            whole copy, the codes `publisher_served_copy_bind_total` counts,
+            most actionable first (for example `cross_connection_join` before
+            `fields_not_carried`): `cross_connection_join`,
+            `cross_connection_unbuilt`, `inline_join_kept`,
+            `read_terms_not_kept`, `fields_not_carried`, `column_types`,
+            `classification_not_kept`, `pair_join_not_found`,
+            `pair_not_compiled`, `definition_not_parsed`, `compile_failed`,
+            `no_declaration`, `reroot_not_compiled`. `not_rerooted` alone when
+            no warning names one (also `servePathReason`'s value for that
+            case). Never empty. An open set: treat an unknown value as
+            `not_rerooted`.
     ViewServeVerdict:
       type: object
       required: [view, verdict]

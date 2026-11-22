@@ -43,6 +43,7 @@ import { losslessWidening } from "../domain/lossless_widening";
 import {
    driftDeclaredType,
    driftedColumnRead,
+   spelledNativeType,
    storedColumnsOfOutput,
    storedMalloyType,
    storedTypeServesAs,
@@ -419,7 +420,12 @@ export function deriveDatabaseServeBindings(args: {
       const entry = entries[source.sourceEntityId];
       if (!entry?.tableName) continue;
       const schema = plan
-         ? plannedWithCaptured(plan.storedColumns, entry.schema)
+         ? plannedWithCaptured(
+              plan.storedColumns,
+              entry.schema?.length
+                 ? entry.schema
+                 : capturedOfNative(entry.nativeSchema, source.dialect),
+           )
          : // What its build captured, else what its compiled output derives
            // (a table built before the capture).
            entry.schema?.length
@@ -498,6 +504,29 @@ function plannedWithCaptured(
          (c) => !named.has(c.name) && ZONED_TIMESTAMP.test(c.type.trim()),
       ),
    ];
+}
+
+/**
+ * A table's columns from the warehouse types its build captured, spelled as
+ * a capture spells them (`spelledNativeType`): for a table whose build could
+ * not read its columns back (Postgres's schema reader refuses a name with no
+ * schema, which is how a build names its tables). Undefined with none to
+ * read.
+ */
+function capturedOfNative(
+   nativeSchema: readonly { name: string; type: string }[] | undefined,
+   dialect: string | undefined,
+): StoredColumn[] | undefined {
+   if (!nativeSchema?.length || !dialect) return undefined;
+   try {
+      return nativeSchema.flatMap((c) => {
+         const type = spelledNativeType(c.type, dialect);
+         return type ? [{ name: c.name, type }] : [];
+      });
+   } catch {
+      // A dialect Malloy does not know: no spelling to read them with.
+      return undefined;
+   }
 }
 
 /**
@@ -626,7 +655,11 @@ export interface ObservedDrift {
  *   ({@link driftedColumnRead}), so only a query reading a left-out column
  *   answers live;
  * - a table whose read failed (`unread`), or that was not read, is left out
- *   of both: it answers live (fail safe).
+ *   of both: it answers live (fail safe);
+ * - a table whose build captured neither its columns nor their native types
+ *   (`uncaptured`) is left out of both too: with no built type to compare,
+ *   no alter since the build can be seen (a float, or an exact type that
+ *   rounds its values), so every read of it answers live.
  *
  * With no observation (`observed` undefined) everything is returned as is.
  */
@@ -645,16 +678,12 @@ export function applyObservedColumns(args: {
    bindings: Binding[];
    drifted: ObservedDrift[];
    unread: UnreadTable[];
+   /** The tables left out because their build captured no column types. */
+   uncaptured: string[];
 } {
    const { observed } = args;
-   if (!observed) {
-      return {
-         entries: args.entries,
-         bindings: [...args.bindings],
-         drifted: [],
-         unread: [],
-      };
-   }
+   if (!observed) return asBound(args.entries, args.bindings);
+   const uncaptured: string[] = [];
    const entries: FreshnessManifest = {};
    const drifted: ObservedDrift[] = [];
    const unread: UnreadTable[] = [];
@@ -681,6 +710,11 @@ export function applyObservedColumns(args: {
          left.add(id);
          continue;
       }
+      if (!entry.schema?.length && !entry.nativeSchema?.length) {
+         uncaptured.push(id);
+         left.add(id);
+         continue;
+      }
       reads.set(id, read);
       const columns = entry.schema?.length
          ? entry.schema.flatMap((c) => {
@@ -694,6 +728,10 @@ export function applyObservedColumns(args: {
          : // A build that captured only native types (a warehouse whose
            // schema reader refused the name): those are what moved or not.
            nativeDriftOf(entry.nativeSchema ?? [], read);
+      // A DuckLake 128-bit integer held as a DOUBLE is never exact, whatever
+      // the build captured, or failed to capture: a column the read marks so
+      // and no capture named is reported too, so it is left out.
+      columns.push(...unreportedDoubles(read, columns));
       // Read by Malloy's manifest substitution alone, a table no compile
       // re-types: a column whose source now declares a type the table's
       // value does not read as (a warehouse column retyped upstream since the
@@ -797,7 +835,11 @@ export function applyObservedColumns(args: {
             drifted.push({ sourceEntityId: b.virtualHandle, columns: extra });
          }
       }
-      if (!moved) return [b];
+      // No captured schema: judged by the types it holds (uncapturedTypes).
+      movedColumns.push(
+         ...uncapturedTypes(b, entry, schema, read, movedColumns),
+      );
+      if (!moved && movedColumns.length === 0) return [b];
       // A big-integer column is cast to its native type at read: the type
       // the warehouse holds now, never the one it was built with.
       const nativeSchema = b.nativeSchema?.map((n) =>
@@ -814,7 +856,21 @@ export function applyObservedColumns(args: {
          },
       ];
    });
-   return { entries, bindings, drifted, unread };
+   return { entries, bindings, drifted, unread, uncaptured };
+}
+
+/** With no observation, everything as bound: nothing drifted, read or left out. */
+function asBound(
+   entries: FreshnessManifest,
+   bindings: readonly Binding[],
+): ReturnType<typeof applyObservedColumns> {
+   return {
+      entries,
+      bindings: [...bindings],
+      drifted: [],
+      unread: [],
+      uncaptured: [],
+   };
 }
 
 /**
@@ -869,14 +925,20 @@ function declaredMoves(
 /**
  * Whether a build of a column the source declares as `declared` writes
  * `storedType` by design, though the type does not serve it: a warehouse
- * answers a `date` truncation (or `date + interval`) with a naive timestamp,
- * and a `boolean` over an integer flag with the integer.
+ * answers a `date` truncation (or `date + interval`) with a timestamp, and a
+ * `boolean` over an integer flag with the integer.
+ *
+ * Postgres answers `DATE_TRUNC` of a date with a `timestamptz`: midnight in
+ * the session's zone, which Malloy's driver sets to UTC for the build and
+ * every read alike. Its date is then exact with no query time zone, and the
+ * read casts it back ({@link driftedColumnRead}); under a query time zone the
+ * cast would take the date in that zone, so the column is left out and a
+ * query reading it answers live. Either way it is the type the build wrote,
+ * not drift, so it is not reported.
  */
 function byDesign(storedType: string, declared: string): boolean {
    const family = typeFamily(storedType);
-   if (declared === "date") {
-      return family === "timestamp" && !isZoned(storedType);
-   }
+   if (declared === "date") return family === "timestamp";
    if (declared === "boolean") {
       return family === "number" && /INT/i.test(storedType);
    }
@@ -998,6 +1060,56 @@ function roundsBigInteger(c: ObservedDrift["columns"][number]): boolean {
          c.builtType.trim(),
       ) &&
       /^(DOUBLE|FLOAT|REAL|FLOAT4|FLOAT8)$/i.test((c.observedType ?? "").trim())
+   );
+}
+
+/**
+ * A table whose build captured no schema is bound with the plan's spelling of
+ * each column (every number a DOUBLE), so an exact column altered to a float
+ * reads as unmoved. Each column with no captured type at all, and not already
+ * judged, is listed with the type it holds now, so a gate over a float is not
+ * kept on it.
+ */
+function uncapturedTypes(
+   b: Binding,
+   entry: FreshnessManifest[string] | undefined,
+   schema: readonly { name: string }[],
+   read: Extract<ObservedColumns, { columns: unknown }>,
+   judged: readonly { name: string }[],
+): { name: string; type: string }[] {
+   if (entry?.schema?.length) return [];
+   const captured = b.nativeSchema ?? entry?.nativeSchema;
+   const done = new Set(judged.map((c) => c.name));
+   return schema.flatMap((c) => {
+      const now = columnNamed(read.columns, c.name);
+      return done.has(c.name) ||
+         now?.type === undefined ||
+         nativeTypeOf(captured, c.name) !== undefined
+         ? []
+         : [{ name: c.name, type: now.nativeType ?? now.type }];
+   });
+}
+
+/**
+ * The columns the read marks `storedAsDouble` that `reported` does not name:
+ * ones no build capture listed, which would otherwise be read as exact.
+ */
+function unreportedDoubles(
+   read: Extract<ObservedColumns, { columns: unknown }>,
+   reported: ObservedDrift["columns"],
+): ObservedDrift["columns"] {
+   const named = new Set(reported.map((c) => c.column.toLowerCase()));
+   return read.columns.flatMap((c) =>
+      c.storedAsDouble && !named.has(c.name.toLowerCase())
+         ? [
+              {
+                 column: c.name,
+                 builtType: c.nativeType ?? c.type ?? "DOUBLE",
+                 ...(c.type !== undefined ? { observedType: c.type } : {}),
+                 storedAsDouble: true as const,
+              },
+           ]
+         : [],
    );
 }
 

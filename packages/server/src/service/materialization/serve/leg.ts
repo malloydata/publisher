@@ -98,6 +98,12 @@ export interface LegAnswer {
     */
    readonly gateTablesRead?: readonly TableRead[];
    /**
+    * For the served copy: the author sources its compile re-rooted on their
+    * tables, by `sourceID`, read or not. A join to one reads its table, never
+    * its query, so the row-scope check leaves that query out.
+    */
+   readonly rerootedSourceIDs?: ReadonlySet<string>;
+   /**
     * The bindings the runnable's shape was built from: a store failure is
     * retried live only when every one allows it. Empty when the answer reads
     * nothing through a virtual map.
@@ -109,6 +115,8 @@ export interface LegAnswer {
    readonly graftScope: GraftScope | undefined;
    /** For a rollup answer: the rollup that answered. */
    readonly rollupMember?: string;
+   /** For a rollup answer: the `sourceID` of the source that declares it. */
+   readonly rollupBaseSourceID?: string;
    /**
     * A database table the answer reads that Malloy files under a key not its
     * address (sources of one build placed in two tables): the run's manifest
@@ -302,6 +310,7 @@ function rollupLeg(rollups: RollupVariantServe): Leg {
             virtualMap: answer.virtualMap,
             graftScope: answer.graftScope,
             rollupMember: answer.rollupSourceName,
+            rollupBaseSourceID: answer.rollupBaseSourceID,
             ...(answer.keyedTable ? { keyedTable: answer.keyedTable } : {}),
          };
       },
@@ -330,6 +339,7 @@ function servedLeg(servedCopy: ServedCopyServe): Leg {
             runnable: served.runnable,
             tablesRead: served.tablesRead,
             gateTablesRead: served.gateTablesRead,
+            rerootedSourceIDs: served.rerootedSourceIDs,
             shapeBindings: served.bindings,
             virtualMap: served.virtualMap,
             graftScope: served.graftScope,

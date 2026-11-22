@@ -51,6 +51,14 @@ const MATERIALIZATION_CONNECTION_CANNOT_HOLD_TABLE_CODE =
    "materialization-connection-cannot-hold-table";
 
 /**
+ * The `code` of the package warning for a database table whose build
+ * recorded no column types: the bind leaves it out, so the source serves
+ * live until it is rebuilt.
+ */
+export const MATERIALIZATION_TYPES_UNRECORDED_CODE =
+   "materialization-types-unrecorded";
+
+/**
  * The live verdict reasons that carry a publish warning of their own, with its
  * code. The other live reasons are warned where their cause is found (storage
  * mode, refusals).
@@ -62,6 +70,7 @@ export const VERDICT_WARNING_CODES: Readonly<
    destination_missing: MATERIALIZATION_DESTINATION_MISSING_CODE,
    connection_cannot_hold_table:
       MATERIALIZATION_CONNECTION_CANNOT_HOLD_TABLE_CODE,
+   types_unrecorded: MATERIALIZATION_TYPES_UNRECORDED_CODE,
 };
 
 /** Why a materialized source's table answers no query. Open: see the module doc. */
@@ -89,9 +98,17 @@ type ServeVerdictReason =
     */
    | "materialization_off"
    /**
-    * A `#(materialize)` source, which only the served copy reads, bound, but
-    * no model's served copy re-roots it (see the `served-copy-not-served`
-    * warning).
+    * A database table whose build recorded no column types (neither `schema`
+    * nor `nativeSchema` on its manifest entry): a change to its columns since
+    * the build cannot be ruled out, so the bind leaves it out until it is
+    * rebuilt with its types recorded.
+    */
+   | "types_unrecorded"
+   /**
+    * A source the served copy reads (a `#(materialize)` one, or a `#@ persist`
+    * one), bound, but no model's compiled served copy reads its table;
+    * `notServedIn` names each model and its `served-copy-not-served`
+    * reasons.
     */
    | "served_copy";
 
@@ -117,6 +134,37 @@ export interface ViewServeVerdict {
    detail?: string;
 }
 
+/** One model whose served copy holds a source but does not read its table, and why. */
+export interface NotServedIn {
+   /** The model file. */
+   model: string;
+   /**
+    * Every `served-copy-not-served` reason for the source in that model (on
+    * the source, or on the model's whole copy), most actionable first;
+    * `not_rerooted` alone when no warning names one.
+    */
+   reasons: string[];
+}
+
+/**
+ * Where, and why, a source the served copy reads is not answered from its
+ * table, as each model's compiled served copy left it: the one fact the
+ * `served-copy-not-served` warnings and the verdicts both read, the same for
+ * a `#(materialize)` source and a `#@ persist` one.
+ */
+export interface ServedCopyOutcome {
+   /**
+    * Some model's compiled served copy reads its table: re-roots it, or, an
+    * extension sharing a re-rooted base's table, reads it through that base.
+    */
+   serves: boolean;
+   /**
+    * Each model that holds the source and does not read its table, sorted by
+    * model; the declaring model when none holds it and none serves it.
+    */
+   notServedIn: NotServedIn[];
+}
+
 /** One materialized source's serve verdict. */
 export interface ServeVerdict {
    sourceName: string;
@@ -138,6 +186,12 @@ export interface ServeVerdict {
     */
    verdict: "serves" | "awaiting_build" | "live";
    reason?: ServeVerdictReason;
+   /**
+    * Each model that holds the source but does not read its table, with its
+    * reasons: every such model on a `served_copy` verdict, and on a `serves`
+    * verdict the models that answer it live while another serves it.
+    */
+   notServedIn?: NotServedIn[];
    /** What the verdict means for this source, in a sentence. */
    message: string;
    /** For a `live` verdict, the changes that would let it serve. */
@@ -192,6 +246,11 @@ export interface ServeVerdictFacts {
     * (or whose fallback serves stale). Absent: every bound one is.
     */
    freshEntityIds?: ReadonlySet<string>;
+   /**
+    * Database: the bound sourceEntityIds the bind left out because their
+    * build recorded no column types (`types_unrecorded`). Absent: none.
+    */
+   typesUnrecordedEntityIds?: ReadonlySet<string>;
    /** Storage: the source names the package holds a serve binding for. */
    boundStorageNames: ReadonlySet<string>;
    /**
@@ -210,13 +269,12 @@ export interface ServeVerdictFacts {
    /** Storage: the bound source names still fresh. Absent: every bound one is. */
    freshStorageNames?: ReadonlySet<string>;
    /**
-    * The plan's `#(materialize)` sources, by sourceID, and whether the served
-    * copy answers each from its table: `serves` when some model's compiled
-    * served copy re-roots it (or a served copy has yet to compile), `off` when
-    * the served copy is off, `not_served` otherwise. Absent: no source is a
-    * `#(materialize)` source.
+    * The plan's `#(materialize)` sources, by sourceID: `off` when the served
+    * copy is off, else `serves` (whether it reads the table is
+    * {@link servedCopyOutcome}'s, as for every source it reads). Undefined:
+    * not a `#(materialize)` source.
     */
-   materialize(sourceID: string): "serves" | "off" | "not_served" | undefined;
+   materialize(sourceID: string): "serves" | "off" | undefined;
    /**
     * Whether the compiled served copy re-rooted this source on its database
     * table and on no storage table (it dropped the storage table: a field
@@ -224,6 +282,12 @@ export interface ServeVerdictFacts {
     * compile. Absent: never.
     */
    servedCopyOnDatabaseOnly?(sourceID: string): boolean | undefined;
+   /**
+    * How the models' compiled served copies left a source they read; undefined
+    * while any served copy is off or has yet to compile, which reports
+    * nothing. Absent: never judged.
+    */
+   servedCopyOutcome?(sourceID: string): ServedCopyOutcome | undefined;
    /**
     * A persisted view's generated build source (`#@ persist` on a view),
     * by its plan sourceID: the source and view it stores. A query reaches it
@@ -465,6 +529,8 @@ interface VerdictSubject {
    tier: "database" | "storage";
    /** Whether the package holds a storage binding for it. */
    storageBound: boolean;
+   /** Whether its table is read through the served copy (not a rollup's or persisted result's leg). */
+   servedCopy: boolean;
    base: Omit<ServeVerdict, "verdict" | "message">;
    rollupBase: string | undefined;
    view: ReturnType<NonNullable<ServeVerdictFacts["persistedViewOf"]>>;
@@ -533,6 +599,7 @@ function verdictSubjectOf(
       origin,
       tier,
       storageBound,
+      servedCopy,
       base,
       rollupBase,
       view,
@@ -606,20 +673,40 @@ function boundVerdict(
    storageBound: boolean,
    materialized: ReturnType<NonNullable<ServeVerdictFacts["materialize"]>>,
 ): ServeVerdict {
-   const { sourceID, source, facts, origin, tier, base, subject, live } = s;
-   const notServed = (): ServeVerdict =>
-      live(
+   const { sourceID, source, facts, origin, tier, subject, live } = s;
+   // Every source the served copy reads, `#(materialize)` or `#@ persist`,
+   // is judged by what its compile did, the same fact its
+   // `served-copy-not-served` warnings are read from; a compile still
+   // pending judges nothing.
+   const copy = s.servedCopy ? facts.servedCopyOutcome?.(sourceID) : undefined;
+   const where =
+      copy && copy.notServedIn.length > 0
+         ? { notServedIn: copy.notServedIn }
+         : {};
+   const base = { ...s.base, ...where };
+   const notServed = (): ServeVerdict => ({
+      ...live(
          "served_copy",
          `${subject}'s table is bound, but no model's served copy reads ` +
-            `it, so no query is answered from it: the served copy reads a ` +
-            `source it is built on from that source's table instead, or ` +
-            `leaves it as written for the reason a served-copy-not-served ` +
-            `warning gives.`,
-         [
-            "Fix what the served-copy-not-served warning names, if there is one.",
-            "Or drop #(materialize) from it if a source it is built on already answers its queries.",
-         ],
-      );
+            `it, so no query is answered from it` +
+            (copy && copy.notServedIn.length > 0
+               ? ` (${copy.notServedIn
+                    .map((n) => `${n.model}: ${n.reasons.join(", ")}`)
+                    .join("; ")})`
+               : "") +
+            `. The served-copy-not-served warning on each model says why.`,
+         origin === "materialize"
+            ? [
+                 "Fix what the served-copy-not-served warning names, if there is one.",
+                 "Or drop #(materialize) from it if a source it is built on already answers its queries.",
+              ]
+            : [
+                 "Fix what the served-copy-not-served warning names, if there is one.",
+              ],
+      ),
+      ...where,
+   });
+   const copyLeavesIt = copy !== undefined && !copy.serves;
 
    const stale = (): ServeVerdict =>
       live(
@@ -636,13 +723,12 @@ function boundVerdict(
       const withViews = views && views.length > 0 ? { views } : {};
       if (!storageBound) {
          return {
-            ...base,
+            ...s.base,
             ...withViews,
             verdict: "awaiting_build",
             message: `${subject} will serve from storage once a build binds its table.`,
          };
       }
-      if (materialized === "not_served") return notServed();
       if (
          materialized === undefined &&
          origin !== "rollup" &&
@@ -663,6 +749,7 @@ function boundVerdict(
       ) {
          return stale();
       }
+      if (copyLeavesIt) return notServed();
       return {
          ...base,
          ...withViews,
@@ -676,10 +763,22 @@ function boundVerdict(
 
    if (!facts.boundEntityIds.has(source.sourceEntityId)) {
       return {
-         ...base,
+         ...s.base,
          verdict: "awaiting_build",
          message: `${subject} will serve from its table once a build binds it.`,
       };
+   }
+   if (facts.typesUnrecordedEntityIds?.has(source.sourceEntityId)) {
+      return live(
+         "types_unrecorded",
+         `${subject}'s table is bound, but its build recorded no column types, ` +
+            `so a change to its columns since the build cannot be ruled out; ` +
+            `queries on it are answered live until it is rebuilt.`,
+         [
+            "Rebuild the table, so its build records its column types.",
+            "A host binding its own manifest sends each database entry's `nativeSchema` (or its `schema`).",
+         ],
+      );
    }
    if (
       facts.freshEntityIds &&
@@ -687,7 +786,7 @@ function boundVerdict(
    ) {
       return stale();
    }
-   if (materialized === "not_served") return notServed();
+   if (copyLeavesIt) return notServed();
    return {
       ...base,
       verdict: "serves",

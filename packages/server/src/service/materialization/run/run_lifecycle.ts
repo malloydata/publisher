@@ -50,6 +50,13 @@ export class RunLifecycle {
       { environmentName: string; packageName: string; settled: Promise<void> }
    >();
 
+   /**
+    * The runs {@link abortPackageRuns} aborted: their package is being
+    * deleted or unloaded, so the tables they wrote have no run to serve
+    * them. Cleared when the run settles.
+    */
+   private readonly retiring = new Set<string>();
+
    /** Each create whose run has not started yet, so a retiring package's abort reaches it. */
    private readonly creating = new Set<{
       environmentName: string;
@@ -174,6 +181,8 @@ export class RunLifecycle {
          ) {
             continue;
          }
+         // Before the abort, which the run may read as soon as it lands.
+         this.retiring.add(id);
          this.runningAbortControllers.get(id)?.abort();
          settles.push(run.settled);
       }
@@ -197,6 +206,14 @@ export class RunLifecycle {
          Promise.all(settles).then(() => undefined),
          bound,
       ]).finally(() => clearTimeout(timer));
+   }
+
+   /**
+    * Whether `id` was aborted because its package is being deleted or
+    * unloaded ({@link abortPackageRuns}), rather than stopped.
+    */
+   isRetiring(id: string): boolean {
+      return this.retiring.has(id);
    }
 
    /** The single-active conflict error, with the winning run's id when known. */
@@ -352,6 +369,7 @@ export class RunLifecycle {
          .finally(() => {
             this.runningAbortControllers.delete(id);
             this.runningPackages.delete(id);
+            this.retiring.delete(id);
             onSettled?.();
          });
       if (owner) this.runningPackages.set(id, { ...owner, settled });

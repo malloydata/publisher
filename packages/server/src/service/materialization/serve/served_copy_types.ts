@@ -65,6 +65,18 @@ export interface ServedCopyProblem {
     * table instead.
     */
    servedFromDatabase?: true;
+   /**
+    * For `cross_connection_join`: the join could not be left out alone, so
+    * the served copy leaves out the whole source declaring it, and every
+    * query of that source is answered live.
+    */
+   leftOutWhole?: true;
+   /**
+    * For `cross_connection_join`: the source declaring the join is not
+    * stored itself (the copy reads no table of it); only the joined source
+    * is, in a destination the source's own connection cannot reach.
+    */
+   declarerNotStored?: true;
 }
 
 export interface Compiled {
@@ -99,6 +111,11 @@ export interface Compiled {
    unsafeIDs?: ReadonlySet<string>;
    /** Bindings actually re-rooted, with their destination under its alias. */
    rerooted: Binding[];
+   /**
+    * The author `sourceID`s the copy re-rooted on their tables (a
+    * `#(materialize)` binding's author source, not its generated one).
+    */
+   rerootedSourceIDs?: ReadonlySet<string>;
    /**
     * Extensions of a re-rooted source left as written, which read their
     * base's table by name: each with its chain of ancestor `sourceID`s and the
@@ -232,6 +249,8 @@ export interface AnswerAttempt {
       reason: string,
       code: ServedCopyDeclineCode,
       callerDetail?: string,
+      /** The tables the decline is about, for the path report. */
+      tableIds?: readonly string[],
    ): never;
    /** Run `work`, declining a query that reads a join left out across connections. */
    compiling<T>(work: () => Promise<T>): Promise<T>;

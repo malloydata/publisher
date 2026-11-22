@@ -217,6 +217,88 @@ export function normalizeSnowflakePrivateKey(privateKey: string): string {
    return privateKeyContent;
 }
 
+/**
+ * The pattern `AttachedDatabase.name` documents (api-doc.yaml): a letter or
+ * underscore, then letters, digits and underscores. The name becomes a DuckDB
+ * catalog alias and part of a secret's name, so it is held to it wherever a
+ * connection's config is accepted.
+ */
+export const ATTACHED_DATABASE_NAME_PATTERN = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
+
+/**
+ * The shape an S3 region takes (`us-east-1`, an S3-compatible store's own
+ * name). The region becomes a string literal in the attach's secret, so it is
+ * held to it wherever a connection's config is accepted, as the name is.
+ */
+export const S3_REGION_PATTERN = /^[a-zA-Z0-9_-]+$/;
+
+/** Throws unless `region`, when set, matches {@link S3_REGION_PATTERN}. */
+function assertS3Region(
+   region: unknown,
+   field: string,
+   connectionName: string | undefined,
+): void {
+   if (region === undefined || region === null || region === "") return;
+   if (typeof region === "string" && S3_REGION_PATTERN.test(region)) return;
+   throw new Error(
+      `${field} on connection "${connectionName}" is invalid: an S3 region ` +
+         `must match ${S3_REGION_PATTERN.source} (letters, digits, hyphens or ` +
+         `underscores, such as us-east-1).`,
+   );
+}
+
+/**
+ * Throws unless every connection field Publisher places in setup SQL holds
+ * its shape: each `attachedDatabases[]` name that is set matches
+ * {@link ATTACHED_DATABASE_NAME_PATTERN}, and each S3 region that is set (an
+ * attached database's, a DuckLake connection's storage) matches
+ * {@link S3_REGION_PATTERN}. An absent value is left to the attach that reads
+ * it. The message names the field by path, not by the rejected text.
+ */
+export function validateConnectionSqlFields(
+   connection: Partial<ApiConnection>,
+): void {
+   assertS3Region(
+      (
+         connection.ducklakeConnection?.storage?.s3Connection as
+            | { region?: unknown }
+            | null
+            | undefined
+      )?.region,
+      "ducklakeConnection.storage.s3Connection.region",
+      connection.name,
+   );
+   const attached = connection.duckdbConnection?.attachedDatabases;
+   if (!Array.isArray(attached)) return;
+   attached.forEach((attachedDb, index) => {
+      const entry = attachedDb as {
+         name?: unknown;
+         s3Connection?: { region?: unknown } | null;
+      } | null;
+      const name = entry?.name;
+      if (
+         name !== undefined &&
+         name !== null &&
+         !(
+            typeof name === "string" &&
+            ATTACHED_DATABASE_NAME_PATTERN.test(name)
+         )
+      ) {
+         throw new Error(
+            `attachedDatabases[${index}].name on connection "${connection.name}" ` +
+               `is invalid: an attached database name must match ` +
+               `${ATTACHED_DATABASE_NAME_PATTERN.source} (a letter or underscore, ` +
+               `then letters, digits or underscores).`,
+         );
+      }
+      assertS3Region(
+         entry?.s3Connection?.region,
+         `attachedDatabases[${index}].s3Connection.region`,
+         connection.name,
+      );
+   });
+}
+
 // Narrows the environment-author API surface: rejects securityPolicy,
 // allowedDirectories, etc., and admits setupSQL only behind
 // PUBLISHER_ALLOW_DUCKDB_SETUP_SQL. It is NOT a filesystem isolation boundary:
@@ -224,6 +306,9 @@ export function normalizeSnowflakePrivateKey(privateKey: string): string {
 // DuckDB's local-file access is unchanged. Adversarial filesystem isolation
 // (path-traversal checks, an allowlist) is not provided.
 export function validateDuckdbApiSurface(connection: ApiConnection): void {
+   // Before the type test: a PATCH may send attachedDatabases without a type,
+   // and a DuckLake connection's storage region is checked here too.
+   validateConnectionSqlFields(connection);
    if (connection.type !== "duckdb" || !connection.duckdbConnection) return;
 
    const unsupportedFields = Object.keys(connection.duckdbConnection).filter(

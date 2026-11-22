@@ -586,6 +586,62 @@ describe("reclaiming an archived version's tables", () => {
       expect(await answerOf("1.0.0")).toBe(101);
    });
 
+   it("a retired run's drop keeps a table a sibling version's committed run serves, and drops one only it wrote", async () => {
+      // 1.0.0 built the shared `summary`; a run of 2.0.0 that a retire
+      // aborted wrote `summary` again and a table of its own.
+      await publish("1.0.0", 1, "package");
+      expect((await build({})).status).toBe("MANIFEST_FILE_READY");
+      await publish("2.0.0", 2, "package");
+      const aborted = await repo.createMaterialization(
+         ENV_ID,
+         PKG,
+         "PENDING",
+         { scope: "package", mode: "auto" },
+         { version: "2.0.0", lockVersion: "2.0.0" },
+      );
+      const warehouse = await env.getMalloyConnection("warehouse");
+      await warehouse.runSQL("CREATE TABLE only_aborted AS SELECT 2 AS answer");
+      const retire = (runId: string) =>
+         service.reclaimer.reclaimRetiredRunTables({
+            environment: env,
+            environmentName: ENV,
+            environmentId: ENV_ID,
+            packageName: PKG,
+            runId,
+            targets: ["summary", "only_aborted"].map((physicalTableName) => ({
+               sourceEntityId: "aborted",
+               physicalTableName,
+               connectionName: "warehouse",
+            })),
+            connectionFor: async (name) => env.getMalloyConnection(name),
+         });
+
+      // Nothing at all once the run's record is gone: what other runs
+      // name can no longer be read.
+      const gone = "no-such-run";
+      await retire(gone);
+      expect(await tablesIn(env)).toEqual(["only_aborted", "summary"]);
+
+      // Another run is writing `only_aborted` now (its record says so):
+      // kept, as it may hold that run's rows by now.
+      const writing = await repo.createMaterialization(
+         ENV_ID,
+         PKG,
+         "PENDING",
+         { scope: "package", mode: "auto", writesTables: ["only_aborted"] },
+         { version: "1.0.0", lockVersion: "1.0.0" },
+      );
+      await retire(aborted.id);
+      expect(await tablesIn(env)).toEqual(["only_aborted", "summary"]);
+      await repo.deleteMaterialization(writing.id);
+
+      await retire(aborted.id);
+      expect(await tablesIn(env)).toEqual(["summary"]);
+      // 1.0.0 still serves the shared table its run built.
+      await tamper("summary", 101);
+      expect(await answerOf("1.0.0")).toBe(101);
+   });
+
    it("the startup sweep reclaims an archived version whose reclaim never ran, in every package, and leaves versions in service alone", async () => {
       await publish("1.0.0", 1, "version");
       await publish("2.0.0", 2, "version");

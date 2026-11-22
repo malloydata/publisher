@@ -486,6 +486,9 @@ export class InstructedBuild {
          incremental,
          clearedTiers,
          ...(options.freshness ? { freshness: options.freshness } : {}),
+         ...(options.onBuildStarted
+            ? { onBuildStarted: options.onBuildStarted }
+            : {}),
          index,
          // Once per run: it depends only on the plan.
          planFacts: {
@@ -1145,6 +1148,7 @@ export class InstructedBuild {
          );
 
          buildStartedAt = performance.now();
+         run.onBuildStarted?.(instruction, ownedTarget !== undefined);
          let built = await this.seams.buildOneSource({
             persistSource,
             instruction,

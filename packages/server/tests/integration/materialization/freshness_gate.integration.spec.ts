@@ -4,6 +4,10 @@
 /// <reference types="bun-types" />
 
 import {
+   type RecordedColumn,
+   runNativeSchema,
+} from "../../../src/test_helpers/host_manifest";
+import {
    afterAll,
    afterEach,
    beforeAll,
@@ -60,6 +64,7 @@ describe("Per-query freshness gate (E2E)", () => {
    let baseUrl: string;
    let tmpDir: string;
    let sourceEntityId: string;
+   let builtTypes: RecordedColumn[] = [];
 
    beforeAll(async () => {
       env = await startRestE2E();
@@ -165,6 +170,9 @@ describe("Per-query freshness gate (E2E)", () => {
       const { id } = (await createRes.json()) as { id: string };
       const built = await pollUntilTerminal(id);
       expect(built.status).toBe("MANIFEST_FILE_READY");
+      // What the build reported of its table, for each manifest a test binds,
+      // as a host copies it (host_manifest.ts).
+      builtTypes = runNativeSchema(built);
       await fetch(url("?reload=true"));
       await fetch(url(`/materializations/${id}`), { method: "DELETE" });
    }
@@ -190,6 +198,7 @@ describe("Per-query freshness gate (E2E)", () => {
                   sourceName: "order_summary",
                   physicalTableName: "order_summary",
                   connectionName: "duckdb",
+                  nativeSchema: builtTypes,
                   dataAsOf: opts.dataAsOf,
                   freshnessWindowSeconds: opts.freshnessWindowSeconds,
                   freshnessFallback: opts.freshnessFallback,

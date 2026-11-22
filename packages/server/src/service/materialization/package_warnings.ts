@@ -47,7 +47,10 @@ import {
    SERVED_COPY_WARNING_CODE,
    type ServedCopyProblem,
 } from "./serve/served_copy_serve";
-import { namesServedCopyAlias } from "./serve/served_copy_config";
+import {
+   namesServedCopyAlias,
+   withoutServedCopyAliases,
+} from "./serve/served_copy_config";
 import {
    NATIVE_SCHEMA_MISSING_CODE,
    type NativeSchemaNotice,
@@ -844,6 +847,33 @@ function compilerReasons(detail: string | undefined): string {
    return reasons.length > 0 ? `: ${reasons.join("; ")}.` : ".";
 }
 
+/**
+ * The joins a served copy's compile refused across connections, from its
+ * compiler message, as `: <file> line <n>: Cannot join …; ….`: the file by
+ * its name only (no server path), each served-copy alias said as the
+ * storage destination, and only the refusals themselves (identifiers and
+ * connection names; no source excerpt, no other diagnostic). `.` when the
+ * message names none.
+ */
+function refusedJoins(detail: string | undefined): string {
+   const out: string[] = [];
+   let file = "";
+   for (const line of (detail ?? "").split("\n")) {
+      const named = /^FILE: (.+)$/.exec(line);
+      if (named) {
+         file = named[1].trim().split("/").pop() ?? "";
+         continue;
+      }
+      const refusal = /^line (\d+): (Cannot join .+)$/.exec(line);
+      if (refusal) {
+         out.push(
+            `${file ? `${file} ` : ""}line ${refusal[1]}: ${withoutServedCopyAliases(refusal[2].trim())}`,
+         );
+      }
+   }
+   return out.length > 0 ? `: ${out.join("; ")}.` : ".";
+}
+
 /** The `database-native-type-missing` sentence for one source. */
 function nativeSchemaMissingMessage(n: NativeSchemaNotice): string {
    const names = (columns: string[]) =>
@@ -926,7 +956,12 @@ function servedCopyProblemReasonMessage(
             ? "This source's table does not compile with its kept blocks, so the served copy re-roots it with its own blocks only, or leaves it as written."
             : "This model's served copy does not compile, so its stored sources answer live.";
       case "cross_connection_unbuilt":
-         return "This model's served copy re-roots a source onto its storage destination, which moves a join of it across connections, and the join cannot be left out; the copy compiles once both sides are built into one destination, and serves live until then.";
+         return (
+            "This model's served copy re-roots a source onto its storage destination, which moves a join of it across connections, and the join cannot be left out; the copy compiles once both sides are built into one destination, and serves live until then" +
+            // The compiler's reasons, each served-copy alias said as the
+            // destination, so the join and its file can be found.
+            refusedJoins(problem.detail)
+         );
       case "column_types":
          return (
             "This source's stored column types differ from the types the model declares, or one cannot be declared on its table, so the served copy leaves it as written and it answers live" +
@@ -960,6 +995,25 @@ function servedCopyProblemReasonMessage(
       case "fields_not_carried":
          return "This source inherits fields (a measure, view or join declared on the source it is built from) that its stored table does not carry, so the served copy leaves it as written.";
       case "cross_connection_join":
+         if (problem.leftOutWhole) {
+            return (
+               `This source's join${join ? ` \`${join}\`` : ""} reads a source the served copy moves to its ` +
+               "storage destination, so the join crosses connections there, and it cannot be left out alone " +
+               "(what reads it cannot be left out with it). The served copy leaves this source out, so its " +
+               "queries are answered live, and the model's other stored sources still serve. To serve it, " +
+               "store this source in the same destination, or build the joined source in its own database " +
+               "(drop `storage=`)."
+            );
+         }
+         if (problem.declarerNotStored) {
+            return (
+               `This source's join${join ? ` \`${join}\`` : ""} reads a source the served copy reads from its ` +
+               "storage destination, which this source's own connection cannot reach. Queries that use the " +
+               "join are answered live; the others are answered as before. To serve them too, store this " +
+               "source in the same destination, or build the joined source in its own database (drop its " +
+               "`storage=`)."
+            );
+         }
          return (
             `This source is stored in a destination its join${join ? ` \`${join}\`` : ""} cannot reach: ` +
             "the joined source reads another connection. Queries that use the join are answered live; " +

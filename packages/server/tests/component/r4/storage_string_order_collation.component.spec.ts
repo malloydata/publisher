@@ -269,11 +269,57 @@ const SHAPES: Shape[] = [
       query: "run: m -> { group_by: s is concat(cc, cu) }",
       want: { error: true },
    },
+   // A later stage's filter on a row number over a string's order (the
+   // dimensional indexer's shard-boundary query) compares that string as an
+   // ordering does: declined over the `en_US` column. Over the `C` one too
+   // for now: the query-filter rule does not yet tell a comparison of
+   // columns only from one that falls back to this database's `en_US`
+   // default (the DuckDB spec, later_stage_computed_filter, serves it). A
+   // later stage's string comparison over a value computed from a
+   // case-insensitive column is still declined.
+   {
+      name: "C: a later stage's filter on a row number over the column's order",
+      query: "run: m -> { group_by: value is cc order_by: value calculate: rn is row_number() } -> { where: rn = 1 or rn = 2 select: rn, value order_by: rn }",
+      want: { live: DECLINED },
+   },
+   {
+      name: "en_US: a later stage's filter on a row number over the column's order",
+      query: "run: m -> { group_by: value is cat order_by: value calculate: rn is row_number() } -> { where: rn = 1 or rn = 2 select: rn, value order_by: rn }",
+      want: { live: DECLINED },
+   },
+   {
+      name: "case-insensitive: a later stage's string comparison on a value computed from the column",
+      query: "run: m -> { group_by: k is ci } -> { where: k = 'APPLE' select: k }",
+      want: { live: DECLINED },
+   },
    // ...and what still serves under en_US: equality is byte equality.
    {
       name: "C: a C column with a literal, ordered by the column's collation",
       query: "run: m -> { group_by: c is concat(cc, '!') }",
       want: { served: "materialized" },
+   },
+   // A query's own filter comparing a C column with a literal compares
+   // under the column's collation (it outranks the literal's default), so
+   // it is judged by the column's, not by the en_US default.
+   {
+      name: "C: a query's own range filter on a C column, against a literal",
+      query: "run: m -> { where: cc > 'b'; select: id, cc; order_by: id }",
+      want: { served: "materialized" },
+   },
+   {
+      name: "C: a query's own pattern filter on a C column",
+      query: "run: m -> { where: cc ~ 'a%'; select: id, cc; order_by: id }",
+      want: { served: "materialized" },
+   },
+   {
+      name: "en_US: a query's own range filter on an en_US column, against a literal",
+      query: "run: m -> { where: cat > 'b'; select: id, cat; order_by: id }",
+      want: { live: DECLINED },
+   },
+   {
+      name: "C: a query's own range filter through a function, which is not followed",
+      query: "run: m -> { where: upper(cc) > 'B'; select: id, cc; order_by: id }",
+      want: { live: DECLINED },
    },
    {
       name: "C.utf8: a group_by alone, in Malloy's implicit order",

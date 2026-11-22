@@ -116,16 +116,16 @@ describe("joinGrainAggregatePaths", () => {
                   { path: ["carriers", "x"] },
                   {
                      path: ["carriers"],
-                     uniqueKeyRequirement: { isCount: false },
+                     uniqueKeyRequirement: true,
                   },
-                  { path: [], uniqueKeyRequirement: { isCount: true } },
+                  { path: [], uniqueKeyRequirement: true },
                ],
                queryFields: [
                   {
                      pipeline: [
                         {
                            expandedFieldUsage: [
-                              { path: ["f", "c"], uniqueKeyRequirement: {} },
+                              { path: ["f", "c"], uniqueKeyRequirement: true },
                            ],
                         },
                      ],
@@ -134,7 +134,7 @@ describe("joinGrainAggregatePaths", () => {
                // Not the query's reads.
                outputStruct: {
                   expandedFieldUsage: [
-                     { path: ["o"], uniqueKeyRequirement: {} },
+                     { path: ["o"], uniqueKeyRequirement: true },
                   ],
                },
             },
@@ -150,7 +150,35 @@ describe("joinGrainAggregatePaths", () => {
          joinGrainAggregatePaths(
             view([
                {
-                  expandedFieldUsage: [{ path: "x", uniqueKeyRequirement: {} }],
+                  expandedFieldUsage: [
+                     { path: "x", uniqueKeyRequirement: true },
+                  ],
+               },
+            ]),
+         ).unreadable,
+      ).toBe(true);
+   });
+   it("reads false as no aggregate, and any other shape as unreadable", () => {
+      // The boolean Malloy writes since 0.0.438: false names no aggregate.
+      expect(
+         joinGrainAggregatePaths(
+            view([
+               {
+                  expandedFieldUsage: [
+                     { path: ["carriers"], uniqueKeyRequirement: false },
+                  ],
+               },
+            ]),
+         ),
+      ).toEqual({ paths: [], unreadable: false });
+      // The object an older Malloy wrote is not read as either.
+      expect(
+         joinGrainAggregatePaths(
+            view([
+               {
+                  expandedFieldUsage: [
+                     { path: ["carriers"], uniqueKeyRequirement: {} },
+                  ],
                },
             ]),
          ).unreadable,
@@ -339,7 +367,7 @@ describe("join-to-rollup readers (A7)", () => {
          queryFields: [{ type: "fieldref", path: ["segments", "seg_miles"] }],
          expandedFieldUsage: [
             { path: ["segments", "seg_miles"] },
-            { path: ["segments"], uniqueKeyRequirement: { isCount: false } },
+            { path: ["segments"], uniqueKeyRequirement: true },
          ],
       });
       expect(
@@ -369,7 +397,7 @@ describe("join-to-rollup readers (A7)", () => {
                queryFields: [{ type: "fieldref", path: ["crew", "crew_size"] }],
                expandedFieldUsage: [
                   { path: ["crew", "crew_size"] },
-                  { path: ["crew"], uniqueKeyRequirement: { isCount: false } },
+                  { path: ["crew"], uniqueKeyRequirement: true },
                ],
             }),
             crew,
@@ -392,9 +420,7 @@ describe("join-to-rollup readers (A7)", () => {
          aggregateOutsideJoin(
             view({
                queryFields: [],
-               expandedFieldUsage: [
-                  { path: [], uniqueKeyRequirement: { isCount: true } },
-               ],
+               expandedFieldUsage: [{ path: [], uniqueKeyRequirement: true }],
             }),
             crew,
             "crew",
@@ -406,13 +432,38 @@ describe("join-to-rollup readers (A7)", () => {
             view({
                queryFields: [],
                expandedFieldUsage: [
-                  { path: ["segs"], uniqueKeyRequirement: { isCount: false } },
+                  { path: ["segs"], uniqueKeyRequirement: true },
                ],
             }),
             crew,
             "crew",
          ),
       ).toBe("an aggregate of `segs`");
+      // false names no aggregate; a shape this does not know fails closed.
+      expect(
+         aggregateOutsideJoin(
+            view({
+               queryFields: [],
+               expandedFieldUsage: [
+                  { path: ["segs"], uniqueKeyRequirement: false },
+               ],
+            }),
+            crew,
+            "crew",
+         ),
+      ).toBeUndefined();
+      expect(
+         aggregateOutsideJoin(
+            view({
+               queryFields: [],
+               expandedFieldUsage: [
+                  { path: ["segs"], uniqueKeyRequirement: { isCount: false } },
+               ],
+            }),
+            crew,
+            "crew",
+         ),
+      ).toBe("a field the compiler did not record");
       // A sum over the source's own rows, written or read by name.
       expect(
          aggregateOutsideJoin(
@@ -493,7 +544,7 @@ describe("join-to-rollup readers (A7)", () => {
                         expandedFieldUsage: [
                            {
                               path: [],
-                              uniqueKeyRequirement: { isCount: true },
+                              uniqueKeyRequirement: true,
                            },
                         ],
                      },

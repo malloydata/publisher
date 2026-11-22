@@ -23,7 +23,8 @@
  * Built twice: through the real MaterializationService (a standalone run that
  * binds its own manifest), and as a host builds and binds (each planned table
  * built from the plan's SQL, then bound from a manifest of `{ tableName,
- * connectionName }` entries), where the host may also bind only some tables.
+ * connectionName, nativeSchema }` entries), where the host may also bind only
+ * some tables.
  */
 
 import {
@@ -38,6 +39,7 @@ import {
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import * as path from "path";
 import { unrecordedAudit } from "../../../src/service/access_record";
+import { capturedNativeSchema } from "../../../src/service/materialization/run/database_native_types";
 import { Environment } from "../../../src/service/environment";
 import { parsePackageName } from "../../../src/service/identity";
 import { MaterializationService } from "../../../src/service/materialization/run/materialization_service";
@@ -218,14 +220,36 @@ for (const variant of VARIANTS) {
       let ids: Record<string, string>;
       let tables: Record<string, string>;
 
-      /** Bind the named sources' tables as a host's manifest binds them. */
+      /**
+       * Bind the named sources' tables as a host's manifest binds them: a
+       * database entry with its warehouse column types (`nativeSchema`), as
+       * a host must send them (an entry with none answers live, reason
+       * `types_unrecorded`; database_uncaptured_table_live).
+       */
       async function hostBind(names: string[]): Promise<void> {
          const mz = loader.pkg.materialization();
+         const warehouse = (await loader.pkg.getMalloyConnection(
+            "duckdb",
+         )) as DuckDBConnection;
          const database = Object.fromEntries(
-            names.map((n) => [
-               ids[n],
-               { tableName: tables[ids[n]], connectionName: "duckdb" },
-            ]),
+            await Promise.all(
+               names.map(async (n) => {
+                  const nativeSchema = await capturedNativeSchema({
+                     run: (sql, options) => warehouse.runSQL(sql, options),
+                     physicalTableName: tables[ids[n]],
+                     dialect: warehouse.dialectName,
+                     sourceName: n,
+                  });
+                  return [
+                     ids[n],
+                     {
+                        tableName: tables[ids[n]],
+                        connectionName: "duckdb",
+                        ...(nativeSchema ? { nativeSchema } : {}),
+                     },
+                  ] as const;
+               }),
+            ),
          );
          mz.bind({ database: {} });
          mz.bind({

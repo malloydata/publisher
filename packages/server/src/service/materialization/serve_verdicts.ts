@@ -42,9 +42,13 @@ import {
 import {
    computeServeVerdicts,
    type PersistedResultOf,
+   type NotServedIn,
+   type ServedCopyOutcome,
    type ServeVerdict,
    type ViewServeVerdict,
 } from "./serve/serve_verdict";
+import type { ServedCopyProblem } from "./serve/served_copy_types";
+import { byActionability } from "./domain/source_decline";
 import { previewNativeSchema } from "./stored_column_types";
 import { reachableSourceIDs, SourceMap } from "./text/source_map";
 import {
@@ -88,6 +92,8 @@ interface ServeVerdictsHost {
    snapshot(): Snapshot;
    storageBindings(): readonly Binding[];
    databaseEntries(): FreshnessManifest | undefined;
+   /** The bound database tables the bind left out: no column types recorded. */
+   typesUnrecorded(): readonly string[];
    deploymentFacts(): DeploymentFacts | undefined;
    destinationSchema(destinationName: string): string | undefined;
    declarationOf(sourceID: string): unknown;
@@ -402,6 +408,7 @@ export class ServeVerdicts {
             this.refusedAtBind(sourceID, source, tier),
          boundEntityIds: new Set(Object.keys(host.databaseEntries() ?? {})),
          freshEntityIds: new Set(Object.keys(pinned.compilerManifest.entries)),
+         typesUnrecordedEntityIds: new Set(host.typesUnrecorded()),
          boundStorageNames: new Set(storageBindings.map((b) => b.sourceName)),
          freshStorageIds: new Set(
             pinned.fresh
@@ -419,14 +426,20 @@ export class ServeVerdicts {
          ),
          materialize: (sourceID) => {
             if (!materializeIDs.has(sourceID)) return undefined;
-            if (!servedCopy.on) return "off";
-            return servedCopy.ids.has(sourceID) || servedCopy.pending
-               ? "serves"
-               : "not_served";
+            return servedCopy.on ? "serves" : "off";
          },
          servedCopyOnDatabaseOnly: (sourceID) =>
             servedCopy.on && !servedCopy.pending
                ? servedCopy.databaseOnly.has(sourceID)
+               : undefined,
+         servedCopyOutcome: (sourceID) =>
+            servedCopy.on && !servedCopy.pending
+               ? servedCopyOutcomeOf(
+                    sourceID,
+                    buildPlan?.sources?.[sourceID]?.modelPath,
+                    servedCopy.compiled,
+                    (id) => buildPlan?.sources?.[id]?.sourceEntityId,
+                 )
                : undefined,
          persistedViewOf: (sourceID) => persistedViews.get(sourceID),
          declaredMaterialize: (sourceID) =>
@@ -468,6 +481,7 @@ export class ServeVerdicts {
       const key = [
          plan.buildPlan,
          host.databaseEntries(),
+         host.typesUnrecorded(),
          host.storageBindings(),
          plan.sourceEligibility,
          plan.databaseSourceEligibility,
@@ -489,8 +503,14 @@ export class ServeVerdicts {
          const sources = plan.buildPlan.sources ?? {};
          const perTable = new Map<string, ServeVerdict[]>();
          const bySource = new Map<string, LiveTableVerdict>();
+         // A `#@ persist` source the served copy leaves is reported per
+         // query by the leg's own decline code, which says more than
+         // `served_copy`; only a `#(materialize)` one is re-read here.
          const liveFor = (v: ServeVerdict) =>
-            v.verdict === "live" && !!v.reason && v.reason !== "stale";
+            v.verdict === "live" &&
+            !!v.reason &&
+            v.reason !== "stale" &&
+            (v.reason !== "served_copy" || v.origin === "materialize");
          for (const verdict of this.verdicts()) {
             if (liveFor(verdict) && !bySource.has(verdict.sourceID)) {
                bySource.set(verdict.sourceID, {
@@ -811,6 +831,8 @@ function servedCopyState(models: ReadonlyMap<string, Model>): {
    ids: ReadonlySet<string>;
    /** Re-rooted on a database table by some model, on a storage table by none. */
    databaseOnly: ReadonlySet<string>;
+   /** Each model whose served copy has compiled, and what it left. */
+   compiled: readonly CompiledServedCopy[];
    signature: string;
 } {
    let on = false;
@@ -818,7 +840,9 @@ function servedCopyState(models: ReadonlyMap<string, Model>): {
    const ids = new Set<string>();
    const onDatabase = new Set<string>();
    const onStorage = new Set<string>();
-   for (const model of models.values()) {
+   const compiled: CompiledServedCopy[] = [];
+   const parts: string[] = [];
+   for (const [modelPath, model] of models) {
       const reread = model.servedCopySourceIDs?.();
       if (reread === undefined) continue;
       on = true;
@@ -831,15 +855,91 @@ function servedCopyState(models: ReadonlyMap<string, Model>): {
          ids.add(id);
          (databaseOnly.has(id) ? onDatabase : onStorage).add(id);
       }
+      const problems = model.servedCopyProblems?.() ?? [];
+      const throughBase = model.servedCopyThroughBaseIDs?.() ?? new Set();
+      compiled.push({
+         modelPath,
+         modelDef: model.getModelDef?.(),
+         rerooted: reread,
+         throughBase,
+         problems,
+      });
+      parts.push(
+         `${modelPath}=${problems.map((p) => `${p.reason}/${p.sourceID ?? ""}`).join(";")}` +
+            `/${[...throughBase].sort().join(";")}`,
+      );
    }
    // A source another model re-rooted on its storage table is not database-only.
    const databaseOnly = new Set(
       [...onDatabase].filter((id) => !onStorage.has(id)),
    );
    const signature = on
-      ? `${pending ? "pending" : "compiled"}:${[...ids].sort().join(",")}:${[...databaseOnly].sort().join(",")}`
+      ? `${pending ? "pending" : "compiled"}:${[...ids].sort().join(",")}:${[...databaseOnly].sort().join(",")}:${parts.join("|")}`
       : "off";
-   return { on, pending, ids, databaseOnly, signature };
+   return { on, pending, ids, databaseOnly, compiled, signature };
+}
+
+/** One model's compiled served copy, as the verdicts read it. */
+interface CompiledServedCopy {
+   modelPath: string;
+   modelDef: unknown;
+   /** The sources it re-rooted on a stored table. */
+   rerooted: ReadonlySet<string>;
+   /** The sources it left as written, read through a base it re-rooted. */
+   throughBase: ReadonlySet<string>;
+   /** What its `served-copy-not-served` warnings are read from. */
+   problems: readonly ServedCopyProblem[];
+}
+
+/**
+ * How the compiled served copies left one source they read, the same for a
+ * `#(materialize)` source and a `#@ persist` one. A model reads its table
+ * when its copy re-roots it, or reads it through a re-rooted base whose
+ * table it shares (an extension inheriting `#@ persist`, one content
+ * address); an extension with a table of its own read through its base does
+ * not read that table. Every model that holds it (its compiled model
+ * declares or imports it, or a warning names it) and does not read it is
+ * listed, with every `served-copy-not-served` reason it gives for the source
+ * (its own, and its whole copy's), most actionable first. When no model
+ * holds it and none reads it, the declaring model is listed, `not_rerooted`.
+ */
+function servedCopyOutcomeOf(
+   sourceID: string,
+   declaredIn: string | undefined,
+   compiled: readonly CompiledServedCopy[],
+   entityOf: (sourceID: string) => string | undefined,
+): ServedCopyOutcome {
+   const entity = entityOf(sourceID);
+   let serves = false;
+   const notServedIn: NotServedIn[] = [];
+   for (const copy of compiled) {
+      const sharesRerootedTable =
+         copy.throughBase.has(sourceID) &&
+         entity !== undefined &&
+         [...copy.rerooted].some((id) => entityOf(id) === entity);
+      if (copy.rerooted.has(sourceID) || sharesRerootedTable) {
+         serves = true;
+         continue;
+      }
+      const own = copy.problems.filter(
+         (p) => p.sourceID === sourceID && !p.servedFromDatabase,
+      );
+      const holds =
+         own.length > 0 ||
+         SourceMap.of(copy.modelDef).node(sourceID) !== undefined;
+      if (!holds) continue;
+      const whole = copy.problems.filter((p) => p.sourceID === undefined);
+      const reasons = byActionability([...own, ...whole].map((p) => p.reason));
+      notServedIn.push({
+         model: copy.modelPath,
+         reasons: reasons.length > 0 ? reasons : ["not_rerooted"],
+      });
+   }
+   if (!serves && notServedIn.length === 0 && declaredIn !== undefined) {
+      notServedIn.push({ model: declaredIn, reasons: ["not_rerooted"] });
+   }
+   notServedIn.sort((a, b) => a.model.localeCompare(b.model));
+   return { serves, notServedIn };
 }
 
 /** A plan source's wire columns with both a name and a type. */
