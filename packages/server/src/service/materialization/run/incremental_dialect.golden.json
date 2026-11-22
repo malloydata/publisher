@@ -1,0 +1,287 @@
+{
+  "duckdb": {
+    "version": {
+      "sent": [],
+      "version": null
+    },
+    "decoded": {
+      "t": [
+        "t"
+      ],
+      "s.t": [
+        "s",
+        "t"
+      ],
+      "\"S\".\"T\"": [
+        "S",
+        "T"
+      ],
+      "Lake.Main.T": [
+        "Lake",
+        "Main",
+        "T"
+      ],
+      "\"a.b\".c": [
+        "a.b",
+        "c"
+      ],
+      "`p`.d.t": [
+        "p",
+        "d",
+        "t"
+      ]
+    }
+  },
+  "postgres": {
+    "version": {
+      "sent": [
+        "SELECT row_to_json(__p) AS \"row\" FROM (SELECT current_setting('server_version_num') AS version_num) AS __p"
+      ],
+      "version": 160004
+    },
+    "decoded": {
+      "t": [
+        "t"
+      ],
+      "s.t": [
+        "s",
+        "t"
+      ],
+      "\"S\".\"T\"": [
+        "S",
+        "T"
+      ],
+      "Lake.Main.T": [
+        "lake",
+        "main",
+        "t"
+      ],
+      "\"a.b\".c": [
+        "a.b",
+        "c"
+      ],
+      "`p`.d.t": [
+        "p",
+        "d",
+        "t"
+      ]
+    }
+  },
+  "standardsql": {
+    "version": {
+      "sent": [],
+      "version": null
+    },
+    "decoded": {
+      "t": [
+        "t"
+      ],
+      "s.t": [
+        "s",
+        "t"
+      ],
+      "\"S\".\"T\"": [
+        "S",
+        "T"
+      ],
+      "Lake.Main.T": [
+        "Lake",
+        "Main",
+        "T"
+      ],
+      "\"a.b\".c": null,
+      "`p`.d.t": [
+        "p",
+        "d",
+        "t"
+      ]
+    }
+  },
+  "snowflake": {
+    "version": {
+      "sent": [],
+      "version": null
+    },
+    "decoded": {
+      "t": [
+        "T"
+      ],
+      "s.t": [
+        "S",
+        "T"
+      ],
+      "\"S\".\"T\"": [
+        "S",
+        "T"
+      ],
+      "Lake.Main.T": [
+        "LAKE",
+        "MAIN",
+        "T"
+      ],
+      "\"a.b\".c": [
+        "a.b",
+        "C"
+      ],
+      "`p`.d.t": [
+        "p",
+        "D",
+        "T"
+      ]
+    }
+  },
+  "databricks": {
+    "version": {
+      "sent": [],
+      "version": null
+    },
+    "decoded": {
+      "t": null,
+      "s.t": null,
+      "\"S\".\"T\"": null,
+      "Lake.Main.T": null,
+      "\"a.b\".c": null,
+      "`p`.d.t": null
+    }
+  },
+  "trino": {
+    "version": {
+      "sent": [],
+      "version": null
+    },
+    "decoded": {
+      "t": null,
+      "s.t": null,
+      "\"S\".\"T\"": null,
+      "Lake.Main.T": null,
+      "\"a.b\".c": null,
+      "`p`.d.t": null
+    }
+  },
+  "presto": {
+    "version": {
+      "sent": [],
+      "version": null
+    },
+    "decoded": {
+      "t": null,
+      "s.t": null,
+      "\"S\".\"T\"": null,
+      "Lake.Main.T": null,
+      "\"a.b\".c": null,
+      "`p`.d.t": null
+    }
+  },
+  "mysql": {
+    "version": {
+      "sent": [],
+      "version": null
+    },
+    "decoded": {
+      "t": null,
+      "s.t": null,
+      "\"S\".\"T\"": null,
+      "Lake.Main.T": null,
+      "\"a.b\".c": null,
+      "`p`.d.t": null
+    }
+  },
+  "sqlserver": {
+    "version": {
+      "sent": [],
+      "version": null
+    },
+    "decoded": {
+      "t": null,
+      "s.t": null,
+      "\"S\".\"T\"": null,
+      "Lake.Main.T": null,
+      "\"a.b\".c": null,
+      "`p`.d.t": null
+    }
+  },
+  "bigquery": {
+    "version": {
+      "sent": [],
+      "version": null
+    },
+    "decoded": {
+      "t": null,
+      "s.t": null,
+      "\"S\".\"T\"": null,
+      "Lake.Main.T": null,
+      "\"a.b\".c": null,
+      "`p`.d.t": null
+    }
+  },
+  "motherduck": {
+    "version": {
+      "sent": [],
+      "version": null
+    },
+    "decoded": {
+      "t": null,
+      "s.t": null,
+      "\"S\".\"T\"": null,
+      "Lake.Main.T": null,
+      "\"a.b\".c": null,
+      "`p`.d.t": null
+    }
+  },
+  "ducklake": {
+    "version": {
+      "sent": [],
+      "version": null
+    },
+    "decoded": {
+      "t": null,
+      "s.t": null,
+      "\"S\".\"T\"": null,
+      "Lake.Main.T": null,
+      "\"a.b\".c": null,
+      "`p`.d.t": null
+    }
+  },
+  "constructor": {
+    "version": {
+      "sent": [],
+      "version": null
+    },
+    "decoded": {
+      "t": null,
+      "s.t": null,
+      "\"S\".\"T\"": null,
+      "Lake.Main.T": null,
+      "\"a.b\".c": null,
+      "`p`.d.t": null
+    }
+  },
+  "toString": {
+    "version": {
+      "sent": [],
+      "version": null
+    },
+    "decoded": {
+      "t": null,
+      "s.t": null,
+      "\"S\".\"T\"": null,
+      "Lake.Main.T": null,
+      "\"a.b\".c": null,
+      "`p`.d.t": null
+    }
+  },
+  "nope": {
+    "version": {
+      "sent": [],
+      "version": null
+    },
+    "decoded": {
+      "t": null,
+      "s.t": null,
+      "\"S\".\"T\"": null,
+      "Lake.Main.T": null,
+      "\"a.b\".c": null,
+      "`p`.d.t": null
+    }
+  }
+}

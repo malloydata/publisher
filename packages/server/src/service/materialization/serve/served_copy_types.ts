@@ -94,6 +94,10 @@ export interface Compiled {
     * {@link ServedCopyServe.ensureCompiled}); 0 for the copy compiled at bind.
     */
    lane: number;
+   /** A compile that threw: never reused by a request ({@link LaneCompiled.escaped}). */
+   escaped?: boolean;
+   /** Its backoff has passed, so a verdict read compiles it again. */
+   retryDue?: boolean;
    materializer?: ModelMaterializer;
    /** The served copy's compiled model, read (never edited) for source chains. */
    modelDef?: unknown;
@@ -158,6 +162,17 @@ export interface Compiled {
     * `sourceID`, so a query that reads one is declined with that reason.
     */
    zonedLeftOut?: ReadonlyMap<string, ReadonlySet<string>>;
+   /**
+    * Each query-shaped re-root's timestamp truncations its query computed in
+    * a zone (`zonedTruncations`), by its `sourceID`, with the one zone its
+    * query's stages computed them in: restated over the stored value, so a
+    * query reads one only where it truncates it again in that same zone
+    * (`checkZonedColumns`).
+    */
+   stageZonedTruncations?: ReadonlyMap<
+      string,
+      { zone: string | undefined; names: ReadonlySet<string> }
+   >;
    /**
     * The join_ones each table answers from stored columns (an inlined join,
     * {@link InlinedJoin}), by table path, each with the joined fields the

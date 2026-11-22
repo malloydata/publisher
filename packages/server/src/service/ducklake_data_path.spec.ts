@@ -13,8 +13,8 @@ import {
    attachDuckLakeForCreate,
    attachDuckLakeReadOnly,
    attachDuckLakeReadWrite,
-   dataPathClauses,
 } from "./connection";
+import { dataPathClauses } from "./dialects/ducklake";
 
 type DucklakeConnection = components["schemas"]["DucklakeConnection"];
 

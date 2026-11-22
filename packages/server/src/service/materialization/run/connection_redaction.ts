@@ -7,7 +7,7 @@
  * Pure.
  */
 
-import { escapeSQL } from "../../connection";
+import { escapeSQL } from "../../duckdb_session_setup";
 import { redactPgSecrets, redactStorageUrls } from "../../../pg_helpers";
 
 /** Connection-config keys whose string values are credentials to redact. */

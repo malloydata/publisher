@@ -15,14 +15,14 @@ import { join } from "path";
 import * as sinon from "sinon";
 import tls from "tls";
 import type { components } from "../api";
+import { attachDuckLakeReadWrite } from "./connection";
+import { federateSourceForPassthrough } from "./dialects";
 import {
    ambientTrustBundlePath,
-   attachDuckLakeReadWrite,
-   federateSourceForPassthrough,
    buildProxiedPgAttachString,
    pgAttachSecretName,
    pgConninfoPair,
-} from "./connection";
+} from "./postgres_conninfo";
 import { installSettings } from "../test_helpers/settings_env";
 
 /** A real in-memory DuckDB connection with runSQL stubbed to capture SQL. */

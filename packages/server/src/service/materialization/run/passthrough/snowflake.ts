@@ -2,37 +2,158 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * Attributing a `storage=` build's warehouse read and recovering what it cost:
- * the Snowflake build session aligned with Malloy's live session settings and
- * tagged with the build's query metadata, then the tag's cost read back from
- * the session history and cleared; the BigQuery split read's capability probe
- * and its bounded job-record lookup ({@link BilledReadNotCapturedError} when a
- * billed read cannot be captured). Read by the build session.
+ * A `storage=` build's Snowflake source, read through DuckDB's `snowflake`
+ * extension, which reuses ONE session across `snowflake_query()` calls: the
+ * session aligned with Malloy's live session settings and tagged with the
+ * build's query metadata before the read, the tag's cost read back from the
+ * session history after it, and the tag cleared before the session is
+ * released. Read through passthrough_build.ts.
  *
- * Effects: SQL in the source warehouse, through the passthrough on the build
- * session; logs and attribution-skipped counts.
+ * The Malloy connector renders the metadata bag for every query it issues,
+ * but the passthrough has no connector in its call path, so the bag is
+ * rendered here as the connector renders it (it exports no renderer), pinned
+ * by tests that state the grammar, so one deployment's query history reads
+ * the same whichever path produced the statement. Pinned to
+ * @malloydata/malloy 0.0.427. The statements that set the tag and read the
+ * cost are warehouse_sql.ts's.
+ *
+ * Effects: SQL in Snowflake, through the passthrough on the build session;
+ * logs and attribution-skipped counts.
  */
 
-import { errorCodeOf } from "../../../error_code";
+import { errorCodeOf } from "../../../../error_code";
 import type { DuckDBConnection } from "@malloydata/db-duckdb";
-import { logger } from "../../../logger";
-import { recordAttributionSkipped } from "../../../materialization_metrics";
-import { escapeSQL, type FederatedSourceType } from "../../connection";
-import type { QueryMetadata } from "../../query_metadata";
-import {
-   snowflakeQueryTagValue,
-   snowflakeSessionCheckSQL,
-   snowflakeSessionParitySQL,
-   snowflakeSetQueryTagSQL,
-} from "./build_query_tag";
+import type { components } from "../../../../api";
+import { logger } from "../../../../logger";
+import { recordAttributionSkipped } from "../../../../materialization_metrics";
+import { escapeSQL } from "../../../duckdb_session_setup";
+import type { QueryMetadata } from "../../../query_metadata";
 import {
    pickSnowflakeReadRow,
    resultRows,
    snowflakeReadCost,
    str,
    type BuildReadCost,
-} from "./build_read_cost";
-import { snowflakeCostSQL } from "./warehouse_sql";
+} from "../build_read_cost";
+import {
+   snowflakeCostSQL,
+   snowflakeSetQueryTagStatement,
+} from "../warehouse_sql";
+
+type ApiConnection = components["schemas"]["Connection"];
+
+/**
+ * Snowflake's `QUERY_TAG` ceiling. The bag arrives already bounded to this on
+ * its serialized size ({@link ./query_metadata}'s own budget, which sheds whole
+ * properties to fit), so this is a backstop rather than a working limit.
+ */
+const MAX_QUERY_TAG_LENGTH = 2000;
+
+/**
+ * The bag as a Snowflake `QUERY_TAG` value: JSON, so the properties stay
+ * queryable in `QUERY_HISTORY` / `QUERY_ATTRIBUTION_HISTORY` rather than
+ * arriving as one opaque string. Case is preserved.
+ *
+ * Undefined for an empty bag, and undefined rather than TRUNCATED for an
+ * over-long one: slicing JSON produces a tag that no consumer can parse, which
+ * is indistinguishable from a bug at the point someone tries to read it. An
+ * absent tag at least reads as absent.
+ */
+export function snowflakeQueryTagValue(
+   metadata: QueryMetadata | undefined,
+): string | undefined {
+   if (metadata === undefined || Object.keys(metadata).length === 0) {
+      return undefined;
+   }
+   const tag = JSON.stringify(metadata);
+   return tag.length > MAX_QUERY_TAG_LENGTH ? undefined : tag;
+}
+
+/**
+ * The statement that tags every subsequent read on this build's Snowflake
+ * session, or undefined when there is nothing to tag.
+ *
+ * Session-scoped rather than per-statement because the passthrough exposes no
+ * per-call parameter map: `snowflake_query()` takes SQL and a secret and nothing
+ * else. The passthrough reuses ONE session across calls, which is what makes a
+ * session-level tag reach the build's read at all.
+ *
+ * The statement escapes the tag for Snowflake (see
+ * snowflakeSetQueryTagStatement).
+ */
+export function snowflakeSetQueryTagSQL(
+   metadata: QueryMetadata | undefined,
+   secretName: string,
+): string | undefined {
+   const tag = snowflakeQueryTagValue(metadata);
+   if (tag === undefined) return undefined;
+   return snowflakeSetQueryTagStatement(tag, secretName);
+}
+
+/**
+ * The session parameters Malloy's live Snowflake connection sets on every
+ * session (`@malloydata/db-snowflake`, `SnowflakeExecutor._setSessionParams`):
+ * case-sensitive quoted identifiers, UTC, and weeks starting on Sunday. A
+ * `storage=` passthrough build reads Snowflake on a session of its own, which
+ * otherwise runs in the account's settings: with
+ * `QUOTED_IDENTIFIERS_IGNORE_CASE = TRUE` Malloy's quoted lower-case aliases
+ * come back upper-case, and the account's `TIMEZONE` and `WEEK_START` move a
+ * day or week boundary from live's. Kept in step with db-snowflake by hand;
+ * its output-format settings are left out, since the passthrough reads typed
+ * values, not text.
+ */
+const SNOWFLAKE_SESSION_PARAMETERS = [
+   "ALTER SESSION SET QUOTED_IDENTIFIERS_IGNORE_CASE = FALSE",
+   "ALTER SESSION SET TIMEZONE = 'UTC'",
+   "ALTER SESSION SET WEEK_START = 7",
+] as const;
+
+/**
+ * The settings a build session must hold before it reads, each with the
+ * value Malloy's live session holds: a day or week bucket computed under
+ * another is stored as another bucket than live answers.
+ * `QUOTED_IDENTIFIERS_IGNORE_CASE` is not among them: the build stores each
+ * column under its declared name whatever case the account returns.
+ */
+const SNOWFLAKE_REQUIRED_SETTINGS = [
+   { name: "TIMEZONE", value: "UTC" },
+   { name: "WEEK_START", value: "7" },
+] as const;
+
+/** `inner` run through the passthrough on `secretName`. */
+function throughSnowflake(inner: string, secretName: string): string {
+   return `SELECT * FROM snowflake_query('${inner.replace(/'/g, "''")}', '${secretName.replace(/'/g, "''")}')`;
+}
+
+/**
+ * The statements that give a Snowflake build session Malloy's live session
+ * parameters ({@link SNOWFLAKE_SESSION_PARAMETERS}), each through the
+ * passthrough on `secretName`, the way the query tag is set.
+ */
+export function snowflakeSessionParitySQL(secretName: string): string[] {
+   return SNOWFLAKE_SESSION_PARAMETERS.map((inner) =>
+      throughSnowflake(inner, secretName),
+   );
+}
+
+/**
+ * The reads that check a Snowflake build session holds each required setting
+ * ({@link SNOWFLAKE_REQUIRED_SETTINGS}), on the same handle the build reads
+ * through: one `SHOW PARAMETERS … IN SESSION` each, with the value it must
+ * hold.
+ */
+export function snowflakeSessionCheckSQL(
+   secretName: string,
+): { name: string; value: string; sql: string }[] {
+   return SNOWFLAKE_REQUIRED_SETTINGS.map(({ name, value }) => ({
+      name,
+      value,
+      sql: throughSnowflake(
+         `SHOW PARAMETERS LIKE '${name}' IN SESSION`,
+         secretName,
+      ),
+   }));
+}
 
 /**
  * Give a Snowflake build session the session parameters Malloy's live
@@ -106,11 +227,9 @@ function settingValueOf(result: unknown, name: string): string | null {
  */
 export async function tagSnowflakeSession(
    session: DuckDBConnection,
-   sourceType: FederatedSourceType,
    handle: string,
    queryMetadata: QueryMetadata | undefined,
 ): Promise<void> {
-   if (sourceType !== "snowflake") return;
    // Malloy's session settings first, so the build reads as live does.
    await alignSnowflakeSession(session, handle);
    const sql = snowflakeSetQueryTagSQL(queryMetadata, handle);
@@ -128,102 +247,6 @@ export async function tagSnowflakeSession(
 }
 
 /**
- * Can this connection list the job records the split read depends on?
- *
- * The split locates its result table through the job listing, a permission the
- * direct `bigquery_query()` path never needs. Probing with a one-row listing
- * BEFORE the read means a missing permission costs attribution, not the build:
- * once the read has run, falling back would bill it a second time.
- *
- * Not cached: caching would have to key on credentials and survive rotation.
- */
-export async function canSplitBigQueryRead(
-   session: DuckDBConnection,
-   handle: string,
-): Promise<boolean> {
-   try {
-      await session.runSQL(
-         `SELECT job_id FROM bigquery_jobs('${escapeSQL(handle)}', maxResults := 1)`,
-      );
-      return true;
-   } catch (error) {
-      logger.warn(
-         "Cannot list BigQuery jobs for this connection, so this build's " +
-            "warehouse read will not be labelled or costed",
-         {
-            code: errorCodeOf(error),
-         },
-      );
-      recordAttributionSkipped("job_listing_unavailable");
-      return false;
-   }
-}
-
-/**
- * A build failed AFTER its warehouse read had run and been billed.
- *
- * Everything else this path throws happens before anything is charged. Here the
- * rows live in an anonymous table the build could not locate, so a retry pays
- * for the same read twice: treat it as an operator decision, not something to
- * re-drive automatically. Without the job record there are no rows to capture,
- * so this fails the build rather than degrading to "no cost".
- */
-export class BilledReadNotCapturedError extends Error {
-   constructor(message: string, options?: { cause?: unknown }) {
-      super(message, options);
-      this.name = "BilledReadNotCapturedError";
-   }
-}
-
-const BIGQUERY_LOOKUP_ATTEMPTS = 3;
-const BIGQUERY_LOOKUP_BACKOFF_MS = 250;
-
-/**
- * Re-ask for the job record a few times before failing a build whose read has
- * already been billed. The capability probe showed this connection CAN list
- * jobs, so a failure here is likely transient (5xx, quota, rotated credential).
- * Bounded and short: the session still holds federated credentials, and a
- * warehouse that is down should fail the build rather than stall it.
- */
-export async function withBigQueryLookupRetry<T>(
-   work: () => Promise<T>,
-   /** Named in the terminal error: the only handle on a read that was paid for. */
-   parentJobId: string,
-): Promise<T> {
-   let lastError: unknown;
-   for (let attempt = 1; attempt <= BIGQUERY_LOOKUP_ATTEMPTS; attempt++) {
-      try {
-         return await work();
-      } catch (error) {
-         lastError = error;
-         if (attempt < BIGQUERY_LOOKUP_ATTEMPTS) {
-            logger.warn(
-               "Could not read the BigQuery job record for a build's read; retrying",
-               {
-                  attempt,
-                  of: BIGQUERY_LOOKUP_ATTEMPTS,
-                  parentJobId,
-                  code: errorCodeOf(error),
-               },
-            );
-            await new Promise((resolve) =>
-               setTimeout(resolve, BIGQUERY_LOOKUP_BACKOFF_MS * attempt),
-            );
-         }
-      }
-   }
-   // Names the parent job: it is an operator's only handle on the billed read,
-   // since a script's child job is absent from the default listing.
-   throw new BilledReadNotCapturedError(
-      `Could not read the BigQuery job record for a build's read (parent job ` +
-         `${parentJobId}) after ${BIGQUERY_LOOKUP_ATTEMPTS} attempts, so its ` +
-         `rows cannot be captured: ` +
-         `${lastError instanceof Error ? lastError.message : String(lastError)}`,
-      { cause: lastError },
-   );
-}
-
-/**
  * Ask Snowflake what the build's read just cost, scoped by the tag the build set
  * on its session. Scoped by tag rather than `LAST_QUERY_ID()`, because the ADBC
  * driver issues `SELECT 1` probes around each passthrough call and
@@ -234,17 +257,17 @@ export async function withBigQueryLookupRetry<T>(
  */
 export async function snowflakeReadCostAfterBuild(
    session: DuckDBConnection,
-   sourceType: FederatedSourceType,
    handle: string,
    buildSQL: string,
    queryMetadata: QueryMetadata | undefined,
    /**
-    * The source connection's configured database, if any. `INFORMATION_SCHEMA`
-    * is per-database — see {@link snowflakeCostSQL}.
+    * The source connection, whose configured database, if any, the history is
+    * read in: `INFORMATION_SCHEMA` is per-database — see
+    * {@link snowflakeCostSQL}.
     */
-   database: string | null | undefined,
+   connection: ApiConnection,
 ): Promise<BuildReadCost | null> {
-   if (sourceType !== "snowflake") return null;
+   const database = connection.snowflakeConnection?.database;
    // Untagged: nothing to scope the history by, and no attribution was asked for.
    const tag = snowflakeQueryTagValue(queryMetadata);
    if (tag === undefined) return null;
@@ -288,10 +311,8 @@ function passthroughSnowflake(innerSQL: string, handle: string): string {
  */
 export async function clearSnowflakeSessionTag(
    session: DuckDBConnection,
-   sourceType: FederatedSourceType,
-   handle: string | undefined,
+   handle: string,
 ): Promise<void> {
-   if (sourceType !== "snowflake" || handle === undefined) return;
    try {
       await session.runSQL(
          passthroughSnowflake("ALTER SESSION UNSET QUERY_TAG", handle),

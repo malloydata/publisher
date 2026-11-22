@@ -10,12 +10,14 @@ import { chmodSync, existsSync, mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
-import { applySessionResourceLimits } from "./connection";
+import {
+   applyExtensionSessionSettings,
+   applySessionResourceLimits,
+} from "./duckdb_session_setup";
 import {
    applyLoadSessionSettings,
    createIsolatedBuildSession,
 } from "./materialization/run/materialization_build_session";
-import { applyExtensionSessionSettings } from "./connection";
 import { DuckDBConnection as MetadataStoreConnection } from "../storage/duckdb/DuckDBConnection";
 import { assertDuckDBResourceConfig, duckDBByteSize } from "../config";
 import { installSettings } from "../test_helpers/settings_env";

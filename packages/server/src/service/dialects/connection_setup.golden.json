@@ -1,0 +1,500 @@
+{
+  "postgres bare (connection)": {
+    "entry": {
+      "is": "postgres"
+    }
+  },
+  "postgres bare (storage-destination)": {
+    "entry": {
+      "is": "postgres"
+    }
+  },
+  "postgres empty (connection)": {
+    "entry": {
+      "is": "postgres"
+    }
+  },
+  "postgres empty (storage-destination)": {
+    "entry": {
+      "is": "postgres"
+    }
+  },
+  "postgres #0 (connection)": {
+    "entry": {
+      "is": "postgres",
+      "host": "db",
+      "port": 5432,
+      "username": "u",
+      "password": "p",
+      "databaseName": "d"
+    }
+  },
+  "postgres #0 (storage-destination)": {
+    "entry": {
+      "is": "postgres",
+      "host": "db",
+      "port": 5432,
+      "username": "u",
+      "password": "p",
+      "databaseName": "d"
+    }
+  },
+  "postgres #1 (connection)": {
+    "entry": {
+      "is": "postgres",
+      "connectionString": "postgres://u:p@h:5432/d?sslmode=no-verify"
+    }
+  },
+  "postgres #1 (storage-destination)": {
+    "entry": {
+      "is": "postgres",
+      "connectionString": "postgres://u:p@h:5432/d?sslmode=no-verify"
+    }
+  },
+  "postgres #2 (connection)": {
+    "entry": {
+      "is": "postgres",
+      "host": "db",
+      "connectionString": "postgresql://db?sslmode=no-verify"
+    }
+  },
+  "postgres #2 (storage-destination)": {
+    "entry": {
+      "is": "postgres",
+      "host": "db",
+      "connectionString": "postgresql://db?sslmode=no-verify"
+    }
+  },
+  "postgres #3 (connection)": {
+    "error": "Connection 'c' has unsupported sslmode 'bogus' (expected disable | no-verify | verify-ca | verify-full)."
+  },
+  "postgres #3 (storage-destination)": {
+    "error": "Connection 'c' has unsupported sslmode 'bogus' (expected disable | no-verify | verify-ca | verify-full)."
+  },
+  "postgres #4 (connection)": {
+    "error": "Connection 'c' has an invalid statementTimeoutMilliseconds -1 (expected an integer from 1 to 2147483647)."
+  },
+  "postgres #4 (storage-destination)": {
+    "error": "Connection 'c' has an invalid statementTimeoutMilliseconds -1 (expected an integer from 1 to 2147483647)."
+  },
+  "mysql bare (connection)": {
+    "entry": {
+      "is": "mysql"
+    }
+  },
+  "mysql bare (storage-destination)": {
+    "entry": {
+      "is": "mysql"
+    }
+  },
+  "mysql empty (connection)": {
+    "entry": {
+      "is": "mysql"
+    }
+  },
+  "mysql empty (storage-destination)": {
+    "entry": {
+      "is": "mysql"
+    }
+  },
+  "mysql #0 (connection)": {
+    "entry": {
+      "is": "mysql",
+      "host": "h",
+      "port": 3306,
+      "user": "u",
+      "password": "p",
+      "database": "d"
+    }
+  },
+  "mysql #0 (storage-destination)": {
+    "entry": {
+      "is": "mysql",
+      "host": "h",
+      "port": 3306,
+      "user": "u",
+      "password": "p",
+      "database": "d"
+    }
+  },
+  "sqlserver bare (connection)": {
+    "error": "SQL Server connection configuration is missing."
+  },
+  "sqlserver bare (storage-destination)": {
+    "error": "SQL Server connection configuration is missing."
+  },
+  "sqlserver empty (connection)": {
+    "entry": {
+      "is": "sqlserver"
+    }
+  },
+  "sqlserver empty (storage-destination)": {
+    "entry": {
+      "is": "sqlserver"
+    }
+  },
+  "sqlserver #0 (connection)": {
+    "entry": {
+      "is": "sqlserver",
+      "server": "s",
+      "port": 1433,
+      "database": "d",
+      "user": "u",
+      "password": "p",
+      "encrypt": true,
+      "trustServerCertificate": false
+    }
+  },
+  "sqlserver #0 (storage-destination)": {
+    "entry": {
+      "is": "sqlserver",
+      "server": "s",
+      "port": 1433,
+      "database": "d",
+      "user": "u",
+      "password": "p",
+      "encrypt": true,
+      "trustServerCertificate": false
+    }
+  },
+  "sqlserver #1 (connection)": {
+    "entry": {
+      "is": "sqlserver",
+      "server": "s",
+      "port": 1433,
+      "instanceName": "i"
+    }
+  },
+  "sqlserver #1 (storage-destination)": {
+    "entry": {
+      "is": "sqlserver",
+      "server": "s",
+      "port": 1433,
+      "instanceName": "i"
+    }
+  },
+  "bigquery bare (connection)": {
+    "entry": {
+      "is": "bigquery"
+    }
+  },
+  "bigquery bare (storage-destination)": {
+    "entry": {
+      "is": "bigquery"
+    }
+  },
+  "bigquery empty (connection)": {
+    "entry": {
+      "is": "bigquery"
+    }
+  },
+  "bigquery empty (storage-destination)": {
+    "entry": {
+      "is": "bigquery"
+    }
+  },
+  "bigquery #0 (connection)": {
+    "error": "Invalid service account key: missing \"type\" field"
+  },
+  "bigquery #0 (storage-destination)": {
+    "error": "Invalid service account key: missing \"type\" field"
+  },
+  "bigquery #1 (connection)": {
+    "error": "Connection 'c' sets impersonateServiceAccount but no billingProjectId. Impersonated connections resolve the project through the impersonated credential, so the project that runs (and is billed for) jobs must be named explicitly."
+  },
+  "bigquery #1 (storage-destination)": {
+    "error": "Connection 'c' sets impersonateServiceAccount but no billingProjectId. Impersonated connections resolve the project through the impersonated credential, so the project that runs (and is billed for) jobs must be named explicitly."
+  },
+  "bigquery #2 (connection)": {
+    "error": "Invalid value for dbmeta on BigQuery connection \"c\": expected a boolean (true/false, 1/0, yes/no or on/off), got \"maybe\""
+  },
+  "bigquery #2 (storage-destination)": {
+    "error": "Invalid value for dbmeta on BigQuery connection \"c\": expected a boolean (true/false, 1/0, yes/no or on/off), got \"maybe\""
+  },
+  "bigquery #3 (connection)": {
+    "error": "JSON Parse error: Expected '}'"
+  },
+  "bigquery #3 (storage-destination)": {
+    "error": "JSON Parse error: Expected '}'"
+  },
+  "snowflake bare (connection)": {
+    "error": "Snowflake connection configuration is missing."
+  },
+  "snowflake bare (storage-destination)": {
+    "error": "Snowflake connection configuration is missing."
+  },
+  "snowflake empty (connection)": {
+    "error": "Snowflake account is required."
+  },
+  "snowflake empty (storage-destination)": {
+    "error": "Snowflake account is required."
+  },
+  "snowflake #0 (connection)": {
+    "entry": {
+      "is": "snowflake",
+      "account": "a",
+      "username": "u",
+      "password": "p",
+      "warehouse": "w",
+      "database": "d",
+      "schema": "s",
+      "role": "r",
+      "timeoutMs": null,
+      "poolMin": 1,
+      "poolMax": 20
+    }
+  },
+  "snowflake #0 (storage-destination)": {
+    "entry": {
+      "is": "snowflake",
+      "account": "a",
+      "username": "u",
+      "password": "p",
+      "warehouse": "w",
+      "database": "d",
+      "schema": "s",
+      "role": "r",
+      "timeoutMs": null,
+      "poolMin": 1,
+      "poolMax": 20
+    }
+  },
+  "snowflake #1 (connection)": {
+    "error": "Snowflake warehouse is required."
+  },
+  "snowflake #1 (storage-destination)": {
+    "error": "Snowflake warehouse is required."
+  },
+  "trino bare (connection)": {
+    "error": "Trino connection configuration is missing."
+  },
+  "trino bare (storage-destination)": {
+    "error": "Trino connection configuration is missing."
+  },
+  "trino empty (connection)": {
+    "error": "Invalid Trino connection: expected \"http://server:port\" or \"https://server:port\"."
+  },
+  "trino empty (storage-destination)": {
+    "error": "Invalid Trino connection: expected \"http://server:port\" or \"https://server:port\"."
+  },
+  "trino #0 (connection)": {
+    "entry": {
+      "is": "trino",
+      "server": "http://t:8080",
+      "port": 8080,
+      "catalog": "c",
+      "schema": "s",
+      "user": "u"
+    }
+  },
+  "trino #0 (storage-destination)": {
+    "entry": {
+      "is": "trino",
+      "server": "http://t:8080",
+      "port": 8080,
+      "catalog": "c",
+      "schema": "s",
+      "user": "u"
+    }
+  },
+  "trino #1 (connection)": {
+    "error": "Invalid Trino connection: expected \"http://server:port\" or \"https://server:port\"."
+  },
+  "trino #1 (storage-destination)": {
+    "error": "Invalid Trino connection: expected \"http://server:port\" or \"https://server:port\"."
+  },
+  "databricks bare (connection)": {
+    "error": "Databricks connection configuration is missing."
+  },
+  "databricks bare (storage-destination)": {
+    "error": "Databricks connection configuration is missing."
+  },
+  "databricks empty (connection)": {
+    "error": "Databricks host is required."
+  },
+  "databricks empty (storage-destination)": {
+    "error": "Databricks host is required."
+  },
+  "databricks #0 (connection)": {
+    "entry": {
+      "is": "databricks",
+      "host": "h",
+      "path": "/sql/1.0/x",
+      "token": "t",
+      "defaultCatalog": "c"
+    }
+  },
+  "databricks #0 (storage-destination)": {
+    "entry": {
+      "is": "databricks",
+      "host": "h",
+      "path": "/sql/1.0/x",
+      "token": "t",
+      "defaultCatalog": "c"
+    }
+  },
+  "databricks #1 (connection)": {
+    "error": "Databricks requires either a personal access token or OAuth M2M client ID and secret."
+  },
+  "databricks #1 (storage-destination)": {
+    "error": "Databricks requires either a personal access token or OAuth M2M client ID and secret."
+  },
+  "duckdb bare (connection)": {
+    "error": "DuckDB connection configuration is missing."
+  },
+  "duckdb bare (storage-destination)": {
+    "error": "DuckDB connection configuration is missing."
+  },
+  "duckdb empty (connection)": {
+    "error": "DuckDB connection \"c\" must provide either attachedDatabases or non-empty setupSQL."
+  },
+  "duckdb empty (storage-destination)": {
+    "error": "DuckDB connection \"c\" must provide either attachedDatabases or non-empty setupSQL."
+  },
+  "duckdb #0 (connection)": {
+    "entry": {
+      "is": "duckdb",
+      "databasePath": "/env/c.duckdb",
+      "tempDirectory": "<tmp>/publisher-duckdb/locked-attached-<digest>"
+    }
+  },
+  "duckdb #0 (storage-destination)": {
+    "entry": {
+      "is": "duckdb",
+      "databasePath": "/env/c.duckdb",
+      "tempDirectory": "<tmp>/publisher-duckdb/locked-attached-<digest>"
+    }
+  },
+  "duckdb #1 (connection)": {
+    "error": "attachedDatabases[0].name on connection \"c\" is invalid: an attached database name must match ^[a-zA-Z_][a-zA-Z0-9_]*$ (a letter or underscore, then letters, digits or underscores)."
+  },
+  "duckdb #1 (storage-destination)": {
+    "error": "attachedDatabases[0].name on connection \"c\" is invalid: an attached database name must match ^[a-zA-Z_][a-zA-Z0-9_]*$ (a letter or underscore, then letters, digits or underscores)."
+  },
+  "duckdb #2 (connection)": {
+    "error": "setupSQL on DuckDB connection \"c\" is disabled in this deployment. setupSQL runs arbitrary DuckDB statements on the server when the connection is set up. Fix: set the environment variable PUBLISHER_ALLOW_DUCKDB_SETUP_SQL=true to enable it."
+  },
+  "duckdb #2 (storage-destination)": {
+    "error": "setupSQL on DuckDB connection \"c\" is disabled in this deployment. setupSQL runs arbitrary DuckDB statements on the server when the connection is set up. Fix: set the environment variable PUBLISHER_ALLOW_DUCKDB_SETUP_SQL=true to enable it."
+  },
+  "motherduck bare (connection)": {
+    "error": "MotherDuck connection configuration is missing."
+  },
+  "motherduck bare (storage-destination)": {
+    "error": "MotherDuck connection configuration is missing."
+  },
+  "motherduck empty (connection)": {
+    "error": "MotherDuck access token is required."
+  },
+  "motherduck empty (storage-destination)": {
+    "error": "MotherDuck access token is required."
+  },
+  "motherduck #0 (connection)": {
+    "entry": {
+      "is": "duckdb",
+      "databasePath": "md:d?attach_mode=single",
+      "motherDuckToken": "t",
+      "tempDirectory": "<tmp>/publisher-duckdb/locked-motherduck-<digest>"
+    }
+  },
+  "motherduck #0 (storage-destination)": {
+    "entry": {
+      "is": "duckdb",
+      "databasePath": "md:d?attach_mode=single",
+      "motherDuckToken": "t",
+      "tempDirectory": "<tmp>/publisher-duckdb/locked-motherduck-<digest>"
+    }
+  },
+  "motherduck #1 (connection)": {
+    "error": "MotherDuck access token is required."
+  },
+  "motherduck #1 (storage-destination)": {
+    "error": "MotherDuck access token is required."
+  },
+  "ducklake bare (connection)": {
+    "error": "DuckLake connection configuration is missing."
+  },
+  "ducklake bare (storage-destination)": {
+    "error": "DuckLake connection configuration is missing."
+  },
+  "ducklake empty (connection)": {
+    "error": "PostgreSQL connection configuration is required for DuckLake catalog: c"
+  },
+  "ducklake empty (storage-destination)": {
+    "error": "PostgreSQL connection configuration is required for DuckLake catalog: c"
+  },
+  "ducklake #0 (connection)": {
+    "entry": {
+      "is": "duckdb",
+      "databasePath": ":memory:",
+      "tempDirectory": "<tmp>/publisher-duckdb/locked-ducklake-<digest>"
+    }
+  },
+  "ducklake #0 (storage-destination)": {
+    "entry": {
+      "is": "duckdb",
+      "databasePath": ":memory:",
+      "tempDirectory": "<tmp>/publisher-duckdb/locked-ducklake-<digest>"
+    }
+  },
+  "ducklake #1 (connection)": {
+    "error": "DuckLake catalog of connection 'c' has unsupported sslmode 'bogus' (expected disable | no-verify | verify-ca | verify-full)."
+  },
+  "ducklake #1 (storage-destination)": {
+    "error": "DuckLake catalog of connection 'c' has unsupported sslmode 'bogus' (expected disable | no-verify | verify-ca | verify-full)."
+  },
+  "ducklake #2 (connection)": {
+    "error": "PostgreSQL connection configuration is required for DuckLake catalog: c"
+  },
+  "ducklake #2 (storage-destination)": {
+    "error": "PostgreSQL connection configuration is required for DuckLake catalog: c"
+  },
+  "publisher bare (connection)": {
+    "error": "Publisher proxy connection 'c' is disabled in this deployment. 'publisher' connections make the server issue outbound requests to a configured connectionUri, which is only appropriate for local --watch-env authoring. Fix: set the environment variable PUBLISHER_ALLOW_PROXY_CONNECTIONS=true to enable them."
+  },
+  "publisher bare (storage-destination)": {
+    "error": "Publisher proxy connection 'c' is disabled in this deployment. 'publisher' connections make the server issue outbound requests to a configured connectionUri, which is only appropriate for local --watch-env authoring. Fix: set the environment variable PUBLISHER_ALLOW_PROXY_CONNECTIONS=true to enable them."
+  },
+  "publisher empty (connection)": {
+    "error": "Publisher proxy connection 'c' is disabled in this deployment. 'publisher' connections make the server issue outbound requests to a configured connectionUri, which is only appropriate for local --watch-env authoring. Fix: set the environment variable PUBLISHER_ALLOW_PROXY_CONNECTIONS=true to enable them."
+  },
+  "publisher empty (storage-destination)": {
+    "error": "Publisher proxy connection 'c' is disabled in this deployment. 'publisher' connections make the server issue outbound requests to a configured connectionUri, which is only appropriate for local --watch-env authoring. Fix: set the environment variable PUBLISHER_ALLOW_PROXY_CONNECTIONS=true to enable them."
+  },
+  "publisher #0 (connection)": {
+    "error": "Publisher proxy connection 'c' is disabled in this deployment. 'publisher' connections make the server issue outbound requests to a configured connectionUri, which is only appropriate for local --watch-env authoring. Fix: set the environment variable PUBLISHER_ALLOW_PROXY_CONNECTIONS=true to enable them."
+  },
+  "publisher #0 (storage-destination)": {
+    "error": "Publisher proxy connection 'c' is disabled in this deployment. 'publisher' connections make the server issue outbound requests to a configured connectionUri, which is only appropriate for local --watch-env authoring. Fix: set the environment variable PUBLISHER_ALLOW_PROXY_CONNECTIONS=true to enable them."
+  },
+  "publisher #1 (connection)": {
+    "error": "Publisher proxy connection 'c' is disabled in this deployment. 'publisher' connections make the server issue outbound requests to a configured connectionUri, which is only appropriate for local --watch-env authoring. Fix: set the environment variable PUBLISHER_ALLOW_PROXY_CONNECTIONS=true to enable them."
+  },
+  "publisher #1 (storage-destination)": {
+    "error": "Publisher proxy connection 'c' is disabled in this deployment. 'publisher' connections make the server issue outbound requests to a configured connectionUri, which is only appropriate for local --watch-env authoring. Fix: set the environment variable PUBLISHER_ALLOW_PROXY_CONNECTIONS=true to enable them."
+  },
+  "unregistered redshift (connection)": {
+    "error": "Unsupported connection type: redshift"
+  },
+  "unregistered redshift (storage-destination)": {
+    "error": "Unsupported connection type: redshift"
+  },
+  "unregistered constructor (connection)": {
+    "error": "Unsupported connection type: constructor"
+  },
+  "unregistered constructor (storage-destination)": {
+    "error": "Unsupported connection type: constructor"
+  },
+  "unregistered toString (connection)": {
+    "error": "Unsupported connection type: toString"
+  },
+  "unregistered toString (storage-destination)": {
+    "error": "Unsupported connection type: toString"
+  },
+  "unregistered undefined (connection)": {
+    "error": "Unsupported connection type: undefined"
+  },
+  "unregistered undefined (storage-destination)": {
+    "error": "Unsupported connection type: undefined"
+  }
+}

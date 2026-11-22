@@ -1,0 +1,270 @@
+{
+  "postgres | counted as": [
+    "postgres"
+  ],
+  "postgres | unsafe-name test": {
+    "value": {
+      "status": "ok"
+    }
+  },
+  "postgres | non-SELECT sql": {
+    "error": "lookup reached",
+    "name": "Error"
+  },
+  "postgres | delete": {
+    "result": {
+      "value": null
+    },
+    "release": false,
+    "calls": []
+  },
+  "bigquery | counted as": [
+    "bigquery"
+  ],
+  "bigquery | unsafe-name test": {
+    "value": {
+      "status": "ok"
+    }
+  },
+  "bigquery | non-SELECT sql": {
+    "error": "lookup reached",
+    "name": "Error"
+  },
+  "bigquery | delete": {
+    "result": {
+      "value": null
+    },
+    "release": false,
+    "calls": []
+  },
+  "snowflake | counted as": [
+    "snowflake"
+  ],
+  "snowflake | unsafe-name test": {
+    "value": {
+      "status": "ok"
+    }
+  },
+  "snowflake | non-SELECT sql": {
+    "error": "lookup reached",
+    "name": "Error"
+  },
+  "snowflake | delete": {
+    "result": {
+      "value": null
+    },
+    "release": false,
+    "calls": []
+  },
+  "trino | counted as": [
+    "trino"
+  ],
+  "trino | unsafe-name test": {
+    "value": {
+      "status": "ok"
+    }
+  },
+  "trino | non-SELECT sql": {
+    "error": "lookup reached",
+    "name": "Error"
+  },
+  "trino | delete": {
+    "result": {
+      "value": null
+    },
+    "release": false,
+    "calls": []
+  },
+  "databricks | counted as": [
+    "databricks"
+  ],
+  "databricks | unsafe-name test": {
+    "value": {
+      "status": "ok"
+    }
+  },
+  "databricks | non-SELECT sql": {
+    "error": "lookup reached",
+    "name": "Error"
+  },
+  "databricks | delete": {
+    "result": {
+      "value": null
+    },
+    "release": false,
+    "calls": []
+  },
+  "mysql | counted as": [
+    "mysql"
+  ],
+  "mysql | unsafe-name test": {
+    "value": {
+      "status": "ok"
+    }
+  },
+  "mysql | non-SELECT sql": {
+    "error": "lookup reached",
+    "name": "Error"
+  },
+  "mysql | delete": {
+    "result": {
+      "value": null
+    },
+    "release": false,
+    "calls": []
+  },
+  "sqlserver | counted as": [
+    "sqlserver"
+  ],
+  "sqlserver | unsafe-name test": {
+    "value": {
+      "status": "ok"
+    }
+  },
+  "sqlserver | non-SELECT sql": {
+    "error": "lookup reached",
+    "name": "Error"
+  },
+  "sqlserver | delete": {
+    "result": {
+      "value": null
+    },
+    "release": false,
+    "calls": []
+  },
+  "duckdb | counted as": [
+    "duckdb"
+  ],
+  "duckdb | unsafe-name test": {
+    "error": "Invalid package name: must be 1-255 characters of letters, digits, \"-\", \"_\", or \".\" and must not start with \".\"",
+    "name": "BadRequestError"
+  },
+  "duckdb | non-SELECT sql": {
+    "error": "'c' is a locked-down DuckDB connection: raw SQL on it runs only as a single SELECT, and it is not a SELECT.",
+    "name": "BadRequestError"
+  },
+  "duckdb | delete": {
+    "result": {
+      "value": null
+    },
+    "release": true,
+    "calls": [
+      "deleteDuckDBConnection(c)"
+    ]
+  },
+  "motherduck | counted as": [
+    "motherduck"
+  ],
+  "motherduck | unsafe-name test": {
+    "value": {
+      "status": "ok"
+    }
+  },
+  "motherduck | non-SELECT sql": {
+    "error": "'c' is a locked-down DuckDB connection: raw SQL on it runs only as a single SELECT, and it is not a SELECT.",
+    "name": "BadRequestError"
+  },
+  "motherduck | delete": {
+    "result": {
+      "value": null
+    },
+    "release": false,
+    "calls": []
+  },
+  "ducklake | counted as": [
+    "ducklake"
+  ],
+  "ducklake | unsafe-name test": {
+    "error": "Invalid package name: must be 1-255 characters of letters, digits, \"-\", \"_\", or \".\" and must not start with \".\"",
+    "name": "BadRequestError"
+  },
+  "ducklake | non-SELECT sql": {
+    "error": "'c' is a locked-down DuckDB connection: raw SQL on it runs only as a single SELECT, and it is not a SELECT.",
+    "name": "BadRequestError"
+  },
+  "ducklake | delete": {
+    "result": {
+      "value": null
+    },
+    "release": false,
+    "calls": []
+  },
+  "ducklake | overlap ducklake same catalog": "it names the same DuckLake catalog",
+  "ducklake | overlap ducklake nested path": "its data path overlaps the destination's",
+  "publisher | counted as": [
+    "publisher"
+  ],
+  "publisher | unsafe-name test": {
+    "value": {
+      "status": "ok"
+    }
+  },
+  "publisher | non-SELECT sql": {
+    "error": "lookup reached",
+    "name": "Error"
+  },
+  "publisher | delete": {
+    "result": {
+      "value": null
+    },
+    "release": false,
+    "calls": []
+  },
+  "constructor | counted as": [
+    "unknown"
+  ],
+  "constructor | unsafe-name test": {
+    "value": {
+      "status": "ok"
+    }
+  },
+  "constructor | non-SELECT sql": {
+    "error": "lookup reached",
+    "name": "Error"
+  },
+  "constructor | delete": {
+    "result": {
+      "value": null
+    },
+    "release": false,
+    "calls": []
+  },
+  "toString | counted as": [
+    "unknown"
+  ],
+  "toString | unsafe-name test": {
+    "value": {
+      "status": "ok"
+    }
+  },
+  "toString | non-SELECT sql": {
+    "error": "lookup reached",
+    "name": "Error"
+  },
+  "toString | delete": {
+    "result": {
+      "value": null
+    },
+    "release": false,
+    "calls": []
+  },
+  "nope | counted as": [
+    "unknown"
+  ],
+  "nope | unsafe-name test": {
+    "value": {
+      "status": "ok"
+    }
+  },
+  "nope | non-SELECT sql": {
+    "error": "lookup reached",
+    "name": "Error"
+  },
+  "nope | delete": {
+    "result": {
+      "value": null
+    },
+    "release": false,
+    "calls": []
+  }
+}

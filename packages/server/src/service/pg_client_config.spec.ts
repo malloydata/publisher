@@ -15,7 +15,7 @@ import {
 import { mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { pgClientConfig } from "./connection";
+import { pgClientConfig } from "./postgres_conninfo";
 
 const config = (conninfo: string) => pgClientConfig("test", conninfo);
 

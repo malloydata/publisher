@@ -51,7 +51,7 @@ import {
    type SourceFailure,
 } from "../domain/types";
 import type { BuildRetryable } from "./build_failure_class";
-import { BilledReadNotCapturedError } from "./build_attribution";
+import { BilledReadNotCapturedError } from "./passthrough/bigquery";
 
 /** What started a run, on `materialization.run.started`. */
 export const RUN_TRIGGERS = [

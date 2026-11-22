@@ -74,6 +74,10 @@ import {
    isIntrospectionName,
 } from "./duckdb_introspection";
 import {
+   managedCatalogMessage,
+   managedCatalogRefusal,
+} from "./managed_catalog_scope";
+import {
    assertSingleSelect,
    containsStatementSeparator,
    countStatements,
@@ -1271,33 +1275,66 @@ export async function assertStatementAllowed(
 export async function authorSqlRefusals(
    modelPath: string,
    modelDef: unknown,
+   options: {
+      /**
+       * The schemas author SQL on the connection of that name may name when
+       * it is configured `managed`, undefined when it is not
+       * (managed_catalog_scope.ts).
+       */
+      managedSchemas?: (
+         connectionName: string,
+      ) => Promise<ReadonlySet<string> | undefined>;
+   } = {},
 ): Promise<string[]> {
    const checks = new Map<string, string>();
    /** Table paths named by `.table()` sources. */
    const tablePaths = new Set<string>();
    /** Raw SQL expressions, by their fragments and how many arguments each places. */
    const expressions: { fragments: string[]; argCount: number }[] = [];
+   /** Author SQL by the connection it runs on, for the managed scope. */
+   const byConnection: { connection: string; what: string; sql: string }[] = [];
    const seen = new Set<object>();
-   const walk = (node: unknown, dialect: string | undefined, depth: number) => {
+   const walk = (
+      node: unknown,
+      dialect: string | undefined,
+      connection: string | undefined,
+      depth: number,
+   ) => {
       if (depth > 400 || node === null || typeof node !== "object") return;
       if (seen.has(node)) return;
       seen.add(node);
       if (Array.isArray(node)) {
-         for (const child of node) walk(child, dialect, depth + 1);
+         for (const child of node) walk(child, dialect, connection, depth + 1);
          return;
       }
       const record = node as Record<string, unknown>;
       const here =
          typeof record.dialect === "string" ? record.dialect : dialect;
+      const on =
+         typeof record.connection === "string" ? record.connection : connection;
       if (here === "duckdb") {
          if (
             record.type === "sql_select" &&
             typeof record.selectStr === "string"
          ) {
             checks.set(record.selectStr, `a .sql() source`);
+            if (on) {
+               byConnection.push({
+                  connection: on,
+                  what: "A .sql() source",
+                  sql: record.selectStr,
+               });
+            }
          }
          if (record.type === "table" && typeof record.tablePath === "string") {
             tablePaths.add(record.tablePath);
+            if (on) {
+               byConnection.push({
+                  connection: on,
+                  what: "A .table() source",
+                  sql: `SELECT * FROM ${record.tablePath}`,
+               });
+            }
          }
          if (record.node === "genericSQLExpr" && Array.isArray(record.src)) {
             // Each argument stands as its own column reference, placed where
@@ -1307,19 +1344,43 @@ export async function authorSqlRefusals(
             // fails, since its value could end the statement at run time.
             const args = (record.kids as { args?: unknown[] } | undefined)
                ?.args;
+            const fragments = (record.src as unknown[]).map(String);
             expressions.push({
-               fragments: (record.src as unknown[]).map(String),
+               fragments,
                argCount: Array.isArray(args) ? args.length : 0,
             });
+            if (on) {
+               byConnection.push({
+                  connection: on,
+                  what: "A raw SQL expression",
+                  sql: `SELECT ${fragments.join(" NULL ")}`,
+               });
+            }
          }
       }
       for (const [key, child] of Object.entries(record)) {
          if (record.node === "function_call" && key === "overload") continue;
-         walk(child, here, depth + 1);
+         walk(child, here, on, depth + 1);
       }
    };
-   walk(modelDef, undefined, 0);
+   walk(modelDef, undefined, undefined, 0);
    const refusals: string[] = [];
+   if (options.managedSchemas) {
+      const managed = new Map<string, ReadonlySet<string> | undefined>();
+      for (const { connection, what, sql } of byConnection) {
+         if (!managed.has(connection)) {
+            managed.set(connection, await options.managedSchemas(connection));
+         }
+         const schemas = managed.get(connection);
+         if (!schemas) continue;
+         const refused = await managedCatalogRefusal(sql, connection, schemas);
+         if (refused) {
+            refusals.push(
+               `${modelPath}: ${managedCatalogMessage(what, connection, refused)}`,
+            );
+         }
+      }
+   }
    const refuse = (what: string, sql: string) => {
       const shown = sql.length > 120 ? `${sql.slice(0, 117)}...` : sql;
       refusals.push(

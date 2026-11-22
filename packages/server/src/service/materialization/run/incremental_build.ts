@@ -63,7 +63,7 @@ import {
    isPairGuardFailure,
    isRenderableWatermarkType,
    planIncrementalStep,
-   probePostgresVersion,
+   probeServerVersion,
    seedCoveredThrough,
    type DeltaTarget,
    type IncrementalLineage,
@@ -72,7 +72,7 @@ import {
    type SqlRunner,
    type WatermarkBound,
 } from "./incremental_apply";
-import { isDecimalDeltaGuardFailure } from "./postgres_numeric_precision";
+import { isDecimalDeltaGuardFailure } from "./passthrough/postgres";
 import { capturedNativeSchema } from "./database_native_types";
 import {
    INCREMENTAL_LATE_ROWS_CODE,
@@ -354,7 +354,7 @@ export async function planSourceRefresh(params: {
       lineage.strategy === "merge" &&
       capabilitiesOf(target.dialect).mergeGatedByServerVersion &&
       ledgerEntry !== null
-         ? await probePostgresVersion(target.runner)
+         ? await probeServerVersion(target.runner, target.dialect)
          : undefined;
    let step: IncrementalStep;
    try {
@@ -986,7 +986,7 @@ export function storageRefreshFor(params: {
          );
          // A Postgres numeric a build before the decimal-precision fix stored
          // as DOUBLE, which serves float sums until the table is seeded again
-         // (postgres_numeric_precision.ts); a seed now stores it exactly.
+         // (passthrough/postgres.ts); a seed now stores it exactly.
          const doubles = reseeding ? [] : await numericColumnsStoredAsDouble();
          // The stored table's columns, under the names the delta's SQL
          // emits them (a renamed field's column under its own name), so a

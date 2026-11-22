@@ -24,23 +24,26 @@ import { BadRequestError, ConflictError } from "../errors";
 import { logger } from "../logger";
 import { countLoadRejection, loadSlots } from "../query_concurrency";
 import {
-   applySessionResourceLimits,
    attachDuckLakeForCreate,
    attachDuckLakeReadOnly,
    attachDuckLakeReadWrite,
-   createPgAttachSecret,
-   escapeSQL,
-   isDuckLakeInitRace,
-   connectPgClient,
-   pgClientConfig,
-   tablePartitionKeys,
-   type PartitionKey,
 } from "./connection";
 import {
+   isDuckLakeInitRace,
    READABLE_SCHEMA_NAME,
    RESERVED_SCHEMA_NAMES,
    SYSTEM_SCHEMAS,
-} from "./connection_config";
+} from "./dialects/ducklake";
+import {
+   type PartitionKey,
+   tablePartitionKeys,
+} from "./dialects/ducklake_catalog";
+import { applySessionResourceLimits, escapeSQL } from "./duckdb_session_setup";
+import {
+   connectPgClient,
+   createPgAttachSecret,
+   pgClientConfig,
+} from "./postgres_conninfo";
 import { createIsolatedBuildSession } from "./materialization/run/materialization_build_session";
 import {
    cleanupStorageFiles,

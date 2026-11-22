@@ -19,8 +19,8 @@ import type { components } from "../api";
 import {
    attachDuckLakeReadWrite,
    buildEnvironmentMalloyConfig,
-   federateSourceForPassthrough,
 } from "./connection";
+import { federateSourceForPassthrough } from "./dialects";
 import { isInstanceLocked, runInternalSQL } from "./duckdb_lockdown";
 import { wrapPassthrough } from "./materialization/run/materialization_build_session";
 

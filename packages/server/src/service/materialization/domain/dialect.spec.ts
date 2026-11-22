@@ -23,6 +23,7 @@ const DECIDED: Record<Flag, DialectName[]> = {
    incrementalTargetDml: ["duckdb", "postgres", "snowflake", "standardsql"],
    merge: ["duckdb", "postgres", "snowflake", "standardsql"],
    mergeGatedByServerVersion: ["postgres"],
+   decodedTablePath: ["duckdb", "postgres", "snowflake", "standardsql"],
    pairDelta: ["duckdb"],
    passthroughNumericAsDouble: ["postgres"],
    // A kept table a probe cannot see may be hidden by a grant, not gone.

@@ -1,0 +1,90 @@
+{
+  "postgres bare": {
+    "status": "failed",
+    "errorMessage": "Failed to attach database att: PostgreSQL connection configuration missing for: att"
+  },
+  "postgres #0": {
+    "status": "failed",
+    "errorMessage": "Failed to attach database att: IO Error: Unable to connect to Postgres at \"host=127.0.0.1 port=1 dbname=d\": connection to server at \"127.0.0.1\", port 1 failed: Connection refused\n\tIs the server running on that host and accepting TCP/IP connections?\n"
+  },
+  "bigquery bare": {
+    "status": "failed",
+    "errorMessage": "Failed to attach database att: BigQuery connection configuration missing for: att"
+  },
+  "bigquery #0": {
+    "status": "failed",
+    "errorMessage": "Failed to attach database att: BigQuery project_id and service account key required for: att"
+  },
+  "bigquery #1": {
+    "status": "failed",
+    "errorMessage": "Failed to attach database att: JSON Parse error: Expected '}'"
+  },
+  "snowflake bare": {
+    "status": "failed",
+    "errorMessage": "Failed to attach database att: Snowflake connection configuration missing for: att"
+  },
+  "snowflake #0": {
+    "status": "failed",
+    "errorMessage": "Failed to attach database att: Snowflake password is required for: att"
+  },
+  "snowflake #1": {
+    "status": "failed",
+    "errorMessage": "Failed to attach database att: Snowflake account is required for: att"
+  },
+  "trino bare": {
+    "status": "failed",
+    "errorMessage": "Failed to attach database att: Unsupported database type: trino"
+  },
+  "databricks bare": {
+    "status": "failed",
+    "errorMessage": "Failed to attach database att: Unsupported database type: databricks"
+  },
+  "mysql bare": {
+    "status": "failed",
+    "errorMessage": "Failed to attach database att: Unsupported database type: mysql"
+  },
+  "sqlserver bare": {
+    "status": "failed",
+    "errorMessage": "Failed to attach database att: Unsupported database type: sqlserver"
+  },
+  "duckdb bare": {
+    "status": "failed",
+    "errorMessage": "Failed to attach database att: Unsupported database type: duckdb"
+  },
+  "motherduck bare": {
+    "status": "failed",
+    "errorMessage": "Failed to attach database att: Unsupported database type: motherduck"
+  },
+  "ducklake bare": {
+    "status": "failed",
+    "errorMessage": "Failed to attach database att: Unsupported database type: ducklake"
+  },
+  "publisher bare": {
+    "status": "failed",
+    "errorMessage": "Failed to attach database att: Unsupported database type: publisher"
+  },
+  "gcs bare": {
+    "status": "failed",
+    "errorMessage": "Failed to attach database att: GCS connection configuration missing for: att"
+  },
+  "s3 bare": {
+    "status": "failed",
+    "errorMessage": "Failed to attach database att: S3 connection configuration missing for: att"
+  },
+  "azure bare": {
+    "status": "failed",
+    "errorMessage": "Failed to attach database att: Azure connection configuration missing for: att"
+  },
+  "constructor bare": {
+    "status": "failed",
+    "errorMessage": "attachedDatabases[0].type on connection \"probe\" is invalid: it is not an attached database type."
+  },
+  "toString bare": {
+    "status": "failed",
+    "errorMessage": "attachedDatabases[0].type on connection \"probe\" is invalid: it is not an attached database type."
+  },
+  "nope bare": {
+    "status": "failed",
+    "errorMessage": "Failed to attach database att: Unsupported database type: nope"
+  }
+}

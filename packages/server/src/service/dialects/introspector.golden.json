@@ -1,0 +1,1198 @@
+{
+  "postgres bare | answering | schemas": {
+    "error": "Postgres connection is required",
+    "name": "Error",
+    "sql": []
+  },
+  "postgres bare | answering | tables": {
+    "error": "Postgres connection is required",
+    "name": "Error",
+    "sql": []
+  },
+  "postgres bare | answering | named tables": {
+    "error": "Postgres connection is required",
+    "name": "Error",
+    "sql": []
+  },
+  "postgres bare | failing | schemas": {
+    "error": "Postgres connection is required",
+    "name": "Error",
+    "sql": []
+  },
+  "postgres bare | failing | tables": {
+    "error": "Postgres connection is required",
+    "name": "Error",
+    "sql": []
+  },
+  "postgres bare | failing | named tables": {
+    "error": "Postgres connection is required",
+    "name": "Error",
+    "sql": []
+  },
+  "postgres #0 | answering | schemas": {
+    "value": [
+      {
+        "name": "s",
+        "isHidden": false,
+        "isDefault": false
+      }
+    ],
+    "sql": [
+      "SELECT row_to_json(t) as row FROM (SELECT schema_name FROM information_schema.schemata ORDER BY schema_name) t {\"rowLimit\":100000}"
+    ]
+  },
+  "postgres #0 | answering | tables": {
+    "value": [
+      {
+        "resource": "cat.s.t",
+        "columns": [
+          {
+            "name": "c",
+            "type": "integer"
+          }
+        ]
+      }
+    ],
+    "sql": [
+      "SELECT row_to_json(t) as row FROM (SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = 'cat.s' ORDER BY table_name, ordinal_position) t {\"rowLimit\":100000}"
+    ]
+  },
+  "postgres #0 | answering | named tables": {
+    "value": [
+      {
+        "resource": "s.t",
+        "columns": [
+          {
+            "name": "c",
+            "type": "integer"
+          }
+        ]
+      }
+    ],
+    "sql": [
+      "SELECT row_to_json(t) as row FROM (SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = 's' AND table_name IN ('t', 'o''x') ORDER BY table_name, ordinal_position) t {\"rowLimit\":100000}"
+    ]
+  },
+  "postgres #0 | failing | schemas": {
+    "error": "Failed to get schemas for Postgres connection probe: statement refused",
+    "name": "Error",
+    "sql": [
+      "SELECT row_to_json(t) as row FROM (SELECT schema_name FROM information_schema.schemata ORDER BY schema_name) t {\"rowLimit\":100000}"
+    ]
+  },
+  "postgres #0 | failing | tables": {
+    "error": "Failed to get tables for Postgres schema cat.s in connection probe: statement refused",
+    "name": "Error",
+    "sql": [
+      "SELECT row_to_json(t) as row FROM (SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = 'cat.s' ORDER BY table_name, ordinal_position) t {\"rowLimit\":100000}"
+    ]
+  },
+  "postgres #0 | failing | named tables": {
+    "error": "Failed to get tables for Postgres schema s in connection probe: statement refused",
+    "name": "Error",
+    "sql": [
+      "SELECT row_to_json(t) as row FROM (SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = 's' AND table_name IN ('t', 'o''x') ORDER BY table_name, ordinal_position) t {\"rowLimit\":100000}"
+    ]
+  },
+  "bigquery bare | answering | schemas": {
+    "error": "BigQuery connection is required",
+    "name": "Error",
+    "sql": []
+  },
+  "bigquery bare | answering | tables": {
+    "error": "Failed to get tables for BigQuery schema cat.s in connection probe: BigQuery connection is required",
+    "name": "Error",
+    "sql": []
+  },
+  "bigquery bare | answering | named tables": {
+    "error": "Failed to get tables for BigQuery schema s in connection probe: BigQuery connection is required",
+    "name": "Error",
+    "sql": []
+  },
+  "bigquery bare | failing | schemas": {
+    "error": "BigQuery connection is required",
+    "name": "Error",
+    "sql": []
+  },
+  "bigquery bare | failing | tables": {
+    "error": "Failed to get tables for BigQuery schema cat.s in connection probe: BigQuery connection is required",
+    "name": "Error",
+    "sql": []
+  },
+  "bigquery bare | failing | named tables": {
+    "error": "Failed to get tables for BigQuery schema s in connection probe: BigQuery connection is required",
+    "name": "Error",
+    "sql": []
+  },
+  "bigquery #0 | answering | schemas": {
+    "error": "Failed to get schemas for BigQuery connection probe: BigQuery connection is required, either set the bigqueryConnection in the connection configuration or set the GOOGLE_APPLICATION_CREDENTIALS environment variable.",
+    "name": "Error",
+    "sql": []
+  },
+  "bigquery #0 | answering | tables": {
+    "error": "Failed to get tables for BigQuery schema cat.s in connection probe: BigQuery connection is required, either set the bigqueryConnection in the connection configuration or set the GOOGLE_APPLICATION_CREDENTIALS environment variable.",
+    "name": "Error",
+    "sql": []
+  },
+  "bigquery #0 | answering | named tables": {
+    "error": "Failed to get tables for BigQuery schema s in connection probe: BigQuery connection is required, either set the bigqueryConnection in the connection configuration or set the GOOGLE_APPLICATION_CREDENTIALS environment variable.",
+    "name": "Error",
+    "sql": []
+  },
+  "bigquery #0 | failing | schemas": {
+    "error": "Failed to get schemas for BigQuery connection probe: BigQuery connection is required, either set the bigqueryConnection in the connection configuration or set the GOOGLE_APPLICATION_CREDENTIALS environment variable.",
+    "name": "Error",
+    "sql": []
+  },
+  "bigquery #0 | failing | tables": {
+    "error": "Failed to get tables for BigQuery schema cat.s in connection probe: BigQuery connection is required, either set the bigqueryConnection in the connection configuration or set the GOOGLE_APPLICATION_CREDENTIALS environment variable.",
+    "name": "Error",
+    "sql": []
+  },
+  "bigquery #0 | failing | named tables": {
+    "error": "Failed to get tables for BigQuery schema s in connection probe: BigQuery connection is required, either set the bigqueryConnection in the connection configuration or set the GOOGLE_APPLICATION_CREDENTIALS environment variable.",
+    "name": "Error",
+    "sql": []
+  },
+  "snowflake bare | answering | schemas": {
+    "error": "Snowflake connection is required",
+    "name": "Error",
+    "sql": []
+  },
+  "snowflake bare | answering | tables": {
+    "error": "Snowflake connection is required",
+    "name": "Error",
+    "sql": []
+  },
+  "snowflake bare | answering | named tables": {
+    "error": "Snowflake connection is required",
+    "name": "Error",
+    "sql": []
+  },
+  "snowflake bare | failing | schemas": {
+    "error": "Snowflake connection is required",
+    "name": "Error",
+    "sql": []
+  },
+  "snowflake bare | failing | tables": {
+    "error": "Snowflake connection is required",
+    "name": "Error",
+    "sql": []
+  },
+  "snowflake bare | failing | named tables": {
+    "error": "Snowflake connection is required",
+    "name": "Error",
+    "sql": []
+  },
+  "snowflake #0 | answering | schemas": {
+    "value": [
+      {
+        "name": "cat.s",
+        "isHidden": true,
+        "isDefault": false
+      }
+    ],
+    "sql": [
+      "SELECT CATALOG_NAME, SCHEMA_NAME, SCHEMA_OWNER FROM DB.INFORMATION_SCHEMA.SCHEMATA WHERE CATALOG_NAME = 'DB' AND SCHEMA_NAME = 'S' ORDER BY SCHEMA_NAME {\"rowLimit\":100000}"
+    ]
+  },
+  "snowflake #0 | answering | tables": {
+    "value": [
+      {
+        "resource": "cat.s.t",
+        "columns": [
+          {
+            "name": "c",
+            "type": "integer"
+          }
+        ]
+      }
+    ],
+    "sql": [
+      "SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE FROM cat.INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = 's' ORDER BY TABLE_NAME, ORDINAL_POSITION {\"rowLimit\":100000}"
+    ]
+  },
+  "snowflake #0 | answering | named tables": {
+    "value": [
+      {
+        "resource": "DB.s.t",
+        "columns": [
+          {
+            "name": "c",
+            "type": "integer"
+          }
+        ]
+      }
+    ],
+    "sql": [
+      "SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE FROM DB.INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = 's' AND TABLE_NAME IN ('t', 'o''x') ORDER BY TABLE_NAME, ORDINAL_POSITION {\"rowLimit\":100000}"
+    ]
+  },
+  "snowflake #0 | failing | schemas": {
+    "error": "Failed to get schemas for Snowflake connection probe: statement refused",
+    "name": "Error",
+    "sql": [
+      "SELECT CATALOG_NAME, SCHEMA_NAME, SCHEMA_OWNER FROM DB.INFORMATION_SCHEMA.SCHEMATA WHERE CATALOG_NAME = 'DB' AND SCHEMA_NAME = 'S' ORDER BY SCHEMA_NAME {\"rowLimit\":100000}"
+    ]
+  },
+  "snowflake #0 | failing | tables": {
+    "error": "Failed to get tables for Snowflake schema cat.s in connection probe: statement refused",
+    "name": "Error",
+    "sql": [
+      "SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE FROM cat.INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = 's' ORDER BY TABLE_NAME, ORDINAL_POSITION {\"rowLimit\":100000}"
+    ]
+  },
+  "snowflake #0 | failing | named tables": {
+    "error": "Failed to get tables for Snowflake schema s in connection probe: statement refused",
+    "name": "Error",
+    "sql": [
+      "SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE FROM DB.INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = 's' AND TABLE_NAME IN ('t', 'o''x') ORDER BY TABLE_NAME, ORDINAL_POSITION {\"rowLimit\":100000}"
+    ]
+  },
+  "snowflake #1 | answering | schemas": {
+    "value": [
+      {
+        "name": "db.n",
+        "isHidden": false,
+        "isDefault": false
+      }
+    ],
+    "sql": [
+      "SHOW SCHEMAS IN ACCOUNT LIMIT 10000 {\"rowLimit\":100000}"
+    ]
+  },
+  "snowflake #1 | answering | tables": {
+    "value": [
+      {
+        "resource": "cat.s.t",
+        "columns": [
+          {
+            "name": "c",
+            "type": "integer"
+          }
+        ]
+      }
+    ],
+    "sql": [
+      "SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE FROM cat.INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = 's' ORDER BY TABLE_NAME, ORDINAL_POSITION {\"rowLimit\":100000}"
+    ]
+  },
+  "snowflake #1 | answering | named tables": {
+    "error": "Failed to get tables for Snowflake schema s in connection probe: Cannot resolve database for schema \"s\": provide DATABASE.SCHEMA or configure a database on the connection",
+    "name": "Error",
+    "sql": []
+  },
+  "snowflake #1 | failing | schemas": {
+    "error": "Failed to get schemas for Snowflake connection probe: statement refused",
+    "name": "Error",
+    "sql": [
+      "SHOW SCHEMAS IN ACCOUNT LIMIT 10000 {\"rowLimit\":100000}"
+    ]
+  },
+  "snowflake #1 | failing | tables": {
+    "error": "Failed to get tables for Snowflake schema cat.s in connection probe: statement refused",
+    "name": "Error",
+    "sql": [
+      "SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE FROM cat.INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = 's' ORDER BY TABLE_NAME, ORDINAL_POSITION {\"rowLimit\":100000}"
+    ]
+  },
+  "snowflake #1 | failing | named tables": {
+    "error": "Failed to get tables for Snowflake schema s in connection probe: Cannot resolve database for schema \"s\": provide DATABASE.SCHEMA or configure a database on the connection",
+    "name": "Error",
+    "sql": []
+  },
+  "trino bare | answering | schemas": {
+    "error": "Trino connection is required",
+    "name": "Error",
+    "sql": []
+  },
+  "trino bare | answering | tables": {
+    "error": "Trino connection is required",
+    "name": "Error",
+    "sql": []
+  },
+  "trino bare | answering | named tables": {
+    "error": "Trino connection is required",
+    "name": "Error",
+    "sql": []
+  },
+  "trino bare | failing | schemas": {
+    "error": "Trino connection is required",
+    "name": "Error",
+    "sql": []
+  },
+  "trino bare | failing | tables": {
+    "error": "Trino connection is required",
+    "name": "Error",
+    "sql": []
+  },
+  "trino bare | failing | named tables": {
+    "error": "Trino connection is required",
+    "name": "Error",
+    "sql": []
+  },
+  "trino #0 | answering | schemas": {
+    "value": [
+      {
+        "name": "s",
+        "isHidden": false,
+        "isDefault": true
+      }
+    ],
+    "sql": [
+      "SELECT schema_name FROM cat.information_schema.schemata ORDER BY schema_name {\"rowLimit\":100000}"
+    ]
+  },
+  "trino #0 | answering | tables": {
+    "value": [
+      {
+        "resource": "cat.cat.s.t",
+        "columns": [
+          {
+            "name": "c",
+            "type": "integer"
+          }
+        ]
+      }
+    ],
+    "sql": [
+      "SELECT table_name, column_name, data_type FROM cat.information_schema.columns WHERE table_schema = 'cat.s' ORDER BY table_name, ordinal_position {\"rowLimit\":100000}"
+    ]
+  },
+  "trino #0 | answering | named tables": {
+    "value": [
+      {
+        "resource": "cat.s.t",
+        "columns": [
+          {
+            "name": "c",
+            "type": "integer"
+          }
+        ]
+      }
+    ],
+    "sql": [
+      "SELECT table_name, column_name, data_type FROM cat.information_schema.columns WHERE table_schema = 's' AND table_name IN ('t', 'o''x') ORDER BY table_name, ordinal_position {\"rowLimit\":100000}"
+    ]
+  },
+  "trino #0 | failing | schemas": {
+    "error": "Failed to get schemas for Trino connection probe: statement refused",
+    "name": "Error",
+    "sql": [
+      "SELECT schema_name FROM cat.information_schema.schemata ORDER BY schema_name {\"rowLimit\":100000}"
+    ]
+  },
+  "trino #0 | failing | tables": {
+    "error": "Failed to get tables for Trino schema cat.s in connection probe: statement refused",
+    "name": "Error",
+    "sql": [
+      "SELECT table_name, column_name, data_type FROM cat.information_schema.columns WHERE table_schema = 'cat.s' ORDER BY table_name, ordinal_position {\"rowLimit\":100000}"
+    ]
+  },
+  "trino #0 | failing | named tables": {
+    "error": "Failed to get tables for Trino schema s in connection probe: statement refused",
+    "name": "Error",
+    "sql": [
+      "SELECT table_name, column_name, data_type FROM cat.information_schema.columns WHERE table_schema = 's' AND table_name IN ('t', 'o''x') ORDER BY table_name, ordinal_position {\"rowLimit\":100000}"
+    ]
+  },
+  "trino #1 | answering | schemas": {
+    "error": "Invalid catalog name \"bad-cat\": expected a plain identifier (letters, digits, underscore or dollar, not starting with a digit).",
+    "name": "InvalidArgumentError",
+    "sql": []
+  },
+  "trino #1 | answering | tables": {
+    "value": [
+      {
+        "resource": "bad-cat.cat.s.t",
+        "columns": [
+          {
+            "name": "c",
+            "type": "integer"
+          }
+        ]
+      }
+    ],
+    "sql": [
+      "SELECT table_name, column_name, data_type FROM bad-cat.information_schema.columns WHERE table_schema = 'cat.s' ORDER BY table_name, ordinal_position {\"rowLimit\":100000}"
+    ]
+  },
+  "trino #1 | answering | named tables": {
+    "value": [
+      {
+        "resource": "bad-cat.s.t",
+        "columns": [
+          {
+            "name": "c",
+            "type": "integer"
+          }
+        ]
+      }
+    ],
+    "sql": [
+      "SELECT table_name, column_name, data_type FROM bad-cat.information_schema.columns WHERE table_schema = 's' AND table_name IN ('t', 'o''x') ORDER BY table_name, ordinal_position {\"rowLimit\":100000}"
+    ]
+  },
+  "trino #1 | failing | schemas": {
+    "error": "Invalid catalog name \"bad-cat\": expected a plain identifier (letters, digits, underscore or dollar, not starting with a digit).",
+    "name": "InvalidArgumentError",
+    "sql": []
+  },
+  "trino #1 | failing | tables": {
+    "error": "Failed to get tables for Trino schema cat.s in connection probe: statement refused",
+    "name": "Error",
+    "sql": [
+      "SELECT table_name, column_name, data_type FROM bad-cat.information_schema.columns WHERE table_schema = 'cat.s' ORDER BY table_name, ordinal_position {\"rowLimit\":100000}"
+    ]
+  },
+  "trino #1 | failing | named tables": {
+    "error": "Failed to get tables for Trino schema s in connection probe: statement refused",
+    "name": "Error",
+    "sql": [
+      "SELECT table_name, column_name, data_type FROM bad-cat.information_schema.columns WHERE table_schema = 's' AND table_name IN ('t', 'o''x') ORDER BY table_name, ordinal_position {\"rowLimit\":100000}"
+    ]
+  },
+  "databricks bare | answering | schemas": {
+    "error": "Databricks connection is required",
+    "name": "Error",
+    "sql": []
+  },
+  "databricks bare | answering | tables": {
+    "error": "Databricks connection is required",
+    "name": "Error",
+    "sql": []
+  },
+  "databricks bare | answering | named tables": {
+    "error": "Databricks connection is required",
+    "name": "Error",
+    "sql": []
+  },
+  "databricks bare | failing | schemas": {
+    "error": "Databricks connection is required",
+    "name": "Error",
+    "sql": []
+  },
+  "databricks bare | failing | tables": {
+    "error": "Databricks connection is required",
+    "name": "Error",
+    "sql": []
+  },
+  "databricks bare | failing | named tables": {
+    "error": "Databricks connection is required",
+    "name": "Error",
+    "sql": []
+  },
+  "databricks #0 | answering | schemas": {
+    "value": [
+      {
+        "name": "s",
+        "isHidden": false,
+        "isDefault": true
+      }
+    ],
+    "sql": [
+      "SELECT schema_name FROM cat.information_schema.schemata ORDER BY schema_name {\"rowLimit\":100000}"
+    ]
+  },
+  "databricks #0 | answering | tables": {
+    "value": [
+      {
+        "resource": "cat.cat.s.t",
+        "columns": [
+          {
+            "name": "c",
+            "type": "integer"
+          }
+        ]
+      }
+    ],
+    "sql": [
+      "SELECT table_name, column_name, CASE WHEN upper(data_type) IN ('STRUCT', 'ARRAY') THEN coalesce(full_data_type, data_type) ELSE data_type END AS data_type FROM cat.information_schema.columns WHERE table_schema = 'cat.s' ORDER BY table_name, ordinal_position {\"rowLimit\":100000}"
+    ]
+  },
+  "databricks #0 | answering | named tables": {
+    "value": [
+      {
+        "resource": "cat.s.t",
+        "columns": [
+          {
+            "name": "c",
+            "type": "integer"
+          }
+        ]
+      }
+    ],
+    "sql": [
+      "SELECT table_name, column_name, CASE WHEN upper(data_type) IN ('STRUCT', 'ARRAY') THEN coalesce(full_data_type, data_type) ELSE data_type END AS data_type FROM cat.information_schema.columns WHERE table_schema = 's' AND table_name IN ('t', 'o''x') ORDER BY table_name, ordinal_position {\"rowLimit\":100000}"
+    ]
+  },
+  "databricks #0 | failing | schemas": {
+    "error": "Failed to get schemas for Databricks connection probe: statement refused",
+    "name": "Error",
+    "sql": [
+      "SELECT schema_name FROM cat.information_schema.schemata ORDER BY schema_name {\"rowLimit\":100000}"
+    ]
+  },
+  "databricks #0 | failing | tables": {
+    "error": "Failed to get tables for Databricks schema cat.s in connection probe: statement refused",
+    "name": "Error",
+    "sql": [
+      "SELECT table_name, column_name, CASE WHEN upper(data_type) IN ('STRUCT', 'ARRAY') THEN coalesce(full_data_type, data_type) ELSE data_type END AS data_type FROM cat.information_schema.columns WHERE table_schema = 'cat.s' ORDER BY table_name, ordinal_position {\"rowLimit\":100000}"
+    ]
+  },
+  "databricks #0 | failing | named tables": {
+    "error": "Failed to get tables for Databricks schema s in connection probe: statement refused",
+    "name": "Error",
+    "sql": [
+      "SELECT table_name, column_name, CASE WHEN upper(data_type) IN ('STRUCT', 'ARRAY') THEN coalesce(full_data_type, data_type) ELSE data_type END AS data_type FROM cat.information_schema.columns WHERE table_schema = 's' AND table_name IN ('t', 'o''x') ORDER BY table_name, ordinal_position {\"rowLimit\":100000}"
+    ]
+  },
+  "mysql bare | answering | schemas": {
+    "error": "Mysql connection is required",
+    "name": "Error",
+    "sql": []
+  },
+  "mysql bare | answering | tables": {
+    "error": "Mysql connection is required",
+    "name": "Error",
+    "sql": []
+  },
+  "mysql bare | answering | named tables": {
+    "error": "Mysql connection is required",
+    "name": "Error",
+    "sql": []
+  },
+  "mysql bare | failing | schemas": {
+    "error": "Mysql connection is required",
+    "name": "Error",
+    "sql": []
+  },
+  "mysql bare | failing | tables": {
+    "error": "Mysql connection is required",
+    "name": "Error",
+    "sql": []
+  },
+  "mysql bare | failing | named tables": {
+    "error": "Mysql connection is required",
+    "name": "Error",
+    "sql": []
+  },
+  "mysql #0 | answering | schemas": {
+    "value": [
+      {
+        "name": "d",
+        "isHidden": false,
+        "isDefault": true
+      }
+    ],
+    "sql": []
+  },
+  "mysql #0 | answering | tables": {
+    "value": [
+      {
+        "resource": "cat.s.t",
+        "columns": [
+          {
+            "name": "c",
+            "type": "integer"
+          }
+        ]
+      }
+    ],
+    "sql": [
+      "SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE FROM information_schema.columns WHERE table_schema = 'cat.s' ORDER BY TABLE_NAME, ORDINAL_POSITION {\"rowLimit\":100000}"
+    ]
+  },
+  "mysql #0 | answering | named tables": {
+    "value": [
+      {
+        "resource": "s.t",
+        "columns": [
+          {
+            "name": "c",
+            "type": "integer"
+          }
+        ]
+      }
+    ],
+    "sql": [
+      "SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE FROM information_schema.columns WHERE table_schema = 's' AND TABLE_NAME IN ('t', 'o''x') ORDER BY TABLE_NAME, ORDINAL_POSITION {\"rowLimit\":100000}"
+    ]
+  },
+  "mysql #0 | failing | schemas": {
+    "value": [
+      {
+        "name": "d",
+        "isHidden": false,
+        "isDefault": true
+      }
+    ],
+    "sql": []
+  },
+  "mysql #0 | failing | tables": {
+    "error": "Failed to get tables for MySQL schema cat.s in connection probe: statement refused",
+    "name": "Error",
+    "sql": [
+      "SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE FROM information_schema.columns WHERE table_schema = 'cat.s' ORDER BY TABLE_NAME, ORDINAL_POSITION {\"rowLimit\":100000}"
+    ]
+  },
+  "mysql #0 | failing | named tables": {
+    "error": "Failed to get tables for MySQL schema s in connection probe: statement refused",
+    "name": "Error",
+    "sql": [
+      "SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE FROM information_schema.columns WHERE table_schema = 's' AND TABLE_NAME IN ('t', 'o''x') ORDER BY TABLE_NAME, ORDINAL_POSITION {\"rowLimit\":100000}"
+    ]
+  },
+  "sqlserver bare | answering | schemas": {
+    "error": "SQL Server connection is required",
+    "name": "Error",
+    "sql": []
+  },
+  "sqlserver bare | answering | tables": {
+    "error": "SQL Server connection is required",
+    "name": "Error",
+    "sql": []
+  },
+  "sqlserver bare | answering | named tables": {
+    "error": "SQL Server connection is required",
+    "name": "Error",
+    "sql": []
+  },
+  "sqlserver bare | failing | schemas": {
+    "error": "SQL Server connection is required",
+    "name": "Error",
+    "sql": []
+  },
+  "sqlserver bare | failing | tables": {
+    "error": "SQL Server connection is required",
+    "name": "Error",
+    "sql": []
+  },
+  "sqlserver bare | failing | named tables": {
+    "error": "SQL Server connection is required",
+    "name": "Error",
+    "sql": []
+  },
+  "sqlserver #0 | answering | schemas": {
+    "value": [
+      {
+        "name": "s",
+        "isHidden": false,
+        "isDefault": false
+      }
+    ],
+    "sql": [
+      "SELECT DISTINCT table_schema AS schema_name FROM information_schema.tables ORDER BY table_schema {\"rowLimit\":100000}"
+    ]
+  },
+  "sqlserver #0 | answering | tables": {
+    "value": [
+      {
+        "resource": "cat.s.t",
+        "columns": [
+          {
+            "name": "c",
+            "type": "integer"
+          }
+        ]
+      }
+    ],
+    "sql": [
+      "SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = N'cat.s' ORDER BY table_name, ordinal_position {\"rowLimit\":100000}"
+    ]
+  },
+  "sqlserver #0 | answering | named tables": {
+    "value": [
+      {
+        "resource": "s.t",
+        "columns": [
+          {
+            "name": "c",
+            "type": "integer"
+          }
+        ]
+      }
+    ],
+    "sql": [
+      "SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = N's' AND table_name IN (N't', N'o''x') ORDER BY table_name, ordinal_position {\"rowLimit\":100000}"
+    ]
+  },
+  "sqlserver #0 | failing | schemas": {
+    "error": "Failed to get schemas for SQL Server connection probe: statement refused",
+    "name": "Error",
+    "sql": [
+      "SELECT DISTINCT table_schema AS schema_name FROM information_schema.tables ORDER BY table_schema {\"rowLimit\":100000}"
+    ]
+  },
+  "sqlserver #0 | failing | tables": {
+    "error": "Failed to get tables for SQL Server schema cat.s in connection probe: statement refused",
+    "name": "Error",
+    "sql": [
+      "SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = N'cat.s' ORDER BY table_name, ordinal_position {\"rowLimit\":100000}"
+    ]
+  },
+  "sqlserver #0 | failing | named tables": {
+    "error": "Failed to get tables for SQL Server schema s in connection probe: statement refused",
+    "name": "Error",
+    "sql": [
+      "SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = N's' AND table_name IN (N't', N'o''x') ORDER BY table_name, ordinal_position {\"rowLimit\":100000}"
+    ]
+  },
+  "duckdb bare | answering | schemas": {
+    "error": "DuckDB connection is required",
+    "name": "Error",
+    "sql": []
+  },
+  "duckdb bare | answering | tables": {
+    "error": "DuckDB connection is required",
+    "name": "Error",
+    "sql": []
+  },
+  "duckdb bare | answering | named tables": {
+    "error": "DuckDB connection is required",
+    "name": "Error",
+    "sql": []
+  },
+  "duckdb bare | failing | schemas": {
+    "error": "DuckDB connection is required",
+    "name": "Error",
+    "sql": []
+  },
+  "duckdb bare | failing | tables": {
+    "error": "DuckDB connection is required",
+    "name": "Error",
+    "sql": []
+  },
+  "duckdb bare | failing | named tables": {
+    "error": "DuckDB connection is required",
+    "name": "Error",
+    "sql": []
+  },
+  "duckdb #0 | answering | schemas": {
+    "value": [
+      {
+        "name": "cat.s",
+        "isHidden": false,
+        "isDefault": false
+      }
+    ],
+    "sql": [
+      "SELECT DISTINCT schema_name,catalog_name FROM information_schema.schemata ORDER BY catalog_name,schema_name {\"rowLimit\":100000}"
+    ]
+  },
+  "duckdb #0 | answering | tables": {
+    "value": [
+      {
+        "resource": "cat.s.t",
+        "columns": [
+          {
+            "name": "c",
+            "type": "integer"
+          }
+        ]
+      }
+    ],
+    "sql": [
+      "SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = 's' AND table_catalog = 'cat' ORDER BY table_name, ordinal_position {\"rowLimit\":100000}"
+    ]
+  },
+  "duckdb #0 | answering | named tables": {
+    "error": "DuckDB schema name must be qualified as \"catalog.schema\", got \"s\". List this connection's schemas and use one of those names verbatim.",
+    "name": "InvalidArgumentError",
+    "sql": []
+  },
+  "duckdb #0 | failing | schemas": {
+    "error": "Failed to get schemas for DuckDB connection probe: statement refused",
+    "name": "Error",
+    "sql": [
+      "SELECT DISTINCT schema_name,catalog_name FROM information_schema.schemata ORDER BY catalog_name,schema_name {\"rowLimit\":100000}"
+    ]
+  },
+  "duckdb #0 | failing | tables": {
+    "error": "Failed to get tables for DuckDB schema cat.s in connection probe: statement refused",
+    "name": "Error",
+    "sql": [
+      "SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = 's' AND table_catalog = 'cat' ORDER BY table_name, ordinal_position {\"rowLimit\":100000}"
+    ]
+  },
+  "duckdb #0 | failing | named tables": {
+    "error": "DuckDB schema name must be qualified as \"catalog.schema\", got \"s\". List this connection's schemas and use one of those names verbatim.",
+    "name": "InvalidArgumentError",
+    "sql": []
+  },
+  "motherduck bare | answering | schemas": {
+    "error": "MotherDuck connection is required",
+    "name": "Error",
+    "sql": []
+  },
+  "motherduck bare | answering | tables": {
+    "error": "MotherDuck connection is required",
+    "name": "Error",
+    "sql": []
+  },
+  "motherduck bare | answering | named tables": {
+    "error": "MotherDuck connection is required",
+    "name": "Error",
+    "sql": []
+  },
+  "motherduck bare | failing | schemas": {
+    "error": "MotherDuck connection is required",
+    "name": "Error",
+    "sql": []
+  },
+  "motherduck bare | failing | tables": {
+    "error": "MotherDuck connection is required",
+    "name": "Error",
+    "sql": []
+  },
+  "motherduck bare | failing | named tables": {
+    "error": "MotherDuck connection is required",
+    "name": "Error",
+    "sql": []
+  },
+  "motherduck #0 | answering | schemas": {
+    "value": [
+      {
+        "name": "s",
+        "isHidden": false,
+        "isDefault": false
+      }
+    ],
+    "sql": [
+      "SELECT DISTINCT schema_name FROM information_schema.schemata WHERE catalog_name = 'md' ORDER BY schema_name {\"rowLimit\":100000}"
+    ]
+  },
+  "motherduck #0 | answering | tables": {
+    "value": [
+      {
+        "resource": "cat.s.t",
+        "columns": [
+          {
+            "name": "c",
+            "type": "integer"
+          }
+        ]
+      }
+    ],
+    "sql": [
+      "SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = 'cat.s' ORDER BY table_name, ordinal_position {\"rowLimit\":100000}"
+    ]
+  },
+  "motherduck #0 | answering | named tables": {
+    "value": [
+      {
+        "resource": "s.t",
+        "columns": [
+          {
+            "name": "c",
+            "type": "integer"
+          }
+        ]
+      }
+    ],
+    "sql": [
+      "SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = 's' AND table_name IN ('t', 'o''x') ORDER BY table_name, ordinal_position {\"rowLimit\":100000}"
+    ]
+  },
+  "motherduck #0 | failing | schemas": {
+    "error": "Failed to get schemas for MotherDuck connection probe: statement refused",
+    "name": "Error",
+    "sql": [
+      "SELECT DISTINCT schema_name FROM information_schema.schemata WHERE catalog_name = 'md' ORDER BY schema_name {\"rowLimit\":100000}"
+    ]
+  },
+  "motherduck #0 | failing | tables": {
+    "error": "Failed to get tables for MotherDuck schema cat.s in connection probe: statement refused",
+    "name": "Error",
+    "sql": [
+      "SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = 'cat.s' ORDER BY table_name, ordinal_position {\"rowLimit\":100000}"
+    ]
+  },
+  "motherduck #0 | failing | named tables": {
+    "error": "Failed to get tables for MotherDuck schema s in connection probe: statement refused",
+    "name": "Error",
+    "sql": [
+      "SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = 's' AND table_name IN ('t', 'o''x') ORDER BY table_name, ordinal_position {\"rowLimit\":100000}"
+    ]
+  },
+  "ducklake bare | answering | schemas": {
+    "value": [
+      {
+        "name": "s",
+        "isHidden": true,
+        "isDefault": false
+      }
+    ],
+    "sql": [
+      "SELECT schema_name FROM information_schema.schemata WHERE catalog_name = 'probe' ORDER BY schema_name {\"rowLimit\":100000}"
+    ]
+  },
+  "ducklake bare | answering | tables": {
+    "value": [
+      {
+        "resource": "cat.s.t",
+        "columns": [
+          {
+            "name": "c",
+            "type": "integer"
+          }
+        ]
+      }
+    ],
+    "sql": [
+      "SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = 's' AND table_catalog = 'cat' ORDER BY table_name, ordinal_position {\"rowLimit\":100000}"
+    ]
+  },
+  "ducklake bare | answering | named tables": {
+    "value": [
+      {
+        "resource": "probe.s.t",
+        "columns": [
+          {
+            "name": "c",
+            "type": "integer"
+          }
+        ]
+      }
+    ],
+    "sql": [
+      "SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = 's' AND table_catalog = 'probe' AND table_name IN ('t', 'o''x') ORDER BY table_name, ordinal_position {\"rowLimit\":100000}"
+    ]
+  },
+  "ducklake bare | failing | schemas": {
+    "error": "Failed to get schemas for DuckLake connection probe: statement refused",
+    "name": "Error",
+    "sql": [
+      "SELECT schema_name FROM information_schema.schemata WHERE catalog_name = 'probe' ORDER BY schema_name {\"rowLimit\":100000}"
+    ]
+  },
+  "ducklake bare | failing | tables": {
+    "error": "Failed to get tables for DuckLake schema cat.s in connection probe: statement refused",
+    "name": "Error",
+    "sql": [
+      "SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = 's' AND table_catalog = 'cat' ORDER BY table_name, ordinal_position {\"rowLimit\":100000}"
+    ]
+  },
+  "ducklake bare | failing | named tables": {
+    "error": "Failed to get tables for DuckLake schema probe.s in connection probe: statement refused",
+    "name": "Error",
+    "sql": [
+      "SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = 's' AND table_catalog = 'probe' AND table_name IN ('t', 'o''x') ORDER BY table_name, ordinal_position {\"rowLimit\":100000}"
+    ]
+  },
+  "ducklake #0 | answering | schemas": {
+    "value": [
+      {
+        "name": "s",
+        "isHidden": true,
+        "isDefault": false
+      }
+    ],
+    "sql": [
+      "SELECT schema_name FROM information_schema.schemata WHERE catalog_name = 'probe' ORDER BY schema_name {\"rowLimit\":100000}"
+    ]
+  },
+  "ducklake #0 | answering | tables": {
+    "value": [
+      {
+        "resource": "cat.s.t",
+        "columns": [
+          {
+            "name": "c",
+            "type": "integer"
+          }
+        ]
+      }
+    ],
+    "sql": [
+      "SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = 's' AND table_catalog = 'cat' ORDER BY table_name, ordinal_position {\"rowLimit\":100000}"
+    ]
+  },
+  "ducklake #0 | answering | named tables": {
+    "value": [
+      {
+        "resource": "probe.s.t",
+        "columns": [
+          {
+            "name": "c",
+            "type": "integer"
+          }
+        ]
+      }
+    ],
+    "sql": [
+      "SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = 's' AND table_catalog = 'probe' AND table_name IN ('t', 'o''x') ORDER BY table_name, ordinal_position {\"rowLimit\":100000}"
+    ]
+  },
+  "ducklake #0 | failing | schemas": {
+    "error": "Failed to get schemas for DuckLake connection probe: statement refused",
+    "name": "Error",
+    "sql": [
+      "SELECT schema_name FROM information_schema.schemata WHERE catalog_name = 'probe' ORDER BY schema_name {\"rowLimit\":100000}"
+    ]
+  },
+  "ducklake #0 | failing | tables": {
+    "error": "Failed to get tables for DuckLake schema cat.s in connection probe: statement refused",
+    "name": "Error",
+    "sql": [
+      "SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = 's' AND table_catalog = 'cat' ORDER BY table_name, ordinal_position {\"rowLimit\":100000}"
+    ]
+  },
+  "ducklake #0 | failing | named tables": {
+    "error": "Failed to get tables for DuckLake schema probe.s in connection probe: statement refused",
+    "name": "Error",
+    "sql": [
+      "SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = 's' AND table_catalog = 'probe' AND table_name IN ('t', 'o''x') ORDER BY table_name, ordinal_position {\"rowLimit\":100000}"
+    ]
+  },
+  "publisher bare | answering | schemas": {
+    "error": "Publisher connection \"probe\" is missing connectionUri",
+    "name": "Error",
+    "sql": []
+  },
+  "publisher bare | answering | tables": {
+    "error": "Publisher connection \"probe\" is missing connectionUri",
+    "name": "Error",
+    "sql": []
+  },
+  "publisher bare | answering | named tables": {
+    "error": "Publisher connection \"probe\" is missing connectionUri",
+    "name": "Error",
+    "sql": []
+  },
+  "publisher bare | failing | schemas": {
+    "error": "Publisher connection \"probe\" is missing connectionUri",
+    "name": "Error",
+    "sql": []
+  },
+  "publisher bare | failing | tables": {
+    "error": "Publisher connection \"probe\" is missing connectionUri",
+    "name": "Error",
+    "sql": []
+  },
+  "publisher bare | failing | named tables": {
+    "error": "Publisher connection \"probe\" is missing connectionUri",
+    "name": "Error",
+    "sql": []
+  },
+  "publisher #0 | answering | schemas": {
+    "error": "Publisher dataplane request to http://127.0.0.1:1/connections/c/schemas failed for connection \"probe\": Unable to connect. Is the computer able to access the url?",
+    "name": "Error",
+    "sql": []
+  },
+  "publisher #0 | answering | tables": {
+    "error": "Publisher dataplane request to http://127.0.0.1:1/connections/c/schemas/cat.s/tables failed for connection \"probe\": Unable to connect. Is the computer able to access the url?",
+    "name": "Error",
+    "sql": []
+  },
+  "publisher #0 | answering | named tables": {
+    "error": "Publisher dataplane request to http://127.0.0.1:1/connections/c/schemas/s/tables failed for connection \"probe\": Unable to connect. Is the computer able to access the url?",
+    "name": "Error",
+    "sql": []
+  },
+  "publisher #0 | failing | schemas": {
+    "error": "Publisher dataplane request to http://127.0.0.1:1/connections/c/schemas failed for connection \"probe\": Unable to connect. Is the computer able to access the url?",
+    "name": "Error",
+    "sql": []
+  },
+  "publisher #0 | failing | tables": {
+    "error": "Publisher dataplane request to http://127.0.0.1:1/connections/c/schemas/cat.s/tables failed for connection \"probe\": Unable to connect. Is the computer able to access the url?",
+    "name": "Error",
+    "sql": []
+  },
+  "publisher #0 | failing | named tables": {
+    "error": "Publisher dataplane request to http://127.0.0.1:1/connections/c/schemas/s/tables failed for connection \"probe\": Unable to connect. Is the computer able to access the url?",
+    "name": "Error",
+    "sql": []
+  },
+  "constructor bare | answering | schemas": {
+    "error": "Unsupported connection type: constructor",
+    "name": "Error",
+    "sql": []
+  },
+  "constructor bare | answering | tables": {
+    "error": "Unsupported connection type: constructor",
+    "name": "Error",
+    "sql": []
+  },
+  "constructor bare | answering | named tables": {
+    "error": "Unsupported connection type: constructor",
+    "name": "Error",
+    "sql": []
+  },
+  "constructor bare | failing | schemas": {
+    "error": "Unsupported connection type: constructor",
+    "name": "Error",
+    "sql": []
+  },
+  "constructor bare | failing | tables": {
+    "error": "Unsupported connection type: constructor",
+    "name": "Error",
+    "sql": []
+  },
+  "constructor bare | failing | named tables": {
+    "error": "Unsupported connection type: constructor",
+    "name": "Error",
+    "sql": []
+  },
+  "toString bare | answering | schemas": {
+    "error": "Unsupported connection type: toString",
+    "name": "Error",
+    "sql": []
+  },
+  "toString bare | answering | tables": {
+    "error": "Unsupported connection type: toString",
+    "name": "Error",
+    "sql": []
+  },
+  "toString bare | answering | named tables": {
+    "error": "Unsupported connection type: toString",
+    "name": "Error",
+    "sql": []
+  },
+  "toString bare | failing | schemas": {
+    "error": "Unsupported connection type: toString",
+    "name": "Error",
+    "sql": []
+  },
+  "toString bare | failing | tables": {
+    "error": "Unsupported connection type: toString",
+    "name": "Error",
+    "sql": []
+  },
+  "toString bare | failing | named tables": {
+    "error": "Unsupported connection type: toString",
+    "name": "Error",
+    "sql": []
+  },
+  "nope bare | answering | schemas": {
+    "error": "Unsupported connection type: nope",
+    "name": "Error",
+    "sql": []
+  },
+  "nope bare | answering | tables": {
+    "error": "Unsupported connection type: nope",
+    "name": "Error",
+    "sql": []
+  },
+  "nope bare | answering | named tables": {
+    "error": "Unsupported connection type: nope",
+    "name": "Error",
+    "sql": []
+  },
+  "nope bare | failing | schemas": {
+    "error": "Unsupported connection type: nope",
+    "name": "Error",
+    "sql": []
+  },
+  "nope bare | failing | tables": {
+    "error": "Unsupported connection type: nope",
+    "name": "Error",
+    "sql": []
+  },
+  "nope bare | failing | named tables": {
+    "error": "Unsupported connection type: nope",
+    "name": "Error",
+    "sql": []
+  }
+}

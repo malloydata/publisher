@@ -1,7 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { connectPgClient } from "../../../src/service/connection";
+import { connectPgClient } from "../../../src/service/postgres_conninfo";
 
 /** The Postgres superuser the admin integration specs provision with; they skip without it. */
 export const SUPERUSER = process.env.PUBLISHER_TEST_ADMIN_SUPERUSER;

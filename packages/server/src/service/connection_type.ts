@@ -16,8 +16,17 @@
 import { externalEnv } from "../settings/external";
 
 const recorded = new WeakMap<object, string>();
-/** Connections configured `managed` (a catalog an orchestrator provisions). */
-const managed = new WeakSet<object>();
+/**
+ * Connections configured `managed` (a catalog an orchestrator provisions), with
+ * the schemas SQL on each may name (managed_catalog_scope.ts).
+ */
+const managed = new WeakMap<object, ReadonlySet<string>>();
+/**
+ * What a connection recorded `managed` without its schemas may name: `main`
+ * alone, as managed_catalog_scope.ts's `managedSchemas()` gives. Not imported
+ * from there, which would load DuckDB into the package-load worker.
+ */
+const MAIN_ONLY: ReadonlySet<string> = new Set(["main"]);
 
 /** Test seam layers: connection name -> the type to record instead. */
 const overrides: Map<string, string>[] = [];
@@ -113,17 +122,18 @@ function overrideOf(connection: object): string | undefined {
 
 /**
  * Record `connection`'s configured type, and whether it is configured
- * `managed`; returns `connection`.
+ * `managed`, with the schemas SQL on it may name (managed_catalog_scope.ts,
+ * `managedSchemas`); returns `connection`.
  */
 export function recordConnectionType<T extends object>(
    connection: T,
    type: string | undefined,
-   options: { managed?: boolean } = {},
+   options: { managed?: boolean; schemas?: ReadonlySet<string> } = {},
 ): T {
    const recordedType = overrideOf(connection) ?? type;
    if (recordedType) recorded.set(connection, recordedType);
    if (options.managed === true || managedOverrideOf(connection)) {
-      managed.add(connection);
+      managed.set(connection, options.schemas ?? MAIN_ONLY);
    }
    return connection;
 }
@@ -133,6 +143,16 @@ export function isManagedConnection(
    connection: object | null | undefined,
 ): boolean {
    return !!connection && managed.has(connection);
+}
+
+/**
+ * The schemas SQL on `connection` may name when it was recorded as `managed`;
+ * undefined when it was not.
+ */
+export function managedSchemasOf(
+   connection: object | null | undefined,
+): ReadonlySet<string> | undefined {
+   return connection ? managed.get(connection) : undefined;
 }
 
 /**

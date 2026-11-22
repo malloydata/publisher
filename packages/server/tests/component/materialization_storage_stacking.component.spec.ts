@@ -35,11 +35,12 @@ import * as fs from "fs";
 import * as path from "path";
 import { unrecordedAudit } from "../../src/service/access_record";
 import * as connection from "../../src/service/connection";
+import * as dialects from "../../src/service/dialects";
 import { recordConnectionsAsForTests } from "../../src/service/connection_type";
 import { Environment } from "../../src/service/environment";
 import { parsePackageName } from "../../src/service/identity";
 import { MaterializationService } from "../../src/service/materialization/run/materialization_service";
-import * as numericPrecision from "../../src/service/materialization/run/postgres_numeric_precision";
+import * as numericPrecision from "../../src/service/materialization/run/passthrough/postgres";
 import { StorageBuildStrategy } from "../../src/service/materialization/run/storage_build_strategy";
 import { QueryPrivileges } from "../../src/service/model_query_request";
 import type {
@@ -428,15 +429,14 @@ describe.skipIf(process.platform === "win32")(
                await attachFileLake(session as never, dbName, true);
                return true;
             }),
-            spyOn(
-               connection,
-               "federateSourceForPassthrough",
-            ).mockImplementation(async (session, sourceType) => {
-               await session.runSQL(
-                  "CREATE OR REPLACE TEMP MACRO postgres_query(alias, q) AS TABLE SELECT * FROM query(q)",
-               );
-               return { handle: "warehouse", sourceType };
-            }),
+            spyOn(dialects, "federateSourceForPassthrough").mockImplementation(
+               async (session, sourceType) => {
+                  await session.runSQL(
+                     "CREATE OR REPLACE TEMP MACRO postgres_query(alias, q) AS TABLE SELECT * FROM query(q)",
+                  );
+                  return { handle: "warehouse", sourceType };
+               },
+            ),
             // The stand-in warehouse is DuckDB, which has no Postgres type
             // catalog to probe; it holds no numeric to read as text.
             spyOn(

@@ -40,6 +40,10 @@ import {
 } from "../service/access_record";
 import { testConnectionConfig } from "../service/connection";
 import {
+   connectionDialectOf,
+   registeredConnectionType,
+} from "../service/dialects";
+import {
    toPublicConnection,
    toPublicConnections,
 } from "../service/connection_public_view";
@@ -47,6 +51,11 @@ import {
    validateConnectionSqlFields,
    validateDuckdbApiSurface,
 } from "../service/connection_config";
+import {
+   managedCatalogMessage,
+   managedCatalogRefusal,
+   managedSchemas,
+} from "../service/managed_catalog_scope";
 import { assertSingleSelect } from "../service/single_select";
 import {
    meterStatement,
@@ -247,6 +256,27 @@ function sqlRunFailure(
 }
 
 /**
+ * Refuse raw SQL on a managed connection that names anything outside the
+ * schemas it may read (managed_catalog_scope.ts), before it runs.
+ */
+async function assertManagedCatalogScope(
+   connectionName: string,
+   sqlStatement: string,
+   schemas: ReadonlySet<string>,
+): Promise<void> {
+   const refused = await managedCatalogRefusal(
+      sqlStatement,
+      connectionName,
+      schemas,
+   );
+   if (refused) {
+      throw new BadRequestError(
+         managedCatalogMessage("Raw SQL", connectionName, refused),
+      );
+   }
+}
+
+/**
  * `refusal` marked managed when its URL lies under a data path `environment`
  * configures (StorageAccessDeniedError.managed).
  */
@@ -275,20 +305,6 @@ async function withDatabaseAccessClassified<T>(
    }
 }
 
-const CONNECTION_TYPES = new Set<string>([
-   "postgres",
-   "bigquery",
-   "snowflake",
-   "trino",
-   "databricks",
-   "mysql",
-   "sqlserver",
-   "duckdb",
-   "motherduck",
-   "ducklake",
-   "publisher",
-]);
-
 const connectionOperations = lazyCounter(
    "publisher_connection_operations_total",
    "Connection create/update/delete/test requests. Labels: operation ('create'|'update'|'delete'|'test'), type (the connection type, 'unknown' when absent or unrecognised), outcome ('success'|'failed'|'refused'). 'failed' is a test that ran and could not connect; 'refused' threw (a 4xx or 5xx).",
@@ -309,10 +325,7 @@ async function metered<T>(
 ): Promise<T> {
    const label = {
       operation,
-      type:
-         typeof type === "string" && CONNECTION_TYPES.has(type)
-            ? type
-            : "unknown",
+      type: registeredConnectionType(type) ?? "unknown",
    };
    const startedAt = performance.now();
    const record = (outcome: string) => {
@@ -397,7 +410,7 @@ export class ConnectionController {
          if (error instanceof ConnectionNotFoundError) return undefined;
          throw error;
       }
-      return type === "duckdb" || type === "ducklake" || type === "motherduck"
+      return connectionDialectOf(type)?.lockedDown === true
          ? "locked-down DuckDB connection"
          : undefined;
    }
@@ -420,6 +433,17 @@ export class ConnectionController {
          if (error instanceof ConnectionNotFoundError) return false;
          throw error;
       }
+   }
+
+   /** The schemas raw SQL on a managed connection may name (managed_catalog_scope.ts). */
+   private managedSchemasOf(
+      environment: Environment,
+      connectionName: string,
+   ): ReadonlySet<string> {
+      return managedSchemas(
+         this.getApiConnectionForLookup(environment, connectionName)
+            .ducklakeConnection?.readableSchemas,
+      );
    }
 
    /**
@@ -748,6 +772,13 @@ export class ConnectionController {
       if (singleSelect) {
          await assertSingleSelect(connectionName, sqlStatement, singleSelect);
       }
+      if (singleSelect === "managed database") {
+         await assertManagedCatalogScope(
+            connectionName,
+            sqlStatement,
+            this.managedSchemasOf(environment, connectionName),
+         );
+      }
 
       const malloyConnection = await this.getMalloyConnection(
          environmentName,
@@ -959,6 +990,13 @@ export class ConnectionController {
       const managed = singleSelect === "managed database";
       if (singleSelect) {
          await assertSingleSelect(connectionName, sqlStatement, singleSelect);
+      }
+      if (managed) {
+         await assertManagedCatalogScope(
+            connectionName,
+            sqlStatement,
+            this.managedSchemasOf(environmentForAdmission, connectionName),
+         );
       }
       // A managed connection is metered (statement_usage.ts): the statement
       // that runs below emits one usage record, whether it answers or fails.
@@ -1307,8 +1345,7 @@ export class ConnectionController {
       // is a 400 rather than a failed test. Other types accept any name; an
       // empty name falls through to the service's missing-name failure.
       if (
-         (connectionConfig.type === "duckdb" ||
-            connectionConfig.type === "ducklake") &&
+         connectionDialectOf(connectionConfig.type)?.fileNamed === true &&
          connectionConfig.name
       ) {
          assertSafePackageName(connectionConfig.name);

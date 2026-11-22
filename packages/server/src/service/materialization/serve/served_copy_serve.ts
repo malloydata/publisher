@@ -176,6 +176,7 @@ import {
    readsRerootedTables,
    readZonesOf,
    recordJoinsRead,
+   sameZone,
    ZONED_TRUNCATION_REASON,
 } from "./served_copy_checks";
 
@@ -356,6 +357,12 @@ type AuthorReroot = Reroot & {
    /** The timestamp truncations it leaves out, stored in another zone than any read's. */
    zonedLeftOut?: string[];
    /**
+    * For a query-shaped re-root whose query computed in a zone: its
+    * timestamp truncations, restated over the stored value, and the one
+    * zone its query's stages truncated them in ({@link zonedTruncations}).
+    */
+   stageZonedTruncations?: { zone: string | undefined; names: string[] };
+   /**
     * The stored columns left out of the `type:`, so only a query reading
     * one fails to compile here and answers live; their absence is not a lost
     * field. For a v1 re-root, the columns no cast reads as their declared
@@ -417,6 +424,12 @@ const knownRerootFailures = new WeakMap<
    Map<string, { error: unknown; until: number }>
 >();
 const REROOT_FAILURE_TTL_MS = 10 * 60_000;
+
+/**
+ * How long a compile that threw is judged as failed before a verdict read
+ * compiles it again (a query does at once).
+ */
+const ESCAPED_FAILURE_RETRY_MS = 30_000;
 const REROOT_FAILURES_PER_CONFIG = 64;
 
 /** The key a copy's failure is remembered under. */
@@ -510,6 +523,17 @@ export class ServedCopyServe {
    /** Drop the compiled copy (bindings, destinations or the model changed). */
    invalidate(): void {
       this.lanes.invalidate();
+   }
+
+   /**
+    * Whether the compiled copy is the one a query pinned now reads: compiled
+    * over the bindings fresh at the pin. Right after a bind it is not: the
+    * compile at bind runs in the background, and until it lands the copy
+    * kept is the previous bindings' (a query compiles its own, so it never
+    * reads that one).
+    */
+   isCurrent(pinned: Pinned = this.current()): boolean {
+      return this.lanes.keepsFor(0, this.freshBindings(pinned));
    }
 
    /**
@@ -1221,6 +1245,12 @@ export class ServedCopyServe {
       problems: ServedCopyProblem[],
       reservedNames: readonly string[],
       lane = 0,
+      /**
+       * Keep a query-shaped source's zoned truncations, restated, for the
+       * read checks a query runs (`checkZonedColumns`); a chained build runs
+       * none, so it leaves them out.
+       */
+      restatesStageZoned = false,
    ): AuthorReroot | undefined {
       // `#(materialize)`: the binding is the generated build source's; its
       // plan names the author's source, by sourceID.
@@ -1304,6 +1334,7 @@ export class ServedCopyServe {
          def,
          fieldsByName,
          chainZoneOf(map, def) ?? inlineBaseZoneOf(def),
+         restatesStageZoned,
       );
       if (zoned.leftOut.length > 0) {
          // Left out like any column no read gives exactly, with its own
@@ -1370,6 +1401,9 @@ export class ServedCopyServe {
             ? { restatedTruncations: zoned.restated }
             : {}),
          ...(zoned.leftOut.length > 0 ? { zonedLeftOut: zoned.leftOut } : {}),
+         ...(zoned.stageZoned
+            ? { stageZonedTruncations: zoned.stageZoned }
+            : {}),
          ...(plan?.readTimeTerms?.length
             ? { readTimeTerms: plan.readTimeTerms }
             : {}),
@@ -1771,6 +1805,8 @@ export class ServedCopyServe {
       passedOver: ReadonlySet<Binding> = new Set(),
       /** Filled with each source bound in both tiers: its storage binding's database twin. */
       twins?: Map<Binding, Binding>,
+      /** {@link rerootFor}'s `restatesStageZoned`: true for a query's compile. */
+      restatesStageZoned = false,
    ): {
       candidates: { binding: Binding; reroot: AuthorReroot }[];
       throughBase: NonNullable<Compiled["throughBase"]>[number][];
@@ -1791,6 +1827,7 @@ export class ServedCopyServe {
             problems,
             reservedNames,
             lane,
+            restatesStageZoned,
          );
          if (reroot) {
             candidates.push({
@@ -1903,6 +1940,50 @@ export class ServedCopyServe {
       /** The pin's time, which a remembered failure is held against. */
       asOf = 0,
    ): Promise<Compiled> {
+      try {
+         return await this.compileWithFallbacks(
+            key,
+            generation,
+            bindings,
+            lane,
+            asOf,
+         );
+      } catch (error) {
+         // A failure the passes did not catch is the copy failing to compile,
+         // recorded so a verdict judges it (every source answers live) rather
+         // than reading it pending forever. It may be transient, so the next
+         // request compiles again, and a verdict read does once the backoff
+         // has passed.
+         const failed: Compiled = {
+            key,
+            generation,
+            over: bindings,
+            lane,
+            rerooted: [],
+            aliased: [],
+            escaped: true,
+            problems: [
+               {
+                  reason: "compile_failed",
+                  detail:
+                     error instanceof Error ? error.message : String(error),
+               },
+            ],
+         };
+         setTimeout(() => {
+            failed.retryDue = true;
+         }, ESCAPED_FAILURE_RETRY_MS).unref?.();
+         return failed;
+      }
+   }
+
+   private async compileWithFallbacks(
+      key: string,
+      generation: number,
+      bindings: Binding[],
+      lane: number,
+      asOf: number,
+   ): Promise<Compiled> {
       const passedOver = new Set<Binding>();
       // Why each storage table passed over was dropped, from the compile
       // that dropped it: still warned, as served from the database instead.
@@ -1991,6 +2072,7 @@ export class ServedCopyServe {
          lane,
          passedOver,
          twins,
+         true,
       );
       const { throughBase, withoutKept } = prepared;
       const state: CopyPassState = {
@@ -2513,6 +2595,19 @@ export class ServedCopyServe {
             candidates
                .filter((c) => c.reroot.zonedLeftOut?.length)
                .map((c) => [c.reroot.sourceID, new Set(c.reroot.zonedLeftOut)]),
+         ),
+         stageZonedTruncations: new Map(
+            candidates.flatMap((c) => {
+               const s = c.reroot.stageZonedTruncations;
+               return s
+                  ? [
+                       [
+                          c.reroot.sourceID,
+                          { zone: s.zone, names: new Set(s.names) },
+                       ] as const,
+                    ]
+                  : [];
+            }),
          ),
          leftOutTables: new Set(
             candidates
@@ -4771,10 +4866,14 @@ export function staleOnChain(
  * from the base its query runs on, `ev_ny -> { … }`) reads in another zone
  * than it was built in (its query's stage zone ends with the
  * query, and its own applies only at read, not to the query that built the
- * table), so each such column is left out (`leftOut`) and a query reading it
- * answers live. Otherwise the columns stay (`restated`), built in the
- * source's own zone, and a query that reads one in another zone is declined
- * (`checkZonedColumns`).
+ * table). With `restatesStageZoned`, when its query's stages computed in one
+ * zone ({@link queryStageZone}), each such column stays, restated
+ * (`stageZoned`), and a query reads one only where it truncates it again in
+ * that zone (`checkZonedColumns`): `DATE_TRUNC` of a value already truncated
+ * in a zone, in that zone, is that value. Otherwise each is left out
+ * (`leftOut`) and a query reading it answers live. A source with no zone
+ * keeps its columns (`restated`), built in the source's own zone, and a
+ * query that reads one in another zone is declined (`checkZonedColumns`).
  */
 function zonedTruncations(
    columns: readonly ServedColumn[],
@@ -4782,7 +4881,13 @@ function zonedTruncations(
    fieldsByName: ReadonlyMap<string, unknown>,
    /** The zone the source's chain sets, which its query's stage inherits. */
    chainZone?: string,
-): { columns: ServedColumn[]; leftOut: string[]; restated: string[] } {
+   restatesStageZoned = false,
+): {
+   columns: ServedColumn[];
+   leftOut: string[];
+   restated: string[];
+   stageZoned?: { zone: string | undefined; names: string[] };
+} {
    const truncation = (c: ServedColumn) => {
       const type = (fieldsByName.get(c.name) as { type?: unknown } | undefined)
          ?.type;
@@ -4798,9 +4903,61 @@ function zonedTruncations(
    if (queryShaped === undefined || !(queryTimezoneOf(def) ?? chainZone)) {
       return { columns: [...columns], leftOut: [], restated: truncated };
    }
+   const stage = restatesStageZoned ? queryStageZone(def) : undefined;
+   if (stage !== undefined) {
+      return {
+         columns: [...columns],
+         leftOut: [],
+         restated: [],
+         ...(truncated.length > 0
+            ? { stageZoned: { zone: stage.zone, names: truncated } }
+            : {}),
+      };
+   }
    return {
       columns: columns.filter((c) => !truncation(c)),
       leftOut: truncated,
       restated: [],
    };
+}
+
+/**
+ * The one zone a query-shaped source's query computes every timestamp
+ * truncation it outputs in: each stage's own `timezone:`, and, for a stage
+ * that sets none, the zone of the base the query runs on, written inline (as
+ * Malloy compiles a query-shaped source, carrying the zone it inherits).
+ * Only over a base that is not itself query-shaped, so each truncation is
+ * computed by one of these stages: a base's query may pass through a
+ * truncation it computed in its own zone. Undefined when the base is
+ * query-shaped or not inline, or the zones are not all one.
+ */
+function queryStageZone(
+   def: unknown,
+): { zone: string | undefined } | undefined {
+   const query = (
+      def as { query?: { structRef?: unknown; pipeline?: unknown } } | undefined
+   )?.query;
+   const stages = Array.isArray(query?.pipeline) ? query.pipeline : [];
+   if (stages.length === 0) return undefined;
+   const zoneOf = (x: unknown) => {
+      const z = (x as { queryTimezone?: unknown } | null)?.queryTimezone;
+      return typeof z === "string" && z !== "" ? z : undefined;
+   };
+   const base = query?.structRef as
+      | { query?: unknown; type?: unknown }
+      | null
+      | undefined;
+   if (
+      base === null ||
+      typeof base !== "object" ||
+      base.query !== undefined ||
+      base.type === "query_source"
+   ) {
+      return undefined;
+   }
+   const own = stages.map(zoneOf);
+   const zones = own.filter((z) => z !== undefined) as (string | undefined)[];
+   if (own.some((z) => z === undefined)) zones.push(zoneOf(base));
+   const [first, ...rest] = zones;
+   return rest.every((z) => sameZone(z, first)) ? { zone: first } : undefined;
 }

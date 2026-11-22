@@ -471,7 +471,7 @@ export function isDestinationCatalogUnavailableError(error: unknown): boolean {
  * Whether `error` is DuckDB refusing DECIMAL arithmetic past its 38 digits: a
  * product whose scale exceeds 38 (`DECIMAL(38,20) * DECIMAL(38,20)`), or a
  * product, sum or addition that overflows. A Postgres `numeric` is stored as
- * the exact DECIMAL(38, s) that holds it (`run/postgres_numeric_precision.ts`),
+ * the exact DECIMAL(38, s) that holds it (`run/passthrough/postgres.ts`),
  * where live's arbitrary precision has room the destination's arithmetic does
  * not. The table is right and only the arithmetic ran out, so such an answer
  * degrades to live whatever the bindings' `freshnessFallback` says.
