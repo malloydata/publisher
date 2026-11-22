@@ -324,6 +324,22 @@ export class MaterializationController {
          validReferenceSchema(ref.nativeSchema).length > 0
             ? { nativeSchema: validReferenceSchema(ref.nativeSchema) }
             : {}),
+         // A stored upstream's columns, as its build reported them.
+         ...(ref.schema !== undefined &&
+         validReferenceSchema(ref.schema, "schema").length > 0
+            ? { schema: validReferenceSchema(ref.schema, "schema") }
+            : {}),
+         ...(ref.dataAsOf !== undefined
+            ? { dataAsOf: referenceInstant(ref.dataAsOf, "dataAsOf") }
+            : {}),
+         ...(ref.builtAt !== undefined
+            ? { builtAt: referenceInstant(ref.builtAt, "builtAt") }
+            : {}),
+         // Carried unparsed, as a host stores it: a contract that does not
+         // read is none (domain/column_contract.ts).
+         ...(ref.contract !== undefined && ref.contract !== null
+            ? { contract: ref.contract as ManifestReference["contract"] }
+            : {}),
       };
    }
 
@@ -565,7 +581,10 @@ function assertUsableTableName(name: string, what: string): void {
  * each a name and a type, both non-empty strings. Anything else is refused
  * (400), so a malformed list never reads as "no types recorded".
  */
-function validReferenceSchema(raw: unknown): { name: string; type: string }[] {
+function validReferenceSchema(
+   raw: unknown,
+   field: "nativeSchema" | "schema" = "nativeSchema",
+): { name: string; type: string }[] {
    if (
       !Array.isArray(raw) ||
       !raw.every(
@@ -579,13 +598,27 @@ function validReferenceSchema(raw: unknown): { name: string; type: string }[] {
       )
    ) {
       throw new BuildInstructionsInvalidError(
-         "Manifest reference 'nativeSchema' must be an array of { name, type } objects with non-empty string fields",
+         `Manifest reference '${field}' must be an array of { name, type } objects with non-empty string fields`,
       );
    }
    return raw.map((c: { name: string; type: string }) => ({
       name: c.name,
       type: c.type,
    }));
+}
+
+/**
+ * A reference's instant (`dataAsOf`, `builtAt`): a string `Date` reads as
+ * an instant, refused otherwise (400), so a malformed one never reads as
+ * "of unknown age".
+ */
+function referenceInstant(raw: unknown, field: string): string {
+   if (typeof raw !== "string" || Number.isNaN(Date.parse(raw))) {
+      throw new BuildInstructionsInvalidError(
+         `Manifest reference '${field}' must be a date-time string when present`,
+      );
+   }
+   return raw;
 }
 
 /**

@@ -254,6 +254,67 @@ describe("MaterializationController.createMaterialization validation", () => {
       }
    });
 
+   it("carries a reference's schema, dataAsOf, builtAt and contract, and refuses a malformed schema or instant", async () => {
+      const body = (ref: Record<string, unknown>) => ({
+         buildInstructions: {
+            sources: [
+               {
+                  sourceEntityId: "b2",
+                  materializedTableId: "mt-2",
+                  physicalTableName: "downstream_v1",
+               },
+            ],
+            referenceManifest: [
+               {
+                  sourceEntityId: "b1",
+                  physicalTableName: "upstream_table",
+                  storageDestinationName: "lake",
+                  ...ref,
+               },
+            ],
+         },
+      });
+      const schema = [{ name: "cat", type: "VARCHAR" }];
+      // A host's contract, as it stored it: carried unparsed, unknown keys too.
+      const contract = { v: 1, columns: [], later: { x: 1 } };
+      const parsed = (await parse(
+         body({
+            schema,
+            dataAsOf: "2026-11-20T00:00:00.000Z",
+            builtAt: "2026-11-20T00:05:00.000Z",
+            contract,
+         }),
+      )) as { referenceManifest: unknown[] };
+      expect(parsed.referenceManifest).toEqual([
+         {
+            sourceEntityId: "b1",
+            physicalTableName: "upstream_table",
+            storageDestinationName: "lake",
+            schema,
+            dataAsOf: "2026-11-20T00:00:00.000Z",
+            builtAt: "2026-11-20T00:05:00.000Z",
+            contract,
+         },
+      ]);
+      for (const [bad, field] of [
+         [{ schema: [{ name: "cat" }] }, "schema"],
+         [{ dataAsOf: "yesterday" }, "dataAsOf"],
+         [{ builtAt: 7 }, "builtAt"],
+      ] as const) {
+         const { controller } = build();
+         let err: unknown;
+         try {
+            await controller.createMaterialization("env", "pkg", body(bad));
+         } catch (e) {
+            err = e;
+         }
+         expect(err).toBeInstanceOf(BadRequestError);
+         expect(String((err as Error).message)).toContain(
+            `Manifest reference '${field}'`,
+         );
+      }
+   });
+
    it("keeps a reference's storageDestinationName, reads an empty nativeSchema as none, and refuses an empty destination", async () => {
       const body = (ref: Record<string, unknown>) => ({
          buildInstructions: {

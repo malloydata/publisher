@@ -678,6 +678,14 @@ export function referenceManifestToEntries(
          // What the altered-upstream check compares the table against
          // (database_column_read.ts, movedSinceBuild).
          ...(ref.nativeSchema ? { nativeSchema: ref.nativeSchema } : {}),
+         // What a storage= build stacked on it declares.
+         ...(ref.schema ? { schema: ref.schema } : {}),
+         // How fresh it is, for a downstream with a freshness window.
+         ...(ref.dataAsOf ? { dataAsOf: ref.dataAsOf } : {}),
+         // Which build of it a downstream's builtFrom names.
+         ...(ref.builtAt ? { builtAt: ref.builtAt } : {}),
+         // Its column contract, as the host stored it.
+         ...(ref.contract !== undefined ? { contract: ref.contract } : {}),
       };
    }
    return entries;

@@ -11793,6 +11793,43 @@ components:
             it there. Optional and additive.
           items:
             $ref: "#/components/schemas/Column"
+        schema:
+          type: array
+          description: >-
+            For a `storage=` upstream: the `schema` its build reported on its
+            manifest entry, sent back as it came. A `storage=` build stacked
+            on the referenced table declares exactly these columns, so without
+            it (and without this worker's own record of the table) that build
+            is refused rather than recomputing the upstream. Optional and
+            additive.
+          items:
+            $ref: "#/components/schemas/Column"
+        dataAsOf:
+          type: string
+          format: date-time
+          description: >-
+            The upstream entry's `dataAsOf`, sent back as it came: how fresh
+            the referenced table is. A downstream with a freshness window
+            reads a referenced table only when it is fresh enough by this
+            instant; without it the table is of unknown age, and such a
+            downstream is refused rather than built from raw. Optional and
+            additive.
+        builtAt:
+          type: string
+          format: date-time
+          description: >-
+            The upstream entry's `builtAt`, sent back as it came, so a
+            downstream's `builtFrom` names which build of the table it read.
+            Optional and additive.
+        contract:
+          allOf:
+            - $ref: "#/components/schemas/ColumnContract"
+          description: >-
+            The upstream entry's `contract`, sent back unparsed. A downstream
+            built over the referenced table reads it to know how the table's
+            strings compare with live, and, for a pair table, whether its leaf
+            key check passed; without it those columns are unknown, and a
+            downstream that needs them is refused. Optional and additive.
 
     BuildInstruction:
       type: object
