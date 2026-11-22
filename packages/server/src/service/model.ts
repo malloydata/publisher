@@ -3518,6 +3518,8 @@ export class Model {
          sources: () => this.sources,
          givens: () => this.givens,
          snapshot: () => this.servingSnapshot(),
+         reportIncompatible: (handles) =>
+            this.policy.reportIncompatible?.(handles),
          servedCopy: () => this.servedCopy,
          legs: (pinned, servedCopy) =>
             makeLegs(pinned, {

@@ -21,6 +21,10 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — a stored read that finds its table changed answers live, and the package reads its tables again
+
+**Changed: a query whose stored table no longer holds what it reads (a column, or the table, gone since the bind) is answered live in that same query, on every leg, whatever the source's `freshnessFallback`.** Before, such a query failed unless the source declared `freshnessFallback: live`. The table is failed closed at once (serve verdict `incompatible`, code `read_failed`), so no later query reads it, and the package reads and binds every bound table again, in the background, where the bind's contract check judges it (`incompatible`, answered live until a rebuild, or served again if it reads as its contract recorded it). One rebind runs at a time per package and replica; each replica finds such a change at its own next bind or failed read. **Who is affected:** a source declaring `freshnessFallback: fail`, whose query over a changed table now answers live instead of failing.
+
 ## [Unreleased] — a bind compiles the served copy before it swaps the tables in
 
 **Changed: every bind (a run's commit, a manifest bind, a reload, an unread table read again) compiles each model's served copy over the new tables before they are swapped in.** Until then, models and queries read the tables from before the bind, so a query never meets tables its served copy has not compiled for, and a serve verdict read after a bind returns is never pending. `ServeVerdict.servedCopyPending` is deprecated: a server no longer leaves one behind, and the field goes in a later release. A bind returns once the copies have compiled, so it takes longer than before.

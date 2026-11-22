@@ -41,10 +41,12 @@ import {
 } from "../../config";
 import { logger } from "../../logger";
 import {
+   recordIncompatibleDetected,
    recordSourceBound,
    recordSourceDeclined,
    recordStoredColumnTypeMismatch,
 } from "../../materialization_metrics";
+import { errorCodeOf } from "../../error_code";
 import type { LoadPackageOutcome } from "../../package_load/package_load_pool";
 import type { Model } from "../model";
 import type { PackageModelPolicy } from "../model_policy";
@@ -248,6 +250,14 @@ export class PackageMaterialization {
       | undefined;
    /** Where the last bind read its `storage=` tables (readStorageColumns). */
    private storageSite: StoredTableSite | undefined;
+   /**
+    * Tables a stored read found not as their bind found them, by address:
+    * failed closed until the rebind {@link onIncompatible} starts judges
+    * them again.
+    */
+   private readFailed: ReadonlySet<string> = new Set();
+   /** The rebind {@link onIncompatible} runs, and whether another is due after it. */
+   private rebinding: { again: boolean } | undefined;
    /** The snapshot from before a bind that is compiling ({@link servedSnapshot}). */
    private committing: Snapshot | undefined;
    /** The pending re-read of the `storage=` tables the last bind left unread. */
@@ -460,7 +470,79 @@ export class PackageMaterialization {
          snapshot: () => this.servedSnapshot(),
          preaggregateEntityIds: () => this.getPreaggregateEntityIds(),
          materializedTables: () => this.verdicts.tableCatalog(),
+         reportIncompatible: (handles) => this.onIncompatible(handles),
       });
+   }
+
+   /**
+    * The drift handler, for a stored read that found its tables not as their
+    * bind found them (a column or the table gone): fail them closed at once,
+    * so every leg declines them and their queries answer live, then read
+    * and bind every bound table again, where the one comparator judges each
+    * against its contract (an incompatible one stays out, `incompatible`).
+    * One rebind at a time; reports during it start one more after it.
+    * Per replica: each finds drift at its own next bind or failed read.
+    */
+   private onIncompatible(handles: readonly string[]): void {
+      if (this.disposed) return;
+      const known = handles.filter((h) => !this.readFailed.has(h));
+      if (known.length > 0) {
+         this.readFailed = new Set([...this.readFailed, ...known]);
+         recordIncompatibleDetected("read", known.length);
+         this.publish();
+      }
+      if (this.rebinding) {
+         this.rebinding.again = true;
+         return;
+      }
+      const run = { again: false };
+      this.rebinding = run;
+      void (async () => {
+         try {
+            do {
+               run.again = false;
+               await this.rebindFromCatalog();
+            } while (run.again && !this.disposed);
+         } catch (err) {
+            logger.warn(
+               "Could not read the bound tables again after a stored read failed; they stay answered live until the next bind",
+               {
+                  packageName: this.owner.packageName(),
+                  code: errorCodeOf(err),
+               },
+            );
+         } finally {
+            this.rebinding = undefined;
+         }
+      })();
+   }
+
+   /**
+    * Read every bound table again, on both tiers, and bind what it finds as
+    * one commit, clearing the tables {@link onIncompatible} failed closed.
+    */
+   private async rebindFromCatalog(): Promise<void> {
+      const database = this.databaseEntries;
+      const observed =
+         database && Object.keys(database).length > 0
+            ? await this.readDatabaseColumns(database)
+            : undefined;
+      const storage = this.storageEntries;
+      const storageObserved =
+         Object.keys(storage).length > 0
+            ? await this.readStorageColumns(storage, this.storageSite)
+            : undefined;
+      if (this.disposed) return;
+      await this.commit(() => {
+         if (observed && this.databaseEntries === database) {
+            this.observedColumns = observed;
+         }
+         if (storageObserved && this.storageEntries === storage) {
+            this.storageObserved = storageObserved;
+         }
+         this.readFailed = new Set();
+      });
+      this.logObservedOutcome();
    }
 
    /**
@@ -486,6 +568,7 @@ export class PackageMaterialization {
       const key = [
          this.storageBindings,
          this.storageObserved,
+         this.readFailed,
          this.databaseEntries,
          this.observedColumns,
          plan.buildPlan,
@@ -534,8 +617,23 @@ export class PackageMaterialization {
          }),
          ...observed.bindings,
       ].map((b) => (asOfBuild(b) ? { ...b, asOfBuild: true } : b));
+      // A table a stored read failed on serves nothing until the rebind
+      // judges it again.
+      const failed = this.readFailed;
+      const served =
+         failed.size === 0
+            ? bindings
+            : bindings.filter((b) => !failed.has(b.virtualHandle));
+      bindings.splice(0, bindings.length, ...served);
       const signature = JSON.stringify(bindings);
-      const entries = observed.entries;
+      const entries =
+         failed.size === 0
+            ? observed.entries
+            : Object.fromEntries(
+                 Object.entries(observed.entries).filter(
+                    ([id]) => !failed.has(id),
+                 ),
+              );
       const snapshot = makeSnapshot(
          memo && memo.signature === signature
             ? memo.snapshot.bindings
@@ -1039,6 +1137,17 @@ export class PackageMaterialization {
             physicalTableName: t.physicalTableName,
             ...(t.builtAt ? { builtAt: t.builtAt } : {}),
             incompatibility: { code: "upstream_altered", columns: [] },
+         });
+      }
+      // A table a stored read failed on, until the rebind judges it again.
+      for (const id of this.readFailed) {
+         const t = tableOf(id);
+         if (!t.physicalTableName) continue;
+         verdicts.set(id, {
+            reason: "incompatible",
+            physicalTableName: t.physicalTableName,
+            ...(t.builtAt ? { builtAt: t.builtAt } : {}),
+            incompatibility: { code: "read_failed", columns: [] },
          });
       }
       for (const i of this.observedOutcome.incompatible) {

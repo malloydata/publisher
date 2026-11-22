@@ -449,3 +449,73 @@ for (const tier of tiers) {
       });
    });
 }
+
+describe("a stored read that finds its table gone since the bind (the drift handler's failed-read trigger)", () => {
+   let restore: () => void;
+   let f: Fixture;
+   let drop: (() => Promise<void>) | undefined;
+   const live: Record<string, Answer> = {};
+   let dropped = "";
+   const QUERY = QUERIES["view num"];
+   beforeAll(async () => {
+      restore = installSettings({
+         env: {
+            PUBLISHER_MATERIALIZE: "true",
+            PERSIST_STORAGE_MODE: "off",
+            PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: "true",
+         },
+      }).restore;
+      await freshLoadPool();
+      const w = await tiers[0].warehouse();
+      drop = w.drop;
+      f = await fixture(w.config);
+      live.before = await ask(f, QUERY);
+      const run = await build(f);
+      expect(run.status).toBe("MANIFEST_FILE_READY");
+      // Out of band, with no bind after it: the view's table is dropped.
+      const warehouse = await f.env.getMalloyConnection("warehouse");
+      dropped = Object.values(
+         (
+            run.manifest as {
+               entries: Record<string, { physicalTableName: string }>;
+            }
+         ).entries,
+      )
+         .map((e) => e.physicalTableName)
+         .find((t) => t.includes("v_num") || t.includes("q_num"))!;
+      await warehouse.runSQL(`DROP TABLE ${dropped}`);
+   }, 300_000);
+   afterAll(async () => {
+      await f?.cleanup();
+      await drop?.();
+      restore();
+      await freshLoadPool();
+   });
+
+   it("answers that query live, equal to live, rather than failing it", async () => {
+      expect(dropped).not.toBe("");
+      const answer = await ask(f, QUERY);
+      expect(answer.rows).toEqual(live.before.rows);
+      expect(answer.kind).toBe("live");
+   });
+
+   it("fails the table closed, then the rebind judges it: never served again until it is rebuilt", async () => {
+      const deadline = Date.now() + 20_000;
+      let verdict: { reason?: string; table?: { physicalTableName: string } } =
+         {};
+      while (Date.now() < deadline) {
+         verdict =
+            f.pkg
+               .materialization()
+               .serveVerdicts()
+               .find((v) => v.table?.physicalTableName === dropped) ?? {};
+         if (verdict.reason !== undefined) break;
+         await new Promise((r) => setTimeout(r, 100));
+      }
+      // Gone at the rebind's read: unread (not_found), or failed closed.
+      expect(["incompatible", "stale", undefined]).toContain(verdict.reason);
+      const again = await ask(f, QUERY);
+      expect(again.rows).toEqual(live.before.rows);
+      expect(again.kind).toBe("live");
+   });
+});

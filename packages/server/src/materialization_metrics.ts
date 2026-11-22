@@ -449,6 +449,12 @@ const contractCaptureCounter = lazyCounter(
       "capture records no contract: the table is not served from until it " +
       "is rebuilt (serve verdict reason contract_missing).",
 );
+const incompatibleDetectedCounter = lazyCounter(
+   "publisher_materialization_incompatible_detected_total",
+   "Bound tables the drift handler found no longer as their bind found " +
+      "them, failed closed until a rebind judges them again. Labels: " +
+      "trigger ('read': a stored read failed on a column or table gone).",
+);
 const storageTableRetainedCounter = lazyCounter(
    "publisher_storage_tables_retained_total",
    "Tables a FAILED run left in a storage= destination and deliberately did not " +
@@ -795,6 +801,14 @@ export function recordKeyCheck(
    outcome: KeyCheckOutcome,
 ): void {
    keyCheckCounter().add(1, { kind, outcome });
+}
+
+/** Record tables the drift handler failed closed (package_materialization.ts). */
+export function recordIncompatibleDetected(
+   trigger: "read",
+   tables: number,
+): void {
+   incompatibleDetectedCounter().add(tables, { trigger });
 }
 
 /** Record one column contract capture (run/column_contract_capture.ts). */
