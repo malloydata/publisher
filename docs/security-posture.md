@@ -228,8 +228,20 @@ Concretely:
   read and no URL: `STORAGE_ACCESS_DENIED`, saying the query is fine, only for a URL under a data
   path the environment configures, and `PATH_ACCESS_DENIED` for a path the query or model reads
   itself. The full text, bucket and path included, is in the server
-  log. Hiding a schema a host's catalog uses (such as a managed `materialized` schema)
-  from models is the host's to configure, not Publisher's.
+  log.
+- **A `managed` DuckLake connection reads only its catalog's `main` schema.** Its storage
+  credential reaches only `main`'s files, and because DuckLake answers some reads from catalog
+  metadata alone (columns, row counts, file statistics, listings, inlined rows), SQL on it is also
+  held to `main` before it runs: a `.table()` or `.sql()` source when the model compiles, a raw SQL
+  expression when the package loads, and raw SQL at its route. Another schema or catalog, the
+  metadata catalog, DuckDB's catalog views and functions, `DESCRIBE`/`SHOW`/`SUMMARIZE`, and table
+  functions other than `range`, `generate_series` and `unnest` are refused, as is a table name that is a
+  path, glob or DuckDB catalog name however it is qualified; on a local data path its file allowlist
+  is `main`'s files, as its secret is scoped elsewhere; and its schema listing
+  shows only `main` (`packages/server/src/service/managed_catalog_scope.ts`). DuckDB and DuckLake
+  offer no attach option that hides a schema, the metadata, file statistics or inlined rows from a
+  read-only attach, so this check is the control. A storage destination's own session still reads
+  every schema.
 - **Governance is mostly a modeling concern.** `#(authorize)`, `#(access_filter)`, given-scoped
   row-level access, and a package's `index.malloy` surface constrain what a _model_ exposes. They are
   real, and they are the right place to put data policy. They are not end-user authentication:

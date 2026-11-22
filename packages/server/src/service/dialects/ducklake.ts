@@ -19,7 +19,7 @@ import {
    catalogFormatRangeForEngine,
    isCatalogFormatInRange,
 } from "../../ducklake_version";
-import { UnsupportedCatalogFormatError } from "../../errors";
+import { BadRequestError, UnsupportedCatalogFormatError } from "../../errors";
 import { logger } from "../../logger";
 import { redactPgSecrets } from "../../pg_helpers";
 import { errMessage } from "../../utils";
@@ -51,6 +51,7 @@ import {
    createPgAttachSecret,
    validatePostgresSslmode,
 } from "../postgres_conninfo";
+import { managedCatalogMessage } from "../managed_catalog_scope";
 import { quoteIdentifier } from "../quoting";
 import { buildDuckdbEntry } from "./duckdb";
 import {
@@ -735,13 +736,27 @@ async function secureCatalogStorage(
    },
 ): Promise<void> {
    const { dataPath, metadataSchema, options } = input;
+   // Only a connection view is narrowed: an operator's destination serves
+   // every schema, whatever flags its entry carries.
+   const managedView =
+      options.managed === true && options.origin !== "storage-destination";
    if (!storage) {
-      // No storage secret: the catalog's data path is what its lock allows.
+      // No storage secret (a local data path): what its lock allows is the
+      // whole data path, or, for a managed read-only view, only its `main`
+      // schema's files, as a secret would be scoped. A managed view whose main
+      // path cannot be read is allowed no data file at all.
       const root =
-         dataPath ||
-         (await recordedCatalogSettings(connection, dbName, metadataSchema)
-            .then((settings) => settings.data_path)
-            .catch(() => undefined));
+         managedView && options.readOnly
+            ? await attachedDuckLakeScope(connection, dbName, {
+                 configuredDataPath: dataPath,
+                 metadataSchema,
+                 readOnly: true,
+                 managed: true,
+              }).catch(() => undefined)
+            : dataPath ||
+              (await recordedCatalogSettings(connection, dbName, metadataSchema)
+                 .then((settings) => settings.data_path)
+                 .catch(() => undefined));
       if (root) allowForLockdown(connection, root);
    }
    if (storage) {
@@ -757,11 +772,7 @@ async function secureCatalogStorage(
             configuredDataPath: dataPath,
             metadataSchema,
             readOnly: options.readOnly,
-            // Only a connection view is narrowed: an operator's destination
-            // serves every schema, whatever flags its entry carries.
-            managed:
-               options.managed === true &&
-               options.origin !== "storage-destination",
+            managed: managedView,
          });
          if (!scope) {
             throw new Error(
@@ -916,7 +927,13 @@ async function getSchemasForDuckLake(
             malloyConnection,
             `SELECT schema_name FROM information_schema.schemata WHERE catalog_name = '${sqlLiteral(catalogName, connection.type)}' ORDER BY schema_name`,
          );
-         const rows = standardizeRunSQLResult(result);
+         // A managed connection reads only its catalog's `main` schema
+         // (managed_catalog_scope.ts): the others are not listed to it.
+         const rows = standardizeRunSQLResult(result).filter(
+            (row) =>
+               connection.managed !== true ||
+               (row as Record<string, unknown>).schema_name === "main",
+         );
 
          return rows.map((row: unknown) => {
             const typedRow = row as Record<string, unknown>;
@@ -946,6 +963,20 @@ async function listTablesForDuckLake(
 
    const catalogName = schemaName.split(".")[0];
    const actualSchemaName = schemaName.split(".")[1];
+   if (
+      connection.managed === true &&
+      (catalogName.toLowerCase() !== (connection.name ?? "").toLowerCase() ||
+         actualSchemaName?.toLowerCase() !== "main" ||
+         schemaName.split(".").length !== 2)
+   ) {
+      throw new BadRequestError(
+         managedCatalogMessage(
+            "A table listing",
+            connection.name ?? "",
+            `the schema '${schemaName}'`,
+         ),
+      );
+   }
    return withIntrospectionFailure(
       `tables for DuckLake schema ${schemaName} in connection ${connection.name}`,
       async () => {
