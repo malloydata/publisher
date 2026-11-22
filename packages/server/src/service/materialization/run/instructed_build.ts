@@ -893,14 +893,30 @@ export class InstructedBuild {
             stacked = true;
          },
       };
+      const overUpstreams = await overStoredUpstreamSource(
+         run,
+         persistSource,
+         gated,
+      );
+      const overStored =
+         overUpstreams instanceof Error ? undefined : overUpstreams;
       const built = await this.buildGatedSource(
          run,
-         (await overStoredBaseSource(run, persistSource, gated, connection)) ??
+         overStored ??
+            (await overStoredBaseSource(
+               run,
+               persistSource,
+               gated,
+               connection,
+            )) ??
             persistSource,
          graphConnectionName,
          connection,
          gated,
          storedBase,
+         overUpstreams instanceof Error
+            ? { refused: overUpstreams }
+            : { upstreams: overStored !== undefined },
       );
       if (!built) return;
       // A `storage=` rollup that grouped its base's stored table is anchored
@@ -1097,7 +1113,14 @@ export class InstructedBuild {
       connection: MalloyConnection,
       { instruction, orchestrated, sourceEntityId, target }: GatedSource,
       storedBase?: StoredRollupBase,
+      over: {
+         /** `persistSource` is a view or query compiled over its upstreams' tables. */
+         upstreams?: boolean;
+         /** Why it could not be: the build fails with this, never recomputes. */
+         refused?: Error;
+      } = {},
    ): Promise<ManifestEntry | undefined> {
+      const overStoredUpstreams = over.upstreams === true;
       const { compiled } = run;
       // An auto-run's table at the author's own `name=`, which another
       // package on the same schema may hold (table_ownership.ts). Every other
@@ -1113,6 +1136,7 @@ export class InstructedBuild {
       // (ownership, uniqueness) ran no build to time.
       let buildStartedAt: number | undefined;
       const checkBuildAndMark = async (): Promise<ManifestEntry> => {
+         if (over.refused) throw over.refused;
          // A `name=` another package holds fails the source before anything
          // is written, the uniqueness check included. This package's own
          // leftover view at the name is dropped by the build's own
@@ -1172,6 +1196,7 @@ export class InstructedBuild {
             planFacts: run.planFacts,
             ...(replacesView ? { replacesView } : {}),
             ...(storedBase ? { storedBase } : {}),
+            ...(overStoredUpstreams ? { overStoredUpstreams } : {}),
             ...(compiled.tables[persistSource.sourceID]?.kind === "rollup"
                ? { rollup: true }
                : {}),
@@ -2183,6 +2208,70 @@ function baseFreshEnough(
          run.freshness!.at,
       ) === "fresh"
    );
+}
+
+/**
+ * The source a database persisted view or named query the plan offers a
+ * build over its upstreams' tables builds from: its
+ * build source compiled over its upstreams' stored tables
+ * (persisted_view_compile.ts), so its build reads each upstream's table
+ * through the build manifest as any chained build does, and a moved,
+ * missing or wrong-tier upstream takes the ordinary chained path (recomputed,
+ * or under strict upstreams refused). Only when the plan offers it, the
+ * instruction names no destination, and the compiled source is at the
+ * view's planned address: the upstreams' own `#@ persist` kept leaves its
+ * fully inlined SQL, which keys the address, unchanged. Undefined when not
+ * offered (it builds from its definition, as planned); an Error, which fails
+ * the build, when offered and not the planned table.
+ */
+async function overStoredUpstreamSource(
+   run: InstructedRun,
+   persistSource: PersistSource,
+   gated: Pick<GatedSource, "instruction" | "sourceEntityId">,
+): Promise<PersistSource | Error | undefined> {
+   const { compiled } = run;
+   const table = compiled.tables[persistSource.sourceID];
+   if (table?.kind !== "view" || !table.overStoredBase) return undefined;
+   if (gated.instruction.destination) return undefined;
+   // The plan said it builds over its upstreams' tables: a compile that
+   // does not give the planned table fails the build (closed), never a
+   // recompute from raw. Its files changed since the plan, or a Publisher
+   // bug; a reload plans it again.
+   const refused = (why: string) =>
+      new Error(
+         `Failed to materialize source '${persistSource.name}': its build ` +
+            `over its upstreams' stored tables ${why}; reload the package to ` +
+            `plan it again`,
+      );
+   let variant: OverStoredBase | undefined;
+   try {
+      variant = await table.overStoredBase();
+   } catch {
+      variant = undefined;
+   }
+   if (!variant) return refused("did not compile");
+   try {
+      const address = computeSourceEntityId(
+         variant.source,
+         compiled.connectionDigests,
+         undefined,
+         compiled.tableFolds,
+         compiled.upstreamSchemas,
+      );
+      const planned = computeSourceEntityId(
+         persistSource,
+         compiled.connectionDigests,
+         table.target,
+         compiled.tableFolds,
+         compiled.upstreamSchemas,
+      );
+      if (address !== planned || !sameColumns(variant.source, persistSource)) {
+         return refused("is not the planned table");
+      }
+   } catch {
+      return refused("could not be addressed");
+   }
+   return variant.source;
 }
 
 /**

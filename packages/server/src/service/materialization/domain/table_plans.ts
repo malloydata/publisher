@@ -747,6 +747,13 @@ export type TablePlan = TablePlanFacts &
            kind: Extract<TableKind, "persist" | "view">;
            materialize?: undefined;
            rollup?: undefined;
+           /**
+            * A database persisted view or named query compiled over its
+            * upstreams' stored tables (persisted_view_compile.ts): set when
+            * it qualifies, compiled on the first call. A run builds from it
+            * when it builds the planned table (instructed_build.ts).
+            */
+           overStoredBase?: () => Promise<OverStoredBase | undefined>;
         }
       | {
            kind: Extract<TableKind, "materialize" | "pair">;

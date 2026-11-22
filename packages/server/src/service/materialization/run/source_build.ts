@@ -521,6 +521,7 @@ function classifyStoredUpstreams(
    contentSourceEntityId: string | undefined,
    planFacts: ChainedPlanFacts,
    rendered: ReturnType<typeof renderBuildSQL>,
+   overStoredUpstreams = false,
 ) {
    const {
       isStorageBuild,
@@ -606,7 +607,9 @@ function classifyStoredUpstreams(
            ),
            // The content address: orchestrators may assign their own ids.
            rootAddress: contentSourceEntityId ?? instruction.sourceEntityId,
-           readsDefinitions: isPersistedResultSourceID(persistSource.sourceID),
+           readsDefinitions:
+              !overStoredUpstreams &&
+              isPersistedResultSourceID(persistSource.sourceID),
         })
       : { fields: {}, inManifestOnly: [], missing: [], definitionsRead: [] };
    // A persisted view or query reads every upstream through its
@@ -704,6 +707,13 @@ export interface SourceBuildOptions {
     */
    rollup?: boolean;
    /**
+    * A persisted view's or named query's build source compiled over its
+    * upstreams' stored tables (persisted_view_compile.ts): it reads each
+    * upstream as any chained build does, from its table through the
+    * manifest, not through its definition.
+    */
+   overStoredUpstreams?: boolean;
+   /**
     * The addresses this run built so far: their tables' columns were
     * captured by their own builds, so a chained build does not read them
     * again ({@link movedUpstreams}).
@@ -741,6 +751,7 @@ export async function buildSource(
       rollup,
       signal,
       builtThisRun,
+      overStoredUpstreams,
    } = options;
    const physicalTableName = instruction.physicalTableName;
    const reach = persistedReach(persistSource, environment, planFacts);
@@ -782,6 +793,7 @@ export async function buildSource(
       contentSourceEntityId,
       planFacts,
       rendered,
+      overStoredUpstreams === true,
    );
 
    // Every statement of this build carries the same metadata so query history

@@ -1156,6 +1156,15 @@ async function collectGeneratedPersistedViews(
       parts.tables[source.sourceID] = {
          kind: "view",
          ...plannedFacts(source, args.modelPath),
+         // Built over its upstreams' tables, when it may be.
+         ...(generated.overStoredCandidates.has(source.sourceID)
+            ? {
+                 overStoredBase: async () =>
+                    (await generated.overStoredUpstreams()).get(
+                       source.sourceID,
+                    ),
+              }
+            : {}),
          gate: query
             ? await persistedQueryGate(source, query, ctx)
             : // The view's rows are its source's: its gate is the source's.

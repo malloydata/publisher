@@ -83,6 +83,34 @@ source: b is a -> { group_by: cat; aggregate: total is amt.sum() }
       query: `run: b ${AS_TEXT}`,
       servedBy: "materialized",
    },
+   {
+      label: "persisted view",
+      files: {
+         "m.malloy": `${HEAD}${PERSIST_A}
+source: s is a extend {
+  #@ persist name="dr_v"
+  view: by_cat is { group_by: cat; aggregate: total is amt.sum() }
+}
+`,
+      },
+      upstream: "a",
+      downstream: /^s__by_cat__view$/,
+      query: `run: s -> by_cat ${AS_TEXT}`,
+      servedBy: "view",
+   },
+   {
+      label: "persisted query",
+      files: {
+         "m.malloy": `${HEAD}${PERSIST_A}
+#@ persist name="dr_q"
+query: q is a -> { group_by: cat; aggregate: total is amt.sum() }
+`,
+      },
+      upstream: "a",
+      downstream: /^q__query$/,
+      query: `run: q ${AS_TEXT}`,
+      servedBy: "query",
+   },
 ];
 
 interface Answer {
@@ -297,3 +325,120 @@ for (const [tier, mechanism] of tiers.flatMap((t) =>
       });
    });
 }
+
+describe("a host's instructions listing a view before its upstream", () => {
+   let restore: () => void;
+   let root: string;
+   let env: Environment;
+   let db: DuckDBConnection;
+   let repo: ResourceRepository;
+   let service: MaterializationService;
+   let pkg: Package;
+   let run: Materialization;
+   let order: string[];
+
+   beforeAll(async () => {
+      restore = installSettings({
+         env: {
+            PUBLISHER_MATERIALIZE: "true",
+            PERSIST_STORAGE_MODE: "off",
+            PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: "true",
+         },
+      }).restore;
+      await freshLoadPool();
+      root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "dr-")));
+      const envPath = path.join(root, "env");
+      fs.mkdirSync(envPath);
+      writePackageFiles(path.join(envPath, PKG), MECHANISMS[1].files, {
+         manifest: { name: PKG, description: "fixture" },
+      });
+      db = new DuckDBConnection(":memory:");
+      await db.initialize();
+      await initializeSchema(db);
+      await db.run(
+         "INSERT INTO environments (id, name, path, created_at, updated_at) VALUES (?, ?, ?, now(), now())",
+         ["env-1", ENV, envPath],
+      );
+      repo = createDuckDBRepository(db);
+      env = await Environment.create(
+         ENV,
+         envPath,
+         [
+            {
+               name: "warehouse",
+               type: "duckdb",
+               duckdbConnection: { setupSQL: "SELECT 1" },
+            } as never,
+         ],
+         [],
+      );
+      const warehouse = await env.getMalloyConnection("warehouse");
+      await warehouse.runSQL(`CREATE TABLE dr_raw AS ${RAW_ROWS}`);
+      await env.addPackage(PKG);
+      pkg = await env.getPackage(parsePackageName(PKG), false);
+      service = serviceOverEnvironment(
+         () => repo,
+         () => env,
+      );
+      // The view first: a run that followed the list would build it before
+      // `a`'s table exists, which strict upstreams refuse.
+      // One table per address: `s` extends `a`, so it shares `a`'s.
+      const sources = Object.values(pkg.getBuildPlan()!.sources);
+      const tableAt = (address: string) =>
+         `host_${sources.find((s) => s.sourceEntityId === address)!.name}`;
+      const instructions = sources
+         .map((s) => ({
+            sourceEntityId: s.sourceEntityId,
+            sourceID: s.sourceID,
+            materializedTableId: `mt-${s.name}`,
+            physicalTableName: tableAt(s.sourceEntityId),
+            realization: "COPY" as const,
+         }))
+         .sort((x, y) =>
+            x.physicalTableName.includes("view")
+               ? -1
+               : y.physicalTableName.includes("view")
+                 ? 1
+                 : 0,
+         );
+      order = instructions.map((i) => i.physicalTableName);
+      const created = await service.createMaterialization(ENV, PKG, {
+         buildInstructions: instructions,
+         strictUpstreams: true,
+      });
+      const deadline = Date.now() + 120_000;
+      for (;;) {
+         const m = await repo.getMaterializationById(created.id);
+         if (m && ["MANIFEST_FILE_READY", "FAILED"].includes(m.status)) {
+            run = m;
+            break;
+         }
+         if (Date.now() > deadline) throw new Error("run never settled");
+         await new Promise((r) => setTimeout(r, 20));
+      }
+   }, 300_000);
+   afterAll(async () => {
+      await env?.closeAllConnections().catch(() => undefined);
+      await db?.close();
+      fs.rmSync(root, { recursive: true, force: true });
+      restore();
+      await freshLoadPool();
+   });
+
+   it("builds the view after its upstream, over the upstream's table, under strict upstreams", () => {
+      expect(order[0]).toBe("host_s__by_cat__view");
+      expect([run.status, (run as { error?: unknown }).error]).toEqual([
+         "MANIFEST_FILE_READY",
+         null,
+      ]);
+      const entries = Object.entries(entriesOf(run));
+      const [aAddress] = entries.find(
+         ([, e]) => e.physicalTableName === "host_a",
+      )!;
+      const view = entries.find(
+         ([, e]) => e.physicalTableName === "host_s__by_cat__view",
+      )![1];
+      expect(view.upstreamReuse).toBe("reused");
+      expect(view.builtFrom?.map((b) => b.sourceEntityId)).toEqual([aAddress]);
+   });
+});
