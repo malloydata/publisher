@@ -136,7 +136,8 @@ describe("the storage tier's build (chained-build fallback ladder)", () => {
          | "infra"
          | "wrongTier"
          | "wrongTierAndMissing"
-         | "withUndeclarable";
+         | "withUndeclarable"
+         | "collation";
       /** The host instructed the run (orchestrated). */
       hostInstructed?: boolean;
       /** The host's `warehouseReach` (ms2data/service#6756). */
@@ -196,6 +197,15 @@ describe("the storage tier's build (chained-build fallback ladder)", () => {
             new MaterializationEligibilityError({
                message:
                   "'monthly' reads the source warehouse (regions) through 'daily_regional'",
+            }),
+         ),
+         // Over the parents the build would compare a string byte-exact that
+         // its source compares under a collation (buildDownstreamViaParents):
+         // no build over them gives live's rows, as for `raw`.
+         collation: sinon.stub().rejects(
+            new MaterializationEligibilityError({
+               message:
+                  "'monthly' compares a string over its stored upstreams ('daily') that the destination, byte-exact, would compare otherwise than its source does: `region` compares under a unknown collation",
             }),
          ),
          // Every upstream is stored and present, yet the build could not carry
@@ -461,6 +471,36 @@ describe("the storage tier's build (chained-build fallback ladder)", () => {
       });
       await expect(uncarried).rejects.toBeInstanceOf(
          ChainedShapeNotCarriedError,
+      );
+   });
+
+   it("a downstream whose strings its source compares otherwise recomputes, strict or not, and refuses only under warehouseReach refuse", async () => {
+      // Strict, as Credible sends every build, with no warehouseReach: the
+      // recompute runs (and fails here for its own reason, no destination
+      // file), never the strict refusal of an uncarried shape.
+      for (const opts of [
+         { strict: true },
+         { strict: true, warehouseReach: "recompute" as const },
+         { strict: false },
+         { strict: false, warehouseReach: "refuse" as const },
+      ]) {
+         await expect(
+            callInto({ ...opts, stackOnParent: "collation" }),
+         ).rejects.toThrow(/Failed to materialize source 'monthly'/i);
+      }
+      const { WarehouseRecomputeRefusedError } = await import(
+         "../../../errors"
+      );
+      const refused = callInto({
+         strict: true,
+         stackOnParent: "collation",
+         warehouseReach: "refuse",
+      });
+      await expect(refused).rejects.toBeInstanceOf(
+         WarehouseRecomputeRefusedError,
+      );
+      await expect(refused).rejects.toThrow(
+         /warehouseReach: refuse.*compares under a unknown collation/is,
       );
    });
 

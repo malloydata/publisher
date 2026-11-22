@@ -7,6 +7,10 @@
  * destination, every stored upstream it reads re-rooted on that upstream's
  * table there, as the served copy re-roots it.
  *
+ * Its sibling, `chainCollationRefusal`, says whether such a build may be
+ * computed there at all: the destination compares strings byte-exact, which
+ * the source's collation may not.
+ *
  * Made by the run (run/storage_build_strategy.ts) and answered by the package
  * facade, which asks the served copy (serve/served_copy_serve.ts). Every input
  * is explicit: the upstreams' entries are the ones this run holds, schemas
@@ -82,3 +86,22 @@ export type ChainBuildText =
          */
         code?: "package_stale";
      };
+
+/**
+ * What a chained `storage=` build computes over its stored upstreams, for the
+ * host port's `chainCollationRefusal`: the downstream's own query, or a
+ * rollup's grouping of its base, by the author's names.
+ */
+export interface ChainCollationRequest {
+   /** The downstream persist source, by its plan's sourceID and name. */
+   downstream: { sourceID: string; name: string };
+   /** Set for a rollup: its base by name, its grain and its measures. */
+   rollup?: {
+      baseSourceID: string;
+      baseName: string;
+      grain: readonly string[];
+      measures: readonly string[];
+   };
+   /** The sourceIDs of the upstreams whose stored tables the build reads. */
+   stored: readonly string[];
+}
