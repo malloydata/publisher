@@ -2437,6 +2437,8 @@ function storedRollupBase(
       address,
       entry,
       companion: table.storedBase.companion,
+      grain: table.rollup.grainDimensions,
+      measures: table.rollup.measures.map((m) => m.name),
    };
 }
 

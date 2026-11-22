@@ -110,6 +110,7 @@ import {
 import type {
    ChainBuildRequest,
    ChainBuildText,
+   ChainCollationRequest,
 } from "./materialization/domain/chain_build";
 import type { KeptTable, LateRows } from "./materialization/domain/types";
 import { underCompilerKeys } from "./materialization/domain/binding";
@@ -1741,6 +1742,13 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    /** The host port's `chainBuildText` (see PackageMaterialization.chainBuildText). */
    public chainBuildText(request: ChainBuildRequest): ChainBuildText {
       return this.mz.chainBuildText(request);
+   }
+
+   /** The host port's `chainCollationRefusal` (see PackageMaterialization.chainCollationRefusal). */
+   public chainCollationRefusal(
+      request: ChainCollationRequest,
+   ): Promise<string | undefined> {
+      return this.mz.chainCollationRefusal(request);
    }
 
    /** The persist build plan, or null when the package declares no persist source. */
