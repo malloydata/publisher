@@ -310,7 +310,9 @@ describe("a storage= source on a DuckLake catalog that carries author SQL", () =
          expect(refused.map((r) => [r.name, r.tier, r.reason])).toEqual([
             ["daily", "storage", "storage_source_unsupported"],
          ]);
-         expect(refused[0].message).toContain("carries SQL its author wrote");
+         expect(refused[0].message).toContain(
+            "cannot be materialized: it reads source 'raw', which is an .sql() source, and its connection 'duckdb' is a DuckLake catalog",
+         );
          expect(Object.keys(pkg.getBuildPlan()?.sources ?? {})).toEqual([]);
       },
       { timeout: 30000 },
@@ -349,7 +351,9 @@ describe("a source over author SQL on a managed connection", () => {
          );
          const [warning] = coded(pkg, "persist-not-built");
          expect(warning).toMatchObject({ severity: "warn", subject: "daily" });
-         expect(warning.message).toContain("is a managed database");
+         expect(warning.message).toContain(
+            "it reads source 'raw', which is an .sql() source, and its connection 'duckdb' is a managed database",
+         );
          expect(refusals(pkg)).toEqual([
             ["daily", "database", "storage_source_unsupported"],
          ]);
@@ -364,6 +368,33 @@ describe("a source over author SQL on a managed connection", () => {
                responseShape: "compact",
             });
          expect(result.servedFrom ?? null).toBeNull();
+      },
+      { timeout: 30000 },
+   );
+
+   it(
+      "names the joined .sql() source, not every possible cause, for a source that joins one",
+      async () => {
+         managed();
+         const pkg = await loadPackage(
+            `${RAW}source: status_names is duckdb.sql("""SELECT 'A' AS category, 'Alpha' AS label""")
+#@ persist name="j"
+source: lab_joined is duckdb.table('information_schema.schemata') extend {
+   join_one: sn is status_names on schema_name = sn.category
+} -> { group_by: schema_name, sn.label }
+#@ persist name="s"
+source: lab_sql is duckdb.sql("""SELECT 'A' AS category""")
+`,
+         );
+         const bySubject = new Map(
+            coded(pkg, "persist-not-built").map((w) => [w.subject, w.message]),
+         );
+         expect(bySubject.get("lab_joined")).toContain(
+            "cannot be materialized: its join 'sn' reads source 'status_names', which is an .sql() source, and its connection",
+         );
+         expect(bySubject.get("lab_sql")).toContain(
+            "cannot be materialized: it is an .sql() source, and its connection",
+         );
       },
       { timeout: 30000 },
    );

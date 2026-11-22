@@ -21,6 +21,10 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — a catalog build's author-SQL refusal names its cause
+
+**Fixed: a source refused for author SQL on a managed database or DuckLake catalog got a message listing every possible cause.** The `persist-not-built` (or `materialize-not-built`) warning, `refusedSources[].message` and the run's message said the source "carries SQL its author wrote (an .sql() source or a sql_* expression, its own or a joined source's) or reads a file or URL as a table", the same text for a source whose own `.sql()` was the cause and one that only joins an `.sql()` source. The message now names the cause and where it is: `it is an .sql() source`, `its join 'sn' reads source 'status_names', which is an .sql() source`, `it reads source 'raw', which is an .sql() source`, `its field 'doubled' uses a sql_* expression`, or `it reads source 'orders', which reads '/x.csv' as a table`. The refusal itself, its `reason` (`storage_source_unsupported`) and which sources are refused are unchanged.
+
 ## [Unreleased] — an MCP tool error carries the `reason` its REST error does
 
 **Fixed: `execute_query` over MCP gave a truncated BigQuery result no `reason`.** The REST query route answers BigQuery's short first page with a 502 carrying `reason: RESULT_TRUNCATED`, but the MCP tool's error payload held only `error` and `suggestions`, so a client could tell it apart only by its text. Every MCP tool error now carries the REST body's `reason` when the error has one (`RESULT_TRUNCATED`, `CONNECTION_FAILED`, `CONNECTION_AUTH_FAILED`, `CONNECTION_NOT_FOUND`, `ACCESS_DENIED`, …), beside `error` and `suggestions`. The field is new and additive; nothing else in the payload changed.

@@ -1792,7 +1792,9 @@ source: stored is base -> { group_by: region; aggregate: c is count() }`;
       expect(err.message).toContain(
          "connection 'duckdb' is a DuckLake catalog",
       );
-      expect(err.message).toContain("carries SQL its author wrote");
+      expect(err.message).toContain(
+         "cannot be materialized: it reads source 'base', which is an .sql() source, and its connection 'duckdb'",
+      );
    });
 
    it("admits a DuckLake source over the catalog's own tables", async () => {
