@@ -41,8 +41,10 @@ import type {
    Runtime,
    SourceDef,
 } from "@malloydata/malloy";
+import { Manifest } from "@malloydata/malloy";
 import * as path from "path";
 import { fileURLToPath, pathToFileURL } from "url";
+import { readsTable } from "../domain/table_name";
 import { incrementalUnbuildableReason } from "./incremental_policy";
 import {
    nearMissGateLines,
@@ -191,7 +193,9 @@ import {
 import { quoteIdentifier } from "../../quoting";
 import {
    addressSQL,
+   buildSQLOf,
    compilerBuildId,
+   computeSourceEntityId,
    foldDistinctTableNames,
    isUnkeyable,
    planAddresses,
@@ -2276,6 +2280,16 @@ function refuseAcrossPlacements<
                storage: declaredStorage(upstream.source)?.trim() || undefined,
             });
             if (why === undefined) continue;
+            // A persisted source's edge may be a join only its read applies
+            // (declared in its `extend`): refused only when its build reads
+            // the upstream's table. A view's or rollup's edges are what its
+            // definition reads.
+            if (
+               (table.kind === "persist" || table.kind === "materialize") &&
+               !buildReadsTable(compiled, table, upstreamID)
+            ) {
+               continue;
+            }
             dropped.add(sourceID);
             findings.push(
                notBuiltFinding(
@@ -2295,9 +2309,47 @@ function refuseAcrossPlacements<
 }
 
 /**
- * Refuse, as `upstream_table_unusable`, each downstream (a persisted view or
- * query, or a rollup) planned to build over an upstream's table
- * (`overStoredBase`) whose upstream is not planned, or is refused: the
+ * Whether `table`'s build SQL reads the table of the planned upstream at
+ * `upstreamID`, rendered with that upstream's table in its manifest. A
+ * render that fails reads it (fail closed).
+ */
+function buildReadsTable(
+   compiled: Omit<FinishedBuildPlan, "connections">,
+   table: Omit<FinishedBuildPlan, "connections">["tables"][string],
+   upstreamID: string,
+): boolean {
+   const upstream = compiled.tables[upstreamID];
+   if (!upstream) return false;
+   const probe = "publisher_placement_probe";
+   try {
+      const manifest = new Manifest();
+      manifest.update(
+         computeSourceEntityId(
+            upstream.source,
+            compiled.connectionDigests,
+            upstream.target,
+            compiled.tableFolds,
+            compiled.upstreamSchemas,
+         ),
+         { tableName: probe },
+      );
+      manifest.update(compilerBuildId(upstream.source, upstream.target), {
+         tableName: probe,
+      });
+      return readsTable(
+         buildSQLOf(table.source, manifest.buildManifest, table.target),
+         probe,
+      );
+   } catch {
+      return true;
+   }
+}
+
+/**
+ * Refuse, as `upstream_table_unusable`, each downstream planned to build over
+ * an upstream's table whose upstream is not planned, or is refused (a
+ * persisted view or query, or a rollup, over its `overStoredBase`; a
+ * persisted source whose build reads a refused upstream's table): the
  * upstream's declaration is read from its notes, but it has no table to
  * read, and a downstream is never built by recomputing its upstream from
  * raw. Decided here, once every table and its eligibility is known, so a
@@ -2309,9 +2361,26 @@ function refuseOverMissingUpstreams<
    const verdicts = planVerdicts(compiled);
    const findings: PackageAnnotationFinding[] = [];
    const dropped = new Set<string>();
+   // A persisted source's upstreams: the tables its build reads.
+   const edges = new Map<string, string[]>();
+   for (const build of compiled.builds) {
+      for (const [id, reads] of Object.entries(build.dependsOn)) {
+         edges.set(id, [...(edges.get(id) ?? []), ...reads]);
+      }
+   }
    for (const [sourceID, table] of Object.entries(compiled.tables)) {
-      if (table.kind !== "view" && table.kind !== "rollup") continue;
-      for (const upstreamID of table.overStoredBase?.upstreamSourceIDs ?? []) {
+      const upstreamIDs =
+         table.kind === "view" || table.kind === "rollup"
+            ? (table.overStoredBase?.upstreamSourceIDs ?? [])
+            : (edges.get(sourceID) ?? []).filter((id) => {
+                 const wire = verdicts.get(id)?.wire;
+                 return (
+                    wire !== undefined &&
+                    ("failed" in wire || wire.refused !== undefined) &&
+                    buildReadsTable(compiled, table, id)
+                 );
+              });
+      for (const upstreamID of upstreamIDs) {
          const upstream = compiled.tables[upstreamID];
          const verdict = verdicts.get(upstreamID)?.wire;
          const refusedWhy =
