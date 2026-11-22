@@ -19,7 +19,7 @@
  *
  * **Built over a database base's stored table when a run holds it.** A
  * database rollup over a database `#@ persist` base has a second compile,
- * made only when a run asks ({@link GeneratedRollups.overStoredBases}), with
+ * made at plan time ({@link GeneratedRollups.overStoredBases}), with
  * the base's own `#@ persist` kept: the run builds the rollup from that
  * source, at the same address, only when its build manifest holds the base's
  * table (instructed_build.ts), so the build reads the table, not the
@@ -139,12 +139,12 @@ interface GeneratedRollups {
     * The rollups that may be built over their base's stored table, by sourceID,
     * each as the companion compiled over the author's files with its base's
     * own `#@ persist` kept ({@link overStoredBaseNotes}), so Malloy's planner
-    * reads the base's table through a run's build manifest. Compiled once, on
-    * the first call: a plan never builds, so only a run pays for it. Empty
-    * when no rollup qualifies or the compile fails (each rollup then builds
-    * from the warehouse, as it is planned).
+    * reads the base's table through a run's build manifest. Compiled at plan
+    * time, so the plan records the decision (build_plan.ts proves each
+    * against its planned table). Empty when no rollup qualifies or the
+    * compile fails (each rollup then builds from the warehouse, as planned).
     */
-   overStoredBases(): Promise<ReadonlyMap<string, OverStoredBase>>;
+   overStoredBases: ReadonlyMap<string, OverStoredBase>;
    /** The sourceIDs {@link overStoredBases} may hold: the reuse candidates. */
    overStoredCandidates: ReadonlySet<string>;
    /**
@@ -634,9 +634,18 @@ export async function tryCompileRollupCompanion(args: {
          modelFile,
          args.materialized,
       );
-      let overStoredBases:
-         | Promise<ReadonlyMap<string, OverStoredBase>>
-         | undefined;
+      const overStoredBases = await compileOverStoredBases({
+         files,
+         modelDef: args.modelDef,
+         modelPath: args.modelPath,
+         modelFile,
+         companionURL: url,
+         text,
+         plans: planned.plans,
+         copies: copies.files,
+         overStored,
+         materialized: args.materialized,
+      });
       return {
          generated: {
             plans: planned.plans,
@@ -644,19 +653,7 @@ export async function tryCompileRollupCompanion(args: {
             materializer,
             runtime,
             text,
-            overStoredBases: () =>
-               (overStoredBases ??= compileOverStoredBases({
-                  files,
-                  modelDef: args.modelDef,
-                  modelPath: args.modelPath,
-                  modelFile,
-                  companionURL: url,
-                  text,
-                  plans: planned.plans,
-                  copies: copies.files,
-                  overStored,
-                  materialized: args.materialized,
-               })),
+            overStoredBases,
             overStoredCandidates: overStored.rollups,
             storedBaseBuilds: storedBaseBuildsOf(
                SourceMap.of(args.modelDef),

@@ -34,24 +34,17 @@ import {
    type UniquenessLedger,
 } from "./inline_uniqueness";
 import { movedSinceBuild } from "./database_column_read";
-import type {
-   OverStoredBase,
-   ParentKeyCheck,
-   RollupKeyCheck,
-} from "../domain/table_plans";
+import type { ParentKeyCheck, RollupKeyCheck } from "../domain/table_plans";
 import type { InlineUniquenessCheck } from "../domain/table_plans";
 import {
    assertPlacementNamed,
    assertTierEligible,
    buildSQLOf,
-   compilerBuildId,
    computeSourceEntityId,
    upstreamSchemasOfSource,
-   presentAs,
    type RunPlan,
    tierGateInputs,
 } from "./run_plan";
-import { outputColumnsOf } from "../../governance/ir/compiled_model";
 import type {
    Connection as MalloyConnection,
    PersistSource,
@@ -124,7 +117,6 @@ import {
    chainedPlanFacts,
    manifestExcludingStorage,
    manifestForCompiler,
-   readsTable,
    upstreamEntryIsCurrent,
 } from "./build_upstreams";
 import {
@@ -893,13 +885,7 @@ export class InstructedBuild {
             stacked = true;
          },
       };
-      const overUpstreams = await overStoredUpstreamSource(
-         run,
-         persistSource,
-         gated,
-      );
-      const overStored =
-         overUpstreams instanceof Error ? undefined : overUpstreams;
+      const overStored = overStoredUpstreamSource(run, persistSource, gated);
       const built = await this.buildGatedSource(
          run,
          overStored ??
@@ -914,9 +900,7 @@ export class InstructedBuild {
          connection,
          gated,
          storedBase,
-         overUpstreams instanceof Error
-            ? { refused: overUpstreams }
-            : { upstreams: overStored !== undefined },
+         overStored !== undefined,
       );
       if (!built) return;
       // A `storage=` rollup that grouped its base's stored table is anchored
@@ -1113,14 +1097,9 @@ export class InstructedBuild {
       connection: MalloyConnection,
       { instruction, orchestrated, sourceEntityId, target }: GatedSource,
       storedBase?: StoredRollupBase,
-      over: {
-         /** `persistSource` is a view or query compiled over its upstreams' tables. */
-         upstreams?: boolean;
-         /** Why it could not be: the build fails with this, never recomputes. */
-         refused?: Error;
-      } = {},
+      /** `persistSource` is a view or query compiled over its upstreams' tables. */
+      overStoredUpstreams = false,
    ): Promise<ManifestEntry | undefined> {
-      const overStoredUpstreams = over.upstreams === true;
       const { compiled } = run;
       // An auto-run's table at the author's own `name=`, which another
       // package on the same schema may hold (table_ownership.ts). Every other
@@ -1136,7 +1115,6 @@ export class InstructedBuild {
       // (ownership, uniqueness) ran no build to time.
       let buildStartedAt: number | undefined;
       const checkBuildAndMark = async (): Promise<ManifestEntry> => {
-         if (over.refused) throw over.refused;
          // A `name=` another package holds fails the source before anything
          // is written, the uniqueness check included. This package's own
          // leftover view at the name is dropped by the build's own
@@ -2211,67 +2189,24 @@ function baseFreshEnough(
 }
 
 /**
- * The source a database persisted view or named query the plan offers a
- * build over its upstreams' tables builds from: its
- * build source compiled over its upstreams' stored tables
- * (persisted_view_compile.ts), so its build reads each upstream's table
- * through the build manifest as any chained build does, and a moved,
- * missing or wrong-tier upstream takes the ordinary chained path (recomputed,
- * or under strict upstreams refused). Only when the plan offers it, the
- * instruction names no destination, and the compiled source is at the
- * view's planned address: the upstreams' own `#@ persist` kept leaves its
- * fully inlined SQL, which keys the address, unchanged. Undefined when not
- * offered (it builds from its definition, as planned); an Error, which fails
- * the build, when offered and not the planned table.
+ * The source a database persisted view or named query builds from when the
+ * plan decided it builds over its upstreams' tables: its build source
+ * compiled over them, proven at plan time to build the planned table
+ * (over_stored_proof.ts). Its build reads each upstream's table through the
+ * build manifest as any chained build does, so a moved, missing or
+ * wrong-tier upstream takes the ordinary chained path (recomputed, or under
+ * strict upstreams refused). Undefined when the plan did not decide so, or
+ * the instruction names a destination: it builds from its definition.
  */
-async function overStoredUpstreamSource(
+function overStoredUpstreamSource(
    run: InstructedRun,
    persistSource: PersistSource,
-   gated: Pick<GatedSource, "instruction" | "sourceEntityId">,
-): Promise<PersistSource | Error | undefined> {
-   const { compiled } = run;
-   const table = compiled.tables[persistSource.sourceID];
+   gated: Pick<GatedSource, "instruction">,
+): PersistSource | undefined {
+   const table = run.compiled.tables[persistSource.sourceID];
    if (table?.kind !== "view" || !table.overStoredBase) return undefined;
    if (gated.instruction.destination) return undefined;
-   // The plan said it builds over its upstreams' tables: a compile that
-   // does not give the planned table fails the build (closed), never a
-   // recompute from raw. Its files changed since the plan, or a Publisher
-   // bug; a reload plans it again.
-   const refused = (why: string) =>
-      new Error(
-         `Failed to materialize source '${persistSource.name}': its build ` +
-            `over its upstreams' stored tables ${why}; reload the package to ` +
-            `plan it again`,
-      );
-   let variant: OverStoredBase | undefined;
-   try {
-      variant = await table.overStoredBase();
-   } catch {
-      variant = undefined;
-   }
-   if (!variant) return refused("did not compile");
-   try {
-      const address = computeSourceEntityId(
-         variant.source,
-         compiled.connectionDigests,
-         undefined,
-         compiled.tableFolds,
-         compiled.upstreamSchemas,
-      );
-      const planned = computeSourceEntityId(
-         persistSource,
-         compiled.connectionDigests,
-         table.target,
-         compiled.tableFolds,
-         compiled.upstreamSchemas,
-      );
-      if (address !== planned || !sameColumns(variant.source, persistSource)) {
-         return refused("is not the planned table");
-      }
-   } catch {
-      return refused("could not be addressed");
-   }
-   return variant.source;
+   return table.overStoredBase.source;
 }
 
 /**
@@ -2293,7 +2228,8 @@ async function overStoredUpstreamSource(
  *    ({@link baseFreshEnough}), whoever instructed the run;
  *  - a table this run did not build holds the columns its build recorded
  *    (`movedSinceBuild`);
- *  - the compiled source builds the planned table ({@link buildsPlannedTable}).
+ *  - the plan proved its compile over the base's table builds the planned
+ *    table (over_stored_proof.ts), and recorded it (`overStoredBase`).
  *
  * Records the base as what the rollup read, for its freshness anchor.
  */
@@ -2370,111 +2306,8 @@ async function overStoredBaseSource(
       (run.baseRecomputed ??= new Map()).set(gated.sourceEntityId, reason);
       return undefined;
    }
-   let variant: OverStoredBase | undefined;
-   try {
-      variant = await table.overStoredBase();
-   } catch {
-      return undefined;
-   }
-   if (
-      !variant ||
-      (base.kind === "materialize") !== (variant.baseBuildSource !== undefined)
-   ) {
-      return undefined;
-   }
-   try {
-      if (
-         !buildsPlannedTable(run, persistSource, variant, {
-            base: base.source,
-            baseAddress,
-            rollupAddress: gated.sourceEntityId,
-         })
-      ) {
-         return undefined;
-      }
-   } catch {
-      return undefined;
-   }
    (run.readFrom ??= new Map()).set(gated.sourceEntityId, [baseAddress]);
-   return variant.source;
-}
-
-/**
- * Whether `variant`, the rollup compiled over its base's stored table, builds
- * the table the plan gives the rollup `planned`:
- *
- *  - over a `#@ persist` base, it has the rollup's own planned address: its
- *    SQL, the base's inlined, is the plan's;
- *  - over a `#(materialize)` base, the base is re-rooted on its generated
- *    build source, which moves the rollup's SQL, so its own address cannot
- *    match. The build source must instead be at the base's planned address
- *    (the same build source, so the same table), the rollup's SQL rendered
- *    over the base's entry alone must read that table, and its columns must
- *    be the planned rollup's, by name, type and numeric subtype. The rows
- *    are the base's either way, as an extension's build over its parent's
- *    table.
- *
- * The three `#(materialize)` checks are defensive: a compile that re-roots
- * the base as planned passes all three, so none is false in practice. Each
- * guards a drift between the second compile and the plan (another build
- * source, a rollup that no longer reads the base's table, other columns) and
- * fails closed, to the warehouse build. Exported for its unit spec.
- */
-export function buildsPlannedTable(
-   run: InstructedRun,
-   planned: PersistSource,
-   variant: OverStoredBase,
-   at: { base: PersistSource; baseAddress: string; rollupAddress: string },
-): boolean {
-   const { compiled } = run;
-   if (!variant.baseBuildSource) {
-      return (
-         computeSourceEntityId(
-            variant.source,
-            compiled.connectionDigests,
-            undefined,
-            compiled.tableFolds,
-            compiled.upstreamSchemas,
-         ) === at.rollupAddress
-      );
-   }
-   const buildSource = presentAs(variant.baseBuildSource, {
-      name: at.base.name,
-      sourceID: at.base.sourceID,
-   });
-   if (
-      computeSourceEntityId(
-         buildSource,
-         compiled.connectionDigests,
-         undefined,
-         compiled.tableFolds,
-         compiled.upstreamSchemas,
-      ) !== at.baseAddress
-   ) {
-      return false;
-   }
-   const table = run.manifest.buildManifest.entries[at.baseAddress]?.tableName;
-   if (table === undefined) return false;
-   const only = new Manifest();
-   only.update(at.baseAddress, { tableName: table });
-   // Also under the compiler's own key for the base, which differs from
-   // its address when the address folds in a `name=`, projection or
-   // destination.
-   only.update(compilerBuildId(buildSource), { tableName: table });
-   if (!readsTable(buildSQLOf(variant.source, only.buildManifest), table)) {
-      return false;
-   }
-   return sameColumns(variant.source, planned);
-}
-
-/**
- * Whether two sources output the same columns, by name, type and numeric
- * subtype, in order: an integer column where the plan has a float is drift.
- */
-function sameColumns(a: PersistSource, b: PersistSource): boolean {
-   return (
-      JSON.stringify(outputColumnsOf(a)) === JSON.stringify(outputColumnsOf(b))
-   );
+   return table.overStoredBase.source;
 }
 
 /**

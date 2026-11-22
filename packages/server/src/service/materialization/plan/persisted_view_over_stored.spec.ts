@@ -51,12 +51,15 @@ query: q is a -> { group_by: cat; aggregate: total is amt.sum() }
             (t) => t.source.name === name,
          )!;
          expect(table.kind).toBe("view");
-         const offered = (table as { overStoredBase?: () => Promise<unknown> })
-            .overStoredBase;
-         expect(offered).toBeDefined();
-         const variant = (await offered!()) as {
-            source: Parameters<typeof computeSourceEntityId>[0];
-         };
+         // Decided and recorded at plan time.
+         const variant = (
+            table as {
+               overStoredBase?: {
+                  source: Parameters<typeof computeSourceEntityId>[0];
+               };
+            }
+         ).overStoredBase!;
+         expect(variant).toBeDefined();
          // The address-unchanged pin: kept or blanked, the same address.
          expect(
             computeSourceEntityId(variant.source, c.connectionDigests),

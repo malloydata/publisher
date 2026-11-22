@@ -2,21 +2,29 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * The defensive checks {@link buildsPlannedTable} makes before a rollup over a
- * `#(materialize)` base builds from the base's stored table. A compile that
- * re-roots the base as planned passes all three, so the component specs never
- * see one fail; each is proved here, one at a time, to block reuse.
+ * The defensive checks {@link overStoredProven} makes, at plan time, before a
+ * rollup over a `#(materialize)` base is recorded as building from the base's
+ * stored table. A compile that re-roots the base as planned passes all three,
+ * so the component specs never see one fail; each is proved here, one at a
+ * time, to block reuse.
  */
 
-import { Manifest } from "@malloydata/malloy";
 import type { PersistSource } from "@malloydata/malloy";
 import { describe, expect, it } from "bun:test";
 import { fakeSource } from "../../../test_helpers/materialization_test_fixtures";
-import { buildsPlannedTable } from "./instructed_build";
+import { overStoredProven } from "./over_stored_proof";
 
 const BASE_ADDRESS = "base-address";
 const ROLLUP_ADDRESS = "rollup-address";
-const TABLE = '"orders_mat"';
+/** The table the proof renders the base's table under, as a fake reads it. */
+function tableIn(sqlOpts: unknown): string {
+   const entries = (
+      sqlOpts as {
+         buildManifest: { entries: Record<string, { tableName: string }> };
+      }
+   ).buildManifest.entries;
+   return entries[BASE_ADDRESS]?.tableName ?? "raw";
+}
 
 type Column = { name: string; type: string; numberType?: string };
 
@@ -45,9 +53,9 @@ function variant(
          fakeSource({
             name: "orders__rollup",
             sourceEntityId: "variant-address",
-            onGetSQL: () =>
-               opts.sql ??
-               `SELECT cat, SUM(amt) AS grand FROM ${TABLE} AS base GROUP BY 1`,
+            onGetSQL: (sqlOpts) =>
+               opts.sql?.replace("$TABLE", tableIn(sqlOpts)) ??
+               `SELECT cat, SUM(amt) AS grand FROM ${tableIn(sqlOpts)} AS base GROUP BY 1`,
          }),
          opts.columns ?? COLUMNS,
       ),
@@ -59,25 +67,15 @@ function variant(
 }
 
 function decide(v: ReturnType<typeof variant>): boolean {
-   const manifest = new Manifest();
-   manifest.update(BASE_ADDRESS, { tableName: TABLE });
-   const run = {
-      compiled: { connectionDigests: { duckdb: "dig" } },
-      manifest,
-   } as unknown as Parameters<typeof buildsPlannedTable>[0];
    const planned = withColumns(
       fakeSource({ name: "orders__rollup", sourceEntityId: ROLLUP_ADDRESS }),
       COLUMNS,
    );
    const base = fakeSource({ name: "orders", sourceEntityId: BASE_ADDRESS });
-   return buildsPlannedTable(run, planned, v, {
-      base,
-      baseAddress: BASE_ADDRESS,
-      rollupAddress: ROLLUP_ADDRESS,
-   });
+   return overStoredProven(planned, v, base);
 }
 
-describe("buildsPlannedTable over a #(materialize) base", () => {
+describe("overStoredProven over a #(materialize) base", () => {
    it("reuses the base's table when every check holds", () => {
       expect(decide(variant())).toBe(true);
    });
@@ -98,7 +96,7 @@ describe("buildsPlannedTable over a #(materialize) base", () => {
       expect(
          decide(
             variant({
-               sql: `SELECT cat, SUM(amt) AS grand FROM "other_schema".${TABLE} GROUP BY 1`,
+               sql: `SELECT cat, SUM(amt) AS grand FROM "other_schema".$TABLE GROUP BY 1`,
             }),
          ),
       ).toBe(false);

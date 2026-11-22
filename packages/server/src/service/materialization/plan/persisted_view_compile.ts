@@ -109,12 +109,12 @@ interface GeneratedPersistedViews {
     * stored tables, by build sourceID, each as the companion compiled over
     * the author's files with those upstreams' own `#@ persist` lines kept
     * ({@link overStoredUpstreamNotes}), so Malloy's planner reads each
-    * upstream's table through a run's build manifest. Compiled once, on the
-    * first call: a plan never builds. Empty when none qualifies or the
-    * compile fails (a run then fails each candidate's build, closed).
+    * upstream's table through a run's build manifest. Compiled at plan
+    * time, so the plan records the decision (build_plan.ts proves each
+    * against its planned table). A candidate missing here did not compile.
     */
-   overStoredUpstreams(): Promise<ReadonlyMap<string, OverStoredBase>>;
-   /** The build sourceIDs {@link overStoredUpstreams} may hold. */
+   overStoredSources: ReadonlyMap<string, OverStoredBase>;
+   /** The build sourceIDs offered the compile: the candidates. */
    overStoredCandidates: ReadonlySet<string>;
 }
 
@@ -629,9 +629,13 @@ export async function tryCompilePersistedViewCompanion(args: {
          overlay,
       );
       const overStored = overStoredUpstreamNotes(args.modelDef, plans, queries);
-      let compiledOverStored:
-         | Promise<ReadonlyMap<string, OverStoredBase>>
-         | undefined;
+      const overStoredSources = await compileOverStoredUpstreams({
+         files,
+         modelDef: args.modelDef,
+         url,
+         text,
+         overStored,
+      });
       return {
          generated: {
             plans,
@@ -640,15 +644,7 @@ export async function tryCompilePersistedViewCompanion(args: {
             materializer,
             runtime,
             text,
-            overStoredUpstreams: () =>
-               (compiledOverStored ??= compileOverStoredUpstreams({
-                  files,
-                  modelDef: args.modelDef,
-                  modelPath: args.modelPath,
-                  url,
-                  text,
-                  overStored,
-               })),
+            overStoredSources,
             overStoredCandidates: overStored.candidates,
          },
          refused,
@@ -751,12 +747,11 @@ function upstreamTableOf(
  * The companion compiled a second time, over the author's files with the
  * candidates' upstream notes kept ({@link overStoredUpstreamNotes}): each
  * candidate's build source by its sourceID. Empty when the compile fails:
- * a run then fails each candidate's build (instructed_build.ts).
+ * the plan then refuses each candidate (build_plan.ts).
  */
 async function compileOverStoredUpstreams(args: {
    files: GeneratedFiles;
    modelDef: unknown;
-   modelPath: string;
    url: URL;
    text: string;
    overStored: ReturnType<typeof overStoredUpstreamNotes>;
@@ -779,8 +774,7 @@ async function compileOverStoredUpstreams(args: {
          }
       }
    } catch {
-      // Each candidate is then missing: a run fails its build, naming that
-      // its compile over its upstreams' tables did not compile.
+      // Each candidate is then missing: the plan refuses it (build_plan.ts).
       out.clear();
    }
    return out;

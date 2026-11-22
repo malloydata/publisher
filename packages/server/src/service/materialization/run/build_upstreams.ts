@@ -17,6 +17,7 @@
 
 import { declaredDestination, storageWritable } from "../domain/placement";
 import { underCompilerKeys } from "../domain/binding";
+import { readsTable } from "../domain/table_name";
 import {
    buildSQLOf,
    compilerBuildId,
@@ -842,16 +843,6 @@ export function packageRelativeRun(
          typeof r.message === "string" ? { ...r, message: rel(r.message) } : r,
       ),
    };
-}
-
-/**
- * Whether `sql` reads the table `table` (a manifest's table path) by its whole
- * reference: not as the tail of another schema's path, nor as the head of a
- * longer one.
- */
-export function readsTable(sql: string, table: string): boolean {
-   const escaped = table.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-   return new RegExp(`(?<![\\w.])${escaped}(?![\\w.])`).test(sql);
 }
 
 /**

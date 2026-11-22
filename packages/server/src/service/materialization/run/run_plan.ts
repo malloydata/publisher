@@ -110,11 +110,7 @@ export function runPlanGateText(
 
 // The plan's per-source derivations the run reads: addresses, build SQL,
 // annotation fields, stored columns, and the gates a source is held to.
-export {
-   buildSQLOf,
-   presentAs,
-   upstreamSchemasOfSource,
-} from "../plan/addressing";
+export { buildSQLOf, upstreamSchemasOfSource } from "../plan/addressing";
 export {
    addressSQL,
    collectIncrementalDeclarations,

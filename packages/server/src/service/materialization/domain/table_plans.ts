@@ -749,11 +749,12 @@ export type TablePlan = TablePlanFacts &
            rollup?: undefined;
            /**
             * A database persisted view or named query compiled over its
-            * upstreams' stored tables (persisted_view_compile.ts): set when
-            * it qualifies, compiled on the first call. A run builds from it
-            * when it builds the planned table (instructed_build.ts).
+            * upstreams' stored tables (persisted_view_compile.ts), compiled
+            * and proven to build the planned table at plan time
+            * (over_stored_proof.ts): the plan's decision that it builds over
+            * its upstreams' tables, which a run reads (instructed_build.ts).
             */
-           overStoredBase?: () => Promise<OverStoredBase | undefined>;
+           overStoredBase?: OverStoredBase;
         }
       | {
            kind: Extract<TableKind, "materialize" | "pair">;
@@ -767,11 +768,12 @@ export type TablePlan = TablePlanFacts &
            /**
             * The rollup as compiled over its base's stored table: set for a
             * database rollup over a database `#@ persist` or
-            * `#(materialize)` base, and compiled on the first call
-            * (rollup_compile.ts). A run builds from it only when its build
-            * manifest holds the base's table (instructed_build.ts).
+            * `#(materialize)` base, compiled and proven to build the planned
+            * table at plan time (rollup_compile.ts, over_stored_proof.ts). A
+            * run builds from it only when its build manifest holds the
+            * base's table (instructed_build.ts).
             */
-           overStoredBase?: () => Promise<OverStoredBase | undefined>;
+           overStoredBase?: OverStoredBase;
            /**
             * For a `storage=` rollup over a base stored in the same
             * destination: the base, and the rollup's own generated build

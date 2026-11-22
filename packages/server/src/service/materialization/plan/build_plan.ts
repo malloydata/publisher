@@ -106,6 +106,7 @@ import {
    splitSourceID,
    type TableOrigin,
    type MaterializePlan,
+   type OverStoredBase,
    type PersistedQueryPlan,
    type PersistSourceGateClassification,
    type PersistSourceGateOutcome,
@@ -143,6 +144,7 @@ import {
    type DeclaredPersistQuery,
 } from "./persisted_query";
 import { tryCompilePersistedViewCompanion } from "./persisted_view_compile";
+import { overStoredProven } from "./over_stored_proof";
 import { deletingWindowsOf } from "./rolling_window";
 import {
    tryCompileRollupCompanion,
@@ -1039,13 +1041,14 @@ async function collectGeneratedRollups(
          kind: "rollup",
          ...plannedFacts(source, args.modelPath),
          rollup: plan,
-         // Only a candidate: any other rollup keeps its place in the order.
-         ...(generated.overStoredCandidates.has(source.sourceID)
-            ? {
-                 overStoredBase: async () =>
-                    (await generated.overStoredBases()).get(source.sourceID),
-              }
-            : {}),
+         // Proven at plan, and recorded: any other rollup builds from the
+         // warehouse, and keeps its place in the order.
+         ...provenRollupOverStored(
+            source,
+            plan,
+            generated.overStoredBases.get(source.sourceID),
+            parts.tables,
+         ),
          ...(generated.storedBaseBuilds.has(source.sourceID)
             ? { storedBase: generated.storedBaseBuilds.get(source.sourceID) }
             : {}),
@@ -1058,6 +1061,36 @@ async function collectGeneratedRollups(
          ),
       };
    }
+}
+
+/**
+ * A rollup's build over its base's stored table, when its second compile
+ * builds the planned table ({@link overStoredProven}): over a `#(materialize)`
+ * base (its table planned before the rollups), the compile re-roots the base
+ * on its build source; over a `#@ persist` one, it does not. The run still
+ * checks the base is a database `#@ persist` or `#(materialize)` table.
+ * Empty otherwise.
+ */
+function provenRollupOverStored(
+   source: PersistSource,
+   plan: RollupPlan,
+   variant: OverStoredBase | undefined,
+   tables: Readonly<Record<string, TablePlan>>,
+): { overStoredBase?: OverStoredBase } {
+   if (!variant) return {};
+   // Over a `#@ persist` base, the address alone proves it: the base's own
+   // table plan is collected after the companions'.
+   if (!variant.baseBuildSource) {
+      return overStoredProven(source, variant)
+         ? { overStoredBase: variant }
+         : {};
+   }
+   const base =
+      plan.baseSourceID === undefined ? undefined : tables[plan.baseSourceID];
+   if (base?.kind !== "materialize") return {};
+   return overStoredProven(source, variant, base.source)
+      ? { overStoredBase: variant }
+      : {};
 }
 
 /**
@@ -1150,21 +1183,51 @@ async function collectGeneratedPersistedViews(
       const query = queryByID.get(source.sourceID);
       const plan = planByName.get(source.name);
       if (!query && !plan) continue;
+      // Offered a build over its upstreams' tables: decided here, once,
+      // and recorded. A compile that is not the planned table refuses it:
+      // strict upstreams forbid recomputing its upstreams from raw.
+      let overStoredBase: OverStoredBase | undefined;
+      if (generated.overStoredCandidates.has(source.sourceID)) {
+         overStoredBase = generated.overStoredSources.get(source.sourceID);
+         if (!overStoredBase || !overStoredProven(source, overStoredBase)) {
+            const reason =
+               "its build over its upstreams' stored tables did not compile " +
+               "to the planned table (a Publisher bug worth reporting), and " +
+               "strict upstreams forbid recomputing them from raw";
+            addAnnotationFinding(
+               parts,
+               query
+                  ? persistedQueryRefusalFinding(
+                       {
+                          queryName: query.queryName,
+                          reason,
+                          refusal: "generated_build_failed",
+                          declaringURL: query.declaringURL,
+                          ...(query.storage !== undefined
+                             ? { storage: query.storage }
+                             : {}),
+                       },
+                       args.modelPath,
+                    )
+                  : persistedViewRefusalFinding(
+                       {
+                          ...plan!,
+                          reason,
+                          outcome: { refused: "generated_build_failed" },
+                       },
+                       args.modelPath,
+                    ),
+            );
+            continue;
+         }
+      }
       kept++;
       // A persisted query's table is a view's, built from the same
       // companion and read by an exact call.
       parts.tables[source.sourceID] = {
          kind: "view",
          ...plannedFacts(source, args.modelPath),
-         // Built over its upstreams' tables, when it may be.
-         ...(generated.overStoredCandidates.has(source.sourceID)
-            ? {
-                 overStoredBase: async () =>
-                    (await generated.overStoredUpstreams()).get(
-                       source.sourceID,
-                    ),
-              }
-            : {}),
+         ...(overStoredBase ? { overStoredBase } : {}),
          gate: query
             ? await persistedQueryGate(source, query, ctx)
             : // The view's rows are its source's: its gate is the source's.
