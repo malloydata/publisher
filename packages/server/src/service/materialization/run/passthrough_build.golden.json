@@ -1,187 +1,214 @@
 {
-   "postgres: tagged incremental": {
-      "outcome": {
-         "schema": ["amount DECIMAL(38,1)", "s VARCHAR", "b BLOB"],
-         "rowCount": 1,
-         "readCost": null
-      },
-      "statements": [
-         "SELECT * FROM postgres_query('h''q', 'SELECT MAX(\"amount\") AS \"watermark_max\" FROM (SELECT 1.5::DOUBLE AS amount, ''x'' AS s, ''\\x01''::BLOB AS b) AS __w')",
-         "DESCRIBE \"lake\".\"t\"",
-         "DESCRIBE (SELECT * FROM postgres_query('h''q', 'SELECT 1.5::DOUBLE AS amount, ''x'' AS s, ''\\x01''::BLOB AS b'))",
-         "SELECT * FROM postgres_query('h''q', 'SELECT (SELECT coalesce(nullif(typbasetype, 0), oid)::regtype::text FROM pg_type WHERE oid = pg_typeof(q.\"amount\")) AS t0 FROM (SELECT 1) AS one LEFT JOIN (SELECT * FROM (\nSELECT 1.5::DOUBLE AS amount, ''x'' AS s, ''\\x01''::BLOB AS b\n) AS b LIMIT 0) AS q ON true')",
-         "CREATE OR REPLACE TEMP TABLE \"__numeric_text_stage\" AS SELECT * FROM postgres_query('h''q', 'SELECT \"amount\"::text AS \"amount\", \"s\", \"b\" FROM (\nSELECT 1.5::DOUBLE AS amount, ''x'' AS s, ''\\x01''::BLOB AS b\n) AS __numeric_text')",
-         "SELECT max(CASE WHEN regexp_full_match(\"amount\", '^-?[0-9]+(\\.[0-9]*)?$') THEN length(ltrim(split_part(ltrim(\"amount\", '-'), '.', 1), '0')) END) AS i0, max(CASE WHEN regexp_full_match(\"amount\", '^-?[0-9]+(\\.[0-9]*)?$') THEN length(rtrim(split_part(\"amount\", '.', 2), '0')) END) AS s0, count(*) FILTER (WHERE \"amount\" IS NOT NULL AND NOT regexp_full_match(\"amount\", '^-?[0-9]+(\\.[0-9]*)?$')) AS n0 FROM temp.main.\"__numeric_text_stage\"",
-         "BEGIN TRANSACTION",
-         "CREATE OR REPLACE TABLE \"lake\".\"t\" AS (SELECT * REPLACE (CAST(\"s\" AS VARCHAR) AS \"s\") FROM (\nSELECT * REPLACE (CAST(\"amount\" AS DECIMAL(38,1)) AS \"amount\") FROM temp.main.\"__numeric_text_stage\"\n) AS __declared_types)",
-         "DESCRIBE \"lake\".\"t\"",
-         "COMMIT",
-         "DROP TABLE IF EXISTS temp.main.\"__numeric_text_stage\"",
-         "SELECT count(*) AS n FROM \"lake\".\"t\""
+  "postgres: tagged incremental": {
+    "outcome": {
+      "schema": [
+        "amount DECIMAL(38,1)",
+        "s VARCHAR",
+        "b BLOB"
       ],
-      "incremental": {
-         "windowRows": true,
-         "frontier": {
-            "value": {
-               "bound": {
-                  "malloyType": "number",
-                  "value": "1.5"
-               }
-            }
-         },
-         "numericStoredAsDouble": {
-            "value": []
-         },
-         "window": {
-            "value": "SELECT * FROM postgres_query('h''q', 'SELECT \"amount\" FROM (SELECT \"amount\", \"s\", \"b\" FROM (SELECT * FROM (SELECT 1.5::DOUBLE AS amount, ''x'' AS s, ''\\x01''::BLOB AS b) AS __d WHERE \"amount\" >= 1 AND \"amount\" < 2) AS __public) AS __c')"
-         }
+      "rowCount": 1,
+      "readCost": null
+    },
+    "statements": [
+      "SELECT * FROM postgres_query('h''q', 'SELECT MAX(\"amount\") AS \"watermark_max\" FROM (SELECT 1.5::DOUBLE AS amount, ''x'' AS s, ''\\x01''::BLOB AS b) AS __w')",
+      "DESCRIBE \"lake\".\"t\"",
+      "DESCRIBE (SELECT * FROM postgres_query('h''q', 'SELECT 1.5::DOUBLE AS amount, ''x'' AS s, ''\\x01''::BLOB AS b'))",
+      "SELECT * FROM postgres_query('h''q', 'SELECT (SELECT coalesce(nullif(typbasetype, 0), oid)::regtype::text FROM pg_type WHERE oid = pg_typeof(q.\"amount\")) AS t0 FROM (SELECT 1) AS one LEFT JOIN (SELECT * FROM (\nSELECT 1.5::DOUBLE AS amount, ''x'' AS s, ''\\x01''::BLOB AS b\n) AS b LIMIT 0) AS q ON true')",
+      "CREATE OR REPLACE TEMP TABLE \"__numeric_text_stage\" AS SELECT * FROM postgres_query('h''q', 'SELECT \"amount\"::text AS \"amount\", \"s\", \"b\" FROM (\nSELECT 1.5::DOUBLE AS amount, ''x'' AS s, ''\\x01''::BLOB AS b\n) AS __numeric_text')",
+      "SELECT max(CASE WHEN regexp_full_match(\"amount\", '^-?[0-9]+(\\.[0-9]*)?$') THEN length(ltrim(split_part(ltrim(\"amount\", '-'), '.', 1), '0')) END) AS i0, max(CASE WHEN regexp_full_match(\"amount\", '^-?[0-9]+(\\.[0-9]*)?$') THEN length(rtrim(split_part(\"amount\", '.', 2), '0')) END) AS s0, count(*) FILTER (WHERE \"amount\" IS NOT NULL AND NOT regexp_full_match(\"amount\", '^-?[0-9]+(\\.[0-9]*)?$')) AS n0 FROM temp.main.\"__numeric_text_stage\"",
+      "BEGIN TRANSACTION",
+      "CREATE OR REPLACE TABLE \"lake\".\"t\" AS (SELECT * REPLACE (CAST(\"s\" AS VARCHAR) AS \"s\") FROM (\nSELECT * REPLACE (CAST(\"amount\" AS DECIMAL(38,1)) AS \"amount\") FROM temp.main.\"__numeric_text_stage\"\n) AS __declared_types)",
+      "DESCRIBE \"lake\".\"t\"",
+      "COMMIT",
+      "DROP TABLE IF EXISTS temp.main.\"__numeric_text_stage\"",
+      "SELECT count(*) AS n FROM \"lake\".\"t\"",
+      "SELECT sql FROM duckdb_tables() WHERE NOT internal AND lower(table_name) = lower('t') AND (lower(schema_name) = lower('lake') OR lower(database_name) = lower('lake'))"
+    ],
+    "incremental": {
+      "windowRows": true,
+      "frontier": {
+        "value": {
+          "bound": {
+            "malloyType": "number",
+            "value": "1.5"
+          }
+        }
+      },
+      "numericStoredAsDouble": {
+        "value": []
+      },
+      "window": {
+        "value": "SELECT * FROM postgres_query('h''q', 'SELECT \"amount\" FROM (SELECT \"amount\", \"s\", \"b\" FROM (SELECT * FROM (SELECT 1.5::DOUBLE AS amount, ''x'' AS s, ''\\x01''::BLOB AS b) AS __d WHERE \"amount\" >= 1 AND \"amount\" < 2) AS __public) AS __c')"
       }
-   },
-   "bigquery: plain": {
-      "outcome": {
-         "schema": ["amount DOUBLE", "s VARCHAR", "b VARCHAR"],
-         "rowCount": 1,
-         "readCost": null
-      },
-      "statements": [
-         "BEGIN TRANSACTION",
-         "CREATE OR REPLACE TABLE \"lake\".\"t\" AS (SELECT * REPLACE (CAST(\"s\" AS VARCHAR) AS \"s\", CAST(\"b\" AS VARCHAR) AS \"b\") FROM (\nSELECT * FROM bigquery_query('h''q', 'SELECT 1.5::DOUBLE AS amount, ''x'' AS s, ''\\x01''::BLOB AS b')\n) AS __declared_types)",
-         "DESCRIBE \"lake\".\"t\"",
-         "COMMIT",
-         "SELECT count(*) AS n FROM \"lake\".\"t\""
-      ]
-   },
-   "bigquery: tagged, no job listing": {
-      "outcome": {
-         "schema": ["amount DOUBLE", "s VARCHAR", "b VARCHAR"],
-         "rowCount": 1,
-         "readCost": null
-      },
-      "statements": [
-         "SELECT job_id FROM bigquery_jobs('h''q', maxResults := 1)",
-         "BEGIN TRANSACTION",
-         "CREATE OR REPLACE TABLE \"lake\".\"t\" AS (SELECT * REPLACE (CAST(\"s\" AS VARCHAR) AS \"s\", CAST(\"b\" AS VARCHAR) AS \"b\") FROM (\nSELECT * FROM bigquery_query('h''q', 'SELECT 1.5::DOUBLE AS amount, ''x'' AS s, ''\\x01''::BLOB AS b')\n) AS __declared_types)",
-         "DESCRIBE \"lake\".\"t\"",
-         "COMMIT",
-         "SELECT count(*) AS n FROM \"lake\".\"t\""
-      ]
-   },
-   "bigquery: cancelled at its read": {
-      "outcome": {
-         "error": "Build cancelled",
-         "name": "BuildCancelledError"
-      },
-      "statements": [
-         "BEGIN TRANSACTION",
-         "CREATE OR REPLACE TABLE \"lake\".\"t\" AS (SELECT * REPLACE (CAST(\"s\" AS VARCHAR) AS \"s\", CAST(\"b\" AS VARCHAR) AS \"b\") FROM (\nSELECT * FROM bigquery_query('h''q', '/* publisher_build:<uuid> */\nSELECT 1.5::DOUBLE AS amount, ''x'' AS s, ''\\x01''::BLOB AS b')\n) AS __declared_types)",
-         "ROLLBACK"
+    }
+  },
+  "bigquery: plain": {
+    "outcome": {
+      "schema": [
+        "amount DOUBLE",
+        "s VARCHAR",
+        "b VARCHAR"
       ],
-      "listed": [
-         {
-            "projectId": "h'q",
-            "key": "{}"
-         }
+      "rowCount": 1,
+      "readCost": null
+    },
+    "statements": [
+      "BEGIN TRANSACTION",
+      "CREATE OR REPLACE TABLE \"lake\".\"t\" AS (SELECT * REPLACE (CAST(\"s\" AS VARCHAR) AS \"s\", CAST(\"b\" AS VARCHAR) AS \"b\") FROM (\nSELECT * FROM bigquery_query('h''q', 'SELECT 1.5::DOUBLE AS amount, ''x'' AS s, ''\\x01''::BLOB AS b')\n) AS __declared_types)",
+      "DESCRIBE \"lake\".\"t\"",
+      "COMMIT",
+      "SELECT count(*) AS n FROM \"lake\".\"t\"",
+      "SELECT sql FROM duckdb_tables() WHERE NOT internal AND lower(table_name) = lower('t') AND (lower(schema_name) = lower('lake') OR lower(database_name) = lower('lake'))"
+    ]
+  },
+  "bigquery: tagged, no job listing": {
+    "outcome": {
+      "schema": [
+        "amount DOUBLE",
+        "s VARCHAR",
+        "b VARCHAR"
       ],
-      "cancelled": ["job-3"]
-   },
-   "bigquery: tagged incremental": {
-      "outcome": {
-         "schema": ["amount DOUBLE", "s VARCHAR", "b VARCHAR"],
-         "rowCount": 1,
-         "readCost": {
-            "engine": "bigquery",
-            "jobId": "child-1",
-            "parentJobId": "parent-1",
-            "bytesScanned": 100,
-            "bytesBilled": 10485760,
-            "slotTimeMs": 7,
-            "executionTimeMs": null,
-            "cacheHit": false
-         }
-      },
-      "statements": [
-         "SELECT * FROM bigquery_query('h''q', '/* publisher_build:<uuid> */\nSELECT MAX(`amount`) AS `watermark_max` FROM (SELECT 1.5::DOUBLE AS amount, ''x'' AS s, ''\\x01''::BLOB AS b) AS __w')",
-         "SELECT job_id FROM bigquery_jobs('h''q', maxResults := 1)",
-         "SELECT * FROM bigquery_execute('h''q', 'SET @@query_label = \"team:x,job:nightly\";\n/* publisher_build:<uuid> */\nSELECT 1.5::DOUBLE AS amount, ''x'' AS s, ''\\x01''::BLOB AS b;')",
-         "\n      SELECT job_id,\n             json_extract_string(configuration, '$.query.destinationTable.projectId') AS project,\n             json_extract_string(configuration, '$.query.destinationTable.datasetId') AS dataset,\n             json_extract_string(configuration, '$.query.destinationTable.tableId')   AS table,\n             \n   total_slot_time_ms,\n   json_extract_string(statistics, '$.query.totalBytesProcessed') AS bytes_processed,\n   json_extract_string(statistics, '$.query.totalBytesBilled')    AS bytes_billed,\n   json_extract_string(statistics, '$.query.cacheHit')            AS cache_hit\n      FROM (SELECT * FROM bigquery_jobs('h''q',\n                                        parentJobId := 'parent-1')\n            WHERE job_type = 'QUERY')\n      ORDER BY creation_time DESC",
-         "BEGIN TRANSACTION",
-         "CREATE OR REPLACE TABLE \"lake\".\"t\" AS (SELECT * REPLACE (CAST(\"s\" AS VARCHAR) AS \"s\", CAST(\"b\" AS VARCHAR) AS \"b\") FROM (\nSELECT * FROM bigquery_scan('proj._anon.result')\n) AS __declared_types)",
-         "DESCRIBE \"lake\".\"t\"",
-         "COMMIT",
-         "SELECT count(*) AS n FROM \"lake\".\"t\""
-      ],
-      "incremental": {
-         "windowRows": false,
-         "frontier": {
-            "value": {
-               "error": "Parser Error: syntax error at or near \"`\"\n\nLINE 1: SELECT * FROM bigquery_query('h''q', '/* publisher_build:<uuid>...\n                      ^"
-            }
-         },
-         "numericStoredAsDouble": {
-            "value": []
-         }
+      "rowCount": 1,
+      "readCost": null
+    },
+    "statements": [
+      "SELECT job_id FROM bigquery_jobs('h''q', maxResults := 1)",
+      "BEGIN TRANSACTION",
+      "CREATE OR REPLACE TABLE \"lake\".\"t\" AS (SELECT * REPLACE (CAST(\"s\" AS VARCHAR) AS \"s\", CAST(\"b\" AS VARCHAR) AS \"b\") FROM (\nSELECT * FROM bigquery_query('h''q', 'SELECT 1.5::DOUBLE AS amount, ''x'' AS s, ''\\x01''::BLOB AS b')\n) AS __declared_types)",
+      "DESCRIBE \"lake\".\"t\"",
+      "COMMIT",
+      "SELECT count(*) AS n FROM \"lake\".\"t\"",
+      "SELECT sql FROM duckdb_tables() WHERE NOT internal AND lower(table_name) = lower('t') AND (lower(schema_name) = lower('lake') OR lower(database_name) = lower('lake'))"
+    ]
+  },
+  "bigquery: cancelled at its read": {
+    "outcome": {
+      "error": "Build cancelled",
+      "name": "BuildCancelledError"
+    },
+    "statements": [
+      "BEGIN TRANSACTION",
+      "CREATE OR REPLACE TABLE \"lake\".\"t\" AS (SELECT * REPLACE (CAST(\"s\" AS VARCHAR) AS \"s\", CAST(\"b\" AS VARCHAR) AS \"b\") FROM (\nSELECT * FROM bigquery_query('h''q', '/* publisher_build:<uuid> */\nSELECT 1.5::DOUBLE AS amount, ''x'' AS s, ''\\x01''::BLOB AS b')\n) AS __declared_types)",
+      "ROLLBACK"
+    ],
+    "listed": [
+      {
+        "projectId": "h'q",
+        "key": "{}"
       }
-   },
-   "snowflake: tagged incremental": {
-      "outcome": {
-         "schema": ["amount DOUBLE", "s VARCHAR", "b VARCHAR"],
-         "rowCount": 1,
-         "readCost": {
-            "engine": "snowflake",
-            "jobId": "sf-1",
-            "parentJobId": null,
-            "bytesScanned": 0,
-            "bytesBilled": null,
-            "slotTimeMs": null,
-            "executionTimeMs": 12,
-            "cacheHit": true
-         }
-      },
-      "statements": [
-         "SELECT * FROM snowflake_query('ALTER SESSION SET QUOTED_IDENTIFIERS_IGNORE_CASE = FALSE', 'h''q')",
-         "SELECT * FROM snowflake_query('ALTER SESSION SET TIMEZONE = ''UTC''', 'h''q')",
-         "SELECT * FROM snowflake_query('ALTER SESSION SET WEEK_START = 7', 'h''q')",
-         "SELECT * FROM snowflake_query('SHOW PARAMETERS LIKE ''TIMEZONE'' IN SESSION', 'h''q')",
-         "SELECT * FROM snowflake_query('SHOW PARAMETERS LIKE ''WEEK_START'' IN SESSION', 'h''q')",
-         "SELECT * FROM snowflake_query('ALTER SESSION SET QUERY_TAG = ''{\"team\":\"Data Eng\",\"Team\":\"x\",\"job\":\"nightly\"}''', 'h''q')",
-         "SELECT * FROM snowflake_query('SELECT MAX(\"amount\") AS \"watermark_max\" FROM (SELECT 1.5::DOUBLE AS amount, ''x'' AS s, ''\\x01''::BLOB AS b) AS __w', 'h''q')",
-         "BEGIN TRANSACTION",
-         "CREATE OR REPLACE TABLE \"lake\".\"t\" AS (SELECT * REPLACE (CAST(\"s\" AS VARCHAR) AS \"s\", CAST(\"b\" AS VARCHAR) AS \"b\") FROM (\nSELECT * FROM snowflake_query('SELECT 1.5::DOUBLE AS amount, ''x'' AS s, ''\\x01''::BLOB AS b', 'h''q')\n) AS __declared_types)",
-         "DESCRIBE \"lake\".\"t\"",
-         "COMMIT",
-         "SELECT count(*) AS n FROM \"lake\".\"t\"",
-         "SELECT * FROM snowflake_query('\n      SELECT QUERY_ID       AS \"job_id\",\n             QUERY_TEXT     AS \"query_text\",\n             BYTES_SCANNED  AS \"bytes_scanned\",\n             EXECUTION_TIME AS \"execution_time_ms\",\n             ROWS_PRODUCED  AS \"rows_produced\"\n      FROM TABLE(ANALYTICS.INFORMATION_SCHEMA.QUERY_HISTORY_BY_SESSION(\n                 RESULT_LIMIT => 10000))\n      WHERE QUERY_TAG = ''{\"team\":\"Data Eng\",\"Team\":\"x\",\"job\":\"nightly\"}''\n        AND EXECUTION_STATUS = ''SUCCESS''', 'h''q')",
-         "SELECT * FROM snowflake_query('ALTER SESSION UNSET QUERY_TAG', 'h''q')"
+    ],
+    "cancelled": [
+      "job-3"
+    ]
+  },
+  "bigquery: tagged incremental": {
+    "outcome": {
+      "schema": [
+        "amount DOUBLE",
+        "s VARCHAR",
+        "b VARCHAR"
       ],
-      "incremental": {
-         "windowRows": true,
-         "frontier": {
-            "value": {
-               "bound": {
-                  "malloyType": "number",
-                  "value": "1.5"
-               }
-            }
-         },
-         "numericStoredAsDouble": {
-            "value": []
-         },
-         "window": {
-            "value": "SELECT * FROM snowflake_query('SELECT \"amount\" FROM (SELECT \"amount\", \"s\", \"b\" FROM (SELECT * FROM (SELECT 1.5::DOUBLE AS amount, ''x'' AS s, ''\\x01''::BLOB AS b) AS __d WHERE \"amount\" >= 1 AND \"amount\" < 2) AS __public) AS __c', 'h''q')"
-         }
+      "rowCount": 1,
+      "readCost": {
+        "engine": "bigquery",
+        "jobId": "child-1",
+        "parentJobId": "parent-1",
+        "bytesScanned": 100,
+        "bytesBilled": 10485760,
+        "slotTimeMs": 7,
+        "executionTimeMs": null,
+        "cacheHit": false
       }
-   },
-   "snowflake: session refuses UTC": {
-      "outcome": {
-         "error": "The Snowflake build session holds TIMEZONE = America/Denver, not Malloy's UTC, so its day and week buckets could differ from live's; the build is refused. Allow ALTER SESSION SET TIMEZONE for the build's role.",
-         "name": "Error"
+    },
+    "statements": [
+      "SELECT * FROM bigquery_query('h''q', '/* publisher_build:<uuid> */\nSELECT MAX(`amount`) AS `watermark_max` FROM (SELECT 1.5::DOUBLE AS amount, ''x'' AS s, ''\\x01''::BLOB AS b) AS __w')",
+      "SELECT job_id FROM bigquery_jobs('h''q', maxResults := 1)",
+      "SELECT * FROM bigquery_execute('h''q', 'SET @@query_label = \"team:x,job:nightly\";\n/* publisher_build:<uuid> */\nSELECT 1.5::DOUBLE AS amount, ''x'' AS s, ''\\x01''::BLOB AS b;')",
+      "\n      SELECT job_id,\n             json_extract_string(configuration, '$.query.destinationTable.projectId') AS project,\n             json_extract_string(configuration, '$.query.destinationTable.datasetId') AS dataset,\n             json_extract_string(configuration, '$.query.destinationTable.tableId')   AS table,\n             \n   total_slot_time_ms,\n   json_extract_string(statistics, '$.query.totalBytesProcessed') AS bytes_processed,\n   json_extract_string(statistics, '$.query.totalBytesBilled')    AS bytes_billed,\n   json_extract_string(statistics, '$.query.cacheHit')            AS cache_hit\n      FROM (SELECT * FROM bigquery_jobs('h''q',\n                                        parentJobId := 'parent-1')\n            WHERE job_type = 'QUERY')\n      ORDER BY creation_time DESC",
+      "BEGIN TRANSACTION",
+      "CREATE OR REPLACE TABLE \"lake\".\"t\" AS (SELECT * REPLACE (CAST(\"s\" AS VARCHAR) AS \"s\", CAST(\"b\" AS VARCHAR) AS \"b\") FROM (\nSELECT * FROM bigquery_scan('proj._anon.result')\n) AS __declared_types)",
+      "DESCRIBE \"lake\".\"t\"",
+      "COMMIT",
+      "SELECT count(*) AS n FROM \"lake\".\"t\"",
+      "SELECT sql FROM duckdb_tables() WHERE NOT internal AND lower(table_name) = lower('t') AND (lower(schema_name) = lower('lake') OR lower(database_name) = lower('lake'))"
+    ],
+    "incremental": {
+      "windowRows": false,
+      "frontier": {
+        "value": {
+          "error": "Parser Error: syntax error at or near \"`\"\n\nLINE 1: SELECT * FROM bigquery_query('h''q', '/* publisher_build:<uuid>...\n                      ^"
+        }
       },
-      "statements": [
-         "SELECT * FROM snowflake_query('ALTER SESSION SET QUOTED_IDENTIFIERS_IGNORE_CASE = FALSE', 'h''q')",
-         "SELECT * FROM snowflake_query('ALTER SESSION SET TIMEZONE = ''UTC''', 'h''q')",
-         "SELECT * FROM snowflake_query('ALTER SESSION SET WEEK_START = 7', 'h''q')",
-         "SELECT * FROM snowflake_query('SHOW PARAMETERS LIKE ''TIMEZONE'' IN SESSION', 'h''q')",
-         "SELECT * FROM snowflake_query('ALTER SESSION UNSET QUERY_TAG', 'h''q')"
-      ]
-   }
+      "numericStoredAsDouble": {
+        "value": []
+      }
+    }
+  },
+  "snowflake: tagged incremental": {
+    "outcome": {
+      "schema": [
+        "amount DOUBLE",
+        "s VARCHAR",
+        "b VARCHAR"
+      ],
+      "rowCount": 1,
+      "readCost": {
+        "engine": "snowflake",
+        "jobId": "sf-1",
+        "parentJobId": null,
+        "bytesScanned": 0,
+        "bytesBilled": null,
+        "slotTimeMs": null,
+        "executionTimeMs": 12,
+        "cacheHit": true
+      }
+    },
+    "statements": [
+      "SELECT * FROM snowflake_query('ALTER SESSION SET QUOTED_IDENTIFIERS_IGNORE_CASE = FALSE', 'h''q')",
+      "SELECT * FROM snowflake_query('ALTER SESSION SET TIMEZONE = ''UTC''', 'h''q')",
+      "SELECT * FROM snowflake_query('ALTER SESSION SET WEEK_START = 7', 'h''q')",
+      "SELECT * FROM snowflake_query('SHOW PARAMETERS LIKE ''TIMEZONE'' IN SESSION', 'h''q')",
+      "SELECT * FROM snowflake_query('SHOW PARAMETERS LIKE ''WEEK_START'' IN SESSION', 'h''q')",
+      "SELECT * FROM snowflake_query('ALTER SESSION SET QUERY_TAG = ''{\"team\":\"Data Eng\",\"Team\":\"x\",\"job\":\"nightly\"}''', 'h''q')",
+      "SELECT * FROM snowflake_query('SELECT MAX(\"amount\") AS \"watermark_max\" FROM (SELECT 1.5::DOUBLE AS amount, ''x'' AS s, ''\\x01''::BLOB AS b) AS __w', 'h''q')",
+      "BEGIN TRANSACTION",
+      "CREATE OR REPLACE TABLE \"lake\".\"t\" AS (SELECT * REPLACE (CAST(\"s\" AS VARCHAR) AS \"s\", CAST(\"b\" AS VARCHAR) AS \"b\") FROM (\nSELECT * FROM snowflake_query('SELECT 1.5::DOUBLE AS amount, ''x'' AS s, ''\\x01''::BLOB AS b', 'h''q')\n) AS __declared_types)",
+      "DESCRIBE \"lake\".\"t\"",
+      "COMMIT",
+      "SELECT count(*) AS n FROM \"lake\".\"t\"",
+      "SELECT sql FROM duckdb_tables() WHERE NOT internal AND lower(table_name) = lower('t') AND (lower(schema_name) = lower('lake') OR lower(database_name) = lower('lake'))",
+      "SELECT * FROM snowflake_query('\n      SELECT QUERY_ID       AS \"job_id\",\n             QUERY_TEXT     AS \"query_text\",\n             BYTES_SCANNED  AS \"bytes_scanned\",\n             EXECUTION_TIME AS \"execution_time_ms\",\n             ROWS_PRODUCED  AS \"rows_produced\"\n      FROM TABLE(ANALYTICS.INFORMATION_SCHEMA.QUERY_HISTORY_BY_SESSION(\n                 RESULT_LIMIT => 10000))\n      WHERE QUERY_TAG = ''{\"team\":\"Data Eng\",\"Team\":\"x\",\"job\":\"nightly\"}''\n        AND EXECUTION_STATUS = ''SUCCESS''', 'h''q')",
+      "SELECT * FROM snowflake_query('ALTER SESSION UNSET QUERY_TAG', 'h''q')"
+    ],
+    "incremental": {
+      "windowRows": true,
+      "frontier": {
+        "value": {
+          "bound": {
+            "malloyType": "number",
+            "value": "1.5"
+          }
+        }
+      },
+      "numericStoredAsDouble": {
+        "value": []
+      },
+      "window": {
+        "value": "SELECT * FROM snowflake_query('SELECT \"amount\" FROM (SELECT \"amount\", \"s\", \"b\" FROM (SELECT * FROM (SELECT 1.5::DOUBLE AS amount, ''x'' AS s, ''\\x01''::BLOB AS b) AS __d WHERE \"amount\" >= 1 AND \"amount\" < 2) AS __public) AS __c', 'h''q')"
+      }
+    }
+  },
+  "snowflake: session refuses UTC": {
+    "outcome": {
+      "error": "The Snowflake build session holds TIMEZONE = America/Denver, not Malloy's UTC, so its day and week buckets could differ from live's; the build is refused. Allow ALTER SESSION SET TIMEZONE for the build's role.",
+      "name": "Error"
+    },
+    "statements": [
+      "SELECT * FROM snowflake_query('ALTER SESSION SET QUOTED_IDENTIFIERS_IGNORE_CASE = FALSE', 'h''q')",
+      "SELECT * FROM snowflake_query('ALTER SESSION SET TIMEZONE = ''UTC''', 'h''q')",
+      "SELECT * FROM snowflake_query('ALTER SESSION SET WEEK_START = 7', 'h''q')",
+      "SELECT * FROM snowflake_query('SHOW PARAMETERS LIKE ''TIMEZONE'' IN SESSION', 'h''q')",
+      "SELECT * FROM snowflake_query('ALTER SESSION UNSET QUERY_TAG', 'h''q')"
+    ]
+  }
 }

@@ -304,6 +304,8 @@ const BUILT = [
    'DESCRIBE "lake"."t"',
    "COMMIT",
    'SELECT count(*) AS n FROM "lake"."t"',
+   // The column contract's read of its collations.
+   "SELECT sql FROM duckdb_tables() WHERE NOT internal AND lower(table_name) = lower('t') AND (lower(schema_name) = lower('lake') OR lower(database_name) = lower('lake'))",
 ];
 const NONE = { attaches: [], statements: [] };
 

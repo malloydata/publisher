@@ -41,7 +41,7 @@ const CONTRACT_VERSION = 1;
  * grouping, filters and ordering match), `equality` (equality, grouping,
  * equality filters and joins match; ordering and ranges may not), `none`.
  */
-export type ContractCompare = "exact" | "equality" | "none";
+type ContractCompare = "exact" | "equality" | "none";
 
 /** One column a build recorded. */
 type ContractColumn = {

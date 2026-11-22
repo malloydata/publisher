@@ -1235,12 +1235,16 @@ describe.skipIf(process.platform === "win32")(
             'DESCRIBE "lake"."orders_g1"',
             "COMMIT",
             'SELECT count(*) AS n FROM "lake"."orders_g1"',
+            // The column contract's read of its collations.
+            "SELECT sql FROM duckdb_tables() WHERE NOT internal AND lower(table_name) = lower('orders_g1') AND (lower(schema_name) = lower('lake') OR lower(database_name) = lower('lake'))",
             "DESCRIBE (passthrough)",
             "BEGIN TRANSACTION",
             'CREATE OR REPLACE TABLE "lake"."daily_g1"',
             'DESCRIBE "lake"."daily_g1"',
             "COMMIT",
             'SELECT count(*) AS n FROM "lake"."daily_g1"',
+            // The column contract's read of its collations.
+            "SELECT sql FROM duckdb_tables() WHERE NOT internal AND lower(table_name) = lower('daily_g1') AND (lower(schema_name) = lower('lake') OR lower(database_name) = lower('lake'))",
          ]);
 
          expect(await lake.catalogTables()).toEqual(["daily_g1", "orders_g1"]);
@@ -1523,6 +1527,8 @@ source: events is warehouse.sql("""
             'SELECT (SELECT COUNT(*) FROM (SELECT * FROM postgres_query(\'warehouse\', \'SELECT "wm" FROM (SELECT "id", "cat", "amt", "wm" FROM (SELECT * FROM (SELECT ',
             `DESCRIBE "lake"."${TABLE}"`,
             `SELECT count(*) AS n FROM "lake"."${TABLE}"`,
+            // The column contract's read of its collations.
+            `SELECT sql FROM duckdb_tables() WHERE NOT internal AND lower(table_name) = lower('${TABLE}') AND (lower(schema_name) = lower('lake') OR lower(database_name) = lower('lake'))`,
          ]);
          const script = lake.statements.find((s) => s.startsWith("BEGIN;"))!;
          expect(script.split("\n")[1]).toBe(
@@ -1976,6 +1982,8 @@ describe.skipIf(process.platform === "win32")(
             `DESCRIBE "lake"."${DAILY}"`,
             "COMMIT",
             `SELECT count(*) AS n FROM "lake"."${DAILY}"`,
+            // The column contract's read of its collations.
+            `SELECT sql FROM duckdb_tables() WHERE NOT internal AND lower(table_name) = lower('${DAILY}') AND (lower(schema_name) = lower('lake') OR lower(database_name) = lower('lake'))`,
          ]);
          // No staging or backup name: the catalog holds the same two tables,
          // `orders` still the first run's files and rows, `daily` rewritten.

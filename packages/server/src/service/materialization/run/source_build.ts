@@ -72,7 +72,7 @@ import { movedSinceBuild, type UpstreamMove } from "./database_column_read";
 import type { ColumnContract } from "../domain/column_contract";
 import {
    captureDatabaseContract,
-   captureStorageContract,
+   liveCollationsOf,
 } from "./column_contract_capture";
 
 /**
@@ -839,7 +839,6 @@ export async function buildSource(
       // included (`private:`, `internal:`), which the served copy hides
       // again; a column `except:` drops is left out. Refuses the build
       // (422) if the column surface can't be determined.
-      let stackedOnBase = false;
       const built = await storage({
          persistSource,
          instruction,
@@ -860,30 +859,13 @@ export async function buildSource(
          planFacts,
          lift,
          ...(replacesView ? { replacesView } : {}),
-         ...(storedBase
-            ? {
-                 storedBase: {
-                    ...storedBase,
-                    onStacked: () => {
-                       stackedOnBase = true;
-                       storedBase.onStacked?.();
-                    },
-                 },
-              }
-            : {}),
+         ...(storedBase ? { storedBase } : {}),
          ...(rollup ? { rollup } : {}),
          ...(signal ? { signal } : {}),
+         // How its source's strings compare live, for its column contract.
+         liveCollations: liveCollationsOf(connection, buildSQL),
       });
-      return withContract(
-         built,
-         await captureStorageContract({
-            environment,
-            entry: built,
-            sourceConnection: connection,
-            buildSQL,
-            ...storedTablesRead(built, builtEntries, stackedOnBase, storedBase),
-         }),
-      );
+      return built;
    }
 
    // Incremental refresh: a source with `refresh="incremental"` and a usable
@@ -934,27 +916,6 @@ function withContract(
    contract: ColumnContract | undefined,
 ): ManifestEntry {
    return contract ? { ...entry, contract } : entry;
-}
-
-/**
- * The stored tables a `storage=` build read in place of its source, whose
- * contracts bound how its strings compare: its base's, for a rollup that
- * grouped it; else each table its entry's `builtFrom` names, when it
- * reused its upstreams. Undefined for a build that read its source.
- */
-function storedTablesRead(
-   entry: ManifestEntry,
-   builtEntries: Record<string, ManifestEntry>,
-   stackedOnBase: boolean,
-   storedBase: StoredRollupBase | undefined,
-): { stackedOn?: ManifestEntry[] } {
-   if (stackedOnBase && storedBase) return { stackedOn: [storedBase.entry] };
-   if (entry.upstreamReuse !== "reused") return {};
-   const read = (entry.builtFrom ?? []).flatMap((b) => {
-      const upstream = builtEntries[b.sourceEntityId];
-      return upstream ? [upstream] : [];
-   });
-   return read.length > 0 ? { stackedOn: read } : {};
 }
 
 /**

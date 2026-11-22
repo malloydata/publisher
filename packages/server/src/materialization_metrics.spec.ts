@@ -28,6 +28,7 @@ import {
    recordBuildReadBytes,
    recordDuplicateTargetSkipped,
    recordIncrementalStep,
+   recordContractCapture,
    recordKeyCheck,
    recordManifestBindDegraded,
    recordQueryRoute,
@@ -467,6 +468,8 @@ const EMISSIONS: Record<string, () => void> = {
    publisher_query_route_duration_ms: () => recordQueryRouteDuration(1, "live"),
    publisher_materialization_key_check_total: () =>
       recordKeyCheck("parent", "not_unique"),
+   publisher_materialization_contract_capture_total: () =>
+      recordContractCapture("storage", "unread"),
    publisher_storage_tables_retained_total: () => recordStorageTableRetained(),
    publisher_storage_build_attribution_skipped_total: () =>
       recordAttributionSkipped("tag_failed"),

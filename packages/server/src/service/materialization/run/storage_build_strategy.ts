@@ -121,6 +121,8 @@ import {
    storageTablePath,
 } from "../domain/storage_table_path";
 import { STORAGE_DIALECT } from "../domain/dialect";
+import type { Collation } from "../domain/collation";
+import { storageContract } from "./column_contract_capture";
 import {
    storageBuildReadsConnectionType,
    unreadableSourceConnectionMessage,
@@ -213,6 +215,12 @@ export interface StorageBuildRequest {
    replacesView?: string[];
    /** See SourceBuildOptions.storedBase. */
    storedBase?: StoredRollupBase;
+   /**
+    * How each of the given string columns compares where live reads this
+    * source, for the column contract of a table built from its source
+    * (column_contract_capture.ts). Absent: unknown (`compare` `none`).
+    */
+   liveCollations?: (columns: string[]) => Promise<Map<string, Collation>>;
    /** See SourceBuildOptions.rollup. */
    rollup?: boolean;
 }
@@ -829,6 +837,21 @@ export class StorageBuildStrategy
       manifest.update(sourceEntityId, { tableName: physicalTableName });
 
       const durationMs = Math.round(performance.now() - startTime);
+      const contract = await storageContract({
+         schema: result.schema,
+         collations: result.collations,
+         ...(stackedOnBase && params.storedBase
+            ? { stackedOn: [params.storedBase.entry] }
+            : result.readFrom
+              ? {
+                   stackedOn: result.readFrom.map(
+                      (a) => params.builtEntries[a],
+                   ),
+                }
+              : params.liveCollations
+                ? { live: params.liveCollations }
+                : {}),
+      });
       return {
          sourceEntityId,
          sourceName: persistSource.name,
@@ -876,6 +899,7 @@ export class StorageBuildStrategy
          // Null when the read reported nothing: a build with an empty metadata
          // bag, since the label is what makes BigQuery's read report.
          queryCostBytes: result.readCost?.bytesScanned ?? null,
+         ...(contract ? { contract } : {}),
       };
    }
 
@@ -1205,20 +1229,24 @@ export class StorageBuildStrategy
          upstreams,
          planFacts,
       );
+      const readFrom = { readFrom: upstreams.map((b) => b.virtualHandle) };
       if (sameBuild) {
-         return buildProjectionIntoStorage({
-            destinationName,
-            destinationConnection,
-            downstream: persistSource,
-            columns: sameBuild.columns,
-            upstreamTable: quoteManifestTablePath(
-               sameBuild.upstream.tablePath,
-               STORAGE_DIALECT,
-            ),
-            physicalTableName,
-            environmentPath: environment.getEnvironmentPath(),
-            ...(replacesView ? { replacesView } : {}),
-         });
+         return withReadFrom(
+            readFrom,
+            buildProjectionIntoStorage({
+               destinationName,
+               destinationConnection,
+               downstream: persistSource,
+               columns: sameBuild.columns,
+               upstreamTable: quoteManifestTablePath(
+                  sameBuild.upstream.tablePath,
+                  STORAGE_DIALECT,
+               ),
+               physicalTableName,
+               environmentPath: environment.getEnvironmentPath(),
+               ...(replacesView ? { replacesView } : {}),
+            }),
+         );
       }
       const notCarried = (detail: string) =>
          new ChainedShapeNotCarriedError(
@@ -1282,24 +1310,27 @@ export class StorageBuildStrategy
             : notCarried(text.declined);
       }
       try {
-         return await buildDownstreamIntoStorage({
-            destinationName,
-            destinationConnection,
-            model: {
-               files: text.files,
-               entry: text.entry,
-               leaveOutWithin: text.rerootedSpans,
-            },
-            connectionName: text.connection,
-            downstreamName: text.downstreamName,
-            // A recompute writes the planned source's stored columns, hidden
-            // ones included; a stacked table must hold each of them.
-            recomputes: persistSource,
-            virtualMap: text.virtualMap,
-            physicalTableName,
-            environmentPath: environment.getEnvironmentPath(),
-            ...(replacesView ? { replacesView } : {}),
-         });
+         return await withReadFrom(
+            readFrom,
+            buildDownstreamIntoStorage({
+               destinationName,
+               destinationConnection,
+               model: {
+                  files: text.files,
+                  entry: text.entry,
+                  leaveOutWithin: text.rerootedSpans,
+               },
+               connectionName: text.connection,
+               downstreamName: text.downstreamName,
+               // A recompute writes the planned source's stored columns, hidden
+               // ones included; a stacked table must hold each of them.
+               recomputes: persistSource,
+               virtualMap: text.virtualMap,
+               physicalTableName,
+               environmentPath: environment.getEnvironmentPath(),
+               ...(replacesView ? { replacesView } : {}),
+            }),
+         );
       } catch (err) {
          // The model reached only stored parents (checked above), so a shape
          // failure here is one the build could not carry, not one the
@@ -1380,41 +1411,44 @@ export class StorageBuildStrategy
       const { declared, leftOut } = declarableColumns(binding.schema);
       reportLeftOutColumns(parent.sourceName, leftOut);
       try {
-         return await buildDownstreamIntoStorage({
-            destinationName,
-            destinationConnection,
-            model: oneFileModel(
-               extensionOverStoredModel({
-                  plan,
-                  chain,
-                  connectionName: destinationName,
-                  virtualHandle: address,
-                  columns: declared.map((c) => ({
-                     name: c.name,
-                     type: c.malloyType,
-                  })),
-               }),
-            ),
-            downstreamName: plan.buildSourceName,
-            recomputes: persistSource,
-            virtualMap: new Map([
-               [
-                  destinationName,
-                  new Map([
-                     [
-                        binding.virtualHandle,
-                        quoteManifestTablePath(
-                           binding.tablePath,
-                           STORAGE_DIALECT,
-                        ),
-                     ],
-                  ]),
-               ],
-            ]),
-            physicalTableName,
-            environmentPath: environment.getEnvironmentPath(),
-            ...(replacesView ? { replacesView } : {}),
-         });
+         return await withReadFrom(
+            { readFrom: [address] },
+            buildDownstreamIntoStorage({
+               destinationName,
+               destinationConnection,
+               model: oneFileModel(
+                  extensionOverStoredModel({
+                     plan,
+                     chain,
+                     connectionName: destinationName,
+                     virtualHandle: address,
+                     columns: declared.map((c) => ({
+                        name: c.name,
+                        type: c.malloyType,
+                     })),
+                  }),
+               ),
+               downstreamName: plan.buildSourceName,
+               recomputes: persistSource,
+               virtualMap: new Map([
+                  [
+                     destinationName,
+                     new Map([
+                        [
+                           binding.virtualHandle,
+                           quoteManifestTablePath(
+                              binding.tablePath,
+                              STORAGE_DIALECT,
+                           ),
+                        ],
+                     ]),
+                  ],
+               ]),
+               physicalTableName,
+               environmentPath: environment.getEnvironmentPath(),
+               ...(replacesView ? { replacesView } : {}),
+            }),
+         );
       } catch (err) {
          if (!(err instanceof MaterializationEligibilityError)) throw err;
          // Its text names the generated sources; logged, never returned.
@@ -1581,4 +1615,12 @@ export function missingPersistedTables(
             bound.has(alias),
          ),
    );
+}
+
+/** A stacked build's result, with the stored tables it read. */
+async function withReadFrom(
+   readFrom: { readFrom: string[] },
+   built: Promise<StorageBuildResult>,
+): Promise<StorageBuildResult> {
+   return { ...(await built), ...readFrom };
 }

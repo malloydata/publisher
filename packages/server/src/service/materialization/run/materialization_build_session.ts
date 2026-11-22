@@ -41,7 +41,13 @@ import {
 import { logger } from "../../../logger";
 import { errorCodeOf } from "../../../error_code";
 import { errMessage } from "../../../utils";
-import { quoteIdentifier, quoteManifestTablePath } from "../../quoting";
+import {
+   quoteIdentifier,
+   quoteManifestTablePath,
+   tablePathParts,
+} from "../../quoting";
+import type { TableCollations } from "../domain/collation";
+import { collationCatalogBatches } from "./warehouse_sql";
 import { fromSubselect } from "../subselect";
 import {
    type BuildCastOptions,
@@ -537,6 +543,19 @@ export interface StorageBuildResult {
    /** Authoritative DuckDB column schema, captured post-build via DESCRIBE. */
    schema: WireColumn[];
    /**
+    * The table's column collations, read from its definition in the same
+    * session ({@link storedCollations}), for its column contract. Undefined
+    * when the read failed.
+    */
+   collations?: TableCollations;
+   /**
+    * The addresses of the stored tables a build stacked on read in place of
+    * its source: what its entry's `builtFrom` names, and whose contracts
+    * bound how its strings compare. Absent for a build that read its
+    * source's warehouse.
+    */
+   readFrom?: string[];
+   /**
     * Rows in the table after the build, counted in the destination (cheap in
     * DuckDB and DuckLake, which keep row counts with their files), and
     * recorded as the manifest entry's `rowCount`. Null when the count could
@@ -649,6 +668,7 @@ async function refreshInPlace(
          // leave the source unservable until its next full build.
          schema: await describeTable(session, target),
          rowCount: await countStoredRows(session, target),
+         ...(await storedCollationsField(session, target)),
          readCost: refreshed.readCost,
          refresh: refreshed,
       };
@@ -898,6 +918,7 @@ async function buildOnFederatedSession(
       storageDestinationName: destinationName,
       schema,
       rowCount: await countStoredRows(session, target),
+      ...(await storedCollationsField(session, target)),
       // BigQuery's labelled read reports its cost; Snowflake's must be asked
       // after the read, while the session still holds the credentials.
       readCost:
@@ -985,6 +1006,7 @@ async function buildSameCatalogIntoStorage(params: {
             storageDestinationName: destinationName,
             schema,
             rowCount: await countStoredRows(session, target),
+            ...(await storedCollationsField(session, target)),
             readCost: null,
          };
       },
@@ -1374,6 +1396,7 @@ async function writeStackedTable(
       storageDestinationName: destinationName,
       schema,
       rowCount: await countStoredRows(session, target),
+      ...(await storedCollationsField(session, target)),
       // Reads no source warehouse: here, uniquely, null means "spent nothing".
       readCost: null,
       upstreamReuse: "reused",
@@ -1903,6 +1926,34 @@ async function inTransaction<T>(
       throw buildErr;
    }
    return result;
+}
+
+/**
+ * The column collations of the table at `target` (quoted), as the bind's
+ * read finds them (`collationCatalogBatches`, from its definition), in the
+ * session that wrote it: so a stored table's contract records what a bind
+ * will read. Empty when the read fails (its strings then record no
+ * collation, and compare `none`).
+ */
+async function storedCollationsField(
+   session: DuckDBConnection,
+   target: string,
+): Promise<{ collations?: TableCollations }> {
+   const parts = tablePathParts(target, STORAGE_DIALECT);
+   const [batch] = parts
+      ? collationCatalogBatches([{ key: "t", parts }], STORAGE_DIALECT)
+      : [];
+   if (!batch) return {};
+   try {
+      const result = await session.runSQL(batch.sql);
+      const rows = Array.isArray(result) ? result : (result.rows ?? []);
+      const read = batch
+         .collationsOf(rows as Record<string, unknown>[])
+         .get("t");
+      return read ? { collations: read } : {};
+   } catch {
+      return {};
+   }
 }
 
 /**

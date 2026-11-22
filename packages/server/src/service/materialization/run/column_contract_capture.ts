@@ -25,25 +25,19 @@
 import type { Connection } from "@malloydata/malloy";
 import { runAsInternalStatement } from "../../duckdb_lockdown";
 import { SERVER_VERSION } from "../../../version";
-import type { Collation } from "../domain/collation";
+import type { Collation, TableCollations } from "../domain/collation";
 import {
    type ColumnContract,
-   type ContractCompare,
    deriveContract,
    parseContract,
    weakestStringCompare,
 } from "../domain/column_contract";
 import type { ManifestEntry } from "../domain/types";
-import {
-   destinationSchemaOf,
-   storageTablePath,
-} from "../domain/storage_table_path";
+import { STORAGE_DIALECT } from "../domain/dialect";
 import { recordContractCapture } from "../../../materialization_metrics";
 import { isStringNativeType } from "../stored_column_types";
 import { readTableCollations, readTableColumns } from "./database_column_read";
 import { NATIVE_SCHEMA_ROW_LIMIT } from "./database_native_types";
-import type { BuildEnvironment } from "./build_upstreams";
-import { withDestinationSession } from "./materialization_build_session";
 import { liveCollationReads } from "./warehouse_sql";
 
 type ReadConnection = Pick<Connection, "runSQL" | "dialectName">;
@@ -95,65 +89,67 @@ export async function captureDatabaseContract(args: {
 }
 
 /**
- * The contract of a `storage=` table a build just wrote, read through a
- * destination session, or undefined when its columns could not be read.
- * `stackedOn` names the stored tables it read in place of its source (each
- * one's entry); otherwise its live side is read from `buildSQL` on the
- * source's warehouse `sourceConnection`.
+ * The contract of a `storage=` table a build just wrote, from what its
+ * build session read of it (its `DESCRIBE` and its definition's
+ * collations, the reads a bind makes), or undefined when its collations
+ * were not read. `stackedOn` names the stored tables it read in place of
+ * its source; otherwise `live` judges its source's strings.
  */
-export async function captureStorageContract(args: {
-   environment: BuildEnvironment;
-   entry: ManifestEntry;
-   sourceConnection: ReadConnection;
-   buildSQL: string;
-   stackedOn?: readonly ManifestEntry[];
+export async function storageContract(args: {
+   schema: readonly { name?: string; type?: string }[];
+   collations: TableCollations | undefined;
+   stackedOn?: readonly (ManifestEntry | undefined)[];
+   live?: (columns: string[]) => Promise<Map<string, Collation>>;
 }): Promise<ColumnContract | undefined> {
-   let stored: Awaited<ReturnType<typeof storedFacts>>;
-   try {
-      const destinationName = args.entry.storageDestinationName!;
-      const destinationConnection =
-         args.environment.getStorageDestination(destinationName);
-      const tablePath = storageTablePath(
-         destinationName,
-         args.entry.physicalTableName,
-         destinationSchemaOf(destinationConnection),
-      );
-      stored = await withDestinationSession(
-         {
-            destinationName,
-            destinationConnection,
-            environmentPath: args.environment.getEnvironmentPath(),
-         },
-         { purpose: "contract" },
-         (session) =>
-            storedFacts(session as unknown as ReadConnection, tablePath),
-      );
-   } catch {
-      // Never fails the build: the table records no contract.
-      stored = undefined;
+   const columns = args.schema.flatMap((c) =>
+      c.name && c.type
+         ? [
+              {
+                 name: c.name,
+                 nativeType: c.type,
+                 isString: isStringNativeType(c.type, STORAGE_DIALECT),
+              },
+           ]
+         : [],
+   );
+   const captured = args.collations !== undefined && columns.length > 0;
+   recordContractCapture("storage", captured ? "captured" : "unread");
+   if (!captured) return undefined;
+   const stored = {
+      dialect: STORAGE_DIALECT,
+      columns,
+      collations: args.collations,
+   };
+   if (args.stackedOn) {
+      return deriveContract({
+         tier: "storage",
+         stored,
+         stackedOn: weakestStringCompare(
+            args.stackedOn.map((e) => parseContract(e?.contract)),
+         ),
+         producer: SERVER_VERSION,
+      });
    }
-   recordContractCapture("storage", stored ? "captured" : "unread");
-   if (!stored) return undefined;
-   const stackedOn: ContractCompare | undefined = args.stackedOn
-      ? weakestStringCompare(
-           args.stackedOn.map((e) => parseContract(e.contract)),
-        )
-      : undefined;
-   const live =
-      stackedOn === undefined
-         ? await liveCollations(
-              args.sourceConnection,
-              args.buildSQL,
-              stored.columns.filter((c) => c.isString).map((c) => c.name),
-           )
-         : undefined;
+   const live = await args.live?.(
+      columns.filter((c) => c.isString).map((c) => c.name),
+   );
    return deriveContract({
       tier: "storage",
       stored,
-      ...(stackedOn !== undefined ? { stackedOn } : {}),
       ...(live ? { live } : {}),
       producer: SERVER_VERSION,
    });
+}
+
+/**
+ * How each of `columns` compares where live reads `sql` on `connection`
+ * (a `storage=` build's warehouse SQL), for {@link storageContract}.
+ */
+export function liveCollationsOf(
+   connection: ReadConnection,
+   sql: string,
+): (columns: string[]) => Promise<Map<string, Collation>> {
+   return (columns) => liveCollations(connection, sql, columns);
 }
 
 /**
