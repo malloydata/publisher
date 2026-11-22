@@ -30,6 +30,7 @@ import {
    modelDefOf,
    queryStageZone,
    queryTimezoneOf,
+   sameZone,
 } from "../../governance/ir/compiled_model";
 import {
    MalloyError,
