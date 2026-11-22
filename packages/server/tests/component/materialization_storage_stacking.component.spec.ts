@@ -615,6 +615,44 @@ describe.skipIf(process.platform === "win32")(
          expect(served.rows).toEqual(live.rows);
       });
 
+      it("records each stored table's column contract, read back as a bind reads it", async () => {
+         await setUp({ "m.malloy": ROLLUP_MODEL });
+         const m = await build();
+         expect([m.status, m.error]).toEqual(["MANIFEST_FILE_READY", null]);
+         const base = entryOf(m, "daily") as Entry & { contract?: unknown };
+         const rollup = entryOf(m, /^daily__rollup__/) as Entry & {
+            contract?: unknown;
+         };
+         const column = (e: { contract?: unknown }, name: string) =>
+            (
+               e.contract as {
+                  columns: { name: string; [k: string]: unknown }[];
+               }
+            ).columns.find((c) => c.name === name);
+         expect(base.contract).toMatchObject({ v: 1, dialect: "duckdb" });
+         // A string the warehouse compares byte-wise, stored byte-wise.
+         expect(column(base, "cat")).toEqual({
+            name: "cat",
+            nativeType: "VARCHAR",
+            collation: "binary",
+            compare: "exact",
+            gateExact: true,
+         });
+         // A double: no gate over it is exact, since the build does not
+         // name each column's source.
+         expect(column(base, "total")).toMatchObject({
+            compare: "exact",
+            gateExact: false,
+         });
+         expect(column(base, "n")).toMatchObject({ gateExact: true });
+         // Stacked on the base's table: its strings compare as the base's.
+         expect(rollup.upstreamReuse).toBe("reused");
+         expect(column(rollup, "cat")).toMatchObject({
+            collation: "binary",
+            compare: "exact",
+         });
+      });
+
       it("builds a storage= rollup from the warehouse when the run holds no table of its base", async () => {
          await setUp({ "m.malloy": ROLLUP_MODEL });
          const pkg = await env.getPackage(parsePackageName(PKG), false);

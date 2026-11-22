@@ -688,6 +688,20 @@ export function spelledNativeType(
    return spelled?.type;
 }
 
+/** Whether Malloy reads a column of native type `nativeType` as a string. */
+export function isStringNativeType(
+   nativeType: string,
+   dialect: string,
+): boolean {
+   try {
+      return (
+         getDialect(dialect).sqlTypeToMalloyType(nativeType).type === "string"
+      );
+   } catch {
+      return false;
+   }
+}
+
 function isArrayType(type: string): boolean {
    return /\[\s*\d*\s*\]\s*$/.test(type) || /^\s*ARRAY\b/i.test(type);
 }

@@ -488,6 +488,23 @@ for (const [tier, mechanism] of tiers.flatMap((t) =>
          ]);
       });
 
+      it("records a column contract on every table it built, each string compared exact on its own engine", () => {
+         for (const e of [
+            ...Object.values(entriesOf(first)),
+            ...Object.values(entriesOf(second)),
+         ]) {
+            const contract = (e as { contract?: unknown }).contract as {
+               v: number;
+               columns: { collation: string | null; compare: string }[];
+            };
+            expect(contract.v).toBe(1);
+            expect(contract.columns.length).toBeGreaterThan(0);
+            for (const c of contract.columns) {
+               expect(c.compare).toBe("exact");
+            }
+         }
+      });
+
       it("serves its table, equal to live before the drop, as text", () => {
          // On Postgres the router may answer from the upstream's served
          // copy instead, at its read cost; the stored rows are compared

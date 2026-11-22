@@ -39,7 +39,7 @@ import {
    storageTablePath,
 } from "../domain/storage_table_path";
 import { recordContractCapture } from "../../../materialization_metrics";
-import { spelledNativeType } from "../stored_column_types";
+import { isStringNativeType } from "../stored_column_types";
 import { readTableCollations, readTableColumns } from "./database_column_read";
 import { NATIVE_SCHEMA_ROW_LIMIT } from "./database_native_types";
 import type { BuildEnvironment } from "./build_upstreams";
@@ -67,9 +67,7 @@ async function storedFacts(
       columns: read.columns.map((c) => ({
          name: c.name,
          nativeType: c.nativeType ?? c.type ?? "",
-         isString:
-            (c.type ?? spelledNativeType(c.nativeType ?? "", dialect)) ===
-            "string",
+         isString: isStringNativeType(c.nativeType ?? c.type ?? "", dialect),
          ...(c.storedAsDouble ? { storedAsDouble: true } : {}),
       })),
       ...(collations.get("t") ? { collations: collations.get("t") } : {}),

@@ -1560,22 +1560,20 @@ export function collationCatalogBatches(
    switch (registeredDialect(dialect)) {
       case "duckdb":
          return tables.map((t) => {
-            const [catalog, schema] =
+            // A two-part name is a catalog's table or a schema's, as DuckDB
+            // resolves it: either matches.
+            const [p0, p1] = t.parts;
+            const qualifier =
                t.parts.length >= 3
-                  ? [t.parts[0], t.parts[1]]
+                  ? ` AND lower(database_name) = lower(${lit(p0)}) AND lower(schema_name) = lower(${lit(p1)})`
                   : t.parts.length === 2
-                    ? [undefined, t.parts[0]]
-                    : [undefined, undefined];
+                    ? ` AND (lower(schema_name) = lower(${lit(p0)}) OR lower(database_name) = lower(${lit(p0)}))`
+                    : "";
             return {
                sql:
                   "SELECT sql FROM duckdb_tables() WHERE NOT internal " +
                   `AND lower(table_name) = lower(${lit(tableOf(t))})` +
-                  (schema !== undefined
-                     ? ` AND lower(schema_name) = lower(${lit(schema)})`
-                     : "") +
-                  (catalog !== undefined
-                     ? ` AND lower(database_name) = lower(${lit(catalog)})`
-                     : ""),
+                  qualifier,
                keys: [t.key],
                collationsOf: (rows) => {
                   const defs = rows
