@@ -77,7 +77,8 @@ export function reachedSourceIDsOf(
  * source a named query refers to by its name in the model resolved to its
  * sourceID: each that its own notes declare `#@ persist` or
  * `#(materialize)`, in sourceID order, with the destination its own notes
- * place it in. Read from the declaration alone, whatever
+ * place it in. A `#@ persist` on a source that is not a query builds no
+ * table, so it is no upstream. Read from the declaration alone, whatever
  * `PERSIST_STORAGE_MODE` says: with `storage=` off such a source has no
  * table at all, and a downstream refused over it is answered live too.
  */
@@ -101,6 +102,15 @@ export function reachedUpstreams(
       );
       const persisted = notesDeclarePersist(own);
       if (!persisted && materialize.length === 0) continue;
+      // A `#@ persist` on a source that is not a query builds no table
+      // (`persist-not-materializable`): nothing stored to read.
+      if (
+         persisted &&
+         materialize.length === 0 &&
+         (node?.def as { type?: unknown } | undefined)?.type !== "query_source"
+      ) {
+         continue;
+      }
       const tag = persisted
          ? readNotesIfAny(own, "@")
          : readNotesIfAny(materialize, "materialize");
