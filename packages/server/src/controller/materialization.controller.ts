@@ -308,7 +308,20 @@ export class MaterializationController {
          ...(typeof ref.connectionName === "string"
             ? { connectionName: ref.connectionName }
             : {}),
-         ...(ref.nativeSchema !== undefined
+         // Where a stored upstream's table lives. Without it a reference to
+         // a stored table reads as a warehouse table, and a chained
+         // `storage=` build over it refuses or recomputes it. The service
+         // checks it names a configured destination.
+         ...(referenceDestination(ref.storageDestinationName) !== undefined
+            ? {
+                 storageDestinationName: referenceDestination(
+                    ref.storageDestinationName,
+                 ),
+              }
+            : {}),
+         // An empty list is no types, as an absent one is.
+         ...(ref.nativeSchema !== undefined &&
+         validReferenceSchema(ref.nativeSchema).length > 0
             ? { nativeSchema: validReferenceSchema(ref.nativeSchema) }
             : {}),
       };
@@ -573,4 +586,19 @@ function validReferenceSchema(raw: unknown): { name: string; type: string }[] {
       name: c.name,
       type: c.type,
    }));
+}
+
+/**
+ * A reference's `storageDestinationName`: absent, or a non-empty string
+ * (refused otherwise, 400). Whether it names a configured destination is
+ * the service's check, which holds the environment.
+ */
+function referenceDestination(raw: unknown): string | undefined {
+   if (raw === undefined) return undefined;
+   if (typeof raw !== "string" || raw === "") {
+      throw new BuildInstructionsInvalidError(
+         "Manifest reference 'storageDestinationName' must be a non-empty string when present",
+      );
+   }
+   return raw;
 }

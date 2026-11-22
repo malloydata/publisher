@@ -19,6 +19,7 @@ import { leafKey } from "../domain/physical_table";
 import {
    BadRequestError,
    BuildInstructionsInvalidError,
+   DestinationNotFoundError,
    BuildPlanUnavailableError,
    ConnectionNotFoundError,
    databaseAccessFailure,
@@ -853,6 +854,19 @@ export class MaterializationService {
             options.ledger,
             options.reseed ?? false,
          );
+         // A stored reference's destination must be one this environment
+         // configures: an unknown one would read its table from nowhere.
+         for (const ref of options.referenceManifest ?? []) {
+            if (ref.storageDestinationName === undefined) continue;
+            try {
+               environment.getStorageDestination(ref.storageDestinationName);
+            } catch (err) {
+               if (!(err instanceof DestinationNotFoundError)) throw err;
+               throw new BuildInstructionsInvalidError(
+                  `Manifest reference for '${ref.sourceEntityId}' names storage destination '${ref.storageDestinationName}', which this environment does not configure`,
+               );
+            }
+         }
          if (version !== null) {
             // One table, two writers in one run: it would hold the last
             // one's rows under both definitions.
