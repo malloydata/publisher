@@ -262,6 +262,13 @@ async function withLoadSession<T>(
 }
 
 /**
+ * read_xlsx reports a workbook it cannot use (a sheet that isn't there, no rows, not a zip) as Binder or IO errors.
+ * A remote object cut short mid-download could also read as "Failed to open zip": that rare transient answers a terminal 400.
+ */
+const XLSX_CONTENT =
+   /^Binder Error: (Sheet ".*" not found in xlsx file|Invalid range|No rows found in xlsx file|No sheets found|No \[Content_Types\]\.xml found)|^IO Error: Failed to open zip for reading/;
+
+/**
  * What a reader's failure says of the objects it read: `missing` (nothing at
  * the URI) or `content` (not Parquet, or a value its column's type cannot hold),
  * neither of which a retry cures. Null for anything else -- a storage error, a
@@ -269,10 +276,6 @@ async function withLoadSession<T>(
  * A missing local file counts only when the message names one of `uris`, since a
  * spill file can go missing too.
  */
-/** read_xlsx reports a workbook it cannot use (a sheet that isn't there, no rows, not a zip) as Binder or IO errors. */
-const XLSX_CONTENT =
-   /^Binder Error: (Sheet ".*" not found in xlsx file|Invalid range|No rows found in xlsx file|No sheets found|No \[Content_Types\]\.xml found)|^IO Error: Failed to open zip for reading/;
-
 function readerFault(
    error: Error,
    uris: readonly string[],
