@@ -52,7 +52,7 @@ interface Mechanism {
    /** Built alone first. */
    upstream: string;
    /** The downstream's entry's `sourceName`. */
-   downstream: string;
+   downstream: RegExp;
    query: string;
 }
 
@@ -70,7 +70,7 @@ source: s is base extend {
 }
 `,
       upstream: "base",
-      downstream: "s__by_cat__view",
+      downstream: /^s__by_cat__view$/,
       query: "run: s -> by_cat -> { select: *; order_by: cat }",
    },
    {
@@ -80,8 +80,20 @@ source: s is base extend {
 query: q is base -> { group_by: sub; aggregate: total is amt.sum() }
 `,
       upstream: "base",
-      downstream: "q__query",
+      downstream: /^q__query$/,
       query: "run: q -> { select: *; order_by: sub }",
+   },
+   {
+      label: "storage= rollup over a database #@ persist",
+      model: `${HEAD}${DATABASE_BASE}
+source: rolled is base extend {
+  #@ preaggregate grain="cat" storage=lake
+  measure: total is amt.sum()
+}
+`,
+      upstream: "base",
+      downstream: /^rolled__rollup__/,
+      query: "run: rolled -> { group_by: cat; aggregate: total; order_by: cat }",
    },
 ];
 
@@ -247,8 +259,8 @@ for (const mechanism of MECHANISMS) {
             const upstream = entriesOf(first).find(
                (e) => e.sourceName === mechanism.upstream,
             )!;
-            const downstream = entriesOf(second).find(
-               (e) => e.sourceName === mechanism.downstream,
+            const downstream = entriesOf(second).find((e) =>
+               mechanism.downstream.test(e.sourceName ?? ""),
             )!;
             expect(downstream.error).toBeUndefined();
             expect(downstream.storageDestinationName).toBe("lake");

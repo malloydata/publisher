@@ -234,9 +234,9 @@ function materializeStoredIn(
  * compile needs: a database rollup over a base whose own notes declare a
  * database `#@ persist` (its notes kept, `keep`), or a database
  * `#(materialize)` that `materialized` planned as a plain table (its copy,
- * `stored`, by the base's declared name). A rollup in a `storage=`
- * destination, or over a base built into one, reads the author's rows as
- * planned: a destination cannot be read from the base's warehouse.
+ * `stored`, by the base's declared name), in either tier. A rollup over a
+ * base built into a `storage=` destination is not offered it: the
+ * destination cannot be read from the base's warehouse.
  */
 function overStoredBaseNotes(
    map: SourceMap,
@@ -255,8 +255,10 @@ function overStoredBaseNotes(
    const rollups = new Set<string>();
    const stored = new Map<string, StoredMaterializeBase>();
    for (const plan of plans) {
-      // A base read from its build copy is never its stored table.
-      if (plan.storage !== undefined || readsBuildCopy(plan)) continue;
+      // A base read from its build copy is never its stored table. A
+      // `storage=` rollup's build runs in the warehouse too, so it reads a
+      // database base's table as a database rollup does.
+      if (readsBuildCopy(plan)) continue;
       const node = map.node(plan.baseSourceID);
       const def = node?.def as { annotations?: AnnotationsDef } | undefined;
       const notes = ownLevelNotes(def?.annotations);

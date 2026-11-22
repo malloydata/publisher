@@ -2249,15 +2249,15 @@ function overStoredUpstreamSource(
 }
 
 /**
- * The source a database rollup builds from when this run holds its base's
+ * The source a rollup builds from when this run holds its base's
  * table: the rollup compiled over that table (rollup_compile.ts), so its
  * build reads the table rather than the warehouse, through the build
  * manifest as any chained build does. Only when every one of these holds,
  * otherwise undefined and the rollup builds from the warehouse as planned:
  *
- *  - the rollup builds in the database tier, and its base is a database `#@ persist`
- *    source or a database `#(materialize)` plain table (the plan offers the
- *    compile only then);
+ *  - its base is a database `#@ persist` source or a database
+ *    `#(materialize)` plain table (the plan offers the compile only then),
+ *    in either tier: a `storage=` rollup's build runs in the warehouse too;
  *  - the run's entries hold the base's table at the address the plan gives
  *    it, built this run or carried under the reuse rules, database and at
  *    the tier the base declares now. The database gate refused nothing on
@@ -2282,7 +2282,6 @@ async function overStoredBaseSource(
    const { compiled } = run;
    const table = compiled.tables[persistSource.sourceID];
    if (table?.kind !== "rollup" || !table.overStoredBase) return undefined;
-   if (gated.instruction.destination) return undefined;
    // The table it reads: its base's, or that of the `#(materialize)` source
    // its base extends, which its compile re-roots.
    const baseID =
@@ -2474,7 +2473,7 @@ function withBuiltProvenance(
 }
 
 /**
- * A database rollup's entry with `upstreamReuse` saying what its build read: `reused`
+ * A rollup's entry with `upstreamReuse` saying what its build read: `reused`
  * when it built from its base's stored table ({@link overStoredBaseSource}),
  * `recomputed`, with why, when it could not because that table moved since
  * its build, could not be read, or recorded no column types
@@ -2491,11 +2490,14 @@ function withRollupUpstreamReuse(
    address: string,
    entry: ManifestEntry,
 ): ManifestEntry {
-   // A `storage=` build reports what it read itself: `reused` only when it
-   // stacked on a stored table (storage_build_strategy.ts, `rollup`).
+   // A `storage=` build reports what it read itself (`reused` when it
+   // stacked on a stored table, storage_build_strategy.ts), unless it read
+   // its database base's table in the warehouse, as a database rollup does.
    if (
       run.compiled.tables[persistSource.sourceID]?.kind !== "rollup" ||
-      entry.storageDestinationName
+      (entry.storageDestinationName &&
+         !run.readFrom?.has(address) &&
+         !run.baseRecomputed?.has(address))
    ) {
       return entry;
    }

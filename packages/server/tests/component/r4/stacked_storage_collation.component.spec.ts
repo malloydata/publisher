@@ -151,6 +151,7 @@ source: b_binary is a -> { group_by: cc; aggregate: n is count(); order_by: cc; 
 // Unpersisted: answered by a served copy over the table of a, or live.
 source: x_mf is a -> { aggregate: n is count() { where: ci = 'apple' } }
 source: x_where is a -> { where: ci = 'apple'; aggregate: n is count() }
+source: x_cat is a -> { aggregate: n is count() { where: cat > 'B' } }
 
 #@ persist storage="lake"
 source: b_number is a -> { group_by: big is amt > 50; aggregate: n is count() }
@@ -178,6 +179,7 @@ const SHAPES: Shape[] = [
    },
    { query: "run: x_mf -> { aggregate: t is sum(n) }", servedBy: "live" },
    { query: "run: x_where -> { aggregate: t is sum(n) }", servedBy: "live" },
+   { query: "run: x_cat -> { aggregate: t is sum(n) }", servedBy: "live" },
    // Stacked builds that compare a non-binary string: refused, never
    // recomputed from raw, so live answers.
    {
