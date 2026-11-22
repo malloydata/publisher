@@ -333,7 +333,13 @@ for (const mechanism of MECHANISMS) {
 describe.skipIf(!url)(
    "a storage= view over an upstream whose stored type is not the plan's default",
    () => {
-      const QUERY = "run: s -> by_cat -> { select: *; order_by: total, cat }";
+      const QUERY = "run: s -> by_cat -> { select: *; order_by: total }";
+      // Two categories share a total, so rows compare in category order (an
+      // `order_by: cat` would compare a string, which live answers itself).
+      const byCat = (rows: unknown) =>
+         [...(rows as { cat: string }[])].sort((a, b) =>
+            a.cat < b.cat ? -1 : a.cat > b.cat ? 1 : 0,
+         );
       const f = lakeFixture(`${HEAD}#@ persist storage="lake" name="sdr_priced"
 source: base is raw -> { select: cat, price }
 source: s is base extend {
@@ -380,7 +386,7 @@ source: s is base extend {
          expect(view.upstreamReuse).toBe("reused");
          const served = await f.ask(QUERY);
          expect(served.kind).not.toBe("live");
-         expect(served.rows).toEqual(live);
+         expect(byCat(served.rows)).toEqual(byCat(live));
       });
    },
 );
