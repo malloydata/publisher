@@ -109,9 +109,10 @@ describe("buildOneSource", () => {
       });
 
       const bags = runSQL.getCalls().map((c) => c.args[1]?.queryMetadata);
-      // The staging drop, the CTAS, the swap, and the read of the built
-      // table's column types (database_native_types.ts).
-      expect(bags).toHaveLength(4);
+      // The staging drop, the CTAS, the swap, the read of the built
+      // table's column types (database_native_types.ts), and the column
+      // contract's (column_contract_capture.ts).
+      expect(bags).toHaveLength(5);
       for (const bag of bags) {
          expect(bag).toEqual({
             deployment: "eu",
@@ -162,7 +163,8 @@ describe("buildOneSource", () => {
       const sql = runSQL.getCalls().map((c) => c.args[0] as string);
       // DuckDB: the served table is dropped and replaced in one transaction,
       // so no reader finds the name missing.
-      expect(sql).toEqual([
+      // Then the column contract's read (column_contract_capture.ts).
+      expect(sql.slice(0, 4)).toEqual([
          'DROP TABLE IF EXISTS "orders_v1_abcdef123456"',
          'CREATE TABLE "orders_v1_abcdef123456" AS (SELECT * FROM t)',
          'BEGIN TRANSACTION;\nDROP TABLE IF EXISTS "orders_v1";\nALTER TABLE "orders_v1_abcdef123456" RENAME TO "orders_v1";\nCOMMIT;',
@@ -188,7 +190,8 @@ describe("buildOneSource", () => {
       );
 
       const sql = runSQL.getCalls().map((c) => c.args[0] as string);
-      expect(sql).toEqual([
+      // Then the column contract's read (column_contract_capture.ts).
+      expect(sql.slice(0, 6)).toEqual([
          'DROP TABLE IF EXISTS "MY_SCHEMA"."orders_v1_abcdef123456"',
          'CREATE TABLE "MY_SCHEMA"."orders_v1_abcdef123456" AS (SELECT * FROM t)',
          // Snowflake: renamed aside, the new table renamed in, the old dropped.
@@ -285,7 +288,8 @@ describe("buildOneSource", () => {
       );
 
       const sql = runSQL.getCalls().map((c) => c.args[0] as string);
-      expect(sql).toEqual([
+      // Then the column contract's read (column_contract_capture.ts).
+      expect(sql.slice(0, 6)).toEqual([
          "DROP TABLE IF EXISTS `ds`.`orders_v1_abcdef123456`",
          "CREATE TABLE `ds`.`orders_v1_abcdef123456` AS (SELECT * FROM t)",
          "ALTER TABLE `ds`.`orders_v1` RENAME TO `orders_v1_oabcdef12345`",

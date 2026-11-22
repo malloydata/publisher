@@ -24,9 +24,17 @@
  */
 
 import { createHash } from "crypto";
+import {
+   BINARY_COLLATION,
+   type Collation,
+   collationOf,
+   type TableCollations,
+} from "./collation";
+import { gateTypeInexact } from "./gate_policy";
+import type { Tier } from "./vocabulary";
 
 /** The contract shape this release writes and reads. */
-export const CONTRACT_VERSION = 1;
+const CONTRACT_VERSION = 1;
 
 /**
  * How a stored read of a column may stand in for live: `exact` (equality,
@@ -36,7 +44,7 @@ export const CONTRACT_VERSION = 1;
 export type ContractCompare = "exact" | "equality" | "none";
 
 /** One column a build recorded. */
-export interface ContractColumn {
+type ContractColumn = {
    name: string;
    /** Its type as the holding engine's catalog names it. */
    nativeType: string;
@@ -45,23 +53,23 @@ export interface ContractColumn {
    compare: ContractCompare;
    /** Whether a row-level gate over it reads the same rows as live (R-10). */
    gateExact: boolean;
-}
+};
 
 /** One pair-table key check a build ran (`ColumnContract.keys`). */
-export interface ContractKeyCheck {
+type ContractKeyCheck = {
    unique: boolean;
    level?: string;
-}
+};
 
 /** A table's contract, as {@link parseContract} reads it. */
-export interface ColumnContract {
+export type ColumnContract = {
    v: number;
    producer?: string;
    dialect: string;
    defaultCollation?: string;
    columns: ContractColumn[];
    keys?: Record<string, ContractKeyCheck>;
-}
+};
 
 const COMPARES: ReadonlySet<string> = new Set(["exact", "equality", "none"]);
 
@@ -140,7 +148,7 @@ export function contractColumn(
 }
 
 /** The column named `name`: exactly, else the one that matches it case-blind. */
-export function columnNamed<C extends { name: string }>(
+function columnNamed<C extends { name: string }>(
    columns: readonly C[],
    name: string,
 ): C | undefined {
@@ -153,7 +161,7 @@ export function columnNamed<C extends { name: string }>(
 }
 
 /** A native type spelled one way whatever its case and spacing. */
-export function spelledType(nativeType: string): string {
+function spelledType(nativeType: string): string {
    return nativeType
       .replace(/\s+/g, " ")
       .replace(/\s*([(),])\s*/g, "$1")
@@ -185,4 +193,137 @@ export function keyCheckPassed(
    column: string,
 ): boolean {
    return contract?.keys?.[column]?.unique === true;
+}
+
+/** The stored side of a table a build just wrote, as the bind reads it. */
+interface StoredTableFacts {
+   /** The holding engine's dialect. */
+   dialect: string;
+   columns: readonly {
+      name: string;
+      nativeType: string;
+      /** Malloy reads it as a string. */
+      isString: boolean;
+      /** A DuckLake 128-bit integer its Parquet files hold as a DOUBLE. */
+      storedAsDouble?: boolean;
+   }[];
+   /** Its columns' collations; undefined when the holding engine's were not read. */
+   collations?: TableCollations;
+   defaultCollation?: string;
+}
+
+/** The order of {@link ContractCompare}, weakest first. */
+const COMPARE_RANK: Record<ContractCompare, number> = {
+   none: 0,
+   equality: 1,
+   exact: 2,
+};
+
+/** The weaker of two compares. */
+function weakerCompare(
+   a: ContractCompare,
+   b: ContractCompare,
+): ContractCompare {
+   return COMPARE_RANK[a] <= COMPARE_RANK[b] ? a : b;
+}
+
+/**
+ * The contract a build records for a table it wrote, from the table as its
+ * holding engine reads it now ({@link StoredTableFacts}, the read a bind
+ * makes, so a table straight out of a build always passes its own check)
+ * and, for a `storage=` table, how its source's strings compared live.
+ *
+ * A string column's `compare`:
+ * - its stored collation unread: `none`;
+ * - a database table: `exact`. Live reads the same engine, and the build's
+ *   `CREATE TABLE AS` keeps each column's collation;
+ * - a `storage=` table: `none` unless its stored collation is binary; then
+ *   the weakest compare of the stored tables it read when it stacked on
+ *   them (`stackedOn`), else its source's live judgement (binary: `exact`;
+ *   deterministic: `equality`; anything else, or unread: `none`).
+ *
+ * `gateExact`: on a database table, every column but a DuckLake double; on
+ * a `storage=` table, a column of a type a gate compares exactly
+ * ({@link gateTypeInexact}), since the build does not name each column's
+ * source.
+ */
+export function deriveContract(args: {
+   tier: Tier;
+   stored: StoredTableFacts;
+   /** A `storage=` table built from its source: each string column's live collation. */
+   live?: ReadonlyMap<string, Collation>;
+   /** A `storage=` table built over stored tables: their weakest string compare. */
+   stackedOn?: ContractCompare;
+   keys?: Record<string, ContractKeyCheck>;
+   producer?: string;
+}): ColumnContract {
+   const { tier, stored } = args;
+   const columns = stored.columns.map((c): ContractColumn => {
+      const collation =
+         c.isString && stored.collations
+            ? collationOf(stored.collations, c.name)
+            : null;
+      return {
+         name: c.name,
+         nativeType: c.nativeType,
+         collation,
+         compare: columnCompare(args, c.isString, collation, c.name),
+         gateExact:
+            tier === "database"
+               ? c.storedAsDouble !== true
+               : !gateTypeInexact(c.nativeType),
+      };
+   });
+   return {
+      v: CONTRACT_VERSION,
+      ...(args.producer ? { producer: args.producer } : {}),
+      dialect: stored.dialect,
+      ...(stored.defaultCollation
+         ? { defaultCollation: stored.defaultCollation }
+         : {}),
+      columns,
+      ...(args.keys && Object.keys(args.keys).length > 0
+         ? { keys: args.keys }
+         : {}),
+   };
+}
+
+/** One column's `compare` (see {@link deriveContract}). */
+function columnCompare(
+   args: Parameters<typeof deriveContract>[0],
+   isString: boolean,
+   collation: string | null,
+   name: string,
+): ContractCompare {
+   if (!isString) return "exact";
+   if (collation === null) return "none";
+   if (args.tier === "database") return "exact";
+   if (collation !== BINARY_COLLATION) return "none";
+   if (args.stackedOn !== undefined) return args.stackedOn;
+   const live = args.live?.get(name);
+   return live === "binary"
+      ? "exact"
+      : live === "deterministic"
+        ? "equality"
+        : "none";
+}
+
+/**
+ * The weakest `compare` over the string columns of the stored tables a
+ * build read; `none` when any of them has no contract. A table with no
+ * string column reads `exact`.
+ */
+export function weakestStringCompare(
+   upstreams: readonly (ColumnContract | undefined)[],
+): ContractCompare {
+   let out: ContractCompare = "exact";
+   for (const contract of upstreams) {
+      if (!contract) return "none";
+      for (const c of contract.columns) {
+         if (c.collation !== null || c.compare !== "exact") {
+            out = weakerCompare(out, c.compare);
+         }
+      }
+   }
+   return out;
 }

@@ -34,9 +34,11 @@ import {
 import type { FreshnessManifest, ObservedColumns } from "../domain/types";
 import { NATIVE_SCHEMA_ROW_LIMIT } from "./database_native_types";
 import { redactConnectionSecrets } from "./connection_redaction";
+import type { TableCollations } from "../domain/collation";
 import {
    type CatalogBatch,
    type CatalogTable,
+   collationCatalogBatches,
    nativeTypeCatalogBatches,
 } from "./warehouse_sql";
 
@@ -158,6 +160,73 @@ export async function readTableColumns(args: {
                out,
             ),
          );
+      }
+   }
+   await runBounded(tasks, BIND_READ_CONCURRENCY);
+   return out;
+}
+
+/**
+ * Each table's column collations as its engine's catalog holds them now, by
+ * the caller's key (`collationCatalogBatches`): the read a build's column
+ * contract records and a bind checks it with. A table whose read failed,
+ * timed out, found nothing, or whose engine's collations are not read is
+ * absent: its string columns' collations are unknown. Never throws.
+ */
+export async function readTableCollations(args: {
+   tables: readonly {
+      key: string;
+      connectionName: string | undefined;
+      /** Its path, unquoted and dot-separated, as Publisher wrote it. */
+      tableName: string;
+   }[];
+   connection: (connectionName: string) => Promise<ReadConnection>;
+   /** Overrides {@link BIND_READ_TIMEOUT_MS} (a test's). */
+   timeoutMs?: number;
+}): Promise<Map<string, TableCollations>> {
+   const out = new Map<string, TableCollations>();
+   const byConnection = new Map<string, typeof args.tables>();
+   for (const t of args.tables) {
+      if (!t.connectionName) continue;
+      byConnection.set(t.connectionName, [
+         ...(byConnection.get(t.connectionName) ?? []),
+         t,
+      ]);
+   }
+   const tasks: (() => Promise<void>)[] = [];
+   for (const [name, tables] of byConnection) {
+      let connection: ReadConnection;
+      try {
+         connection = await args.connection(name);
+      } catch {
+         continue;
+      }
+      const dialect = connection.dialectName;
+      const parts: CatalogTable[] = [];
+      for (const t of tables) {
+         const p = tablePathParts(t.tableName, dialect);
+         if (p) parts.push({ key: t.key, parts: p });
+      }
+      for (const batch of collationCatalogBatches(parts, dialect)) {
+         tasks.push(async () => {
+            try {
+               const result = await withTimeout(
+                  runAsInternalStatement(batch.sql, () =>
+                     connection.runSQL(batch.sql, {
+                        rowLimit: NATIVE_SCHEMA_ROW_LIMIT,
+                     }),
+                  ),
+                  args.timeoutMs ?? BIND_READ_TIMEOUT_MS,
+               );
+               for (const [key, read] of batch.collationsOf(
+                  result.rows as Record<string, unknown>[],
+               )) {
+                  out.set(key, read);
+               }
+            } catch {
+               // Unread: the collations stay unknown.
+            }
+         });
       }
    }
    await runBounded(tasks, BIND_READ_CONCURRENCY);

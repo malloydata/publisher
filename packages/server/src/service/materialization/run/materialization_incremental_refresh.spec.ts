@@ -408,7 +408,9 @@ describe("buildOneSource: incremental refresh", () => {
       await callBuildOneSource({ runSQL, context });
 
       const statements = runSQL.getCalls().map((c) => c.args[0] as string);
-      expect(statements).toEqual([
+      // Then the column contract's read of the table it wrote
+      // (column_contract_capture.ts).
+      expect(statements.slice(0, 4)).toEqual([
          'DROP TABLE IF EXISTS "orders_v1_abcdef123456"',
          'CREATE TABLE "orders_v1_abcdef123456" AS (SELECT * FROM t)',
          // Postgres: the swap is one implicit transaction in one call.
@@ -457,9 +459,9 @@ describe("buildOneSource: incremental refresh", () => {
          incremental: context,
          contentSourceEntityId: "abcdef1234567890",
       });
-      // The staging drop, the CTAS, the one-transaction swap, and the read of
-      // the built table's column types.
-      expect(runSQL.getCalls().map((c) => c.args[0])).toHaveLength(4);
+      // The staging drop, the CTAS, the one-transaction swap, the read of
+      // the built table's column types, and the column contract's.
+      expect(runSQL.getCalls().map((c) => c.args[0])).toHaveLength(5);
       expect(upsert.called).toBe(false);
    });
 

@@ -542,7 +542,7 @@ export async function assertInlinedJoinsUnique(
  */
 export function pairLeafKeyChecksOf(
    plan: MaterializePlan | undefined,
-): { sourceID: string; keyColumn: string; sql: string }[] {
+): { sourceID: string; keyColumn: string; sql: string; contractKey: string }[] {
    return (plan?.uniquenessChecks ?? []).flatMap((check) =>
       check.recordOnly && check.sql
          ? [
@@ -550,10 +550,20 @@ export function pairLeafKeyChecksOf(
                  sourceID: check.joinedSourceID,
                  keyColumn: check.keyColumn,
                  sql: check.sql,
+                 contractKey: pairLeafContractKey(check.join, check.keyColumn),
               },
            ]
          : [],
    );
+}
+
+/**
+ * The key a pair table's leaf check is recorded under in its contract
+ * (`ColumnContract.keys`): the path of joins down to the leaf and the
+ * leaf's key column, dot-separated (`items.options.option_id`).
+ */
+function pairLeafContractKey(join: string, keyColumn: string): string {
+   return join ? `${join}.${keyColumn}` : keyColumn;
 }
 
 /**

@@ -5,8 +5,10 @@ import { describe, expect, it } from "bun:test";
 import {
    contractColumn,
    contractDigest,
+   deriveContract,
    keyCheckPassed,
    parseContract,
+   weakestStringCompare,
 } from "./column_contract";
 
 const one = {
@@ -143,5 +145,127 @@ describe("keyCheckPassed", () => {
       expect(keyCheckPassed(c, "b")).toBe(false);
       expect(keyCheckPassed(c, "c")).toBe(false);
       expect(keyCheckPassed(undefined, "a")).toBe(false);
+   });
+});
+
+describe("deriveContract", () => {
+   const stored = (
+      columns: { name: string; nativeType: string; isString: boolean }[],
+      collation: string | null = "binary",
+   ) => ({
+      dialect: "duckdb",
+      columns,
+      collations: { byColumn: new Map(), otherwise: collation },
+   });
+   const name = { name: "name", nativeType: "VARCHAR", isString: true };
+   const n = { name: "n", nativeType: "BIGINT", isString: false };
+   const d = { name: "d", nativeType: "DOUBLE", isString: false };
+
+   it("records every non-string column exact", () => {
+      const c = deriveContract({ tier: "storage", stored: stored([n, d]) });
+      expect(c.columns.map((x) => x.compare)).toEqual(["exact", "exact"]);
+      expect(c.v).toBe(1);
+   });
+
+   it("derives a storage= string's compare from its live collation", () => {
+      const at = (live: "binary" | "deterministic" | "unknown") =>
+         deriveContract({
+            tier: "storage",
+            stored: stored([name]),
+            live: new Map([["name", live]]),
+         }).columns[0].compare;
+      expect(at("binary")).toBe("exact");
+      expect(at("deterministic")).toBe("equality");
+      expect(at("unknown")).toBe("none");
+      expect(
+         deriveContract({ tier: "storage", stored: stored([name]) }).columns[0]
+            .compare,
+      ).toBe("none");
+   });
+
+   it("compares nothing on a storage= string whose stored collation is not binary or unread", () => {
+      const live = new Map([["name", "binary" as const]]);
+      expect(
+         deriveContract({
+            tier: "storage",
+            stored: stored([name], "duckdb:nocase"),
+            live,
+         }).columns[0].compare,
+      ).toBe("none");
+      expect(
+         deriveContract({
+            tier: "storage",
+            stored: { dialect: "duckdb", columns: [name] },
+            live,
+         }).columns[0],
+      ).toMatchObject({ compare: "none", collation: null });
+   });
+
+   it("takes a stacked storage= table's string compare from the tables it read", () => {
+      expect(
+         deriveContract({
+            tier: "storage",
+            stored: stored([name]),
+            stackedOn: "equality",
+         }).columns[0].compare,
+      ).toBe("equality");
+   });
+
+   it("records a database string exact once its collation is read", () => {
+      const c = deriveContract({
+         tier: "database",
+         stored: {
+            dialect: "postgres",
+            columns: [name],
+            collations: {
+               byColumn: new Map([["name", "postgres:db|c|en_US"]]),
+               otherwise: null,
+            },
+         },
+      });
+      expect(c.columns[0]).toMatchObject({
+         collation: "postgres:db|c|en_US",
+         compare: "exact",
+      });
+   });
+
+   it("records a gate exact by tier", () => {
+      const storage = deriveContract({
+         tier: "storage",
+         stored: stored([n, d]),
+      });
+      expect(storage.columns.map((x) => x.gateExact)).toEqual([true, false]);
+      const database = deriveContract({
+         tier: "database",
+         stored: {
+            dialect: "duckdb",
+            columns: [d, { ...n, storedAsDouble: true }],
+         },
+      });
+      expect(database.columns.map((x) => x.gateExact)).toEqual([true, false]);
+   });
+
+   it("round-trips through the reader", () => {
+      const c = deriveContract({
+         tier: "storage",
+         stored: stored([name, n]),
+         live: new Map([["name", "binary" as const]]),
+         keys: { "items.id": { unique: true, level: "leaf" } },
+         producer: "0.0.0",
+      });
+      expect(parseContract(JSON.parse(JSON.stringify(c)))).toEqual(c);
+   });
+});
+
+describe("weakestStringCompare", () => {
+   it("is the weakest string compare, none for a missing contract", () => {
+      const exact = parseContract(one)!;
+      const equality = parseContract({
+         ...one,
+         columns: [{ ...one.columns[0], compare: "equality" }],
+      })!;
+      expect(weakestStringCompare([exact])).toBe("exact");
+      expect(weakestStringCompare([exact, equality])).toBe("equality");
+      expect(weakestStringCompare([exact, undefined])).toBe("none");
    });
 });

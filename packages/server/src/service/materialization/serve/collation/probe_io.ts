@@ -9,12 +9,9 @@
  * stay in `gate_collation.ts`.
  */
 
-/**
- * How a string column compares: byte-exact under every operator (`binary`),
- * byte-exact for equality only (`deterministic`), or not known to be either
- * (`unknown`, which fails closed).
- */
-export type Collation = "binary" | "deterministic" | "unknown";
+import type { Collation } from "../../domain/collation";
+
+export type { Collation };
 
 /** Most rows one complete catalog read takes; a read that fills it proves nothing. */
 export const CATALOG_ROW_LIMIT = 100_000;

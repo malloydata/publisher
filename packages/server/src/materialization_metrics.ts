@@ -440,6 +440,13 @@ const keyCheckCounter = lazyCounter(
       "the key unknown or repeated, so queries that need it unique are " +
       "answered live.",
 );
+const contractCaptureCounter = lazyCounter(
+   "publisher_materialization_contract_capture_total",
+   "Column contracts a build captured over the table it wrote. Labels: tier " +
+      "('database'|'storage'), outcome ('captured'|'unread'). An unread " +
+      "capture records no contract: the table is not served from until it " +
+      "is rebuilt (serve verdict reason contract_missing).",
+);
 const storageTableRetainedCounter = lazyCounter(
    "publisher_storage_tables_retained_total",
    "Tables a FAILED run left in a storage= destination and deliberately did not " +
@@ -786,6 +793,14 @@ export function recordKeyCheck(
    outcome: KeyCheckOutcome,
 ): void {
    keyCheckCounter().add(1, { kind, outcome });
+}
+
+/** Record one column contract capture (run/column_contract_capture.ts). */
+export function recordContractCapture(
+   tier: BuildTier,
+   outcome: "captured" | "unread",
+): void {
+   contractCaptureCounter().add(1, { tier, outcome });
 }
 
 /** Record how long the router took to choose the leg that answered a query. */

@@ -17,6 +17,7 @@
 
 import { tableNamesFoldCase } from "../domain/storage_table_path";
 import { errorCodeOf } from "../../../error_code";
+import { parseContract } from "../domain/column_contract";
 import { instructionTier } from "../domain/placement";
 import {
    instructedTable,
@@ -176,6 +177,7 @@ async function checkBuiltKeys(
    connection: MalloyConnection,
    { instruction, orchestrated, sourceEntityId }: GatedSource,
    entry: ManifestEntry,
+   leafChecks: readonly PairLeafCheck[],
 ): Promise<void> {
    const { compiled } = run;
    // A rollup's key checks. Auto-run only; never
@@ -192,21 +194,17 @@ async function checkBuiltKeys(
          writtenTableIdentity(instruction, graphConnectionName),
       );
    }
-   // A pair table (an inlined join_many): its leaf's key unique and never
-   // NULL, checked over the leaf source's rows on the source's own
-   // connection, which the served copy needs before it serves a count
-   // through the path. Never fails the build.
+   // A pair table's leaf key checks ran before the entry was recorded
+   // ({@link pairLeafKeysOf}); an auto-run also records them beside the
+   // table, for the served copy.
    if (!orchestrated && run.uniqueness) {
-      await checkPairLeafKeys(
-         run.uniqueness,
-         pairLeafKeyChecksOf(
-            compiled.tables[persistSource.sourceID]?.materialize,
-         ),
-         connection,
-         persistSource.name,
-         sourceEntityId,
-         writtenTableIdentity(instruction, graphConnectionName),
-      );
+      for (const { check, record } of leafChecks) {
+         if (!record) continue;
+         run.uniqueness.recordRollupKey(sourceEntityId, {
+            ...record,
+            sourceID: check.sourceID,
+         });
+      }
    }
    // A source stored in a destination, read there beside a joined
    // source's rollup through a join keyed on its primary key:
@@ -908,10 +906,21 @@ export class InstructedBuild {
       if (storedBase && stacked) {
          (run.readFrom ??= new Map()).set(sourceEntityId, [storedBase.address]);
       }
-      const entry = withBuiltProvenance(
-         run,
-         sourceEntityId,
-         withRollupUpstreamReuse(run, persistSource, sourceEntityId, built),
+      const leafChecks = await runPairLeafKeyChecks(
+         pairLeafKeyChecksOf(
+            compiled.tables[persistSource.sourceID]?.materialize,
+         ),
+         connection,
+         persistSource.name,
+         writtenTableIdentity(instruction, graphConnectionName),
+      );
+      const entry = withLeafKeys(
+         withBuiltProvenance(
+            run,
+            sourceEntityId,
+            withRollupUpstreamReuse(run, persistSource, sourceEntityId, built),
+         ),
+         leafChecks,
       );
       run.builtSources.push(persistSource.name);
       reportSourceBuilt(
@@ -933,6 +942,7 @@ export class InstructedBuild {
          connection,
          gated,
          entry,
+         leafChecks,
       );
       run.writtenTargets.set(target, {
          sourceEntityId,
@@ -1928,37 +1938,67 @@ async function checkParentKeys(
    }
 }
 
+/** One leaf key check of a built pair table, and what it found (undefined: it did not run). */
+interface PairLeafCheck {
+   check: ReturnType<typeof pairLeafKeyChecksOf>[number];
+   record: KeyCheckRecord | undefined;
+}
+
 /**
- * Run each leaf key check of a built pair table on the source's connection
- * and record what it found beside the table, under the leaf source's
- * sourceID. A check that does not run records nothing: the served copy then
- * reads the leaf's key as unknown and keeps declining a count through the
- * path.
+ * Run each leaf key check of a built pair table on the source's connection,
+ * on every build (auto-run or a host's): the leaf's key unique and never
+ * NULL over the leaf source's rows. What each found is recorded in the
+ * table's contract (`ColumnContract.keys`), which a view built over the
+ * pair table needs passed. A check that does not run records nothing.
+ * Never fails the build.
  */
-async function checkPairLeafKeys(
-   ledger: UniquenessLedger,
-   checks: readonly { sourceID: string; keyColumn: string; sql: string }[],
+async function runPairLeafKeyChecks(
+   checks: ReturnType<typeof pairLeafKeyChecksOf>,
    connection: MalloyConnection,
    sourceName: string,
-   address: string,
    table: string,
-): Promise<void> {
+): Promise<PairLeafCheck[]> {
+   const out: PairLeafCheck[] = [];
    for (const check of checks) {
-      await checkAndRecordKey(
-         ledger,
-         address,
+      const logContext = { source: sourceName, keyColumn: check.keyColumn };
+      let record: KeyCheckRecord | undefined;
+      try {
+         record = await DATABASE.checkKey({ connection }, check, table);
+      } catch (err) {
+         logger.warn(
+            "A pair table's leaf key check did not run; counts through its inlined join_many are answered live, and a view over it is not built",
+            { ...logContext, code: errorCodeOf(err) },
+         );
+      }
+      recordKeyCheck(
          "pair_leaf",
-         () => DATABASE.checkKey({ connection }, check, table),
-         {
-            notRun:
-               "A pair table's leaf key check did not run; counts through its inlined join_many are answered live",
-            notUnique:
-               "An inlined join_many's joined source holds its primary key more than once or NULL; counts through it are answered live",
-         },
-         { source: sourceName, keyColumn: check.keyColumn },
-         check.sourceID,
+         !record ? "not_run" : record.unique ? "unique" : "not_unique",
       );
+      if (record && !record.unique) {
+         logger.warn(
+            "An inlined join_many's joined source holds its primary key more than once or NULL; counts through it are answered live, and a view over it is not built",
+            logContext,
+         );
+      }
+      out.push({ check, record });
    }
+   return out;
+}
+
+/** `entry` with its leaf key checks in its contract's `keys`. */
+function withLeafKeys(
+   entry: ManifestEntry,
+   leafChecks: readonly PairLeafCheck[],
+): ManifestEntry {
+   const contract = parseContract(entry.contract);
+   if (!contract || leafChecks.length === 0) return entry;
+   const keys = { ...(contract.keys ?? {}) };
+   for (const { check, record } of leafChecks) {
+      if (record) {
+         keys[check.contractKey] = { unique: record.unique, level: "leaf" };
+      }
+   }
+   return { ...entry, contract: { ...contract, keys } };
 }
 
 /**

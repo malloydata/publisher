@@ -69,6 +69,11 @@ import type {
 } from "./storage_build_strategy";
 import { compiledTextReader } from "../../../utils";
 import { movedSinceBuild, type UpstreamMove } from "./database_column_read";
+import type { ColumnContract } from "../domain/column_contract";
+import {
+   captureDatabaseContract,
+   captureStorageContract,
+} from "./column_contract_capture";
 
 /**
  * The persisted sources `persistSource` reads, from the author's model
@@ -834,7 +839,8 @@ export async function buildSource(
       // included (`private:`, `internal:`), which the served copy hides
       // again; a column `except:` drops is left out. Refuses the build
       // (422) if the column surface can't be determined.
-      return storage({
+      let stackedOnBase = false;
+      const built = await storage({
          persistSource,
          instruction,
          manifest,
@@ -854,10 +860,30 @@ export async function buildSource(
          planFacts,
          lift,
          ...(replacesView ? { replacesView } : {}),
-         ...(storedBase ? { storedBase } : {}),
+         ...(storedBase
+            ? {
+                 storedBase: {
+                    ...storedBase,
+                    onStacked: () => {
+                       stackedOnBase = true;
+                       storedBase.onStacked?.();
+                    },
+                 },
+              }
+            : {}),
          ...(rollup ? { rollup } : {}),
          ...(signal ? { signal } : {}),
       });
+      return withContract(
+         built,
+         await captureStorageContract({
+            environment,
+            entry: built,
+            sourceConnection: connection,
+            buildSQL,
+            ...storedTablesRead(built, builtEntries, stackedOnBase, storedBase),
+         }),
+      );
    }
 
    // Incremental refresh: a source with `refresh="incremental"` and a usable
@@ -887,7 +913,48 @@ export async function buildSource(
       builtEntries,
       contentSourceEntityId ?? instruction.sourceEntityId,
    );
-   return builtFrom ? { ...built, builtFrom } : built;
+   return withContract(
+      builtFrom ? { ...built, builtFrom } : built,
+      await captureDatabaseContract({
+         // Its reads carry the build's metadata, as every statement of the
+         // build does.
+         connection: {
+            dialectName: connection.dialectName,
+            runSQL: (sql, options) =>
+               connection.runSQL(sql, { ...runOptions, ...options }),
+         },
+         physicalTableName,
+      }),
+   );
+}
+
+/** `entry` with the column contract its build captured, when it captured one. */
+function withContract(
+   entry: ManifestEntry,
+   contract: ColumnContract | undefined,
+): ManifestEntry {
+   return contract ? { ...entry, contract } : entry;
+}
+
+/**
+ * The stored tables a `storage=` build read in place of its source, whose
+ * contracts bound how its strings compare: its base's, for a rollup that
+ * grouped it; else each table its entry's `builtFrom` names, when it
+ * reused its upstreams. Undefined for a build that read its source.
+ */
+function storedTablesRead(
+   entry: ManifestEntry,
+   builtEntries: Record<string, ManifestEntry>,
+   stackedOnBase: boolean,
+   storedBase: StoredRollupBase | undefined,
+): { stackedOn?: ManifestEntry[] } {
+   if (stackedOnBase && storedBase) return { stackedOn: [storedBase.entry] };
+   if (entry.upstreamReuse !== "reused") return {};
+   const read = (entry.builtFrom ?? []).flatMap((b) => {
+      const upstream = builtEntries[b.sourceEntityId];
+      return upstream ? [upstream] : [];
+   });
+   return read.length > 0 ? { stackedOn: read } : {};
 }
 
 /**
