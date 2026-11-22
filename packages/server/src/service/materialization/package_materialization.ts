@@ -1098,6 +1098,19 @@ export class PackageMaterialization {
    }
 
    /**
+    * The bound tables a bind found incompatible with their contracts, or a
+    * stored read failed closed, by address: a standalone run rebuilds each
+    * in full rather than carry it.
+    */
+   incompatibleTables(): ReadonlySet<string> {
+      return new Set(
+         [...this.contractVerdicts()]
+            .filter(([, v]) => v.reason === "incompatible")
+            .map(([id]) => id),
+      );
+   }
+
+   /**
     * The bound tables the bind held to their contracts and left out, by
     * address, with the generation judged: the `contract_missing` and
     * `incompatible` serve verdicts. Memoized on the snapshot, so the serve

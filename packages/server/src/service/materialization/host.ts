@@ -61,6 +61,11 @@ interface MaterializationPackage extends BuildPlanPackage {
     */
    forgetKeyUniqueness(sourceEntityIds: Iterable<string>): void;
    /**
+    * The bound tables a bind found incompatible with their contracts, by
+    * address, which a standalone run rebuilds in full rather than carry.
+    */
+   incompatibleTables?(): ReadonlySet<string>;
+   /**
     * The text a chained `storage=` build compiles on its destination alone:
     * the request's downstream, with each stored upstream the request carries
     * re-rooted as the served copy re-roots it, from those entries alone and

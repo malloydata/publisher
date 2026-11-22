@@ -58,6 +58,7 @@ const FACADE_SURFACE = [
    "asOfBuildWarnings",
    "bind",
    "bindCompiled",
+   "incompatibleTables",
    "bindingState",
    "boundDatabaseEntries",
    "boundLateRows",

@@ -1457,6 +1457,7 @@ export class MaterializationService {
                   upstreamsOf: (address) => freshness.upstreamsOf(address),
                   at: new Date(run.startedAt),
                },
+               incompatible: pkg.incompatibleTables?.() ?? new Set(),
             },
          ));
          // A carried table at the author's `name=` is reused only while

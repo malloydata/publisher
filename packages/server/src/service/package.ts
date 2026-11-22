@@ -1739,6 +1739,11 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       this.mz.setKeptTables(tables);
    }
 
+   /** The host port's `incompatibleTables` (see PackageMaterialization.incompatibleTables). */
+   public incompatibleTables(): ReadonlySet<string> {
+      return this.mz.incompatibleTables();
+   }
+
    /** The host port's `chainBuildText` (see PackageMaterialization.chainBuildText). */
    public chainBuildText(request: ChainBuildRequest): ChainBuildText {
       return this.mz.chainBuildText(request);

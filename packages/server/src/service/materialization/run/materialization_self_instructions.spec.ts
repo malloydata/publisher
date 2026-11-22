@@ -1,6 +1,8 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { contractFor } from "../../../test_helpers/contract_fixture";
+import { deriveSelfInstructions } from "./run_instructions";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { MaterializationEligibilityError } from "../../../errors";
 import { BuildInstruction } from "../domain/types";
@@ -43,6 +45,7 @@ describe("deriveSelfInstructions", () => {
             sourceEntityId: "b1aaaaaaaaaaaaaa",
             // At the name this run writes: carried only there.
             physicalTableName: "s1",
+            contract: contractFor(),
             connectionName: "duckdb",
          },
       };
@@ -84,6 +87,7 @@ describe("deriveSelfInstructions", () => {
             sourceEntityId: "b1aaaaaaaaaaaaaa",
             // At the name this run writes: carried only there.
             physicalTableName: "s1",
+            contract: contractFor(),
             connectionName: "duckdb",
          },
       };
@@ -412,6 +416,7 @@ describe("deriveSelfInstructions", () => {
                a0a0a0a0a0a0a0a0: {
                   sourceEntityId: "a0a0a0a0a0a0a0a0",
                   physicalTableName: "ok",
+                  contract: contractFor(),
                   connectionName: "duckdb",
                },
             },
@@ -548,6 +553,7 @@ describe("deriveSelfInstructions", () => {
          b1aaaaaaaaaaaaaa: {
             sourceEntityId: "b1aaaaaaaaaaaaaa",
             physicalTableName: "s1",
+            contract: contractFor(),
             connectionName: "wh",
          },
       };
@@ -585,6 +591,7 @@ describe("deriveSelfInstructions", () => {
          b1aaaaaaaaaaaaaa: {
             sourceEntityId: "b1aaaaaaaaaaaaaa",
             physicalTableName: "s1",
+            contract: contractFor(),
             connectionName: "duckdb",
          },
       };
@@ -619,5 +626,60 @@ describe("deriveSelfInstructions", () => {
       expect(instructions).toHaveLength(1);
       expect(instructions[0].sourceEntityId).toBe("b2bbbbbbbbbbbbbb");
       expect(Object.keys(carried as Record<string, unknown>)).toHaveLength(0);
+   });
+});
+
+describe("a prior table its bind cannot serve is rebuilt in full", () => {
+   const compiled = () =>
+      compiledWith(
+         {
+            s1: fakeSource({ name: "s1", sourceEntityId: "b1aaaaaaaaaaaaaa" }),
+         },
+         [["s1"]],
+      );
+   const prior = (contract?: unknown) => ({
+      b1aaaaaaaaaaaaaa: {
+         sourceEntityId: "b1aaaaaaaaaaaaaa",
+         physicalTableName: "s1",
+         connectionName: "duckdb",
+         ...(contract !== undefined ? { contract } : {}),
+      },
+   });
+
+   it("never carries a table whose entry has no contract (built before contracts were recorded)", () => {
+      const { instructions, carried } = deriveSelfInstructions(
+         compiled(),
+         undefined,
+         prior() as never,
+      );
+      expect(instructions.map((i) => i.sourceEntityId)).toEqual([
+         "b1aaaaaaaaaaaaaa",
+      ]);
+      expect(carried).toEqual({});
+   });
+
+   it("never carries a table a bind found incompatible with its contract", () => {
+      const { instructions, carried } = deriveSelfInstructions(
+         compiled(),
+         undefined,
+         prior(contractFor()) as never,
+         undefined,
+         undefined,
+         { incompatible: new Set(["b1aaaaaaaaaaaaaa"]) },
+      );
+      expect(instructions.map((i) => i.sourceEntityId)).toEqual([
+         "b1aaaaaaaaaaaaaa",
+      ]);
+      expect(carried).toEqual({});
+   });
+
+   it("still carries a table whose contract it holds", () => {
+      const { instructions, carried } = deriveSelfInstructions(
+         compiled(),
+         undefined,
+         prior(contractFor()) as never,
+      );
+      expect(instructions).toEqual([]);
+      expect(Object.keys(carried)).toEqual(["b1aaaaaaaaaaaaaa"]);
    });
 });

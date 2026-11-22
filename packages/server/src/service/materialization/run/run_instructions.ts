@@ -12,6 +12,7 @@
  * refuses. A source the eligibility gate refuses is returned as refused and serves live.
  */
 
+import { parseContract } from "../domain/column_contract";
 import { PACKAGE_SANDBOX_CONNECTION } from "../../connection_config";
 import { storageWritable } from "../domain/placement";
 import { freshnessOf } from "../domain/freshness";
@@ -794,6 +795,24 @@ interface SelfInstructions {
 }
 
 /**
+ * Whether a prior table must be rebuilt in full: one with no contract
+ * (built before contracts were recorded), or one a bind found incompatible
+ * with its contract, is never served from, so it is never carried, and an
+ * incremental one is reseeded rather than advanced by a delta.
+ */
+function rebuiltInFull(
+   prior: ManifestEntry | undefined,
+   sourceEntityId: string,
+   options: { incompatible?: ReadonlySet<string> },
+): boolean {
+   return (
+      prior !== undefined &&
+      (parseContract(prior.contract) === undefined ||
+         options.incompatible?.has(sourceEntityId) === true)
+   );
+}
+
+/**
  * Derive auto-run's own build instructions. Each persist source (respecting
  * `sourceNames`) gets a self-assigned physical name and COPY realization,
  * unless its sourceEntityId is unchanged since `priorEntries`, in which case
@@ -840,6 +859,12 @@ export function deriveSelfInstructions(
        * {@link rebuildStaleUpstreams}).
        */
       upstreams?: StaleUpstreamRule;
+      /**
+       * The tables a bind left out as incompatible with their contracts, by
+       * address: never carried, rebuilt in full (an incremental one
+       * reseeds).
+       */
+      incompatible?: ReadonlySet<string>;
    } = {},
 ): SelfInstructions {
    const include = sourceNames ? new Set(sourceNames) : null;
@@ -923,6 +948,7 @@ export function deriveSelfInstructions(
             ? previous!
             : tableName;
 
+      const mustRebuild = rebuiltInFull(prior, sourceEntityId, options);
       const instruction: BuildInstruction = {
          sourceEntityId,
          materializedTableId: `local-${sourceEntityId.substring(
@@ -932,18 +958,15 @@ export function deriveSelfInstructions(
          physicalTableName: logicalName,
          realization: "COPY",
          ...(destination ? { destination } : {}),
+         ...(mustRebuild && deltaEligible ? { reseed: true } : {}),
       };
       // Carry forward only within the SAME destination, and only a table
-      // at the name this run would write: sourceEntityId encodes neither.
-      // A source that changes `storage=`, or whose table name changes (a
-      // `name=` removed or changed, a v1 source moved to `#(materialize)`,
-      // a table named before readable names, or the unsuffixed table a run
-      // before package-owned names built, which another package on the same
-      // schema may have written since) is rebuilt under its name now, and
-      // the old table is offered to the reclaim once this run commits
-      // (supersededTable), which drops it only when Publisher can prove it
-      // is its own.
+      // at the name this run would write: sourceEntityId encodes neither. A
+      // source whose `storage=` or table name changed is rebuilt under its
+      // name now, and the old table offered to the reclaim once this run
+      // commits (supersededTable), which drops only what it proves its own.
       if (
+         !mustRebuild &&
          !deltaEligible &&
          !rebuildsEveryRun(compiled, options, persistSource.sourceID) &&
          sameDestination &&
