@@ -3,67 +3,71 @@
 
 import type { Connection } from "@malloydata/malloy";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import * as fs from "fs";
-import * as path from "path";
 import type { components } from "../../api";
 import { installSettings } from "../../test_helpers/settings_env";
 import { getSchemasForConnection, listTablesForSchema } from "../db_utils";
 
 /**
- * The schema and table listing the registry took over from db_utils.ts, run
- * for every connection type (and for types no entry names) on a recording
- * Malloy connection, and compared with what the code produced before the
- * move, recorded in introspector.golden.json: each listing's result or
- * refusal, and every statement it sent, under a connection that answers and
- * one whose every statement fails.
+ * Each connection type's schema and table listing, as the registry
+ * dispatches it, on a recording Malloy connection: the refusal of a missing
+ * config, a configured connection's schema listing under a connection that
+ * answers, and the type's own error wrap under one whose every statement
+ * fails. The SQL each listing sends is pinned per type in db_utils.spec.ts,
+ * so it is not repeated here.
  *
  * No case reaches a network: BigQuery is refused before its client is made,
  * and a `publisher` connection dials a closed local port.
- *
- * Re-record only for a reviewed behaviour change:
- * `RECORD_INTROSPECTOR=1 bun test <this file>`.
  */
 
 type ApiConnection = components["schemas"]["Connection"];
 
-const GOLDEN = path.join(__dirname, "introspector.golden.json");
-
-const TYPES = [
-   "postgres",
-   "bigquery",
-   "snowflake",
-   "trino",
-   "databricks",
-   "mysql",
-   "sqlserver",
-   "duckdb",
-   "motherduck",
-   "ducklake",
-   "publisher",
-   "constructor",
-   "toString",
-   "nope",
-];
-
-/** Per type, the configured connections beyond a bare one. */
-const CONFIGURED: Record<string, Partial<ApiConnection>[]> = {
-   postgres: [{ postgresConnection: { databaseName: "d" } }],
-   bigquery: [{ bigqueryConnection: {} }],
+/**
+ * Per type: a configured connection, the schemas it lists from ROW, and the
+ * name its error wrap gives the type.
+ */
+const CONFIGURED: Record<
+   string,
+   [
+      Partial<ApiConnection>,
+      { name: string; isHidden: boolean; isDefault: boolean },
+      string,
+   ]
+> = {
+   postgres: [
+      { postgresConnection: { databaseName: "d" } },
+      { name: "s", isHidden: false, isDefault: false },
+      "Postgres",
+   ],
    snowflake: [
       { snowflakeConnection: { database: "DB", schema: "S" } },
-      { snowflakeConnection: {} },
+      { name: "cat.s", isHidden: true, isDefault: false },
+      "Snowflake",
    ],
    trino: [
       { trinoConnection: { catalog: "cat", schema: "s" } },
-      { trinoConnection: { catalog: "bad-cat" } },
+      { name: "s", isHidden: false, isDefault: true },
+      "Trino",
    ],
    databricks: [
       { databricksConnection: { defaultCatalog: "cat", defaultSchema: "s" } },
+      { name: "s", isHidden: false, isDefault: true },
+      "Databricks",
    ],
-   mysql: [{ mysqlConnection: { database: "d" } }],
-   sqlserver: [{ sqlserverConnection: { database: "d" } }],
-   duckdb: [{ duckdbConnection: { attachedDatabases: [] } }],
-   motherduck: [{ motherduckConnection: { database: "md" } }],
+   sqlserver: [
+      { sqlserverConnection: { database: "d" } },
+      { name: "s", isHidden: false, isDefault: false },
+      "SQL Server",
+   ],
+   duckdb: [
+      { duckdbConnection: { attachedDatabases: [] } },
+      { name: "cat.s", isHidden: false, isDefault: false },
+      "DuckDB",
+   ],
+   motherduck: [
+      { motherduckConnection: { database: "md" } },
+      { name: "s", isHidden: false, isDefault: false },
+      "MotherDuck",
+   ],
    ducklake: [
       {
          ducklakeConnection: {
@@ -71,15 +75,23 @@ const CONFIGURED: Record<string, Partial<ApiConnection>[]> = {
             destinationSchema: "ds",
          },
       },
+      { name: "s", isHidden: true, isDefault: false },
+      "DuckLake",
    ],
-   publisher: [
-      {
-         publisherConnection: {
-            connectionUri: "http://user:pw@127.0.0.1:1/connections/c",
-            accessToken: "tok",
-         },
-      },
-   ],
+};
+
+/** Per type, the refusal of a connection with no config. */
+const MISSING: Record<string, string> = {
+   postgres: "Postgres connection is required",
+   bigquery: "BigQuery connection is required",
+   snowflake: "Snowflake connection is required",
+   trino: "Trino connection is required",
+   databricks: "Databricks connection is required",
+   mysql: "Mysql connection is required",
+   sqlserver: "SQL Server connection is required",
+   duckdb: "DuckDB connection is required",
+   motherduck: "MotherDuck connection is required",
+   publisher: 'Publisher connection "probe" is missing connectionUri',
 };
 
 /** A row every listing can read: each column under both spellings. */
@@ -146,18 +158,8 @@ async function listing(
    }
 }
 
-function cases(): [string, ApiConnection][] {
-   const out: [string, ApiConnection][] = [];
-   for (const type of TYPES) {
-      const base = { name: "probe", type } as ApiConnection;
-      out.push([`${type} bare`, base]);
-      (Object.hasOwn(CONFIGURED, type) ? CONFIGURED[type] : []).forEach(
-         (extra, i) =>
-            out.push([`${type} #${i}`, { ...base, ...extra } as ApiConnection]),
-      );
-   }
-   return out;
-}
+const probe = (type: string, extra: Partial<ApiConnection> = {}) =>
+   ({ name: "probe", type, ...extra }) as ApiConnection;
 
 let restoreSettings: () => void;
 beforeAll(() => {
@@ -165,30 +167,131 @@ beforeAll(() => {
 });
 afterAll(() => restoreSettings());
 
-describe("the introspectors are unchanged by the registry", () => {
-   it("lists every type's schemas and tables as before the move", async () => {
-      const actual: Record<string, unknown> = {};
-      for (const [label, connection] of cases()) {
-         for (const fail of [false, true]) {
-            const session = fail ? "failing" : "answering";
-            actual[`${label} | ${session} | schemas`] = await listing(
-               (conn) => getSchemasForConnection(connection, conn),
-               fail,
-            );
-            actual[`${label} | ${session} | tables`] = await listing(
-               (conn) => listTablesForSchema(connection, "cat.s", conn),
-               fail,
-            );
-            actual[`${label} | ${session} | named tables`] = await listing(
-               (conn) =>
-                  listTablesForSchema(connection, "s", conn, ["t", "o'x"]),
-               fail,
-            );
-         }
+describe("the introspectors are dispatched by type", () => {
+   it("refuses each type's missing config in its own words", async () => {
+      for (const [type, message] of Object.entries(MISSING)) {
+         expect(
+            await listing(
+               (conn) => getSchemasForConnection(probe(type), conn),
+               false,
+            ),
+         ).toEqual({ error: message, name: "Error", sql: [] });
       }
-      if (process.env.RECORD_INTROSPECTOR === "1") {
-         fs.writeFileSync(GOLDEN, JSON.stringify(actual, null, 2) + "\n");
+   });
+
+   it("lists each configured type's schemas, and wraps its failure in its name", async () => {
+      for (const [type, [extra, schema, label]] of Object.entries(CONFIGURED)) {
+         const connection = probe(type, extra);
+         const answered = (await listing(
+            (conn) => getSchemasForConnection(connection, conn),
+            false,
+         )) as { value: unknown; sql: string[] };
+         expect([type, answered.value]).toEqual([type, [schema]]);
+         expect(answered.sql).toHaveLength(1);
+         const failed = await listing(
+            (conn) => getSchemasForConnection(connection, conn),
+            true,
+         );
+         expect([type, failed]).toMatchObject([
+            type,
+            {
+               error: `Failed to get schemas for ${label} connection probe: statement refused`,
+            },
+         ]);
+         const tables = await listing(
+            (conn) => listTablesForSchema(connection, "cat.s", conn),
+            true,
+         );
+         expect([type, tables]).toMatchObject([
+            type,
+            {
+               error: `Failed to get tables for ${label} schema cat.s in connection probe: statement refused`,
+            },
+         ]);
       }
-      expect(actual).toEqual(JSON.parse(fs.readFileSync(GOLDEN, "utf8")));
-   }, 120_000);
+   });
+
+   it("reads MySQL's one schema from its config, sending nothing", async () => {
+      expect(
+         await listing(
+            (conn) =>
+               getSchemasForConnection(
+                  probe("mysql", { mysqlConnection: { database: "d" } }),
+                  conn,
+               ),
+            true,
+         ),
+      ).toEqual({
+         value: [{ name: "d", isHidden: false, isDefault: true }],
+         sql: [],
+      });
+   });
+
+   it("refuses BigQuery before its client is made", async () => {
+      expect(
+         await listing(
+            (conn) =>
+               getSchemasForConnection(
+                  probe("bigquery", { bigqueryConnection: {} }),
+                  conn,
+               ),
+            false,
+         ),
+      ).toEqual({
+         error: "Failed to get schemas for BigQuery connection probe: BigQuery connection is required, either set the bigqueryConnection in the connection configuration or set the GOOGLE_APPLICATION_CREDENTIALS environment variable.",
+         name: "Error",
+         sql: [],
+      });
+   });
+
+   it("refuses an invalid Trino catalog before any statement", async () => {
+      expect(
+         await listing(
+            (conn) =>
+               getSchemasForConnection(
+                  probe("trino", { trinoConnection: { catalog: "bad-cat" } }),
+                  conn,
+               ),
+            false,
+         ),
+      ).toEqual({
+         error: 'Invalid catalog name "bad-cat": expected a plain identifier (letters, digits, underscore or dollar, not starting with a digit).',
+         name: "InvalidArgumentError",
+         sql: [],
+      });
+   });
+
+   it("asks a publisher connection's dataplane, not the session", async () => {
+      const connection = probe("publisher", {
+         publisherConnection: {
+            connectionUri: "http://user:pw@127.0.0.1:1/connections/c",
+            accessToken: "tok",
+         },
+      });
+      expect(
+         await listing(
+            (conn) => listTablesForSchema(connection, "cat.s", conn),
+            false,
+         ),
+      ).toEqual({
+         error: 'Publisher dataplane request to http://127.0.0.1:1/connections/c/schemas/cat.s/tables failed for connection "probe": Unable to connect. Is the computer able to access the url?',
+         name: "Error",
+         sql: [],
+      });
+   });
+
+   it("refuses a prototype name and an unknown type", async () => {
+      for (const type of ["constructor", "nope"]) {
+         expect(
+            await listing(
+               (conn) => listTablesForSchema(probe(type), "s", conn),
+               false,
+            ),
+         ).toEqual({
+            error: `Unsupported connection type: ${type}`,
+            name: "Error",
+            sql: [],
+         });
+      }
+   });
 });

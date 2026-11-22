@@ -63,7 +63,7 @@ import {
    catalogAuthorSqlMessage,
    unreadableSourceConnectionMessage,
 } from "../domain/source_connection_type";
-import { carriesAuthorSql } from "../domain/same_catalog_build";
+import { authorSqlCause } from "../domain/same_catalog_build";
 
 /**
  * What an eligible source carries into the build. Returned by the gate rather
@@ -216,10 +216,14 @@ function assertStorageBuildReadsConnection(
    // A DuckLake source builds into its own catalog only, on a read-write
    // session that runs only SQL Malloy generated (the build session's
    // same-catalog rule), so one carrying author SQL can never build.
-   if (type === "ducklake" && carriesAuthorSql(sourceDefOf(persistSource))) {
+   const cause =
+      type === "ducklake"
+         ? authorSqlCause(sourceDefOf(persistSource))
+         : undefined;
+   if (cause !== undefined) {
       throw new MaterializationEligibilityError({
          reason: "storage_source_unsupported",
-         message: catalogAuthorSqlMessage(persistSource),
+         message: catalogAuthorSqlMessage(persistSource, cause),
       });
    }
 }
@@ -237,10 +241,11 @@ function assertManagedBuildRunsMalloySql(
    plan: TierGateInputs | undefined,
 ): void {
    if (!plan?.managedConnections?.includes(source.connectionName)) return;
-   if (!carriesAuthorSql(sourceDefOf(source))) return;
+   const cause = authorSqlCause(sourceDefOf(source));
+   if (cause === undefined) return;
    throw new MaterializationEligibilityError({
       reason: "storage_source_unsupported",
-      message: catalogAuthorSqlMessage(source, { managed: true }),
+      message: catalogAuthorSqlMessage(source, cause, { managed: true }),
    });
 }
 

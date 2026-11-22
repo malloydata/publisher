@@ -489,7 +489,7 @@ export function internalErrorToHttpError(
          json: { code: status, message, problems: row.problems(error) },
       };
    }
-   const answer = httpError(status, message, resolve(row.reason, error));
+   const answer = httpError(status, message, errorReason(error));
    const refusalReason = row.refusalReason?.(error);
    if (refusalReason !== undefined) answer.json.refusalReason = refusalReason;
    return headers ? { ...answer, headers } : answer;
@@ -2313,4 +2313,9 @@ export const ERROR_TABLE: { [K in ErrorKind]: ErrorMapping<ErrorByKind[K]> } = {
 export function errorMapping(error: unknown): ErrorMapping<Error> {
    // The row is typed for its kind; errorKind guarantees `error` is of it.
    return ERROR_TABLE[errorKind(error)] as ErrorMapping<Error>;
+}
+
+/** The `reason` an error's HTTP body carries, which MCP errors carry too. */
+export function errorReason(error: unknown): ErrorReason | undefined {
+   return resolve(errorMapping(error).reason, error as Error);
 }

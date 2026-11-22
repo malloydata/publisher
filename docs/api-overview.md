@@ -118,6 +118,10 @@ A query that fails tells you whose problem it is. Branch on `reason`, not on the
 For `CONNECTION_FAILED` and `CONNECTION_AUTH_FAILED` the body carries a fixed message, because the
 driver's text can name a host or a user; it is in the server log.
 
+An MCP tool's error carries the same `reason` beside its `error` and `suggestions`, so an agent or
+harness can branch on `RESULT_TRUNCATED` or `CONNECTION_FAILED` from `execute_query` as a REST client
+does from the 502.
+
 A gate's refusal is a **403 with `reason: ACCESS_DENIED`**: supply the givens the gate reads.
 
 Starting a materialization (`POST …/packages/{pkg}/materializations`) answers, beside the version
