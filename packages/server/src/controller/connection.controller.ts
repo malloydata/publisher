@@ -51,6 +51,10 @@ import {
    validateConnectionSqlFields,
    validateDuckdbApiSurface,
 } from "../service/connection_config";
+import {
+   managedCatalogMessage,
+   managedCatalogRefusal,
+} from "../service/managed_catalog_scope";
 import { assertSingleSelect } from "../service/single_select";
 import {
    meterStatement,
@@ -248,6 +252,22 @@ function sqlRunFailure(
       statementRejection(error) ??
       new ConnectionError((error as Error).message)
    );
+}
+
+/**
+ * Refuse raw SQL on a managed connection that names anything outside its
+ * catalog's `main` schema (managed_catalog_scope.ts), before it runs.
+ */
+async function assertManagedCatalogScope(
+   connectionName: string,
+   sqlStatement: string,
+): Promise<void> {
+   const refused = await managedCatalogRefusal(sqlStatement, connectionName);
+   if (refused) {
+      throw new BadRequestError(
+         managedCatalogMessage("Raw SQL", connectionName, refused),
+      );
+   }
 }
 
 /**
@@ -735,6 +755,9 @@ export class ConnectionController {
       if (singleSelect) {
          await assertSingleSelect(connectionName, sqlStatement, singleSelect);
       }
+      if (singleSelect === "managed database") {
+         await assertManagedCatalogScope(connectionName, sqlStatement);
+      }
 
       const malloyConnection = await this.getMalloyConnection(
          environmentName,
@@ -946,6 +969,9 @@ export class ConnectionController {
       const managed = singleSelect === "managed database";
       if (singleSelect) {
          await assertSingleSelect(connectionName, sqlStatement, singleSelect);
+      }
+      if (managed) {
+         await assertManagedCatalogScope(connectionName, sqlStatement);
       }
       // A managed connection is metered (statement_usage.ts): the statement
       // that runs below emits one usage record, whether it answers or fails.

@@ -50,6 +50,7 @@ import type { PoolConfig } from "pg";
 import { components } from "../api";
 import { ConnectionOrigin, getPostgresPoolMax } from "../config";
 import {
+   BadRequestError,
    ConnectionNotFoundError,
    ConnectionPoolExhaustedError,
    TableNotFoundError,
@@ -94,7 +95,13 @@ import { buildSnowflakeConnection } from "./snowflake_connection";
 import { guardBigQueryTruncation } from "./bigquery_truncation";
 import { gcpImpersonationOverlay } from "./gcp_impersonation";
 import { assertGoogleCredentialsIsNotADirectory } from "./google_credentials";
-import { recordConnectionType } from "./connection_type";
+import { isManagedConnection, recordConnectionType } from "./connection_type";
+import {
+   managedCatalogMessage,
+   managedCatalogRefusal,
+   managedTablePathRefusal,
+   scrubCatalogSuggestions,
+} from "./managed_catalog_scope";
 import {
    allowForLockdown,
    azureAllowPrefix,
@@ -891,6 +898,9 @@ class DuckLakeConnection extends DuckDBConnection {
     * and reopens the connection.
     */
    private async catalogUnavailableOr(error: unknown): Promise<unknown> {
+      // A managed connection's errors name nothing outside `main`: DuckDB's
+      // "Did you mean" suggests a table from any schema of the catalog.
+      if (isManagedConnection(this)) error = scrubCatalogSuggestions(error);
       if (
          !/\b(Binder|Catalog) Error\b/.test(errMessage(error)) ||
          (await aliasAttachedOnInstance(this, this.connectionName)) !== false
@@ -927,6 +937,11 @@ class DuckLakeConnection extends DuckDBConnection {
       tableKey: string,
       tablePath: string,
    ): Promise<TableSourceDef> {
+      // Before the schema read: a DESCRIBE outside `main` is itself the
+      // catalog metadata a managed connection keeps from models.
+      await this.assertManagedScope("A .table() source", () =>
+         managedTablePathRefusal(tablePath, this.connectionName),
+      );
       try {
          return await this.fetchTableSchemaIn(tableKey, tablePath);
       } catch (error) {
@@ -938,10 +953,30 @@ class DuckLakeConnection extends DuckDBConnection {
    async fetchSelectSchema(
       sqlRef: Parameters<DuckDBConnection["fetchSelectSchema"]>[0],
    ): Promise<Awaited<ReturnType<DuckDBConnection["fetchSelectSchema"]>>> {
+      await this.assertManagedScope("A .sql() source", () =>
+         managedCatalogRefusal(sqlRef.selectStr, this.connectionName),
+      );
       try {
          return await super.fetchSelectSchema(sqlRef);
       } catch (error) {
          throw await this.catalogUnavailableOr(error);
+      }
+   }
+
+   /**
+    * On a connection configured `managed`, throw when `refusal` names a
+    * reference outside the catalog's `main` schema (managed_catalog_scope.ts).
+    */
+   private async assertManagedScope(
+      what: string,
+      refusal: () => Promise<string | undefined>,
+   ): Promise<void> {
+      if (!isManagedConnection(this)) return;
+      const refused = await refusal();
+      if (refused) {
+         throw new BadRequestError(
+            managedCatalogMessage(what, this.connectionName, refused),
+         );
       }
    }
 
