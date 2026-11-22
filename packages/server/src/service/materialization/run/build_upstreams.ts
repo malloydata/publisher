@@ -843,3 +843,51 @@ export function packageRelativeRun(
       ),
    };
 }
+
+/**
+ * Whether `sql` reads the table `table` (a manifest's table path) by its whole
+ * reference: not as the tail of another schema's path, nor as the head of a
+ * longer one.
+ */
+export function readsTable(sql: string, table: string): boolean {
+   const escaped = table.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+   return new RegExp(`(?<![\\w.])${escaped}(?![\\w.])`).test(sql);
+}
+
+/**
+ * The stored upstream tables a database build's SQL reads, as
+ * `ManifestEntry.builtFrom` records them: each entry of the run's manifest,
+ * other than the table being built (`rootAddress`), whose table the SQL reads
+ * by its whole name ({@link readsTable}), with its entry's `builtAt`. Sorted
+ * by address. Undefined when it reads none.
+ */
+export function builtFromOf(
+   buildSQL: string,
+   manifest: Manifest["buildManifest"],
+   builtEntries: Readonly<Record<string, ManifestEntry>>,
+   rootAddress: string | undefined,
+): ManifestEntry["builtFrom"] {
+   const out: NonNullable<ManifestEntry["builtFrom"]> = [];
+   for (const [address, { tableName }] of Object.entries(manifest.entries)) {
+      if (address === rootAddress) continue;
+      const entry = builtEntries[address];
+      if (!entry?.physicalTableName || !tableName) continue;
+      if (!readsTable(buildSQL, tableName)) continue;
+      out.push({
+         sourceEntityId: address,
+         physicalTableName: entry.physicalTableName,
+         ...(entry.storageDestinationName
+            ? { storageDestinationName: entry.storageDestinationName }
+            : {}),
+         ...(entry.builtAt ? { builtAt: entry.builtAt } : {}),
+      });
+   }
+   out.sort((a, b) =>
+      a.sourceEntityId < b.sourceEntityId
+         ? -1
+         : a.sourceEntityId > b.sourceEntityId
+           ? 1
+           : 0,
+   );
+   return out.length > 0 ? out : undefined;
+}

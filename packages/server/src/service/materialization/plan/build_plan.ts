@@ -191,6 +191,7 @@ import {
    resolveConnectionDigests,
    withoutSourceIDs,
    sourceBuildsOf,
+   withDownstreamEdges,
    upstreamSchemasOfSource,
    upstreamTablesOf,
    type PlanAddresses,
@@ -2081,6 +2082,9 @@ export function finishBuildPlan(
    const plan = {
       ...(ctx.versionScoped ? { versionScoped: true } : {}),
       ...parts,
+      // A downstream's edges to the tables it is computed from, which its
+      // companion's own targets do not name.
+      builds: withDownstreamEdges(parts.builds, parts.tables),
       connectionDigests: ctx.connectionDigests,
       ...(ctx.upstreamSchemas ? { upstreamSchemas: ctx.upstreamSchemas } : {}),
       connectionTypes: resolveConnectionTypes(ctx.connections),

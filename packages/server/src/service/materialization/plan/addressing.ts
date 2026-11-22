@@ -279,6 +279,55 @@ export function renameBuildSourceIDs(
    };
 }
 
+/**
+ * `builds` with an edge from each downstream, a persisted view's or named
+ * query's build source or a rollup (`kind` `view` or `rollup`), to every
+ * planned table its definition reaches ({@link reachedBy}). Their companions
+ * are compiled over the author's files with the source-level `#@` lines
+ * blanked, so Malloy's own targets name no upstream for them; the edges say
+ * what their rows are computed from, which a run orders by
+ * (`sourcesInDependencyOrder`) and a host walks for a rerun's upstream
+ * closure. An upstream is a table of another kind: nothing reads a view's or
+ * a rollup's table. A definition that cannot be read adds no edge.
+ */
+export function withDownstreamEdges(
+   builds: readonly SourceBuild[],
+   tables: Readonly<
+      Record<string, { kind: string; source: PersistSource } | undefined>
+   >,
+): SourceBuild[] {
+   const upstreamIDs = new Set(
+      Object.entries(tables).flatMap(([id, table]) =>
+         table && table.kind !== "view" && table.kind !== "rollup" ? [id] : [],
+      ),
+   );
+   const edges = new Map<string, string[]>();
+   const edgesOf = (sourceID: string): string[] => {
+      let found = edges.get(sourceID);
+      if (found !== undefined) return found;
+      const table = tables[sourceID];
+      const reached =
+         table && (table.kind === "view" || table.kind === "rollup")
+            ? reachedBy(table.source)
+            : undefined;
+      found = [...(reached ?? [])]
+         .filter((id) => id !== sourceID && upstreamIDs.has(id))
+         .sort();
+      edges.set(sourceID, found);
+      return found;
+   };
+   return builds.map((build) => {
+      let changed = false;
+      const dependsOn: Record<string, string[]> = {};
+      for (const [sourceID, reads] of Object.entries(build.dependsOn)) {
+         const added = edgesOf(sourceID).filter((id) => !reads.includes(id));
+         if (added.length > 0) changed = true;
+         dependsOn[sourceID] = added.length > 0 ? [...reads, ...added] : reads;
+      }
+      return changed ? { ...build, dependsOn } : build;
+   });
+}
+
 /** `build` without the sourceIDs `drop` names, wherever they appear. */
 export function withoutSourceIDs(
    build: SourceBuild,

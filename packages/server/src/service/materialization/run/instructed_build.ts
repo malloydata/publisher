@@ -92,7 +92,7 @@ import {
 } from "../stored_column_types";
 import {
    materializePlansOf,
-   sourcesInBuildOrder,
+   sourcesInDependencyOrder,
 } from "../domain/compiled_build_plan";
 import {
    BuildInstruction,
@@ -124,6 +124,7 @@ import {
    chainedPlanFacts,
    manifestExcludingStorage,
    manifestForCompiler,
+   readsTable,
    upstreamEntryIsCurrent,
 } from "./build_upstreams";
 import {
@@ -754,35 +755,34 @@ export class InstructedBuild {
          connection: MalloyConnection;
       }[] = [];
       for (const build of builds) {
-         const connection = connections.get(build.connectionName);
-         if (!connection) {
+         if (!connections.get(build.connectionName)) {
             throw new BadRequestError(
                `Connection '${build.connectionName}' not found`,
             );
          }
-         for (const persistSource of sourcesInBuildOrder(build, tables)) {
-            // A rollup that may read its base's stored table builds once
-            // every other table has, so a base this run builds is there
-            // to read. Nothing a run builds reads a rollup's table.
-            const table = tables[persistSource.sourceID];
-            if (
-               table?.kind === "rollup" &&
-               (table.overStoredBase || table.storedBase)
-            ) {
-               deferred.push({
-                  persistSource,
-                  connectionName: build.connectionName,
-                  connection,
-               });
-               continue;
-            }
-            await this.buildInRun(
-               run,
-               persistSource,
-               build.connectionName,
-               connection,
-            );
+      }
+      // Each source after every source it reads, across builds: a
+      // downstream's edges (a persisted view, query or rollup) may name a
+      // source another build orders, and the instructions' own order is
+      // never read.
+      for (const { sourceID, connectionName } of sourcesInDependencyOrder(
+         builds,
+      )) {
+         const table = tables[sourceID];
+         if (!table) continue;
+         const persistSource = table.source;
+         const connection = connections.get(connectionName)!;
+         // A rollup that may read its base's stored table builds once
+         // every other table has, so a base this run builds is there
+         // to read. Nothing a run builds reads a rollup's table.
+         if (
+            table.kind === "rollup" &&
+            (table.overStoredBase || table.storedBase)
+         ) {
+            deferred.push({ persistSource, connectionName, connection });
+            continue;
          }
+         await this.buildInRun(run, persistSource, connectionName, connection);
       }
       for (const later of deferred) {
          await this.buildInRun(
@@ -908,11 +908,10 @@ export class InstructedBuild {
       if (storedBase && stacked) {
          (run.readFrom ??= new Map()).set(sourceEntityId, [storedBase.address]);
       }
-      const entry = withRollupUpstreamReuse(
+      const entry = withBuiltProvenance(
          run,
-         persistSource,
          sourceEntityId,
-         built,
+         withRollupUpstreamReuse(run, persistSource, sourceEntityId, built),
       );
       run.builtSources.push(persistSource.name);
       reportSourceBuilt(
@@ -2380,16 +2379,6 @@ export function buildsPlannedTable(
 }
 
 /**
- * Whether `sql` reads the table `table` (a manifest's table path) by its whole
- * reference: not as the tail of another schema's path, nor as the head of a
- * longer one.
- */
-function readsTable(sql: string, table: string): boolean {
-   const escaped = table.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-   return new RegExp(`(?<![\\w.])${escaped}(?![\\w.])`).test(sql);
-}
-
-/**
  * Whether two sources output the same columns, by name, type and numeric
  * subtype, in order: an integer column where the plan has a float is drift.
  */
@@ -2483,6 +2472,38 @@ function storedRollupBase(
       address,
       entry,
       companion: table.storedBase.companion,
+   };
+}
+
+/**
+ * A built entry with its provenance: `builtAt`, now, and in `builtFrom` each
+ * stored table a build read that the database build did not already name
+ * (a `storage=` rollup that grouped its base's table, `readFrom`).
+ */
+function withBuiltProvenance(
+   run: InstructedRun,
+   address: string,
+   entry: ManifestEntry,
+): ManifestEntry {
+   const builtFrom = [...(entry.builtFrom ?? [])];
+   for (const upstream of run.readFrom?.get(address) ?? []) {
+      if (builtFrom.some((b) => b.sourceEntityId === upstream)) continue;
+      const read = run.entries[upstream];
+      if (!read?.physicalTableName) continue;
+      builtFrom.push({
+         sourceEntityId: upstream,
+         physicalTableName: read.physicalTableName,
+         ...(read.storageDestinationName
+            ? { storageDestinationName: read.storageDestinationName }
+            : {}),
+         ...(read.builtAt ? { builtAt: read.builtAt } : {}),
+      });
+   }
+   const { builtFrom: _unset, ...rest } = entry;
+   return {
+      ...rest,
+      builtAt: new Date().toISOString(),
+      ...(builtFrom.length > 0 ? { builtFrom } : {}),
    };
 }
 

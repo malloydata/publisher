@@ -45,6 +45,7 @@ import {
 } from "./incremental_build";
 import {
    BuildEnvironment,
+   builtFromOf,
    ChainedPlanFacts,
    compilerMissingUpstream,
    HostSuppliedWrongTierError,
@@ -866,7 +867,15 @@ export async function buildSource(
       ...(replacesView ? { replacesView } : {}),
       ...(signal ? { signal } : {}),
    };
-   return DATABASE.build(request);
+   const built = await DATABASE.build(request);
+   // The stored upstream tables its SQL read, as provenance.
+   const builtFrom = builtFromOf(
+      buildSQL,
+      manifest.buildManifest,
+      builtEntries,
+      contentSourceEntityId ?? instruction.sourceEntityId,
+   );
+   return builtFrom ? { ...built, builtFrom } : built;
 }
 
 /**

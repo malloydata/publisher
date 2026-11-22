@@ -142,6 +142,49 @@ export function* sourcesInBuildOrder(
    }
 }
 
+/**
+ * Every planned source of `builds`, each with the connection whose build
+ * names it, in an order where each comes after every source it depends on
+ * that the builds name, across builds: a downstream's edges may name a
+ * source another build (another model's, or Malloy's own build of the
+ * author's model) orders. Otherwise in the builds' own order, which is
+ * Malloy's within a build. A source named by several builds is kept at each
+ * place, as the builds name it. A cycle, which no plan has, is broken in the
+ * builds' order rather than dropping a source.
+ */
+export function sourcesInDependencyOrder(
+   builds: readonly SourceBuild[],
+): { sourceID: string; connectionName: string }[] {
+   const items = builds.flatMap((build) =>
+      build.order.map((sourceID) => ({
+         sourceID,
+         connectionName: build.connectionName,
+      })),
+   );
+   const named = new Set(items.map((i) => i.sourceID));
+   const upstreams = new Map<string, Set<string>>();
+   for (const build of builds) {
+      for (const [sourceID, reads] of Object.entries(build.dependsOn)) {
+         const set = upstreams.get(sourceID) ?? new Set<string>();
+         for (const r of reads) if (r !== sourceID && named.has(r)) set.add(r);
+         upstreams.set(sourceID, set);
+      }
+   }
+   const out: typeof items = [];
+   const placed = new Set<string>();
+   const pending = [...items];
+   while (pending.length > 0) {
+      let at = pending.findIndex((item) =>
+         [...(upstreams.get(item.sourceID) ?? [])].every((u) => placed.has(u)),
+      );
+      if (at < 0) at = 0;
+      const [item] = pending.splice(at, 1);
+      out.push(item);
+      placed.add(item.sourceID);
+   }
+   return out;
+}
+
 /** The `#(materialize)` plans of `tables`, by the author's sourceID. */
 export function materializePlansOf(
    tables: Readonly<Record<string, Pick<TablePlan, "materialize">>>,
