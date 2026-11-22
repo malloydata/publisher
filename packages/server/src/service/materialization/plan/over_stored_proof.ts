@@ -19,7 +19,9 @@
  *    numeric subtype.
  *
  * Each check is defensive: a compile made as planned passes them all. Each
- * guards a drift between the second compile and the plan and fails closed.
+ * guards a drift between the second compile and the plan and fails closed:
+ * a view or query that fails it is refused at plan (`generated_build_failed`),
+ * a rollup builds from the warehouse (build_plan.ts).
  * Addresses are compared over one connection digest for both sources, which
  * share a connection, so the comparison needs no live connection.
  */
