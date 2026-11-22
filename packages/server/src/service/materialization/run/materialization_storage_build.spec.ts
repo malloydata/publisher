@@ -323,47 +323,40 @@ describe("the storage tier's build (chained-build fallback ladder)", () => {
       expect(entry.upstreamRecomputeReason).toBeUndefined();
    });
 
-   it("strict + a persisted upstream the build cannot see: refuses, naming it, instead of recomputing from raw", async () => {
-      // The orchestrator meant to pin that upstream; recomputing it here would
-      // rebuild a table it did not ask for. The refusal carries the upstream's
-      // name so the dispatch, not the model, is what gets fixed.
-      const call = callInto({ strict: true, stackOnParent: "missing" });
-      await expect(call).rejects.toThrow(
-         /strict upstreams forbid.*persisted upstream 'daily'/is,
-      );
-      // Typed, so the run can attribute it to an upstream that failed.
-      await expect(call).rejects.toBeInstanceOf(ChainedUpstreamMissingError);
+   // Always strict: a chained build is built over its stored upstreams or
+   // refused, never by recomputing them from raw, whatever the run asks.
+   it("a persisted upstream the build cannot see: refuses, naming it, strict or not", async () => {
+      for (const strict of [true, false]) {
+         const call = callInto({ strict, stackOnParent: "missing" });
+         await expect(call).rejects.toThrow(
+            /never built by recomputing its upstreams from raw.*persisted upstream 'daily'/is,
+         );
+         // Typed, so the run can attribute it to an upstream that failed.
+         await expect(call).rejects.toBeInstanceOf(ChainedUpstreamMissingError);
+      }
    });
 
-   it("strict + a downstream that reaches the warehouse falls through to recompute-from-raw", async () => {
-      // No build over the parents exists for this source, so the recompute is
-      // the only build there is and strict permits it. Only the parent-reuse
-      // seam is stubbed, so the recompute runs for real and fails for its own
-      // reason (no destination file) — the proof it was reached, since the two
-      // paths report differently: "chained source" from the stack-on-parent
-      // path, "source" from the single-source recompute.
-      await expect(
-         callInto({ strict: true, stackOnParent: "raw" }),
-      ).rejects.toThrow(/Failed to materialize source 'monthly'/i);
+   it("a downstream that reaches the warehouse through a non-persisted source: refused, never recomputed, strict or not", async () => {
+      for (const opts of [
+         { strict: true },
+         { strict: false },
+         { strict: true, warehouseReach: "recompute" as const },
+         { strict: true, warehouseReach: "refuse" as const },
+      ]) {
+         const call = callInto({ ...opts, stackOnParent: "raw" });
+         await expect(call).rejects.toBeInstanceOf(ChainedShapeNotCarriedError);
+         await expect(call).rejects.toThrow(
+            /never built by recomputing its upstreams from raw.*reads the source warehouse \(regions\) through 'daily_regional'/is,
+         );
+      }
    });
 
-   it("strict + a shape over stored upstreams the build could not carry: refuses rather than recomputing them", async () => {
-      // Every upstream was handed to the build; recomputing them would rebuild
-      // pinned tables because of a limit in the carrying, which is not the
-      // source's doing and not a licence strict grants.
-      const call = callInto({ strict: true, stackOnParent: "uncarried" });
-      await expect(call).rejects.toThrow(
-         /strict upstreams forbid.*could not be built over them/is,
-      );
-      // Typed, so the run classifies it deterministic.
-      await expect(call).rejects.toBeInstanceOf(ChainedShapeNotCarriedError);
-   });
-
-   it("non-strict + a persisted upstream the build cannot see, or an uncarried shape, falls through to recompute-from-raw", async () => {
-      for (const stackOnParent of ["missing", "uncarried"] as const) {
-         await expect(
-            callInto({ strict: false, stackOnParent }),
-         ).rejects.toThrow(/Failed to materialize source 'monthly'/i);
+   it("a shape over stored upstreams the build could not carry: refused, strict or not", async () => {
+      for (const strict of [true, false]) {
+         const call = callInto({ strict, stackOnParent: "uncarried" });
+         await expect(call).rejects.toThrow(/could not be built over them/i);
+         // Typed, so the run classifies it deterministic.
+         await expect(call).rejects.toBeInstanceOf(ChainedShapeNotCarriedError);
       }
    });
 
@@ -403,19 +396,16 @@ describe("the storage tier's build (chained-build fallback ladder)", () => {
       expect(message.split("supplied at the wrong tier").length).toBe(2);
    });
 
-   it("self-instructed + a parent supplied at the wrong tier still recomputes when not strict", async () => {
-      // The recompute runs for real and fails for its own reason (no
-      // destination file): the single-source path's message proves it ran.
+   it("self-instructed + a parent supplied at the wrong tier: refused, never recomputed", async () => {
       await expect(
          callInto({ strict: false, stackOnParent: "wrongTier" }),
-      ).rejects.toThrow(/Failed to materialize source 'monthly'/i);
+      ).rejects.toBeInstanceOf(ChainedUpstreamMissingError);
    });
 
    it("an INFRA failure fails rather than recomputing from raw, strict or not", async () => {
       // Recompute-from-raw writes to the same destination, so retrying an outage
       // there just fails again — and metering it as a fallback files the outage
-      // under the same label as a legitimate shape miss. Only a shape failure is
-      // a reason to try the other path.
+      // under the same label as a legitimate shape miss.
       for (const strict of [false, true]) {
          await expect(
             callInto({ strict, stackOnParent: "infra" }),
@@ -423,95 +413,14 @@ describe("the storage tier's build (chained-build fallback ladder)", () => {
       }
    });
 
-   // ms2data/service#6756: the orchestrator can refuse the one recompute
-   // strict permits.
-   it("strict + warehouseReach refuse + a downstream that reaches the warehouse: refuses with the reason, never recomputing", async () => {
-      const { WarehouseRecomputeRefusedError } = await import(
-         "../../../errors"
-      );
-      const call = callInto({
-         strict: true,
-         stackOnParent: "raw",
-         warehouseReach: "refuse",
-      });
-      await expect(call).rejects.toBeInstanceOf(WarehouseRecomputeRefusedError);
-      // The reason the entry would have carried, and the knob that refused it.
-      await expect(call).rejects.toThrow(
-         /warehouseReach: refuse.*reads the source warehouse \(regions\) through 'daily_regional'/is,
-      );
-   });
-
-   it("warehouseReach recompute is today's behaviour: strict recomputes a downstream that reaches the warehouse", async () => {
-      await expect(
-         callInto({
-            strict: true,
-            stackOnParent: "raw",
-            warehouseReach: "recompute",
-         }),
-      ).rejects.toThrow(/Failed to materialize source 'monthly'/i);
-   });
-
-   it("a non-strict build ignores warehouseReach refuse, as it ignores strictUpstreams", async () => {
-      await expect(
-         callInto({
-            strict: false,
-            stackOnParent: "raw",
-            warehouseReach: "refuse",
-         }),
-      ).rejects.toThrow(/Failed to materialize source 'monthly'/i);
-   });
-
-   it("warehouseReach refuse changes no other rung: a missing upstream and an uncarried shape still refuse as before", async () => {
-      const missing = callInto({
-         strict: true,
-         stackOnParent: "missing",
-         warehouseReach: "refuse",
-      });
-      await expect(missing).rejects.toBeInstanceOf(ChainedUpstreamMissingError);
-      const uncarried = callInto({
-         strict: true,
-         stackOnParent: "uncarried",
-         warehouseReach: "refuse",
-      });
-      await expect(uncarried).rejects.toBeInstanceOf(
-         ChainedShapeNotCarriedError,
-      );
-   });
-
-   it("a downstream whose strings its source compares otherwise recomputes, strict or not, and refuses only under warehouseReach refuse", async () => {
-      // Strict, as Credible sends every build, with no warehouseReach: the
-      // recompute runs (and fails here for its own reason, no destination
-      // file), never the strict refusal of an uncarried shape.
-      for (const opts of [
-         { strict: true },
-         { strict: true, warehouseReach: "recompute" as const },
-         { strict: false },
-         { strict: false, warehouseReach: "refuse" as const },
-      ]) {
-         await expect(
-            callInto({ ...opts, stackOnParent: "collation" }),
-         ).rejects.toThrow(/Failed to materialize source 'monthly'/i);
+   it("a downstream whose strings its source compares otherwise: refused, never recomputed, strict or not", async () => {
+      for (const opts of [{ strict: true }, { strict: false }]) {
+         const call = callInto({ ...opts, stackOnParent: "collation" });
+         await expect(call).rejects.toBeInstanceOf(ChainedShapeNotCarriedError);
+         await expect(call).rejects.toThrow(
+            /compares under a unknown collation/i,
+         );
       }
-      const { WarehouseRecomputeRefusedError } = await import(
-         "../../../errors"
-      );
-      const refused = callInto({
-         strict: true,
-         stackOnParent: "collation",
-         warehouseReach: "refuse",
-      });
-      await expect(refused).rejects.toBeInstanceOf(
-         WarehouseRecomputeRefusedError,
-      );
-      await expect(refused).rejects.toThrow(
-         /warehouseReach: refuse.*compares under a unknown collation/is,
-      );
-   });
-
-   it("non-strict + a downstream that reaches the warehouse falls through to recompute-from-raw", async () => {
-      await expect(
-         callInto({ strict: false, stackOnParent: "raw" }),
-      ).rejects.toThrow(/Failed to materialize source 'monthly'/i);
    });
 
    describe("telemetry", () => {
@@ -528,31 +437,19 @@ describe("the storage tier's build (chained-build fallback ladder)", () => {
 
       it("meters each rung under its own outcome", async () => {
          await callInto({ strict: false, stackOnParent: "ok" });
-         await callInto({ strict: true, stackOnParent: "raw" }).catch(
-            () => undefined,
-         );
-         await callInto({ strict: false, stackOnParent: "raw" }).catch(
-            () => undefined,
-         );
-         await callInto({ strict: true, stackOnParent: "missing" }).catch(
-            () => undefined,
-         );
-         await callInto({ strict: true, stackOnParent: "uncarried" }).catch(
-            () => undefined,
-         );
+         for (const stackOnParent of ["raw", "missing", "uncarried"] as const) {
+            await callInto({ strict: false, stackOnParent }).catch(
+               () => undefined,
+            );
+         }
          await callInto({ strict: true, stackOnParent: "infra" }).catch(
             () => undefined,
          );
-         // The refused recompute is a strict refusal, not a fallback.
-         await callInto({
-            strict: true,
-            stackOnParent: "raw",
-            warehouseReach: "refuse",
-         }).catch(() => undefined);
          for (const [outcome, n] of [
             ["parent_reuse", 1],
-            ["strict_shape_fallback", 1],
-            ["inline_fallback", 1],
+            // Retained, no longer produced: nothing recomputes from raw.
+            ["strict_shape_fallback", 0],
+            ["inline_fallback", 0],
             ["strict_refused", 3],
             ["infra_failure", 1],
          ] as const) {

@@ -28,7 +28,6 @@ import {
    ChainedUpstreamMissingError,
    ConnectionNotFoundError,
    MaterializationEligibilityError,
-   WarehouseRecomputeRefusedError,
 } from "../../../errors";
 import { logger } from "../../../logger";
 import { errorCodeOf } from "../../../error_code";
@@ -108,7 +107,6 @@ import {
    currentUpstreamEntries,
    HostSuppliedWrongTierError,
    NO_PLAN_FACTS,
-   noteWrongTierRecompute,
    upstreamEntryIsCurrent,
    WRONG_TIER_MARKER,
    wrongTierDetail,
@@ -395,7 +393,7 @@ function reportStoredColumns(
 function recomputeAfterStackFailure(
    err: unknown,
    ctx: StorageBuildContext,
-): { result: undefined; upstreamRecomputeReason: string } {
+): never {
    const {
       params,
       planFacts,
@@ -403,7 +401,7 @@ function recomputeAfterStackFailure(
       sourceConnection,
       destinationConnection,
    } = ctx;
-   const { persistSource, manifest } = params;
+   const { persistSource } = params;
    // Redact: a failed read-write ATTACH or CTAS can echo the SQL,
    // catalog `password=` included, into the run `error` or the log.
    const safeDetail = redactConnectionSecrets(
@@ -411,14 +409,9 @@ function recomputeAfterStackFailure(
       sourceConnection,
       destinationConnection,
    );
-   // Only a SHAPE failure justifies recomputing from raw. An INFRA
-   // failure (attach, CTAS, destination down) would fail the same way
-   // against the same destination, so it throws.
-   //
-   // Under strict, a missing upstream or an uncarried shape would
-   // recompute tables the orchestrator pinned, so it is refused. A
-   // downstream that reaches the source warehouse has no build over the
-   // parents, so strict permits the recompute, and it is reported.
+   // An INFRA failure (attach, CTAS, destination down) throws as one; a
+   // missing upstream or an uncarried shape is refused below as its type.
+   // Neither is ever answered by recomputing the upstreams from raw.
    const pinnedRecompute =
       err instanceof ChainedUpstreamMissingError ||
       err instanceof ChainedShapeNotCarriedError;
@@ -454,68 +447,22 @@ function recomputeAfterStackFailure(
          wrongTierUpstreams,
       );
    }
-   if (manifest.strict && pinnedRecompute) {
-      recordChainedStorageBuild("strict_refused");
-      const message =
-         `Failed to materialize chained source '${persistSource.name}' ` +
-         `into storage destination '${destinationName}' by reading ` +
-         `its materialized upstream, and strict upstreams forbid ` +
-         `recomputing it from raw: ${safeDetail}`;
-      // Re-raised as the same type, so the run can classify the
-      // failure (build_failure_class.ts): a missing upstream that
-      // failed earlier in the run, or a shape no retry can carry.
-      throw err instanceof ChainedUpstreamMissingError
-         ? new ChainedUpstreamMissingError(err.missing, message)
-         : new ChainedShapeNotCarriedError(message);
-   }
-   // The orchestrator may refuse the one recompute strict permits
-   // (`warehouseReach: refuse`): the source fails with the reason the
-   // entry would have carried, and nothing reads the warehouse.
-   if (
-      manifest.strict &&
-      planFacts.warehouseReach === "refuse" &&
-      err instanceof MaterializationEligibilityError
-   ) {
-      recordChainedStorageBuild("strict_refused");
-      throw new WarehouseRecomputeRefusedError(
-         persistSource.name,
-         destinationName,
-         safeDetail,
-      );
-   }
-   recordChainedStorageBuild(
-      manifest.strict ? "strict_shape_fallback" : "inline_fallback",
-   );
-   const upstreamRecomputeReason = safeDetail;
-   logger.warn(
-      "Chained storage build could not reuse the parent table; " +
-         "recomputing the upstream from raw",
-      {
-         sourceName: persistSource.name,
-         destinationName,
-         strict: manifest.strict,
-         // The reason is on the entry (upstreamRecomputeReason); a
-         // compile error in it can quote the build's text.
-         code: errorCodeOf(err),
-      },
-   );
-   // A recompute because a parent's entry is at the wrong tier reads
-   // the warehouse; counted once per run per parent.
-   if (
-      err instanceof ChainedUpstreamMissingError &&
-      safeDetail.includes(WRONG_TIER_MARKER)
-   ) {
-      for (const upstream of err.missing) {
-         noteWrongTierRecompute({
-            planFacts,
-            build: "storage",
-            sourceName: persistSource.name,
-            upstream,
-            detail: safeDetail,
-         });
-      }
-   }
-   return { result: undefined, upstreamRecomputeReason };
+   // Always strict: a chained build is built over its stored upstreams or
+   // not at all, never by recomputing them from raw, whatever the run.
+   recordChainedStorageBuild("strict_refused");
+   const message =
+      `Failed to materialize chained source '${persistSource.name}' ` +
+      `into storage destination '${destinationName}' by reading its ` +
+      `materialized upstreams, and a downstream is never built by ` +
+      `recomputing its upstreams from raw: ${safeDetail}`;
+   // Re-raised as its type, so the run can classify the failure
+   // (build_failure_class.ts): a missing upstream that failed earlier in
+   // the run, or a shape no retry carries (a source that reaches the
+   // warehouse through a non-persisted source has no build over its
+   // stored upstreams, and is refused, not retried).
+   throw err instanceof ChainedUpstreamMissingError
+      ? new ChainedUpstreamMissingError(err.missing, message, err.details)
+      : new ChainedShapeNotCarriedError(message);
 }
 
 /**
@@ -550,8 +497,19 @@ function storedUpstreamsIn(
    // Only an entry at the destination its source is declared in NOW: a
    // stored table left from before the source moved is stale.
    const currentEntries = currentUpstreamEntries(builtEntries, planFacts);
+   // A host's reference names no source: its address's planned source
+   // names it, as the serve bindings name every entry.
+   const named = Object.fromEntries(
+      Object.entries(currentEntries).map(([address, entry]) => {
+         const name = planFacts.namesByAddress?.[address]?.[0];
+         return [
+            address,
+            entry.sourceName || !name ? entry : { ...entry, sourceName: name },
+         ];
+      }),
+   );
    const upstreams: Binding[] = deriveServeBindings(
-      currentEntries,
+      named,
       aliasesForBinding,
       (name) => {
          try {
@@ -572,7 +530,7 @@ function storedUpstreamsIn(
       // file). Filtering it also keeps the legible "no materialized upstream"
       // refusal for a destination holding only rollups.
       .filter((b) => b.kind !== "rollup");
-   return { upstreams, currentEntries };
+   return { upstreams, currentEntries: named };
 }
 
 /**

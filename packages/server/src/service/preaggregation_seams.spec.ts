@@ -1067,7 +1067,7 @@ source: ungated is duckdb.sql("""
 }
 `,
    };
-   
+
    it(
       "is found by the routing pre-check's model-wide sweep",
       async () => {

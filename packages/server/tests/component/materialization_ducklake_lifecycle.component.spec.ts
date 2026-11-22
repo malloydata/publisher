@@ -2710,10 +2710,13 @@ source: crm_current is crm_raw -> { group_by: category, region; aggregate: amt i
       afterAll(() => lake.tearDown());
 
       const QUERIES: [model: string, query: string, served: boolean][] = [
+         // `deals11` joins the stored `crm_current` to the warehouse's rows:
+         // no engine reads both, and it is never built by recomputing
+         // `crm_current` from raw, so it is refused and answered live.
          [
             "m.malloy",
             "run: deals11 -> { group_by: category, region; aggregate: a is amt.sum() }",
-            true,
+            false,
          ],
          [
             "m.malloy",

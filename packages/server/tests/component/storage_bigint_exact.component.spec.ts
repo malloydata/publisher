@@ -130,7 +130,9 @@ source: m_wide is wide_base extend {}
 // A stored upstream whose sum column fell back to the 128-bit type, as an
 // older build's did: one key past 38 digits fails the DECIMAL(38,0) cast for
 // the whole column, so every key's sum is stored rounded. A chained
-// downstream over it must never store those rounded values as exact.
+// downstream over it must never store those rounded values as exact, and is
+// never built by recomputing its upstream from raw: it is refused, and
+// answered live.
 source: mixed is warehouse.sql("""
   SELECT 'k' || lpad((i % ${GROUPS})::VARCHAR, 5, '0') AS k,
          (CASE WHEN i < ${GROUPS} THEN ${BIG} ELSE 1 END)::HUGEINT AS v
@@ -157,6 +159,8 @@ const CASES: {
    exact?: { column: string; value: string };
    /** Answered from the table (a control); else live. */
    served?: true;
+   /** Never built (refused at build): live, with no table to report. */
+   unbuilt?: true;
    /** The path report's kind for the table that would answer it. */
    leg?: "materialized" | "rollup" | "view";
 }[] = [
@@ -209,10 +213,10 @@ const CASES: {
       leg: "view",
    },
    {
-      name: "P4-01 chained: a downstream over a rounded 128-bit upstream equals live",
+      name: "P4-01 chained: a downstream over a rounded 128-bit upstream is refused, and answered live, equal to live",
       malloy: "run: c_mixed -> { select: k, t; order_by: k }",
       exact: { column: "t", value: SUM },
-      served: true,
+      unbuilt: true,
    },
    {
       name: "P4-01 control: a stored BIGINT (#@ persist) still serves",
@@ -521,7 +525,6 @@ describe.skipIf(process.platform === "win32")(
 
       it("builds every table into the lake as Parquet: a computed sum as DECIMAL(38,0), every digit kept", async () => {
          const run = await build();
-         expect([run.status, run.error]).toEqual(["MANIFEST_FILE_READY", null]);
          const entries = Object.values(
             (
                run.manifest as {
@@ -545,15 +548,15 @@ describe.skipIf(process.platform === "win32")(
             });
          }
          // Past 38 digits the cast fails and the 128-bit type is stored.
-         // The rounded upstream, and its chained downstream stored exact.
+         // The rounded upstream; its chained downstream is refused, never
+         // recomputed from raw.
          expect(entry("p_mixed").schema).toContainEqual({
             name: "total",
             type: "HUGEINT",
          });
-         expect(entry("c_mixed").schema).toContainEqual({
-            name: "t",
-            type: "DECIMAL(38,0)",
-         });
+         expect((entry("c_mixed") as { error?: string }).error ?? "").toContain(
+            "a downstream is never built by recomputing its upstreams from raw",
+         );
          expect(entry("p_wide").schema).toContainEqual({
             name: "hs",
             type: "HUGEINT",
@@ -590,6 +593,7 @@ describe.skipIf(process.platform === "win32")(
             } else {
                expect(answer.servedFrom).toBeNull();
                expect(answer.servedBy.kind).toBe("live");
+               if (c.unbuilt) return;
                // The path report says why: the table that would answer was
                // skipped for a field it cannot give exactly.
                const considered = (

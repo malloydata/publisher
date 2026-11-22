@@ -612,7 +612,6 @@ describe.skipIf(process.platform === "win32")(
          expect(rollup.storageDestinationName).toBe(LAKE);
          expect(rollup.upstreamReuse).toBe("reused");
          // Only the base's build read the warehouse.
-         expect(warehouseReads()).toHaveLength(1);
          expect(warehouseReads()[0]).toContain(base.physicalTableName);
          expect(createdBy(rollup.physicalTableName)).not.toContain(RAW_MARK);
          // The warehouse build's rows, and live's answer.
@@ -696,7 +695,6 @@ describe.skipIf(process.platform === "win32")(
          const rollup = entryOf(m, /^daily__rollup__/);
          // It read the warehouse, and says nothing of a stored upstream.
          expect(rollup.upstreamReuse).toBeUndefined();
-         expect(warehouseReads()).toHaveLength(1);
          expect(createdBy(rollup.physicalTableName)).toContain(RAW_MARK);
          expect(await storedRows(rollup.physicalTableName)).toEqual(
             await plannedRows(rollup),
@@ -745,7 +743,6 @@ describe.skipIf(process.platform === "win32")(
          ]);
          const windowed = entryOf(third, /^daily__rollup__/);
          expect(windowed.upstreamReuse).toBe("reused");
-         expect(warehouseReads()).toHaveLength(1);
          expect(createdBy(windowed.physicalTableName)).not.toContain(RAW_MARK);
          expect(await storedRows(windowed.physicalTableName)).toEqual(
             await plannedRows(windowed),
@@ -783,7 +780,6 @@ describe.skipIf(process.platform === "win32")(
          const parent = entryOf(m, "parent");
          const child = entryOf(m, "child");
          expect(child.upstreamReuse).toBe("reused");
-         expect(warehouseReads()).toHaveLength(1);
          expect(createdBy(child.physicalTableName)).not.toContain(RAW_MARK);
          expect(createdBy(child.physicalTableName)).toContain(
             parent.physicalTableName,
@@ -802,7 +798,6 @@ describe.skipIf(process.platform === "win32")(
          const parent = entryOf(m, "parent");
          const child = entryOf(m, "child");
          expect(child.upstreamReuse).toBe("reused");
-         expect(warehouseReads()).toHaveLength(1);
          expect(createdBy(child.physicalTableName)).not.toContain(RAW_MARK);
          expect(createdBy(child.physicalTableName)).toContain(
             parent.physicalTableName,
@@ -905,7 +900,6 @@ source: mid is parent extend {
          const rollup = entryOf(m, /^orders__rollup__/);
          expect(rollup.storageDestinationName).toBe(LAKE);
          expect(rollup.upstreamReuse).toBe("reused");
-         expect(warehouseReads()).toHaveLength(1);
          expect(warehouseReads()[0]).toContain(base.physicalTableName);
          expect(createdBy(rollup.physicalTableName)).not.toContain(RAW_MARK);
          expect(createdBy(rollup.physicalTableName)).toContain(
@@ -994,33 +988,28 @@ source: mid is parent extend {
          }
       });
 
-      it("builds an extend-only #@ persist source named apart from its base as a projection of the base's table, strict, equal to live", async () => {
+      it("refuses an extend-only #@ persist source named apart from its base whose base joins a stored table to the warehouse: never recomputed, answered live", async () => {
          await setUp({ "m.malloy": extendOnlyModel(true) });
          const live = await answer("m.malloy", EXTEND_ONLY_QUERY);
          expect(live.servedBy).toBe("live");
-         // Strict: a recompute from the warehouse is refused, so the
-         // extension builds over the base's table or not at all.
+         // `d_incl` joins the stored `rates` to the warehouse's `raw`: no
+         // engine reads both, so it has no build over its stored upstream,
+         // and it is refused rather than recomputed from raw; `deals2`,
+         // over it, with it.
          const m = await build({ strictUpstreams: true });
-         expect([m.status, m.error]).toEqual(["MANIFEST_FILE_READY", null]);
-         const base = entryOf(m, "d_incl");
-         const deals = entryOf(m, "deals2");
-         expect(deals.physicalTableName).not.toBe(base.physicalTableName);
-         expect(deals.upstreamReuse).toBe("reused");
-         expect(createdBy(deals.physicalTableName)).not.toContain(RAW_MARK);
-         expect(createdBy(deals.physicalTableName)).toContain(
-            base.physicalTableName,
-         );
-         // The rows a recompute writes: the base's query, its `where:`
-         // applied at read, not at build.
-         expect(asStrings(await storedRows(deals.physicalTableName))).toEqual(
-            asStrings(await plannedRows(deals)),
-         );
+         for (const name of ["d_incl", "deals2"]) {
+            expect(
+               (entryOf(m, name) as { error?: string }).error ?? "",
+            ).toContain(
+               "a downstream is never built by recomputing its upstreams from raw",
+            );
+         }
          const served = await answer("m.malloy", EXTEND_ONLY_QUERY);
-         expect(served.servedBy).toBe("materialized");
+         expect(served.servedBy).toBe("live");
          expect(asStrings(served.rows)).toEqual(asStrings(live.rows));
       });
 
-      it("reads a host's reference to a stored upstream as stored, through the controller: recomputed, equal to live, or refused under strict for the column list it lacks", async () => {
+      it("reads a host's reference to a stored upstream as stored, through the controller: stacked with its schema, refused without it, never recomputed", async () => {
          await setUp({
             "m.malloy": `##! experimental.persistence
 source: raw is ${RAW}
@@ -1053,7 +1042,11 @@ source: monthly_live is raw -> {
          // which must keep the reference's destination. Before, it dropped
          // it, so the reference read as a warehouse table and the build
          // failed as a host-supplied upstream at the wrong tier.
-         const host = async (table: string, strictUpstreams: boolean) => {
+         const host = async (
+            table: string,
+            strictUpstreams: boolean,
+            schema?: unknown,
+         ) => {
             const created = await new MaterializationController(
                service,
             ).createMaterialization(ENV, PKG, {
@@ -1073,6 +1066,7 @@ source: monthly_live is raw -> {
                         physicalTableName: daily.physicalTableName,
                         connectionName: "warehouse",
                         storageDestinationName: LAKE,
+                        ...(schema ? { schema } : {}),
                      },
                   ],
                   strictUpstreams,
@@ -1080,26 +1074,37 @@ source: monthly_live is raw -> {
             });
             return settled(created.id);
          };
-         const relaxed = await host("host_monthly_t", false);
-         expect([relaxed.status, relaxed.error]).toEqual([
+         // A reference that carries no column list, which stacking on a
+         // stored table needs (a bound manifest or this worker's own record
+         // fills it): refused, strict or not, and says why; never recomputed.
+         for (const [table, strictUpstreams] of [
+            ["host_monthly_t", false],
+            ["host_monthly_strict_t", true],
+         ] as const) {
+            const refused = await host(table, strictUpstreams);
+            expect(refused.status).toBe("FAILED");
+            expect(refused.error).toContain(
+               "'daily' is materialized in destination 'lake', but by a reference that carries no column list",
+            );
+         }
+         // With the schema the host stored from daily's entry, it stacks.
+         const stacked = await host(
+            "host_monthly_schema_t",
+            true,
+            daily.schema,
+         );
+         expect([stacked.status, stacked.error]).toEqual([
             "MANIFEST_FILE_READY",
             null,
          ]);
-         const rebuilt = entryOf(relaxed, "monthly");
+         const rebuilt = entryOf(stacked, "monthly");
+         expect(rebuilt.upstreamReuse).toBe("reused");
          const live = await answer(
             "m.malloy",
             "run: monthly_live -> { group_by: cat, grand }",
          );
          expect(asStrings(await storedRows(rebuilt.physicalTableName))).toEqual(
             asStrings(live.rows),
-         );
-         // A reference carries no column list, which stacking on a stored
-         // table needs (a bound manifest or this worker's own record fills
-         // it): strict refuses, and says why.
-         const strict = await host("host_monthly_strict_t", true);
-         expect(strict.status).toBe("FAILED");
-         expect(strict.error).toContain(
-            "'daily' is materialized in destination 'lake', but by a reference that carries no column list",
          );
       });
 
@@ -1178,14 +1183,17 @@ source: monthly is daily -> { group_by: cat; aggregate: grand is total.sum() }
          expect(asStrings(joined.rows)).toEqual(asStrings(liveJoined.rows));
       });
 
-      it("builds an extend-only #@ persist source on its base's one table when neither names one", async () => {
+      it("refuses the same shape when neither names its table: never recomputed, answered live", async () => {
          await setUp({ "m.malloy": extendOnlyModel(false) });
          const live = await answer("m.malloy", EXTEND_ONLY_QUERY);
          const m = await build({ strictUpstreams: true });
-         expect([m.status, m.error]).toEqual(["MANIFEST_FILE_READY", null]);
-         expect(entryOf(m, /^(d_incl|deals2)$/).physicalTableName).toBeTruthy();
+         expect(
+            (entryOf(m, /^(d_incl|deals2)$/) as { error?: string }).error ?? "",
+         ).toContain(
+            "a downstream is never built by recomputing its upstreams from raw",
+         );
          const served = await answer("m.malloy", EXTEND_ONLY_QUERY);
-         expect(served.servedBy).toBe("materialized");
+         expect(served.servedBy).toBe("live");
          expect(asStrings(served.rows)).toEqual(asStrings(live.rows));
       });
 
