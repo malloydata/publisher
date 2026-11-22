@@ -343,9 +343,12 @@ paths:
         in place and never left as rows in the catalog database, so an
         encrypted catalog stays encrypted. One DuckLake transaction:
         a reader sees the old table or the new one. A file the reader refuses
-        (not the format it claims, a value it cannot convert) is `400
-        INVALID_REQUEST` carrying the reader's own message, with the object
-        named by its file name. `201` when the table is new,
+        (not the format it claims, a value it cannot convert) or an object that
+        does not exist is `400 INVALID_REQUEST` carrying the reader's own
+        message, with the object named by its file name. A `500` is a failure a
+        retry may cure (storage unavailable or throttled, a refused credential,
+        a full spill disk), and a retry is safe: it writes the whole table from
+        the same object again. `201` when the table is new,
         `200` when it replaced one; with `If-None-Match: *` an existing table is
         refused with `412 TABLE_EXISTS`. Synchronous: it answers when the table
         is written.

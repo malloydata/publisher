@@ -211,6 +211,18 @@ describe("readerRefusal: what a person sent and the reader refused", () => {
          expect(refusal?.message).not.toContain("CREATE TABLE");
       });
 
+      it("for an object that does not exist", async () => {
+         const file = `${dir}/absent.parquet`;
+         const thrown = await readerError(`read_parquet('${file}')`);
+         expect(thrown.message).toMatch(
+            /^IO Error: No files found that match the pattern/,
+         );
+         const refusal = readerRefusal(thrown, file);
+         expect(refusal).toBeInstanceOf(BadRequestError);
+         expect(refusal?.message).toContain('"absent.parquet"');
+         expect(refusal?.message).not.toContain(dir);
+      });
+
       it("for a CSV value the column's type cannot hold", async () => {
          const file = `${dir}/orders.csv`;
          fs.writeFileSync(file, "id,amount\n1,10.5\n2,N/A\n3,7\n");

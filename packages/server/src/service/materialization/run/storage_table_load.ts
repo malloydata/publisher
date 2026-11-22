@@ -314,7 +314,8 @@ function readerWords(
  * carrying DuckDB's own words ("No magic bytes found", `Could not convert string "N/A" to
  * 'DOUBLE'`), which name the fix, rather than a 500 a caller can only retry. The object's URI,
  * an internal staging path, is replaced by its file name, and the SQL DuckDB echoes after
- * `LINE` is dropped. Null for anything else (a storage or catalog failure), which stays a 500.
+ * `LINE` is dropped. A missing object is refused the same way, so a 500 is always one a retry
+ * may cure. Null for anything else (a storage or catalog failure), which stays a 500.
  *
  * Applied only to the `CREATE TABLE ... AS SELECT` that runs the reader (see
  * {@link writeTableAs}): the flush, count and describe after it run against the
@@ -328,7 +329,7 @@ export function readerRefusal(
    error: unknown,
    uri: string,
 ): BadRequestError | null {
-   if (!(error instanceof Error) || readerFault(error, [uri]) !== "content") {
+   if (!(error instanceof Error) || readerFault(error, [uri]) === null) {
       return null;
    }
    logInternalFailure("Load refused by the file reader", error, "warn");
