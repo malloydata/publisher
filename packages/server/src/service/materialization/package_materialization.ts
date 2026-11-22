@@ -921,10 +921,11 @@ export class PackageMaterialization {
    /**
     * Whether the bound database tables include one the bind could not read
     * (it answers live): a poll that finds the manifest unchanged binds again
-    * rather than skip, so the table is read once it can be.
+    * rather than skip, so the table is read once it can be. A bind still
+    * committing counts as unread: its tables are not yet the ones read.
     */
    hasUnreadDatabaseTables(): boolean {
-      return this.knownUnread().length > 0;
+      return this.committing !== undefined || this.knownUnread().length > 0;
    }
 
    /**
