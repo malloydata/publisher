@@ -3074,7 +3074,16 @@ export class Model {
     * compile.
     */
    public async prepareServedCopy(): Promise<void> {
-      const pinned = this.pinNow();
+      await this.prepareServedCopyOver(this.servingSnapshot());
+   }
+
+   /**
+    * {@link prepareServedCopy} over `snapshot`, the tables a bind is about
+    * to swap in (`PackageMaterialization.bindCompiled`): the copy is then
+    * current the moment the swap makes `snapshot` the one this model reads.
+    */
+   public async prepareServedCopyOver(snapshot: Snapshot): Promise<void> {
+      const pinned = pin(snapshot, new Date());
       this.storageTables(pinned.snapshot);
       if (!this.servedCopyEnabled()) return;
       await this.servedCopy.prepare(pinned);

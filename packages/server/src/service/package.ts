@@ -2998,7 +2998,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             last.quotedFrom === requested
                ? last.quoted
                : await this.quoteBoundTableNames(entries);
-         this.mz.bind({
+         await this.mz.bindCompiled({
             database: quoted,
             databaseAsGiven: true,
             // Each table's columns as its warehouse holds them now.
@@ -3095,7 +3095,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       // publish starts is not invalidated and started again.
       this.mz.wireServingResolvers();
       this.mz.pushServeDestinationConfigToModels();
-      this.mz.bind({
+      await this.mz.bindCompiled({
          database: entries,
          databaseAsGiven: true,
          observed,

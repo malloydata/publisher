@@ -248,6 +248,8 @@ export class PackageMaterialization {
       | undefined;
    /** Where the last bind read its `storage=` tables (readStorageColumns). */
    private storageSite: StoredTableSite | undefined;
+   /** The snapshot from before a bind that is compiling ({@link servedSnapshot}). */
+   private committing: Snapshot | undefined;
    /** The pending re-read of the `storage=` tables the last bind left unread. */
    private storageRetry: ReturnType<typeof setTimeout> | undefined;
    /** The `storage=` entries {@link storageBindings} were made from, by address. */
@@ -455,10 +457,21 @@ export class PackageMaterialization {
    /** Point every model's policy at this package's snapshot; idempotent. */
    wireServingResolvers(): void {
       this.owner.modelPolicy().setServingResolvers({
-         snapshot: () => this.snapshot(),
+         snapshot: () => this.servedSnapshot(),
          preaggregateEntityIds: () => this.getPreaggregateEntityIds(),
          materializedTables: () => this.verdicts.tableCatalog(),
       });
+   }
+
+   /**
+    * The snapshot the models read: {@link snapshot}, except while a bind
+    * commits ({@link bindCompiled}), when it is the one from before the
+    * bind, until every model's served copy has compiled over the new one.
+    * So a query never meets tables its served copy has not compiled for, and
+    * no verdict read after a bind is pending.
+    */
+   private servedSnapshot(): Snapshot {
+      return this.committing ?? this.snapshot();
    }
 
    /**
@@ -708,6 +721,44 @@ export class PackageMaterialization {
     *   definition of their source. The host knows WHICH table backs a source,
     *   not WHETHER a frozen table may serve it: only a compile knows that.
     */
+   /**
+    * {@link bind}, as a bind's commit: every model's served copy is compiled
+    * over the new tables before they are swapped in, and the models read
+    * the tables from before the bind until then. Every server bind commits
+    * this way; a spec's direct {@link bind} compiles after the swap, as it
+    * always has.
+    */
+   async bindCompiled(update: Parameters<PackageMaterialization["bind"]>[0]) {
+      await this.commit(() => this.applyBind(update), update.models);
+      this.afterBind(update);
+   }
+
+   /**
+    * Make `change` to the bound state and publish it as one commit: every
+    * model's served copy compiles over the new snapshot while the models go
+    * on reading the one from before (`servedSnapshot`), then the two swap.
+    */
+   private async commit(change: () => void, models?: "installed") {
+      const before = this.snapshot();
+      this.committing = before;
+      try {
+         change();
+         const next = this.snapshot();
+         if (next.bindings !== this.publishedBindings || models) {
+            this.publishedBindings = next.bindings;
+            await Promise.all(
+               [...this.owner.models().values()].map(async (model) => {
+                  this.setServedCopyContextOn(model);
+                  await model.prepareServedCopyOver(next);
+               }),
+            );
+            this.bindTypeFindings(next.bindings);
+         }
+      } finally {
+         this.committing = undefined;
+      }
+   }
+
    bind(update: {
       database?: FreshnessManifest;
       databaseAsGiven?: boolean;
@@ -728,6 +779,13 @@ export class PackageMaterialization {
       /** Models a reload just installed: publish to them even when the bindings did not move. */
       models?: "installed";
    }): void {
+      this.applyBind(update);
+      this.publish(update.models);
+      this.afterBind(update);
+   }
+
+   /** {@link bind}'s change of the bound state, before any publish. */
+   private applyBind(update: Parameters<PackageMaterialization["bind"]>[0]) {
       if (update.database) {
          this.adoptDatabase(
             update.databaseAsGiven
@@ -749,7 +807,10 @@ export class PackageMaterialization {
             ),
          );
       }
-      this.publish(update.models);
+   }
+
+   /** {@link bind}'s logs and retries, once the bound state is published. */
+   private afterBind(update: Parameters<PackageMaterialization["bind"]>[0]) {
       if (update.storage && update.storageObserved) {
          this.scheduleStorageRetry(1);
       }
@@ -841,8 +902,9 @@ export class PackageMaterialization {
             if (!current()) return;
             const next = new Map(observed);
             for (const [id, o] of reread) next.set(id, o);
-            this.storageObserved = next;
-            this.publish();
+            await this.commit(() => {
+               this.storageObserved = next;
+            });
             this.scheduleStorageRetry(attempt + 1);
          })();
       }, delay);
@@ -906,8 +968,9 @@ export class PackageMaterialization {
       if (!current()) return;
       const next = new Map(observed);
       for (const [id, o] of reread) next.set(id, o);
-      this.observedColumns = next;
-      this.publish();
+      await this.commit(() => {
+         this.observedColumns = next;
+      });
       // Only what this retry read: the rest was logged and counted already.
       this.logObservedOutcome(new Set(unread));
       this.scheduleUnreadRetry(attempt + 1);

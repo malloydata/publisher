@@ -631,6 +631,20 @@ describe("verdicts read between a bind and the served copy's compile at bind", (
       await expectServedEqualLive();
    });
 
+   it("a bind's commit compiles the served copy before the swap: never pending once it returns, correct at once", async () => {
+      const { mz, database, stored, model } = bound();
+      await unbindAll();
+      // The server's binds commit this way (bindCompiled): the models read
+      // the tables from before the bind until every copy compiled over the
+      // new ones, so nothing is pending when it returns.
+      await mz.bindCompiled({ database: database as never });
+      await mz.bindCompiled({ storage: stored as never });
+      expect(model.servedCopySourceIDs()).not.toBe("pending");
+      expect(pendingMarked()).toEqual([]);
+      expect(shapes()).toEqual(SERVING);
+      await expectServedEqualLive();
+   });
+
    it("a rebind that adds a table: pending, then correct", async () => {
       const { mz, database, stored, model } = bound();
       await unbindAll();

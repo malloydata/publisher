@@ -5046,15 +5046,15 @@ components:
             running a query.
         servedCopyPending:
           type: boolean
+          deprecated: true
           description: >-
-            Present, and always `true`, while some model that holds this source,
-            which its served copy reads (`#(materialize)` or `#@ persist`), has
-            yet to compile its served copy over the tables bound now. A bind
-            returns before that compile, so the verdict carries no served-copy
-            judgement yet: it may read `serves` for a table the compile will
-            leave unread. A host must re-read the verdict while it is present;
-            it is absent once every such model's copy is current, and then
-            `notServedIn` and a `served_copy` reason are final for the bind.
+            DEPRECATED, removed in a later release: a bind now compiles every
+            model's served copy over the new tables before they are swapped
+            in, and models read the previous tables until then, so a verdict
+            read after a bind returns is never pending. Present, and `true`,
+            only while some model holding this source has yet to compile its
+            copy over the tables bound now, which a server's own binds never
+            leave behind.
         message:
           type: string
           description: What the verdict means for this source, in a sentence.

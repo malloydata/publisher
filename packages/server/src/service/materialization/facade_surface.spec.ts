@@ -57,6 +57,7 @@ const FACADE_SURFACE = [
    "applyLoadBuildPlan",
    "asOfBuildWarnings",
    "bind",
+   "bindCompiled",
    "bindingState",
    "boundDatabaseEntries",
    "boundLateRows",

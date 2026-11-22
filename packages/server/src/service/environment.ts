@@ -2356,7 +2356,7 @@ export class Environment {
          }
          if (Object.keys(rawEntries).length === 0) return;
          if (Object.keys(tableNameManifest).length > 0) {
-            pkg.materialization().bind({
+            await pkg.materialization().bindCompiled({
                database: tableNameManifest,
                observed: await pkg
                   .materialization()
@@ -2367,7 +2367,7 @@ export class Environment {
             storageWritable(getPersistStorageMode()) &&
             Object.keys(storageEntries).length > 0
          ) {
-            pkg.materialization().bind({
+            await pkg.materialization().bindCompiled({
                storage: storageEntries,
                storageObserved: await pkg
                   .materialization()
@@ -3343,7 +3343,7 @@ export class Environment {
          reloaded = true;
       }
       if (storageWritable(getPersistStorageMode())) {
-         pkg.materialization().bind({
+         await pkg.materialization().bindCompiled({
             storage: storageEntries,
             storageObserved: await pkg
                .materialization()
@@ -3408,7 +3408,7 @@ export class Environment {
       if (!wasBound) return false;
       // Drop both tiers so nothing still routes to a materialized table.
       await pkg.reloadAllModels({});
-      pkg.materialization().bind({ storage: {} });
+      await pkg.materialization().bindCompiled({ storage: {} });
       return true;
    }
 
@@ -3485,7 +3485,7 @@ export class Environment {
                      { packageName, versionId, error: errMessage(error) },
                   );
                }
-               mz.bind({ storage: {} });
+               await mz.bindCompiled({ storage: {} });
             }
             mz.markServingLive();
          }),
@@ -4495,7 +4495,7 @@ export class Environment {
             return { loaded: false, step: "reload", error: errMessage(err) };
          }
          try {
-            pkg.materialization().bind({
+            await pkg.materialization().bindCompiled({
                storage: params.storage,
                storageObserved: await pkg
                   .materialization()
@@ -4596,7 +4596,7 @@ export class Environment {
                await pkg.reloadAllModels(database);
             }
             if (storage) {
-               pkg.materialization().bind({
+               await pkg.materialization().bindCompiled({
                   storage: storage,
                   storageObserved: await pkg
                      .materialization()
@@ -4666,7 +4666,7 @@ export class Environment {
             }));
 
          if (hasStorage || hadStorage) {
-            pkg.materialization().bind({
+            await pkg.materialization().bindCompiled({
                storage: storageEntries,
                storageObserved: await pkg
                   .materialization()

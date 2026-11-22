@@ -1971,7 +1971,7 @@ describe("what a run's load binds, read back from the store", () => {
          commit: async () => {},
       });
       const reloads = spyOn(pkg, "reloadAllModels");
-      const bind = spyOn(pkg.materialization(), "bind");
+      const bind = spyOn(pkg.materialization(), "bindCompiled");
       const storageBinds = () =>
          bind.mock.calls.filter(([update]) => update.storage !== undefined)
             .length;
