@@ -274,6 +274,10 @@ async function chainedRows(model: CorpusModel): Promise<ChainedRow[]> {
             modelDef: malloyModel._modelDef,
             context: [root, {} as never, {}],
          }) ?? { declined: "no model declares the downstream" },
+      // The corpus's DuckDB sources name no collation: byte-exact, as the
+      // destination is (stacked_storage_collation.component.spec.ts judges
+      // a collated one).
+      chainCollationRefusal: async () => undefined,
    };
    const strategy = new StorageBuildStrategy({
       buildDownstreamViaParents: () => {

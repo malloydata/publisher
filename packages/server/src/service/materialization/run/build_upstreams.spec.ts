@@ -840,9 +840,29 @@ describe("withChainBuildText", () => {
    it("asks the package for the text while it is current", () => {
       const scoped = withChainBuildText({} as never, {
          chainBuildText: () => text,
+         chainCollationRefusal: async () => undefined,
          getPackagePath: () => "/pkg",
       }) as { chainBuildText(r: unknown): unknown };
       expect(scoped.chainBuildText(request)).toBe(text);
+   });
+
+   it("asks the package whether the build may stack over its stored upstreams", async () => {
+      const asked: unknown[] = [];
+      const scoped = withChainBuildText({} as never, {
+         chainBuildText: () => text,
+         chainCollationRefusal: async (r) => {
+            asked.push(r);
+            return "the package's own refusal";
+         },
+         getPackagePath: () => "/pkg",
+      }) as {
+         chainCollationRefusal(r: unknown): Promise<string | undefined>;
+      };
+      const collation = { downstream: request.downstream, stored: ["u@m"] };
+      expect(await scoped.chainCollationRefusal(collation)).toBe(
+         "the package's own refusal",
+      );
+      expect(asked).toEqual([collation]);
    });
 
    it("declines with package_stale, asking nothing of the package, while it serves an older model", () => {
@@ -856,6 +876,7 @@ describe("withChainBuildText", () => {
                asked++;
                return text;
             },
+            chainCollationRefusal: async () => undefined,
          },
          () => stale,
       ) as { chainBuildText(r: unknown): { declined: string; code?: string } };
