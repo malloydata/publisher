@@ -117,8 +117,9 @@ interface GeneratedPersistedViews {
     * the author's files with those upstreams' own `#@ persist` lines kept
     * ({@link overStoredUpstreamNotes}), so Malloy's planner reads each
     * upstream's table through a run's build manifest. Compiled at plan
-    * time, so the plan records the decision (build_plan.ts proves each
-    * against its planned table). A candidate missing here did not compile.
+    * time, each candidate alone, so the plan records the decision
+    * (build_plan.ts proves each against its planned table). A candidate
+    * missing here did not compile, and builds from its definition.
     */
    overStoredSources: ReadonlyMap<string, OverStoredBase>;
    /** The build sourceIDs offered the compile: the candidates. */
@@ -700,14 +701,15 @@ function overStoredUpstreamNotes(
    modelFile: string,
    materialized: MaterializedBases | undefined,
 ): {
-   keep: Set<string>;
+   keep: Map<string, Set<string>>;
    candidates: Set<string>;
    stored: Map<string, StoredMaterializeBase>;
 } {
    const map = SourceMap.of(modelDef);
    const contents =
       (modelDef as { contents?: Record<string, unknown> }).contents ?? {};
-   const keep = new Set<string>();
+   // By build sourceID: each candidate's own upstreams' notes.
+   const keep = new Map<string, Set<string>>();
    const candidates = new Set<string>();
    const stored = new Map<string, StoredMaterializeBase>();
    const plans: {
@@ -740,7 +742,7 @@ function overStoredUpstreamNotes(
       );
       if (!chainable || base === "unusable") continue;
       if (spans.length === 0 && base === undefined) continue;
-      for (const span of spans) keep.add(span);
+      keep.set(plan.buildSourceID, new Set(spans));
       if (base) stored.set(plan.buildSourceID, base);
       candidates.add(plan.buildSourceID);
    }
@@ -779,10 +781,13 @@ function upstreamTableOf(
 }
 
 /**
- * The companion compiled a second time, over the author's files with the
- * candidates' upstream notes kept ({@link overStoredUpstreamNotes}): each
- * candidate's build source by its sourceID. Empty when the compile fails:
- * the plan then refuses each candidate (build_plan.ts).
+ * Each candidate compiled a second time, alone, in a companion of its own
+ * over the author's files with its own upstreams' notes kept and, over a
+ * `#(materialize)` upstream, its source imported from a copy of the model
+ * that re-roots that upstream ({@link overStoredUpstreamNotes}): its build
+ * source by its sourceID. One candidate's compile never decides another's.
+ * A candidate whose compile fails, or whose copy or upstream build source
+ * cannot be made, is left out, and builds from its definition, as planned.
  */
 async function compileOverStoredUpstreams(args: {
    files: GeneratedFiles;
@@ -795,75 +800,79 @@ async function compileOverStoredUpstreams(args: {
    materialized: MaterializedBases | undefined;
 }): Promise<ReadonlyMap<string, OverStoredBase>> {
    const out = new Map<string, OverStoredBase>();
+   for (const buildSourceID of args.overStored.candidates) {
+      const found = await compileOneOverStored(args, buildSourceID);
+      if (found) out.set(buildSourceID, found);
+   }
+   return out;
+}
+
+/** One candidate's compile ({@link compileOverStoredUpstreams}), or undefined. */
+async function compileOneOverStored(
+   args: Parameters<typeof compileOverStoredUpstreams>[0],
+   buildSourceID: string,
+): Promise<OverStoredBase | undefined> {
    const { overStored, files, modelFile } = args;
-   if (overStored.candidates.size === 0) return out;
+   const views = args.plans.filter((p) => p.buildSourceID === buildSourceID);
+   const queries = args.queries.filter(
+      (p) => p.buildSourceID === buildSourceID,
+   );
    try {
-      const kept = await files.blanked(args.modelDef, overStored.keep);
-      if (!kept) return out;
-      // One copy of the model per `#(materialize)` upstream, re-rooted on
-      // its build source, by that source's name.
-      const bases = new Map<string, StoredMaterializeBase>();
-      for (const base of overStored.stored.values()) {
-         bases.set(base.plan.sourceName, base);
+      const kept = await files.blanked(
+         args.modelDef,
+         overStored.keep.get(buildSourceID) ?? new Set(),
+      );
+      if (!kept) return undefined;
+      const base = overStored.stored.get(buildSourceID);
+      // Over a `#(materialize)` upstream: a copy of the model, re-rooted on
+      // the upstream's build source, which its source is imported from.
+      let copy: { url: string; text: string } | undefined;
+      if (base) {
+         const modelURL = pathToFileURL(modelFile);
+         copy = storedBaseCopies(
+            new Map([[base.plan.sourceName, base]]),
+            kept.get(overlayKey(modelURL)) ?? (await files.readIfAny(modelURL)),
+            modelFile,
+         ).get(base.plan.sourceName);
+         if (!copy) return undefined;
       }
-      const modelURL = pathToFileURL(modelFile);
-      const copies = storedBaseCopies(
-         bases,
-         kept.get(overlayKey(modelURL)) ?? (await files.readIfAny(modelURL)),
-         modelFile,
-      );
-      const importOf = (buildSourceID: string) => {
-         const base = overStored.stored.get(buildSourceID);
-         const copy = base && copies.get(base.plan.sourceName);
-         return copy ? path.basename(new URL(copy.url).pathname) : undefined;
-      };
+      const from = copy ? path.basename(new URL(copy.url).pathname) : undefined;
       const text = generatePersistedResultFile(
-         args.plans,
-         args.queries,
+         views,
+         queries,
          path.basename(modelFile),
-         importOf,
+         () => from,
       );
-      if (text === undefined) return out;
+      if (text === undefined) return undefined;
       const overlay = new Map(kept);
       for (const [file, fileText] of args.materialized?.files ?? []) {
          overlay.set(file, fileText);
       }
-      for (const { url, text: copyText } of copies.values()) {
-         overlay.set(url, copyText);
-      }
+      if (copy) overlay.set(copy.url, copy.text);
       overlay.set(args.url.href, text);
       const compiled = await files.compile(args.url, overlay);
       const sources = plannedSources(
          await compiled.runtime.getBuildTargets(compiled.model),
       );
-      for (const source of sources) {
-         if (!overStored.candidates.has(source.sourceID)) continue;
-         const base = overStored.stored.get(source.sourceID);
-         if (!base) {
-            out.set(source.sourceID, { source });
-            continue;
-         }
-         // Its upstream's copy was not made: it builds from its definition.
-         if (!copies.has(base.plan.sourceName)) continue;
-         const declaring = pathToFileURL(
-            path.join(path.dirname(modelFile), base.importFrom),
-         ).href;
-         const baseBuildSource = sources.find(
-            (s) =>
-               s.name === base.plan.buildSourceName &&
-               overlayKey(splitSourceID(s.sourceID)?.url ?? "") ===
-                  overlayKey(declaring),
-         );
-         if (!baseBuildSource) continue;
-         out.set(source.sourceID, {
-            source,
-            baseBuildSource,
-            rerootedSourceID: base.plan.sourceID,
-         });
-      }
+      const source = sources.find((s) => s.sourceID === buildSourceID);
+      if (!source) return undefined;
+      if (!base) return { source };
+      const declaring = pathToFileURL(
+         path.join(path.dirname(modelFile), base.importFrom),
+      ).href;
+      const baseBuildSource = sources.find(
+         (s) =>
+            s.name === base.plan.buildSourceName &&
+            overlayKey(splitSourceID(s.sourceID)?.url ?? "") ===
+               overlayKey(declaring),
+      );
+      if (!baseBuildSource) return undefined;
+      return {
+         source,
+         baseBuildSource,
+         rerootedSourceID: base.plan.sourceID,
+      };
    } catch {
-      // Each candidate is then missing, and builds from its definition.
-      out.clear();
+      return undefined;
    }
-   return out;
 }

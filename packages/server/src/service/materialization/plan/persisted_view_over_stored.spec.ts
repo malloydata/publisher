@@ -189,4 +189,64 @@ source: s is a extend {
       expect(view).toBeDefined();
       expect(view!.overStoredBase).toBeUndefined();
    });
+
+   it("decides each query alone: one declined does not stop another reading the table", async () => {
+      const { c } = await packages.plan({
+         "m.malloy": `${RAW}
+#(materialize)
+source: a is raw extend { dimension: cat2 is cat }
+
+source: s is a extend {
+  view: by_cat is { group_by: cat; aggregate: total is amt.sum() }
+}
+
+#@ persist name="os_q1"
+query: q1 is s -> by_cat
+
+#@ persist name="os_q2"
+query: q2 is s -> { timezone: 'America/New_York'; group_by: cat; aggregate: total is amt.sum() }
+`,
+      });
+      const over = (name: string) =>
+         (
+            Object.values(c.tables).find((t) => t.source.name === name) as
+               | { overStoredBase?: unknown }
+               | undefined
+         )?.overStoredBase;
+      expect(over("q1__query")).toBeDefined();
+      // Another zone: declined alone, built from its definition.
+      expect(
+         Object.values(c.tables).some((t) => t.source.name === "q2__query"),
+      ).toBe(true);
+      expect(over("q2__query")).toBeUndefined();
+   });
+
+   it("decides each view alone: a storage= view first on the same source leaves a database view over the table", async () => {
+      packages.settings({
+         PUBLISHER_MATERIALIZE: "true",
+         PERSIST_STORAGE_MODE: "on",
+      });
+      const { c } = await packages.plan({
+         "m.malloy": `${RAW}
+#(materialize)
+source: a is raw extend { dimension: cat2 is cat }
+
+source: s is a extend {
+  #@ persist storage="lake"
+  view: a_first is { group_by: cat; aggregate: total is amt.sum() }
+  #@ persist name="os_db"
+  view: b_second is { group_by: cat; aggregate: n is count() }
+}
+`,
+      });
+      const db = Object.values(c.tables).find(
+         (t) => t.source.name === "s__b_second__view",
+      ) as { overStoredBase?: unknown } | undefined;
+      expect(db?.overStoredBase).toBeDefined();
+      expect(
+         (c.annotationFindings ?? []).filter(
+            (f) => f.refused?.reason === "generated_build_failed",
+         ),
+      ).toEqual([]);
+   });
 });
