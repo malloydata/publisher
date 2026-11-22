@@ -36,6 +36,7 @@ import {
 } from "./dialects/ducklake";
 import {
    METADATA_CATALOG_PREFIX,
+   metadataCatalogRef,
    type PartitionKey,
    tablePartitionKeys,
 } from "./dialects/ducklake_catalog";
@@ -373,7 +374,7 @@ export class CatalogAdmin {
       if (!Array.isArray(schemas)) {
          throw badRequest("'schemas' must be a list of names.");
       }
-      const schemaNames = schemas.map((s) => identifier(s, "schemas[]"));
+      const schemaNames = schemas.map((s) => schemaName(s, "schemas[]"));
 
       const owner = await this.withCatalogDatabase(async (pg) => {
          if (await this.catalogExists(pg, name)) {
@@ -446,12 +447,7 @@ export class CatalogAdmin {
       if (request && Object.keys(request).length > 0) {
          throw badRequest("The request takes no body.");
       }
-      if (!READABLE_SCHEMA_NAME.test(schema)) {
-         throw badRequest(
-            "'schema' must be a lowercase name ([a-z_][a-z0-9_]*).",
-         );
-      }
-      refuseReserved(schema);
+      schemaName(schema, "schema");
       const created = await this.withAttached(name, "write", async (s) => {
          if (await schemaExists(s, name, schema)) return false;
          try {
@@ -533,7 +529,7 @@ export class CatalogAdmin {
          )) as { schema_name: string; table_name: string }[];
          // ducklake_table_info names a table's schema by id; the catalog's own
          // schema table maps the name to it (the live row, end_snapshot null).
-         const meta = `${q(`${METADATA_CATALOG_PREFIX}${name}`)}.${q(name)}`;
+         const meta = metadataCatalogRef(name, name);
          const sizes = new Map<string, number>();
          for (const r of (await rows(
             s,
@@ -1524,6 +1520,17 @@ function identifier(value: unknown, what: string): string {
          `'${what}' must be a plain identifier ([A-Za-z_][A-Za-z0-9_]*).`,
       );
    }
+   return value;
+}
+
+/** A schema name the admin API may create: lowercase and not reserved. */
+function schemaName(value: unknown, what: string): string {
+   if (typeof value !== "string" || !READABLE_SCHEMA_NAME.test(value)) {
+      throw badRequest(
+         `'${what}' must be a lowercase name ([a-z_][a-z0-9_]*).`,
+      );
+   }
+   refuseReserved(value);
    return value;
 }
 

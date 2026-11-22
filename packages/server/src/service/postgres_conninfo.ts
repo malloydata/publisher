@@ -644,9 +644,9 @@ export function splitPgAttachCredentials(
 
 /**
  * libpq settings node-pg cannot follow, each with the variable libpq falls back
- * to and the values that demand more than node-pg gives; `disable`, `prefer`,
- * `allow` and a TLS minimum Node already meets (its default is TLSv1.2) ask for
- * nothing it lacks.
+ * to and the values that demand more than node-pg gives; `disable`, `prefer`
+ * (libpq's default for `channel_binding` and `gssencmode`) and a TLS minimum
+ * Node already meets (its default is TLSv1.2) ask for nothing it lacks.
  */
 const UNHONORED_SETTINGS: ReadonlyArray<{
    key: string;

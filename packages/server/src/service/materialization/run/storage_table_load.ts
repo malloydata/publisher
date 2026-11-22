@@ -32,6 +32,7 @@ import {
    stripTrailingSlashes,
    tablePartitionKeys,
 } from "../../dialects/ducklake_catalog";
+import { redactStorageUrls } from "../../../pg_helpers";
 import { runInternalSQL } from "../../duckdb_lockdown";
 import { escapeSQL, installAndLoadExtension } from "../../duckdb_session_setup";
 import {
@@ -296,30 +297,24 @@ function readerFault(
 /** Where DuckDB starts echoing the statement it failed, which names every object it read. */
 const ECHOED_SQL = /\n\s*LINE \d+:/;
 
-/** An object address in a message, as httpfs may respell it (`https://storage.googleapis.com/…`, percent-encoded). */
-const OBJECT_ADDRESS = /\b(?:gs|s3|gcs|r2|az|abfss|https?):\/\/[^\s'"]+/g;
-
 /**
  * DuckDB's words for a reader's failure, each URI replaced by its label and the
- * SQL it echoes after `LINE` dropped. When no sent URI appears, the reader
- * respelled it, so any object address left is replaced by a generic label
- * rather than shown.
+ * SQL it echoes after `LINE` dropped. A URI the reader respelled
+ * (`https://storage.googleapis.com/…`, percent-encoded) matches no label, so
+ * every storage URL left is redacted.
  */
 function readerWords(
    error: Error,
    labels: readonly (readonly [uri: string, label: string])[],
 ): string {
    let words = error.message.split(ECHOED_SQL)[0];
-   let named = false;
    // Longest first, so a URI that prefixes another never splits it.
    for (const [uri, label] of [...labels].sort(
       ([a], [b]) => b.length - a.length,
    )) {
-      if (words.includes(uri)) named = true;
       words = words.split(uri).join(label);
    }
-   if (!named) words = words.replace(OBJECT_ADDRESS, "the object");
-   return words.trim();
+   return redactStorageUrls(words).trim();
 }
 
 /**

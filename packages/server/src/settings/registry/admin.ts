@@ -42,7 +42,7 @@ export const admin = [
       secret: true,
       description:
          "libpq connection string of the database the admin API finds DuckLake catalogs in.",
-      notes: "A libpq connection string (keyword or `postgres://` form) for the Postgres database holding the catalogs the admin API manages. Unset, the admin API's catalog routes answer `503 CATALOG_DATABASE_NOT_CONFIGURED`. The string also opens the connection that holds a table load's advisory lock, so it must name one host (no `service`, `hostaddr` or list of hosts, and no `PGSERVICE` or `PGHOSTADDR` in the environment; either fails startup), and reach Postgres directly or through a session-mode pooler, not a transaction-mode one such as PgBouncer.",
+      notes: "A libpq connection string (keyword or `postgres://` form) for the Postgres database holding the catalogs the admin API manages. Unset, the admin API's catalog routes answer `503 CATALOG_DATABASE_NOT_CONFIGURED`. The string also opens the connection that holds a table load's advisory lock, so it must name one host (no `service`, `hostaddr` or list of hosts, and no `PGSERVICE` or `PGHOSTADDR` in the environment; either fails startup). It also refuses what the lock connection cannot honor: `channel_binding=require`, `gssencmode=require`, any `require_auth`, `sslcrl`, `sslcrldir`, an `ssl_min_protocol_version` of `TLSv1.3` (from the string or the matching `PG*` variable), a missing or unreadable `sslrootcert`, `sslcert` or `sslkey` file, and `sslmode=verify-ca` with no `sslrootcert` while `NODE_EXTRA_CA_CERTS` is unset. It must reach Postgres directly or through a session-mode pooler, not a transaction-mode one such as PgBouncer.",
       aliases: { env: ["PUBLISHER_ADMIN_CATALOG_DATABASE"] },
    }),
    setting({

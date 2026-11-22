@@ -333,6 +333,8 @@ describe("objectUnreadable: the reader failures a retry cannot cure", () => {
          "https://storage.googleapis.com/lake/org_1/staging/b.parquet",
       ],
       ["a percent-encoded spelling", "gs://lake/org_1/staging/b%2Eparquet%20x"],
+      ["an s3a spelling", "s3a://lake/org_1/staging/a%2Eparquet"],
+      ["an upper-case scheme", "HTTPS://storage.googleapis.com/lake/b.parquet"],
    ])(
       "names no object it was not sent when the reader respells a URI as %s",
       (_, respelled) => {
@@ -343,11 +345,24 @@ describe("objectUnreadable: the reader failures a retry cannot cure", () => {
             uris,
          );
          expect(refusal?.message).toBe(
-            "An object of the load could not be read: HTTP Error: HTTP GET error on 'the object' (HTTP 404)",
+            "An object of the load could not be read: HTTP Error: HTTP GET error on '<storage path>' (HTTP 404)",
          );
          expect(refusal?.detail).toBeUndefined();
       },
    );
+
+   it("labels a sent URI and redacts a respelled one in the same message", () => {
+      const refusal = objectUnreadable(
+         new Error(
+            `IO Error: Cannot open file "${uris[0]}": HTTP GET error on 'https://storage.googleapis.com/lake/org_1/staging/a.parquet' (HTTP 404)\n\nLINE 1: SELECT * FROM read_parquet(['${uris[0]}'])`,
+         ),
+         uris,
+      );
+      expect(refusal?.message).toBe(
+         `objects[0] could not be read: IO Error: Cannot open file "objects[0]": HTTP GET error on '<storage path>' (HTTP 404)`,
+      );
+      expect(refusal?.detail).toEqual({ object: 0 });
+   });
 
    it.each([
       [

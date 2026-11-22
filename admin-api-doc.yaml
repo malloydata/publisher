@@ -180,8 +180,8 @@ paths:
         Creates the schema, and records that tables written into it never keep
         rows inline in the catalog database. The name is lowercase
         (`[a-z_][a-z0-9_]*`) and not reserved (`main`, `memory`,
-        `information_schema`, `pg_catalog`, `temp`, `system`:
-        `400 SCHEMA_RESERVED`). The request has
+        `information_schema`, `pg_catalog`, `temp`, `system`, or a name starting
+        `__ducklake_metadata_`: `400 SCHEMA_RESERVED`). The request has
         no body; a body is `400 INVALID_REQUEST`. `201` when the schema is new,
         `200` when it already existed; with `If-None-Match: *` an existing
         schema, including one a concurrent request created first, is refused
@@ -796,8 +796,9 @@ components:
         schemas:
           type: array
           items:
-            $ref: "#/components/schemas/Identifier"
-          description: Schemas to create beside `main`
+            type: string
+            pattern: "^[a-z_][a-z0-9_]*$"
+          description: Schemas to create beside `main`, named as for a schema PUT (a reserved name is `400 SCHEMA_RESERVED`)
 
     CatalogUpdate:
       type: object
@@ -1090,8 +1091,8 @@ components:
             LOAD_CONFLICT, LOAD_SCHEMA_CONTRACT, LOAD_ROW_DROP_GUARD,
             LOAD_OBJECT_UNREADABLE.
             `SCHEMA_EXISTS`: a create-only schema PUT found the schema.
-            `SCHEMA_RESERVED`: the schema name is one the engine owns, or
-            `main`. `LOAD_BUSY` (503): another load of the table, or another
+            `SCHEMA_RESERVED`: the schema name is one the engine owns, `main`,
+            or a name starting `__ducklake_metadata_`. `LOAD_BUSY` (503): another load of the table, or another
             load on this server, is running; nothing was written, retry.
             `LOAD_CONFLICT` (409): DuckLake refused the commit because
             another request (a table PUT or DELETE, a schema drop) changed

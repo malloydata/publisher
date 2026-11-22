@@ -909,7 +909,22 @@ describe.skipIf(!SUPERUSER)(
                   400,
                   "SCHEMA_RESERVED",
                ]);
+               const create = await refusal(
+                  admin.createCatalog({
+                     name: "ds_reserved_schema",
+                     dataPath: join(root, "ds_reserved_schema"),
+                     schemas: [reserved],
+                  }),
+               );
+               expect([reserved, create.status, create.reason]).toEqual([
+                  reserved,
+                  400,
+                  "SCHEMA_RESERVED",
+               ]);
             }
+            expect(
+               (await refusal(admin.getCatalog("ds_reserved_schema"))).reason,
+            ).toBe("CATALOG_NOT_FOUND");
             expect(
                (
                   await refusal(
