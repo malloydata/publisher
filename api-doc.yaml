@@ -11981,6 +11981,104 @@ components:
             The upstream entry's own `builtAt`: which build of that table was
             read. Absent when its entry carries none (a reference, or an entry
             written before 0.17.2).
+        contractDigest:
+          type: string
+          description: >-
+            A digest of the upstream table's column contract
+            (`ManifestEntry.contract`: each column's name, native type and
+            collation) as this build read it. A downstream is carried forward
+            only while its upstream's current entry still has this digest, so
+            a rebuilt or altered upstream rebuilds its readers. Absent when
+            the upstream carried no contract.
+
+    ColumnContract:
+      type: object
+      additionalProperties: true
+      description: >-
+        What a materialized table's build recorded about each of its columns,
+        so a stored read is judged against facts recorded once at build rather
+        than probed per query. A host that stores entries keeps it as written
+        (as text is fine) and sends it back unparsed. Readers ignore keys they
+        do not know, at every level, so later releases may add keys. An entry
+        with no `contract`, an empty one, or one without `v` has no contract:
+        its table is not served from until it is rebuilt (serve verdict
+        reason `contract_missing`). A column the contract does not list is
+        treated as unknown: `compare` `none`, `gateExact` false.
+      properties:
+        v:
+          type: integer
+          description: The contract's shape version. `1`.
+        producer:
+          type: string
+          description: The Publisher version whose build wrote it; diagnostic only.
+        dialect:
+          type: string
+          description: >-
+            The dialect of the engine holding the table: the warehouse's for a
+            database table, the destination's (`duckdb`) for a `storage=` one.
+        defaultCollation:
+          type: string
+          description: >-
+            The holding engine's default collation as the build read it,
+            normalised (`binary` for a byte-wise default). Absent when unread.
+        columns:
+          type: array
+          description: The table's columns, in table order.
+          items:
+            $ref: "#/components/schemas/ContractColumn"
+        keys:
+          type: object
+          description: >-
+            For a pair table (an `inline=` join_many), the key checks its build
+            ran, by stored key column: whether the key held one row per value
+            and no NULL. A view built over a pair table needs its leaf key's
+            check recorded as passed.
+          additionalProperties:
+            type: object
+            required: [unique]
+            properties:
+              unique:
+                type: boolean
+              level:
+                type: string
+                description: "`parent`, `middle` or `leaf`. An open set."
+
+    ContractColumn:
+      type: object
+      additionalProperties: true
+      required: [name, nativeType]
+      description: One column of a `ColumnContract`.
+      properties:
+        name:
+          type: string
+        nativeType:
+          type: string
+          description: >-
+            The column's type as the holding engine's catalog names it, read
+            from the table the build wrote, by the same catalog read a bind
+            makes.
+        collation:
+          type: [string, "null"]
+          description: >-
+            For a string column, the stored column's collation identity as the
+            holding engine's catalog reports it (normalised; `binary` for
+            byte-wise). Null or absent for a non-string column.
+        compare:
+          type: string
+          description: >-
+            What a stored read of this column may answer in place of live:
+            `exact` (equality, grouping, filters and ordering all match live),
+            `equality` (equality, grouping, equality filters and joins match;
+            ordering and ranges may not), or `none` (no string comparison is
+            known to match). Every non-string column is `exact`. An open set:
+            read an unknown value as `none`.
+        gateExact:
+          type: boolean
+          description: >-
+            Whether a row-level gate comparing this column reads the same rows
+            from the stored table as live (a binary64 double read from a
+            binary64 source, never a DECIMAL or float4 stored as a double, nor
+            a 128-bit integer).
 
     BuildManifest:
       type: object
@@ -12396,6 +12494,18 @@ components:
             build read no upstream's table.
           items:
             $ref: "#/components/schemas/BuiltFromTable"
+        contract:
+          allOf:
+            - $ref: "#/components/schemas/ColumnContract"
+          description: >-
+            The table's column contract, written by the build that produced
+            it on both tiers: each column's native type, collation, how a
+            stored read of it compares with live, and whether a gate over it
+            is exact. A host that stores entries keeps it as written, as text
+            if it likes, and returns it unparsed. A table whose entry has no
+            contract (built before this field existed, or whose capture
+            failed) is never served from: it answers live, with serve verdict
+            reason `contract_missing`, and the next build rebuilds it in full.
         upstreamRecomputeReason:
           type: string
           description: >-
