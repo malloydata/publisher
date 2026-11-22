@@ -80,6 +80,7 @@ import {
    storedTypeServesAs,
 } from "../stored_column_types";
 import {
+   queryTimezones,
    readPreparedQuery,
    resolveStructRefSource,
 } from "../../governance/ir/prepared_query";
@@ -1656,6 +1657,16 @@ export class ServedCopyServe {
                     .map((p) => `'${p.sourceName}': ${p.reason}`)
                     .join(", ")})`
                : "no stored upstream could be re-rooted",
+         );
+      }
+      const elsewhere = zonedElsewhere(map, downstreamSourceID, candidates);
+      if (elsewhere.length > 0) {
+         return why(
+            `the downstream reads ${elsewhere
+               .map((n) => `'${n}'`)
+               .join(
+                  ", ",
+               )} in another time zone than its table was built in, and a value stored in one zone (a restated timestamp truncation, a computed dimension) is not the one it computes in another`,
          );
       }
       const set = chainBuildFileSet({
@@ -4738,6 +4749,46 @@ function nestedDeclarationOf(
       liveType === "record";
    if (!nested || field === undefined) return declared;
    return storedMalloyTypeFor(storedType, field, keepsBigIntegers);
+}
+
+/**
+ * The re-rooted upstreams a chained build's downstream reads in another time
+ * zone than their tables were built in, when each stores a value that
+ * depends on the zone: a timestamp truncation restated over its stored value
+ * (`d is d__stored.day`), which the downstream would truncate again in its
+ * own zone; a computed dimension, or a record of joined fields, the build
+ * evaluated in its own. The served copy declines such a read per query
+ * (`checkZonedColumns`, `checkTimeZone`); a chained build runs no read
+ * checks, so the chain is declined and the downstream recomputes from its
+ * source, as live computes it. The zones are compared as
+ * `readsInAnotherZone` compares them: the zone the downstream reads in, and
+ * every zone its definition sets. A downstream that cannot be resolved
+ * declines every such upstream.
+ */
+function zonedElsewhere(
+   map: SourceMap,
+   downstreamSourceID: string,
+   candidates: readonly { reroot: AuthorReroot }[],
+): string[] {
+   const zoneDependent = candidates.filter(
+      ({ reroot: r }) =>
+         (r.restatedTruncations ?? []).length > 0 ||
+         (r.zonedDimensions ?? []).length > 0 ||
+         r.zonedRows === true ||
+         (r.inlinedJoins ?? []).length > 0 ||
+         (r.pair?.childStoredDimensions ?? []).length > 0,
+   );
+   if (zoneDependent.length === 0) return [];
+   const def = map.node(downstreamSourceID)?.def;
+   if (def === undefined) return zoneDependent.map((c) => c.reroot.sourceName);
+   const read = chainZoneOf(map, def) ?? inlineBaseZoneOf(def);
+   const set = queryTimezones(def);
+   return zoneDependent
+      .filter(({ reroot }) => {
+         const built = chainZoneOf(map, reroot.authorDef);
+         return !sameZone(read, built) || set.some((z) => !sameZone(z, built));
+      })
+      .map((c) => c.reroot.sourceName);
 }
 
 /** What the chained build's text is written from, for one model. */
