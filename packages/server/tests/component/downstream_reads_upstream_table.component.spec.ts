@@ -111,6 +111,69 @@ query: q is a -> { group_by: cat; aggregate: total is amt.sum() }
       query: `run: q ${AS_TEXT}`,
       servedBy: "query",
    },
+   {
+      label: "rollup over an inherited #@ persist",
+      files: {
+         "m.malloy": `${HEAD}${PERSIST_A}
+source: rolled is a extend {
+  #(rollup) grain=["cat"]
+  measure: total is amt.sum()
+}
+`,
+      },
+      upstream: "a",
+      downstream: /rolled/,
+      query: `run: rolled -> { group_by: cat; aggregate: total } ${AS_TEXT}`,
+      servedBy: "rollup",
+   },
+   {
+      label: "rollup over its own #@ persist",
+      files: {
+         "m.malloy": `${HEAD}#@ persist name="dr_a"
+source: a is raw -> { select: cat, amt } extend {
+  #(rollup) grain=["cat"]
+  measure: total is amt.sum()
+}
+`,
+      },
+      upstream: "a",
+      downstream: /^(?!a$)/,
+      query: `run: a -> { group_by: cat; aggregate: total } ${AS_TEXT}`,
+      servedBy: "rollup",
+   },
+   {
+      label: "rollup over a #@ persist source in another file",
+      files: {
+         "base.malloy": `${HEAD}${PERSIST_A}`,
+         "m.malloy": `##! experimental { persistence }
+import "base.malloy"
+source: rolled is a extend {
+  #(rollup) grain=["cat"]
+  measure: total is amt.sum()
+}
+`,
+      },
+      upstream: "a",
+      downstream: /rolled/,
+      query: `run: rolled -> { group_by: cat; aggregate: total } ${AS_TEXT}`,
+      servedBy: "rollup",
+   },
+   {
+      label: "rollup over a #(materialize) source",
+      files: {
+         "m.malloy": `${HEAD}#(materialize)
+source: a is raw extend {
+  dimension: cat2 is cat
+  #(rollup) grain=["cat"]
+  measure: total is amt.sum()
+}
+`,
+      },
+      upstream: "a",
+      downstream: /^(?!a$)/,
+      query: `run: a -> { group_by: cat; aggregate: total } ${AS_TEXT}`,
+      servedBy: "rollup",
+   },
 ];
 
 interface Answer {
