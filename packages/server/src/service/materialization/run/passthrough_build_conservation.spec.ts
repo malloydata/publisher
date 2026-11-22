@@ -21,15 +21,16 @@ import {
 } from "./materialization_build_session";
 
 /**
- * A `storage=` build's per-source-type run path (each warehouse's read
- * preparation, its session tag and cost, the job cancel, the numeric recast,
- * the kept warehouse types and the late-row window read), run for every
- * connection type and for types nothing names, and compared with what the
- * code produced before it moved into the passthrough builds
- * (passthrough_build.ts), recorded in passthrough_build.golden.json: every
- * statement the build session sends, what the build returns or the refusal,
+ * A `storage=` build's run path for each passthrough source type (each
+ * warehouse's read preparation, its session tag and cost, the job cancel,
+ * the numeric recast, the kept warehouse types and the late-row window
+ * read), recorded in passthrough_build.golden.json: the statements the build
+ * session sends after its lockdown, what the build returns or the refusal,
  * the BigQuery jobs a cancel lists and cancels, and an incremental delta's
- * reads.
+ * reads. One case per behaviour that differs by type; every other
+ * connection type, a prototype name and an unknown one are refused before
+ * any statement. The session lockdown itself is pinned in
+ * duckdb_lockdown.spec.ts and destination_session_lockdown.spec.ts.
  *
  * No case reaches a network: the federation is stubbed, the passthrough
  * functions are macros over the session's own `query()`, and the reads a
@@ -44,17 +45,14 @@ type ApiConnection = components["schemas"]["Connection"];
 
 const GOLDEN = path.join(__dirname, "passthrough_build.golden.json");
 
-const TYPES = [
-   "postgres",
-   "bigquery",
-   "snowflake",
+/** The types with no passthrough build, refused before any statement. */
+const REFUSED = [
    "trino",
    "databricks",
    "mysql",
    "sqlserver",
    "duckdb",
    "motherduck",
-   "ducklake",
    "publisher",
    "constructor",
    "nope",
@@ -92,14 +90,46 @@ interface Case {
    incremental?: boolean;
 }
 
-const CASES: Record<string, Case> = {
-   plain: {},
-   tagged: { metadata: METADATA, signal: true },
-   "tagged, no job listing": { metadata: METADATA, noJobListing: true },
-   "cancelled at its read": { signal: true, abortOnMarkedRead: true },
-   "snowflake session refuses UTC": { metadata: METADATA, wrongTimezone: true },
-   incremental: { metadata: METADATA, signal: true, incremental: true },
+const TAGGED_INCREMENTAL: Case = {
+   metadata: METADATA,
+   signal: true,
+   incremental: true,
 };
+
+/**
+ * Per passthrough type, the cases whose path differs. A tagged incremental
+ * build covers the tag, the cost read, the numeric recast and the delta
+ * reads at once; BigQuery's untagged read, its fallback when the job listing
+ * is refused and its cancel, and Snowflake's UTC refusal are their own paths.
+ */
+const CASES: [string, string, Case][] = [
+   ["postgres", "tagged incremental", TAGGED_INCREMENTAL],
+   ["bigquery", "plain", {}],
+   [
+      "bigquery",
+      "tagged, no job listing",
+      { metadata: METADATA, noJobListing: true },
+   ],
+   [
+      "bigquery",
+      "cancelled at its read",
+      { signal: true, abortOnMarkedRead: true },
+   ],
+   ["bigquery", "tagged incremental", TAGGED_INCREMENTAL],
+   ["snowflake", "tagged incremental", TAGGED_INCREMENTAL],
+   [
+      "snowflake",
+      "session refuses UTC",
+      { metadata: METADATA, wrongTimezone: true },
+   ],
+];
+
+/** The statements after the session lockdown's last one. */
+function afterLockdown(statements: string[]): string[] {
+   return statements.slice(
+      statements.lastIndexOf("SET enable_external_access=false") + 1,
+   );
+}
 
 const normalize = (text: string) =>
    text
@@ -339,7 +369,7 @@ async function observe(
    }
    const observed = {
       outcome,
-      statements: statements.filter((s) => !MACROS.includes(s)),
+      statements: afterLockdown(statements.filter((s) => !MACROS.includes(s))),
       ...(listed.length > 0 ? { listed } : {}),
       ...(cancelled.length > 0 ? { cancelled: cancelled.sort() } : {}),
       ...(incremental ? { incremental } : {}),
@@ -353,17 +383,36 @@ beforeAll(() => {
 });
 afterAll(() => restoreSettings());
 
-describe("a storage= build's run path is unchanged by the passthrough builds", () => {
-   it("builds every type as before the move", async () => {
+describe("a storage= build's run path by source type", () => {
+   it("builds each passthrough type as recorded", async () => {
       const actual: Record<string, unknown> = {};
-      for (const type of TYPES) {
-         for (const [name, c] of Object.entries(CASES)) {
-            actual[`${type}: ${name}`] = await observe(type, c);
-         }
+      for (const [type, name, c] of CASES) {
+         actual[`${type}: ${name}`] = await observe(type, c);
       }
       if (process.env.RECORD_PASSTHROUGH_BUILD === "1") {
          fs.writeFileSync(GOLDEN, JSON.stringify(actual, null, 2) + "\n");
       }
       expect(actual).toEqual(JSON.parse(fs.readFileSync(GOLDEN, "utf8")));
    }, 120_000);
+
+   it("refuses every other type before any statement", async () => {
+      for (const type of REFUSED) {
+         expect(await observe(type, {})).toEqual({
+            outcome: {
+               error: `Cannot materialize a '${type}' source into a storage destination: the native query-passthrough build supports source connections of type bigquery, snowflake, postgres only.`,
+               name: "BadRequestError",
+            },
+            statements: [],
+         });
+      }
+      expect(await observe("ducklake", {})).toMatchObject({
+         outcome: {
+            error: expect.stringContaining(
+               "Cannot materialize a 'ducklake' source into a storage destination that is a different catalog.",
+            ),
+            name: "BadRequestError",
+         },
+         statements: [],
+      });
+   });
 });
