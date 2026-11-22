@@ -23,6 +23,10 @@ import {
    startMetricsHarness,
    type MetricsHarness,
 } from "../../../test_helpers/metrics_harness";
+import { fakeContractReads } from "../../../test_helpers/contract_fixture";
+
+// Builds over fake connections, which answer no catalog query.
+fakeContractReads();
 
 /**
  * The storage tier's build: the chained-build fallback ladder, destination

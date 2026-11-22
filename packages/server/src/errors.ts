@@ -1198,6 +1198,33 @@ export class WarehouseRecomputeRefusedError extends Error {
 }
 
 /**
+ * A build wrote its table but could not read back the table's column
+ * contract (`ManifestEntry.contract`), which a table must carry to be served
+ * from. The source fails with SourceFailure code `contract_capture_failed`
+ * (non-terminal: a retry reads it again), and its previous table, if any, is
+ * left as it was: the read runs before the write is swapped in or committed
+ * wherever the build has a staging table or a transaction.
+ */
+export class ContractCaptureFailedError extends Error {
+   get kind(): "contract_capture_failed" {
+      return "contract_capture_failed";
+   }
+
+   /** The SourceFailure `code`. */
+   readonly code = "contract_capture_failed";
+
+   constructor(table: string, read: string) {
+      super(
+         `The column contract of the table ${table} could not be read back ` +
+            `(${read}), so the build is not recorded: a table with no ` +
+            `contract is never served from. The previous table, if any, is ` +
+            `left as it was; a retry reads it again.`,
+      );
+      this.name = "ContractCaptureFailedError";
+   }
+}
+
+/**
  * The config file exists but cannot be read (malformed JSON, a rejected shape,
  * an unset `${VAR}`). Unlike an absent file, which falls back to the bundled
  * default, this must not degrade to serving nothing while reporting healthy.
@@ -1688,6 +1715,7 @@ interface ErrorByKind {
    chained_upstream_missing: ChainedUpstreamMissingError;
    chained_shape_not_carried: ChainedShapeNotCarriedError;
    warehouse_recompute_refused: WarehouseRecomputeRefusedError;
+   contract_capture_failed: ContractCaptureFailedError;
    publisher_config: PublisherConfigError;
    server_configuration: ServerConfigurationError;
    frozen_config: FrozenConfigError;
@@ -1777,6 +1805,7 @@ const ERROR_CLASSES: {
    chained_upstream_missing: ChainedUpstreamMissingError,
    chained_shape_not_carried: ChainedShapeNotCarriedError,
    warehouse_recompute_refused: WarehouseRecomputeRefusedError,
+   contract_capture_failed: ContractCaptureFailedError,
    publisher_config: PublisherConfigError,
    server_configuration: ServerConfigurationError,
    frozen_config: FrozenConfigError,
@@ -2304,6 +2333,7 @@ export const ERROR_TABLE: { [K in ErrorKind]: ErrorMapping<ErrorByKind[K]> } = {
    chained_upstream_missing: UNHANDLED,
    chained_shape_not_carried: UNHANDLED,
    warehouse_recompute_refused: UNHANDLED,
+   contract_capture_failed: UNHANDLED,
    publisher_config: UNHANDLED,
    write_verify: UNHANDLED,
    unknown: UNHANDLED,

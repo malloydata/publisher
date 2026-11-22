@@ -19,10 +19,10 @@
       "BEGIN TRANSACTION",
       "CREATE OR REPLACE TABLE \"lake\".\"t\" AS (SELECT * REPLACE (CAST(\"s\" AS VARCHAR) AS \"s\") FROM (\nSELECT * REPLACE (CAST(\"amount\" AS DECIMAL(38,1)) AS \"amount\") FROM temp.main.\"__numeric_text_stage\"\n) AS __declared_types)",
       "DESCRIBE \"lake\".\"t\"",
+      "SELECT sql FROM duckdb_tables() WHERE NOT internal AND lower(table_name) = lower('t') AND (lower(schema_name) = lower('lake') OR lower(database_name) = lower('lake'))",
       "COMMIT",
       "DROP TABLE IF EXISTS temp.main.\"__numeric_text_stage\"",
-      "SELECT count(*) AS n FROM \"lake\".\"t\"",
-      "SELECT sql FROM duckdb_tables() WHERE NOT internal AND lower(table_name) = lower('t') AND (lower(schema_name) = lower('lake') OR lower(database_name) = lower('lake'))"
+      "SELECT count(*) AS n FROM \"lake\".\"t\""
     ],
     "incremental": {
       "windowRows": true,
@@ -56,9 +56,9 @@
       "BEGIN TRANSACTION",
       "CREATE OR REPLACE TABLE \"lake\".\"t\" AS (SELECT * REPLACE (CAST(\"s\" AS VARCHAR) AS \"s\", CAST(\"b\" AS VARCHAR) AS \"b\") FROM (\nSELECT * FROM bigquery_query('h''q', 'SELECT 1.5::DOUBLE AS amount, ''x'' AS s, ''\\x01''::BLOB AS b')\n) AS __declared_types)",
       "DESCRIBE \"lake\".\"t\"",
+      "SELECT sql FROM duckdb_tables() WHERE NOT internal AND lower(table_name) = lower('t') AND (lower(schema_name) = lower('lake') OR lower(database_name) = lower('lake'))",
       "COMMIT",
-      "SELECT count(*) AS n FROM \"lake\".\"t\"",
-      "SELECT sql FROM duckdb_tables() WHERE NOT internal AND lower(table_name) = lower('t') AND (lower(schema_name) = lower('lake') OR lower(database_name) = lower('lake'))"
+      "SELECT count(*) AS n FROM \"lake\".\"t\""
     ]
   },
   "bigquery: tagged, no job listing": {
@@ -76,9 +76,9 @@
       "BEGIN TRANSACTION",
       "CREATE OR REPLACE TABLE \"lake\".\"t\" AS (SELECT * REPLACE (CAST(\"s\" AS VARCHAR) AS \"s\", CAST(\"b\" AS VARCHAR) AS \"b\") FROM (\nSELECT * FROM bigquery_query('h''q', 'SELECT 1.5::DOUBLE AS amount, ''x'' AS s, ''\\x01''::BLOB AS b')\n) AS __declared_types)",
       "DESCRIBE \"lake\".\"t\"",
+      "SELECT sql FROM duckdb_tables() WHERE NOT internal AND lower(table_name) = lower('t') AND (lower(schema_name) = lower('lake') OR lower(database_name) = lower('lake'))",
       "COMMIT",
-      "SELECT count(*) AS n FROM \"lake\".\"t\"",
-      "SELECT sql FROM duckdb_tables() WHERE NOT internal AND lower(table_name) = lower('t') AND (lower(schema_name) = lower('lake') OR lower(database_name) = lower('lake'))"
+      "SELECT count(*) AS n FROM \"lake\".\"t\""
     ]
   },
   "bigquery: cancelled at its read": {
@@ -128,9 +128,9 @@
       "BEGIN TRANSACTION",
       "CREATE OR REPLACE TABLE \"lake\".\"t\" AS (SELECT * REPLACE (CAST(\"s\" AS VARCHAR) AS \"s\", CAST(\"b\" AS VARCHAR) AS \"b\") FROM (\nSELECT * FROM bigquery_scan('proj._anon.result')\n) AS __declared_types)",
       "DESCRIBE \"lake\".\"t\"",
+      "SELECT sql FROM duckdb_tables() WHERE NOT internal AND lower(table_name) = lower('t') AND (lower(schema_name) = lower('lake') OR lower(database_name) = lower('lake'))",
       "COMMIT",
-      "SELECT count(*) AS n FROM \"lake\".\"t\"",
-      "SELECT sql FROM duckdb_tables() WHERE NOT internal AND lower(table_name) = lower('t') AND (lower(schema_name) = lower('lake') OR lower(database_name) = lower('lake'))"
+      "SELECT count(*) AS n FROM \"lake\".\"t\""
     ],
     "incremental": {
       "windowRows": false,
@@ -174,9 +174,9 @@
       "BEGIN TRANSACTION",
       "CREATE OR REPLACE TABLE \"lake\".\"t\" AS (SELECT * REPLACE (CAST(\"s\" AS VARCHAR) AS \"s\", CAST(\"b\" AS VARCHAR) AS \"b\") FROM (\nSELECT * FROM snowflake_query('SELECT 1.5::DOUBLE AS amount, ''x'' AS s, ''\\x01''::BLOB AS b', 'h''q')\n) AS __declared_types)",
       "DESCRIBE \"lake\".\"t\"",
+      "SELECT sql FROM duckdb_tables() WHERE NOT internal AND lower(table_name) = lower('t') AND (lower(schema_name) = lower('lake') OR lower(database_name) = lower('lake'))",
       "COMMIT",
       "SELECT count(*) AS n FROM \"lake\".\"t\"",
-      "SELECT sql FROM duckdb_tables() WHERE NOT internal AND lower(table_name) = lower('t') AND (lower(schema_name) = lower('lake') OR lower(database_name) = lower('lake'))",
       "SELECT * FROM snowflake_query('\n      SELECT QUERY_ID       AS \"job_id\",\n             QUERY_TEXT     AS \"query_text\",\n             BYTES_SCANNED  AS \"bytes_scanned\",\n             EXECUTION_TIME AS \"execution_time_ms\",\n             ROWS_PRODUCED  AS \"rows_produced\"\n      FROM TABLE(ANALYTICS.INFORMATION_SCHEMA.QUERY_HISTORY_BY_SESSION(\n                 RESULT_LIMIT => 10000))\n      WHERE QUERY_TAG = ''{\"team\":\"Data Eng\",\"Team\":\"x\",\"job\":\"nightly\"}''\n        AND EXECUTION_STATUS = ''SUCCESS''', 'h''q')",
       "SELECT * FROM snowflake_query('ALTER SESSION UNSET QUERY_TAG', 'h''q')"
     ],

@@ -48,6 +48,8 @@ import {
 } from "../../quoting";
 import type { TableCollations } from "../domain/collation";
 import { collationCatalogBatches } from "./warehouse_sql";
+import { ContractCaptureFailedError } from "../../../errors";
+import { fakedCollations } from "./column_contract_capture";
 import { fromSubselect } from "../subselect";
 import {
    type BuildCastOptions,
@@ -668,7 +670,11 @@ async function refreshInPlace(
          // leave the source unservable until its next full build.
          schema: await describeTable(session, target),
          rowCount: await countStoredRows(session, target),
-         ...(await storedCollationsField(session, target)),
+         // A delta wrote in place, outside any transaction, and never
+         // changes the column set: read again, a failure fails the source
+         // after the write (its previous entry understates the table's
+         // freshness, never its rows).
+         collations: await readCollationsOrFail(session, target),
          readCost: refreshed.readCost,
          refresh: refreshed,
       };
@@ -889,6 +895,7 @@ async function buildOnFederatedSession(
    // SQL (at most reading a numeric as its text), and only the stored types
    // change.
    let schema: WireColumn[];
+   const captured: { collations?: TableCollations } = {};
    try {
       schema = await createTableWithDeclaredTypes(
          session,
@@ -896,6 +903,7 @@ async function buildOnFederatedSession(
          staged?.selectSQL ?? passthrough.selectSQL,
          { columns: params.declaredColumns ?? [], ...params.castOptions },
          {
+            captured,
             sourceType,
             ...(recast?.described ? { described: recast.described } : {}),
             ...(params.replacesView
@@ -918,7 +926,7 @@ async function buildOnFederatedSession(
       storageDestinationName: destinationName,
       schema,
       rowCount: await countStoredRows(session, target),
-      ...(await storedCollationsField(session, target)),
+      ...(captured.collations ? { collations: captured.collations } : {}),
       // BigQuery's labelled read reports its cost; Snowflake's must be asked
       // after the read, while the session still holds the credentials.
       readCost:
@@ -994,19 +1002,25 @@ async function buildSameCatalogIntoStorage(params: {
             ),
             STORAGE_DIALECT,
          );
+         const captured: { collations?: TableCollations } = {};
          const schema = await createTableWithDeclaredTypes(
             session,
             target,
             params.buildSQL,
             { columns: params.declaredColumns ?? [], ...params.castOptions },
-            params.replacesView ? { replacesView: params.replacesView } : {},
+            {
+               captured,
+               ...(params.replacesView
+                  ? { replacesView: params.replacesView }
+                  : {}),
+            },
          );
          // Reads no warehouse, as a chained build does: nothing was charged.
          return {
             storageDestinationName: destinationName,
             schema,
             rowCount: await countStoredRows(session, target),
-            ...(await storedCollationsField(session, target)),
+            ...(captured.collations ? { collations: captured.collations } : {}),
             readCost: null,
          };
       },
@@ -1385,18 +1399,22 @@ async function writeStackedTable(
    );
    // The downstream's own declared types, as for a recompute.
    const casts = storageBuildCasts(downstream);
+   const captured: { collations?: TableCollations } = {};
    const schema = await createTableWithDeclaredTypes(
       session,
       target,
       sql,
       { columns: casts.declaredColumns, ...casts.castOptions },
-      params.replacesView ? { replacesView: params.replacesView } : {},
+      {
+         captured,
+         ...(params.replacesView ? { replacesView: params.replacesView } : {}),
+      },
    );
    return {
       storageDestinationName: destinationName,
       schema,
       rowCount: await countStoredRows(session, target),
-      ...(await storedCollationsField(session, target)),
+      ...(captured.collations ? { collations: captured.collations } : {}),
       // Reads no source warehouse: here, uniquely, null means "spent nothing".
       readCost: null,
       upstreamReuse: "reused",
@@ -1746,6 +1764,13 @@ export async function createTableAndDescribe(
        * transaction ({@link canonicalRenames}).
        */
       declaredNames?: readonly string[];
+      /**
+       * Filled with the table's column collations, read in the same
+       * transaction: one that does not read rolls the build back
+       * ({@link readCollationsOrFail}), so the previous generation keeps
+       * serving.
+       */
+      captured?: { collations?: TableCollations };
    } = {},
 ): Promise<WireColumn[]> {
    // In the transaction, not create-then-drop-on-failure: a DROP after the
@@ -1758,15 +1783,23 @@ export async function createTableAndDescribe(
       await session.runSQL(
          `CREATE OR REPLACE TABLE ${quotedTablePath} AS (${selectSQL})`,
       );
-      const described = await describeTable(session, quotedTablePath);
+      let described = await describeTable(session, quotedTablePath);
       const renames = canonicalRenames(described, options.declaredNames ?? []);
-      if (renames.length === 0) return described;
       for (const { from, to } of renames) {
          await session.runSQL(
             `ALTER TABLE ${quotedTablePath} RENAME COLUMN ${quoteIdentifier(from, STORAGE_DIALECT)} TO ${quoteIdentifier(to, STORAGE_DIALECT)}`,
          );
       }
-      return await describeTable(session, quotedTablePath);
+      if (renames.length > 0) {
+         described = await describeTable(session, quotedTablePath);
+      }
+      if (options.captured) {
+         options.captured.collations = await readCollationsOrFail(
+            session,
+            quotedTablePath,
+         );
+      }
+      return described;
    });
 }
 
@@ -1932,28 +1965,35 @@ async function inTransaction<T>(
  * The column collations of the table at `target` (quoted), as the bind's
  * read finds them (`collationCatalogBatches`, from its definition), in the
  * session that wrote it: so a stored table's contract records what a bind
- * will read. Empty when the read fails (its strings then record no
- * collation, and compare `none`).
+ * will read. Throws {@link ContractCaptureFailedError} when they do not read.
  */
-async function storedCollationsField(
+async function readCollationsOrFail(
    session: DuckDBConnection,
    target: string,
-): Promise<{ collations?: TableCollations }> {
+): Promise<TableCollations> {
+   const faked = fakedCollations();
+   if (faked) return faked;
    const parts = tablePathParts(target, STORAGE_DIALECT);
    const [batch] = parts
       ? collationCatalogBatches([{ key: "t", parts }], STORAGE_DIALECT)
       : [];
-   if (!batch) return {};
-   try {
-      const result = await session.runSQL(batch.sql);
-      const rows = Array.isArray(result) ? result : (result.rows ?? []);
-      const read = batch
-         .collationsOf(rows as Record<string, unknown>[])
-         .get("t");
-      return read ? { collations: read } : {};
-   } catch {
-      return {};
+   let read: TableCollations | undefined;
+   if (batch) {
+      try {
+         const result = await session.runSQL(batch.sql);
+         const rows = Array.isArray(result) ? result : (result.rows ?? []);
+         read = batch.collationsOf(rows as Record<string, unknown>[]).get("t");
+      } catch {
+         read = undefined;
+      }
    }
+   if (!read) {
+      throw new ContractCaptureFailedError(
+         target,
+         "its column collations did not read",
+      );
+   }
+   return read;
 }
 
 /**

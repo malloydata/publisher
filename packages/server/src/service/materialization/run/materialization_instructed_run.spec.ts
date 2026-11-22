@@ -26,6 +26,10 @@ import { logger } from "../../../logger";
 import { resetMaterializationTelemetryForTesting } from "../../../materialization_metrics";
 import { startMetricsHarness } from "../../../test_helpers/metrics_harness";
 import { installSettings } from "../../../test_helpers/settings_env";
+import { fakeContractReads } from "../../../test_helpers/contract_fixture";
+
+// Builds over fake connections, which answer no catalog query.
+fakeContractReads();
 
 /**
  * Instructed builds (executeInstructedBuild): resolving each instruction,

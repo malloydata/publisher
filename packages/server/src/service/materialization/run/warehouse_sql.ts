@@ -1744,3 +1744,15 @@ export function liveCollationReads(
          return undefined;
    }
 }
+
+/** Whether {@link collationCatalogBatches} reads a dialect's collations at all. */
+export function readsCollations(dialect: string): boolean {
+   switch (registeredDialect(dialect)) {
+      case "duckdb":
+      case "postgres":
+      case "standardsql":
+         return true;
+      default:
+         return false;
+   }
+}

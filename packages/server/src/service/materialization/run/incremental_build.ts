@@ -22,6 +22,8 @@
  * ledger in the run store; logs and counts each step.
  */
 
+import { captureDatabaseContract } from "./column_contract_capture";
+import type { Connection as ReadConnectionSource } from "@malloydata/malloy";
 import { errorCodeOf } from "../../../error_code";
 import { recordedTableKey } from "../domain/physical_table";
 import { logger } from "../../../logger";
@@ -917,6 +919,26 @@ export async function refreshOneSourceIncrementally(params: {
               sourceName: persistSource.name,
            })
          : undefined;
+   type ReadConnection = Pick<ReadConnectionSource, "runSQL">;
+   // Its column contract, read again after the delta: a delta writes in
+   // place, outside any transaction, and never changes the column set, so a
+   // read that fails fails the source after the write (the previous entry
+   // understates the table's freshness, never its rows), and a retry reads
+   // it again.
+   const contract =
+      lineage.storageDestinationName === undefined
+         ? await captureDatabaseContract({
+              connection: {
+                 dialectName: target.dialect,
+                 runSQL: (sql, options) =>
+                    target.runner(sql, options) as ReturnType<
+                       ReadConnection["runSQL"]
+                    >,
+              },
+              tableName: target.logicalTablePath,
+              physicalTableName: lineage.physicalTableName,
+           })
+         : undefined;
    return {
       sourceEntityId,
       sourceName: persistSource.name,
@@ -925,6 +947,7 @@ export async function refreshOneSourceIncrementally(params: {
       connectionName: persistSource.connectionName,
       realization: "COPY",
       ...params.upstreamReuse,
+      ...(contract ? { contract } : {}),
       rowCount: null,
       buildDurationMs: outcome.durationMs ?? null,
       // applyDeltaScript returns no cost figure, even on backends that have one.

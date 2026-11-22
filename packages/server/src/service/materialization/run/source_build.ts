@@ -69,11 +69,7 @@ import type {
 } from "./storage_build_strategy";
 import { compiledTextReader } from "../../../utils";
 import { movedSinceBuild, type UpstreamMove } from "./database_column_read";
-import type { ColumnContract } from "../domain/column_contract";
-import {
-   captureDatabaseContract,
-   liveCollationsOf,
-} from "./column_contract_capture";
+import { liveCollationsOf } from "./column_contract_capture";
 
 /**
  * The persisted sources `persistSource` reads, from the author's model
@@ -895,27 +891,7 @@ export async function buildSource(
       builtEntries,
       contentSourceEntityId ?? instruction.sourceEntityId,
    );
-   return withContract(
-      builtFrom ? { ...built, builtFrom } : built,
-      await captureDatabaseContract({
-         // Its reads carry the build's metadata, as every statement of the
-         // build does.
-         connection: {
-            dialectName: connection.dialectName,
-            runSQL: (sql, options) =>
-               connection.runSQL(sql, { ...runOptions, ...options }),
-         },
-         physicalTableName,
-      }),
-   );
-}
-
-/** `entry` with the column contract its build captured, when it captured one. */
-function withContract(
-   entry: ManifestEntry,
-   contract: ColumnContract | undefined,
-): ManifestEntry {
-   return contract ? { ...entry, contract } : entry;
+   return builtFrom ? { ...built, builtFrom } : built;
 }
 
 /**

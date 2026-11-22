@@ -123,6 +123,7 @@ import {
 import { STORAGE_DIALECT } from "../domain/dialect";
 import type { Collation } from "../domain/collation";
 import { storageContract } from "./column_contract_capture";
+import { ContractCaptureFailedError } from "../../../errors";
 import {
    storageBuildReadsConnectionType,
    unreadableSourceConnectionMessage,
@@ -311,6 +312,8 @@ async function recomputeIntoStorage(
            )
          : await build();
    } catch (err) {
+      // Kept as it is, for its code: its message names only the table.
+      if (err instanceof ContractCaptureFailedError) throw err;
       // Redact: a federation/passthrough/attach error can echo connection
       // detail (connstrings, service-account JSON). Strip credential VALUES
       // but keep the message legible, since the run `error` is user-visible.
@@ -838,6 +841,7 @@ export class StorageBuildStrategy
 
       const durationMs = Math.round(performance.now() - startTime);
       const contract = await storageContract({
+         table: physicalTableName,
          schema: result.schema,
          collations: result.collations,
          ...(stackedOnBase && params.storedBase
@@ -899,7 +903,7 @@ export class StorageBuildStrategy
          // Null when the read reported nothing: a build with an empty metadata
          // bag, since the label is what makes BigQuery's read report.
          queryCostBytes: result.readCost?.bytesScanned ?? null,
-         ...(contract ? { contract } : {}),
+         contract,
       };
    }
 

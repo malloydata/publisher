@@ -9,6 +9,8 @@
  * text, which differs by dialect, is warehouse_sql.ts's.
  */
 
+import type { ColumnContract } from "../domain/column_contract";
+import { captureDatabaseContract } from "./column_contract_capture";
 import { BuildCancelledError } from "../domain/build_cancelled";
 import type { Connection as MalloyConnection } from "@malloydata/malloy";
 import { logger } from "../../../logger";
@@ -178,6 +180,29 @@ export class DatabaseTier
          });
          throw err;
       }
+      // The column contract, read over the staging table before the swap:
+      // a capture that fails drops it and leaves the previous table serving.
+      let contract: ColumnContract;
+      try {
+         contract = await captureDatabaseContract({
+            connection: {
+               dialectName: dialect,
+               runSQL: (sql, options) =>
+                  connection.runSQL(sql, { ...runOptions, ...options }),
+            },
+            tableName: stagingTableName,
+            physicalTableName,
+         });
+      } catch (err) {
+         await dropStagingAfterFailure({
+            connection,
+            runOptions,
+            dialect,
+            stagingTableName,
+            connectionName: persistSource.connectionName,
+         });
+         throw err;
+      }
       await swapIntoPlace({
          connection,
          runOptions,
@@ -247,6 +272,7 @@ export class DatabaseTier
          ...(schema?.length ? { schema } : {}),
          ...(nativeSchema?.length ? { nativeSchema } : {}),
          ...request.upstreamReuse,
+         contract,
       };
    }
 }

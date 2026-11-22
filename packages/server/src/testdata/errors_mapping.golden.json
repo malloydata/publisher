@@ -2183,6 +2183,44 @@
       ]
     }
   },
+  "ContractCaptureFailedError": {
+    "class": "ContractCaptureFailedError",
+    "http": {
+      "status": 500,
+      "json": {
+        "code": 500,
+        "message": "Internal server error."
+      },
+      "logged": true,
+      "logs": [
+        [
+          "error",
+          "Unhandled internal error"
+        ]
+      ]
+    },
+    "mcp": {
+      "message": "An unexpected internal error occurred during executeQuery.: The column contract of the table lake.orders_t could not be read back (its collations did not read), so the build is not recorded: a table with no contract is never served from. The previous table, if any, is left as it was; a retry reads it again.",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: The column contract of the table lake.orders_t could not be read back (its collations did not read), so the build is not recorded: a table with no contract is never served from. The previous table, if any, is left as it was; a retry reads it again.",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
   "PublisherConfigError": {
     "class": "PublisherConfigError",
     "http": {

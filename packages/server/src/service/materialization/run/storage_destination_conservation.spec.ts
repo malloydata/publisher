@@ -302,10 +302,11 @@ const BUILT = [
    "BEGIN TRANSACTION",
    'CREATE OR REPLACE TABLE "lake"."t" AS (SELECT 1 AS x)',
    'DESCRIBE "lake"."t"',
+   // The column contract's read of its collations, before COMMIT: one that
+   // fails rolls the build back.
+   "SELECT sql FROM duckdb_tables() WHERE NOT internal AND lower(table_name) = lower('t') AND (lower(schema_name) = lower('lake') OR lower(database_name) = lower('lake'))",
    "COMMIT",
    'SELECT count(*) AS n FROM "lake"."t"',
-   // The column contract's read of its collations.
-   "SELECT sql FROM duckdb_tables() WHERE NOT internal AND lower(table_name) = lower('t') AND (lower(schema_name) = lower('lake') OR lower(database_name) = lower('lake'))",
 ];
 const NONE = { attaches: [], statements: [] };
 

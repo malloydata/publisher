@@ -12219,8 +12219,17 @@ components:
           description: >-
             A bounded code for a failure a client may branch on, beside
             `reason`'s prose: `table-owned-elsewhere` (the build's `name=` is
-            held by a table this package does not own) or
-            `table-ownership-unverified` (who holds it could not be read). An
+            held by a table this package does not own),
+            `table-ownership-unverified` (who holds it could not be read), or
+            `contract_capture_failed` (the build wrote its table but could not
+            read back its column contract, `ManifestEntry.contract`, which a
+            table must carry to be served from). `contract_capture_failed` is
+            non-terminal, never a refusal: a rebuild fixes it, and the source
+            is `retryable`. The read runs before the write is swapped in or
+            committed wherever the build has a staging table or a transaction,
+            so the previous table is left as it was; an incremental delta,
+            which writes in place, fails after its write, and its previous
+            entry then understates the table's freshness, never its rows. An
             open set; absent for a failure that has none.
         refused:
           type: boolean

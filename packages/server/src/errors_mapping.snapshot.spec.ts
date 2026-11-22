@@ -14,6 +14,7 @@ import {
    BuildPlanUnavailableError,
    ChainedShapeNotCarriedError,
    WarehouseRecomputeRefusedError,
+   ContractCaptureFailedError,
    ChainedUpstreamMissingError,
    CompileRefusedError,
    ConflictError,
@@ -365,6 +366,14 @@ const CASES: Array<[string, () => unknown]> = [
             "rollup",
             "lake",
             "'rollup' reads the source warehouse (regions) through 'via'",
+         ),
+   ],
+   [
+      "ContractCaptureFailedError",
+      () =>
+         new ContractCaptureFailedError(
+            "lake.orders_t",
+            "its collations did not read",
          ),
    ],
    [
