@@ -1107,8 +1107,9 @@ class GateReadWalk {
    }
 
    /**
-    * A query-shaped source's base's terms and each stage's own, a later
-    * stage's read back through the earlier ones.
+    * A query-shaped source's base's terms and each stage's own (its `where:`,
+    * `having:` and each filtered measure's `{ where: … }`), a later stage's
+    * read back through the earlier ones.
     */
    private scopeQuery(source: unknown, query: QueryLike, depth: number): void {
       const base = this.baseOf(query);
@@ -1120,16 +1121,23 @@ class GateReadWalk {
       else this.scope(base, depth + 1, atBase, true);
       const stages = Array.isArray(query.pipeline) ? query.pipeline : [];
       stages.forEach((stage, i) => {
-         const where = (stage as { filterList?: unknown }).filterList;
-         for (const f of Array.isArray(where) ? where : []) {
+         const { filterList, queryFields } = stage as {
+            filterList?: unknown;
+            queryFields?: unknown;
+         };
+         const terms = [
+            ...asArray(filterList).map((f) => (f as { e?: unknown }).e),
+            ...asArray(queryFields).flatMap((qf) =>
+               filteredTerms((qf as { e?: unknown }).e),
+            ),
+         ];
+         for (const e of terms) {
             this.scoped = true;
-            if (!equalityOnlyExpr((f as { e?: unknown }).e)) {
-               this.equalityOnly = false;
-            }
+            if (!equalityOnlyExpr(e)) this.equalityOnly = false;
             this.entryPathsComplete = false;
             // A stage's term reads the stage's fields, not typed here.
             this.noColumnsOnly();
-            for (const p of fieldPathsIn((f as { e?: unknown }).e)) {
+            for (const p of fieldPathsIn(e)) {
                if (i === 0) atBase(p);
                else if (p.length === 1) {
                   this.throughStages(source, p[0], [], [], i - 1);
