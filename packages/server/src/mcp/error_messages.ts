@@ -17,6 +17,8 @@ import {
 export interface ErrorDetails {
    message: string;
    suggestions: string[];
+   /** The `reason` the same error's REST body carries, for a client that branches on it. */
+   reason?: string;
 }
 
 /**

@@ -21,6 +21,10 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — an MCP tool error carries the `reason` its REST error does
+
+**Fixed: `execute_query` over MCP gave a truncated BigQuery result no `reason`.** The REST query route answers BigQuery's short first page with a 502 carrying `reason: RESULT_TRUNCATED`, but the MCP tool's error payload held only `error` and `suggestions`, so a client could tell it apart only by its text. Every MCP tool error now carries the REST body's `reason` when the error has one (`RESULT_TRUNCATED`, `CONNECTION_FAILED`, `CONNECTION_AUTH_FAILED`, `CONNECTION_NOT_FOUND`, `ACCESS_DENIED`, …), beside `error` and `suggestions`. The field is new and additive; nothing else in the payload changed.
+
 ## [Unreleased] — DuckLake catalogs Publisher creates record data inlining off
 
 **Changed: a DuckLake catalog Publisher creates records `data_inlining_row_limit` 0.** DuckLake's default keeps a table of up to 10 rows as rows in the catalog database instead of a file, and a reader confined to the catalog's files, such as a managed connection's read-only view, still reads them. Publisher's build session turned inlining off for its own writes, but that does not override a limit the catalog records, and other writers were not covered. A storage destination's catalog created at its first build, and a catalog created with the admin API's `POST /catalogs` without a `dataInliningRowLimit`, now record 0, so every writer's small tables land in files. A `POST` that names a limit still records it.
