@@ -4973,10 +4973,9 @@ components:
             another source), `destination_missing` (`storage=` names a
             destination the environment does not configure),
             `connection_cannot_hold_table` (database, on a connection whose
-            type creates no tables), `types_unrecorded` (database, bound, but
-            its manifest entry records no column types, neither `schema` nor
-            `nativeSchema`, so a change since the build cannot be ruled out;
-            rebuild it), `materialization_off` (a `#(materialize)`
+            type creates no tables), `types_unrecorded` (retained, no longer
+            produced: an entry with no recorded types reads
+            `contract_missing` now), `materialization_off` (a `#(materialize)`
             source, which only the served copy reads, and the served copy is
             off: `PUBLISHER_MATERIALIZE`, and for `storage=`
             `PERSIST_STORAGE_MODE`), `served_copy` (a source the served copy
@@ -6050,7 +6049,9 @@ components:
                   `storage-column-type-mismatch`: a `storage=` table of any
                   kind (`#@ persist`, `#(materialize)`, a rollup, a persisted
                   view or query) stores a column as a type other than the one
-                  its build declares. It is read through a cast to the
+                  its build declares, as its build wrote it (a change after
+                  the build is `materialization-table-incompatible`). It is
+                  read through a cast to the
                   declared type where that is faithful, and otherwise
                   answered live, never read as its stored type (one per
                   source and column, `model` the model
@@ -6058,12 +6059,24 @@ components:
                   view's or query's build source, the message naming the
                   column, both types and which applies; `warn`; see
                   docs/materialization.md).
-                  `database-column-type-mismatch`: a bound table in a source's
-                  own database whose column was altered, or dropped, outside a
-                  build, so it no longer stores the declared type; it is read
-                  through a cast where that is faithful, and otherwise answered
-                  live, until the table is rebuilt (one per source and column,
-                  `subject` the source; `warn`).
+                  `database-column-type-mismatch` is retained, no longer
+                  produced: a bound table altered outside a build is now
+                  `materialization-table-incompatible`, answered live whole
+                  until it is rebuilt, never read through a cast.
+                  `materialization-table-incompatible`: a bound table, on
+                  either tier, that no longer matches the column contract its
+                  build recorded (a column gone, retyped or recollated since,
+                  or its source now declaring another type than it was built
+                  for); it is answered live until a build rebuilds it (one per
+                  source, `subject` the source; `warn`; the serve verdict's
+                  `incompatible` names the table and what changed).
+                  `materialization-contract-missing`: a bound table whose
+                  entry carries no column contract (built before contracts
+                  were recorded); it is answered live until a build rebuilds
+                  it in full (one per source, `subject` the source; `warn`).
+                  `materialization-types-unrecorded` is retained, no longer
+                  produced: a table with no recorded types is
+                  `materialization-contract-missing` now.
                   `table-kept`: a table an auto-run replaced
                   when its source's table was renamed or moved, which
                   Publisher keeps rather than drops: one at an author's exact

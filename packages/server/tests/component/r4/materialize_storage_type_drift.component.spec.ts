@@ -509,12 +509,12 @@ source: drift is ev extend {
          );
          const observed = await fixture.observeDatabaseColumns();
          expect(observed.unread).toEqual([]);
-         expect(observed.drifted).toEqual([
+         // The table no longer matches its contract: left out, never cast.
+         expect(observed.drifted).toEqual([]);
+         expect(observed.incompatible).toEqual([
             expect.objectContaining({
-               columns: [
-                  expect.objectContaining({ column: "amt" }),
-                  expect.objectContaining({ column: "flag" }),
-               ],
+               code: "column_retyped",
+               columns: ["amt", "flag"],
             }),
          ]);
       }, 120_000);
@@ -534,7 +534,7 @@ source: drift is ev extend {
          expect(run.servedFrom).not.toBe("database");
       });
 
-      it("a boolean now stored as an integer: read through a cast, served, equal to live", async () => {
+      it("a boolean now stored as an integer: answered live, equal to live", async () => {
          const run = await fixture.run({
             name: "flag",
             malloy:
@@ -542,16 +542,16 @@ source: drift is ev extend {
          });
          expect(run.live.length).toBeGreaterThan(0);
          expect(rowDifference(run.live, run.served)).toBeUndefined();
-         expect(run.servedFrom).toBe("database");
+         expect(run.servedFrom).not.toBe("database");
       });
 
-      it("a column left as built: served, equal to live", async () => {
+      it("a column left as built: answered live with its table, equal to live", async () => {
          const run = await fixture.run({
             name: "total",
             malloy: "run: drift -> { aggregate: total }",
          });
          expect(rowDifference(run.live, run.served)).toBeUndefined();
-         expect(run.servedFrom).toBe("database");
+         expect(run.servedFrom).not.toBe("database");
       });
    },
 );

@@ -5,6 +5,15 @@
  * A bind's read of its `storage=` tables, as their builds' sessions read
  * them, so each is held to the column contract its build recorded: on a
  * destination session of its own, read-only, the catalog as it is now.
+ *
+ * Never through the shared serve connection. Reading there right after a
+ * build met a DuckLake attach made before the build's commit: `DESCRIBE
+ * "lake"."<new table>"` failed with "Invalid Input Error: No snapshot found
+ * in DuckLake", and the next `DESCRIBE` on that connection crashed Bun with a
+ * segmentation fault (tests/component/materialization_storage_stacking
+ * .component.spec.ts, its file-catalog fixture's serve connection, on the
+ * first build's bind). A fresh read-only session sees the catalog as
+ * committed and is closed with the read, so it never reaches that state.
  */
 
 import type { Connection } from "@malloydata/malloy";
