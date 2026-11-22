@@ -481,7 +481,7 @@ const EMISSIONS: Record<string, () => void> = {
    publisher_materialization_stale_upstream_entry_total: () =>
       recordStaleUpstreamEntry("storage"),
    publisher_materialization_upstream_recompute_total: () =>
-      recordUpstreamRecompute("moved", "chained"),
+      recordUpstreamRecompute("moved", "chained", "recomputed"),
 };
 
 /** Every instrument name `materialization_metrics.ts` passes to a lazy constructor. */

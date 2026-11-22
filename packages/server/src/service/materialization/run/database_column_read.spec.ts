@@ -511,17 +511,17 @@ describe("movedSinceBuild on DuckDB", () => {
       );
       expect(Object.fromEntries(moved)).toEqual({
          retyped: {
-            cause: "moved",
+            kind: "moved",
             reason:
                "its column 'amt' was built as DOUBLE and is now DECIMAL(10,1)",
          },
-         gone: { cause: "moved", reason: "its column 'x' is gone" },
+         gone: { kind: "moved", reason: "its column 'x' is gone" },
          missing: {
-            cause: "unreadable",
+            kind: "unreadable",
             reason: "its columns could not be read (catalog_query_failed)",
          },
          unrecorded: {
-            cause: "types_unrecorded",
+            kind: "types_unrecorded",
             reason: "its build recorded no column types to check it against",
          },
       });

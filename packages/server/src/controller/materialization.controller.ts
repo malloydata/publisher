@@ -308,6 +308,9 @@ export class MaterializationController {
          ...(typeof ref.connectionName === "string"
             ? { connectionName: ref.connectionName }
             : {}),
+         ...(ref.nativeSchema !== undefined
+            ? { nativeSchema: validReferenceSchema(ref.nativeSchema) }
+            : {}),
       };
    }
 
@@ -542,4 +545,32 @@ function assertUsableTableName(name: string, what: string): void {
          `${what} 'physicalTableName' must be a table path with no empty part, no backslash or control character, and only whole quoted parts`,
       );
    }
+}
+
+/**
+ * A reference's `nativeSchema`: the columns its upstream's build reported,
+ * each a name and a type, both non-empty strings. Anything else is refused
+ * (400), so a malformed list never reads as "no types recorded".
+ */
+function validReferenceSchema(raw: unknown): { name: string; type: string }[] {
+   if (
+      !Array.isArray(raw) ||
+      !raw.every(
+         (c) =>
+            typeof c === "object" &&
+            c !== null &&
+            typeof (c as { name?: unknown }).name === "string" &&
+            (c as { name: string }).name !== "" &&
+            typeof (c as { type?: unknown }).type === "string" &&
+            (c as { type: string }).type !== "",
+      )
+   ) {
+      throw new BuildInstructionsInvalidError(
+         "Manifest reference 'nativeSchema' must be an array of { name, type } objects with non-empty string fields",
+      );
+   }
+   return raw.map((c: { name: string; type: string }) => ({
+      name: c.name,
+      type: c.type,
+   }));
 }

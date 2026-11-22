@@ -150,7 +150,12 @@ import {
    TableOwnershipError,
    type OwnedTableTarget,
 } from "./table_ownership";
-import { persistedReach, type SourceBuildOptions } from "./source_build";
+import {
+   noteUntypedReference,
+   persistedReach,
+   readsUntypedReferences,
+   type SourceBuildOptions,
+} from "./source_build";
 import type { KeyCheckRecord } from "./tier";
 import {
    buildKindOf,
@@ -2254,7 +2259,12 @@ async function overStoredBaseSource(
               connection,
            )
         ).get(baseAddress);
-   if (move) {
+   if (
+      move?.kind === "types_unrecorded" &&
+      readsUntypedReferences(run.manifest, run.planFacts)
+   ) {
+      noteUntypedReference(persistSource.name, base.source.name, "rollup");
+   } else if (move) {
       const reason =
          `persisted upstream '${base.source.name}' was not read from its ` +
          `table, since ${move.reason}; recomputed from its definition in the ` +
@@ -2265,10 +2275,10 @@ async function overStoredBaseSource(
             sourceName: persistSource.name,
             upstream: base.source.name,
             reason: move.reason,
-            cause: move.cause,
+            kind: move.kind,
          },
       );
-      recordUpstreamRecompute(move.cause, "rollup");
+      recordUpstreamRecompute(move.kind, "rollup", "recomputed");
       (run.baseRecomputed ??= new Map()).set(gated.sourceEntityId, reason);
       return undefined;
    }

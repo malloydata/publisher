@@ -216,7 +216,7 @@ export async function movedSinceBuild(
  * columns `unreadable` now, or `types_unrecorded` by its build.
  */
 export interface UpstreamMove {
-   cause: "moved" | "unreadable" | "types_unrecorded";
+   kind: "moved" | "unreadable" | "types_unrecorded";
    reason: string;
 }
 
@@ -231,7 +231,7 @@ function unrecordedTypes(built: {
       )
    ) {
       return {
-         cause: "types_unrecorded",
+         kind: "types_unrecorded",
          reason: "its build recorded no column types to check it against",
       };
    }
@@ -245,7 +245,7 @@ function movedColumns(
 ): UpstreamMove | undefined {
    if ("unread" in read) {
       return {
-         cause: "unreadable",
+         kind: "unreadable",
          reason: `its columns could not be read (${read.unread})`,
       };
    }
@@ -254,11 +254,11 @@ function movedColumns(
       const type = column.type ?? "";
       const now = columnNamed(read.columns, name);
       if (!now)
-         return { cause: "moved", reason: `its column '${name}' is gone` };
+         return { kind: "moved", reason: `its column '${name}' is gone` };
       const nowType = now.nativeType ?? now.type ?? "";
       if (now.storedAsDouble || spelled(nowType) !== spelled(type)) {
          return {
-            cause: "moved",
+            kind: "moved",
             reason:
                `its column '${name}' was built as ${type} and is now ` +
                `${nowType || "of no readable type"}`,

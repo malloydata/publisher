@@ -131,6 +131,7 @@ async function movedUpstreams(args: {
    connection: MalloyConnection;
    builtThisRun?: ReadonlySet<string>;
    rootAddress?: string;
+   sourceName: string;
 }): Promise<MovedUpstreams> {
    const { reach, manifest, builtEntries, planFacts } = args;
    const tables = new Map<string, { name: string; entry: ManifestEntry }>();
@@ -159,11 +160,49 @@ async function movedUpstreams(args: {
       new Map([...tables].map(([address, { entry }]) => [address, entry])),
       args.connection,
    );
-   return new Map(
-      [...reasons].map(([address, move]) => [
-         address,
-         { name: tables.get(address)!.name, ...move },
-      ]),
+   const moved = new Map<string, { name: string } & UpstreamMove>();
+   for (const [address, move] of reasons) {
+      const { name } = tables.get(address)!;
+      if (
+         move.kind === "types_unrecorded" &&
+         readsUntypedReferences(manifest, planFacts)
+      ) {
+         noteUntypedReference(args.sourceName, name, "chained");
+         continue;
+      }
+      moved.set(address, { name, ...move });
+   }
+   return moved;
+}
+
+/**
+ * Whether a build reads an upstream table whose entry carries no column types
+ * unchecked: a strict build a host instructed, whose upstream entries are the
+ * host's references. A reference without `nativeSchema` cannot be checked,
+ * and strict forbids the recompute, so the table is read as before, with a
+ * warning and a count. Any other build recomputes it (movedUpstreams).
+ */
+export function readsUntypedReferences(
+   manifest: Pick<Manifest, "strict">,
+   planFacts: Pick<ChainedPlanFacts, "hostInstructed">,
+): boolean {
+   return manifest.strict === true && planFacts.hostInstructed === true;
+}
+
+/** Logs and counts an untyped reference read unchecked ({@link readsUntypedReferences}). */
+export function noteUntypedReference(
+   sourceName: string,
+   upstream: string,
+   build: "chained" | "rollup",
+): void {
+   logger.warn(
+      "A strict build reads a referenced upstream table unchecked: the reference carries no nativeSchema, so a column altered since its build cannot be seen; send nativeSchema on each reference",
+      { sourceName, upstream },
+   );
+   recordUpstreamRecompute(
+      "reference_types_unrecorded",
+      build,
+      "read_unchecked",
    );
 }
 
@@ -713,6 +752,7 @@ export async function buildSource(
       connection,
       ...(builtThisRun ? { builtThisRun } : {}),
       rootAddress: contentSourceEntityId ?? instruction.sourceEntityId,
+      sourceName: persistSource.name,
    });
    const rendered = renderBuildSQL(
       persistSource,
@@ -726,12 +766,12 @@ export async function buildSource(
    const { isStorageBuild, buildSQL } = rendered;
    // Strict refused these above: here each is recomputed. A rollup's own
    // fallback is counted where it is decided (instructed_build.ts).
-   for (const { name, reason, cause } of rendered.movedRead.values()) {
+   for (const { name, reason, kind } of rendered.movedRead.values()) {
       logger.warn(
          "A stored upstream's table could not be read in place of it; the build recomputes it from its definition",
-         { sourceName: persistSource.name, upstream: name, reason, cause },
+         { sourceName: persistSource.name, upstream: name, reason, kind },
       );
-      if (!rollup) recordUpstreamRecompute(cause, "chained");
+      if (!rollup) recordUpstreamRecompute(kind, "chained", "recomputed");
    }
 
    const { reuse, sqlInlinesStored, lift } = classifyStoredUpstreams(

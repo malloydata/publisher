@@ -11765,6 +11765,24 @@ components:
             content address): a stored upstream is stacked on in its
             destination, and never rendered into warehouse SQL. Optional and
             additive: a reference without it still serves a database upstream.
+        nativeSchema:
+          type: array
+          description: >-
+            For a database upstream (no `storageDestinationName`): the
+            `nativeSchema` the upstream's build reported on its manifest
+            entry, sent back as it came. Before a build reads the referenced
+            table in place of its source, it reads the table's columns from
+            the warehouse and compares each with this type (case and spacing
+            aside). If a column was retyped or dropped since, or cannot be
+            read, a strict build is refused and any other build recomputes
+            the upstream from its definition. Without it nothing can be
+            checked: a strict build reads the table unchecked, with a warning
+            and a count (`publisher_materialization_upstream_recompute_total`,
+            `reason="reference_types_unrecorded"`), and any other build
+            recomputes the upstream. Ignored for a `storage=` upstream: omit
+            it there. Optional and additive.
+          items:
+            $ref: "#/components/schemas/Column"
 
     BuildInstruction:
       type: object
