@@ -91,12 +91,13 @@ import {
    buildDownstreamIntoStorage,
    buildProjectionIntoStorage,
    buildSourceIntoStorage,
+   isCatalogDestination,
    oneFileModel,
    withDestinationSession,
    type StorageBuildResult,
    type StorageIncrementalRefresh,
 } from "./materialization_build_session";
-import { BilledReadNotCapturedError } from "./build_attribution";
+import { BilledReadNotCapturedError } from "./passthrough/bigquery";
 import { dropStorageTable } from "./storage_admin";
 import { backupSuffix } from "./build_table_names";
 import {
@@ -133,7 +134,7 @@ import {
  * does not pass through. Thrown as a refusal, which the run records against
  * this source and goes on (instructed_build.ts).
  */
-function storageSourceConnection(
+export function storageSourceConnection(
    environment: { getApiConnection(name: string): ApiConnection },
    persistSource: PersistSource,
    destinationConnection: ApiConnection,
@@ -149,8 +150,9 @@ function storageSourceConnection(
       connection &&
       type &&
       storageBuildReadsConnectionType(type) &&
-      // A DuckLake source builds only into its own catalog.
-      (type !== "ducklake" || isSameCatalog(connection, destinationConnection))
+      // A catalog source (DuckLake's) builds only into its own catalog.
+      (!isCatalogDestination(connection) ||
+         isSameCatalog(connection, destinationConnection))
    ) {
       return connection;
    }

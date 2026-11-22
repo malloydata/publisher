@@ -1,0 +1,1697 @@
+{
+  "postgres": {
+    "supported": {
+      "error": "Storage destination 'lake' is type 'postgres', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError"
+    },
+    "config": {
+      "value": {
+        "catalog": {
+          "postgresConnection": {
+            "host": "pg",
+            "port": 5432,
+            "databaseName": "cat"
+          }
+        },
+        "storage": {
+          "bucketUrl": "<data>/"
+        }
+      }
+    },
+    "list": {
+      "error": "Storage destination 'lake' is type 'postgres', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "cleanup": {
+      "error": "Storage destination 'lake' is type 'postgres'; file cleanup applies only to 'ducklake' destinations.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "load": {
+      "error": "Storage destination 'lake' is not DuckLake; only a DuckLake catalog takes a load.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "copy from ducklake": {
+      "error": "Only a DuckLake catalog is a copy's source or destination.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "copy from postgres": {
+      "error": "Only a DuckLake catalog is a copy's source or destination.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "build": {
+      "error": "Storage destination 'lake' is type 'postgres', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "same-catalog build": {
+      "error": "Storage destination 'lake' is type 'postgres', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "supported (no config)": {
+      "error": "Storage destination 'lake' is type 'postgres', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError"
+    },
+    "config (no config)": {
+      "error": "Storage destination 'lake' is type 'ducklake' but has no ducklakeConnection config.",
+      "name": "BadRequestError"
+    },
+    "list (no config)": {
+      "error": "Storage destination 'lake' is type 'postgres', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "cleanup (no config)": {
+      "error": "Storage destination 'lake' is type 'postgres'; file cleanup applies only to 'ducklake' destinations.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "load (no config)": {
+      "error": "Storage destination 'lake' is not DuckLake; only a DuckLake catalog takes a load.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "copy from ducklake (no config)": {
+      "error": "Only a DuckLake catalog is a copy's source or destination.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "copy from postgres (no config)": {
+      "error": "Only a DuckLake catalog is a copy's source or destination.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "build (no config)": {
+      "error": "Storage destination 'lake' is type 'postgres', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "same-catalog build (no config)": {
+      "error": "Storage destination 'lake' is type 'postgres', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "storage source, same catalog": {
+      "value": "postgres"
+    },
+    "storage source, other catalog": {
+      "value": "postgres"
+    }
+  },
+  "bigquery": {
+    "supported": {
+      "error": "Storage destination 'lake' is type 'bigquery', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError"
+    },
+    "config": {
+      "value": {
+        "catalog": {
+          "postgresConnection": {
+            "host": "pg",
+            "port": 5432,
+            "databaseName": "cat"
+          }
+        },
+        "storage": {
+          "bucketUrl": "<data>/"
+        }
+      }
+    },
+    "list": {
+      "error": "Storage destination 'lake' is type 'bigquery', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "cleanup": {
+      "error": "Storage destination 'lake' is type 'bigquery'; file cleanup applies only to 'ducklake' destinations.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "load": {
+      "error": "Storage destination 'lake' is not DuckLake; only a DuckLake catalog takes a load.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "copy from ducklake": {
+      "error": "Only a DuckLake catalog is a copy's source or destination.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "copy from bigquery": {
+      "error": "Only a DuckLake catalog is a copy's source or destination.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "build": {
+      "error": "Storage destination 'lake' is type 'bigquery', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "same-catalog build": {
+      "error": "Storage destination 'lake' is type 'bigquery', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "supported (no config)": {
+      "error": "Storage destination 'lake' is type 'bigquery', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError"
+    },
+    "config (no config)": {
+      "error": "Storage destination 'lake' is type 'ducklake' but has no ducklakeConnection config.",
+      "name": "BadRequestError"
+    },
+    "list (no config)": {
+      "error": "Storage destination 'lake' is type 'bigquery', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "cleanup (no config)": {
+      "error": "Storage destination 'lake' is type 'bigquery'; file cleanup applies only to 'ducklake' destinations.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "load (no config)": {
+      "error": "Storage destination 'lake' is not DuckLake; only a DuckLake catalog takes a load.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "copy from ducklake (no config)": {
+      "error": "Only a DuckLake catalog is a copy's source or destination.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "copy from bigquery (no config)": {
+      "error": "Only a DuckLake catalog is a copy's source or destination.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "build (no config)": {
+      "error": "Storage destination 'lake' is type 'bigquery', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "same-catalog build (no config)": {
+      "error": "Storage destination 'lake' is type 'bigquery', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "storage source, same catalog": {
+      "value": "bigquery"
+    },
+    "storage source, other catalog": {
+      "value": "bigquery"
+    }
+  },
+  "snowflake": {
+    "supported": {
+      "error": "Storage destination 'lake' is type 'snowflake', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError"
+    },
+    "config": {
+      "value": {
+        "catalog": {
+          "postgresConnection": {
+            "host": "pg",
+            "port": 5432,
+            "databaseName": "cat"
+          }
+        },
+        "storage": {
+          "bucketUrl": "<data>/"
+        }
+      }
+    },
+    "list": {
+      "error": "Storage destination 'lake' is type 'snowflake', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "cleanup": {
+      "error": "Storage destination 'lake' is type 'snowflake'; file cleanup applies only to 'ducklake' destinations.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "load": {
+      "error": "Storage destination 'lake' is not DuckLake; only a DuckLake catalog takes a load.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "copy from ducklake": {
+      "error": "Only a DuckLake catalog is a copy's source or destination.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "copy from snowflake": {
+      "error": "Only a DuckLake catalog is a copy's source or destination.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "build": {
+      "error": "Storage destination 'lake' is type 'snowflake', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "same-catalog build": {
+      "error": "Storage destination 'lake' is type 'snowflake', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "supported (no config)": {
+      "error": "Storage destination 'lake' is type 'snowflake', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError"
+    },
+    "config (no config)": {
+      "error": "Storage destination 'lake' is type 'ducklake' but has no ducklakeConnection config.",
+      "name": "BadRequestError"
+    },
+    "list (no config)": {
+      "error": "Storage destination 'lake' is type 'snowflake', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "cleanup (no config)": {
+      "error": "Storage destination 'lake' is type 'snowflake'; file cleanup applies only to 'ducklake' destinations.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "load (no config)": {
+      "error": "Storage destination 'lake' is not DuckLake; only a DuckLake catalog takes a load.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "copy from ducklake (no config)": {
+      "error": "Only a DuckLake catalog is a copy's source or destination.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "copy from snowflake (no config)": {
+      "error": "Only a DuckLake catalog is a copy's source or destination.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "build (no config)": {
+      "error": "Storage destination 'lake' is type 'snowflake', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "same-catalog build (no config)": {
+      "error": "Storage destination 'lake' is type 'snowflake', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "storage source, same catalog": {
+      "value": "snowflake"
+    },
+    "storage source, other catalog": {
+      "value": "snowflake"
+    }
+  },
+  "trino": {
+    "supported": {
+      "error": "Storage destination 'lake' is type 'trino', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError"
+    },
+    "config": {
+      "value": {
+        "catalog": {
+          "postgresConnection": {
+            "host": "pg",
+            "port": 5432,
+            "databaseName": "cat"
+          }
+        },
+        "storage": {
+          "bucketUrl": "<data>/"
+        }
+      }
+    },
+    "list": {
+      "error": "Storage destination 'lake' is type 'trino', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "cleanup": {
+      "error": "Storage destination 'lake' is type 'trino'; file cleanup applies only to 'ducklake' destinations.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "load": {
+      "error": "Storage destination 'lake' is not DuckLake; only a DuckLake catalog takes a load.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "copy from ducklake": {
+      "error": "Only a DuckLake catalog is a copy's source or destination.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "copy from trino": {
+      "error": "Only a DuckLake catalog is a copy's source or destination.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "build": {
+      "error": "Storage destination 'lake' is type 'trino', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "same-catalog build": {
+      "error": "Storage destination 'lake' is type 'trino', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "supported (no config)": {
+      "error": "Storage destination 'lake' is type 'trino', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError"
+    },
+    "config (no config)": {
+      "error": "Storage destination 'lake' is type 'ducklake' but has no ducklakeConnection config.",
+      "name": "BadRequestError"
+    },
+    "list (no config)": {
+      "error": "Storage destination 'lake' is type 'trino', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "cleanup (no config)": {
+      "error": "Storage destination 'lake' is type 'trino'; file cleanup applies only to 'ducklake' destinations.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "load (no config)": {
+      "error": "Storage destination 'lake' is not DuckLake; only a DuckLake catalog takes a load.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "copy from ducklake (no config)": {
+      "error": "Only a DuckLake catalog is a copy's source or destination.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "copy from trino (no config)": {
+      "error": "Only a DuckLake catalog is a copy's source or destination.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "build (no config)": {
+      "error": "Storage destination 'lake' is type 'trino', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "same-catalog build (no config)": {
+      "error": "Storage destination 'lake' is type 'trino', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "storage source, same catalog": {
+      "error": "Source 'src' cannot be materialized into a storage destination: its connection 'lake' is a 'trino' connection, which cannot be passed through to a 'storage=' build (it reads bigquery, snowflake, postgres sources, and a DuckLake source into its own catalog only). The source is not built and is answered live. Drop 'storage=' to build it in its own connection, or put the source on a warehouse connection.",
+      "name": "MaterializationEligibilityError"
+    },
+    "storage source, other catalog": {
+      "error": "Source 'src' cannot be materialized into a storage destination: its connection 'lake' is a 'trino' connection, which cannot be passed through to a 'storage=' build (it reads bigquery, snowflake, postgres sources, and a DuckLake source into its own catalog only). The source is not built and is answered live. Drop 'storage=' to build it in its own connection, or put the source on a warehouse connection.",
+      "name": "MaterializationEligibilityError"
+    }
+  },
+  "databricks": {
+    "supported": {
+      "error": "Storage destination 'lake' is type 'databricks', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError"
+    },
+    "config": {
+      "value": {
+        "catalog": {
+          "postgresConnection": {
+            "host": "pg",
+            "port": 5432,
+            "databaseName": "cat"
+          }
+        },
+        "storage": {
+          "bucketUrl": "<data>/"
+        }
+      }
+    },
+    "list": {
+      "error": "Storage destination 'lake' is type 'databricks', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "cleanup": {
+      "error": "Storage destination 'lake' is type 'databricks'; file cleanup applies only to 'ducklake' destinations.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "load": {
+      "error": "Storage destination 'lake' is not DuckLake; only a DuckLake catalog takes a load.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "copy from ducklake": {
+      "error": "Only a DuckLake catalog is a copy's source or destination.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "copy from databricks": {
+      "error": "Only a DuckLake catalog is a copy's source or destination.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "build": {
+      "error": "Storage destination 'lake' is type 'databricks', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "same-catalog build": {
+      "error": "Storage destination 'lake' is type 'databricks', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "supported (no config)": {
+      "error": "Storage destination 'lake' is type 'databricks', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError"
+    },
+    "config (no config)": {
+      "error": "Storage destination 'lake' is type 'ducklake' but has no ducklakeConnection config.",
+      "name": "BadRequestError"
+    },
+    "list (no config)": {
+      "error": "Storage destination 'lake' is type 'databricks', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "cleanup (no config)": {
+      "error": "Storage destination 'lake' is type 'databricks'; file cleanup applies only to 'ducklake' destinations.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "load (no config)": {
+      "error": "Storage destination 'lake' is not DuckLake; only a DuckLake catalog takes a load.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "copy from ducklake (no config)": {
+      "error": "Only a DuckLake catalog is a copy's source or destination.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "copy from databricks (no config)": {
+      "error": "Only a DuckLake catalog is a copy's source or destination.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "build (no config)": {
+      "error": "Storage destination 'lake' is type 'databricks', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "same-catalog build (no config)": {
+      "error": "Storage destination 'lake' is type 'databricks', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "storage source, same catalog": {
+      "error": "Source 'src' cannot be materialized into a storage destination: its connection 'lake' is a 'databricks' connection, which cannot be passed through to a 'storage=' build (it reads bigquery, snowflake, postgres sources, and a DuckLake source into its own catalog only). The source is not built and is answered live. Drop 'storage=' to build it in its own connection, or put the source on a warehouse connection.",
+      "name": "MaterializationEligibilityError"
+    },
+    "storage source, other catalog": {
+      "error": "Source 'src' cannot be materialized into a storage destination: its connection 'lake' is a 'databricks' connection, which cannot be passed through to a 'storage=' build (it reads bigquery, snowflake, postgres sources, and a DuckLake source into its own catalog only). The source is not built and is answered live. Drop 'storage=' to build it in its own connection, or put the source on a warehouse connection.",
+      "name": "MaterializationEligibilityError"
+    }
+  },
+  "mysql": {
+    "supported": {
+      "error": "Storage destination 'lake' is type 'mysql', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError"
+    },
+    "config": {
+      "value": {
+        "catalog": {
+          "postgresConnection": {
+            "host": "pg",
+            "port": 5432,
+            "databaseName": "cat"
+          }
+        },
+        "storage": {
+          "bucketUrl": "<data>/"
+        }
+      }
+    },
+    "list": {
+      "error": "Storage destination 'lake' is type 'mysql', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "cleanup": {
+      "error": "Storage destination 'lake' is type 'mysql'; file cleanup applies only to 'ducklake' destinations.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "load": {
+      "error": "Storage destination 'lake' is not DuckLake; only a DuckLake catalog takes a load.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "copy from ducklake": {
+      "error": "Only a DuckLake catalog is a copy's source or destination.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "copy from mysql": {
+      "error": "Only a DuckLake catalog is a copy's source or destination.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "build": {
+      "error": "Storage destination 'lake' is type 'mysql', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "same-catalog build": {
+      "error": "Storage destination 'lake' is type 'mysql', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "supported (no config)": {
+      "error": "Storage destination 'lake' is type 'mysql', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError"
+    },
+    "config (no config)": {
+      "error": "Storage destination 'lake' is type 'ducklake' but has no ducklakeConnection config.",
+      "name": "BadRequestError"
+    },
+    "list (no config)": {
+      "error": "Storage destination 'lake' is type 'mysql', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "cleanup (no config)": {
+      "error": "Storage destination 'lake' is type 'mysql'; file cleanup applies only to 'ducklake' destinations.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "load (no config)": {
+      "error": "Storage destination 'lake' is not DuckLake; only a DuckLake catalog takes a load.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "copy from ducklake (no config)": {
+      "error": "Only a DuckLake catalog is a copy's source or destination.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "copy from mysql (no config)": {
+      "error": "Only a DuckLake catalog is a copy's source or destination.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "build (no config)": {
+      "error": "Storage destination 'lake' is type 'mysql', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "same-catalog build (no config)": {
+      "error": "Storage destination 'lake' is type 'mysql', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "storage source, same catalog": {
+      "error": "Source 'src' cannot be materialized into a storage destination: its connection 'lake' is a 'mysql' connection, which cannot be passed through to a 'storage=' build (it reads bigquery, snowflake, postgres sources, and a DuckLake source into its own catalog only). The source is not built and is answered live. Drop 'storage=' to build it in its own connection, or put the source on a warehouse connection.",
+      "name": "MaterializationEligibilityError"
+    },
+    "storage source, other catalog": {
+      "error": "Source 'src' cannot be materialized into a storage destination: its connection 'lake' is a 'mysql' connection, which cannot be passed through to a 'storage=' build (it reads bigquery, snowflake, postgres sources, and a DuckLake source into its own catalog only). The source is not built and is answered live. Drop 'storage=' to build it in its own connection, or put the source on a warehouse connection.",
+      "name": "MaterializationEligibilityError"
+    }
+  },
+  "sqlserver": {
+    "supported": {
+      "error": "Storage destination 'lake' is type 'sqlserver', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError"
+    },
+    "config": {
+      "value": {
+        "catalog": {
+          "postgresConnection": {
+            "host": "pg",
+            "port": 5432,
+            "databaseName": "cat"
+          }
+        },
+        "storage": {
+          "bucketUrl": "<data>/"
+        }
+      }
+    },
+    "list": {
+      "error": "Storage destination 'lake' is type 'sqlserver', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "cleanup": {
+      "error": "Storage destination 'lake' is type 'sqlserver'; file cleanup applies only to 'ducklake' destinations.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "load": {
+      "error": "Storage destination 'lake' is not DuckLake; only a DuckLake catalog takes a load.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "copy from ducklake": {
+      "error": "Only a DuckLake catalog is a copy's source or destination.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "copy from sqlserver": {
+      "error": "Only a DuckLake catalog is a copy's source or destination.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "build": {
+      "error": "Storage destination 'lake' is type 'sqlserver', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "same-catalog build": {
+      "error": "Storage destination 'lake' is type 'sqlserver', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "supported (no config)": {
+      "error": "Storage destination 'lake' is type 'sqlserver', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError"
+    },
+    "config (no config)": {
+      "error": "Storage destination 'lake' is type 'ducklake' but has no ducklakeConnection config.",
+      "name": "BadRequestError"
+    },
+    "list (no config)": {
+      "error": "Storage destination 'lake' is type 'sqlserver', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "cleanup (no config)": {
+      "error": "Storage destination 'lake' is type 'sqlserver'; file cleanup applies only to 'ducklake' destinations.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "load (no config)": {
+      "error": "Storage destination 'lake' is not DuckLake; only a DuckLake catalog takes a load.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "copy from ducklake (no config)": {
+      "error": "Only a DuckLake catalog is a copy's source or destination.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "copy from sqlserver (no config)": {
+      "error": "Only a DuckLake catalog is a copy's source or destination.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "build (no config)": {
+      "error": "Storage destination 'lake' is type 'sqlserver', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "same-catalog build (no config)": {
+      "error": "Storage destination 'lake' is type 'sqlserver', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "storage source, same catalog": {
+      "error": "Source 'src' cannot be materialized into a storage destination: its connection 'lake' is a 'sqlserver' connection, which cannot be passed through to a 'storage=' build (it reads bigquery, snowflake, postgres sources, and a DuckLake source into its own catalog only). The source is not built and is answered live. Drop 'storage=' to build it in its own connection, or put the source on a warehouse connection.",
+      "name": "MaterializationEligibilityError"
+    },
+    "storage source, other catalog": {
+      "error": "Source 'src' cannot be materialized into a storage destination: its connection 'lake' is a 'sqlserver' connection, which cannot be passed through to a 'storage=' build (it reads bigquery, snowflake, postgres sources, and a DuckLake source into its own catalog only). The source is not built and is answered live. Drop 'storage=' to build it in its own connection, or put the source on a warehouse connection.",
+      "name": "MaterializationEligibilityError"
+    }
+  },
+  "duckdb": {
+    "supported": {
+      "value": "undefined"
+    },
+    "config": {
+      "value": {
+        "catalog": {
+          "postgresConnection": {
+            "host": "pg",
+            "port": 5432,
+            "databaseName": "cat"
+          }
+        },
+        "storage": {
+          "bucketUrl": "<data>/"
+        }
+      }
+    },
+    "list": {
+      "value": [],
+      "attaches": [],
+      "statements": []
+    },
+    "cleanup": {
+      "error": "Storage destination 'lake' is type 'duckdb'; file cleanup applies only to 'ducklake' destinations.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "load": {
+      "error": "Storage destination 'lake' is not DuckLake; only a DuckLake catalog takes a load.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "copy from ducklake": {
+      "error": "Only a DuckLake catalog is a copy's source or destination.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "copy from duckdb": {
+      "error": "Only a DuckLake catalog is a copy's source or destination.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "build": {
+      "value": [
+        "x INTEGER"
+      ],
+      "attaches": [],
+      "statements": []
+    },
+    "same-catalog build": {
+      "error": "Cannot materialize a 'duckdb' source into a storage destination: the native query-passthrough build supports source connections of type bigquery, snowflake, postgres only.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "supported (no config)": {
+      "value": "undefined"
+    },
+    "config (no config)": {
+      "error": "Storage destination 'lake' is type 'ducklake' but has no ducklakeConnection config.",
+      "name": "BadRequestError"
+    },
+    "list (no config)": {
+      "value": [
+        "t"
+      ],
+      "attaches": [],
+      "statements": []
+    },
+    "cleanup (no config)": {
+      "error": "Storage destination 'lake' is type 'duckdb'; file cleanup applies only to 'ducklake' destinations.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "load (no config)": {
+      "error": "Storage destination 'lake' is not DuckLake; only a DuckLake catalog takes a load.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "copy from ducklake (no config)": {
+      "error": "Only a DuckLake catalog is a copy's source or destination.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "copy from duckdb (no config)": {
+      "error": "Only a DuckLake catalog is a copy's source or destination.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "build (no config)": {
+      "value": [
+        "x INTEGER"
+      ],
+      "attaches": [],
+      "statements": []
+    },
+    "same-catalog build (no config)": {
+      "error": "Cannot materialize a 'duckdb' source into a storage destination: the native query-passthrough build supports source connections of type bigquery, snowflake, postgres only.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "storage source, same catalog": {
+      "error": "Source 'src' cannot be materialized into a storage destination: its connection 'lake' is a 'duckdb' connection, which cannot be passed through to a 'storage=' build (it reads bigquery, snowflake, postgres sources, and a DuckLake source into its own catalog only). The source is not built and is answered live. Drop 'storage=' to build it in its own connection, or put the source on a warehouse connection.",
+      "name": "MaterializationEligibilityError"
+    },
+    "storage source, other catalog": {
+      "error": "Source 'src' cannot be materialized into a storage destination: its connection 'lake' is a 'duckdb' connection, which cannot be passed through to a 'storage=' build (it reads bigquery, snowflake, postgres sources, and a DuckLake source into its own catalog only). The source is not built and is answered live. Drop 'storage=' to build it in its own connection, or put the source on a warehouse connection.",
+      "name": "MaterializationEligibilityError"
+    }
+  },
+  "motherduck": {
+    "supported": {
+      "error": "Storage destination 'lake' is type 'motherduck', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError"
+    },
+    "config": {
+      "value": {
+        "catalog": {
+          "postgresConnection": {
+            "host": "pg",
+            "port": 5432,
+            "databaseName": "cat"
+          }
+        },
+        "storage": {
+          "bucketUrl": "<data>/"
+        }
+      }
+    },
+    "list": {
+      "error": "Storage destination 'lake' is type 'motherduck', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "cleanup": {
+      "error": "Storage destination 'lake' is type 'motherduck'; file cleanup applies only to 'ducklake' destinations.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "load": {
+      "error": "Storage destination 'lake' is not DuckLake; only a DuckLake catalog takes a load.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "copy from ducklake": {
+      "error": "Only a DuckLake catalog is a copy's source or destination.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "copy from motherduck": {
+      "error": "Only a DuckLake catalog is a copy's source or destination.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "build": {
+      "error": "Storage destination 'lake' is type 'motherduck', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "same-catalog build": {
+      "error": "Storage destination 'lake' is type 'motherduck', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "supported (no config)": {
+      "error": "Storage destination 'lake' is type 'motherduck', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError"
+    },
+    "config (no config)": {
+      "error": "Storage destination 'lake' is type 'ducklake' but has no ducklakeConnection config.",
+      "name": "BadRequestError"
+    },
+    "list (no config)": {
+      "error": "Storage destination 'lake' is type 'motherduck', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "cleanup (no config)": {
+      "error": "Storage destination 'lake' is type 'motherduck'; file cleanup applies only to 'ducklake' destinations.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "load (no config)": {
+      "error": "Storage destination 'lake' is not DuckLake; only a DuckLake catalog takes a load.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "copy from ducklake (no config)": {
+      "error": "Only a DuckLake catalog is a copy's source or destination.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "copy from motherduck (no config)": {
+      "error": "Only a DuckLake catalog is a copy's source or destination.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "build (no config)": {
+      "error": "Storage destination 'lake' is type 'motherduck', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "same-catalog build (no config)": {
+      "error": "Storage destination 'lake' is type 'motherduck', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "storage source, same catalog": {
+      "error": "Source 'src' cannot be materialized into a storage destination: its connection 'lake' is a 'motherduck' connection, which cannot be passed through to a 'storage=' build (it reads bigquery, snowflake, postgres sources, and a DuckLake source into its own catalog only). The source is not built and is answered live. Drop 'storage=' to build it in its own connection, or put the source on a warehouse connection.",
+      "name": "MaterializationEligibilityError"
+    },
+    "storage source, other catalog": {
+      "error": "Source 'src' cannot be materialized into a storage destination: its connection 'lake' is a 'motherduck' connection, which cannot be passed through to a 'storage=' build (it reads bigquery, snowflake, postgres sources, and a DuckLake source into its own catalog only). The source is not built and is answered live. Drop 'storage=' to build it in its own connection, or put the source on a warehouse connection.",
+      "name": "MaterializationEligibilityError"
+    }
+  },
+  "ducklake": {
+    "supported": {
+      "value": "undefined"
+    },
+    "config": {
+      "value": {
+        "catalog": {
+          "postgresConnection": {
+            "host": "pg",
+            "port": 5432,
+            "databaseName": "cat"
+          }
+        },
+        "storage": {
+          "bucketUrl": "<data>/"
+        }
+      }
+    },
+    "list": {
+      "value": [],
+      "attaches": [
+        "read-only lake"
+      ],
+      "statements": [
+        "SELECT current_setting('lock_configuration') AS v",
+        "SELECT current_setting('enable_external_access') AS v",
+        "SELECT extension_name FROM duckdb_extensions() WHERE loaded",
+        "SET GLOBAL enable_global_s3_configuration=false",
+        "SET GLOBAL s3_access_key_id=''",
+        "SET GLOBAL s3_secret_access_key=''",
+        "SET GLOBAL s3_session_token=''",
+        "LOAD excel",
+        "SELECT current_setting('temp_directory') AS v",
+        "SET autoinstall_known_extensions=false",
+        "SET autoload_known_extensions=false",
+        "SELECT count(*) FROM duckdb_secrets()",
+        "SET allowed_directories=['<tmp>','<tmp>','<tmp>']",
+        "SET enable_external_access=false",
+        "SELECT table_name FROM duckdb_tables() WHERE database_name = 'lake' AND schema_name = 'main' ORDER BY table_name"
+      ]
+    },
+    "cleanup": {
+      "value": {
+        "expiredSnapshots": 0,
+        "deletedFiles": 0
+      },
+      "attaches": [
+        "read-write lake"
+      ],
+      "statements": [
+        "SELECT current_setting('lock_configuration') AS v",
+        "SELECT current_setting('enable_external_access') AS v",
+        "SELECT extension_name FROM duckdb_extensions() WHERE loaded",
+        "SET GLOBAL enable_global_s3_configuration=false",
+        "SET GLOBAL s3_access_key_id=''",
+        "SET GLOBAL s3_secret_access_key=''",
+        "SET GLOBAL s3_session_token=''",
+        "LOAD excel",
+        "SELECT current_setting('temp_directory') AS v",
+        "SET autoinstall_known_extensions=false",
+        "SET autoload_known_extensions=false",
+        "SELECT count(*) FROM duckdb_secrets()",
+        "SET allowed_directories=['<tmp>','<tmp>']",
+        "SET enable_external_access=false",
+        "CALL ducklake_expire_snapshots('lake', older_than => TIMESTAMPTZ '2026-01-01T00:00:00.000Z')",
+        "CALL ducklake_cleanup_old_files('lake', older_than => TIMESTAMPTZ '2026-01-02T00:00:00.000Z')"
+      ]
+    },
+    "load": {
+      "value": {
+        "rowCount": 1,
+        "columns": [
+          {
+            "name": "x",
+            "type": "BIGINT"
+          }
+        ]
+      },
+      "attaches": [
+        "read-write lake"
+      ],
+      "statements": [
+        "SELECT current_setting('lock_configuration') AS v",
+        "SELECT current_setting('enable_external_access') AS v",
+        "SELECT extension_name FROM duckdb_extensions() WHERE loaded",
+        "SET GLOBAL enable_global_s3_configuration=false",
+        "SET GLOBAL s3_access_key_id=''",
+        "SET GLOBAL s3_secret_access_key=''",
+        "SET GLOBAL s3_session_token=''",
+        "LOAD excel",
+        "SELECT current_setting('temp_directory') AS v",
+        "SET autoinstall_known_extensions=false",
+        "SET autoload_known_extensions=false",
+        "SELECT count(*) FROM duckdb_secrets()",
+        "SET allowed_directories=['<tmp>','<tmp>']",
+        "SET enable_external_access=false",
+        "SET ducklake_default_data_inlining_row_limit = 0",
+        "CREATE TABLE \"lake\".\"main\".\"t\" AS SELECT * FROM read_csv('<data>/in.csv')",
+        "CALL ducklake_flush_inlined_data('lake', schema_name => 'main', table_name => 't')",
+        "SELECT count(*) AS n FROM \"lake\".\"main\".\"t\"",
+        "DESCRIBE \"lake\".\"main\".\"t\""
+      ]
+    },
+    "copy from ducklake": {
+      "error": "Catalog Error: Table with name t does not exist!\nDid you mean \"information_schema.tables\"?\n\nLINE 1: CREATE TABLE \"lake\".\"main\".\"t\" AS SELECT * FROM \"__copy_source\".\"main\".\"t\"\n                                                        ^",
+      "name": "Error",
+      "attaches": [
+        "read-write lake",
+        "read-only __copy_source"
+      ],
+      "statements": [
+        "ATTACH ':memory:' AS \"__copy_source\"",
+        "SELECT current_setting('lock_configuration') AS v",
+        "SELECT current_setting('lock_configuration') AS v",
+        "SELECT current_setting('enable_external_access') AS v",
+        "SELECT current_setting('enable_external_access') AS v",
+        "SELECT extension_name FROM duckdb_extensions() WHERE loaded",
+        "SELECT extension_name FROM duckdb_extensions() WHERE loaded",
+        "SET GLOBAL enable_global_s3_configuration=false",
+        "SET GLOBAL enable_global_s3_configuration=false",
+        "SET GLOBAL s3_access_key_id=''",
+        "SET GLOBAL s3_access_key_id=''",
+        "SET GLOBAL s3_secret_access_key=''",
+        "SET GLOBAL s3_secret_access_key=''",
+        "SET GLOBAL s3_session_token=''",
+        "SET GLOBAL s3_session_token=''",
+        "LOAD excel",
+        "LOAD excel",
+        "SELECT current_setting('temp_directory') AS v",
+        "SELECT current_setting('temp_directory') AS v",
+        "SET autoinstall_known_extensions=false",
+        "SET autoinstall_known_extensions=false",
+        "SET autoload_known_extensions=false",
+        "SET autoload_known_extensions=false",
+        "SELECT count(*) FROM duckdb_secrets()",
+        "SELECT count(*) FROM duckdb_secrets()",
+        "SET allowed_directories=['<tmp>','<tmp>']",
+        "SET allowed_directories=['<tmp>','<tmp>']",
+        "SET enable_external_access=false",
+        "SET enable_external_access=false",
+        "SELECT c.column_name, pc.transform\n            FROM \"__ducklake_metadata___copy_source\".ducklake_table t\n            JOIN \"__ducklake_metadata___copy_source\".ducklake_schema s\n              ON s.schema_id = t.schema_id AND s.end_snapshot IS NULL\n            JOIN \"__ducklake_metadata___copy_source\".ducklake_partition_info pi\n              ON pi.table_id = t.table_id AND pi.end_snapshot IS NULL\n            JOIN \"__ducklake_metadata___copy_source\".ducklake_partition_column pc\n              ON pc.partition_id = pi.partition_id AND pc.table_id = t.table_id\n            JOIN \"__ducklake_metadata___copy_source\".ducklake_column c\n              ON c.table_id = t.table_id AND c.column_id = pc.column_id AND c.end_snapshot IS NULL\n           WHERE s.schema_name = 'main'\n             AND t.table_name = 't'\n             AND t.end_snapshot IS NULL\n           ORDER BY pc.partition_key_index",
+        "SET ducklake_default_data_inlining_row_limit = 0",
+        "CREATE TABLE \"lake\".\"main\".\"t\" AS SELECT * FROM \"__copy_source\".\"main\".\"t\"",
+        "CREATE TABLE \"lake\".\"main\".\"t\" AS SELECT * FROM \"__copy_source\".\"main\".\"t\""
+      ]
+    },
+    "build": {
+      "value": [
+        "x INTEGER"
+      ],
+      "attaches": [
+        "read-write lake"
+      ],
+      "statements": [
+        "SET ducklake_default_data_inlining_row_limit=0",
+        "SET TimeZone='UTC'",
+        "SELECT current_setting('lock_configuration') AS v",
+        "SELECT current_setting('enable_external_access') AS v",
+        "SELECT extension_name FROM duckdb_extensions() WHERE loaded",
+        "SET GLOBAL enable_global_s3_configuration=false",
+        "SET GLOBAL s3_access_key_id=''",
+        "SET GLOBAL s3_secret_access_key=''",
+        "SET GLOBAL s3_session_token=''",
+        "LOAD excel",
+        "SELECT current_setting('temp_directory') AS v",
+        "SET autoinstall_known_extensions=false",
+        "SET autoload_known_extensions=false",
+        "SELECT count(*) FROM duckdb_secrets()",
+        "SET allowed_directories=['<tmp>','<tmp>','<tmp>']",
+        "SET enable_external_access=false",
+        "BEGIN TRANSACTION",
+        "CREATE OR REPLACE TABLE \"lake\".\"t\" AS (SELECT 1 AS x)",
+        "DESCRIBE \"lake\".\"t\"",
+        "COMMIT",
+        "SELECT count(*) AS n FROM \"lake\".\"t\""
+      ]
+    },
+    "same-catalog build": {
+      "value": [
+        "x INTEGER"
+      ],
+      "attaches": [
+        "read-write lake"
+      ],
+      "statements": [
+        "SET ducklake_default_data_inlining_row_limit=0",
+        "SET TimeZone='UTC'",
+        "SELECT current_setting('lock_configuration') AS v",
+        "SELECT current_setting('enable_external_access') AS v",
+        "SELECT extension_name FROM duckdb_extensions() WHERE loaded",
+        "SET GLOBAL enable_global_s3_configuration=false",
+        "SET GLOBAL s3_access_key_id=''",
+        "SET GLOBAL s3_secret_access_key=''",
+        "SET GLOBAL s3_session_token=''",
+        "LOAD excel",
+        "SELECT current_setting('temp_directory') AS v",
+        "SET autoinstall_known_extensions=false",
+        "SET autoload_known_extensions=false",
+        "SELECT count(*) FROM duckdb_secrets()",
+        "SET allowed_directories=['<tmp>','<tmp>','<tmp>']",
+        "SET enable_external_access=false",
+        "SET search_path = '\"lake\".main'",
+        "DESCRIBE (SELECT 1 AS x)",
+        "BEGIN TRANSACTION",
+        "CREATE OR REPLACE TABLE \"lake\".\"t\" AS (SELECT 1 AS x)",
+        "DESCRIBE \"lake\".\"t\"",
+        "COMMIT",
+        "SELECT count(*) AS n FROM \"lake\".\"t\""
+      ]
+    },
+    "supported (no config)": {
+      "value": "undefined"
+    },
+    "config (no config)": {
+      "error": "Storage destination 'lake' is type 'ducklake' but has no ducklakeConnection config.",
+      "name": "BadRequestError"
+    },
+    "list (no config)": {
+      "error": "Storage destination 'lake' is type 'ducklake' but has no ducklakeConnection config.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "cleanup (no config)": {
+      "error": "Storage destination 'lake' is type 'ducklake' but has no ducklakeConnection config.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "load (no config)": {
+      "error": "Storage destination 'lake' is not DuckLake; only a DuckLake catalog takes a load.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "copy from ducklake (no config)": {
+      "error": "Only a DuckLake catalog is a copy's source or destination.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "build (no config)": {
+      "error": "Storage destination 'lake' is type 'ducklake' but has no ducklakeConnection config.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "same-catalog build (no config)": {
+      "error": "Cannot materialize a 'ducklake' source into a storage destination that is a different catalog. A DuckLake source builds only into its own catalog, matched by the catalog database's host, port and databaseName (a connectionString is never matched), its metadataSchema, and its data path when both configs state one.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "storage source, same catalog": {
+      "value": "ducklake"
+    },
+    "storage source, other catalog": {
+      "error": "Source 'src' cannot be materialized into a storage destination: its connection 'lake' is a DuckLake catalog other than the destination's, which cannot be passed through to a 'storage=' build (it reads bigquery, snowflake, postgres sources, and a DuckLake source into its own catalog only). The source is not built and is answered live. Drop 'storage=' to build it in its own connection, or put the source on a warehouse connection.",
+      "name": "MaterializationEligibilityError"
+    }
+  },
+  "publisher": {
+    "supported": {
+      "error": "Storage destination 'lake' is type 'publisher', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError"
+    },
+    "config": {
+      "value": {
+        "catalog": {
+          "postgresConnection": {
+            "host": "pg",
+            "port": 5432,
+            "databaseName": "cat"
+          }
+        },
+        "storage": {
+          "bucketUrl": "<data>/"
+        }
+      }
+    },
+    "list": {
+      "error": "Storage destination 'lake' is type 'publisher', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "cleanup": {
+      "error": "Storage destination 'lake' is type 'publisher'; file cleanup applies only to 'ducklake' destinations.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "load": {
+      "error": "Storage destination 'lake' is not DuckLake; only a DuckLake catalog takes a load.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "copy from ducklake": {
+      "error": "Only a DuckLake catalog is a copy's source or destination.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "copy from publisher": {
+      "error": "Only a DuckLake catalog is a copy's source or destination.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "build": {
+      "error": "Storage destination 'lake' is type 'publisher', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "same-catalog build": {
+      "error": "Storage destination 'lake' is type 'publisher', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "supported (no config)": {
+      "error": "Storage destination 'lake' is type 'publisher', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError"
+    },
+    "config (no config)": {
+      "error": "Storage destination 'lake' is type 'ducklake' but has no ducklakeConnection config.",
+      "name": "BadRequestError"
+    },
+    "list (no config)": {
+      "error": "Storage destination 'lake' is type 'publisher', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "cleanup (no config)": {
+      "error": "Storage destination 'lake' is type 'publisher'; file cleanup applies only to 'ducklake' destinations.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "load (no config)": {
+      "error": "Storage destination 'lake' is not DuckLake; only a DuckLake catalog takes a load.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "copy from ducklake (no config)": {
+      "error": "Only a DuckLake catalog is a copy's source or destination.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "copy from publisher (no config)": {
+      "error": "Only a DuckLake catalog is a copy's source or destination.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "build (no config)": {
+      "error": "Storage destination 'lake' is type 'publisher', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "same-catalog build (no config)": {
+      "error": "Storage destination 'lake' is type 'publisher', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "storage source, same catalog": {
+      "error": "Source 'src' cannot be materialized into a storage destination on this server: its connection 'lake' is a 'publisher' connection, a proxy to the host the package is published to; this server holds no warehouse credentials for it. A 'storage=' build runs on that host, not on this server. The source is answered live here.",
+      "name": "MaterializationEligibilityError"
+    },
+    "storage source, other catalog": {
+      "error": "Source 'src' cannot be materialized into a storage destination on this server: its connection 'lake' is a 'publisher' connection, a proxy to the host the package is published to; this server holds no warehouse credentials for it. A 'storage=' build runs on that host, not on this server. The source is answered live here.",
+      "name": "MaterializationEligibilityError"
+    }
+  },
+  "constructor": {
+    "supported": {
+      "error": "Storage destination 'lake' is type 'constructor', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError"
+    },
+    "config": {
+      "value": {
+        "catalog": {
+          "postgresConnection": {
+            "host": "pg",
+            "port": 5432,
+            "databaseName": "cat"
+          }
+        },
+        "storage": {
+          "bucketUrl": "<data>/"
+        }
+      }
+    },
+    "list": {
+      "error": "Storage destination 'lake' is type 'constructor', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "cleanup": {
+      "error": "Storage destination 'lake' is type 'constructor'; file cleanup applies only to 'ducklake' destinations.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "load": {
+      "error": "Storage destination 'lake' is not DuckLake; only a DuckLake catalog takes a load.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "copy from ducklake": {
+      "error": "Only a DuckLake catalog is a copy's source or destination.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "copy from constructor": {
+      "error": "Only a DuckLake catalog is a copy's source or destination.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "build": {
+      "error": "Storage destination 'lake' is type 'constructor', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "same-catalog build": {
+      "error": "Storage destination 'lake' is type 'constructor', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "supported (no config)": {
+      "error": "Storage destination 'lake' is type 'constructor', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError"
+    },
+    "config (no config)": {
+      "error": "Storage destination 'lake' is type 'ducklake' but has no ducklakeConnection config.",
+      "name": "BadRequestError"
+    },
+    "list (no config)": {
+      "error": "Storage destination 'lake' is type 'constructor', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "cleanup (no config)": {
+      "error": "Storage destination 'lake' is type 'constructor'; file cleanup applies only to 'ducklake' destinations.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "load (no config)": {
+      "error": "Storage destination 'lake' is not DuckLake; only a DuckLake catalog takes a load.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "copy from ducklake (no config)": {
+      "error": "Only a DuckLake catalog is a copy's source or destination.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "copy from constructor (no config)": {
+      "error": "Only a DuckLake catalog is a copy's source or destination.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "build (no config)": {
+      "error": "Storage destination 'lake' is type 'constructor', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "same-catalog build (no config)": {
+      "error": "Storage destination 'lake' is type 'constructor', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "storage source, same catalog": {
+      "error": "Source 'src' cannot be materialized into a storage destination: its connection 'lake' is a 'constructor' connection, which cannot be passed through to a 'storage=' build (it reads bigquery, snowflake, postgres sources, and a DuckLake source into its own catalog only). The source is not built and is answered live. Drop 'storage=' to build it in its own connection, or put the source on a warehouse connection.",
+      "name": "MaterializationEligibilityError"
+    },
+    "storage source, other catalog": {
+      "error": "Source 'src' cannot be materialized into a storage destination: its connection 'lake' is a 'constructor' connection, which cannot be passed through to a 'storage=' build (it reads bigquery, snowflake, postgres sources, and a DuckLake source into its own catalog only). The source is not built and is answered live. Drop 'storage=' to build it in its own connection, or put the source on a warehouse connection.",
+      "name": "MaterializationEligibilityError"
+    }
+  },
+  "nope": {
+    "supported": {
+      "error": "Storage destination 'lake' is type 'nope', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError"
+    },
+    "config": {
+      "value": {
+        "catalog": {
+          "postgresConnection": {
+            "host": "pg",
+            "port": 5432,
+            "databaseName": "cat"
+          }
+        },
+        "storage": {
+          "bucketUrl": "<data>/"
+        }
+      }
+    },
+    "list": {
+      "error": "Storage destination 'lake' is type 'nope', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "cleanup": {
+      "error": "Storage destination 'lake' is type 'nope'; file cleanup applies only to 'ducklake' destinations.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "load": {
+      "error": "Storage destination 'lake' is not DuckLake; only a DuckLake catalog takes a load.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "copy from ducklake": {
+      "error": "Only a DuckLake catalog is a copy's source or destination.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "copy from nope": {
+      "error": "Only a DuckLake catalog is a copy's source or destination.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "build": {
+      "error": "Storage destination 'lake' is type 'nope', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "same-catalog build": {
+      "error": "Storage destination 'lake' is type 'nope', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "supported (no config)": {
+      "error": "Storage destination 'lake' is type 'nope', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError"
+    },
+    "config (no config)": {
+      "error": "Storage destination 'lake' is type 'ducklake' but has no ducklakeConnection config.",
+      "name": "BadRequestError"
+    },
+    "list (no config)": {
+      "error": "Storage destination 'lake' is type 'nope', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "cleanup (no config)": {
+      "error": "Storage destination 'lake' is type 'nope'; file cleanup applies only to 'ducklake' destinations.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "load (no config)": {
+      "error": "Storage destination 'lake' is not DuckLake; only a DuckLake catalog takes a load.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "copy from ducklake (no config)": {
+      "error": "Only a DuckLake catalog is a copy's source or destination.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "copy from nope (no config)": {
+      "error": "Only a DuckLake catalog is a copy's source or destination.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "build (no config)": {
+      "error": "Storage destination 'lake' is type 'nope', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "same-catalog build (no config)": {
+      "error": "Storage destination 'lake' is type 'nope', but 'storage=' destinations must be one of ducklake, duckdb.",
+      "name": "BadRequestError",
+      "attaches": [],
+      "statements": []
+    },
+    "storage source, same catalog": {
+      "error": "Source 'src' cannot be materialized into a storage destination: its connection 'lake' is a 'nope' connection, which cannot be passed through to a 'storage=' build (it reads bigquery, snowflake, postgres sources, and a DuckLake source into its own catalog only). The source is not built and is answered live. Drop 'storage=' to build it in its own connection, or put the source on a warehouse connection.",
+      "name": "MaterializationEligibilityError"
+    },
+    "storage source, other catalog": {
+      "error": "Source 'src' cannot be materialized into a storage destination: its connection 'lake' is a 'nope' connection, which cannot be passed through to a 'storage=' build (it reads bigquery, snowflake, postgres sources, and a DuckLake source into its own catalog only). The source is not built and is answered live. Drop 'storage=' to build it in its own connection, or put the source on a warehouse connection.",
+      "name": "MaterializationEligibilityError"
+    }
+  }
+}

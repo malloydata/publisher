@@ -53,6 +53,7 @@ import * as os from "os";
 import * as path from "path";
 import { unrecordedAudit } from "../../src/service/access_record";
 import * as connection from "../../src/service/connection";
+import * as connectionDialects from "../../src/service/dialects";
 import { Environment } from "../../src/service/environment";
 import { parsePackageName } from "../../src/service/identity";
 import * as dialects from "../../src/service/materialization/domain/dialect";
@@ -312,7 +313,7 @@ describe.skipIf(process.platform === "win32")(
                return true;
             }),
             spyOn(
-               connection,
+               connectionDialects,
                "federateSourceForPassthrough",
             ).mockImplementation(async (session, sourceType) => {
                await session.runSQL(
@@ -924,28 +925,29 @@ class LakeFixture {
             await this.attachFileLake(session as never, dbName, true);
             return true;
          }),
-         spyOn(connection, "federateSourceForPassthrough").mockImplementation(
-            async (session, sourceType) => {
-               await session.runSQL(
-                  "CREATE OR REPLACE TEMP MACRO postgres_query(alias, q) AS TABLE SELECT * FROM query(q)",
+         spyOn(
+            connectionDialects,
+            "federateSourceForPassthrough",
+         ).mockImplementation(async (session, sourceType) => {
+            await session.runSQL(
+               "CREATE OR REPLACE TEMP MACRO postgres_query(alias, q) AS TABLE SELECT * FROM query(q)",
+            );
+            // Recorded from here on: the build's own statements.
+            const run = session.runSQL.bind(session);
+            session.runSQL = (async (sql: string, ...rest: unknown[]) => {
+               // The session's lockdown (duckdb_lockdown.ts) runs once the
+               // source is federated; it is not the build's own SQL.
+               if (!LOCKDOWN_STATEMENT.test(sql)) this.statements.push(sql);
+               await this.onStatement?.(sql);
+               const result = await (run as (...a: unknown[]) => unknown)(
+                  sql,
+                  ...rest,
                );
-               // Recorded from here on: the build's own statements.
-               const run = session.runSQL.bind(session);
-               session.runSQL = (async (sql: string, ...rest: unknown[]) => {
-                  // The session's lockdown (duckdb_lockdown.ts) runs once the
-                  // source is federated; it is not the build's own SQL.
-                  if (!LOCKDOWN_STATEMENT.test(sql)) this.statements.push(sql);
-                  await this.onStatement?.(sql);
-                  const result = await (run as (...a: unknown[]) => unknown)(
-                     sql,
-                     ...rest,
-                  );
-                  await this.afterStatement?.(sql);
-                  return result;
-               }) as typeof session.runSQL;
-               return { handle: "warehouse", sourceType };
-            },
-         ),
+               await this.afterStatement?.(sql);
+               return result;
+            }) as typeof session.runSQL;
+            return { handle: "warehouse", sourceType };
+         }),
       );
 
       this.env = await Environment.create(

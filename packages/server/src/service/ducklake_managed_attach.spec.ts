@@ -6,7 +6,7 @@ import { afterAll, describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { managedSearchPathSql } from "./connection";
+import { managedSearchPathSql } from "./dialects/ducklake";
 
 /**
  * A managed connection's `<name>.table('t')` compiles to the bare table name,

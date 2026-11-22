@@ -11,13 +11,22 @@ import {
    stringGateCollationRefusal,
 } from "./gate_collation";
 import { equalityOnlyExpr, gateReadsOfQuery } from "./gate_reads";
+import { probeIO } from "./gate_collation";
+import { DUCKDB_COLLATION } from "./collation/duckdb";
 import {
-   duckdbCollation,
-   duckdbTableCollation,
-   postgresCollation,
-   postgresTableCollation,
+   POSTGRES_COLLATION,
    unfinalizedPostgresSQL,
-} from "./gate_collation";
+} from "./collation/postgres";
+
+/** The reads over a connection, through the I/O `gate_collation.ts` builds. */
+const duckdbCollation = (c: Connection, sql: string) =>
+   DUCKDB_COLLATION.sourceColumns(probeIO(c), sql);
+const duckdbTableCollation = (c: Connection, path: string) =>
+   DUCKDB_COLLATION.storedTable(probeIO(c), path);
+const postgresCollation = (c: Connection, sql: string) =>
+   POSTGRES_COLLATION.sourceColumns(probeIO(c), sql);
+const postgresTableCollation = (c: Connection, path: string) =>
+   POSTGRES_COLLATION.storedTable(probeIO(c), path);
 
 describe("a DuckDB source's string comparison", () => {
    it("is binary with no collation set or written, and unknown with one", async () => {
@@ -318,10 +327,12 @@ describe.skipIf(!url)("a Postgres column's collation", () => {
          .loadQuery("run: s -> { select: probe_value is c_bin; limit: 1 }")
          .getPreparedResult();
       // Malloy wraps a Postgres query's rows as one JSON column, which has
-      // no `probe_value` to read.
-      await expect(
-         postgresCollation(pg as unknown as Connection, sql),
-      ).rejects.toThrow();
+      // no `probe_value` to read: the reader takes the stage off itself, so
+      // the query as compiled and with its stage off read alike.
+      expect(await postgresCollation(pg as unknown as Connection, sql)).toBe(
+         "binary",
+      );
+      expect(unfinalizedPostgresSQL(sql)).not.toBe(sql);
       expect(
          await postgresCollation(
             pg as unknown as Connection,

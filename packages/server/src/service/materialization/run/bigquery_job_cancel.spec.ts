@@ -28,7 +28,7 @@ import {
    trackBigQueryJobs,
    type BigQueryActiveJob,
    type BigQueryJobLister,
-} from "./bigquery_job_cancel";
+} from "./passthrough/bigquery";
 import {
    buildSourceIntoStorage,
    issuePassthroughRead,

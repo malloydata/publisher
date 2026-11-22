@@ -23,9 +23,11 @@ import {
 import {
    attachDuckLakeReadOnly,
    attachDuckLakeReadWrite,
+} from "../../../src/service/connection";
+import {
    recordedCatalogSettings,
    recordedSchemaPath,
-} from "../../../src/service/connection";
+} from "../../../src/service/dialects/ducklake_catalog";
 import { listStorageTables } from "../../../src/service/materialization/run/storage_admin";
 import type { components } from "../../../src/api";
 

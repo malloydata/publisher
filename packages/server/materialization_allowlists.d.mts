@@ -15,6 +15,7 @@ export declare const RATCHET_ANNOTATION_READS: Counted;
 export declare const RATCHET_IR_READS: Counted;
 export declare const RATCHET_CLOCK_READS: Counted;
 export declare const RATCHET_DIALECT_LITERALS: Counted;
+export declare const RATCHET_CONNECTION_TYPE_LITERALS: Counted;
 export declare const RATCHET_LONG_FUNCTIONS: Record<string, Step>;
 export declare const RATCHET_SWITCH_READS: Counted;
 export declare const RATCHET_TIER_DECISIONS: Counted;

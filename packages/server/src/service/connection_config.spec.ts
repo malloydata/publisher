@@ -12,11 +12,11 @@ import { PUBLISHER_CONFIG_NAME } from "../constants";
 import { logger } from "../logger";
 import {
    assembleEnvironmentConnections,
-   normalizeSnowflakePrivateKey,
    validateConnectionSqlFields,
    validateDuckdbApiSurface,
    validateStorageDestinations,
 } from "./connection_config";
+import { normalizeSnowflakePrivateKey } from "./dialects/snowflake";
 import { installSettings } from "../test_helpers/settings_env";
 import { toPublicConnection } from "./connection_public_view";
 
@@ -1784,6 +1784,55 @@ describe("attachedDatabases[].name is held to its documented pattern", () => {
             "/tmp/env",
          ),
       ).toThrow(/attachedDatabases\[1\]\.name/);
+   });
+});
+
+describe("attachedDatabases[].type is never an Object.prototype member", () => {
+   const withType = (type: string): ApiConnection =>
+      ({
+         name: "lake",
+         type: "duckdb",
+         duckdbConnection: {
+            attachedDatabases: [
+               { name: "first_ok", type: "s3" },
+               { name: "second", type },
+            ],
+         },
+      }) as unknown as ApiConnection;
+
+   it.each([
+      "constructor",
+      "toString",
+      "valueOf",
+      "hasOwnProperty",
+      "__proto__",
+      "isPrototypeOf",
+   ])("refuses %p, naming the entry by position", (type) => {
+      const refuse = () => validateConnectionSqlFields(withType(type));
+      expect(refuse).toThrow(
+         /attachedDatabases\[1\]\.type on connection "lake" is invalid/,
+      );
+   });
+
+   it.each(["bigquery", "snowflake", "postgres", "gcs", "s3", "azure"])(
+      "accepts %p",
+      (type) => {
+         expect(() =>
+            validateConnectionSqlFields(withType(type)),
+         ).not.toThrow();
+      },
+   );
+
+   it("leaves a type no attach supports to the attach, which refuses it", () => {
+      expect(() =>
+         validateConnectionSqlFields(withType("trino")),
+      ).not.toThrow();
+   });
+
+   it("refuses the type at config load, before any connection is built", () => {
+      expect(() =>
+         assembleEnvironmentConnections([withType("constructor")], "/tmp/env"),
+      ).toThrow(/attachedDatabases\[1\]\.type/);
    });
 });
 

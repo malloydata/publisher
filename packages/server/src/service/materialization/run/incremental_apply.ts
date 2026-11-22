@@ -33,6 +33,7 @@ import {
    escapeSqlString,
    inOneTransaction,
    probeSelect,
+   serverVersionSql,
    targetColumnsProbeSql,
    transactionKeywords,
    watermarkTextSql,
@@ -373,22 +374,11 @@ export type SqlRunner = (
 ) => Promise<{ rows: unknown[] }>;
 
 /**
- * The dialects whose target table's columns the incremental refresh probes
- * by decoded path: Postgres, Snowflake, BigQuery and DuckDB (a `storage=`
- * destination's `<destination>.[<schema>.]<name>`).
- */
-const DECODED_PATH_DIALECTS = new Set([
-   "postgres",
-   "snowflake",
-   "standardsql",
-   "duckdb",
-]);
-
-/**
  * The raw identifier segments of a physical table path, as its catalog stores
- * them, or undefined when the path cannot be decoded for this dialect (which
- * leads to a SEED, not a throw). The physical name arrives as SQL (bare or
- * quoted segments) while `information_schema` compares RAW identifier text,
+ * them, or undefined when the path cannot be decoded for this dialect (one
+ * without `decodedTablePath`, which leads to a SEED, not a throw). The
+ * physical name arrives as SQL (bare or quoted segments) while
+ * `information_schema` compares RAW identifier text,
  * so it is decoded by the one parser of a table name
  * ({@link foldedTablePathParts}): a bare segment folded as the engine folds
  * it (Postgres to lower case, Snowflake to UPPER, ASCII only; BigQuery and
@@ -398,7 +388,7 @@ export function decodeTablePathSegments(
    dialect: string,
    tablePath: string,
 ): string[] | undefined {
-   if (!DECODED_PATH_DIALECTS.has(dialect)) return undefined;
+   if (!capabilitiesOf(dialect).decodedTablePath) return undefined;
    return foldedTablePathParts(tablePath, dialect);
 }
 
@@ -560,19 +550,18 @@ export async function probeStoredWatermark(params: {
 }
 
 /**
- * Postgres's `server_version_num`, for the MERGE floor: MERGE is a syntax error
- * before Postgres 15.
+ * The server's version number, for the MERGE floor of a `dialect` a version
+ * gates it on (Postgres's `server_version_num`: MERGE is a syntax error before
+ * Postgres 15); undefined for any other dialect, or a read that fails.
  */
-export async function probePostgresVersion(
+export async function probeServerVersion(
    runner: SqlRunner,
+   dialect: string,
 ): Promise<number | undefined> {
+   const sql = serverVersionSql(dialect);
+   if (sql === undefined) return undefined;
    try {
-      const result = await runner(
-         probeSelect(
-            "postgres",
-            `SELECT current_setting('server_version_num') AS version_num`,
-         ),
-      );
+      const result = await runner(sql);
       const raw = probeRows(result.rows)[0]?.["version_num"];
       const parsed = Number(raw);
       return Number.isFinite(parsed) ? parsed : undefined;

@@ -619,6 +619,35 @@ export function probeSelect(dialect: string, innerSelect: string): string {
 }
 
 /**
+ * The read of the server's version number as `version_num`, wrapped as a
+ * probe ({@link probeSelect}), for a dialect a version gates a statement on
+ * (`mergeGatedByServerVersion`: Postgres's MERGE, a syntax error before
+ * Postgres 15); undefined for any other.
+ */
+export function serverVersionSql(dialect: string): string | undefined {
+   const knownDialect = registeredDialect(dialect);
+   switch (knownDialect) {
+      case "postgres":
+         return probeSelect(
+            knownDialect,
+            `SELECT current_setting('server_version_num') AS version_num`,
+         );
+      case "duckdb":
+      case "standardsql":
+      case "snowflake":
+      case "databricks":
+      case "trino":
+      case "presto":
+      case "mysql":
+      case "sqlserver":
+         return undefined;
+      default:
+         unregistered(knownDialect);
+         return undefined;
+   }
+}
+
+/**
  * `sql` bounded to `timeoutMs` on the warehouse itself, for a read that may be
  * given up on (the late-row check): Postgres takes a transaction-local
  * `statement_timeout` (`set_config(…, true)`) in the same simple-protocol
