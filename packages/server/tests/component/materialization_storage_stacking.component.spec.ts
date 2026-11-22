@@ -247,6 +247,7 @@ const asStrings = (rows: Record<string, unknown>[]) =>
 
 type Entry = {
    sourceName: string;
+   schema?: { name: string; type: string }[];
    sourceEntityId: string;
    physicalTableName: string;
    storageDestinationName?: string;

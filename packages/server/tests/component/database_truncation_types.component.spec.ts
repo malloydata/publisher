@@ -450,7 +450,7 @@ for (const tier of tiers) {
          for (const v of incompatible) {
             // DuckDB retypes in place; DuckLake drops and adds the column.
             expect(["column_retyped", "column_gone"]).toContain(
-               v.incompatibility?.code,
+               v.incompatibility?.code ?? "",
             );
             expect(v.incompatibility?.columns).toEqual(["d_month"]);
          }

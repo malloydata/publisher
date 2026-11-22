@@ -664,6 +664,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
          schema?: { name: string; type: string }[];
          heldRead?: FreshnessAwareManifestEntry["heldRead"];
          leftOutColumns?: string[];
+         contract?: unknown;
       }
    > = {};
    // The join_ones a package's build reads the rollups' key checks for.
@@ -876,6 +877,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
          schema?: { name: string; type: string }[];
          nativeSchema?: { name: string; type: string }[];
          keyUniqueness?: KeyUniqueness;
+         contract?: unknown;
       }
    > = {};
    // A pair table's leaf key checks, run on the source's own connection once

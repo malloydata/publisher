@@ -117,7 +117,6 @@ async function buildRollups(pkg: Package): Promise<string> {
       database: {
          [ids[0]]: {
             tableName: "built_rollup",
-            contract: contractFor(),
             connectionName: "duckdb",
             contract: contractFor(),
          },
@@ -239,7 +238,6 @@ async function buildDaily(pkg: Package, table: string): Promise<string> {
       database: {
          [entry.sourceEntityId]: {
             tableName: table,
-            contract: contractFor(),
             connectionName: "duck",
             contract: contractFor(),
          },

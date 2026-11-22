@@ -486,9 +486,13 @@ describe("a stored read that finds its table gone since the bind (the drift hand
          .find((t) => t.includes("v_num") || t.includes("q_num"))!;
       await warehouse.runSQL(`DROP TABLE ${dropped}`);
       // Every drift report marks the build plan stale and derives it again.
-      const plan = f.pkg.materialization().plan;
+      const plan = (
+         f.pkg.materialization() as unknown as {
+            plan: { markStale(changed?: Iterable<string>): void };
+         }
+      ).plan;
       const markStale = plan.markStale.bind(plan);
-      plan.markStale = (changed) => {
+      plan.markStale = (changed?: Iterable<string>) => {
          staleMarks++;
          markStale(changed);
       };
