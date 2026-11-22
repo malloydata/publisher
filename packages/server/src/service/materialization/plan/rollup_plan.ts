@@ -1232,8 +1232,8 @@ function declarationRefusal(
    // A `storage=` rollup is read through a declaration that restates each
    // timestamp truncation over its stored value in the reading query's zone,
    // which truncates one its source's query computed in a zone of its own
-   // again: every read of it is answered live (rollup_variants'
-   // `stagedZoneDecline`), so its table would cost a build nothing reads.
+   // again and serves a wrong value, so such a rollup is not planned and its
+   // reads are answered live.
    const stageZoned =
       decl.storage === undefined
          ? undefined
