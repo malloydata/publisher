@@ -2385,9 +2385,12 @@ function assertPairLeafKeysOfUpstream(
  * Refuse an extension table whose parent is a pair table
  * (`buildsOver.mode.pair`, read back with its join put back) unless the
  * parent's current entry in the run records each leaf key check the re-root
- * relies on as passed ({@link assertPairLeafKeysPassed}). Reached only for a
- * parent the plan could not judge from a bound contract (one built in this
- * run, or first built): a bound failure refuses the extension at plan.
+ * relies on as passed ({@link assertPairLeafKeysPassed}). A parent whose
+ * bound contract the plan found failing (`unusableUpstream`) is judged by it
+ * only when this run did not rebuild the parent's table: the extension is
+ * then refused (`upstream_table_unusable`), never attempted, so that table
+ * never fails it twice. A parent rebuilt in this run is judged by its fresh
+ * contract instead.
  */
 function assertPairLeafKeysOfParent(
    run: InstructedRun,
@@ -2414,6 +2417,19 @@ function assertPairLeafKeysOfParent(
       } catch {
          entry = undefined;
       }
+   }
+   const table = compiled.tables[persistSource.sourceID];
+   if (
+      table?.unusableUpstream &&
+      table.unusableUnlessParentRebuilt &&
+      !(entry && run.builtAddresses.has(entry.sourceEntityId))
+   ) {
+      throw new MaterializationEligibilityError({
+         reason: "upstream_table_unusable",
+         message:
+            `'${persistSource.name}' is not built: ${table.unusableUpstream}; ` +
+            `a downstream is never built by recomputing its upstreams from raw`,
+      });
    }
    assertPairLeafKeysPassed(
       persistSource.name,

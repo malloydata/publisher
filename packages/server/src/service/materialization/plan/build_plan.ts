@@ -981,7 +981,9 @@ async function collectGeneratedMaterialize(
          kind: materializeKindOf(plan),
          ...plannedFacts(source, args.modelPath),
          materialize: plan,
-         ...(unusableUpstream ? { unusableUpstream } : {}),
+         ...(unusableUpstream
+            ? { unusableUpstream, unusableUnlessParentRebuilt: true as const }
+            : {}),
          gate: await authorSourceGate(sourceID, authorDef, {
             materializer: args.materializer,
             deps,
@@ -993,13 +995,17 @@ async function collectGeneratedMaterialize(
 }
 
 /**
- * Why an extension table over a pair-table parent (`ChainMode.pair`) is
- * refused at plan: the parent's bound contract records a leaf key check its
+ * Why an extension table over a pair-table parent (`ChainMode.pair`) cannot
+ * build over the parent's bound table: its contract records a leaf key check its
  * re-root relies on as failed, or records none. Judged here when the
  * package has bound a contract for the parent's table, so a failure the
  * bind already holds is never found again by a build (`schema_incompatible`
  * for the same table twice); undefined otherwise, when a parent built in
  * the same run, or never bound, is judged at build (run/pair_leaf_gate.ts).
+ * Recorded on the table rather than refused here: a run that rebuilds the
+ * parent before the extension judges the parent's fresh table at build
+ * instead, and any other run refuses the extension with this reason before
+ * building anything (instructed_build.ts, `assertPairLeafKeysOfParent`).
  */
 function pairParentUnusable(
    plan: MaterializePlan,
@@ -2757,8 +2763,13 @@ function refuseUncomparableStrings<
                buildReadsTable(compiled, table, id)
             );
          });
+      // Judged from a pair-table parent's bound contract: applied by the
+      // run, which refuses it unless it rebuilds the parent first
+      // (instructed_build.ts, `assertPairLeafKeysOfParent`).
       const why =
-         table.unusableUpstream ??
+         (table.unusableUnlessParentRebuilt
+            ? undefined
+            : table.unusableUpstream) ??
          (stacks && reads !== undefined && "refused" in reads
             ? `it is built over its upstreams' tables in its storage= ` +
               `destination, which compares strings byte-exact, and ` +

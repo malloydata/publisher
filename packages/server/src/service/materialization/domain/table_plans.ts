@@ -808,6 +808,14 @@ interface TablePlanFacts {
     * with this as its message.
     */
    unusableUpstream?: string;
+   /**
+    * Set for an {@link unusableUpstream} judged from a pair-table parent's
+    * bound contract, which is not refused at plan: a run refuses
+    * the table with {@link unusableUpstream} before building anything,
+    * unless it rebuilt the parent's table first, whose fresh contract the
+    * build-time leaf gate judges instead (instructed_build.ts).
+    */
+   unusableUnlessParentRebuilt?: true;
 }
 
 /**

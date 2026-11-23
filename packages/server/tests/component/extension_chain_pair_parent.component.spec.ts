@@ -14,8 +14,10 @@
  *    child), equal to live before the raw rows went.
  *  - A parent whose leaf key check failed: built in the same run as the
  *    extension, the extension is refused at build (`schema_incompatible`);
- *    once that table is bound, it is refused at plan
- *    (`upstream_table_unusable`), so the next run never fails it again.
+ *    once that table is bound, the plan records why, and a run that does
+ *    not rebuild the parent refuses it (`upstream_table_unusable`) before
+ *    building anything, so that table never fails it again; a run that
+ *    rebuilds the fixed parent builds it.
  *
  * DuckDB, and Postgres when `PUBLISHER_TEST_POSTGRES_URL` names one.
  */
@@ -518,25 +520,74 @@ for (const tier of tiers) {
          );
       });
 
-      it("refuses it at plan once the parent's table is bound, as upstream_table_unusable", () => {
-         const finding = (replanned.annotationFindings ?? []).find(
-            (x) => x.code === "materialize-not-built" && x.subject === "ext",
+      it("records at plan, once the parent's table is bound, why the extension cannot build over it", () => {
+         const ext = Object.values(replanned.tables).find(
+            (t) => t.source.name === "ext",
          );
-         expect(finding?.refused?.reason).toBe("upstream_table_unusable");
-         expect(finding?.message).toMatch(
+         expect(ext?.unusableUpstream).toMatch(
             /extends 'orders'.*leaf key check.*found the key 'items\.item_id' held more than once or NULL/,
          );
       });
 
-      it("never fails it again in the next run: it is not attempted", () => {
-         expect(
-            failuresOf(second).filter((x) => x.sourceName === "ext"),
-         ).toEqual([]);
+      it("never fails it again in a run that does not rebuild the parent: it is refused, not attempted", () => {
+         const failures = failuresOf(second).filter(
+            (x) => x.sourceName === "ext",
+         );
+         expect(failures.map((x) => x.code)).not.toContain(
+            "schema_incompatible",
+         );
          expect(
             Object.values(entriesOf(second)).filter(
-               (e) => e.sourceName === "ext",
+               (e) => e.sourceName === "ext" && e.builtAt !== undefined,
             ),
          ).toEqual([]);
+      });
+   });
+}
+
+for (const tier of tiers) {
+   describe(`an extension of a pair table whose parent is rebuilt after its leaf key check failed (${tier.label})`, () => {
+      const f = new Fixture(tier, MECHANISMS[0].model, true);
+      let replanned: Awaited<ReturnType<typeof compilePackageBuildPlan>>;
+      let fixedRun: Materialization;
+
+      beforeAll(async () => {
+         await f.open();
+         await f.build({});
+         await f.pkg.reloadAllModels(
+            f.pkg.materialization().boundDatabaseEntries() ?? {},
+         );
+         // The parent's raw rows fixed out of band, its definition unchanged:
+         // its bound contract still records the failed check.
+         const warehouse = await f.warehouse();
+         await warehouse.runSQL(
+            `DELETE FROM ${tier.tablePrefix}xp_items WHERE item_id = 102 AND order_id = 4`,
+         );
+         replanned = await compilePackageBuildPlan(f.pkg);
+         // A run that rebuilds the parent.
+         fixedRun = await f.build({ forceRefresh: true });
+      }, 300_000);
+      afterAll(() => f.close());
+
+      it("keeps the extension planned, its stale reason recorded for a run that does not rebuild the parent", () => {
+         expect(
+            (replanned.annotationFindings ?? []).filter(
+               (x) => x.code === "materialize-not-built" && x.subject === "ext",
+            ),
+         ).toEqual([]);
+         expect(
+            Object.values(replanned.tables).find((t) => t.source.name === "ext")
+               ?.unusableUpstream,
+         ).toEqual(expect.any(String));
+      });
+
+      it("builds the extension in the run that rebuilds the fixed parent, judged by its fresh check", () => {
+         expect(failuresOf(fixedRun)).toEqual([]);
+         const ext = Object.values(entriesOf(fixedRun)).find(
+            (e) => e.sourceName === "ext",
+         );
+         expect(ext?.builtAt).toEqual(expect.any(String));
+         expect(ext?.error).toBeUndefined();
       });
    });
 }
