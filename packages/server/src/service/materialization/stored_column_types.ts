@@ -303,6 +303,20 @@ export interface BuildCastOptions {
 const EXACT_INTEGER_STORAGE_TYPE = "DECIMAL(38,0)";
 
 /**
+ * Each type a `storage=` build may store a column the session computes as
+ * `computedType`: a 128-bit integer (a DuckDB `sum` of integers) is cast to
+ * `DECIMAL(38,0)` ({@link castToDeclaredTypes}' exact integers), or, when a
+ * value does not fit, stored as computed, which DuckLake holds as a DOUBLE
+ * ({@link ducklakeStoresAsDouble}); any other type as it is. Numbers are
+ * never cast to a declared type.
+ */
+export function storedTypesAsBuilt(computedType: string): readonly string[] {
+   return ducklakeStoresAsDouble(computedType)
+      ? [EXACT_INTEGER_STORAGE_TYPE, computedType, "DOUBLE"]
+      : [computedType];
+}
+
+/**
  * The columns of a described SELECT that DuckLake would store as a DOUBLE: a
  * 128-bit integer, such as DuckDB's sum of BIGINTs. A build stores each as
  * {@link EXACT_INTEGER_STORAGE_TYPE}; a value past 38 digits fails that cast,
