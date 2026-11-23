@@ -49,6 +49,10 @@ import {
 import type { TableCollations } from "../domain/collation";
 import { collationCatalogBatches } from "./warehouse_sql";
 import { ContractCaptureFailedError } from "../../../errors";
+import {
+   classifySelect,
+   containsStatementSeparator,
+} from "../../single_select";
 import { fakedCollations } from "./column_contract_capture";
 import { fromSubselect } from "../subselect";
 import {
@@ -481,7 +485,13 @@ export async function withDestinationSession<T>(
       }
       if (options.lockdown !== "caller") {
          // Setup done (the destinations attached): confine the session to
-         // them (duckdb_lockdown.ts) before any of its work runs.
+         // them (duckdb_lockdown.ts) before any of its work runs. Each
+         // `alsoRead` destination's data path is allowed too, so the build
+         // can read its files: DuckDB's `allowed_directories` cannot allow a
+         // path for reading alone, so writes there are kept out by the
+         // catalog's READ_ONLY attach and by the one statement such a build
+         // runs that a model shapes, which must be a single SELECT
+         // ({@link assertSingleSelect}): a SELECT cannot `COPY ... TO`.
          await lockDownDestinationSession(session, [
             ...destinationAllowlist(destination),
             ...others.flatMap((other) =>
@@ -493,6 +503,30 @@ export async function withDestinationSession<T>(
          ]);
       }
       return fn(session);
+   }
+}
+
+/**
+ * Throws unless `sql` is exactly one SELECT, by DuckDB's own parser and as
+ * the connector would split it: what a build in a session that also reads
+ * another destination may run from a model. Its data path is in the
+ * session's allowlist, which DuckDB cannot make read-only, so a statement
+ * that writes files (`COPY ... TO`, `EXPORT DATABASE`) must never reach the
+ * session; one SELECT writes nothing.
+ */
+export async function assertSingleSelect(sql: string): Promise<void> {
+   const verdict = containsStatementSeparator(sql)
+      ? { refused: "it holds the connector's statement separator" }
+      : await classifySelect(sql);
+   if ("refused" in verdict || verdict.selects !== 1) {
+      throw new Error(
+         `A build that reads another storage destination runs one SELECT ` +
+            `from its model, and this SQL is not one (${
+               "refused" in verdict
+                  ? verdict.refused
+                  : `${verdict.selects} statements`
+            }), so it is not run`,
+      );
    }
 }
 
@@ -1416,6 +1450,9 @@ export async function buildDownstreamIntoStorage(params: {
             ),
          });
 
+         // Another destination is attached read-only, its data path in the
+         // session's allowlist: the model-shaped SQL must not write there.
+         if (params.readOnly?.length) await assertSingleSelect(sql);
          const incremental = params.incremental;
          if (!incremental) {
             return writeStackedTable(session, params, sql, downstream);

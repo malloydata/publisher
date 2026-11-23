@@ -26,6 +26,7 @@ import {
    wrapPassthrough,
    writePartitionedTable,
    oneFileModel,
+   assertSingleSelect,
 } from "./materialization_build_session";
 import { dropStorageTable, dropStorageTableSql } from "./storage_admin";
 import { identifier } from "../../malloy_text";
@@ -1367,5 +1368,30 @@ describe("buildSourceIntoStorage clears a Snowflake session's query tag", () => 
          runSQL.mockRestore();
          rmSync(dir, { recursive: true, force: true });
       }
+   });
+});
+
+describe("a build that also reads another destination", () => {
+   // Its data path is in the session's allowlist, which DuckDB cannot make
+   // read-only: only one SELECT from the model reaches the session.
+   const other = "/tmp/other-destination/data";
+
+   it("refuses a COPY ... TO into the other destination's path, alone or after a SELECT", async () => {
+      for (const sql of [
+         `COPY (SELECT 1 AS x) TO '${other}/x.parquet'`,
+         `SELECT 1 AS x; COPY (SELECT 1 AS x) TO '${other}/x.parquet'`,
+         `SELECT 1 AS x -- hack: split on this\nCOPY (SELECT 1) TO '${other}/x.parquet'`,
+         `EXPORT DATABASE '${other}'`,
+      ]) {
+         await expect(assertSingleSelect(sql)).rejects.toThrow(
+            /runs one SELECT from its model/,
+         );
+      }
+   });
+
+   it("runs one SELECT", async () => {
+      await assertSingleSelect(
+         "WITH t AS (SELECT 1 AS x) SELECT x FROM t ORDER BY x",
+      );
    });
 });
