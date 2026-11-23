@@ -238,6 +238,29 @@ describe("an incremental extension's plan", () => {
    );
 });
 
+describe("an extension of a parent whose incremental refresh is not built here", () => {
+   const strict = planPackages({});
+   it(
+      "is refused with it, never built over a parent with no table",
+      async () => {
+         const { c } = await strict.plan(`${BASE}
+#(materialize) refresh="incremental" watermark="order_date"
+source: orders is orders_raw
+#(materialize)
+source: ext is orders extend { dimension: big is amount > 10 }
+`);
+         const refused = (c.annotationFindings ?? [])
+            .filter((f) => f.code === "materialize-not-built")
+            .map((f) => [f.subject, f.refused?.reason]);
+         expect(refused.sort()).toEqual([
+            ["ext", "upstream_table_unusable"],
+            ["orders", "incremental_unsupported"],
+         ]);
+      },
+      { timeout: 60000 },
+   );
+});
+
 describe("chainVerdict", () => {
    const parent = examplePlan({ sourceID: "p@file:///pkg/m.malloy" });
    const ext = examplePlan({
