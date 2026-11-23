@@ -81,6 +81,11 @@ interface Fixture {
     * builds reported: no local run's key check records come with it.
     */
    hostManifest(entries: Record<string, unknown>): Promise<void>;
+   /**
+    * Write `model` over the package's model and reload it in place, as an
+    * edit does: the models recompile, and no `storage=` entry is bound again.
+    */
+   editModel(model: string): Promise<void>;
    dispose(): Promise<void>;
 }
 
@@ -295,6 +300,14 @@ async function fixture(
                committer: ReturnType<Fixture["committer"]>;
             }
          ).committer,
+      editModel: async (edited) => {
+         const loaded = await pkg();
+         fs.writeFileSync(
+            path.join(loaded.getPackagePath(), "m.malloy"),
+            edited,
+         );
+         await loaded.reloadAllModels({});
+      },
       hostManifest: async (entries) => {
          const location = path.join(root, `host-${Date.now()}.json`);
          fs.writeFileSync(
@@ -857,6 +870,80 @@ source: flights is warehouse.table('public.flights') extend {
                });
             }
          }
+      });
+   },
+);
+
+describe.skipIf(!url)(
+   "an orchestrated join to a rollup reads its stored source's key check under the primary key the model declares now",
+   () => {
+      // `flights` is stored and read beside `segs`'s rollup through a
+      // join_many on its primary key. Its build checked `id`; an edit then
+      // makes `alt_id`, which repeats, the key the join reads. The table and
+      // its contract stay bound, but the check under `id` says nothing of
+      // `alt_id`: read through the rollup, flight 1's segments would be met
+      // once per flight sharing alt_id 1.
+      const model = (
+         key: string,
+      ) => `source: segs is warehouse.table('public.segs') extend {
+  primary_key: seg_id
+  #(rollup) grain=["flight_id"] storage="lake"
+  measure: seg_miles is miles.sum()
+}
+
+#(materialize) storage="lake"
+source: flights is warehouse.table('public.flights') extend {
+  primary_key: ${key}
+  join_many: segs on segs.flight_id = ${key}
+  measure: flight_count is count()
+}
+`;
+      const SEG =
+         "run: flights -> { group_by: carrier; aggregate: flight_count, segs.seg_miles; order_by: carrier }";
+      let f: Fixture;
+      beforeAll(async () => {
+         f = await fixture(
+            model("id"),
+            [
+               `CREATE TABLE flights AS SELECT * FROM (VALUES
+                  (1, 1, 'AA'), (2, 2, 'UA'), (3, 1, 'AA'), (4, 4, 'UA'))
+                  AS t(id, alt_id, carrier)`,
+               SEGS,
+            ],
+            false,
+         );
+         const built = await f.build();
+         expect(built.status).toBe("MANIFEST_FILE_READY");
+         await f.hostManifest(
+            (built.manifest as { entries: Record<string, unknown> }).entries,
+         );
+      }, 120_000);
+      afterAll(async () => {
+         await f?.dispose();
+      });
+
+      it("serves the join from storage while the checked key is the one it reads", async () => {
+         const served = await f.query(SEG);
+         expect(served.rows).toEqual([
+            { carrier: "AA", flight_count: 2, seg_miles: 150 },
+            { carrier: "UA", flight_count: 2, seg_miles: 500 },
+         ]);
+         expect(served.servedFrom).toBe("storage");
+      });
+
+      it("answers live once a reload moves the primary key, with no storage rebind", async () => {
+         await f.editModel(model("alt_id"));
+         const answer = await f.query(SEG);
+         // Live's own answer over a key the data holds twice: it counts
+         // AA's two flights, both alt_id 1, as one flight, and meets
+         // flight 1's segments once per row. Read through the rollup, the
+         // stale check would have answered 2 and 150.
+         expect(answer.rows).toEqual([
+            { carrier: "AA", flight_count: 1, seg_miles: 300 },
+            { carrier: "UA", flight_count: 2, seg_miles: 500 },
+         ]);
+         expect(answer.servedFrom).toBeUndefined();
+         expect(answer.reasons).toContain("COUNT_SEMANTICS");
       });
    },
 );

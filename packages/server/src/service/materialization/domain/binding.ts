@@ -554,6 +554,28 @@ function rollupKeyOf(entry: {
 }
 
 /**
+ * `binding` with the key checks `entry` records now (its stored sources'
+ * primary keys, and a rollup's own key), in place of the ones it was made
+ * with: what a reload that moves a primary key gives a `storage=` binding
+ * without binding its entries again.
+ */
+export function withEntryKeyChecks(
+   binding: Binding,
+   entry: ManifestEntry,
+): Binding {
+   const { primaryKeys: _was, rollupKey: _wasKey, ...rest } = binding;
+   const primaryKeys = primaryKeysOf(entry as never);
+   const rollupKey = isRollupOrigin(entry.origin)
+      ? rollupKeyOf(entry as never)
+      : undefined;
+   return {
+      ...rest,
+      ...(primaryKeys ? { primaryKeys } : {}),
+      ...(rollupKey ? { rollupKey } : {}),
+   };
+}
+
+/**
  * The `storage=` bindings a run's manifest entries make: one per name that
  * reads each table (its builder, then its aliases), each with the plan's
  * sourceIDs for it. An entry with no complete column binds nothing. Each is

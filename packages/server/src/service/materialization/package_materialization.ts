@@ -72,6 +72,7 @@ import {
    pin,
    type Snapshot,
    underCompilerKeys,
+   withEntryKeyChecks,
 } from "./domain/binding";
 import {
    observedDatabaseColumns,
@@ -1007,29 +1008,50 @@ export class PackageMaterialization {
    }
 
    /**
+    * The key checks {@link withRecordedKeyChecks} read off a contract, by
+    * identity: never a local run's record, so each is read again, under the
+    * primary keys the models declare then, whenever its entry is.
+    */
+   private readonly contractKeyChecks = new WeakSet<object>();
+
+   /**
     * `entries`, each that carries no key check record of a local run
     * (`keyUniqueness`) given the rollup and source key checks its contract
     * records (`keyUniquenessOfContract`), for the sources the models declare
     * now: so a table a host built and bound serves a join to a rollup as one
-    * this server built does. A local record, when there is one, stands.
+    * this server built does. A local record, when there is one, stands. One
+    * read off a contract before is read again, never kept: a primary key the
+    * models moved since then finds no check recorded under it, and its joins
+    * to rollups answer live.
     */
    private withRecordedKeyChecks<
       E extends { contract?: unknown; keyUniqueness?: unknown },
-   >(entries: Record<string, E>): Record<string, E> {
+   >(entries: Readonly<Record<string, E>>): Readonly<Record<string, E>> {
       let sources: KeyedSource[] | undefined;
       let out: Record<string, E> | undefined;
       for (const [id, entry] of Object.entries(entries)) {
+         const previous = entry.keyUniqueness;
+         const fromContract =
+            typeof previous === "object" &&
+            previous !== null &&
+            this.contractKeyChecks.has(previous);
          if (
-            entry.keyUniqueness !== undefined ||
+            (previous !== undefined && !fromContract) ||
             entry.contract === undefined
          ) {
             continue;
          }
          sources ??= this.keyedSources();
          const keyUniqueness = keyUniquenessOfContract(entry.contract, sources);
-         if (!keyUniqueness) continue;
+         if (!keyUniqueness && !fromContract) continue;
          out ??= { ...entries };
-         out[id] = { ...entry, keyUniqueness };
+         if (keyUniqueness) {
+            this.contractKeyChecks.add(keyUniqueness);
+            out[id] = { ...entry, keyUniqueness };
+         } else {
+            const { keyUniqueness: _stale, ...rest } = entry;
+            out[id] = rest as E;
+         }
       }
       return out ?? entries;
    }
@@ -1086,6 +1108,20 @@ export class PackageMaterialization {
                entry.lateRows ? [[id, entry.lateRows]] : [],
             ),
          );
+      } else if (update.models) {
+         // New models may declare other primary keys: the `storage=`
+         // tables' key checks are read off their contracts again, under them.
+         const before = this.storageEntries;
+         const storage = this.withRecordedKeyChecks(before);
+         if (storage !== before) {
+            this.storageEntries = storage;
+            this.storageBindings = this.storageBindings.map((b) => {
+               const entry = storage[b.virtualHandle];
+               return entry && entry !== before[b.virtualHandle]
+                  ? withEntryKeyChecks(b, entry)
+                  : b;
+            });
+         }
       }
    }
 
