@@ -41,8 +41,10 @@ import type {
    Runtime,
    SourceDef,
 } from "@malloydata/malloy";
+import { Manifest } from "@malloydata/malloy";
 import * as path from "path";
 import { fileURLToPath, pathToFileURL } from "url";
+import { readsTable } from "../domain/table_name";
 import { incrementalUnbuildableReason } from "./incremental_policy";
 import {
    nearMissGateLines,
@@ -144,9 +146,29 @@ import {
    type DeclaredPersistQuery,
 } from "./persisted_query";
 import { tryCompilePersistedViewCompanion } from "./persisted_view_compile";
-import { overStoredProven } from "./over_stored_proof";
-import { UPSTREAM_TABLE_UNUSABLE_REASON } from "./downstream_upstreams";
+import { overStoredProven, sameColumnsOverStandIn } from "./over_stored_proof";
+import {
+   placementReason,
+   reachedUpstreams,
+   UPSTREAM_TABLE_UNUSABLE_REASON,
+} from "./downstream_upstreams";
+import type {
+   BoundStorageColumns,
+   BoundStorageContract,
+   ChainStringReadsRequest,
+   PlanChainBuildText,
+   PlanChainStringReads,
+} from "../domain/chain_build";
+import { type StringReads, stringReadsRefusal } from "../domain/string_reads";
+import { SourceMap } from "../text/source_map";
+import { quotedIdentifier } from "../../malloy_text";
+import type {
+   PersistedViewPlan,
+   StoredInDestination,
+} from "../domain/table_plans";
+import { type StorageOverStored, storedColumnsOf } from "./storage_over_stored";
 import { deletingWindowsOf } from "./rolling_window";
+import { storedMaterializeUpstream } from "./stored_base_copy";
 import {
    tryCompileRollupCompanion,
    type MaterializedBases,
@@ -182,7 +204,9 @@ import {
 import { quoteIdentifier } from "../../quoting";
 import {
    addressSQL,
+   buildSQLOf,
    compilerBuildId,
+   computeSourceEntityId,
    foldDistinctTableNames,
    isUnkeyable,
    planAddresses,
@@ -1002,6 +1026,11 @@ async function collectGeneratedRollups(
       getRuntime: SynthesizedRuntimeFactory;
       modelDef: unknown;
       materialized?: MaterializedBases;
+      /** The author's model, where a stored-base build's strings are read. */
+      materializer: ModelMaterializer;
+      stringReads?: StringReadsPorts;
+      chainBuildText?: PlanChainBuildText;
+      boundStorageColumns?: BoundStorageColumns;
    },
 ): Promise<void> {
    const { generated, refused, omitted, failure } =
@@ -1039,21 +1068,44 @@ async function collectGeneratedRollups(
    if (kept.length === 0) return;
    const deps = gateDepsFor(generated.model, `${args.modelPath}#preaggregate`);
    for (const { source, plan } of kept) {
+      const storedBase = generated.storedBaseBuilds.get(source.sourceID);
+      const stringReads =
+         storedBase && plan.storage !== undefined
+            ? await planStringReads(
+                 args.stringReads,
+                 args.materializer,
+                 {
+                    rollup: {
+                       baseName: plan.baseSourceName,
+                       grain: plan.grainDimensions,
+                       measures: plan.measures.map((m) => m.name),
+                    },
+                    stored: [storedBase.baseSourceID],
+                 },
+                 plan.storage,
+              )
+            : undefined;
+      // Proven at plan, and recorded.
+      const overStored = provenRollupOverStored(
+         source,
+         plan,
+         generated.overStoredBases.get(source.sourceID),
+         parts.tables,
+      );
+      const unusableUpstream =
+         storedBase && plan.storage !== undefined
+            ? storedBaseDecline(args, source, plan, storedBase, plan.storage)
+            : !storedBase && !overStored.overStoredBase
+              ? rollupOverDefinition(args, plan)
+              : undefined;
       parts.tables[source.sourceID] = {
          kind: "rollup",
+         ...(unusableUpstream ? { unusableUpstream } : {}),
          ...plannedFacts(source, args.modelPath),
          rollup: plan,
-         // Proven at plan, and recorded: any other rollup builds from the
-         // warehouse, and keeps its place in the order.
-         ...provenRollupOverStored(
-            source,
-            plan,
-            generated.overStoredBases.get(source.sourceID),
-            parts.tables,
-         ),
-         ...(generated.storedBaseBuilds.has(source.sourceID)
-            ? { storedBase: generated.storedBaseBuilds.get(source.sourceID) }
-            : {}),
+         ...overStored,
+         ...(storedBase ? { storedBase } : {}),
+         ...(stringReads ? { stringReads } : {}),
          gate: await classifyPersistSourceGate(
             source,
             modelDefOf(generated.model),
@@ -1096,6 +1148,264 @@ function provenRollupOverStored(
 }
 
 /**
+ * The plan's ports for the strings a `storage=` build over stored upstreams
+ * compares (`domain/string_reads.ts`): `read` reads them from the author's
+ * compile; `boundContract`, when the package has bound its tables, judges
+ * them here against each upstream's bound contract, so a build that cannot
+ * compare them as live does is refused at plan. Absent `read`, every such
+ * build is refused; absent `boundContract`, each is judged at build against
+ * the contract its upstream's table records then.
+ */
+type StringReadsPorts = {
+   read: PlanChainStringReads;
+   boundContract?: BoundStorageContract;
+};
+
+/**
+ * The strings the build `request` names compares in `destination`, read in
+ * `materializer`'s model, refused here when every upstream it reads has a
+ * bound contract and one of them does not compare a string as the build
+ * needs ({@link StringReadsPorts}).
+ */
+async function planStringReads(
+   ports: StringReadsPorts | undefined,
+   materializer: ModelMaterializer,
+   request: ChainStringReadsRequest,
+   destination: string,
+): Promise<StringReads> {
+   if (!ports) {
+      return { refused: "this package reads no string a build compares" };
+   }
+   let reads: StringReads;
+   try {
+      reads = await ports.read(
+         (query) => materializer.loadQuery(query),
+         request,
+      );
+   } catch {
+      return { refused: "the strings it compares could not be read" };
+   }
+   if ("refused" in reads || !ports.boundContract) return reads;
+   const contracts = new Map(
+      request.stored.map((id) => [id, ports.boundContract!(id, destination)]),
+   );
+   if ([...contracts.values()].some((c) => c === undefined)) return reads;
+   const why = stringReadsRefusal(reads, contracts);
+   return why === undefined ? reads : { refused: why };
+}
+
+/**
+ * Why a persisted view or query is refused at plan: it reads a
+ * `#(materialize)` upstream's table it cannot build from, or it was offered
+ * the build over its upstreams' tables and that compile failed (unless
+ * `proven`). A view or query is never built from its definition over a
+ * persisted upstream.
+ */
+function viewUnusableUpstream(
+   generated: {
+      overStoredUnusable: ReadonlyMap<string, string>;
+      overStoredCandidates: ReadonlySet<string>;
+      overStoredUpstreams: ReadonlyMap<string, readonly string[]>;
+   },
+   sourceID: string,
+   proven: boolean,
+): string | undefined {
+   const unusable = generated.overStoredUnusable.get(sourceID);
+   if (unusable !== undefined) return unusable;
+   const declined =
+      !proven && generated.overStoredCandidates.has(sourceID)
+         ? (generated.overStoredUpstreams.get(sourceID) ?? [])
+         : [];
+   if (declined.length === 0) return undefined;
+   const names = declined
+      .map((id) => `'${splitSourceID(id)?.name ?? id}'`)
+      .join(", ");
+   return (
+      `its build over the table of persisted upstream ${names} does not ` +
+      `compile (it reads what that table does not hold, such as a measure ` +
+      `or view of an inlined join's joined source)`
+   );
+}
+
+/**
+ * Why a rollup whose base reads a persisted upstream is refused when no
+ * build over that upstream's table is planned for it (none was offered, or
+ * its compile did not prove the planned table): it would be built from its
+ * base's definition, recomputing the upstream from raw. Undefined for a
+ * rollup over a base no persisted source is under, which builds from its
+ * rows as planned.
+ */
+function rollupOverDefinition(
+   args: {
+      modelPath: string;
+      packagePath: string;
+      modelDef: unknown;
+      materialized?: MaterializedBases;
+   },
+   plan: RollupPlan,
+): string | undefined {
+   if (plan.baseSourceID === undefined) return undefined;
+   const map = SourceMap.of(args.modelDef);
+   const base = map.node(plan.baseSourceID)?.def;
+   if (base === undefined) return undefined;
+   const upstreams = reachedUpstreams(base, args.modelDef, map);
+   if (upstreams.length === 0) return undefined;
+   const materialize = storedMaterializeUpstream(
+      map,
+      base,
+      args.modelDef,
+      path.join(args.packagePath, args.modelPath),
+      args.materialized,
+   );
+   const why =
+      materialize && "unusable" in materialize
+         ? materialize.unusable
+         : `no build over its upstream ` +
+           `${upstreams.map((u) => `'${u.name}'`).join(", ")}'s table ` +
+           `compiled to the planned table`;
+   return `its base reads a persisted upstream, and ${why}`;
+}
+
+/**
+ * Why a `storage=` rollup cannot be built over its base's table in its
+ * destination, decided from the text it builds from there (the served
+ * copy's chain text, over a stand-in of the base's table: its bound
+ * columns, else the ones its build writes), or undefined when the text is
+ * written. What the text compiles to over the real table is the build's to
+ * find: it depends on that table's columns.
+ */
+function storedBaseDecline(
+   args: {
+      modelPath: string;
+      modelDef: unknown;
+      materialized?: MaterializedBases;
+      chainBuildText?: PlanChainBuildText;
+      boundStorageColumns?: BoundStorageColumns;
+   },
+   source: PersistSource,
+   plan: RollupPlan,
+   storedBase: {
+      baseSourceID: string;
+      companion: { url: string; text: string };
+   },
+   destination: string,
+): string | undefined {
+   const base = `its base '${plan.baseSourceName}''s table in '${destination}'`;
+   if (!args.chainBuildText) {
+      return `no served copy writes its text over ${base}`;
+   }
+   // As bound, else as its build writes them: a `#(materialize)` base's
+   // compiled output, a `#@ persist` base's output fields.
+   const columns =
+      args.boundStorageColumns?.(storedBase.baseSourceID, destination) ??
+      args.materialized?.plans.find(
+         (p) => p.sourceID === storedBase.baseSourceID,
+      )?.storedColumns ??
+      storedColumnsOf(
+         SourceMap.of(args.modelDef).node(storedBase.baseSourceID)?.def,
+      );
+   if (columns === undefined) {
+      return `${base} holds no columns a stored table can stand in for`;
+   }
+   const handle = "publisher_stand_in_base";
+   const text = args.chainBuildText(
+      {
+         downstream: { sourceID: source.sourceID, name: source.name },
+         destination: { name: destination, schema: "main" },
+         upstreams: [
+            {
+               entry: {
+                  sourceEntityId: handle,
+                  sourceName: plan.baseSourceName,
+                  physicalTableName: handle,
+                  connectionName: destination,
+                  storageDestinationName: destination,
+                  schema: columns.map((c) => ({ ...c })),
+               },
+               names: { [plan.baseSourceName]: [storedBase.baseSourceID] },
+            },
+         ],
+         rollup: {
+            baseSourceID: storedBase.baseSourceID,
+            companion: storedBase.companion,
+         },
+      },
+      {
+         modelPath: args.modelPath,
+         modelDef: args.modelDef,
+         ...(args.materialized
+            ? {
+                 materializePlans: Object.fromEntries(
+                    args.materialized.plans.map((p) => [p.sourceID, p]),
+                 ),
+              }
+            : {}),
+      },
+   );
+   if (text === undefined) return `its model does not declare ${base}`;
+   return "declined" in text
+      ? `${base} cannot be re-rooted on that table: ${text.declined}`
+      : undefined;
+}
+
+/**
+ * A `storage=` view's or named query's compared strings, built in its
+ * destination over its upstreams' stored tables (`stored`).
+ */
+function inDestinationStringReads(
+   args: { materializer: ModelMaterializer; stringReads?: StringReadsPorts },
+   stored: StoredInDestination,
+   planned: PersistedViewPlan | PersistedQueryPlan,
+): Promise<StringReads> {
+   const run =
+      planned.kind === "query"
+         ? `run: ${quotedIdentifier(planned.queryName)}`
+         : `run: ${quotedIdentifier(planned.sourceName)} -> ${quotedIdentifier(planned.viewName)}`;
+   return planStringReads(
+      args.stringReads,
+      args.materializer,
+      { run, stored: stored.upstreams.map((u) => u.sourceID) },
+      planned.storage!,
+   );
+}
+
+/**
+ * A chained `storage=` `#@ persist` source's compared strings: one that is
+ * a query over upstreams stored in its own destination, which its build
+ * stacks on there. Undefined for any other source.
+ */
+async function chainedStringReads(
+   source: PersistSource,
+   modelDef: ModelDef,
+   materializer: ModelMaterializer,
+   ports: StringReadsPorts | undefined,
+): Promise<StringReads | undefined> {
+   const destination = declaredStorage(source)?.trim();
+   if (!destination) return undefined;
+   const map = SourceMap.of(modelDef);
+   const def = map.node(source.sourceID)?.def as
+      | { type?: unknown; extends?: unknown }
+      | undefined;
+   // An `extend` of a stored source runs that source's query: its table,
+   // or a projection of it, not a build over it that compares anything.
+   if (def?.type !== "query_source" || typeof def.extends === "string") {
+      return undefined;
+   }
+   const stored = reachedUpstreams(def, modelDef, map)
+      .filter(
+         (u) => u.storage === destination && u.sourceID !== source.sourceID,
+      )
+      .map((u) => u.sourceID);
+   if (stored.length === 0) return undefined;
+   return planStringReads(
+      ports,
+      materializer,
+      { downstream: source.name, stored },
+      destination,
+   );
+}
+
+/**
  * The `#@ persist` views a model declares:
  * one generated build source per view, planned only in the model that
  * declares the view's source, so a view is listed once however many models
@@ -1117,12 +1427,21 @@ async function collectGeneratedPersistedViews(
       materializer: ModelMaterializer;
       /** The model's `#(materialize)` companion, when it compiled one. */
       materialized?: MaterializedBases;
+      chainBuildText?: PlanChainBuildText;
+      boundStorageColumns?: BoundStorageColumns;
+      stringReads?: StringReadsPorts;
    },
 ): Promise<void> {
    const authorDef: ModelDef = modelDefOf(args.malloyModel);
    const { generated, refused, refusedQueries, omitted, failure } =
       await tryCompilePersistedViewCompanion({
          ...(args.materialized ? { materialized: args.materialized } : {}),
+         ...(args.chainBuildText
+            ? { chainBuildText: args.chainBuildText }
+            : {}),
+         ...(args.boundStorageColumns
+            ? { boundStorageColumns: args.boundStorageColumns }
+            : {}),
          packagePath: args.packagePath,
          modelPath: args.modelPath,
          modelDef: authorDef,
@@ -1202,7 +1521,10 @@ async function collectGeneratedPersistedViews(
             !overStoredProven(
                source,
                overStoredBase,
-               rerooted?.kind === "materialize" ? rerooted.source : undefined,
+               // A pair table is re-rooted with its join put back.
+               rerooted?.kind === "materialize" || rerooted?.kind === "pair"
+                  ? rerooted.source
+                  : undefined,
             )
          ) {
             const reason =
@@ -1237,13 +1559,47 @@ async function collectGeneratedPersistedViews(
             continue;
          }
       }
+      // A `storage=` view or query over upstreams in its own destination:
+      // built from its text there, proven here, or refused (never
+      // recomputed from raw).
+      const inDestination = generated.storageOverStored.get(source.sourceID);
+      const unbuildable =
+         inDestination &&
+         storageOverStoredRefusal(
+            inDestination,
+            source,
+            query ?? plan!,
+            args.modelPath,
+         );
+      if (unbuildable) {
+         addAnnotationFinding(parts, unbuildable);
+         continue;
+      }
       kept++;
+      const stringReads =
+         inDestination && "stored" in inDestination
+            ? await inDestinationStringReads(
+                 args,
+                 inDestination.stored,
+                 query ?? plan!,
+              )
+            : undefined;
       // A persisted query's table is a view's, built from the same
       // companion and read by an exact call.
+      const unusableUpstream = viewUnusableUpstream(
+         generated,
+         source.sourceID,
+         overStoredBase !== undefined,
+      );
       parts.tables[source.sourceID] = {
          kind: "view",
          ...plannedFacts(source, args.modelPath),
          ...(overStoredBase ? { overStoredBase } : {}),
+         ...(unusableUpstream ? { unusableUpstream } : {}),
+         ...(inDestination && "stored" in inDestination
+            ? { storedInDestination: inDestination.stored }
+            : {}),
+         ...(stringReads ? { stringReads } : {}),
          gate: query
             ? await persistedQueryGate(source, query, ctx)
             : // The view's rows are its source's: its gate is the source's.
@@ -1458,6 +1814,16 @@ export async function collectModelBuildPlan(
        * absent, each model compiles its own.
        */
       crossFileCompanions?: CrossFileCompanions;
+      /**
+       * The served copy's chain text, for a `storage=` view or query over
+       * upstreams in its own destination (storage_over_stored.ts); absent,
+       * such a view or query is refused.
+       */
+      chainBuildText?: PlanChainBuildText;
+      /** The stored columns bound for an upstream (storage_over_stored.ts). */
+      boundStorageColumns?: BoundStorageColumns;
+      /** See {@link StringReadsPorts}. */
+      stringReads?: StringReadsPorts;
    },
 ): Promise<void> {
    addAccessReads(parts, args.malloyModel);
@@ -1498,6 +1864,8 @@ async function collectGeneratedTables(
       getRuntime,
       keyCheckCompilers,
       crossFileCompanions,
+      chainBuildText,
+      boundStorageColumns,
    } = args;
    // The model's own load-failure lines, read off the author's model as the
    // load reads them (Model.preaggregateViolations, annotationNearMisses).
@@ -1570,6 +1938,9 @@ async function collectGeneratedTables(
          malloyModel,
          materializer,
          ...(materialized ? { materialized } : {}),
+         ...(chainBuildText ? { chainBuildText } : {}),
+         ...(boundStorageColumns ? { boundStorageColumns } : {}),
+         ...(args.stringReads ? { stringReads: args.stringReads } : {}),
       });
    }
    // Rollups: v1 `#@ preaggregate` lines are read as their declarations, and
@@ -1581,6 +1952,10 @@ async function collectGeneratedTables(
       getRuntime,
       modelDef: modelDefOf(malloyModel),
       materialized,
+      materializer,
+      ...(args.stringReads ? { stringReads: args.stringReads } : {}),
+      ...(chainBuildText ? { chainBuildText } : {}),
+      ...(boundStorageColumns ? { boundStorageColumns } : {}),
    });
 }
 
@@ -1841,8 +2216,24 @@ async function planV1PersistSources(
          modelDef: modelDefOf(malloyModel),
          deps: gateDepsFor(malloyModel, modelPath),
       };
+      // Read in the declaring model, where the source's names are its own;
+      // a model importing it keeps that reading.
+      const stringReads =
+         declaringModelPath(
+            sourceIDFileURL(sourceID),
+            packagePath,
+            modelPath,
+         ) === modelPath
+            ? await chainedStringReads(
+                 source,
+                 classificationCtx.modelDef,
+                 materializer,
+                 args.stringReads,
+              )
+            : parts.tables[sourceID]?.stringReads;
       parts.tables[sourceID] = {
          kind: "persist",
+         ...(stringReads ? { stringReads } : {}),
          // The DECLARING model, never this one: a model that imports the
          // source walks it again, and the last walk would otherwise decide
          // its path.
@@ -2194,16 +2585,173 @@ export function finishBuildPlan(
    );
    const known = refuseUpstreamUnread(refused);
    return refuseOverMissingUpstreams(
-      ctx.keepIncrementalUnbuildable
-         ? known
-         : refuseIncrementalUnbuildable(known),
+      refuseUncomparableStrings(
+         refuseAcrossPlacements(
+            ctx.keepIncrementalUnbuildable
+               ? known
+               : refuseIncrementalUnbuildable(known),
+         ),
+      ),
    );
 }
 
 /**
- * Refuse, as `upstream_table_unusable`, each downstream (a persisted view or
- * query, or a rollup) planned to build over an upstream's table
- * (`overStoredBase`) whose upstream is not planned, or is refused: the
+ * Refuse, as `upstream_table_unusable`, each table whose build reads an
+ * upstream's table it cannot read where it is built ({@link
+ * placementReason}): a warehouse table over a `storage=` table, or a
+ * `storage=` table over one in another destination. Read from the build
+ * graph's edges, once, so a run never finds out; the refusal names the
+ * upstream and both placements.
+ */
+function refuseAcrossPlacements<
+   T extends Omit<FinishedBuildPlan, "connections">,
+>(compiled: T): T {
+   const findings: PackageAnnotationFinding[] = [];
+   const dropped = new Set<string>();
+   for (const build of compiled.builds) {
+      for (const [sourceID, reads] of Object.entries(build.dependsOn)) {
+         const table = compiled.tables[sourceID];
+         if (!table || dropped.has(sourceID)) continue;
+         const placed = declaredStorage(table.source)?.trim() || undefined;
+         for (const upstreamID of reads) {
+            const upstream = compiled.tables[upstreamID];
+            if (!upstream) continue;
+            const why = placementReason(placed, {
+               name: upstream.source.name,
+               storage: declaredStorage(upstream.source)?.trim() || undefined,
+            });
+            if (why === undefined) continue;
+            // A persisted source's edge may be a join only its read applies
+            // (declared in its `extend`): refused only when its build reads
+            // the upstream's table. A view's or rollup's edges are what its
+            // definition reads.
+            if (
+               (table.kind === "persist" || table.kind === "materialize") &&
+               !buildReadsTable(compiled, table, upstreamID)
+            ) {
+               continue;
+            }
+            dropped.add(sourceID);
+            findings.push(
+               notBuiltFinding(
+                  compiled,
+                  sourceID,
+                  UPSTREAM_TABLE_UNUSABLE_REASON,
+                  why,
+               ),
+            );
+            break;
+         }
+      }
+   }
+   return dropped.size === 0
+      ? compiled
+      : withoutSources(compiled, findings, dropped);
+}
+
+/**
+ * Refuse, as `upstream_table_unusable`, each `storage=` table built over its
+ * upstreams' stored tables whose compared strings the plan refused
+ * (`TablePlan.stringReads`): they could not be read, or a bound upstream
+ * table records a column compared otherwise than the build needs, so the
+ * destination, byte-exact, would write other rows than live computes.
+ * Decided here, from the recorded contracts and the build's query, so a run
+ * never probes a collation.
+ */
+function refuseUncomparableStrings<
+   T extends Omit<FinishedBuildPlan, "connections">,
+>(compiled: T): T {
+   const findings: PackageAnnotationFinding[] = [];
+   const dropped = new Set<string>();
+   const edges = new Map<string, string[]>();
+   for (const build of compiled.builds) {
+      for (const [id, reads] of Object.entries(build.dependsOn)) {
+         edges.set(id, [...(edges.get(id) ?? []), ...reads]);
+      }
+   }
+   for (const [sourceID, table] of Object.entries(compiled.tables)) {
+      const reads = table.stringReads;
+      // A persisted source stacks only when its build reads the table of
+      // an upstream in its own destination (a join only its read applies,
+      // or a warehouse upstream its build reads there, does not).
+      const placed = declaredStorage(table.source)?.trim() || undefined;
+      const stacks =
+         table.kind !== "persist" ||
+         (edges.get(sourceID) ?? []).some((id) => {
+            const upstream = compiled.tables[id];
+            return (
+               upstream !== undefined &&
+               placed !== undefined &&
+               declaredStorage(upstream.source)?.trim() === placed &&
+               buildReadsTable(compiled, table, id)
+            );
+         });
+      const why =
+         table.unusableUpstream ??
+         (stacks && reads !== undefined && "refused" in reads
+            ? `it is built over its upstreams' tables in its storage= ` +
+              `destination, which compares strings byte-exact, and ` +
+              reads.refused
+            : undefined);
+      if (why === undefined) continue;
+      dropped.add(sourceID);
+      findings.push(
+         notBuiltFinding(
+            compiled,
+            sourceID,
+            UPSTREAM_TABLE_UNUSABLE_REASON,
+            `${why}; a downstream is never built by recomputing its ` +
+               `upstreams from raw`,
+         ),
+      );
+   }
+   return dropped.size === 0
+      ? compiled
+      : withoutSources(compiled, findings, dropped);
+}
+
+/**
+ * Whether `table`'s build SQL reads the table of the planned upstream at
+ * `upstreamID`, rendered with that upstream's table in its manifest. A
+ * render that fails reads it (fail closed).
+ */
+function buildReadsTable(
+   compiled: Omit<FinishedBuildPlan, "connections">,
+   table: Omit<FinishedBuildPlan, "connections">["tables"][string],
+   upstreamID: string,
+): boolean {
+   const upstream = compiled.tables[upstreamID];
+   if (!upstream) return false;
+   const probe = "publisher_placement_probe";
+   try {
+      const manifest = new Manifest();
+      manifest.update(
+         computeSourceEntityId(
+            upstream.source,
+            compiled.connectionDigests,
+            upstream.target,
+            compiled.tableFolds,
+            compiled.upstreamSchemas,
+         ),
+         { tableName: probe },
+      );
+      manifest.update(compilerBuildId(upstream.source, upstream.target), {
+         tableName: probe,
+      });
+      return readsTable(
+         buildSQLOf(table.source, manifest.buildManifest, table.target),
+         probe,
+      );
+   } catch {
+      return true;
+   }
+}
+
+/**
+ * Refuse, as `upstream_table_unusable`, each downstream planned to build over
+ * an upstream's table whose upstream is not planned, or is refused (a
+ * persisted view or query, or a rollup, over its `overStoredBase`; a
+ * persisted source whose build reads a refused upstream's table): the
  * upstream's declaration is read from its notes, but it has no table to
  * read, and a downstream is never built by recomputing its upstream from
  * raw. Decided here, once every table and its eligibility is known, so a
@@ -2215,9 +2763,26 @@ function refuseOverMissingUpstreams<
    const verdicts = planVerdicts(compiled);
    const findings: PackageAnnotationFinding[] = [];
    const dropped = new Set<string>();
+   // A persisted source's upstreams: the tables its build reads.
+   const edges = new Map<string, string[]>();
+   for (const build of compiled.builds) {
+      for (const [id, reads] of Object.entries(build.dependsOn)) {
+         edges.set(id, [...(edges.get(id) ?? []), ...reads]);
+      }
+   }
    for (const [sourceID, table] of Object.entries(compiled.tables)) {
-      if (table.kind !== "view" && table.kind !== "rollup") continue;
-      for (const upstreamID of table.overStoredBase?.upstreamSourceIDs ?? []) {
+      const upstreamIDs =
+         table.kind === "view" || table.kind === "rollup"
+            ? (table.overStoredBase?.upstreamSourceIDs ?? [])
+            : (edges.get(sourceID) ?? []).filter((id) => {
+                 const wire = verdicts.get(id)?.wire;
+                 return (
+                    wire !== undefined &&
+                    ("failed" in wire || wire.refused !== undefined) &&
+                    buildReadsTable(compiled, table, id)
+                 );
+              });
+      for (const upstreamID of upstreamIDs) {
          const upstream = compiled.tables[upstreamID];
          const verdict = verdicts.get(upstreamID)?.wire;
          const refusedWhy =
@@ -2810,4 +3375,51 @@ export function collectIncrementalDeclarations(
       }
    }
    return declarations;
+}
+
+/**
+ * The refusal of a `storage=` view or query over upstreams in its own
+ * destination whose build there was not proven (storage_over_stored.ts), as
+ * `upstream_table_unusable`, or undefined when it was: it is built from the
+ * proven text, or not at all, never by recomputing its upstreams from raw.
+ */
+function storageOverStoredRefusal(
+   inDestination: StorageOverStored,
+   source: PersistSource,
+   planned: PersistedViewPlan | PersistedQueryPlan,
+   modelPath: string,
+): PackageAnnotationFinding | undefined {
+   const why =
+      "refused" in inDestination
+         ? inDestination.refused
+         : sameColumnsOverStandIn(inDestination.source, source)
+           ? undefined
+           : "its build over them did not compile to the planned table (a Publisher bug worth reporting)";
+   if (why === undefined) return undefined;
+   const reason =
+      `its upstreams are stored in its storage= destination ` +
+      `'${planned.storage}', where it is built over their tables, and ` +
+      `${why}; a view or query is never built by recomputing its ` +
+      `upstreams from raw`;
+   return planned.kind === "query"
+      ? persistedQueryRefusalFinding(
+           {
+              queryName: planned.queryName,
+              reason,
+              refusal: UPSTREAM_TABLE_UNUSABLE_REASON,
+              declaringURL: planned.declaringURL,
+              ...(planned.storage !== undefined
+                 ? { storage: planned.storage }
+                 : {}),
+           },
+           modelPath,
+        )
+      : persistedViewRefusalFinding(
+           {
+              ...planned,
+              reason,
+              outcome: { refused: UPSTREAM_TABLE_UNUSABLE_REASON },
+           },
+           modelPath,
+        );
 }

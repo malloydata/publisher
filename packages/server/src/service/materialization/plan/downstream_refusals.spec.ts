@@ -204,3 +204,50 @@ source: s is a extend {
       );
    });
 });
+
+describe("a table whose build reads an upstream's table it cannot read where it is built", () => {
+   it("is refused at plan: a storage= table over one in another destination, and a database table over a storage= one, each naming the upstream and both placements", async () => {
+      packages.settings({
+         PUBLISHER_MATERIALIZE: "true",
+         PERSIST_STORAGE_MODE: "on",
+      });
+      const { refused, names } = await refusedOf({
+         "m.malloy": `${RAW}
+#@ persist storage="lake"
+source: a is raw -> { select: cat, amt }
+
+#@ persist storage="lake2"
+source: b is a -> { group_by: cat; aggregate: t is amt.sum() }
+
+#@ persist name="xp_c"
+source: c is a -> { group_by: cat; aggregate: t is amt.sum() }
+
+source: s is a extend {
+  #@ persist storage="lake2"
+  view: by_cat is { group_by: cat; aggregate: total is amt.sum() }
+}
+
+#@ persist storage="lake"
+source: same is a -> { group_by: cat; aggregate: t is amt.sum() }
+`,
+      });
+      for (const name of ["b", "c", "s__by_cat__view"]) {
+         expect(names).not.toContain(name);
+      }
+      // Over a table in its own destination: planned.
+      expect(names).toContain("same");
+      const byName = (n: string) => refused.find((r) => r.name === n);
+      for (const r of refused.filter((r) =>
+         r.message.includes("its upstream 'a'"),
+      )) {
+         expect(r.reason).toBe(UPSTREAM_TABLE_UNUSABLE_REASON);
+         expect(r.message).toContain("never built by recomputing");
+      }
+      expect(byName("b")?.message).toContain(
+         "it is built into the storage= destination 'lake2'",
+      );
+      expect(byName("c")?.message).toContain(
+         "whose table a build in the warehouse cannot read",
+      );
+   });
+});

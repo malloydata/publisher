@@ -15,6 +15,7 @@
 
 import { components } from "../../../api";
 import type { TableRecord } from "./physical_table";
+import type { TableCollations } from "./collation";
 
 // Wire types for the build protocol.
 export type MaterializationStatus =
@@ -43,6 +44,17 @@ export type Realization = components["schemas"]["Realization"];
  * counterpart is `IncrementalLedgerEntry` in storage/DatabaseInterface.ts.
  */
 export type LedgerEntry = components["schemas"]["LedgerEntry"];
+
+/**
+ * A `buildInstructions.ledger` entry dropped as malformed: the table it named
+ * and what was wrong with it. Its source seeds under `ledger_entry_malformed`.
+ * An entry naming no string table cannot be attributed to a source and is
+ * only logged.
+ */
+export interface MalformedLedgerEntry {
+   physicalTableName: string;
+   defect: string;
+}
 
 /** How a delta advances the serving table. */
 export type IncrementalStrategy = "merge" | "range_replace";
@@ -180,6 +192,13 @@ export interface FreshnessAwareManifestEntry {
     * an incremental delta, raised as a package warning while it is bound.
     */
    lateRows?: LateRows;
+   /**
+    * The wire entry's `contract`, as the host stored it (read with
+    * `parseContract`): a table with none is never served from.
+    */
+   contract?: unknown;
+   /** The wire entry's `builtAt`: which build of the table a verdict judged. */
+   builtAt?: string;
 }
 
 /** See {@link FreshnessAwareManifestEntry.heldRead}. */
@@ -238,6 +257,12 @@ export type ObservedColumns =
         }[];
         /** The connection's dialect the types were read on. */
         dialect?: string;
+        /**
+         * Its column collations, read beside its columns
+         * (`readTableCollations`); absent on an engine whose collations are
+         * not read.
+         */
+        collations?: TableCollations;
      }
    | {
         /** Why, as a fixed class: what a package warning may say. */

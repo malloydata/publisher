@@ -12,6 +12,10 @@ import {
    createMocks,
    withQueryMetadataOn,
 } from "../../../test_helpers/materialization_service_harness";
+import { fakeContractReads } from "../../../test_helpers/contract_fixture";
+
+// Builds over fake connections, which answer no catalog query.
+fakeContractReads();
 
 /**
  * buildOneSource: the database CTAS/swap, the SQL it issues and the metadata

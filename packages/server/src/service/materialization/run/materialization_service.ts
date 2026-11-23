@@ -59,6 +59,7 @@ import { compileRunPlan, type RunPlan, runPlanGateText } from "./run_plan";
 import {
    BuildInstruction,
    LedgerEntry,
+   MalformedLedgerEntry,
    ManifestEntry,
    ManifestReference,
    RefusedSource,
@@ -88,11 +89,7 @@ import {
 } from "./manifest_committer";
 import type { EligibilityTier } from "./materialization_instructed_run";
 import { isActiveRun, outcomeFor } from "./run_status";
-import {
-   packageRelativeRun,
-   type WarehouseReach,
-   withChainBuildText,
-} from "./build_upstreams";
+import { packageRelativeRun, withChainBuildText } from "./build_upstreams";
 import { tallySources } from "./run_telemetry";
 import type { QueryContext } from "../../query_metadata";
 import { packageOwner } from "./table_mark_sql";
@@ -132,9 +129,9 @@ export interface RunBuildOptions {
    reseed: boolean;
    buildInstructions: BuildInstruction[] | undefined;
    ledger: LedgerEntry[] | undefined;
+   /** The caller's ledger entries the controller dropped as malformed. */
+   malformedLedger?: MalformedLedgerEntry[];
    referenceManifest: ManifestReference[] | undefined;
-   strictUpstreams: boolean | undefined;
-   warehouseReach?: WarehouseReach;
    trigger: "on_demand" | "scheduler";
    runContext?: components["schemas"]["RunContext"];
    /** The version createMaterialization resolved; null when unversioned. */
@@ -201,12 +198,6 @@ interface CreateMaterializationOptions {
    sourceNames?: string[];
    buildInstructions?: BuildInstruction[];
    referenceManifest?: ManifestReference[];
-   strictUpstreams?: boolean;
-   /**
-    * What a strict build does with a source whose only build recomputes
-    * a stored upstream from the warehouse. Orchestrated-only.
-    */
-   warehouseReach?: WarehouseReach;
    /**
     * The caller-supplied incremental ledger (each entry a
     * `ManifestEntry.ledger` an earlier run reported). When present, even
@@ -214,6 +205,12 @@ interface CreateMaterializationOptions {
     * Orchestrated-only; validated at create time.
     */
    ledger?: LedgerEntry[];
+   /**
+    * The `ledger` entries dropped as malformed, each by the table it named:
+    * its source seeds under `ledger_entry_malformed`. Not validated against
+    * the plan, since a dropped entry is as good as absent.
+    */
+   malformedLedger?: MalformedLedgerEntry[];
    /**
     * What initiated this run: `on_demand` (default, manual/API) or
     * `scheduler` (the standalone scheduler). Recorded on the run metadata.
@@ -1027,11 +1024,10 @@ export class MaterializationService {
                         // Orchestrated-only: an auto-run depends on the
                         // local store, which a supplied ledger would replace.
                         ledger: orchestrated ? options.ledger : undefined,
+                        ...(orchestrated && options.malformedLedger?.length
+                           ? { malformedLedger: options.malformedLedger }
+                           : {}),
                         referenceManifest: options.referenceManifest,
-                        strictUpstreams: options.strictUpstreams,
-                        warehouseReach: orchestrated
-                           ? options.warehouseReach
-                           : undefined,
                         trigger,
                         runContext: options.runContext ?? undefined,
                         version,
@@ -1124,6 +1120,9 @@ export class MaterializationService {
                forceRefresh: opts.reseed ?? false,
                now: new Date(startedAt),
                ledger: opts.ledger,
+               ...(opts.malformedLedger
+                  ? { malformedLedger: opts.malformedLedger }
+                  : {}),
             },
          );
          // What earlier deltas found missing, from the manifest bound now;
@@ -1457,6 +1456,8 @@ export class MaterializationService {
                   upstreamsOf: (address) => freshness.upstreamsOf(address),
                   at: new Date(run.startedAt),
                },
+               incompatible:
+                  pkg.incompatibleTables?.(priorEntries) ?? new Set(),
             },
          ));
          // A carried table at the author's `name=` is reused only while
@@ -1603,7 +1604,9 @@ export class MaterializationService {
          instructions,
          seedEntries: carried,
          signal,
-         strict: opts.strictUpstreams ?? false,
+         // Always strict: a downstream is built over its upstreams' tables
+         // or not at all.
+         strict: true,
          // Orchestrated-only; see reclaimStorageTablesFromFailedRun.
          owner: orchestrated ? { environmentId, packageName } : undefined,
          buildMetadata: {
@@ -1616,7 +1619,6 @@ export class MaterializationService {
          priorRefusals: Object.values(derivedRefused),
          clearedTiers,
          hostInstructed: orchestrated,
-         warehouseReach: opts.warehouseReach,
          freshness: (() => {
             const index = declaredFreshnessIndex(pkg.getBuildPlan());
             return {

@@ -9,15 +9,8 @@
  * definition it holds.
  */
 
+import { DUCKDB_COLLATE_DEFINITIONS } from "../../domain/collation";
 import type { Collation, CollationReader, ProbeIO } from "./probe_io";
-
-/**
- * How many user definitions in the instance name a `COLLATE`: tables, views,
- * and macros (a macro can return a collated value to a view or a query).
- * Attached databases' definitions are listed too.
- */
-const DUCKDB_COLLATE_DEFINITIONS =
-   "SELECT (SELECT count(*) FROM duckdb_tables() WHERE NOT internal AND sql ILIKE '%collate%') + (SELECT count(*) FROM duckdb_views() WHERE NOT internal AND sql ILIKE '%collate%') + (SELECT count(*) FROM duckdb_functions() WHERE NOT internal AND function_type IN ('macro', 'table_macro') AND (macro_definition IS NULL OR macro_definition ILIKE '%collate%')) AS n";
 
 /**
  * A DuckDB-dialect source compares bytes unless the instance sets a

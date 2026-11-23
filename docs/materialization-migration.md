@@ -83,7 +83,8 @@ still build and serve.
    `name=` unchanged ([addresses](#addresses-what-moves-once)). An incremental source starts again
    from a full build. A source whose build cannot be generated or compiled is refused on its own
    (`materialize-not-built`), and the rest of the package still builds; an extension whose build
-   does not compile over its parent's table builds over the chain from the warehouse instead.
+   does not compile over its parent's table is refused (`upstream_table_unusable`) and answers
+   live, never built over the chain from the warehouse.
 6. **Read the serve verdicts.** `GET …/packages/{pkg}/status` reports `serveVerdicts`. Each migrated
    source should read `serves`. `live` with reason `served_copy` means its table is built but no
    query will read it; its `notServedIn` names each model and its reasons, the same as the package's

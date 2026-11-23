@@ -9,8 +9,10 @@
 import { describe, expect, it } from "bun:test";
 import { makeDigest } from "@malloydata/malloy";
 import {
+   carriedLedgerExtensions,
    incrementalLineage,
    indexCallerLedger,
+   ledgerFields,
    planSourceRefresh,
    type IncrementalRunContext,
 } from "./incremental_build";
@@ -297,5 +299,144 @@ describe("planSourceRefresh: a boundary measured under a partition= address", ()
             reseed: true,
          }),
       ).toMatchObject({ mode: "seed", reasonCode: "forced" });
+   });
+});
+
+describe("indexCallerLedger and ledgerFields: the entry is opaque to hosts", () => {
+   const ENTRY = {
+      connectionName: "wh",
+      physicalTableName: "orders_v1",
+      coveredThrough: "2024-06-20",
+      coveredThroughType: "date",
+      watermark: "order_date",
+      strategy: "range_replace" as const,
+      sourceEntityId: "addr",
+   };
+
+   it("reads a missing mergeKeys as empty, the same as an empty list", () => {
+      const [absent] = [...indexCallerLedger([ENTRY]).values()];
+      const [empty] = [
+         ...indexCallerLedger([{ ...ENTRY, mergeKeys: [] }]).values(),
+      ];
+      expect(absent?.mergeKeyDimensions).toEqual([]);
+      expect(empty).toEqual(absent);
+      expect(absent?.extensions).toBeUndefined();
+   });
+
+   it("carries keys it does not know as extensions, untouched", () => {
+      const parent = { sourceEntityId: "p1", coveredThrough: "2024-06-19" };
+      const [boundary] = [
+         ...indexCallerLedger([
+            { ...ENTRY, mergeKeys: ["id"], parentGeneration: parent, n: 1 },
+         ]).values(),
+      ];
+      expect(boundary?.extensions).toEqual({ parentGeneration: parent, n: 1 });
+      // Known fields are read as before.
+      expect(boundary?.mergeKeyDimensions).toEqual(["id"]);
+      expect(boundary?.coveredThroughValue).toBe("2024-06-20");
+   });
+
+   it("reports extensions on the next entry, a known key always winning", () => {
+      const lineage = {
+         connectionName: "wh",
+         physicalTableName: "orders_v1",
+         sourceEntityId: "addr",
+         watermarkName: "order_date",
+         watermarkType: "date",
+         mergeKeys: [] as string[],
+         scopeColumns: [] as string[],
+         strategy: "range_replace" as const,
+      };
+      const bound = { value: "2024-07-01", malloyType: "date" };
+      expect(
+         ledgerFields(lineage as never, bound as never, {
+            parentGeneration: { g: 2 },
+            coveredThrough: "spoofed",
+         }),
+      ).toEqual({
+         ledger: {
+            ...ENTRY,
+            coveredThrough: "2024-07-01",
+            parentGeneration: { g: 2 },
+         },
+      });
+      // Without extensions, the entry is exactly the known fields.
+      expect(ledgerFields(lineage as never, bound as never)).toEqual({
+         ledger: { ...ENTRY, coveredThrough: "2024-07-01" },
+      });
+   });
+
+   describe("carriedLedgerExtensions", () => {
+      const lineage = {
+         connectionName: "wh",
+         physicalTableName: "orders_v1",
+         sourceEntityId: "addr",
+         watermarkName: "order_date",
+         watermarkType: "date",
+         mergeKeys: [] as string[],
+         scopeColumns: [] as string[],
+         strategy: "range_replace" as const,
+      };
+      const bound = { value: "2024-07-01", malloyType: "date" };
+      function refresh(
+         ledger: Record<string, unknown>[] | undefined,
+         forceRefresh = false,
+      ) {
+         return {
+            context: {
+               forceRefresh,
+               ...(ledger
+                  ? { callerLedger: indexCallerLedger(ledger as never) }
+                  : {}),
+            } as unknown as IncrementalRunContext,
+            lineage: lineage as never,
+         };
+      }
+
+      it("reads the echoed entry's unknown keys for the source's table", () => {
+         const r = refresh([{ ...ENTRY, parent: "g1" }]);
+         expect(carriedLedgerExtensions(r, undefined)).toEqual({
+            parent: "g1",
+         });
+      });
+
+      it("returns a fresh object, so a value computed this run overrides a carried one", () => {
+         const r = refresh([{ ...ENTRY, parent: "g1", kept: true }]);
+         const extensions = carriedLedgerExtensions(r, undefined)!;
+         extensions.parent = "g2";
+         expect(
+            ledgerFields(lineage as never, bound as never, extensions),
+         ).toEqual({
+            ledger: {
+               ...ENTRY,
+               coveredThrough: "2024-07-01",
+               parent: "g2",
+               kept: true,
+            },
+         });
+         // The run's index is untouched, for any other reader.
+         expect(carriedLedgerExtensions(r, undefined)).toEqual({
+            parent: "g1",
+            kept: true,
+         });
+      });
+
+      it("carries nothing for a reseed, a forced run, the local store, or another table", () => {
+         const echoed = [{ ...ENTRY, parent: "g1" }];
+         expect(carriedLedgerExtensions(refresh(echoed), true)).toBeUndefined();
+         expect(
+            carriedLedgerExtensions(refresh(echoed, true), undefined),
+         ).toBeUndefined();
+         expect(
+            carriedLedgerExtensions(refresh(undefined), undefined),
+         ).toBeUndefined();
+         expect(
+            carriedLedgerExtensions(
+               refresh([{ ...echoed[0], physicalTableName: "other" }]),
+               undefined,
+            ),
+         ).toBeUndefined();
+         expect(carriedLedgerExtensions(undefined, undefined)).toBeUndefined();
+      });
    });
 });

@@ -10,6 +10,7 @@
 // at all — that a rollup reaches the wire plan under the author's model path, and
 // that routing a live query through the synthesized model does not change the
 // answer.
+import { contractFor } from "../test_helpers/contract_fixture";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { unrecordedAudit } from "./access_record";
 import * as fs from "fs/promises";
@@ -471,6 +472,7 @@ export { orders }
                   id,
                   {
                      tableName: "no_such_rollup_table",
+                     contract: contractFor(),
                      connectionName: "duckdb",
                   },
                ]),
@@ -518,6 +520,7 @@ export { notes }
                   id,
                   {
                      tableName: "no_such_rollup_table",
+                     contract: contractFor(),
                      connectionName: "duckdb",
                   },
                ]),
@@ -623,6 +626,7 @@ source: regions is duckdb.sql("""
                   id,
                   {
                      tableName: "no_such_rollup_table",
+                     contract: contractFor(),
                      connectionName: "duckdb",
                   },
                ]),
@@ -766,7 +770,11 @@ function bindMissingRollupTables(pkg: Package) {
       database: Object.fromEntries(
          rollupIds.map((id) => [
             id,
-            { tableName: "no_such_rollup_table", connectionName: "duckdb" },
+            {
+               tableName: "no_such_rollup_table",
+               connectionName: "duckdb",
+               contract: contractFor(),
+            },
          ]),
       ),
    });

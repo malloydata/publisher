@@ -14,9 +14,10 @@
  *  - built in a run that rebuilds only the rollup, it reads the base's table
  *    carried from the run before, a computed grain dimension read from the
  *    stored column;
- *  - with no base table in the run, a base too old for the rollup's window,
- *    or a host's reference to the base at another tier, it builds from the
- *    warehouse as planned;
+ *  - a run of the rollup alone builds its base first and reads that table,
+ *    as does a run whose base table is too old for the rollup's window; a
+ *    host's reference to the base at another tier refuses the rollup, never
+ *    builds it from the warehouse;
  *  - over a gated base, under G3 or with gated sources on, it stores the
  *    warehouse build's rows and answers each caller as live;
  *  - over an extension table (P10), it reads the extension's own table;
@@ -417,7 +418,7 @@ describe("a database rollup over a database #(materialize) base", () => {
       ]);
    });
 
-   it("builds from the warehouse when the run holds no table of the base", async () => {
+   it("builds the base first when a run names only the rollup, and reads its table", async () => {
       await setUp();
       const pkg = await env.getPackage(parsePackageName(PKG), false);
       const rollupName = Object.values(pkg.getBuildPlan()!.sources).find(
@@ -426,10 +427,11 @@ describe("a database rollup over a database #(materialize) base", () => {
       const m = await build({ sourceNames: [rollupName] });
       expect([m.status, m.error]).toEqual(["MANIFEST_FILE_READY", null]);
       const rollup = rollupOf(m, "orders");
-      expect(entries(m).map((e) => e.sourceName)).toEqual([rollup.sourceName]);
-      // It read the raw rows, and says so: no `upstreamReuse`.
-      expect(rollup.upstreamReuse).toBeUndefined();
-      expect(createdBy(rollup.physicalTableName)).toContain(RAW_MARK);
+      const base = entryOf(m, "orders");
+      expect(rollup.upstreamReuse).toBe("reused");
+      expect(createdBy(rollup.physicalTableName)).toContain(
+         `"${base.physicalTableName}"`,
+      );
       const served = await answer(queryAt("cat"));
       expect(served.servedBy).toBe("rollup");
    });
@@ -442,10 +444,11 @@ describe("a database rollup over a database #(materialize) base", () => {
       expect(createdBy(rollup.physicalTableName)).toContain(RAW_MARK);
    });
 
-   it("leaves out only a base whose stored copy does not compile: the other rollups still read their bases' tables", async () => {
+   it("refuses only the rollup whose base's stored copy does not compile: the other rollups still read their bases' tables", async () => {
       // `tagged` renames `mark` to `tag` and then excludes `tag`: its table
       // stores neither, so its re-rooted copy cannot rename `mark` and does
-      // not compile. Its rollup builds from the warehouse, while the
+      // not compile. Its rollup is refused at plan (upstream_table_unusable)
+      // and answered live, never built from the warehouse, while the
       // `#@ persist` and the other `#(materialize)` rollups still read their
       // bases' tables.
       await setUp(`##! experimental.persistence
@@ -487,14 +490,9 @@ extend {
          expect(create).not.toContain(RAW_MARK);
       }
 
-      const tagged = rollupOf(m, "tagged");
-      expect(tagged.upstreamReuse).toBeUndefined();
-      expect(createdBy(tagged.physicalTableName)).toContain(RAW_MARK);
-      expect(await rowsOf(`SELECT * FROM ${tagged.physicalTableName}`)).toEqual(
-         await rowsOf(await plannedSQL(tagged)),
-      );
+      expect(() => rollupOf(m, "tagged")).toThrow("no rollup of tagged");
       const served = await answer(query("tagged", "tgrand"));
-      expect(served.servedBy).toBe("rollup");
+      expect(served.servedBy).not.toBe("rollup");
       expect(served.rows).toEqual(live.rows);
    });
 
@@ -589,7 +587,7 @@ source: clipped is raw extend {
       });
    });
 
-   it("builds from the warehouse on a host's run whose reference to the base is at another tier", async () => {
+   it("refuses a rollup on a host's run whose reference to the base is at another tier", async () => {
       await setUp();
       const first = await build();
       const base = entryOf(first, "orders");
@@ -622,16 +620,15 @@ source: clipped is raw extend {
       expect(createdBy(read.physicalTableName)).toContain(
          `"${base.physicalTableName}"`,
       );
-      // At another tier, it is not: the rollup reads the warehouse.
+      // At another tier, it is not, and the rollup is refused as the
+      // host's: never built from the warehouse.
       statements.length = 0;
       const moved = await host({ storageDestinationName: "lake" });
-      expect([moved.status, moved.error]).toEqual([
-         "MANIFEST_FILE_READY",
-         null,
-      ]);
-      const warehouse = rollupOf(moved, "orders");
-      expect(warehouse.upstreamReuse).toBeUndefined();
-      expect(createdBy(warehouse.physicalTableName)).toContain(RAW_MARK);
+      expect(moved.status).toBe("FAILED");
+      expect(JSON.stringify(moved.manifest ?? moved.error)).toContain(
+         "supplied at the wrong tier",
+      );
+      expect(statements.some((s) => s.includes(RAW_MARK))).toBe(false);
    });
 
    const GATED = `##! experimental { persistence givens }

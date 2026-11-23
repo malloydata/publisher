@@ -319,6 +319,19 @@ describe("L2: a gate over a column stored inexactly is never read from the table
          entry.schema = (entry.schema as { name: string; type: string }[]).map(
             (c) => (c.name === "acct" ? { ...c, type: "DOUBLE" } : c),
          );
+         // And recorded in its contract, as that build would have, so the
+         // rebind holds the table to the type it holds.
+         const contract = entry.contract as
+            | { columns: { name: string; nativeType: string }[] }
+            | undefined;
+         if (contract) {
+            entry.contract = {
+               ...contract,
+               columns: contract.columns.map((c) =>
+                  c.name === "acct" ? { ...c, nativeType: "DOUBLE" } : c,
+               ),
+            };
+         }
       }
       // A database table altered in its warehouse after the build.
       const warehouse = (await loader.pkg.getMalloyConnection(

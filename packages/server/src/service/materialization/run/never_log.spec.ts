@@ -17,6 +17,10 @@ import type { Connection as MalloyConnection } from "@malloydata/malloy";
 import { createTableWithDeclaredTypes } from "./materialization_build_session";
 import { stackFrames } from "./run_lifecycle";
 import { errorCodeOf } from "../../../error_code";
+import { fakeContractReads } from "../../../test_helpers/contract_fixture";
+
+// Builds over fake connections, which answer no catalog query.
+fakeContractReads();
 
 // The never-log rule (docs/materialization-v2-plan.md, "Step 4
 // specification"): no log call, at any level, carries a value from the data

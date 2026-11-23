@@ -1128,8 +1128,7 @@ export class MaterializationEligibilityError extends Error {
  * A chained `storage=` build depends on a persisted upstream it has no table
  * for (not built this run, not supplied, or in another destination).
  * Recomputing it from raw would rebuild a stored table nobody asked for, so
- * under `strictUpstreams` this is refused outright, while a shape failure
- * ({@link MaterializationEligibilityError}) falls back.
+ * the build fails: every build is strict, and none falls back.
  */
 export class ChainedUpstreamMissingError extends Error {
    get kind(): "chained_upstream_missing" {
@@ -1159,8 +1158,8 @@ export class ChainedUpstreamMissingError extends Error {
 /**
  * A chained `storage=` build had every stored upstream, but the model assembled
  * over them did not compile: a limit of what the build can carry, not of the
- * source. Recomputing from raw would rebuild the handed-in tables, so under
- * `strictUpstreams` it is refused like a missing upstream.
+ * source. Recomputing from raw would rebuild the handed-in tables, so it
+ * fails like a missing upstream: every build is strict.
  */
 export class ChainedShapeNotCarriedError extends Error {
    get kind(): "chained_shape_not_carried" {
@@ -1174,26 +1173,55 @@ export class ChainedShapeNotCarriedError extends Error {
 }
 
 /**
- * A strict, orchestrated `storage=` build refused the warehouse recompute
- * (ms2data/service#6756, publisher#1327): the source reaches the source
- * warehouse through an intermediate no stored table stands in for, so its only
- * build would recompute its stored upstreams from raw, and the orchestrator
- * said `warehouseReach: "refuse"`. A property of the model and the
- * instructions, so retrying the same ones fails the same way.
+ * A build wrote its table but could not read back the table's column
+ * contract (`ManifestEntry.contract`), which a table must carry to be served
+ * from. The source fails with SourceFailure code `contract_capture_failed`
+ * (non-terminal: a retry reads it again), and its previous table, if any, is
+ * left as it was: the read runs before the write is swapped in or committed
+ * wherever the build has a staging table or a transaction.
  */
-export class WarehouseRecomputeRefusedError extends Error {
-   get kind(): "warehouse_recompute_refused" {
-      return "warehouse_recompute_refused";
+export class ContractCaptureFailedError extends Error {
+   get kind(): "contract_capture_failed" {
+      return "contract_capture_failed";
    }
 
-   constructor(sourceName: string, destinationName: string, reason: string) {
+   /** The SourceFailure `code`. */
+   readonly code = "contract_capture_failed";
+
+   constructor(table: string, read: string) {
       super(
-         `Failed to materialize source '${sourceName}' into storage ` +
-            `destination '${destinationName}': its only build recomputes its ` +
-            `stored upstreams from the source warehouse, and the build ` +
-            `instructions refuse that (warehouseReach: refuse): ${reason}`,
+         `The column contract of the table ${table} could not be read back ` +
+            `(${read}), so the build is not recorded: a table with no ` +
+            `contract is never served from. The previous table, if any, is ` +
+            `left as it was; a retry reads it again.`,
       );
-      this.name = "WarehouseRecomputeRefusedError";
+      this.name = "ContractCaptureFailedError";
+   }
+}
+
+/**
+ * A build's upstream table is not what the plan it was planned from recorded
+ * for it (its stored columns read otherwise than the plan's proof assumed):
+ * the plan is stale, or the upstream incompatible. The source fails with
+ * SourceFailure code `schema_incompatible` (non-terminal), and the package
+ * reads its tables and derives its plan again, which then proves the build
+ * against the upstream's recorded columns or refuses it at plan.
+ */
+export class SchemaIncompatibleError extends Error {
+   get kind(): "schema_incompatible" {
+      return "schema_incompatible";
+   }
+
+   /** The SourceFailure `code`. */
+   readonly code = "schema_incompatible";
+
+   constructor(
+      message: string,
+      /** The tables found otherwise, by content address, for the drift handler. */
+      readonly handles: readonly string[] = [],
+   ) {
+      super(message);
+      this.name = "SchemaIncompatibleError";
    }
 }
 
@@ -1687,7 +1715,8 @@ interface ErrorByKind {
    materialization_eligibility: MaterializationEligibilityError;
    chained_upstream_missing: ChainedUpstreamMissingError;
    chained_shape_not_carried: ChainedShapeNotCarriedError;
-   warehouse_recompute_refused: WarehouseRecomputeRefusedError;
+   contract_capture_failed: ContractCaptureFailedError;
+   schema_incompatible: SchemaIncompatibleError;
    publisher_config: PublisherConfigError;
    server_configuration: ServerConfigurationError;
    frozen_config: FrozenConfigError;
@@ -1776,7 +1805,8 @@ const ERROR_CLASSES: {
    materialization_eligibility: MaterializationEligibilityError,
    chained_upstream_missing: ChainedUpstreamMissingError,
    chained_shape_not_carried: ChainedShapeNotCarriedError,
-   warehouse_recompute_refused: WarehouseRecomputeRefusedError,
+   contract_capture_failed: ContractCaptureFailedError,
+   schema_incompatible: SchemaIncompatibleError,
    publisher_config: PublisherConfigError,
    server_configuration: ServerConfigurationError,
    frozen_config: FrozenConfigError,
@@ -2303,7 +2333,8 @@ export const ERROR_TABLE: { [K in ErrorKind]: ErrorMapping<ErrorByKind[K]> } = {
    // No specific answer: a generalized 500, its detail only logged.
    chained_upstream_missing: UNHANDLED,
    chained_shape_not_carried: UNHANDLED,
-   warehouse_recompute_refused: UNHANDLED,
+   contract_capture_failed: UNHANDLED,
+   schema_incompatible: UNHANDLED,
    publisher_config: UNHANDLED,
    write_verify: UNHANDLED,
    unknown: UNHANDLED,

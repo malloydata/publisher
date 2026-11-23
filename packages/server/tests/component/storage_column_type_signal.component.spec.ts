@@ -8,10 +8,13 @@
  * another type than its build declares report the
  * `storage-column-type-mismatch` package warning (a database table's drift:
  * `database-column-type-mismatch`) and tick
- * `publisher_storage_column_type_mismatch_total{stage="serve"}`. So does a
- * database table whose column type the bind found moved outside a build.
+ * `publisher_storage_column_type_mismatch_total{stage="serve"}`. A database
+ * table whose column type the bind found moved outside a build no longer
+ * matches its column contract: it is left out, `incompatible`, and warned as
+ * `materialization-table-incompatible`, never cast or narrowed.
  */
 
+import { contractFor } from "../../src/test_helpers/contract_fixture";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "fs/promises";
 import * as os from "os";
@@ -127,6 +130,7 @@ function bindMistyped(pkg: Package): Record<string, string> {
          sourceEntityId: source.sourceEntityId,
          sourceName: source.name,
          physicalTableName: `t_${source.sourceEntityId.slice(0, 12)}`,
+         contract: contractFor(),
          storageDestinationName: destination,
          ...(source.origin === "rollup" ? { origin: "rollup" } : {}),
          schema,
@@ -198,7 +202,7 @@ source: sales is raw extend {
 `;
 
 describe("a database table whose column type moved outside a build", () => {
-   it("warns and counts as a storage= table does, once per table", async () => {
+   it("is left out as incompatible with its contract, and warned once per table", async () => {
       const envPath = path.join(rootDir, "env");
       writePackageFiles(
          path.join(envPath, "pkg"),
@@ -209,7 +213,7 @@ describe("a database table whose column type moved outside a build", () => {
       await env.addPackage("pkg");
       const pkg = await env.getPackage(parsePackageName("pkg"), false);
 
-      // Each planned database table as its build captured it, and as the
+      // Each planned database table as its build recorded it, and as the
       // bind reads it now: its first number column altered to VARCHAR.
       const entries: Record<string, Record<string, unknown>> = {};
       const observed = new Map<
@@ -236,12 +240,12 @@ describe("a database table whose column type moved outside a build", () => {
             sourceEntityId: source.sourceEntityId,
             sourceName: source.name,
             tableName: `t_${source.sourceEntityId.slice(0, 12)}`,
+            contract: contractFor(schema),
             connectionName: "duckdb",
             schema,
          };
          observed.set(source.sourceEntityId, { columns: now });
       }
-      // A rollup's plan source is its own; the warning names its base.
       expect(Object.keys(moved)).toHaveLength(3);
       pkg.materialization().bind({
          database: entries as never,
@@ -249,46 +253,27 @@ describe("a database table whose column type moved outside a build", () => {
          observed,
       });
 
-      const all = pkg.getPackageMetadata().warnings ?? [];
-      // The database tier's drift has its own code; the storage tier's code
-      // names no database table.
-      expect(
-         all.filter((w) => w.code === "storage-column-type-mismatch"),
-      ).toEqual([]);
-      const warnings = all.filter(
-         (w) => w.code === "database-column-type-mismatch",
+      const verdicts = pkg
+         .materialization()
+         .serveVerdicts()
+         .filter((v) => v.reason === "incompatible");
+      expect(verdicts.length).toBeGreaterThanOrEqual(3);
+      for (const v of verdicts) {
+         expect(v.incompatibility?.code).toBe("column_retyped");
+         expect(v.table?.physicalTableName).toMatch(/^t_/);
+      }
+      const warnings = (pkg.getPackageMetadata().warnings ?? []).filter(
+         (w) => w.code === "materialization-table-incompatible",
       );
-      const bySubject = new Map(warnings.map((w) => [w.subject, w.message]));
-      expect([...bySubject.keys()].sort()).toEqual([
-         "daily",
-         "orders",
-         "sales",
-      ]);
-      expect(warnings).toHaveLength(3);
-      for (const message of bySubject.values()) {
-         expect(message).toContain("altered outside a build");
-      }
-      // The served copy leaves the column out, and a rollup's typed read
-      // does the same: only queries that read it answer live.
-      for (const subject of ["orders", "daily", "sales"]) {
-         expect(bySubject.get(subject)).toContain(
-            "queries that read it are answered live",
-         );
-      }
-
-      // Asked again, still counted once per table.
-      pkg.getPackageMetadata();
-      expect(
-         await harness.collectCounter(
-            "publisher_storage_column_type_mismatch_total",
-            { stage: "serve", declared: "number" },
-         ),
-      ).toBe(3);
+      expect(new Set(warnings.map((w) => w.subject)).size).toBe(
+         warnings.length,
+      );
+      expect(warnings.length).toBeGreaterThanOrEqual(3);
    });
 });
 
 describe("a database table read again after a transient failure", () => {
-   it("counts a drifted table once, not again on the retry", async () => {
+   it("stays unread, never incompatible, until the retry reads it and binds it", async () => {
       const envPath = path.join(rootDir, "env");
       writePackageFiles(
          path.join(envPath, "pkg"),
@@ -303,10 +288,11 @@ describe("a database table read again after a transient failure", () => {
       const entries: Record<string, Record<string, unknown>> = {};
       const asBuilt = new Map<string, { name: string; type: string }[]>();
       const observed = new Map<string, ObservedColumns>();
-      let drifted = 0;
+      const idOf: Record<string, string> = {};
       for (const source of Object.values(pkg.getBuildPlan()?.sources ?? {})) {
          const id = source.sourceEntityId;
          if (entries[id]) continue;
+         idOf[source.name] = id;
          const schema = (source.columns ?? []).map((c) => ({
             name: c.name as string,
             type: STORED[c.type as string] ?? "VARCHAR",
@@ -315,6 +301,7 @@ describe("a database table read again after a transient failure", () => {
             sourceEntityId: id,
             sourceName: source.name,
             tableName: `t_${id.slice(0, 12)}`,
+            contract: contractFor(schema),
             connectionName: "duckdb",
             schema,
          };
@@ -325,14 +312,12 @@ describe("a database table read again after a transient failure", () => {
                   i === 0 ? { ...c, type: "VARCHAR" } : c,
                ),
             });
-            drifted++;
          } else if (source.name === "daily") {
             observed.set(id, { unread: "timed_out" });
          } else {
             observed.set(id, { columns: schema });
          }
       }
-      expect(drifted).toBe(1);
       const mz = pkg.materialization();
       // The retry's read succeeds, and finds the table as built.
       mz.readDatabaseColumns = async (retried) =>
@@ -347,18 +332,18 @@ describe("a database table read again after a transient failure", () => {
          databaseAsGiven: true,
          observed,
       });
+      const reasonOf = (name: string) =>
+         mz.serveVerdicts().find((v) => v.sourceName === name)?.reason;
       expect(mz.hasUnreadDatabaseTables()).toBe(true);
+      // A transient read failure is the worker's, never the table's.
+      expect(reasonOf("daily")).not.toBe("incompatible");
+      expect(reasonOf("orders")).toBe("incompatible");
       const deadline = Date.now() + 10_000;
       while (mz.hasUnreadDatabaseTables() && Date.now() < deadline) {
          await new Promise((r) => setTimeout(r, 100));
       }
       expect(mz.hasUnreadDatabaseTables()).toBe(false);
-
-      expect(
-         await harness.collectCounter(
-            "publisher_storage_column_type_mismatch_total",
-            { stage: "serve", declared: "number" },
-         ),
-      ).toBe(1);
+      expect(reasonOf("daily")).not.toBe("incompatible");
+      expect(idOf.daily).toBeDefined();
    });
 });

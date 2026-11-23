@@ -7,9 +7,9 @@
  * destination, every stored upstream it reads re-rooted on that upstream's
  * table there, as the served copy re-roots it.
  *
- * Its sibling, `chainCollationRefusal`, says whether such a build may be
- * computed there at all: the destination compares strings byte-exact, which
- * the source's collation may not.
+ * Its sibling, the plan's `chainStringReads` port, reads which strings such
+ * a build compares, which its upstreams' recorded contracts must compare as
+ * live does (`string_reads.ts`): the destination compares them byte-exact.
  *
  * Made by the run (run/storage_build_strategy.ts) and answered by the package
  * facade, which asks the served copy (serve/served_copy_serve.ts). Every input
@@ -20,6 +20,10 @@
  * Types only.
  */
 
+import type { QueryMaterializer } from "@malloydata/malloy";
+import type { ColumnContract } from "./column_contract";
+import type { StringReads } from "./string_reads";
+import type { MaterializePlan } from "./table_plans";
 import type { ManifestEntry } from "./types";
 
 /** The downstream, its destination, and the stored upstreams it may read. */
@@ -45,6 +49,19 @@ export interface ChainBuildRequest {
     */
    rollup?: {
       baseSourceID: string;
+      companion: { url: string; text: string };
+   };
+   /**
+    * Set for a persisted view or named query, whose build source no author
+    * file declares: the author's declaration it runs (`authorName`: the
+    * view's source, or the query), kept with its path to the stored
+    * upstreams, and its generated build file (`downstream.name` declares
+    * it), served at `url` beside the author's model and importing from it.
+    */
+   view?: {
+      authorName: string;
+      /** More of the author's declarations to keep as written (a query). */
+      keepAlso?: readonly string[];
       companion: { url: string; text: string };
    };
 }
@@ -88,20 +105,66 @@ export type ChainBuildText =
      };
 
 /**
- * What a chained `storage=` build computes over its stored upstreams, for the
- * host port's `chainCollationRefusal`: the downstream's own query, or a
- * rollup's grouping of its base, by the author's names.
+ * The build whose compared strings the plan's `chainStringReads` port reads,
+ * by the author's names: a query-shaped `downstream`'s own query over its
+ * base, a `rollup`'s grouping of its base, or a view's or named query's
+ * `run:` text. `stored` names, by sourceID, the upstreams whose tables it
+ * reads.
  */
-export interface ChainCollationRequest {
-   /** The downstream persist source, by its plan's sourceID and name. */
-   downstream: { sourceID: string; name: string };
-   /** Set for a rollup: its base by name, its grain and its measures. */
-   rollup?: {
-      baseSourceID: string;
-      baseName: string;
-      grain: readonly string[];
-      measures: readonly string[];
-   };
-   /** The sourceIDs of the upstreams whose stored tables the build reads. */
-   stored: readonly string[];
-}
+export type ChainStringReadsRequest = { stored: readonly string[] } & (
+   | { downstream: string; rollup?: undefined }
+   | {
+        rollup: {
+           baseName: string;
+           grain: readonly string[];
+           measures: readonly string[];
+        };
+     }
+   | { run: string }
+);
+
+/**
+ * Reads the strings a build compares ({@link ChainStringReadsRequest}) in
+ * the model `load` compiles queries in, at plan: handed to the plan, which
+ * may not read the served copy.
+ */
+export type PlanChainStringReads = (
+   load: (query: string) => QueryMaterializer,
+   request: ChainStringReadsRequest,
+) => Promise<StringReads>;
+
+/**
+ * The served copy's `chainBuildText`, as the plan is handed it (plan may not
+ * read the served copy): the text a downstream of `model` builds from in its
+ * destination, or undefined when `model` does not declare it.
+ */
+export type PlanChainBuildText = (
+   request: ChainBuildRequest,
+   model: {
+      modelPath: string;
+      modelDef: unknown;
+      materializePlans?: Readonly<Record<string, MaterializePlan>>;
+   },
+) => ChainBuildText | undefined;
+
+/**
+ * The stored columns the package has bound for the upstream `sourceID` in
+ * `destination` (its recorded contract's native types, else its schema), or
+ * undefined when none is bound there: what a plan stands in for that
+ * upstream's table (plan/storage_over_stored.ts).
+ */
+export type BoundStorageColumns = (
+   sourceID: string,
+   destination: string,
+) => { name: string; type: string }[] | undefined;
+
+/**
+ * The column contract the package has bound for the upstream `sourceID` in
+ * `destination`, or undefined when none is bound there (or it records
+ * none): what a plan judges a build's compared strings against
+ * (`string_reads.ts`) before any run.
+ */
+export type BoundStorageContract = (
+   sourceID: string,
+   destination: string,
+) => ColumnContract | undefined;

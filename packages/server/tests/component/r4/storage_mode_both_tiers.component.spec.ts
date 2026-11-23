@@ -17,6 +17,7 @@
  * database table was bound; the served copy already read its database twin.
  */
 
+import { contractFor } from "../../../src/test_helpers/contract_fixture";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { unrecordedAudit } from "../../../src/service/access_record";
 import {
@@ -141,6 +142,7 @@ for (const mode of ["on", "write-only", "off"] as const) {
                sourceEntityId: entry.sourceEntityId,
                sourceName: entry.name,
                physicalTableName: table,
+               contract: contractFor(),
                storageDestinationName: "lake",
                ...(entry.origin === "rollup" ? { origin: "rollup" } : {}),
                schema: columns(described.rows),

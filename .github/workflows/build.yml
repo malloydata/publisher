@@ -322,7 +322,11 @@ jobs:
       # always match the runtime, regardless of the Dockerfile ARG default.
       - name: Resolve DuckDB version from Malloy
         id: duckdb
-        run: echo "version=$(node scripts/duckdb-version.js)" >> "$GITHUB_OUTPUT"
+        # And the runner's DuckDB extension mirror, which the Dockerfile's bake reads:
+        # set on Credible's runners, empty elsewhere.
+        run: |
+          echo "version=$(node scripts/duckdb-version.js)" >> "$GITHUB_OUTPUT"
+          echo "extension_mirror=${CI_DUCKDB_EXTENSION_MIRROR:-}" >> "$GITHUB_OUTPUT"
         shell: bash
       # The UTC date, passed as APT_REFRESH so the Dockerfile's `apt-get upgrade`
       # layer rebuilds daily instead of being served from the build cache forever.
@@ -341,6 +345,7 @@ jobs:
           build-args: |
             DUCKDB_VERSION=${{ steps.duckdb.outputs.version }}
             APT_REFRESH=${{ steps.day.outputs.value }}
+            CI_DUCKDB_EXTENSION_MIRROR=${{ steps.duckdb.outputs.extension_mirror }}
           tags: malloy-publisher:smoke-test
           # The donated runners' registry cache when on them (GitHub's runners
           # cannot reach it), GitHub's cache otherwise. Only main writes.
