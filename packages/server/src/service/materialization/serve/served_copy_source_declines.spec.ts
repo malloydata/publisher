@@ -4,20 +4,13 @@
 /**
  * The served copy's per-source declines (a gate it cannot graft, an
  * opted-out source on the chain, a zone that differs from the author's) are
- * recorded at the copy's compile and looked up per query: under `lookup`, a
- * query on a named source walks nothing; one on a source written inline
- * walks; under `shadow`, a record that disagrees with the walk is drift.
+ * recorded at the copy's compile and looked up per query: a query on a
+ * named source walks nothing; one on a source written inline walks, and is
+ * counted.
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import {
-   clearParityDrifts,
-   clearQueryWalks,
-   expectNoDrift,
-   queryWalks,
-   withAdmissionMode,
-} from "../../../test_helpers/admission_parity";
-import { parityDrifts } from "./admission_parity";
+import { clearQueryWalks, queryWalks } from "./admission_parity";
 import { LegDecline } from "../domain/leg_decline";
 import { ServedCopyServe } from "./served_copy_serve";
 
@@ -95,15 +88,9 @@ function record(serve: Record<string, unknown>, attempt: Attempt): void {
 }
 
 describe("the served copy's recorded per-source declines", () => {
-   // Other specs in the run may have walked or drifted already.
-   beforeEach(() => {
-      clearParityDrifts();
-      clearQueryWalks();
-   });
-   afterEach(() => {
-      clearParityDrifts();
-      clearQueryWalks();
-   });
+   // Other specs in the run may have walked already.
+   beforeEach(() => clearQueryWalks());
+   afterEach(() => clearQueryWalks());
 
    it("looks a named source's declines up with no walk", async () => {
       for (const [ref, graftless, code] of [
@@ -119,9 +106,7 @@ describe("the served copy's recorded per-source declines", () => {
          serve.gateCannotGraft = () => {
             throw new Error("walked");
          };
-         expect(
-            await withAdmissionMode("lookup", () => codeOf(serve, attempt)),
-         ).toBe(code);
+         expect(await codeOf(serve, attempt)).toBe(code);
       }
       expect(queryWalks().get("served_copy_declines")).toBeUndefined();
    });
@@ -135,27 +120,7 @@ describe("the served copy's recorded per-source declines", () => {
       const attempt = attemptOn(inline);
       const serve = serveFor(attempt, new Set());
       record(serve, attempt);
-      expect(
-         await withAdmissionMode("lookup", () => codeOf(serve, attempt)),
-      ).toBe("served_copy_opt_out");
+      expect(await codeOf(serve, attempt)).toBe("served_copy_opt_out");
       expect(queryWalks().get("served_copy_declines")).toBe(1);
-   });
-
-   it("agrees with the walk in shadow, and records drift when the record does not", async () => {
-      const attempt = attemptOn("items");
-      const serve = serveFor(attempt, new Set(["items"]));
-      record(serve, attempt);
-      expect(
-         await withAdmissionMode("shadow", () => codeOf(serve, attempt)),
-      ).toBe("served_copy_not_served");
-      expectNoDrift();
-      // A record that misses the decline: the walk still decides.
-      attempt.compiled.sourceDeclines = new Map([["items", {}]]);
-      expect(
-         await withAdmissionMode("shadow", () => codeOf(serve, attempt)),
-      ).toBe("served_copy_not_served");
-      expect(parityDrifts().map((d) => [d.side, d.probe, d.lookup])).toEqual([
-         ["served_copy_declines", "served_copy_not_served", undefined],
-      ]);
    });
 });

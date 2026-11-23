@@ -194,22 +194,6 @@ export function mayAttempt(leg: Leg, s: GateSwitches): boolean {
 }
 
 /**
- * How admission reads one table's gate columns (exact or not, zoned or not,
- * locks only or not), so shadow admission can compare two judgements of a
- * table: from its column contract, and from the bind's types.
- */
-export function gateColumnReading(t: TableRead): string {
-   const zoned = (t.gateColumnTypes ?? []).some((x) =>
-      ZONED_STORED_TYPE.test(x),
-   );
-   return [
-      gateColumnsExact(t) ? "exact" : "inexact",
-      zoned ? "zoned" : "plain",
-      t.gatesReadNoColumn === true ? "locks" : "columns",
-   ].join("/");
-}
-
-/**
  * Whether a `storage=` table among `tables` holds a gate column stored with
  * a zone, which the destination session compares in its own zone rather
  * than the source's: {@link admitRead}'s zone rule.

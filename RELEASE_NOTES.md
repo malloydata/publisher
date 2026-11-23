@@ -21,6 +21,10 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — always-strict cleanup: the temporary switches, probes and recompute paths are removed
+
+**Removed: the temporary `materialize.admissionMode` setting (`PUBLISHER_ADMISSION_MODE`, `PUBLISHER_MATERIALIZE_ADMISSION_MODE`, `--materialize-admission-mode`) and its `probe` and `shadow` modes.** Read admission always looks its collation, gate and scope facts up in what the load, bind and build recorded, as `lookup`, the default since 0.17.3, already did. The metric `publisher_admission_parity_drift_total` is removed with it.
+
 ## [Unreleased] — every instructed source is built or failed, and a warehouse read is refused at plan as itself
 
 **Fixed: an orchestrated run no longer reports success for an instructed source it neither built nor failed.** When the run's own plan held no table for an instruction (the plan had refused the source since the host read it, judged against tables the package had bound since), the instruction was skipped silently: the run finished `MANIFEST_FILE_READY` with the source in neither `entries` nor `failures`. Every instructed source now ends in exactly one of them. One the run's plan refused is a refusal carrying the plan's reason (`refused: true`, `refusalReason`); any other instruction no planned source resolves to fails with the new `SourceFailure.code` `instruction_unresolved`, not `retryable`. A run whose every instruction is refused fails, as before. **Who was affected:** a host instructing a `storage=` source the first time after a standalone run bound its upstream's table, which saw success and no table.

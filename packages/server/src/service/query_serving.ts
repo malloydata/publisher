@@ -20,25 +20,15 @@
  */
 
 import type { ModelDef, QueryMaterializer } from "@malloydata/malloy";
+import { gateSwitches, getPersistStorageMode } from "../config";
 import {
-   gateSwitches,
-   getAdmissionMode,
-   getPersistStorageMode,
-} from "../config";
-import {
-   admissionMode,
    type CollationProbe,
-   collationProbe,
    lookupProbe,
    observeAdmission,
-   readAdmissionModeFrom,
    ReadAdmission,
    reportQueryWalk,
-   shadowFact,
-   shadowProbe,
 } from "./materialization/serve/read_admission";
 import {
-   recordAdmissionParityDrift,
    recordQueryCatalogRead,
    recordQueryProbeCompile,
    recordQueryWalk,
@@ -152,7 +142,7 @@ export function variantsOf(
    const admission = new ReadAdmission(
       facts,
       gateSwitches(),
-      args.probe ?? admissionProbe(),
+      args.probe ?? lookupProbe,
       pinned.snapshot,
    );
    return legs.map((leg) => ({
@@ -198,43 +188,7 @@ observeAdmission({
    catalogRead: recordQueryCatalogRead,
    probeCompile: recordQueryProbeCompile,
    queryWalk: recordQueryWalk,
-   drift(d) {
-      recordAdmissionParityDrift(
-         d.side,
-         d.probe !== undefined && d.lookup !== undefined
-            ? "differs"
-            : d.probe !== undefined
-              ? "probe_refuses"
-              : "lookup_refuses",
-      );
-      logger.warn("admission parity drift", {
-         side: d.side,
-         probe: d.probe ?? null,
-         lookup: d.lookup ?? null,
-         tables: d.tables,
-         ...(d.allowed ? { allowed: d.allowed } : {}),
-      });
-   },
 });
-
-readAdmissionModeFrom(getAdmissionMode);
-
-/**
- * The collation port `materialize.admissionMode` picks, read once per query:
- * the probes, the lookups, or both in shadow, the probes deciding.
- */
-function admissionProbe(): CollationProbe {
-   switch (getAdmissionMode()) {
-      case "probe":
-         return collationProbe;
-      case "shadow":
-         return SHADOW_PROBE;
-      default:
-         return lookupProbe;
-   }
-}
-
-const SHADOW_PROBE = shadowProbe(collationProbe, lookupProbe);
 
 /** The answer the router's decision describes, before anything runs. */
 export function answerOf(route: RouteDecision<LegAnswer>): Answer {
@@ -517,34 +471,22 @@ function servedCopyDetailsOf(
 }
 
 /**
- * The queried source's chain for the path report, by
- * `materialize.admissionMode`: under `lookup`, the chain the model recorded
- * for a source it declares ({@link QueryServingHost.sourceChains}, read once
- * per compile); a source it does not declare (one only the query's compile
- * holds) is walked, and counted. Under `probe` it is walked; under `shadow`
- * both, the walk deciding.
+ * The queried source's chain for the path report: the chain the model
+ * recorded for a source it declares ({@link QueryServingHost.sourceChains},
+ * read once per compile); a source it does not declare (one only the
+ * query's compile holds) is walked, and counted.
  */
 export function queriedChain(
    host: Pick<QueryServingHost, "modelDef" | "sourceChains">,
    struct: unknown,
    queryModelDef: unknown,
 ): string[] {
-   const walk = () =>
-      chainOfQuerySource(struct, queryModelDef, host.modelDef());
-   const mode = admissionMode();
-   if (mode === "probe") return walk();
    const id = (struct as { sourceID?: unknown } | undefined)?.sourceID;
    const recorded =
       typeof id === "string" ? host.sourceChains().get(id) : undefined;
-   if (mode === "lookup") {
-      if (recorded) return [...recorded];
-      reportQueryWalk("path_chain");
-      return walk();
-   }
-   const walked = walk();
-   return recorded === undefined
-      ? walked
-      : shadowFact("path_chain", walked, [...recorded], (c) => c.join(" > "));
+   if (recorded) return [...recorded];
+   reportQueryWalk("path_chain");
+   return chainOfQuerySource(struct, queryModelDef, host.modelDef());
 }
 
 /**

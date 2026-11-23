@@ -487,15 +487,6 @@ const queryProbeCompileCounter = lazyCounter(
       "collation. Labels: site ('source_probe'|'stored_probe'). Zero under " +
       "lookup admission.",
 );
-const admissionParityDriftCounter = lazyCounter(
-   "publisher_admission_parity_drift_total",
-   "Shadow admission's disagreements (materialize.admissionMode=shadow): a " +
-      "query whose probe and lookup judged a stored answer's string " +
-      "comparisons differently, or whose walk and recorded fact differ. The " +
-      "probe or walk decided. Labels: side ('source'|'stored'|" +
-      "'served_copy_declines'|'scope'|'rollup_candidates'|'path_chain'|'gate_exact'), direction ('probe_refuses'|" +
-      "'lookup_refuses'|'differs').",
-);
 /**
  * Where a query walks the IR for a fact a compile or bind records, because
  * the record does not cover it (an inline `extend`, an unrecorded lane or
@@ -881,14 +872,6 @@ export function recordQueryCatalogRead(site: QueryAdmissionReadSite): void {
 /** Record one compile read admission made while answering a query. */
 export function recordQueryProbeCompile(site: QueryAdmissionReadSite): void {
    queryProbeCompileCounter().add(1, { site });
-}
-
-/** Record one disagreement shadow admission found. */
-export function recordAdmissionParityDrift(
-   side: "source" | "stored" | QueryWalkSite | "gate_exact",
-   direction: "probe_refuses" | "lookup_refuses" | "differs",
-): void {
-   admissionParityDriftCounter().add(1, { side, direction });
 }
 
 /** Record one query-path walk for a recorded fact. */

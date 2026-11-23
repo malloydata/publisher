@@ -204,17 +204,6 @@ function compositeOf(struct: unknown, modelDef: unknown): boolean {
    }
 }
 
-/**
- * A rendering of gate reads for comparing two of them: every field, sets
- * sorted. Undefined reads render as undefined.
- */
-export function showReads(r: GateReads | undefined): string | undefined {
-   if (r === undefined) return undefined;
-   return JSON.stringify(r, (_k, v: unknown) =>
-      v instanceof Set ? [...v].sort() : v instanceof Map ? [...v].sort() : v,
-   );
-}
-
 /** Max IR depth {@link carriesAGate} walks; past it, a gate is assumed. */
 const MAX_GATE_WALK_DEPTH = 200;
 

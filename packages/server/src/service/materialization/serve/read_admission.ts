@@ -37,7 +37,6 @@ import {
    type QueryFilterFacts,
    type ReadFacts,
    type ResultOrderFacts,
-   gateColumnReading,
 } from "../domain/admission";
 import type { Binding, Snapshot } from "../domain/binding";
 import type { ColumnContract } from "../domain/column_contract";
@@ -56,33 +55,20 @@ import type {
 } from "./gate_reads_types";
 import type { LegAnswer, LegKind, QueryFacts } from "./leg";
 import { type ResultReads, resultReadsOfQuery } from "./result_reads";
-import {
-   admissionMode,
-   type FactSide,
-   reportQueryWalk,
-   shadowFact,
-} from "./admission_parity";
+import { type QueryWalkSite, reportQueryWalk } from "./admission_parity";
 
 import {
    carriesAGate,
    type RecordedScope,
    recordedReads,
    scopeFactsOf,
-   showReads,
 } from "./scope_facts";
 
 // The port, and its implementation for the query pipeline to hand in.
 export type { CollationProbe } from "./gate_reads_types";
 export { collationProbe } from "./gate_collation";
 export { lookupProbe } from "./admission_lookup";
-export {
-   admissionMode,
-   observeAdmission,
-   readAdmissionModeFrom,
-   reportQueryWalk,
-   shadowFact,
-   shadowProbe,
-} from "./admission_parity";
+export { observeAdmission, reportQueryWalk } from "./admission_parity";
 
 /** What admission decided about one answer, in the router's terms. */
 type AdmissionOutcome =
@@ -233,7 +219,6 @@ export class ReadAdmission {
                return recordedReads(facts, name, stored, onTables);
             },
             () => gateReadsOfQuery(this.query.authorRunnable, stored, onTables),
-            showReads,
          );
          this.reads.set(key, r);
       }
@@ -241,27 +226,18 @@ export class ReadAdmission {
    }
 
    /**
-    * A fact a bind records, by `materialize.admissionMode`: under `probe`
-    * walked; under `lookup` looked up, walked only when nothing recorded
-    * it (and the walk counted); under `shadow` both, the walk deciding and
-    * a disagreement recorded.
+    * A fact a bind records: looked up, and walked only when nothing
+    * recorded it (the walk counted at `site`).
     */
    private async fact<T>(
-      side: FactSide,
+      site: QueryWalkSite,
       recorded: () => Promise<T | "unrecorded">,
       walk: () => Promise<T> | T,
-      show: (fact: T) => string | undefined,
    ): Promise<T> {
-      const mode = admissionMode();
-      if (mode === "probe") return walk();
       const r = await recorded();
-      if (mode === "lookup") {
-         if (r !== "unrecorded") return r;
-         reportQueryWalk(side === "gate_exact" ? "scope" : side);
-         return walk();
-      }
-      const walked = await walk();
-      return r === "unrecorded" ? walked : shadowFact(side, walked, r, show);
+      if (r !== "unrecorded") return r;
+      reportQueryWalk(site);
+      return walk();
    }
 
    /** What the bind commit recorded for this query's model and snapshot. */
@@ -292,10 +268,11 @@ export class ReadAdmission {
 
    /**
     * The tables an answer read, each with what the gate policy judges its
-    * gate columns by: under `lookup`, their stored types and exactness from
-    * each table's column contract, recorded at build and held at bind
-    * ({@link withRecordedGateColumns}); under `probe`, the bind's types and
-    * the warehouse types they copy ({@link withGateColumnTypes}).
+    * gate columns by: their stored types and exactness from each table's
+    * column contract, recorded at build and held at bind
+    * ({@link withRecordedGateColumns}); a table with no listed column, the
+    * bind's types and the warehouse types they copy
+    * ({@link withGateColumnTypes}).
     */
    private async gateColumnsOf(
       tables: readonly TableRead[],
@@ -312,18 +289,10 @@ export class ReadAdmission {
                (t as { virtualHandle?: string }).virtualHandle ?? "",
             )?.columns.length ?? 0) > 0,
       );
-      const mode = admissionMode();
-      if (mode === "lookup" && recordable) {
+      if (recordable) {
          return withRecordedGateColumns(tables, readsOf, contracts);
       }
-      const walked = await withGateColumnTypes(tables, readsOf);
-      if (mode !== "shadow" || !recordable) return walked;
-      const recorded = await withRecordedGateColumns(
-         tables,
-         readsOf,
-         contracts,
-      );
-      return shadowFact("gate_exact", walked, recorded, showGateColumns);
+      return withGateColumnTypes(tables, readsOf);
    }
 
    /** See {@link queryReadsAccess}; read once per query. */
@@ -343,7 +312,6 @@ export class ReadAdmission {
                   return f === undefined ? "unrecorded" : f.carriesGate;
                },
                walk,
-               (b) => `carriesGate=${b}`,
             ),
       ));
    }
@@ -358,7 +326,6 @@ export class ReadAdmission {
             return f === undefined ? "unrecorded" : f.compositeRowFilter;
          },
          () => entryRowFilterOnComposite(this.query.authorRunnable),
-         (b) => `compositeRowFilter=${b}`,
       ));
    }
 
@@ -826,11 +793,6 @@ async function withRecordedGateColumns(
          gateColumnsExactRecorded: judged.length === 0,
       };
    });
-}
-
-/** Admission's reading of each table, for comparing two judgements. */
-function showGateColumns(tables: readonly TableRead[]): string {
-   return tables.map(gateColumnReading).join(",");
 }
 
 /**
