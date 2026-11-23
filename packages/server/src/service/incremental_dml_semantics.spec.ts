@@ -30,6 +30,8 @@ import {
    applyDeltaScript,
    deltaStatements,
    isMergeKeyGuardFailure,
+   planIncrementalStep,
+   warehouseDeltaTarget,
 } from "./materialization/run/incremental_apply";
 
 let duckdb: DuckDBConnection;
@@ -353,3 +355,65 @@ describe.each(["postgres", "duckdb"])(
       });
    },
 );
+
+describe("a DuckDB table whose source column was widened after the build", () => {
+   // DuckDB (and MotherDuck) reads the delta's types with DESCRIBE, which
+   // runs nothing. A FLOAT column given a DOUBLE rounds it with no error.
+   async function plan(storedAmt: string, sourceAmt: string) {
+      const name = `widened_${table++}`;
+      await duckdb.runSQL(
+         `CREATE TABLE "${name}" AS SELECT 1 AS "order_id", ` +
+            `DATE '2024-06-01' AS "order_date", CAST(1.5 AS ${storedAmt}) AS "revenue"`,
+      );
+      const lineage = {
+         physicalTableName: `memory.main.${name}`,
+         connectionName: "duckdb",
+         sourceEntityId: "sid",
+         watermarkName: "order_date",
+         watermarkType: "date",
+         mergeKeys: [] as string[],
+         scopeColumns: [] as string[],
+         strategy: "range_replace" as const,
+      };
+      return planIncrementalStep({
+         target: warehouseDeltaTarget({
+            dialect: "duckdb",
+            runner: (sql) => duckdb.runSQL(sql),
+            quotedTablePath: `"${name}"`,
+            lineage,
+            sourceSQL:
+               `SELECT 2 AS "order_id", DATE '2024-06-15' AS "order_date", ` +
+               `CAST(0.123456789 AS ${sourceAmt}) AS "revenue"`,
+         }),
+         lineage,
+         ledgerEntry: {
+            sourceEntityId: "sid",
+            coveredThroughValue: "2024-06-01",
+            coveredThroughType: "date",
+            watermarkDimension: "order_date",
+            mergeKeyDimensions: [],
+            derivedStrategy: "range_replace",
+            physicalTableName: lineage.physicalTableName,
+            connectionName: "duckdb",
+            storageDestinationName: undefined,
+         } as never,
+         forceRefresh: false,
+         now: new Date("2024-07-01T00:00:00Z"),
+         columns: COLUMNS,
+      });
+   }
+
+   it("rebuilds a FLOAT column the source now gives as DOUBLE", async () => {
+      const step = await plan("FLOAT", "DOUBLE");
+      expect(step).toMatchObject({
+         mode: "seed",
+         reasonCode: "shape_mismatch",
+      });
+      if (step.mode !== "seed") return;
+      expect(step.reason).toContain('"revenue" (FLOAT → DOUBLE)');
+   });
+
+   it("still deltas when the type did not move", async () => {
+      expect((await plan("DOUBLE", "DOUBLE")).mode).toBe("delta");
+   });
+});

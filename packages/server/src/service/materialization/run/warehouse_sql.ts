@@ -836,6 +836,12 @@ export function targetColumnsProbeSql(
  * there is a row to type; a domain reads as its base type. Its `regtype`
  * text is `information_schema`'s `data_type` for every number type
  * (`integer`, `bigint`, `real`, `double precision`, `numeric`).
+ *
+ * DuckDB (MotherDuck too): `DESCRIBE` of the query, which binds it and runs
+ * nothing, spelled as `duckdb_columns()` spells a stored column.
+ *
+ * Not read elsewhere. BigQuery has one integer and one float type, so
+ * neither widens; Snowflake's types are not read without running the query.
  */
 export function deltaColumnTypesSql(
    dialect: string,
@@ -847,13 +853,29 @@ export function deltaColumnTypesSql(
         typesOf(rows: Record<string, unknown>[]): Map<string, string>;
      }
    | undefined {
+   if (columns.length === 0) return undefined;
    switch (registeredDialect(dialect)) {
       case "postgres":
          break;
+      case "duckdb":
+         return {
+            sql: `DESCRIBE (${sql})`,
+            typesOf: (rows) => {
+               const wanted = new Set(columns);
+               return new Map(
+                  rows.flatMap((r) =>
+                     typeof r["column_name"] === "string" &&
+                     typeof r["column_type"] === "string" &&
+                     wanted.has(r["column_name"])
+                        ? [[r["column_name"], r["column_type"]] as const]
+                        : [],
+                  ),
+               );
+            },
+         };
       default:
          return undefined;
    }
-   if (columns.length === 0) return undefined;
    const types = columns
       .map(
          (c, i) =>
