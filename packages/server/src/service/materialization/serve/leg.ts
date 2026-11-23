@@ -297,6 +297,9 @@ function rollupLeg(rollups: RollupVariantServe): Leg {
                           ...(answer.databaseTablePath
                              ? { tablePath: answer.databaseTablePath }
                              : {}),
+                          ...(answer.databaseTableId
+                             ? { virtualHandle: answer.databaseTableId }
+                             : {}),
                           ...{ kind: "rollup" },
                        },
                     ]),

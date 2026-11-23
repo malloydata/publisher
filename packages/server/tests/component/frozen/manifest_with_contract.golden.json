@@ -118,7 +118,7 @@
                }
             ],
             "keys": {
-               "items.item_id": {
+               "leaf:items.item_id": {
                   "unique": true,
                   "level": "leaf"
                }

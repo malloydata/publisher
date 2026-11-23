@@ -594,7 +594,7 @@ describe("chainVerdict", () => {
 
    it("links an extension of a pair table, naming the leaf checks its build relies on", () => {
       expect(chainVerdict(ext, { ...parent, pair })).toEqual({
-         link: { tier: "same", pair: { leafKeys: ["lines.line_id"] } },
+         link: { tier: "same", pair: { leafKeys: ["leaf:lines.line_id"] } },
       });
    });
 

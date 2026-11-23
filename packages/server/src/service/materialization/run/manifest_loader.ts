@@ -238,8 +238,24 @@ function keyUniquenessOnEntry(entry: ManifestEntry): KeyUniqueness | undefined {
               ),
            )
          : {};
+   const parentKeyColumns =
+      k.parentKeyColumns && typeof k.parentKeyColumns === "object"
+         ? Object.fromEntries(
+              Object.entries(k.parentKeyColumns).filter(
+                 ([, column]) => typeof column === "string",
+              ),
+           )
+         : {};
    const anyParent = Object.keys(parentKeys).length > 0;
+   // A record from before the columns were kept carries none: each of its
+   // checks then reads as unknown, and answers live until the next run.
    return own || anyParent
-      ? { ...(own ?? {}), ...(anyParent ? { parentKeys } : {}) }
+      ? {
+           ...(own ?? {}),
+           ...(anyParent ? { parentKeys } : {}),
+           ...(anyParent && Object.keys(parentKeyColumns).length > 0
+              ? { parentKeyColumns }
+              : {}),
+        }
       : undefined;
 }

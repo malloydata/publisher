@@ -109,8 +109,9 @@ describe("publisher.config.json.example", () => {
                example,
             );
       for (const entry of REGISTRY) {
-         // A launch setting decides which file is read, so it is not there.
-         if (entry.kind === "launch") {
+         // A launch setting decides which file is read, so it is not there;
+         // a temporary one is left out, so nothing copied comes to need it.
+         if (entry.kind === "launch" || entry.temporary) {
             expect(at(entry.key), entry.key).toBeUndefined();
             continue;
          }

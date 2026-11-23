@@ -28,6 +28,12 @@
  */
 
 import { captureTableContract } from "../../../src/service/materialization/run/column_contract_capture";
+import {
+   type ColumnContract,
+   parseContract,
+} from "../../../src/service/materialization/domain/column_contract";
+import { refreshStringCapabilities } from "../../../src/service/materialization/serve/source_capability";
+import { recordScopeFacts } from "../../../src/service/materialization/serve/scope_facts";
 import { storedKeyCheckSql } from "../../../src/service/materialization/text/key_check_text";
 import { expect, it } from "bun:test";
 import { tryCompileMaterializeCompanion } from "../../../src/service/materialization/plan/materialize_compile";
@@ -758,16 +764,21 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
          }
          if (checks !== false && (plan.parentKeyChecks ?? []).length > 0) {
             const parentKeys: Record<string, boolean> = {};
+            const parentKeyColumns: Record<string, string> = {};
             for (const parent of plan.parentKeyChecks ?? []) {
                const record =
                   checks === "unique"
                      ? { unique: true }
                      : await runRollupKeyCheck(parent, duckdb, table);
-               if (record) parentKeys[parent.sourceID] = record.unique;
+               if (record) {
+                  parentKeys[parent.sourceID] = record.unique;
+                  parentKeyColumns[parent.sourceID] = parent.keyColumn;
+               }
             }
             databaseEntries[target.buildId].keyUniqueness = {
                ...databaseEntries[target.buildId].keyUniqueness,
                parentKeys,
+               parentKeyColumns,
             };
          }
          rollupPlanned.push([
@@ -903,17 +914,21 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
    // its table is built, as an auto-run runs them: by the leaf's sourceID.
    const pairLeafKeys = async (
       source: (typeof sources)[number],
-   ): Promise<Record<string, boolean> | undefined> => {
+   ): Promise<KeyUniqueness | undefined> => {
       if (scenario.pairLeafKeyChecks === false) return undefined;
       const checks = pairLeafKeyChecksOf(materializePlans[source.sourceID]);
       if (checks.length === 0) return undefined;
       const on = connections.get(source.connectionName) ?? duckdb;
-      const out: Record<string, boolean> = {};
+      const parentKeys: Record<string, boolean> = {};
+      const parentKeyColumns: Record<string, string> = {};
       for (const check of checks) {
          const record = await runRollupKeyCheck(check, on, "pair");
-         if (record) out[check.sourceID] = record.unique;
+         if (record) {
+            parentKeys[check.sourceID] = record.unique;
+            parentKeyColumns[check.sourceID] = check.keyColumn;
+         }
       }
-      return out;
+      return { parentKeys, parentKeyColumns };
    };
    const builtSQL: Record<string, string> = {};
    const checkFailures: Record<string, string> = {};
@@ -981,7 +996,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
             connectionName: source.connectionName,
             ...(schema ? { schema } : {}),
             ...(nativeSchema ? { nativeSchema } : {}),
-            ...(leafKeys ? { keyUniqueness: { parentKeys: leafKeys } } : {}),
+            ...(leafKeys ? { keyUniqueness: leafKeys } : {}),
             // Its column contract, as a build records it.
             contract: await captureTableContract({
                connection: builder,
@@ -1162,6 +1177,13 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
          realization: "COPY",
          rowCount: null,
          ...(rollupOrigin.has(source.sourceID) ? { origin: "rollup" } : {}),
+         // Its column contract's stored side, as a build records it (the
+         // live side is the source probe's here).
+         contract: await captureTableContract({
+            connection: dest,
+            tableName: `${DESTINATION}.${table}`,
+            tier: "storage",
+         }).catch(() => undefined),
       } as ManifestEntry;
       const leafKeys = await pairLeafKeys(source);
       if (leafKeys) {
@@ -1169,7 +1191,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
             entries[`h${i}`] as ManifestEntry & {
                keyUniqueness?: KeyUniqueness;
             }
-         ).keyUniqueness = { parentKeys: leafKeys };
+         ).keyUniqueness = leafKeys;
       }
       // A stored source's primary key, checked over its table as its build
       // checks it, when a storage rollup is read through a join on it.
@@ -1203,6 +1225,10 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
                   ...entry.keyUniqueness?.parentKeys,
                   [source.sourceID]: record.unique,
                },
+               parentKeyColumns: {
+                  ...entry.keyUniqueness?.parentKeyColumns,
+                  [source.sourceID]: storedKey,
+               },
             };
          }
       }
@@ -1213,6 +1239,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
          : [];
       if (rollupChecks.length > 0 && checks !== false) {
          const parentKeys: Record<string, boolean> = {};
+         const parentKeyColumns: Record<string, string> = {};
          for (const parent of rollupChecks) {
             const record =
                checks === "unique"
@@ -1223,7 +1250,10 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
                           duckdb,
                        table,
                     );
-            if (record) parentKeys[parent.sourceID] = record.unique;
+            if (record) {
+               parentKeys[parent.sourceID] = record.unique;
+               parentKeyColumns[parent.sourceID] = parent.keyColumn;
+            }
          }
          const entry = entries[`h${i}`] as ManifestEntry & {
             keyUniqueness?: KeyUniqueness;
@@ -1231,6 +1261,10 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
          entry.keyUniqueness = {
             ...entry.keyUniqueness,
             parentKeys: { ...entry.keyUniqueness?.parentKeys, ...parentKeys },
+            parentKeyColumns: {
+               ...entry.keyUniqueness?.parentKeyColumns,
+               ...parentKeyColumns,
+            },
          };
       }
       // A storage rollup's own key check (known limitation 29), run on its
@@ -1384,6 +1418,30 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
    // The served copy (materialization v2) compiles the author's own files with
    // the package's connections; only routed when its setting is on.
    model.setServedCopyContext(dir, connections, materializePlans);
+   // What a bind records for read admission's lookups: each table's column
+   // contract, and how each source compares its strings.
+   const contracts = new Map<string, ColumnContract>();
+   for (const [id, e] of [
+      ...Object.entries(entries),
+      ...Object.entries(databaseServeEntries),
+      ...Object.entries(databaseEntries),
+   ]) {
+      const contract = parseContract((e as { contract?: unknown }).contract);
+      if (contract) contracts.set(id, contract);
+   }
+   model.setServeBindings([], contracts);
+   model.setStringCapabilityReader(refreshStringCapabilities);
+   model.setScopeFactsRecorder(recordScopeFacts);
+   await model.refreshStringCapabilities();
+   // And, as the bind commit that serves these tables does, what each
+   // source's gates and row scope read over them (a run sets the bindings
+   // beside the package, with no commit). The served copy is not compiled
+   // here, so a scenario that alters a table first still compiles over it:
+   // its lane is recorded after the first served run compiles it.
+   model.setServeBindings(bindings);
+   model.recordScopeFactsOver();
+   model.setServeBindings([]);
+   let laneRecorded = false;
 
    // The ordering the author's query asks for, from compiling it against the
    // author's model: the served answer is held to it, not to its own.
@@ -1591,6 +1649,11 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
                throw err;
             },
          );
+         if (!laneRecorded) {
+            // The first served run compiled the served copy: record its lane.
+            laneRecorded = true;
+            model.recordScopeFactsOver();
+         }
          const truth = query.truthSql
             ? ((await duckdb.runSQL(query.truthSql, { rowLimit: 10_000 }))
                  .rows as Row[])

@@ -18,6 +18,8 @@ import {
    DROP_OCCASIONS,
    KEY_CHECK_KINDS,
    KEY_CHECK_OUTCOMES,
+   recordAdmissionParityDrift,
+   recordQueryWalk,
    recordAnnotationFindings,
    recordAttributionSkipped,
    recordAutoLoadOutcome,
@@ -32,6 +34,8 @@ import {
    recordIncompatibleDetected,
    recordKeyCheck,
    recordManifestBindDegraded,
+   recordQueryCatalogRead,
+   recordQueryProbeCompile,
    recordQueryRoute,
    recordQueryRouteDuration,
    recordScheduledFire,
@@ -411,6 +415,13 @@ describe("materialization_metrics", () => {
  * instrument names, so an instrument added without a case here fails.
  */
 const EMISSIONS: Record<string, () => void> = {
+   publisher_query_catalog_reads_total: () =>
+      recordQueryCatalogRead("source_probe"),
+   publisher_query_probe_compiles_total: () =>
+      recordQueryProbeCompile("stored_probe"),
+   publisher_admission_parity_drift_total: () =>
+      recordAdmissionParityDrift("source", "lookup_refuses"),
+   publisher_query_walks_total: () => recordQueryWalk("scope"),
    publisher_materialization_runs_total: () =>
       recordMaterializationRun("auto", "success", 1),
    publisher_materialization_run_duration_ms: () =>

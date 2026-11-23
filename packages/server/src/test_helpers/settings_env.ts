@@ -57,6 +57,14 @@ export function installSettings(input: SettingsInput = {}): {
             ...(process.env.PUBLISHER_TEST_STRICT_ORIGIN === "1"
                ? { PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: "true" }
                : {}),
+            // A suite run under shadow or lookup admission
+            // (serve/admission_parity.ts) keeps it in every spec's settings.
+            ...(process.env.PUBLISHER_ADMISSION_MODE
+               ? {
+                    PUBLISHER_ADMISSION_MODE:
+                       process.env.PUBLISHER_ADMISSION_MODE,
+                 }
+               : {}),
             ...input.env,
          },
          cwd: serverRoot,

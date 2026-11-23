@@ -229,6 +229,7 @@ import {
    type PlanAddresses,
 } from "./addressing";
 import {
+   columnOriginsOf,
    type UpstreamSchemaReadings,
    type UpstreamTable,
    upstreamTableKey,
@@ -811,9 +812,15 @@ function declaringModelPath(
 function plannedFacts(
    source: PersistSource,
    modelPath: string,
-): Pick<TablePlan, "source" | "target" | "modelPath"> {
+): Pick<TablePlan, "source" | "target" | "modelPath" | "columnOrigins"> {
    const target = plannedTargetOf(source);
-   return { source, ...(target ? { target } : {}), modelPath };
+   const columnOrigins = columnOriginsOf(sourceDefOf(source));
+   return {
+      source,
+      ...(target ? { target } : {}),
+      modelPath,
+      ...(columnOrigins.size > 0 ? { columnOrigins } : {}),
+   };
 }
 
 /** The declaring file's URL in a Malloy `sourceID` (`<name>@<url>`). */
@@ -1030,10 +1037,14 @@ function pairParentUnusable(
    const unpassed = leafKeys.filter((k) => !keyCheckPassed(contract, k));
    if (unpassed.length === 0) return undefined;
    const failed = unpassed.filter((k) => contract.keys?.[k] !== undefined);
+   // Name a key as the author wrote it (`items.item_id`), not as the contract
+   // spells it (`leaf:items.item_id`).
+   const shown = (keys: string[]) =>
+      keys.map((k) => `'${k.replace(/^leaf:/, "")}'`).join(", ");
    const what =
       failed.length > 0
-         ? `found the key ${failed.map((k) => `'${k}'`).join(", ")} held more than once or NULL`
-         : `recorded no result for the key ${unpassed.map((k) => `'${k}'`).join(", ")}`;
+         ? `found the key ${shown(failed)} held more than once or NULL`
+         : `recorded no result for the key ${shown(unpassed)}`;
    return (
       `it extends '${over.sourceName}', whose pair table it is built over ` +
       `with its join put back, and the leaf key check of its inlined ` +
@@ -3109,6 +3120,7 @@ function tablePlanDataOf(
             source,
             target: _target,
             overStoredBase,
+            columnOrigins: _origins,
             ...data
          } = table as TablePlan & { overStoredBase?: unknown };
          return [
