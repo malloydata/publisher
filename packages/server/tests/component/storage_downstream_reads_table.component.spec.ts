@@ -325,11 +325,10 @@ for (const mechanism of MECHANISMS) {
 }
 
 // The plan stands in for an upstream's table the types its build writes by
-// default (a number as DOUBLE); this one's is DECIMAL(10,1). The first run
-// builds the upstream and finds it is not what the view's plan was proven
-// over: `schema_incompatible`, and the plan is derived again from the bound
-// table. The next run proves the view over the real type and builds it: never
-// `schema_incompatible` twice for one table generation.
+// default (a number as DOUBLE); this one's is DECIMAL(10,1). A build keeps a
+// number's warehouse type, so the stand-in is compared by class: the first
+// run builds the upstream and the view over it, never `schema_incompatible`
+// for a type the plan could not know.
 describe.skipIf(!url)(
    "a storage= view over an upstream whose stored type is not the plan's default",
    () => {
@@ -370,14 +369,11 @@ source: s is base extend {
             ).failures ?? {},
          ).find((x) => x.sourceName === "s__by_cat__view");
 
-      it("fails the view as schema_incompatible, non-terminal, in the run that builds its upstream", () => {
-         expect(failureOf(first)).toMatchObject({
-            code: "schema_incompatible",
-            retryable: true,
-         });
+      it("builds the view in the run that builds its upstream", () => {
+         expect(failureOf(first)).toBeUndefined();
       });
 
-      it("builds it in the next run, over the upstream's table, and serves it equal to live", async () => {
+      it("builds it again in the next run, over the upstream's table, and serves it equal to live", async () => {
          expect(failureOf(second)).toBeUndefined();
          const view = entriesOf(second).find(
             (e) => e.sourceName === "s__by_cat__view",

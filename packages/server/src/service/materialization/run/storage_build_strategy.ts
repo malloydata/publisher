@@ -1391,7 +1391,9 @@ export class StorageBuildStrategy
          }
          const moved = standInMoved(entry, u.columns);
          if (moved !== undefined) {
-            environment.reportIncompatible?.([address]);
+            // The plan is stale, not the upstream (which may be just
+            // rebuilt, as it should be): derived again, flagging no table.
+            environment.reportIncompatible?.([]);
             throw new SchemaIncompatibleError(
                `'${persistSource.name}' was not built over its upstream ` +
                   `'${name}''s table ${entry.physicalTableName} in ` +
@@ -1737,15 +1739,52 @@ function standInMoved(
          : (entry.schema ?? []).flatMap((c) =>
               c.name && c.type ? [[c.name, c.type] as const] : [],
            )
-      ).map(([n, t]) => [n.toLowerCase(), t.toUpperCase()]),
+      ).map(([n, t]) => [n.toLowerCase(), t]),
    );
    const moved = standIn.flatMap((c) => {
       const got = recorded.get(c.name.toLowerCase());
-      return got === c.type.toUpperCase()
+      return got !== undefined && sameStoredClass(got, c.type)
          ? []
          : [
               `'${c.name}' is ${got ?? "not recorded"} (the plan stood in ${c.type})`,
            ];
    });
    return moved.length > 0 ? moved.join(", ") : undefined;
+}
+
+/**
+ * Whether a stored column's native type reads as the Malloy type the plan's
+ * stand-in declared it as. A `storage=` build casts a string, boolean or
+ * date to its declared type and keeps a number's warehouse type
+ * (stored_column_types.ts), so a number stood in as BIGINT or DOUBLE may be
+ * stored as any integer, float or decimal type: compared by class, an exact
+ * DECIMAL matching either, never by spelling.
+ */
+function sameStoredClass(stored: string, standIn: string): boolean {
+   const a = storedClass(stored);
+   const b = storedClass(standIn);
+   if (a === b) return true;
+   const numeric = new Set(["integer", "float", "decimal"]);
+   return (
+      numeric.has(a) && numeric.has(b) && (a === "decimal" || b === "decimal")
+   );
+}
+
+/** A native type's class, case, spacing and parameters aside. */
+function storedClass(nativeType: string): string {
+   const spelled = nativeType.replace(/\s+/g, " ").trim().toUpperCase();
+   const base = spelled.replace(/\(.*\)/, "").trim();
+   if (/^(VARCHAR|TEXT|STRING|CHAR|BPCHAR)/.test(base)) return "string";
+   if (base === "BOOLEAN" || base === "BOOL") return "boolean";
+   if (base === "DATE") return "date";
+   if (base === "TIMESTAMPTZ" || base === "TIMESTAMP WITH TIME ZONE") {
+      return "timestamptz";
+   }
+   if (base.startsWith("TIMESTAMP")) return "timestamp";
+   if (/^U?(TINYINT|SMALLINT|INTEGER|INT|BIGINT|HUGEINT)$/.test(base)) {
+      return "integer";
+   }
+   if (/^(FLOAT|REAL|DOUBLE)/.test(base)) return "float";
+   if (base === "DECIMAL" || base === "NUMERIC") return "decimal";
+   return spelled;
 }
