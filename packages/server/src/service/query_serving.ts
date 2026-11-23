@@ -29,9 +29,15 @@ import {
    type CollationProbe,
    collationProbe,
    lookupProbe,
+   observeAdmission,
    ReadAdmission,
    shadowProbe,
 } from "./materialization/serve/read_admission";
+import {
+   recordAdmissionParityDrift,
+   recordQueryCatalogRead,
+   recordQueryProbeCompile,
+} from "../materialization_metrics";
 import { logger } from "../logger";
 import { SourceMap, sourceChain } from "./materialization/text/source_map";
 import {
@@ -181,6 +187,25 @@ export function variantsOf(
       onSkip: (err) => logSkip(leg.kind, args.modelPath, err),
    }));
 }
+
+// What read admission reports, counted and logged here, outside its layer.
+observeAdmission({
+   catalogRead: recordQueryCatalogRead,
+   probeCompile: recordQueryProbeCompile,
+   drift(d) {
+      recordAdmissionParityDrift(
+         d.side,
+         d.probe !== undefined ? "probe_refuses" : "lookup_refuses",
+      );
+      logger.warn("admission parity drift", {
+         side: d.side,
+         probe: d.probe ?? null,
+         lookup: d.lookup ?? null,
+         tables: d.tables,
+         ...(d.allowed ? { allowed: d.allowed } : {}),
+      });
+   },
+});
 
 /**
  * The collation port `materialize.admissionMode` picks, read once per query:

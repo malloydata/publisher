@@ -27,6 +27,7 @@
  */
 
 import { type ColumnContract, parseContract } from "./domain/column_contract";
+import { refreshStringCapabilities } from "./serve/source_capability";
 import type { Connection, MalloyConfig } from "@malloydata/malloy";
 import { components } from "../../api";
 import type {
@@ -968,9 +969,10 @@ export class PackageMaterialization {
          // commit that serves a table: read admission looks it up per query.
          if (next.bindings.length > 0 || Object.keys(next.entries).length > 0) {
             await Promise.all(
-               [...this.owner.models().values()].map((model) =>
-                  model.refreshStringCapabilities(),
-               ),
+               [...this.owner.models().values()].map((model) => {
+                  model.setStringCapabilityReader(refreshStringCapabilities);
+                  return model.refreshStringCapabilities();
+               }),
             );
          }
          if (next.bindings !== this.publishedBindings || models) {
@@ -1802,6 +1804,7 @@ export class PackageMaterialization {
    }
 
    private setServedCopyContextOn(model: Model): void {
+      model.setStringCapabilityReader(refreshStringCapabilities);
       model.setServedCopyContext(
          this.owner.packagePath(),
          this.owner.malloyConfig(),

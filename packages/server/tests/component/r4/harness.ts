@@ -32,6 +32,7 @@ import {
    type ColumnContract,
    parseContract,
 } from "../../../src/service/materialization/domain/column_contract";
+import { refreshStringCapabilities } from "../../../src/service/materialization/serve/source_capability";
 import { storedKeyCheckSql } from "../../../src/service/materialization/text/key_check_text";
 import { expect, it } from "bun:test";
 import { tryCompileMaterializeCompanion } from "../../../src/service/materialization/plan/materialize_compile";
@@ -1388,6 +1389,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
       if (contract) contracts.set(id, contract);
    }
    model.setServeBindings([], contracts);
+   model.setStringCapabilityReader(refreshStringCapabilities);
    await model.refreshStringCapabilities();
 
    // The ordering the author's query asks for, from compiling it against the

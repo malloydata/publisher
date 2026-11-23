@@ -10,15 +10,45 @@
  * decides by the probe, and records every disagreement here.
  *
  * A disagreement is a probe and a lookup that differ on whether a comparison
- * is refused; the two refusals' wording is never compared. It is logged at
- * warn, counted, and kept for a spec to read (`test_helpers/admission_parity.ts`).
+ * is refused; the two refusals' wording is never compared. It is reported to
+ * the shell's observer (which logs it at warn and counts it), and kept for a
+ * spec to read (`test_helpers/admission_parity.ts`).
  * A spec that pins an accepted difference names it by a stable code
  * ({@link ParityAllowance}) around the queries it covers.
  */
 
-import { recordAdmissionParityDrift } from "../../../materialization_metrics";
-import { logger } from "../../../logger";
 import type { CollationProbe, ProbedTable } from "./gate_reads_types";
+
+/** Where on a query's path a probe reads the warehouse or compiles. */
+export type AdmissionReadSite = "source_probe" | "stored_probe";
+
+/**
+ * What admission reports as it judges, for the shell to count and log: this
+ * layer reads no telemetry and writes no log of its own, so the query
+ * pipeline (`query_serving.ts`) installs it once.
+ */
+interface AdmissionObserver {
+   catalogRead(site: AdmissionReadSite): void;
+   probeCompile(site: AdmissionReadSite): void;
+   drift(drift: ParityDrift): void;
+}
+
+let observer: AdmissionObserver | undefined;
+
+/** Install what admission reports to; the last one installed wins. */
+export function observeAdmission(o: AdmissionObserver): void {
+   observer = o;
+}
+
+/** Report one catalog read a probe made on a query's path. */
+export function reportCatalogRead(site: AdmissionReadSite): void {
+   observer?.catalogRead(site);
+}
+
+/** Report one compile a probe made on a query's path, beyond the query's own. */
+export function reportProbeCompile(site: AdmissionReadSite): void {
+   observer?.probeCompile(site);
+}
 
 /**
  * A difference between the probe and the lookup that is accepted, by name:
@@ -108,17 +138,7 @@ function record(drift: Omit<ParityDrift, "allowed">): void {
    const kept: ParityDrift = allowed ? { ...drift, allowed } : drift;
    if (drifts.length >= MAX_KEPT) drifts.shift();
    drifts.push(kept);
-   recordAdmissionParityDrift(
-      drift.side,
-      drift.probe !== undefined ? "probe_refuses" : "lookup_refuses",
-   );
-   logger.warn("admission parity drift", {
-      side: drift.side,
-      probe: drift.probe ?? null,
-      lookup: drift.lookup ?? null,
-      tables: drift.tables,
-      ...(allowed ? { allowed } : {}),
-   });
+   observer?.drift(kept);
 }
 
 /** Whether two refusals disagree on whether the comparison is refused. */

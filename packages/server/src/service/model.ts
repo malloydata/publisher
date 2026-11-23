@@ -218,10 +218,6 @@ import {
 import { QueryPrivileges, type QueryRequest } from "./model_query_request";
 import { annotationNearMisses, authoredNotes } from "./annotation_near_miss";
 import {
-   readStringCapabilities,
-   recordStringCapabilities,
-} from "./materialization";
-import {
    type ColumnContract,
    parseContract,
 } from "./materialization/domain/column_contract";
@@ -364,6 +360,30 @@ export class Model {
    private bindingsOverride:
       | { bindings: readonly Binding[]; over?: Snapshot; snapshot?: Snapshot }
       | undefined;
+   /**
+    * What reads and keeps this model's string capabilities
+    * (`serve/source_capability.ts`), set by the package beside the served
+    * copy's context; absent, {@link refreshStringCapabilities} reads none.
+    */
+   private stringCapabilityReader:
+      | ((
+           runtime: object,
+           args: {
+              modelDef: ModelDef;
+              load: (query: string) => QueryMaterializer;
+              connection: (name: string) => Promise<Connection>;
+              givens?: Record<string, unknown>;
+           },
+        ) => Promise<void>)
+      | undefined;
+
+   /** Set what {@link refreshStringCapabilities} reads through. */
+   public setStringCapabilityReader(
+      reader: NonNullable<Model["stringCapabilityReader"]>,
+   ): void {
+      this.stringCapabilityReader = reader;
+   }
+
    /** The contracts of the tables set directly ({@link setServeBindings}). */
    private contractsOverride: ReadonlyMap<string, ColumnContract> | undefined;
    /** {@link storageTables}, for the snapshot bindings it was read from. */
@@ -3113,6 +3133,7 @@ export class Model {
     * throws; a model with no compile reads nothing.
     */
    public async refreshStringCapabilities(): Promise<void> {
+      const refresh = this.stringCapabilityReader;
       const load = this.authorQueryLoader();
       const modelDef = this.modelDef;
       const runtime = (
@@ -3126,17 +3147,14 @@ export class Model {
               }
             | undefined
       )?.runtime;
-      if (!load || !modelDef || !runtime) return;
+      if (!refresh || !load || !modelDef || !runtime) return;
       try {
-         recordStringCapabilities(
-            runtime,
-            await readStringCapabilities({
-               modelDef,
-               load,
-               connection: (name) => runtime.connections.lookupConnection(name),
-               givens: placeholderGivens(this.givens),
-            }),
-         );
+         await refresh(runtime, {
+            modelDef,
+            load,
+            connection: (name) => runtime.connections.lookupConnection(name),
+            givens: placeholderGivens(this.givens),
+         });
       } catch (err) {
          logger.warn(
             "Could not read how this model's sources compare strings",

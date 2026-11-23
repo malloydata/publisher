@@ -518,3 +518,14 @@ function fieldOf(row: Record<string, unknown>, name: string): unknown {
    );
    return key === undefined ? undefined : row[key];
 }
+
+/**
+ * Read a model's capabilities and keep them with `runtime`, for the
+ * lookups: what a bind commit runs for each model. Never throws.
+ */
+export async function refreshStringCapabilities(
+   runtime: object,
+   args: CapabilityReadArgs,
+): Promise<void> {
+   recordStringCapabilities(runtime, await readStringCapabilities(args));
+}
