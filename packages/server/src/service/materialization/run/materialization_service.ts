@@ -87,7 +87,10 @@ import {
    rebindsOwnVersionAfter,
    referenceManifestToEntries,
 } from "./manifest_committer";
-import type { EligibilityTier } from "./materialization_instructed_run";
+import {
+   type EligibilityTier,
+   planRefusalOf,
+} from "./materialization_instructed_run";
 import { isActiveRun, outcomeFor } from "./run_status";
 import { packageRelativeRun, withChainBuildText } from "./build_upstreams";
 import { tallySources } from "./run_telemetry";
@@ -1599,19 +1602,10 @@ export class MaterializationService {
       // (validateInstructions); the run's own plan may have refused its
       // source since (judged against tables bound after the served plan was
       // derived), and then holds no table for it.
-      const servedSourceIDs = new Map(
-         Object.entries(pkg.getBuildPlan()?.sources ?? {}).map(
-            ([sourceID, source]) => [source.sourceEntityId, sourceID],
-         ),
+      const refusedAtPlan = planRefusalOf(
+         pkg.getBuildPlan()?.sources ?? {},
+         target.planRefusals,
       );
-      const refusedAtPlan = (instruction: BuildInstruction) => {
-         const sourceID =
-            instruction.sourceID ??
-            servedSourceIDs.get(instruction.sourceEntityId);
-         return sourceID === undefined
-            ? undefined
-            : target.planRefusals[sourceID];
-      };
       return await this.collaborators.executeInstructedBuild({
          refusedAtPlan,
          compiled,

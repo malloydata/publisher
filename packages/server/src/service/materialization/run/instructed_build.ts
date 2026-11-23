@@ -1519,10 +1519,22 @@ function recordUnresolvedInstructions(
    instructions: BuildInstruction[],
    refusedAtPlan: InstructedBuildOptions["refusedAtPlan"],
 ): void {
+   // Several instructions may name one source (the index applies the last
+   // for each sourceID and address, and reports the clash): one the index
+   // did not apply is that source's, and its outcome is the applied one's.
+   const resolved = (i: BuildInstruction | undefined): boolean =>
+      i !== undefined && run.resolvedInstructions.has(i);
+   const applied = (instruction: BuildInstruction): boolean =>
+      resolved(instruction) ||
+      (instruction.sourceID !== undefined &&
+         resolved(run.index.bySourceID.get(instruction.sourceID))) ||
+      resolved(run.index.bySourceEntityId.get(instruction.sourceEntityId));
+   const pending = new Set(run.pendingRefusals.map((p) => p.failedKey));
    for (const instruction of instructions) {
-      if (run.resolvedInstructions.has(instruction)) continue;
+      if (applied(instruction)) continue;
       const key = instruction.sourceEntityId;
-      if (run.failures[key] || run.builtAddresses.has(key)) continue;
+      if (run.failures[key] || run.builtAddresses.has(key) || pending.has(key))
+         continue;
       const tier = buildTierOf(instruction);
       const destination = instruction.destination
          ? { storageDestinationName: instruction.destination }

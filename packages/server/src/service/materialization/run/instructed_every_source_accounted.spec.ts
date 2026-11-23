@@ -26,6 +26,7 @@ import {
    INSTRUCTION_UNRESOLVED_CODE,
 } from "./instructed_build";
 import { type BuildEnvironment } from "./build_upstreams";
+import { planRefusalOf } from "./materialization_instructed_run";
 
 let restore: () => void;
 beforeEach(() => {
@@ -190,5 +191,62 @@ describe("every instructed source ends in entries or failures", () => {
          retryable: false,
       });
       expect(result.failures["addr-gone"].refused).toBeUndefined();
+   });
+});
+
+describe("a duplicate instruction for one source", () => {
+   it("keeps the refusal its applied instruction met, never an instruction_unresolved for the other", async () => {
+      const { run, built } = harness();
+      // One address, two tables: the index applies the last, whose name the
+      // gate refuses; the first is the same source's, not an unmatched one.
+      const instructions = [
+         instruction("addr-daily", "daily_g2"),
+         instruction("addr-daily", "bad\0name"),
+      ];
+      let thrown: unknown;
+      try {
+         await run(instructions);
+      } catch (err) {
+         thrown = err;
+      }
+      expect(built).toEqual([]);
+      const failures = (
+         thrown as { runFailures?: Record<string, { code?: string }> }
+      ).runFailures;
+      expect(failures?.["addr-daily"]).toMatchObject({
+         refused: true,
+         physicalTableName: "bad\0name",
+      });
+      expect(failures?.["addr-daily"]?.code).toBeUndefined();
+      expect((thrown as Error).message).not.toContain(
+         "resolves the instruction",
+      );
+   });
+});
+
+describe("planRefusalOf", () => {
+   it("finds the refusal of any source on a shared address for an instruction without a sourceID", () => {
+      // A base and its `extend` share one address; only the base is
+      // refused, and the extension comes after it (a map keeping one
+      // sourceID per address kept the extension's, and missed it).
+      const served = {
+         "a_base@file:///m.malloy": { sourceEntityId: "addr-shared" },
+         "b_ext@file:///m.malloy": { sourceEntityId: "addr-shared" },
+      };
+      const refusal = {
+         ...rollupRefusal,
+         sourceID: "a_base@file:///m.malloy",
+         name: "a_base",
+      };
+      const lookup = planRefusalOf(served, {
+         "a_base@file:///m.malloy": refusal,
+      });
+      expect(lookup(instruction("addr-shared", "t"))).toEqual(refusal);
+      expect(
+         lookup({
+            ...instruction("addr-shared", "t"),
+            sourceID: "b_ext@file:///m.malloy",
+         }),
+      ).toBeUndefined();
    });
 });

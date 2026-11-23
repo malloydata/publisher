@@ -395,6 +395,34 @@ export function resolveInstruction(
 }
 
 /**
+ * The plan's refusal of the source an instruction names: by its `sourceID`
+ * when it carries one, else by its content address through the plan the
+ * caller read (`served`), where a base and its `extend` share one address,
+ * so every source on it is consulted, in sourceID order.
+ */
+export function planRefusalOf(
+   served: Readonly<Record<string, { sourceEntityId: string }>>,
+   refusals: Readonly<Record<string, RefusedSource>>,
+): (instruction: BuildInstruction) => RefusedSource | undefined {
+   const sourceIDsByAddress = new Map<string, string[]>();
+   for (const [sourceID, source] of Object.entries(served)) {
+      const ids = sourceIDsByAddress.get(source.sourceEntityId) ?? [];
+      ids.push(sourceID);
+      sourceIDsByAddress.set(source.sourceEntityId, ids);
+   }
+   return (instruction) => {
+      if (instruction.sourceID !== undefined) {
+         return refusals[instruction.sourceID];
+      }
+      const ids = sourceIDsByAddress.get(instruction.sourceEntityId) ?? [];
+      for (const sourceID of [...ids].sort()) {
+         if (refusals[sourceID]) return refusals[sourceID];
+      }
+      return undefined;
+   };
+}
+
+/**
  * Two definitions on one physical table is refused BEFORE anything is
  * written. A mid-loop throw would leave the pair's FIRST table already
  * replaced, and nothing restores it: the failure path reclaims storage tables
