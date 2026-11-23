@@ -16,11 +16,10 @@ SPDX-License-Identifier: MIT
 so it never names `counts`. The compiler does: `rollup`'s SQL inlines
 `counts` whenever no manifest holds it.
 
-Under `strictUpstreams`, with `daily` supplied by reference and `counts`
-supplied by nothing, that inlining is a recompute of a pinned table — exactly
-what strict exists to refuse. The refusal must come from what the compiler
-actually reaches, not from what the walk names. Non-strict, the build
-recomputes and the entry says which upstream and why.
+With `daily` supplied by reference and `counts` supplied by nothing, that
+inlining is a recompute of a pinned table, which no build does. The refusal
+must come from what the compiler actually reaches, not from what the walk
+names, and it holds with or without `strictUpstreams`.
 
 ## Publisher
 
@@ -89,11 +88,11 @@ Expect:
 
 cites: counts
 
-## Build (orchestrated, pkg=dcr)
+## Build refused (orchestrated, pkg=dcr)
 
-Non-strict: the same instruction recomputes `counts` and says so.
+Without strict: the same instruction is refused the same way.
 
-- rollup -> dcr_rollup__g2 @ lake (recomputed)
+- rollup -> dcr_rollup__g2 @ lake
   reference: daily
 
 cites: counts

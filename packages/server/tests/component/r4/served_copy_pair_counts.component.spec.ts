@@ -547,6 +547,9 @@ describe("R4: a pair table a host's manifest binds, its leaf key claimed checked
          parentKeys: Object.fromEntries(
             Object.keys(own.primaryKeys).map((id) => [id, true]),
          ),
+         ...(own.primaryKeyColumns
+            ? { parentKeyColumns: own.primaryKeyColumns }
+            : {}),
       };
       const entry = {
          sourceEntityId: own.virtualHandle,

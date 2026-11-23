@@ -26,7 +26,15 @@
  * Effects: logs, and the bind metrics.
  */
 
-import { type ColumnContract, parseContract } from "./domain/column_contract";
+import {
+   type ColumnContract,
+   type KeyedSource,
+   keyUniquenessOfContract,
+   parseContract,
+} from "./domain/column_contract";
+import { packageRelativeSourceID } from "./text/read_text";
+import { refreshStringCapabilities } from "./serve/source_capability";
+import { recordScopeFacts } from "./serve/scope_facts";
 import type { Connection, MalloyConfig } from "@malloydata/malloy";
 import { components } from "../../api";
 import type { ChainBuildRequest, ChainBuildText } from "./domain/chain_build";
@@ -64,6 +72,7 @@ import {
    pin,
    type Snapshot,
    underCompilerKeys,
+   withEntryKeyChecks,
 } from "./domain/binding";
 import {
    observedDatabaseColumns,
@@ -107,6 +116,8 @@ import {
 import { STORED_COLUMN_TYPE_MISMATCH_CODE } from "./stored_column_types";
 import { tablePathParts } from "../quoting";
 import * as warnings from "./package_warnings";
+import type { IncrementalCheckState } from "./package_warnings";
+import type { IncrementalCheckFinding } from "./domain/incremental";
 import { PlanLifecycle } from "./plan_lifecycle";
 import { type DeploymentFacts, ServeVerdicts } from "./serve_verdicts";
 import { SourceMap } from "./text/source_map";
@@ -211,6 +222,13 @@ export class PackageMaterialization {
     * (Reclaimer.reclaimRenamedTables), set by that run.
     */
    private keptTables: readonly KeptTable[] = [];
+   /**
+    * What the newest refreshes found of each incremental source's checks,
+    * by content address, while one is unpassed (see noteIncrementalCheck).
+    * In memory: after a restart, the next run that finds it again restores
+    * it.
+    */
+   private incrementalChecks = new Map<string, IncrementalCheckState>();
    /**
     * The same entries as table names only, the manifest models hydrate with
     * and /compile reads. Surfaced on /status so the control plane can confirm
@@ -772,9 +790,40 @@ export class PackageMaterialization {
               ),
          plan.withdrawn,
          plan.compilerKeys,
+         this.servedContracts(bindings, entries),
       );
       this.snapshotMemo = { key, snapshot, signature };
       return snapshot;
+   }
+
+   /**
+    * Each served table's column contract, by content address: a `storage=`
+    * binding's from its entry, a database table's from its entry. Every one
+    * served has one (a table without is never bound).
+    */
+   private servedContracts(
+      bindings: readonly Binding[],
+      entries: Readonly<FreshnessManifest>,
+   ): Map<string, ColumnContract> {
+      const out = new Map<string, ColumnContract>();
+      const keep = (id: string, raw: unknown) => {
+         if (out.has(id)) return;
+         const contract = parseContract(raw);
+         if (contract) out.set(id, contract);
+      };
+      for (const b of bindings) {
+         keep(
+            b.virtualHandle,
+            (b.tier === "storage"
+               ? this.storageEntries[b.virtualHandle]
+               : (entries[b.virtualHandle] ??
+                 this.databaseEntries?.[b.virtualHandle])
+            )?.contract,
+         );
+      }
+      for (const [id, entry] of Object.entries(entries))
+         keep(id, entry.contract);
+      return out;
    }
 
    /**
@@ -937,6 +986,17 @@ export class PackageMaterialization {
       try {
          change();
          const next = this.snapshot();
+         // How each model's sources compare strings, read again on every
+         // commit that serves a table: read admission looks it up per query.
+         if (next.bindings.length > 0 || Object.keys(next.entries).length > 0) {
+            await Promise.all(
+               [...this.owner.models().values()].map((model) => {
+                  model.setStringCapabilityReader(refreshStringCapabilities);
+                  model.setScopeFactsRecorder(recordScopeFacts);
+                  return model.refreshStringCapabilities();
+               }),
+            );
+         }
          if (next.bindings !== this.publishedBindings || models) {
             this.publishedBindings = next.bindings;
             await Promise.all(
@@ -946,6 +1006,14 @@ export class PackageMaterialization {
                }),
             );
             this.bindTypeFindings(next.bindings);
+         }
+         // What each source's gates and row scope read, over this commit's
+         // tables: a commit that changes only the manifest entries (a
+         // database table) is a new snapshot too.
+         if (next.bindings.length > 0 || Object.keys(next.entries).length > 0) {
+            for (const model of this.owner.models().values()) {
+               model.recordScopeFactsOver(next);
+            }
          }
       } finally {
          this.committing = undefined;
@@ -977,28 +1045,121 @@ export class PackageMaterialization {
       this.afterBind(update);
    }
 
+   /**
+    * The key checks {@link withRecordedKeyChecks} read off a contract, by
+    * identity: never a local run's record, so each is read again, under the
+    * primary keys the models declare then, whenever its entry is.
+    */
+   private readonly contractKeyChecks = new WeakSet<object>();
+
+   /**
+    * `entries`, each that carries no key check record of a local run
+    * (`keyUniqueness`) given the rollup and source key checks its contract
+    * records (`keyUniquenessOfContract`), for the sources the models declare
+    * now: so a table a host built and bound serves a join to a rollup as one
+    * this server built does. A local record, when there is one, stands. One
+    * read off a contract before is read again, never kept: a primary key the
+    * models moved since then finds no check recorded under it, and its joins
+    * to rollups answer live.
+    */
+   private withRecordedKeyChecks<
+      E extends { contract?: unknown; keyUniqueness?: unknown },
+   >(entries: Readonly<Record<string, E>>): Readonly<Record<string, E>> {
+      let sources: KeyedSource[] | undefined;
+      let out: Record<string, E> | undefined;
+      for (const [id, entry] of Object.entries(entries)) {
+         const previous = entry.keyUniqueness;
+         const fromContract =
+            typeof previous === "object" &&
+            previous !== null &&
+            this.contractKeyChecks.has(previous);
+         if (
+            (previous !== undefined && !fromContract) ||
+            entry.contract === undefined
+         ) {
+            continue;
+         }
+         sources ??= this.keyedSources();
+         const keyUniqueness = keyUniquenessOfContract(entry.contract, sources);
+         if (!keyUniqueness && !fromContract) continue;
+         out ??= { ...entries };
+         if (keyUniqueness) {
+            this.contractKeyChecks.add(keyUniqueness);
+            out[id] = { ...entry, keyUniqueness };
+         } else {
+            const { keyUniqueness: _stale, ...rest } = entry;
+            out[id] = rest as E;
+         }
+      }
+      return out ?? entries;
+   }
+
+   /** Every source the models declare with a primary key, as a contract's key checks name it. */
+   private keyedSources(): KeyedSource[] {
+      const packagePath = this.owner.packagePath();
+      const bySourceID = new Map<string, KeyedSource>();
+      for (const model of this.owner.models().values()) {
+         const contents =
+            (model.getModelDef() as { contents?: Record<string, unknown> })
+               .contents ?? {};
+         for (const def of Object.values(contents)) {
+            const { sourceID, primaryKey } = def as {
+               sourceID?: unknown;
+               primaryKey?: unknown;
+            };
+            if (
+               typeof sourceID !== "string" ||
+               typeof primaryKey !== "string" ||
+               bySourceID.has(sourceID)
+            ) {
+               continue;
+            }
+            bySourceID.set(sourceID, {
+               sourceID,
+               relativeID: packageRelativeSourceID(packagePath, sourceID),
+               primaryKey,
+            });
+         }
+      }
+      return [...bySourceID.values()];
+   }
+
    /** {@link bind}'s change of the bound state, before any publish. */
    private applyBind(update: Parameters<PackageMaterialization["bind"]>[0]) {
       if (update.database) {
+         const database = this.withRecordedKeyChecks(update.database);
          this.adoptDatabase(
-            update.databaseAsGiven
-               ? update.database
-               : this.admitDatabase(update.database),
+            update.databaseAsGiven ? database : this.admitDatabase(database),
          );
          this.observedColumns = update.observed;
          this.cancelUnreadRetry();
       }
       if (update.storage) {
-         this.storageEntries = update.storage;
+         const storage = this.withRecordedKeyChecks(update.storage);
+         this.storageEntries = storage;
          this.storageObserved = update.storageObserved;
          this.storageSite = update.storageSite;
          this.cancelStorageRetry();
-         this.storageBindings = this.admitStorage(update.storage);
+         this.storageBindings = this.admitStorage(storage);
          this.storageLateRows = new Map(
-            Object.entries(update.storage).flatMap(([id, entry]) =>
+            Object.entries(storage).flatMap(([id, entry]) =>
                entry.lateRows ? [[id, entry.lateRows]] : [],
             ),
          );
+      } else if (update.models) {
+         // New models may declare other primary keys: the `storage=`
+         // tables' key checks are read off their contracts again, under them.
+         const before = this.storageEntries;
+         const storage = this.withRecordedKeyChecks(before);
+         if (storage !== before) {
+            this.storageEntries = storage;
+            this.storageBindings = this.storageBindings.map((b) => {
+               const entry = storage[b.virtualHandle];
+               return entry && entry !== before[b.virtualHandle]
+                  ? withEntryKeyChecks(b, entry)
+                  : b;
+            });
+         }
       }
    }
 
@@ -1483,6 +1644,7 @@ export class PackageMaterialization {
             if (!checked(b)) return b;
             const {
                primaryKeys: _forgotten,
+               primaryKeyColumns: _forgottenColumns,
                rollupKey: _forgottenKey,
                ...rest
             } = b;
@@ -1766,6 +1928,8 @@ export class PackageMaterialization {
    }
 
    private setServedCopyContextOn(model: Model): void {
+      model.setStringCapabilityReader(refreshStringCapabilities);
+      model.setScopeFactsRecorder(recordScopeFacts);
       model.setServedCopyContext(
          this.owner.packagePath(),
          this.owner.malloyConfig(),
@@ -1870,6 +2034,32 @@ export class PackageMaterialization {
 
    keptTableWarnings(): ApiPackageWarning[] {
       return warnings.keptTableWarnings(this.plan.buildPlan, this.keptTables);
+   }
+
+   /**
+    * What a run found of a source's incremental check: a finding that is not
+    * `passed` is kept, and warned of, until that check passes.
+    */
+   noteIncrementalCheck(
+      sourceEntityId: string,
+      finding: IncrementalCheckFinding,
+   ): void {
+      const state = { ...this.incrementalChecks.get(sourceEntityId) };
+      if (finding.outcome === "passed") delete state[finding.check];
+      else state[finding.check] = finding;
+      if (Object.keys(state).length === 0) {
+         this.incrementalChecks.delete(sourceEntityId);
+      } else {
+         this.incrementalChecks.set(sourceEntityId, state);
+      }
+   }
+
+   /** See package_warnings.ts, `incrementalCheckWarnings`. */
+   incrementalCheckWarnings(): ApiPackageWarning[] {
+      return warnings.incrementalCheckWarnings(
+         this.plan.buildPlan,
+         this.incrementalChecks,
+      );
    }
 
    /**

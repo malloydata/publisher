@@ -8,10 +8,11 @@ import {
    SingleConnectionRuntime,
    type VirtualMap,
 } from "@malloydata/malloy";
-import { afterAll, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import {
    type Binding,
    EMPTY_SNAPSHOT,
+   makeSnapshot,
    pin,
 } from "./materialization/domain/binding";
 import type { BuildManifest } from "./materialization/domain/types";
@@ -31,6 +32,10 @@ import {
 import type { RollupVariantServe } from "./materialization/serve/rollup_variants";
 import { tablesReadForGates } from "./materialization/serve/bindings";
 import { answerOf, recordingManifest, variantsOf } from "./query_serving";
+import {
+   readStringCapabilities,
+   recordStringCapabilities,
+} from "./materialization/serve/source_capability";
 
 const runnable = {
    tag: "routed",
@@ -410,7 +415,32 @@ describe("the #(rollup) rollup candidate past an entry-point gate (row 1)", () =
 });
 
 describe("the served copy past an entry-point gate under G3 (gated sources off)", () => {
-   const pinned = pin(EMPTY_SNAPSHOT, new Date(0));
+   // What a bind records for the lookups: the author model's capabilities,
+   // and each stored table's contract, its strings byte-wise.
+   beforeAll(async () => {
+      recordStringCapabilities(
+         (authorModel as unknown as { runtime: object }).runtime,
+         await readStringCapabilities({
+            modelDef: (await authorModel.getModel())._modelDef,
+            load: (q) => authorModel.loadQuery(q),
+            connection: async () => authorConnection,
+         }),
+      );
+   });
+   const byteWise = { v: 1, dialect: "duckdb", columns: [] };
+   const pinned = pin(
+      makeSnapshot(
+         [],
+         {},
+         undefined,
+         undefined,
+         new Map([
+            ["eid-s", byteWise],
+            ["eid-c", byteWise],
+         ]),
+      ),
+      new Date(0),
+   );
    const database = binding("c", {
       kind: "materialize",
       tier: "database",

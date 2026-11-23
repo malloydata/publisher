@@ -2940,11 +2940,12 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                break;
             }
             case "manifest": {
-               // Author the manifest a host would send, and bind it. The schema is
-               // copied from whichever CAPTURED entry already describes that
-               // physical table — a real build has to have produced it, which is
-               // what keeps the forged entry honest about the table's shape while
-               // being dishonest about which source may be served from it.
+               // Author the manifest a host would send, and bind it. The schema and
+               // column contract are copied from whichever CAPTURED entry already
+               // describes that physical table — a real build has to have produced
+               // them, which is what keeps the forged entry honest about the table's
+               // shape while being dishonest about which source may be served from
+               // it. (A bound entry without a contract is never served from.)
                const rest = await serverFor(step.pub, step.env);
                const captured = await rest.latestManifestEntries(step.pkg);
                const ids = await rest.sourceEntityIds(step.pkg);
@@ -2971,7 +2972,7 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                      (c) =>
                         (c as { physicalTableName?: string })
                            .physicalTableName === e.table,
-                  ) as { schema?: unknown } | undefined;
+                  ) as { schema?: unknown; contract?: unknown } | undefined;
                   if (!schemaOf?.schema) {
                      throw new Error(
                         `## Manifest: no captured schema for table "${e.table}" — ` +
@@ -2984,6 +2985,9 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                      physicalTableName: e.table,
                      storageDestinationName: e.dest,
                      schema: schemaOf.schema,
+                     ...(schemaOf.contract
+                        ? { contract: schemaOf.contract }
+                        : {}),
                      ...(e.fallback ? { freshnessFallback: e.fallback } : {}),
                      ...(e.asof ? { dataAsOf: e.asof } : {}),
                      ...(e.fresh !== undefined

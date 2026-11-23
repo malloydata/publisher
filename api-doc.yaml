@@ -11943,11 +11943,13 @@ components:
             do not name the parent's current build, the extension rebuilds in
             full (`upstream_generation_skipped`). It is preferred over both.
 
-            It must name the reference's table (the same `connectionName`,
-            `physicalTableName` and `storageDestinationName`). One that does
-            not, or whose own shape is malformed (see `LedgerEntry`), is dropped
-            with a logged warning and the request proceeds as if it were
-            absent; it is never a 400. Keys this release does not know are
+            It must name the reference's table and source (the same
+            `connectionName`, `physicalTableName`, `storageDestinationName` and
+            `sourceEntityId`). One that does not, or whose own shape is malformed
+            (see `LedgerEntry`), is dropped with a logged warning and the request
+            proceeds as if it were absent, never a 400: the extensions fall back
+            to the bound manifest's entry, then the worker's own, and rebuild in
+            full only when neither proves which build of the parent they read. Keys this release does not know are
             kept. Unlike `BuildInstructions.ledger`, it names a table this run
             does not build, and is never written to. Optional and additive.
 
@@ -12254,10 +12256,21 @@ components:
         keys:
           type: object
           description: >-
-            For a pair table (an `inline=` join_many), the key checks its build
-            ran, by stored key column: whether the key held one row per value
-            and no NULL. A view built over a pair table needs its leaf key's
-            check recorded as passed.
+            The key checks the table's build ran, each named
+            `<level>:<subject>.<keyColumn>` (or `<level>:<keyColumn>` when it
+            has no subject), with whether the key held one row per value and
+            no NULL. `leaf`: a pair table's (an `inline=` join_many's) leaf
+            key, its subject the join path (`leaf:items.options.option_id`);
+            a view built over a pair table needs it recorded as passed.
+            `rollup`: a rollup's own key, its one grain dimension, with no
+            subject (`rollup:category`). `parent`: the primary key of a query
+            source that reads the rollup through a join_many, and `stored`: a
+            stored source's own primary key, each with the source as its
+            subject, named by its sourceID with the file relative to the
+            package (`parent:orders@models/orders.malloy.id`). A rollup or
+            source check serves a join only under the key the model declares
+            now. Readers look up the names they need and never parse one;
+            an unknown name or level is ignored.
           additionalProperties:
             type: object
             required: [unique]
@@ -12266,7 +12279,9 @@ components:
                 type: boolean
               level:
                 type: string
-                description: "`parent`, `middle` or `leaf`. An open set."
+                description: >-
+                  `leaf`, `rollup`, `parent` or `stored`, as the name's
+                  prefix. An open set.
 
     ContractColumn:
       type: object
@@ -12432,8 +12447,15 @@ components:
             is non-terminal, never a refusal: the package reads its tables and
             derives its plan again at once, and the next build either builds
             the source over the upstream's table as it is or the plan refuses
-            it (`upstream_table_unusable`); the source is `retryable`. An open
-            set; absent for a failure that has none.
+            it (`upstream_table_unusable`); the source is `retryable`.
+            `instruction_unresolved` (an instruction no source in the run's
+            build plan resolves to, so nothing was built for it; not
+            `retryable` until the caller reads the plan again). Every
+            instructed source ends in `entries` or `failures`: one the run's
+            plan refused since the caller read it is a refusal carrying the
+            plan's reason, and any other unmatched instruction fails with this
+            code; none is dropped. An open set; absent for a failure that has
+            none.
         refused:
           type: boolean
           description: >-

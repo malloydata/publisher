@@ -16,9 +16,15 @@
  */
 
 import type { StringReads } from "../domain/string_reads";
+import { upstreamTypesOf } from "../domain/upstream_schemas";
 import { tableNamesFoldCase } from "../domain/storage_table_path";
 import { errorCodeOf } from "../../../error_code";
-import { parseContract } from "../domain/column_contract";
+import {
+   type ContractKeyCheck,
+   contractKeyName,
+   parseContract,
+} from "../domain/column_contract";
+import { packageRelativeSourceID } from "../text/read_text";
 import { assertPairLeafKeysPassed } from "./pair_leaf_gate";
 import { instructionTier } from "../domain/placement";
 import {
@@ -164,6 +170,7 @@ import {
    buildKindOf,
    buildTierOf,
    reportSourceBuilt,
+   reportSourceFailed,
    reportSourceRefused,
 } from "./run_telemetry";
 
@@ -175,9 +182,12 @@ const STORAGE: Pick<StorageBuildStrategy, "checkKey" | "keyCheckSql"> =
    new StorageBuildStrategy();
 
 /**
- * The key checks an auto-run runs over a table once it is written: a
- * rollup's key and its query sources' keys, a pair table's leaf key, and a
- * stored source's own key. Each records what it found; none fails the build.
+ * The key checks every build runs over a table once it is written, a host's
+ * included: a rollup's key and its query sources' keys, and a stored
+ * source's own key. None fails the build. What each found goes in the
+ * table's contract (`ColumnContract.keys`, returned here), and an auto-run
+ * also records it, with a pair table's leaf checks, beside the table in its
+ * run (the uniqueness ledger).
  */
 async function checkBuiltKeys(
    run: InstructedRun,
@@ -187,44 +197,40 @@ async function checkBuiltKeys(
    { instruction, orchestrated, sourceEntityId }: GatedSource,
    entry: ManifestEntry,
    leafChecks: readonly PairLeafCheck[],
-): Promise<void> {
+): Promise<Record<string, ContractKeyCheck>> {
    const { compiled } = run;
-   // A rollup's key checks. Auto-run only; never
-   // fails the build.
-   if (!orchestrated && run.uniqueness) {
-      await checkRollupKeys(
-         run.uniqueness,
-         compiled,
-         persistSource,
-         entry,
-         connection,
-         graphConnectionName,
-         sourceEntityId,
-         writtenTableIdentity(instruction, graphConnectionName),
-      );
-   }
+   const ledger = orchestrated ? undefined : run.uniqueness;
+   const relative = relativeSourceIDOf(run);
+   const keys = await checkRollupKeys(
+      ledger,
+      compiled,
+      persistSource,
+      entry,
+      connection,
+      graphConnectionName,
+      sourceEntityId,
+      writtenTableIdentity(instruction, graphConnectionName),
+      relative,
+   );
    // A pair table's leaf key checks ran before the entry was recorded
-   // ({@link pairLeafKeysOf}); an auto-run also records them beside the
-   // table, for the served copy.
-   if (!orchestrated && run.uniqueness) {
-      for (const { check, record } of leafChecks) {
-         if (!record) continue;
-         run.uniqueness.recordRollupKey(sourceEntityId, {
-            ...record,
-            sourceID: check.sourceID,
-         });
-      }
+   // ({@link pairLeafKeysOf}) and are in its contract; an auto-run also
+   // records them beside the table, for the served copy.
+   for (const { check, record } of ledger ? leafChecks : []) {
+      if (!record) continue;
+      ledger!.recordRollupKey(sourceEntityId, {
+         ...record,
+         sourceID: check.sourceID,
+      });
    }
    // A source stored in a destination, read there beside a joined
    // source's rollup through a join keyed on its primary key:
    // check that key over the rows its table holds.
-   const stored =
-      !orchestrated && run.uniqueness && entry.storageDestinationName
-         ? storedKeyCheckOf(run, persistSource.sourceID, entry)
-         : undefined;
-   if (stored && run.uniqueness) {
-      await checkAndRecordKey(
-         run.uniqueness,
+   const stored = entry.storageDestinationName
+      ? storedKeyCheckOf(run, persistSource.sourceID, entry)
+      : undefined;
+   if (stored) {
+      const record = await checkAndRecordKey(
+         ledger,
          sourceEntityId,
          "stored",
          () =>
@@ -247,7 +253,42 @@ async function checkBuiltKeys(
          // Recorded under its own sourceID.
          persistSource.sourceID,
       );
+      const subject = relative?.(persistSource.sourceID);
+      if (record && subject) {
+         keys[contractKeyName("stored", subject, stored.keyColumn)] = {
+            unique: record.unique,
+            level: "stored",
+         };
+      }
    }
+   return keys;
+}
+
+/**
+ * A sourceID with its file made relative to the run's package, as a contract
+ * key names a checked source (`contractKeyName`); undefined when the run
+ * knows no package path, so no such key is recorded.
+ */
+function relativeSourceIDOf(
+   run: InstructedRun,
+): ((sourceID: string) => string) | undefined {
+   const packagePath = run.environment.getPackagePath?.();
+   return packagePath === undefined
+      ? undefined
+      : (sourceID) => packageRelativeSourceID(packagePath, sourceID);
+}
+
+/** `entry` with `keys` added to its contract's `keys`. */
+function withContractKeys(
+   entry: ManifestEntry,
+   keys: Record<string, ContractKeyCheck>,
+): ManifestEntry {
+   const contract = parseContract(entry.contract);
+   if (!contract || Object.keys(keys).length === 0) return entry;
+   return {
+      ...entry,
+      contract: { ...contract, keys: { ...(contract.keys ?? {}), ...keys } },
+   };
 }
 
 /** What an instructed source's gates hand its build. */
@@ -516,6 +557,7 @@ export class InstructedBuild {
          builtThisRun: [],
          retainedThisRun: [],
          failures: {},
+         resolvedInstructions: new Set(),
          failedBySourceID: new Map(),
          upstreamsBySourceID: upstreamsBySourceID(builds),
          failedReasons: [],
@@ -549,6 +591,7 @@ export class InstructedBuild {
          // check before, so the run settles CANCELLED here rather than
          // committing a partial manifest that would serve.
          if (run.signal?.aborted) throw new BuildCancelledError();
+         recordUnresolvedInstructions(run, instructions, options.refusedAtPlan);
 
          settled = settleRefusals(run);
 
@@ -910,13 +953,26 @@ export class InstructedBuild {
          persistSource.name,
          writtenTableIdentity(instruction, graphConnectionName),
       );
-      const entry = withLeafKeys(
+      const withLeaves = withLeafKeys(
          withBuiltProvenance(
             run,
             sourceEntityId,
             withRollupUpstreamReuse(run, persistSource, sourceEntityId, built),
          ),
          leafChecks,
+      );
+      // Before the entry is reported, so its contract carries what they found.
+      const entry = withContractKeys(
+         withLeaves,
+         await checkBuiltKeys(
+            run,
+            persistSource,
+            graphConnectionName,
+            connection,
+            gated,
+            withLeaves,
+            leafChecks,
+         ),
       );
       run.builtSources.push(persistSource.name);
       reportSourceBuilt(
@@ -931,15 +987,6 @@ export class InstructedBuild {
       );
       run.entries[sourceEntityId] = entry;
       run.builtAddresses.add(sourceEntityId);
-      await checkBuiltKeys(
-         run,
-         persistSource,
-         graphConnectionName,
-         connection,
-         gated,
-         entry,
-         leafChecks,
-      );
       run.writtenTargets.set(target, {
          sourceEntityId,
          sourceName: persistSource.name,
@@ -973,6 +1020,7 @@ export class InstructedBuild {
       );
       if (!resolved) return undefined;
       const { instruction, orchestrated } = resolved;
+      run.resolvedInstructions.add(instruction);
 
       if (this.refuseIneligibleInstructedSource(run, persistSource, resolved)) {
          return undefined;
@@ -1192,6 +1240,7 @@ export class InstructedBuild {
             ...(overStoredUpstreams ? { overStoredUpstreams } : {}),
             ...storedInDestinationOf(compiled.tables[persistSource.sourceID]),
             ...stringReadsOf(compiled.tables[persistSource.sourceID]),
+            ...upstreamTypesOption(compiled, persistSource.sourceID),
             ...(compiled.tables[persistSource.sourceID]?.kind === "rollup"
                ? { rollup: true }
                : {}),
@@ -1500,6 +1549,124 @@ function settleRefusals(run: InstructedRun): {
    }
    run.pendingRefusals = [];
    return { refusalsInFailures, refusedBesideBuilt };
+}
+
+/** `SourceFailure.code` of an instruction no planned source resolves to. */
+export const INSTRUCTION_UNRESOLVED_CODE = "instruction_unresolved";
+
+/**
+ * Fail every instruction no source in the run's plan resolved to, so each
+ * instructed source ends in `entries` or `failures` and a run never reports
+ * success for a source it neither built nor failed. One the plan refused
+ * (`refusedAtPlan`) is a refusal with the plan's reason, settled like any
+ * other; any other is a failure coded `instruction_unresolved`.
+ */
+function recordUnresolvedInstructions(
+   run: InstructedRun,
+   instructions: BuildInstruction[],
+   refusedAtPlan: InstructedBuildOptions["refusedAtPlan"],
+): void {
+   // Several instructions may name one source (the index applies the last
+   // for each sourceID and address, and reports the clash): one the index
+   // did not apply is that source's, and its outcome is the applied one's.
+   const resolved = (i: BuildInstruction | undefined): boolean =>
+      i !== undefined && run.resolvedInstructions.has(i);
+   const applied = (instruction: BuildInstruction): boolean =>
+      resolved(instruction) ||
+      (instruction.sourceID !== undefined &&
+         resolved(run.index.bySourceID.get(instruction.sourceID))) ||
+      resolved(run.index.bySourceEntityId.get(instruction.sourceEntityId));
+   const pending = new Set(run.pendingRefusals.map((p) => p.failedKey));
+   for (const instruction of instructions) {
+      if (applied(instruction)) continue;
+      const key = instruction.sourceEntityId;
+      if (run.failures[key] || run.builtAddresses.has(key) || pending.has(key))
+         continue;
+      const tier = buildTierOf(instruction);
+      const destination = instruction.destination
+         ? { storageDestinationName: instruction.destination }
+         : {};
+      const refused = refusedAtPlan?.(instruction);
+      if (refused) {
+         const reason =
+            `'${refused.name}' is not built: the build plan refuses it ` +
+            `(${refused.reason}): ${refused.message}`;
+         const err = new MaterializationEligibilityError({
+            message: reason,
+            reason: refused.reason,
+         });
+         run.refusals.push(err);
+         reportSourceRefused(
+            {
+               kind: buildKindOf(run.compiled, refused.sourceID),
+               tier,
+               sourceEntityId: key,
+               sourceName: refused.name,
+            },
+            refused.reason,
+         );
+         run.failedBySourceID.set(refused.sourceID, {
+            name: refused.name,
+            reason,
+            retryable: false,
+         });
+         run.pendingRefusals.push({
+            failedKey: key,
+            failure: {
+               sourceEntityId: key,
+               sourceName: refused.name,
+               materializedTableId: instruction.materializedTableId,
+               physicalTableName: instruction.physicalTableName,
+               reason,
+               refused: true,
+               refusalReason: refused.reason,
+               retryable: false,
+               ...destination,
+            },
+            errorEntry: {
+               sourceEntityId: key,
+               sourceName: refused.name,
+               physicalTableName: instruction.physicalTableName,
+               materializedTableId: instruction.materializedTableId,
+               error: reason,
+            } as ManifestEntry,
+            refused,
+            sourceID: refused.sourceID,
+            own: true,
+         });
+         continue;
+      }
+      const reason =
+         `No source in the package's build plan resolves the instruction ` +
+         `for '${key}' (table '${instruction.physicalTableName}'), so it was ` +
+         `not built. Read the package's build plan again and instruct the ` +
+         `sources it holds.`;
+      run.failedReasons.push(reason);
+      reportSourceFailed(
+         {
+            kind: buildKindOf(run.compiled, instruction.sourceID),
+            tier,
+            sourceEntityId: key,
+            sourceName: instruction.sourceID?.split("@")[0] ?? key,
+            method: "full",
+            ...(instruction.destination
+               ? { destination: instruction.destination }
+               : {}),
+         },
+         new Error(reason),
+         false,
+         false,
+      );
+      run.failures[key] = {
+         sourceEntityId: key,
+         materializedTableId: instruction.materializedTableId,
+         physicalTableName: instruction.physicalTableName,
+         reason,
+         code: INSTRUCTION_UNRESOLVED_CODE,
+         retryable: false,
+         ...destination,
+      };
+   }
 }
 
 /**
@@ -1834,7 +2001,7 @@ async function storedJoinOf(
  * and declines (`COUNT_SEMANTICS`) rather than trust another set of rows.
  */
 async function checkRollupKeys(
-   ledger: UniquenessLedger,
+   ledger: UniquenessLedger | undefined,
    compiled: RunPlan,
    persistSource: PersistSource,
    entry: ManifestEntry,
@@ -1842,7 +2009,9 @@ async function checkRollupKeys(
    connectionName: string,
    address: string,
    table: string,
-): Promise<void> {
+   /** A sourceID as a contract key names it; absent, no `parent:` key is recorded. */
+   relative: ((sourceID: string) => string) | undefined,
+): Promise<Record<string, ContractKeyCheck>> {
    const { sourceID } = persistSource;
    const groupsBaseRows = entry.upstreamReuse !== "reused";
    const baseSourceID = compiled.tables[sourceID]?.rollup?.baseSourceID;
@@ -1853,8 +2022,9 @@ async function checkRollupKeys(
          { rollup: persistSource.name, keyColumn: own.keyColumn },
       );
    }
+   const keys: Record<string, ContractKeyCheck> = {};
    if (own && groupsBaseRows) {
-      await checkAndRecordKey(
+      const record = await checkAndRecordKey(
          ledger,
          address,
          "rollup",
@@ -1867,8 +2037,14 @@ async function checkRollupKeys(
          },
          { rollup: persistSource.name, keyColumn: own.keyColumn },
       );
+      if (record) {
+         keys[contractKeyName("rollup", "", own.keyColumn)] = {
+            unique: record.unique,
+            level: "rollup",
+         };
+      }
    }
-   await checkParentKeys(
+   const parents = await checkParentKeys(
       ledger,
       rollupParentKeyChecksOf(compiled, sourceID).filter(
          (check) => groupsBaseRows || check.sourceID !== baseSourceID,
@@ -1879,6 +2055,15 @@ async function checkRollupKeys(
       address,
       table,
    );
+   for (const { check, record } of parents) {
+      const subject = relative?.(check.sourceID);
+      if (!subject) continue;
+      keys[contractKeyName("parent", subject, check.keyColumn)] = {
+         unique: record.unique,
+         level: "parent",
+      };
+   }
+   return keys;
 }
 
 /** The key check a run builds for the rollup `sourceID`, if any. */
@@ -1909,22 +2094,24 @@ function rollupParentKeyChecksOf(
 
 /**
  * Run each query source's primary key check of a built rollup, on the
- * rollup's connection, and record what it found beside the rollup. A check
- * on another connection, or one that does not run, records nothing: the
- * join-to-rollup branch then reads that source's key as unknown and declines.
+ * rollup's connection, and say what each found, recorded beside the rollup
+ * on an auto-run. A check on another connection, or one that does not run,
+ * finds nothing: the join-to-rollup branch then reads that source's key as
+ * unknown and declines.
  */
 async function checkParentKeys(
-   ledger: UniquenessLedger,
+   ledger: UniquenessLedger | undefined,
    checks: readonly ParentKeyCheck[],
    connection: MalloyConnection,
    connectionName: string,
    rollupName: string,
    address: string,
    table: string,
-): Promise<void> {
+): Promise<{ check: ParentKeyCheck; record: KeyCheckRecord }[]> {
+   const found: { check: ParentKeyCheck; record: KeyCheckRecord }[] = [];
    for (const check of checks) {
       if (check.connectionName !== connectionName) continue;
-      await checkAndRecordKey(
+      const record = await checkAndRecordKey(
          ledger,
          address,
          "parent",
@@ -1942,7 +2129,9 @@ async function checkParentKeys(
          },
          check.sourceID,
       );
+      if (record) found.push({ check, record });
    }
+   return found;
 }
 
 /** One leaf key check of a built pair table, and what it found (undefined: it did not run). */
@@ -2064,39 +2253,40 @@ function storedKeyCheckOf(
 
 /**
  * Run one key check, warn when it did not run or found the key repeated, and
- * record what it found under `address` (and `sourceID`, for a check of a
- * source other than the table's own). A check that does not run, or throws,
- * on either tier, reads as unknown: it warns, records nothing, and never
- * fails the build.
+ * return what it found, recorded in `ledger` (an auto-run's) under `address`
+ * (and `sourceID`, for a check of a source other than the table's own). A
+ * check that does not run, or throws, on either tier, reads as unknown: it
+ * warns, returns and records nothing, and never fails the build.
  */
 export async function checkAndRecordKey(
-   ledger: UniquenessLedger,
+   ledger: UniquenessLedger | undefined,
    address: string,
    kind: KeyCheckKind,
    runCheck: () => Promise<KeyCheckRecord | undefined>,
    messages: { notRun: string; notUnique: string },
    logContext: Record<string, unknown>,
    sourceID?: string,
-): Promise<void> {
+): Promise<KeyCheckRecord | undefined> {
    let record: KeyCheckRecord | undefined;
    try {
       record = await runCheck();
    } catch (err) {
       recordKeyCheck(kind, "not_run");
       logger.warn(messages.notRun, { ...logContext, code: errorCodeOf(err) });
-      return;
+      return undefined;
    }
    if (!record) {
       recordKeyCheck(kind, "not_run");
       logger.warn(messages.notRun, logContext);
-      return;
+      return undefined;
    }
    recordKeyCheck(kind, record.unique ? "unique" : "not_unique");
    if (!record.unique) logger.warn(messages.notUnique, logContext);
-   ledger.recordRollupKey(
+   ledger?.recordRollupKey(
       address,
       sourceID !== undefined ? { ...record, sourceID } : record,
    );
+   return record;
 }
 
 /**
@@ -2709,6 +2899,24 @@ function stringReadsOf(
    table: InstructedRun["compiled"]["tables"][string] | undefined,
 ): { stringReads?: StringReads } {
    return table?.stringReads ? { stringReads: table.stringReads } : {};
+}
+
+/**
+ * The warehouse type of each column the table of `sourceID` stores as a plain
+ * copy of one warehouse column (its plan's `columnOrigins`), from the plan's
+ * own upstream readings, as a build option; absent when none is known.
+ */
+function upstreamTypesOption(
+   compiled: RunPlan,
+   sourceID: string,
+): {
+   upstreamTypes?: ReadonlyMap<string, { dialect: string; nativeType: string }>;
+} {
+   const upstreamTypes = upstreamTypesOf(
+      compiled.tables[sourceID]?.columnOrigins,
+      compiled.upstreamSchemas,
+   );
+   return upstreamTypes ? { upstreamTypes } : {};
 }
 
 /** A view's or query's proven build in its destination, as a build option. */

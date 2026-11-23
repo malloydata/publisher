@@ -44,12 +44,40 @@ export type StringRead = {
  */
 export type StringReads =
    | { reads: readonly StringRead[] }
-   | { refused: string };
+   /**
+    * `unstored`: refused because a string it compares is read from no
+    * stored upstream's table ({@link unstoredReadRefusal}), not for a
+    * collation.
+    */
+   | { refused: string; unstored?: true };
 
 const MEETS: Record<StringReadNeed, ReadonlySet<string>> = {
    exact: new Set(["exact"]),
    equality: new Set(["exact", "equality"]),
 };
+
+/**
+ * Why a build reading `reads` cannot be built over its stored upstreams at
+ * all, whatever any contract records: a string it compares is read from a
+ * table no stored upstream holds (the source warehouse, through a join or
+ * a source nothing stores). That is not a collation the destination lacks,
+ * so callers report it as itself, never framed as a string comparison.
+ * Undefined when every read reaches a stored upstream (or none is recorded).
+ */
+export function unstoredReadRefusal(
+   reads: StringReads | undefined,
+): string | undefined {
+   if (reads === undefined) return undefined;
+   if ("refused" in reads) return reads.unstored ? reads.refused : undefined;
+   const unstored = reads.reads.find((r) => r.upstream === undefined);
+   if (unstored === undefined) return undefined;
+   const name = unstored.names[unstored.names.length - 1] ?? "?";
+   return (
+      `it reads '${name}' from a table no stored upstream holds (the source ` +
+      `warehouse, through a join or a source nothing stores), which no ` +
+      `stored table can stand in for`
+   );
+}
 
 /**
  * Why a build reading `reads` over tables recorded by `contracts` (by the
@@ -66,6 +94,8 @@ export function stringReadsRefusal(
    if (reads === undefined) return "its string reads were not recorded";
    if ("refused" in reads) return reads.refused;
    if (reads.reads.length === 0) return undefined;
+   const unstored = unstoredReadRefusal(reads);
+   if (unstored !== undefined) return unstored;
    if (contracts.size === 0 || [...contracts.values()].some((c) => !c)) {
       return "an upstream it reads has no column contract";
    }

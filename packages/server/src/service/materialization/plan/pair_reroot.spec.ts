@@ -67,7 +67,7 @@ source: orders is raw extend {
   } on items.__pair_parent_key = id
 }`);
       expect(pairRerootJoins(plan)).toEqual(["items"]);
-      expect(pairLeafContractKeys(plan)).toEqual(["items.item_id"]);
+      expect(pairLeafContractKeys(plan)).toEqual(["leaf:items.item_id"]);
    });
 
    it("a path of two: one join per level, the middle one on its level flag", async () => {
@@ -94,7 +94,9 @@ source: orders is raw extend {
     } on options.__pair_parent_key = item_id
   } on items.__pair_parent_key = id
 }`);
-      expect(pairLeafContractKeys(plan)).toEqual(["items.options.option_id"]);
+      expect(pairLeafContractKeys(plan)).toEqual([
+         "leaf:items.options.option_id",
+      ]);
    });
 
    it("two blocks: each path its own join, every read on its block's rows", async () => {
@@ -124,8 +126,8 @@ source: orders is raw extend {
 }`);
       expect(pairRerootJoins(plan)).toEqual(["items", "notes"]);
       expect(pairLeafContractKeys(plan)).toEqual([
-         "items.item_id",
-         "notes.note_id",
+         "leaf:items.item_id",
+         "leaf:notes.note_id",
       ]);
    });
 

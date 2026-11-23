@@ -1645,6 +1645,7 @@ export const SERVER_VALUE_FLAGS = new Set([
    "--persist-storage-mode",
    "--materialization-scheduler-interval-ms",
    "--materialization-scheduler-max-fires-per-tick",
+   "--materialize-admission-mode",
    "--allow-s3-credential-chain",
    "--logging-level",
    "--shutdown-drain-duration-seconds",

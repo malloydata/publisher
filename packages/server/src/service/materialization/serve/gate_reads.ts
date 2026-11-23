@@ -1915,22 +1915,33 @@ export async function gateReadsOfQuery(
          prepared.structRef as never,
          prepared.modelDef as never,
       );
-      const exprs = entryPointGateExprs(struct, prepared.modelDef);
+      return gateReadsOfSource(struct, prepared.modelDef, stored, rerooted);
+   } catch {
+      return undefined;
+   }
+}
+
+/**
+ * {@link gateReadsOfQuery} for the source `struct` of `modelDef`: what its
+ * entry point's gates and row scope read, or undefined when they cannot be
+ * read. Pure: the bind records it per named source (`scope_facts.ts`).
+ */
+export function gateReadsOfSource(
+   struct: unknown,
+   modelDef: unknown,
+   stored: ReadonlySet<string> = new Set(),
+   rerooted: ReadonlySet<string> = new Set(),
+): GateReads | undefined {
+   try {
+      const exprs = entryPointGateExprs(struct as never, modelDef as never);
       const rowFilters = entryPointGateExprs(
-         struct,
-         prepared.modelDef,
+         struct as never,
+         modelDef as never,
          ACCESS_FILTER_ROUTE,
       );
       return exprs === undefined || rowFilters === undefined
          ? undefined
-         : gateReads(
-              struct,
-              exprs,
-              prepared.modelDef,
-              stored,
-              rowFilters,
-              rerooted,
-           );
+         : gateReads(struct, exprs, modelDef, stored, rowFilters, rerooted);
    } catch {
       return undefined;
    }

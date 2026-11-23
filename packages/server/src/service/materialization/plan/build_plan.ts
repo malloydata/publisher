@@ -163,9 +163,14 @@ import type {
    PlanChainBuildText,
    PlanChainStringReads,
 } from "../domain/chain_build";
-import { type StringReads, stringReadsRefusal } from "../domain/string_reads";
+import {
+   type StringReads,
+   stringReadsRefusal,
+   unstoredReadRefusal,
+} from "../domain/string_reads";
 import { keyCheckPassed } from "../domain/column_contract";
-import { SourceMap } from "../text/source_map";
+import { reachPersisted, SourceMap } from "../text/source_map";
+import { authorModelReachContext } from "../text/author_model";
 import { quotedIdentifier } from "../../malloy_text";
 import type {
    PersistedViewPlan,
@@ -229,6 +234,7 @@ import {
    type PlanAddresses,
 } from "./addressing";
 import {
+   columnOriginsOf,
    type UpstreamSchemaReadings,
    type UpstreamTable,
    upstreamTableKey,
@@ -811,9 +817,15 @@ function declaringModelPath(
 function plannedFacts(
    source: PersistSource,
    modelPath: string,
-): Pick<TablePlan, "source" | "target" | "modelPath"> {
+): Pick<TablePlan, "source" | "target" | "modelPath" | "columnOrigins"> {
    const target = plannedTargetOf(source);
-   return { source, ...(target ? { target } : {}), modelPath };
+   const columnOrigins = columnOriginsOf(sourceDefOf(source));
+   return {
+      source,
+      ...(target ? { target } : {}),
+      modelPath,
+      ...(columnOrigins.size > 0 ? { columnOrigins } : {}),
+   };
 }
 
 /** The declaring file's URL in a Malloy `sourceID` (`<name>@<url>`). */
@@ -1030,10 +1042,14 @@ function pairParentUnusable(
    const unpassed = leafKeys.filter((k) => !keyCheckPassed(contract, k));
    if (unpassed.length === 0) return undefined;
    const failed = unpassed.filter((k) => contract.keys?.[k] !== undefined);
+   // Name a key as the author wrote it (`items.item_id`), not as the contract
+   // spells it (`leaf:items.item_id`).
+   const shown = (keys: string[]) =>
+      keys.map((k) => `'${k.replace(/^leaf:/, "")}'`).join(", ");
    const what =
       failed.length > 0
-         ? `found the key ${failed.map((k) => `'${k}'`).join(", ")} held more than once or NULL`
-         : `recorded no result for the key ${unpassed.map((k) => `'${k}'`).join(", ")}`;
+         ? `found the key ${shown(failed)} held more than once or NULL`
+         : `recorded no result for the key ${shown(unpassed)}`;
    return (
       `it extends '${over.sourceName}', whose pair table it is built over ` +
       `with its join put back, and the leaf key check of its inlined ` +
@@ -1248,6 +1264,10 @@ async function planStringReads(
    } catch {
       return { refused: "the strings it compares could not be read" };
    }
+   // A string read from no stored upstream's table refuses whatever is
+   // bound: the build would read the warehouse, which no contract changes.
+   const unstored = unstoredReadRefusal(reads);
+   if (unstored !== undefined) return { refused: unstored, unstored: true };
    if ("refused" in reads || !ports.boundContract) return reads;
    const contracts = new Map(
       request.stored.map((id) => [id, ports.boundContract!(id, destination)]),
@@ -1460,12 +1480,32 @@ async function chainedStringReads(
       )
       .map((u) => u.sourceID);
    if (stored.length === 0) return undefined;
-   return planStringReads(
+   const reads = await planStringReads(
       ports,
       materializer,
       { downstream: source.name, stored },
       destination,
    );
+   if (!("refused" in reads) || !reads.unstored) return reads;
+   // Name what it reads instead, as a run would: the warehouse table and the
+   // source that reaches it (`regions` through `daily_regional`).
+   const persisted = new Set(
+      reachedUpstreams(def, modelDef, map).map((u) => u.sourceID),
+   );
+   const reached = reachPersisted(
+      authorModelReachContext(modelDef),
+      source.name,
+      (_name, sourceID) => persisted.has(sourceID),
+   );
+   return reached.raw
+      ? {
+           refused:
+              `it reads the source warehouse (${reached.rawLeaves.join(", ")}) ` +
+              `through ${reached.rawVia.map((n) => `'${n}'`).join(", ")}, ` +
+              `which no stored table can stand in for`,
+           unstored: true,
+        }
+      : reads;
 }
 
 /**
@@ -2647,13 +2687,12 @@ export function finishBuildPlan(
    };
    // Each `storage=` source's stored columns read as its build writes them.
    const tableFolds = foldDistinctTableNames(plan, storedColumnNames);
-   const refused = refuseCollidingMaterialize(
-      refuseRewrittenNames({
-         ...plan,
-         tableFolds,
-         addresses: planAddresses({ ...plan, tableFolds }),
-      }),
-   );
+   const full = {
+      ...plan,
+      tableFolds,
+      addresses: planAddresses({ ...plan, tableFolds }),
+   };
+   const refused = refuseCollidingMaterialize(refuseRewrittenNames(full));
    const known = refuseUpstreamUnread(refused);
    return refuseOverMissingUpstreams(
       refuseUncomparableStrings(
@@ -2663,6 +2702,9 @@ export function finishBuildPlan(
                : refuseIncrementalUnbuildable(known),
          ),
       ),
+      // Every table and edge before any refusal dropped one, so a
+      // downstream of a source refused above still names it.
+      full,
    );
 }
 
@@ -2774,9 +2816,11 @@ function refuseUncomparableStrings<
             ? undefined
             : table.unusableUpstream) ??
          (stacks && reads !== undefined && "refused" in reads
-            ? `it is built over its upstreams' tables in its storage= ` +
-              `destination, which compares strings byte-exact, and ` +
-              reads.refused
+            ? reads.unstored
+               ? reads.refused
+               : `it is built over its upstreams' tables in its storage= ` +
+                 `destination, which compares strings byte-exact, and ` +
+                 reads.refused
             : undefined);
       if (why === undefined) continue;
       dropped.add(sourceID);
@@ -2836,67 +2880,90 @@ function buildReadsTable(
  * Refuse, as `upstream_table_unusable`, each downstream planned to build over
  * an upstream's table whose upstream is not planned, or is refused (a
  * persisted view or query, or a rollup, over its `overStoredBase`; a
- * persisted source whose build reads a refused upstream's table): the
- * upstream's declaration is read from its notes, but it has no table to
- * read, and a downstream is never built by recomputing its upstream from
- * raw. Decided here, once every table and its eligibility is known, so a
- * run never finds out.
+ * persisted source whose build reads a refused upstream's table, including
+ * one a refusal above dropped from the plan, read in `full`, the plan before
+ * those refusals): the upstream's declaration is read from its notes, but it
+ * has no table to read, and a downstream is never built by recomputing its
+ * upstream from raw. Repeated until nothing more is refused, so a downstream
+ * of a refused downstream is refused too. Decided here, once every table and
+ * its eligibility is known, so a run never finds out.
  */
 function refuseOverMissingUpstreams<
    T extends Omit<FinishedBuildPlan, "connections">,
->(compiled: T): T {
+>(compiled: T, full: Omit<FinishedBuildPlan, "connections"> = compiled): T {
    const verdicts = planVerdicts(compiled);
    const findings: PackageAnnotationFinding[] = [];
    const dropped = new Set<string>();
-   // A persisted source's upstreams: the tables its build reads.
+   // A persisted source's upstreams: the tables its build reads, as the
+   // plan before any refusal had them.
    const edges = new Map<string, string[]>();
-   for (const build of compiled.builds) {
+   for (const build of full.builds) {
       for (const [id, reads] of Object.entries(build.dependsOn)) {
          edges.set(id, [...(edges.get(id) ?? []), ...reads]);
       }
    }
-   for (const [sourceID, table] of Object.entries(compiled.tables)) {
-      const upstreamIDs =
-         table.kind === "view" || table.kind === "rollup"
-            ? (table.overStoredBase?.upstreamSourceIDs ?? [])
-            : (edges.get(sourceID) ?? []).filter((id) => {
-                 const wire = verdicts.get(id)?.wire;
-                 return (
-                    wire !== undefined &&
-                    ("failed" in wire || wire.refused !== undefined) &&
-                    buildReadsTable(compiled, table, id)
-                 );
-              });
-      for (const upstreamID of upstreamIDs) {
-         const upstream = compiled.tables[upstreamID];
-         const verdict = verdicts.get(upstreamID)?.wire;
-         const refusedWhy =
-            verdict === undefined || "failed" in verdict
-               ? "it could not be planned"
-               : verdict.refused
-                 ? `it is refused (${verdict.refused.reason}: ${verdict.refused.message})`
-                 : undefined;
-         const why =
-            upstream === undefined
-               ? "it is not planned, so it has no table"
-               : refusedWhy;
-         if (why === undefined) continue;
-         const name =
-            upstream?.source.name ??
-            splitSourceID(upstreamID)?.name ??
-            upstreamID;
-         dropped.add(sourceID);
-         findings.push(
-            notBuiltFinding(
-               compiled,
-               sourceID,
-               UPSTREAM_TABLE_UNUSABLE_REASON,
-               `its upstream '${name}' declares a persisted table, but ${why}, ` +
-                  "and a downstream is never built by recomputing its " +
-                  "upstream from raw",
-            ),
-         );
-         break;
+   // Refused by this pass or one above: in `full` but no longer planned.
+   const gone = (id: string) =>
+      dropped.has(id) ||
+      (compiled.tables[id] === undefined && full.tables[id] !== undefined);
+   let changed = true;
+   while (changed) {
+      changed = false;
+      for (const [sourceID, table] of Object.entries(compiled.tables)) {
+         if (dropped.has(sourceID)) continue;
+         const upstreamIDs =
+            table.kind === "view" || table.kind === "rollup"
+               ? (table.overStoredBase?.upstreamSourceIDs ?? [])
+               : (edges.get(sourceID) ?? []).filter((id) => {
+                    const wire = verdicts.get(id)?.wire;
+                    const refused =
+                       gone(id) ||
+                       (wire !== undefined &&
+                          ("failed" in wire || wire.refused !== undefined));
+                    return refused && buildReadsTable(full, table, id);
+                 });
+         for (const upstreamID of upstreamIDs) {
+            const upstream = full.tables[upstreamID];
+            const verdict = verdicts.get(upstreamID)?.wire;
+            const refusedHere = [
+               ...findings,
+               ...(compiled.annotationFindings ?? []),
+            ]
+               .map(
+                  (f) =>
+                     (f as { refused?: { sourceID: string; reason: string } })
+                        .refused,
+               )
+               .find((r) => r?.sourceID === upstreamID);
+            const why =
+               upstream === undefined
+                  ? "it is not planned, so it has no table"
+                  : refusedHere
+                    ? `it is refused (${refusedHere.reason})`
+                    : verdict === undefined || "failed" in verdict
+                      ? "it could not be planned"
+                      : verdict.refused
+                        ? `it is refused (${verdict.refused.reason}: ${verdict.refused.message})`
+                        : undefined;
+            if (why === undefined) continue;
+            const name =
+               upstream?.source.name ??
+               splitSourceID(upstreamID)?.name ??
+               upstreamID;
+            dropped.add(sourceID);
+            changed = true;
+            findings.push(
+               notBuiltFinding(
+                  compiled,
+                  sourceID,
+                  UPSTREAM_TABLE_UNUSABLE_REASON,
+                  `its upstream '${name}' declares a persisted table, but ${why}, ` +
+                     "and a downstream is never built by recomputing its " +
+                     "upstream from raw",
+               ),
+            );
+            break;
+         }
       }
    }
    return dropped.size === 0
@@ -3109,6 +3176,7 @@ function tablePlanDataOf(
             source,
             target: _target,
             overStoredBase,
+            columnOrigins: _origins,
             ...data
          } = table as TablePlan & { overStoredBase?: unknown };
          return [

@@ -8,6 +8,7 @@ import {
    MalloyConfig,
    MalloyError,
    Annotations,
+   type Connection,
    ModelDef,
    ModelMaterializer,
    QueryMaterializer,
@@ -216,6 +217,10 @@ import {
 } from "./model_policy";
 import { QueryPrivileges, type QueryRequest } from "./model_query_request";
 import { annotationNearMisses, authoredNotes } from "./annotation_near_miss";
+import {
+   type ColumnContract,
+   parseContract,
+} from "./materialization/domain/column_contract";
 import { type AnnotationFinding } from "./annotation_reader";
 export { QueryPrivileges } from "./model_query_request";
 export type { QueryRequest } from "./model_query_request";
@@ -355,6 +360,55 @@ export class Model {
    private bindingsOverride:
       | { bindings: readonly Binding[]; over?: Snapshot; snapshot?: Snapshot }
       | undefined;
+   /**
+    * What reads and keeps this model's string capabilities
+    * (`serve/source_capability.ts`), set by the package beside the served
+    * copy's context; absent, {@link refreshStringCapabilities} reads none.
+    */
+   private stringCapabilityReader:
+      | ((
+           runtime: object,
+           args: {
+              modelDef: ModelDef;
+              load: (query: string) => QueryMaterializer;
+              connection: (name: string) => Promise<Connection>;
+              givens?: Record<string, unknown>;
+           },
+        ) => Promise<void>)
+      | undefined;
+
+   /** Set what {@link refreshStringCapabilities} reads through. */
+   public setStringCapabilityReader(
+      reader: NonNullable<Model["stringCapabilityReader"]>,
+   ): void {
+      this.stringCapabilityReader = reader;
+   }
+
+   /**
+    * What records this model's scope facts for read admission
+    * (`serve/scope_facts.ts`), set by the package beside the string
+    * capability reader; absent, {@link recordScopeFactsOver} records none.
+    */
+   private scopeFactsRecorder:
+      | ((
+           runtime: object,
+           args: {
+              modelDef: ModelDef;
+              snapshot: Snapshot;
+              lane?: ReturnType<ServedCopyServe["scopeLane"]>;
+           },
+        ) => void)
+      | undefined;
+
+   /** Set what {@link recordScopeFactsOver} records through. */
+   public setScopeFactsRecorder(
+      recorder: NonNullable<Model["scopeFactsRecorder"]>,
+   ): void {
+      this.scopeFactsRecorder = recorder;
+   }
+
+   /** The contracts of the tables set directly ({@link setServeBindings}). */
+   private contractsOverride: ReadonlyMap<string, ColumnContract> | undefined;
    /** {@link storageTables}, for the snapshot bindings it was read from. */
    private storageTablesMemo:
       | {
@@ -2921,7 +2975,23 @@ export class Model {
       if (!override) return pkg;
       if (override.over !== pkg || !override.snapshot) {
          override.over = pkg;
-         override.snapshot = makeSnapshot(override.bindings, pkg.entries);
+         // Each table's contract: the package's, the database entries',
+         // and those set beside the bindings.
+         const contracts = new Map(pkg.contracts ?? []);
+         for (const [id, entry] of Object.entries(pkg.entries)) {
+            const contract = parseContract(entry.contract);
+            if (contract && !contracts.has(id)) contracts.set(id, contract);
+         }
+         for (const [id, c] of this.contractsOverride ?? []) {
+            contracts.set(id, c);
+         }
+         override.snapshot = makeSnapshot(
+            override.bindings,
+            pkg.entries,
+            undefined,
+            undefined,
+            contracts,
+         );
       }
       return override.snapshot;
    }
@@ -3074,7 +3144,93 @@ export class Model {
     * compile.
     */
    public async prepareServedCopy(): Promise<void> {
-      await this.prepareServedCopyOver(this.servingSnapshot());
+      // Each source's chain, for the path report: recorded once per
+      // compile, so a query looks its source's up.
+      this.sourceChains();
+      await this.refreshStringCapabilities();
+      const snapshot = this.servingSnapshot();
+      await this.prepareServedCopyOver(snapshot);
+      this.recordScopeFactsOver(snapshot);
+   }
+
+   /**
+    * Read how each of this model's sources compares its strings live, and
+    * keep it with the model's runtime, for read admission's lookups
+    * (`serve/source_capability.ts`). Every bind commit calls it, so a
+    * collation altered in the warehouse is seen at the next bind. Never
+    * throws; a model with no compile reads nothing.
+    */
+   public async refreshStringCapabilities(): Promise<void> {
+      const refresh = this.stringCapabilityReader;
+      const materializer = this.modelMaterializer;
+      const load =
+         this.modelType === "model" && !this.isNotebook() && materializer
+            ? (query: string) => materializer.loadQuery(query)
+            : undefined;
+      const modelDef = this.modelDef;
+      const runtime = (
+         this.modelMaterializer as unknown as
+            | {
+                 runtime?: {
+                    connections: {
+                       lookupConnection(name?: string): Promise<Connection>;
+                    };
+                 };
+              }
+            | undefined
+      )?.runtime;
+      if (!refresh || !load || !modelDef || !runtime) return;
+      try {
+         await refresh(runtime, {
+            modelDef,
+            load,
+            connection: (name) => runtime.connections.lookupConnection(name),
+            givens: placeholderGivens(this.givens),
+         });
+      } catch (err) {
+         logger.warn(
+            "Could not read how this model's sources compare strings",
+            {
+               modelPath: this.modelPath,
+               error: err instanceof Error ? err.message : String(err),
+            },
+         );
+      }
+   }
+
+   /**
+    * Record, for read admission's lookups, what each named source's gates
+    * and row scope read over the tables `snapshot` binds, and its gate and
+    * composite flags (`serve/scope_facts.ts`): every bind commit, so a
+    * query pinned to `snapshot` walks none of it. The served copy's lane is
+    * the one compiled last, over the same bindings when its compile ran.
+    */
+   public recordScopeFactsOver(
+      snapshot: Snapshot = this.servingSnapshot(),
+   ): void {
+      const lane = this.servedCopyEnabled()
+         ? this.servedCopy.scopeLane()
+         : undefined;
+      const runtime = (
+         this.modelMaterializer as unknown as { runtime?: object } | undefined
+      )?.runtime;
+      const modelDef = this.modelDef;
+      const record = this.scopeFactsRecorder;
+      if (!record || !runtime || !modelDef || this.modelType !== "model") {
+         return;
+      }
+      try {
+         record(runtime, {
+            modelDef,
+            snapshot,
+            ...(lane ? { lane } : {}),
+         });
+      } catch (err) {
+         logger.warn("Could not record this model's scope facts", {
+            modelPath: this.modelPath,
+            error: err instanceof Error ? err.message : String(err),
+         });
+      }
    }
 
    /**
@@ -3189,8 +3345,13 @@ export class Model {
     * package, as a test or a tool drives one. A copy is taken, so a caller
     * that edits a binding and sets it again compiles over the edit.
     */
-   public setServeBindings(bindings: readonly Binding[]): void {
+   public setServeBindings(
+      bindings: readonly Binding[],
+      /** Their tables' column contracts, by content address; kept when absent. */
+      contracts?: ReadonlyMap<string, ColumnContract>,
+   ): void {
       this.bindingsOverride = { bindings: Object.freeze([...bindings]) };
+      if (contracts) this.contractsOverride = contracts;
    }
 
    /**
@@ -3591,7 +3752,11 @@ export class Model {
       };
    }
 
-   /** Every source's `sourceID` chain in this model, for the path report's `notConsidered`. */
+   /**
+    * Every source's `sourceID` chain in this model, by the source's own: the
+    * queried source's chain and the path report's `notConsidered`. Read once
+    * per compile ({@link prepareServedCopy} reads it at load).
+    */
    private sourceChains(): ReadonlyMap<string, readonly string[]> {
       const modelDef = this.modelDef;
       const cached = this.sourceChainCache;

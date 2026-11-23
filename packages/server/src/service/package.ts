@@ -130,6 +130,7 @@ import type {
 } from "./materialization/domain/chain_build";
 import type { KeptTable, LateRows } from "./materialization/domain/types";
 import type {
+   IncrementalCheckFinding,
    LedgerParent,
    UnprovenGeneration,
 } from "./materialization/domain/incremental";
@@ -1770,6 +1771,17 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    }
 
    /**
+    * The host port's `noteIncrementalCheck`: what a run found of a source's
+    * incremental checks (see PackageMaterialization.noteIncrementalCheck).
+    */
+   public noteIncrementalCheck(
+      sourceEntityId: string,
+      finding: IncrementalCheckFinding,
+   ): void {
+      this.mz.noteIncrementalCheck(sourceEntityId, finding);
+   }
+
+   /**
     * The host port's `setKeptTables`: the tables the newest auto-run lists as
     * kept after a rename (see PackageMaterialization.setKeptTables).
     */
@@ -2237,6 +2249,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          ...this.mz.servedCopyWarnings(),
          ...this.mz.repeatedJoinOneKeyWarnings(),
          ...this.mz.lateRowWarnings(),
+         ...this.mz.incrementalCheckWarnings(),
          ...this.mz.unprovenGenerationWarnings(),
          ...this.mz.keptTableWarnings(),
          ...this.mz.annotationFindingWarnings(),

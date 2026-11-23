@@ -11,6 +11,8 @@ import {
    keyCheckPassed,
    parseContract,
    weakestStringCompare,
+   contractKeyName,
+   keyUniquenessOfContract,
 } from "./column_contract";
 
 const one = {
@@ -247,6 +249,56 @@ describe("deriveContract", () => {
       expect(database.columns.map((x) => x.gateExact)).toEqual([true, false]);
    });
 
+   it("records a storage double gate-exact only as a copy of a binary64", () => {
+      const gateExactOver = (
+         nativeType: string,
+         upstream?: { dialect: string; nativeType: string },
+      ): boolean =>
+         deriveContract({
+            tier: "storage",
+            stored: stored([{ ...d, nativeType }]),
+            ...(upstream ? { upstreamTypes: new Map([["d", upstream]]) } : {}),
+         }).columns[0].gateExact;
+      // A copy of an 8-byte IEEE double, as each dialect's catalog names it.
+      expect(
+         gateExactOver("DOUBLE", {
+            dialect: "postgres",
+            nativeType: "double precision",
+         }),
+      ).toBe(true);
+      expect(
+         gateExactOver("DOUBLE", { dialect: "duckdb", nativeType: "DOUBLE" }),
+      ).toBe(true);
+      expect(
+         gateExactOver("DOUBLE", { dialect: "snowflake", nativeType: "FLOAT" }),
+      ).toBe(true);
+      // An exact number stored as a double, a narrower float, a 128-bit
+      // integer, and a column with no upstream type (computed, or unread).
+      expect(
+         gateExactOver("DOUBLE", {
+            dialect: "postgres",
+            nativeType: "numeric",
+         }),
+      ).toBe(false);
+      expect(
+         gateExactOver("DOUBLE", { dialect: "postgres", nativeType: "real" }),
+      ).toBe(false);
+      expect(
+         gateExactOver("HUGEINT", { dialect: "duckdb", nativeType: "HUGEINT" }),
+      ).toBe(false);
+      expect(gateExactOver("DOUBLE")).toBe(false);
+      // Matched by stored name, case-blind when only one matches.
+      expect(
+         deriveContract({
+            tier: "storage",
+            stored: stored([d]),
+            upstreamTypes: new Map([
+               ["D", { dialect: "duckdb", nativeType: "DOUBLE" }],
+            ]),
+         }).columns[0].gateExact,
+      ).toBe(true);
+   });
+
    it("round-trips through the reader", () => {
       const c = deriveContract({
          tier: "storage",
@@ -368,5 +420,84 @@ describe("declaredMoves", () => {
             { name: "x", type: "number" },
          ]),
       ).toEqual(["n"]);
+   });
+});
+
+describe("the key checks a contract records", () => {
+   it("names each check by its level, subject and key column", () => {
+      expect(contractKeyName("leaf", "items.options", "option_id")).toBe(
+         "leaf:items.options.option_id",
+      );
+      expect(contractKeyName("leaf", "", "id")).toBe("leaf:id");
+      expect(contractKeyName("rollup", "", "category")).toBe("rollup:category");
+      expect(contractKeyName("parent", "orders@m/orders.malloy", "id")).toBe(
+         "parent:orders@m/orders.malloy.id",
+      );
+   });
+
+   const contract = (keys: Record<string, unknown>) => ({
+      v: 1,
+      dialect: "duckdb",
+      columns: [],
+      keys,
+   });
+   const ORDERS = {
+      sourceID: "orders@file:///pkg/m/orders.malloy",
+      relativeID: "orders@m/orders.malloy",
+      primaryKey: "id",
+   };
+   const USERS = {
+      sourceID: "users@file:///pkg/m/users.malloy",
+      relativeID: "users@m/users.malloy",
+      primaryKey: "user_id",
+   };
+
+   it("reads a rollup's own check and each source's under its current key, by sourceID", () => {
+      expect(
+         keyUniquenessOfContract(
+            contract({
+               "rollup:category": { unique: true, level: "rollup" },
+               "parent:orders@m/orders.malloy.id": {
+                  unique: true,
+                  level: "parent",
+               },
+               "stored:users@m/users.malloy.user_id": {
+                  unique: false,
+                  level: "stored",
+               },
+               "leaf:items.item_id": { unique: true, level: "leaf" },
+            }),
+            [ORDERS, USERS],
+         ),
+      ).toEqual({
+         keyColumn: "category",
+         unique: true,
+         parentKeys: { [ORDERS.sourceID]: true, [USERS.sourceID]: false },
+         parentKeyColumns: {
+            [ORDERS.sourceID]: "id",
+            [USERS.sourceID]: "user_id",
+         },
+      });
+   });
+
+   it("reads nothing for a check of another key, a level that does not match, or none", () => {
+      expect(
+         keyUniquenessOfContract(
+            contract({
+               // The key the source declared when the table was built.
+               "parent:orders@m/orders.malloy.old_id": {
+                  unique: true,
+                  level: "parent",
+               },
+               "parent:users@m/users.malloy.user_id": {
+                  unique: true,
+                  level: "leaf",
+               },
+            }),
+            [ORDERS, USERS],
+         ),
+      ).toBeUndefined();
+      expect(keyUniquenessOfContract(contract({}), [ORDERS])).toBeUndefined();
+      expect(keyUniquenessOfContract(undefined, [ORDERS])).toBeUndefined();
    });
 });

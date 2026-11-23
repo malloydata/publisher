@@ -113,7 +113,8 @@ async function buildRollups(pkg: Package): Promise<string> {
    await connection.runSQL(
       `CREATE OR REPLACE TABLE built_rollup AS ${rollup.sql}`,
    );
-   pkg.materialization().bind({
+   // As every server bind commits, with what read admission looks up.
+   await pkg.materialization().bindCompiled({
       database: {
          [ids[0]]: {
             tableName: "built_rollup",

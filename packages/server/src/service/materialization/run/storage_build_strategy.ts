@@ -71,7 +71,11 @@ import {
    storedColumnTypeMismatches,
 } from "../stored_column_types";
 import { BuildInstruction, ManifestEntry } from "../domain/types";
-import { type StringReads, stringReadsRefusal } from "../domain/string_reads";
+import {
+   type StringReads,
+   stringReadsRefusal,
+   unstoredReadRefusal,
+} from "../domain/string_reads";
 import type {
    DroppedTable,
    KeyCheck,
@@ -240,6 +244,8 @@ export interface StorageBuildRequest {
     * (column_contract_capture.ts). Absent: unknown (`compare` `none`).
     */
    liveCollations?: (columns: string[]) => Promise<Map<string, Collation>>;
+   /** See SourceBuildOptions.upstreamTypes. */
+   upstreamTypes?: ReadonlyMap<string, { dialect: string; nativeType: string }>;
    /** See SourceBuildOptions.rollup. */
    rollup?: boolean;
 }
@@ -835,6 +841,9 @@ export class StorageBuildStrategy
       const contract = await storageContract({
          table: physicalTableName,
          declared: declaredColumns,
+         ...(params.upstreamTypes
+            ? { upstreamTypes: params.upstreamTypes }
+            : {}),
          schema: result.schema,
          collations: result.collations,
          ...(stackedOnBase && params.storedBase
@@ -1153,8 +1162,9 @@ export class StorageBuildStrategy
       ]);
       if (collation !== undefined) {
          throw refused(
-            `it compares a string by a collation the destination cannot ` +
-               `reproduce: ${collation}`,
+            unstoredReadRefusal(params.stringReads) ??
+               `it compares a string by a collation the destination cannot ` +
+                  `reproduce: ${collation}`,
          );
       }
       const text = environment.chainBuildText({
@@ -1483,11 +1493,14 @@ export class StorageBuildStrategy
       }
       const collation = stackCollationRefusal(params.stringReads, judged);
       if (collation !== undefined) {
+         const unstored = unstoredReadRefusal(params.stringReads);
          throw new ChainedShapeNotCarriedError(
             `'${persistSource.name}' was not built over its upstreams' ` +
-               `tables in '${destinationName}': it compares a string by a ` +
-               `collation the destination cannot reproduce (${collation}), ` +
-               `and a view or query is never built by recomputing its ` +
+               `tables in '${destinationName}': ` +
+               (unstored ??
+                  `it compares a string by a collation the destination ` +
+                     `cannot reproduce (${collation})`) +
+               `, and a view or query is never built by recomputing its ` +
                `upstreams from raw`,
          );
       }

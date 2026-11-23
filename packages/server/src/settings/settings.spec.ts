@@ -94,6 +94,7 @@ const DESIGN_VARIABLES: Partial<Record<SettingKey, string>> = {
       "PUBLISHER_PERSIST_ADDRESS_INCLUDES_DESTINATION",
    "persist.collisionEnforcementEnabled":
       "PUBLISHER_PERSIST_COLLISION_ENFORCEMENT_ENABLED",
+   "materialize.admissionMode": "PUBLISHER_MATERIALIZE_ADMISSION_MODE",
    "materialize.enabled": "PUBLISHER_MATERIALIZE_ENABLED",
    "materialize.gatedSources": "PUBLISHER_MATERIALIZE_GATED_SOURCES",
    "materialization.schedulerEnabled":
