@@ -37,7 +37,7 @@ Two consequences worth knowing. A section merged to `main` ships in the **next**
 
 **Changed: the served copy decides, at its compile, the declines that depend only on the source a query runs on:** a row-level gate it cannot graft, an opted-out or unsafe source on the chain, and a zone that differs from the author's model. A query on a named source looks them up; only a source written inline (`orders extend { … }`) is walked per query. **Added: counter `publisher_query_walks_total{site}`,** the walks a query still makes for a fact the served copy's compile or the bind records, because the record did not cover it.
 
-**Changed: each bind records, for every named source, what its gates and row scope read and whether it carries a gate or a row filter declared on a composite,** and read admission looks them up instead of walking the author's compile per query. A stored gate column's exactness is now read from its table's column contract (`gateExact`, recorded at build), not from the warehouse types its manifest entry carries: a `storage=` gate column held as a float is exact only when its build recorded it so.
+**Changed: each bind records, for every named source, what its gates and row scope read and whether it carries a gate or a row filter declared on a composite,** and read admission looks them up instead of walking the author's compile per query. A stored gate column's exactness is still judged from the bind's types until builds record a float copy's `gateExact` from its origin.
 
 **Changed: the rollup leg reads which rollups a query's source could answer from (its own, one through its extends and renames, one through a join) from a list built with the plans,** instead of walking the model's sources on every query.
 

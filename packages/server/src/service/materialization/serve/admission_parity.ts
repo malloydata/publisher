@@ -135,12 +135,17 @@ export function reportProbeCompile(site: AdmissionReadSite): void {
  * - `r10_binary64_orchestrated`: a stored binary64 gate column the probe's
  *   inputs cannot prove (no `upstreamSchemas`, as a host's manifest carries
  *   none) and the build's contract does;
+ * - `r10_binary64_pending_origins`: a stored binary64 gate column the
+ *   bind's types and the warehouse types it copies prove exact, which its
+ *   build's contract does not yet (until builds record `gateExact` from a
+ *   column's origin);
  * - `bigquery_ttl`: a BigQuery catalog the probe re-read and the load did
  *   not.
  */
 export type ParityAllowance =
    | "bind_detects_alter"
    | "r10_binary64_orchestrated"
+   | "r10_binary64_pending_origins"
    | "bigquery_ttl";
 
 /** One disagreement shadow admission found. */
