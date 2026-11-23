@@ -19,6 +19,7 @@
  */
 
 import type { StringReads } from "./string_reads";
+import type { UpstreamColumn } from "./upstream_schemas";
 import type { TableKind as StoredTableKind } from "./vocabulary";
 import type { BuildTarget, PersistSource } from "@malloydata/malloy";
 import type {
@@ -724,6 +725,13 @@ interface TablePlanFacts {
    modelPath?: string;
    /** The entry point's `#(authorize)` gate, classified where it compiled. */
    gate?: PersistSourceGateOutcome;
+   /**
+    * Each stored column that is a plain copy of one warehouse column, by its
+    * stored name: a `.table()` source's own columns. A `storage=` build
+    * records a destination double as gate-exact only over a binary64 one
+    * (`deriveContract`). Held in memory with the plan, never on the wire.
+    */
+   columnOrigins?: ReadonlyMap<string, UpstreamColumn>;
    /**
     * The declared primary key a build checks for a repeated or NULL value
     * over this table, when it is stored in a destination and read beside a

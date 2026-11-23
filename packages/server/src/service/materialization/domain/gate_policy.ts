@@ -286,16 +286,6 @@ const INEXACT_GATE_TYPE =
    /\b(DOUBLE|FLOAT[0-9]*|REAL|HUGEINT|UHUGEINT|U?INT128)\b/i;
 
 /**
- * Whether `type`, a stored column's type, is one under which a gate's
- * equality may differ from live's ({@link INEXACT_GATE_TYPE}), whatever
- * its source: a build that cannot name the column's source records such a
- * column's gate as not exact.
- */
-export function gateTypeInexact(type: string): boolean {
-   return INEXACT_GATE_TYPE.test(type);
-}
-
-/**
  * Whether a gate compares a column stored as `type` as live compares it.
  * Every other number type holds what it was given exactly. A binary float
  * is exact only as a copy of the same binary float: a column stored as a
@@ -305,9 +295,10 @@ export function gateTypeInexact(type: string): boolean {
  * are the same on both sides, and so is every comparison, a decimal
  * literal's included (each side reads it as the nearest double). A wider
  * or narrower source, an exact number stored as a float, a column the
- * build computed, and an unknown source are not.
+ * build computed, and an unknown source are not. The build records it per
+ * column as `ColumnContract` `gateExact` (`deriveContract`).
  */
-function gateColumnTypeExact(
+export function gateColumnTypeExact(
    type: string,
    upstream: { dialect: string; nativeType: string } | undefined,
 ): boolean {

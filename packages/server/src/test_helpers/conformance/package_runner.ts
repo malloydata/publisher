@@ -60,6 +60,13 @@ import { QueryPrivileges } from "../../service/model_query_request";
 import type { Package } from "../../service/package";
 import { installSettings } from "../settings_env";
 import { readableTableName } from "../../service/materialization/domain/table_name";
+import {
+   columnOriginsOf,
+   type UpstreamSchemaReadings,
+   type UpstreamTableSchema,
+   upstreamTableKey,
+   upstreamTypesOf,
+} from "../../service/materialization/domain/upstream_schemas";
 import { writePackageFiles } from "../temp_package";
 import { sharedTables } from "../../service/materialization/plan/eligibility_collect";
 import { compilePackageBuildPlan } from "../../service/materialization/plan/build_plan_compile";
@@ -921,11 +928,18 @@ async function buildAll(
                   rowLimit: 10_000,
                });
                // Its column contract, read back as a build records it.
+               // Each column's gate judged by its origin's warehouse type,
+               // as a build judges it from its plan (instructed_build.ts).
+               const upstreamTypes = upstreamTypesOf(
+                  columnOriginsOf(structFor(pkg, entry)),
+                  readingsOf(entry.upstreamSchemas),
+               );
                const contract = await captureTableContract({
                   connection: lake,
                   tableName: table,
                   tier: "storage",
                   live: liveCollationsOf(warehouse, entry.sql),
+                  ...(upstreamTypes ? { upstreamTypes } : {}),
                });
                stored[entry.sourceEntityId] = {
                   sourceEntityId: entry.sourceEntityId,
@@ -1067,6 +1081,35 @@ function castOptionsFor(
  * be read (the build then runs uncast, as a build does when it cannot read
  * the field list).
  */
+/** The author's compiled source a plan entry names, or undefined (a generated build source). */
+function structFor(
+   pkg: Package,
+   entry: { name: string; modelPath?: string },
+): unknown {
+   const def = entry.modelPath
+      ? pkg.getModel(entry.modelPath)?.getModelDef()
+      : undefined;
+   return def?.contents?.[entry.name];
+}
+
+/** A plan entry's upstream tables, as the readings its plan read them from. */
+function readingsOf(
+   schemas: readonly UpstreamTableSchema[] | null | undefined,
+): UpstreamSchemaReadings | undefined {
+   if (!schemas) return undefined;
+   return Object.fromEntries(
+      schemas.map((t) => [
+         upstreamTableKey(t),
+         t.columns
+            ? {
+                 columns: t.columns,
+                 ...(t.dialect ? { dialect: t.dialect } : {}),
+              }
+            : { unread: t.unread ?? "read_failed" },
+      ]),
+   );
+}
+
 function declaredColumnsFor(
    pkg: Package,
    entry: { name: string; modelPath?: string; columns?: unknown[] },

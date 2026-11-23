@@ -224,6 +224,7 @@ import {
    type PlanAddresses,
 } from "./addressing";
 import {
+   columnOriginsOf,
    type UpstreamSchemaReadings,
    type UpstreamTable,
    upstreamTableKey,
@@ -806,9 +807,15 @@ function declaringModelPath(
 function plannedFacts(
    source: PersistSource,
    modelPath: string,
-): Pick<TablePlan, "source" | "target" | "modelPath"> {
+): Pick<TablePlan, "source" | "target" | "modelPath" | "columnOrigins"> {
    const target = plannedTargetOf(source);
-   return { source, ...(target ? { target } : {}), modelPath };
+   const columnOrigins = columnOriginsOf(sourceDefOf(source));
+   return {
+      source,
+      ...(target ? { target } : {}),
+      modelPath,
+      ...(columnOrigins.size > 0 ? { columnOrigins } : {}),
+   };
 }
 
 /** The declaring file's URL in a Malloy `sourceID` (`<name>@<url>`). */
@@ -3024,6 +3031,7 @@ function tablePlanDataOf(
             source,
             target: _target,
             overStoredBase,
+            columnOrigins: _origins,
             ...data
          } = table as TablePlan & { overStoredBase?: unknown };
          return [

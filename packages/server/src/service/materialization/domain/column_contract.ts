@@ -30,7 +30,7 @@ import {
    collationOf,
    type TableCollations,
 } from "./collation";
-import { gateTypeInexact } from "./gate_policy";
+import { gateColumnTypeExact } from "./gate_policy";
 import type { Tier } from "./vocabulary";
 
 /** The contract shape this release writes and reads. */
@@ -236,6 +236,23 @@ function weakerCompare(
    return COMPARE_RANK[a] <= COMPARE_RANK[b] ? a : b;
 }
 
+/** A warehouse column's type, with the dialect it is named in. */
+type UpstreamType = { dialect: string; nativeType: string };
+
+/** The upstream type of the stored column `name`: matched exactly, else case-blind when one matches. */
+function upstreamTypeNamed(
+   types: ReadonlyMap<string, UpstreamType> | undefined,
+   name: string,
+): UpstreamType | undefined {
+   if (!types) return undefined;
+   const exact = types.get(name);
+   if (exact) return exact;
+   const folded = [...types].filter(
+      ([n]) => n.toLowerCase() === name.toLowerCase(),
+   );
+   return folded.length === 1 ? folded[0][1] : undefined;
+}
+
 /**
  * The contract a build records for a table it wrote, from the table as its
  * holding engine reads it now ({@link StoredTableFacts}, the read a bind
@@ -252,9 +269,10 @@ function weakerCompare(
  *   deterministic: `equality`; anything else, or unread: `none`).
  *
  * `gateExact`: on a database table, every column but a DuckLake double; on
- * a `storage=` table, a column of a type a gate compares exactly
- * ({@link gateTypeInexact}), since the build does not name each column's
- * source.
+ * a `storage=` table, a column of a type a gate compares exactly, or a
+ * destination double that copies a warehouse binary64 unchanged
+ * ({@link gateColumnTypeExact}, judged by `upstreamTypes`). A column with no
+ * upstream type (computed, read by author SQL, or its table unread) is not.
  */
 export function deriveContract(args: {
    tier: Tier;
@@ -267,6 +285,11 @@ export function deriveContract(args: {
    producer?: string;
    /** The Malloy type the build source declares for each column, by name. */
    declared?: readonly { name: string; type: string }[];
+   /**
+    * A `storage=` table: the warehouse type of each column that is a plain
+    * copy of one warehouse column, by its stored name.
+    */
+   upstreamTypes?: ReadonlyMap<string, UpstreamType>;
 }): ColumnContract {
    const { tier, stored } = args;
    const columns = stored.columns.map((c): ContractColumn => {
@@ -285,7 +308,10 @@ export function deriveContract(args: {
          gateExact:
             tier === "database"
                ? c.storedAsDouble !== true
-               : !gateTypeInexact(c.nativeType),
+               : gateColumnTypeExact(
+                    c.nativeType,
+                    upstreamTypeNamed(args.upstreamTypes, c.name),
+                 ),
          ...(declaredType ? { declaredType } : {}),
       };
    });

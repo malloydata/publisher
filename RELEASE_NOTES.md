@@ -33,6 +33,8 @@ Two consequences worth knowing. A section merged to `main` ships in the **next**
 
 **Fixed: a Postgres database table's column is no longer judged by another table's column of the same name.** When an answer read two stored database tables that each hold a column of one name (a source and a source it joins, both persisted), the check that each stored string keeps its source's collation took that name's collation from whichever table it read last. A column altered on one table could then pass on the other's collation, and the answer compare its strings otherwise than live. A name two tables read hold under different collations now answers live.
 
+**Changed: a `storage=` table's contract records `gateExact` true for a column stored as a DuckDB `DOUBLE` that copies a warehouse 8-byte double unchanged** (a Postgres `double precision`, a DuckDB `DOUBLE`, a Snowflake `FLOAT`), read from the plan's own reading of the warehouse table. It used to record every `DOUBLE`, `FLOAT` and 128-bit column `false`. So an orchestrated gated `storage=` source over such a column, which failed closed and answered live because a host never stores the upstream types a standalone server judged it by, serves from its table after its next build. A column the build computes, a `.sql()` source's columns and an exact number stored as a double stay `false`. `contract.v` stays 1: a table built before this release keeps its more conservative `false` until it is rebuilt.
+
 **Added: counters `publisher_query_catalog_reads_total{site}` and `publisher_query_probe_compiles_total{site}`,** the catalog reads and extra compiles read admission makes while answering a query.
 
 ## [Unreleased] — a plain DuckDB destination's file is named from its configured name

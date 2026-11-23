@@ -247,6 +247,56 @@ describe("deriveContract", () => {
       expect(database.columns.map((x) => x.gateExact)).toEqual([true, false]);
    });
 
+   it("records a storage double gate-exact only as a copy of a binary64", () => {
+      const gateExactOver = (
+         nativeType: string,
+         upstream?: { dialect: string; nativeType: string },
+      ): boolean =>
+         deriveContract({
+            tier: "storage",
+            stored: stored([{ ...d, nativeType }]),
+            ...(upstream ? { upstreamTypes: new Map([["d", upstream]]) } : {}),
+         }).columns[0].gateExact;
+      // A copy of an 8-byte IEEE double, as each dialect's catalog names it.
+      expect(
+         gateExactOver("DOUBLE", {
+            dialect: "postgres",
+            nativeType: "double precision",
+         }),
+      ).toBe(true);
+      expect(
+         gateExactOver("DOUBLE", { dialect: "duckdb", nativeType: "DOUBLE" }),
+      ).toBe(true);
+      expect(
+         gateExactOver("DOUBLE", { dialect: "snowflake", nativeType: "FLOAT" }),
+      ).toBe(true);
+      // An exact number stored as a double, a narrower float, a 128-bit
+      // integer, and a column with no upstream type (computed, or unread).
+      expect(
+         gateExactOver("DOUBLE", {
+            dialect: "postgres",
+            nativeType: "numeric",
+         }),
+      ).toBe(false);
+      expect(
+         gateExactOver("DOUBLE", { dialect: "postgres", nativeType: "real" }),
+      ).toBe(false);
+      expect(
+         gateExactOver("HUGEINT", { dialect: "duckdb", nativeType: "HUGEINT" }),
+      ).toBe(false);
+      expect(gateExactOver("DOUBLE")).toBe(false);
+      // Matched by stored name, case-blind when only one matches.
+      expect(
+         deriveContract({
+            tier: "storage",
+            stored: stored([d]),
+            upstreamTypes: new Map([
+               ["D", { dialect: "duckdb", nativeType: "DOUBLE" }],
+            ]),
+         }).columns[0].gateExact,
+      ).toBe(true);
+   });
+
    it("round-trips through the reader", () => {
       const c = deriveContract({
          tier: "storage",

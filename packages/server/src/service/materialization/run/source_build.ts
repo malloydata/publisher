@@ -714,6 +714,13 @@ export interface SourceBuildOptions {
    /** The strings its `storage=` build compares, as its plan recorded them. */
    stringReads?: StringReads;
    /**
+    * The warehouse type of each column its `storage=` table stores as a
+    * plain copy of one warehouse column, by stored name: its plan's column
+    * origins looked up in the plan's upstream readings, for its contract's
+    * `gateExact`.
+    */
+   upstreamTypes?: ReadonlyMap<string, { dialect: string; nativeType: string }>;
+   /**
     * The source is a rollup: a `storage=` build reports `upstreamReuse`
     * only when it stacked on a stored table, never from the manifest's
     * classification of its author's text (which names the base).
@@ -763,6 +770,7 @@ export async function buildSource(
       storedBase,
       storedInDestination,
       stringReads,
+      upstreamTypes,
       rollup,
       signal,
       builtThisRun,
@@ -876,6 +884,7 @@ export async function buildSource(
          ...(storedBase ? { storedBase } : {}),
          ...(storedInDestination ? { storedInDestination } : {}),
          ...(stringReads ? { stringReads } : {}),
+         ...(upstreamTypes ? { upstreamTypes } : {}),
          ...(rollup ? { rollup } : {}),
          ...(signal ? { signal } : {}),
          // How its source's strings compare live, for its column contract.

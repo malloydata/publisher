@@ -16,6 +16,7 @@
  */
 
 import type { StringReads } from "../domain/string_reads";
+import { upstreamTypesOf } from "../domain/upstream_schemas";
 import { tableNamesFoldCase } from "../domain/storage_table_path";
 import { errorCodeOf } from "../../../error_code";
 import { parseContract } from "../domain/column_contract";
@@ -1190,6 +1191,7 @@ export class InstructedBuild {
             ...(overStoredUpstreams ? { overStoredUpstreams } : {}),
             ...storedInDestinationOf(compiled.tables[persistSource.sourceID]),
             ...stringReadsOf(compiled.tables[persistSource.sourceID]),
+            ...upstreamTypesOption(compiled, persistSource.sourceID),
             ...(compiled.tables[persistSource.sourceID]?.kind === "rollup"
                ? { rollup: true }
                : {}),
@@ -2648,6 +2650,24 @@ function stringReadsOf(
    table: InstructedRun["compiled"]["tables"][string] | undefined,
 ): { stringReads?: StringReads } {
    return table?.stringReads ? { stringReads: table.stringReads } : {};
+}
+
+/**
+ * The warehouse type of each column the table of `sourceID` stores as a plain
+ * copy of one warehouse column (its plan's `columnOrigins`), from the plan's
+ * own upstream readings, as a build option; absent when none is known.
+ */
+function upstreamTypesOption(
+   compiled: RunPlan,
+   sourceID: string,
+): {
+   upstreamTypes?: ReadonlyMap<string, { dialect: string; nativeType: string }>;
+} {
+   const upstreamTypes = upstreamTypesOf(
+      compiled.tables[sourceID]?.columnOrigins,
+      compiled.upstreamSchemas,
+   );
+   return upstreamTypes ? { upstreamTypes } : {};
 }
 
 /** A view's or query's proven build in its destination, as a build option. */
