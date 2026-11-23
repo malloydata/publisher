@@ -26,10 +26,6 @@ import {
 } from "@malloydata/malloy";
 import { runAsInternalStatement } from "../../duckdb_lockdown";
 import { sourceReads } from "../../governance/ir/source_reads";
-import {
-   type AdmissionReadSite as QueryAdmissionReadSite,
-   reportCatalogRead as recordQueryCatalogRead,
-} from "./admission_parity";
 import { CATALOG_ROW_LIMIT, type ProbeIO } from "./collation/probe_io";
 import {
    BigQueryCatalog,
@@ -251,22 +247,13 @@ async function catalogRead(
  * client's `datasets.list`, its projects and location), read duck-typed
  * here and nowhere else.
  */
-export function probeIO(
-   connection: Connection,
-   /** Where on a query's path it reads, for the counter; absent, off it. */
-   site?: QueryAdmissionReadSite,
-): ProbeIO {
-   const counted = () => {
-      if (site !== undefined) recordQueryCatalogRead(site);
-   };
+export function probeIO(connection: Connection): ProbeIO {
    return {
       dialectName: connection.dialectName,
       async rows(sql) {
-         counted();
          return (await catalogRead(connection, sql)).rows ?? [];
       },
       async completeRows(sql) {
-         counted();
          const result = await catalogRead(connection, sql, {
             rowLimit: CATALOG_ROW_LIMIT,
          });

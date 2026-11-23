@@ -4,12 +4,8 @@
 /**
  * What read admission reports as it judges, for the query pipeline
  * (`query_serving.ts`) to count: each walk of the IR for a fact a compile
- * or bind records but did not record for this query, and each catalog read
- * or extra compile a collation probe made on a query's path.
+ * or bind records but did not record for this query.
  */
-
-/** Where on a query's path a probe reads the warehouse or compiles. */
-export type AdmissionReadSite = "source_probe" | "stored_probe";
 
 /**
  * Where a query walks the IR for a fact a compile or bind records, because
@@ -32,9 +28,7 @@ export type QueryWalkSite =
  * pipeline (`query_serving.ts`) installs it once.
  */
 interface AdmissionObserver {
-   catalogRead(site: AdmissionReadSite): void;
-   probeCompile(site: AdmissionReadSite): void;
-   queryWalk?(site: QueryWalkSite): void;
+   queryWalk(site: QueryWalkSite): void;
 }
 
 let observer: AdmissionObserver | undefined;
@@ -45,7 +39,7 @@ const walks = new Map<QueryWalkSite, number>();
 /** Report one query-path walk for a fact a compile or bind records. */
 export function reportQueryWalk(site: QueryWalkSite): void {
    walks.set(site, (walks.get(site) ?? 0) + 1);
-   observer?.queryWalk?.(site);
+   observer?.queryWalk(site);
 }
 
 /** The query-path walks reported so far, by site (a copy). */
@@ -62,9 +56,3 @@ export function clearQueryWalks(): void {
 export function observeAdmission(o: AdmissionObserver): void {
    observer = o;
 }
-
-/** Report one catalog read a probe made on a query's path. */
-export function reportCatalogRead(site: AdmissionReadSite): void {
-   observer?.catalogRead(site);
-}
-

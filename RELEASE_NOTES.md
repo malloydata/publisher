@@ -23,7 +23,7 @@ Two consequences worth knowing. A section merged to `main` ships in the **next**
 
 ## [Unreleased] — always-strict cleanup: the temporary switches, probes and recompute paths are removed
 
-**Removed: the temporary `materialize.admissionMode` setting (`PUBLISHER_ADMISSION_MODE`, `PUBLISHER_MATERIALIZE_ADMISSION_MODE`, `--materialize-admission-mode`) and its `probe` and `shadow` modes.** Read admission always looks its collation, gate and scope facts up in what the load, bind and build recorded, as `lookup`, the default since 0.17.3, already did. The metric `publisher_admission_parity_drift_total` is removed with it.
+**Removed: the temporary `materialize.admissionMode` setting (`PUBLISHER_ADMISSION_MODE`, `PUBLISHER_MATERIALIZE_ADMISSION_MODE`, `--materialize-admission-mode`) and its `probe` and `shadow` modes.** Read admission always looks its collation, gate and scope facts up in what the load, bind and build recorded, as `lookup`, the default since 0.17.3, already did. The metrics `publisher_admission_parity_drift_total`, `publisher_query_catalog_reads_total` and `publisher_query_probe_compiles_total` are removed with it: no query reads a catalog or compiles a probe to judge a stored answer, so they could only read zero. `publisher_query_walks_total` stays.
 
 ## [Unreleased] — every instructed source is built or failed, and a warehouse read is refused at plan as itself
 

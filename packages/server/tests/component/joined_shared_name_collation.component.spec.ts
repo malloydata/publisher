@@ -42,6 +42,7 @@ import {
    type MetricsHarness,
    startMetricsHarness,
 } from "../../src/test_helpers/metrics_harness";
+import { spyAdmissionIO } from "../../src/test_helpers/admission_io_spy";
 import { resetMaterializationTelemetryForTesting } from "../../src/materialization_metrics";
 import { serviceOverEnvironment } from "../../src/test_helpers/materialization_service_harness";
 import { installSettings } from "../../src/test_helpers/settings_env";
@@ -308,6 +309,7 @@ for (const tier of tiers) {
       let f: Fixture;
       let drop: (() => Promise<void>) | undefined;
       let metrics: MetricsHarness;
+      let io: { calls: readonly string[]; seen: number; decisions: number };
       const live: unknown[] = [];
       const served: { rows: unknown; kind?: string }[] = [];
       beforeAll(async () => {
@@ -328,7 +330,17 @@ for (const tier of tiers) {
          expect(run.status).toBe("MANIFEST_FILE_READY");
          metrics = await startMetricsHarness();
          resetMaterializationTelemetryForTesting();
-         for (const [q, g] of GATED) served.push(await ask(f, q, g));
+         const spy = spyAdmissionIO();
+         try {
+            for (const [q, g] of GATED) served.push(await ask(f, q, g));
+         } finally {
+            spy.restore();
+         }
+         io = {
+            calls: [...spy.calls],
+            seen: spy.seen(),
+            decisions: spy.decisions(),
+         };
       }, 300_000);
       afterAll(async () => {
          await metrics?.shutdown();
@@ -344,21 +356,14 @@ for (const tier of tiers) {
          expect(served.at(-1)?.kind).toBe("materialized");
       });
 
-      it("reads no catalog, compiles nothing extra and walks nothing to judge them", async () => {
-         const reads = await metrics.collectCounter(
-            "publisher_query_catalog_reads_total",
-         );
-         const compiles = await metrics.collectCounter(
-            "publisher_query_probe_compiles_total",
-         );
-         const walks = await metrics.collectCounter(
-            "publisher_query_walks_total",
-         );
-         expect({ reads, compiles, walks }).toEqual({
-            reads: 0,
-            compiles: 0,
-            walks: 0,
-         });
+      it("runs no SQL, compiles nothing and walks nothing to judge them", async () => {
+         // The spy saw the queries' own SQL, and admission decided.
+         expect(io.seen).toBeGreaterThan(0);
+         expect(io.decisions).toBeGreaterThan(0);
+         expect(io.calls).toEqual([]);
+         expect(
+            await metrics.collectCounter("publisher_query_walks_total"),
+         ).toBe(0);
       });
    });
 }

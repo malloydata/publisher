@@ -461,36 +461,9 @@ const incompatibleDetectedCounter = lazyCounter(
       "never counted: it leaves the table unread until that read.",
 );
 /**
- * Where a query's read admission reads the warehouse, or compiles a query of
- * its own, to judge a stored answer's string comparisons: the source side
- * (`source_probe`) or the stored side (`stored_probe`). Under lookup
- * admission neither is ever reached on a query.
- */
-export const QUERY_ADMISSION_READ_SITES = [
-   "source_probe",
-   "stored_probe",
-] as const;
-export type QueryAdmissionReadSite =
-   (typeof QUERY_ADMISSION_READ_SITES)[number];
-const queryCatalogReadCounter = lazyCounter(
-   "publisher_query_catalog_reads_total",
-   "Catalog reads read admission made while answering a query, to judge a " +
-      "stored answer's string comparisons. Labels: site " +
-      "('source_probe'|'stored_probe'). Zero under lookup admission " +
-      "(materialize.admissionMode), which reads what load, bind and build " +
-      "recorded instead.",
-);
-const queryProbeCompileCounter = lazyCounter(
-   "publisher_query_probe_compiles_total",
-   "Compiles read admission made while answering a query, beyond the " +
-      "query's own: a probe query or the query's SQL, to read a source's " +
-      "collation. Labels: site ('source_probe'|'stored_probe'). Zero under " +
-      "lookup admission.",
-);
-/**
  * Where a query walks the IR for a fact a compile or bind records, because
  * the record does not cover it (an inline `extend`, an unrecorded lane or
- * stored set) or admission is not in `lookup` mode.
+ * stored set).
  */
 export type QueryWalkSite =
    | "served_copy_declines"
@@ -862,16 +835,6 @@ export function recordIncompatibleDetected(
    code: string,
 ): void {
    incompatibleDetectedCounter().add(1, { trigger, code });
-}
-
-/** Record one catalog read read admission made while answering a query. */
-export function recordQueryCatalogRead(site: QueryAdmissionReadSite): void {
-   queryCatalogReadCounter().add(1, { site });
-}
-
-/** Record one compile read admission made while answering a query. */
-export function recordQueryProbeCompile(site: QueryAdmissionReadSite): void {
-   queryProbeCompileCounter().add(1, { site });
 }
 
 /** Record one query-path walk for a recorded fact. */

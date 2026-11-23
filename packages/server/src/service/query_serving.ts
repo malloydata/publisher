@@ -28,11 +28,7 @@ import {
    ReadAdmission,
    reportQueryWalk,
 } from "./materialization/serve/read_admission";
-import {
-   recordQueryCatalogRead,
-   recordQueryProbeCompile,
-   recordQueryWalk,
-} from "../materialization_metrics";
+import { recordQueryWalk } from "../materialization_metrics";
 import { logger } from "../logger";
 import { SourceMap, sourceChain } from "./materialization/text/source_map";
 import {
@@ -185,8 +181,6 @@ export function variantsOf(
 
 // What read admission reports, counted and logged here, outside its layer.
 observeAdmission({
-   catalogRead: recordQueryCatalogRead,
-   probeCompile: recordQueryProbeCompile,
    queryWalk: recordQueryWalk,
 });
 

@@ -24,6 +24,10 @@ import {
    type MetricsHarness,
    startMetricsHarness,
 } from "../../../src/test_helpers/metrics_harness";
+import {
+   type AdmissionIOSpy,
+   spyAdmissionIO,
+} from "../../../src/test_helpers/admission_io_spy";
 import { resetMaterializationTelemetryForTesting } from "../../../src/materialization_metrics";
 import { rowDifference } from "./harness";
 
@@ -54,6 +58,7 @@ describe("admission over a stored table", () => {
    let loader: Awaited<ReturnType<typeof loadFixture>>;
    let fixture: LoadedFixture;
    let metrics: MetricsHarness;
+   let spy: AdmissionIOSpy;
    const live = new Map<string, unknown>();
 
    beforeAll(async () => {
@@ -74,9 +79,11 @@ describe("admission over a stored table", () => {
       fixture = await loader.bind();
       metrics = await startMetricsHarness();
       resetMaterializationTelemetryForTesting();
+      spy = spyAdmissionIO();
    }, 900_000);
 
    afterAll(async () => {
+      spy?.restore();
       await metrics?.shutdown();
       resetMaterializationTelemetryForTesting();
       await fixture?.dispose();
@@ -106,21 +113,16 @@ describe("admission over a stored table", () => {
       }
    });
 
-   it("reads no catalog and compiles nothing extra to judge them", async () => {
-      const reads = await metrics.collectCounter(
-         "publisher_query_catalog_reads_total",
+   it("runs no SQL and compiles nothing while it judges them", async () => {
+      // The spy saw the queries' own SQL, and admission decided each.
+      expect(spy.seen()).toBeGreaterThan(0);
+      expect(spy.decisions()).toBeGreaterThan(0);
+      expect(spy.calls).toEqual([]);
+      // Nor walks the IR for what the served copy's compile and the bind
+      // record per source: its declines, the gates' and the row scope's
+      // reads.
+      expect(await metrics.collectCounter("publisher_query_walks_total")).toBe(
+         0,
       );
-      const compiles = await metrics.collectCounter(
-         "publisher_query_probe_compiles_total",
-      );
-      // Nor walks the IR for what the served copy's compile and the
-      // bind record per source: its declines, the gates' and the row
-      // scope's reads.
-      const walks = await metrics.collectCounter("publisher_query_walks_total");
-      expect({ reads, compiles, walks }).toEqual({
-         reads: 0,
-         compiles: 0,
-         walks: 0,
-      });
    });
 });
