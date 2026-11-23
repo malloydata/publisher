@@ -76,8 +76,11 @@ export type { CollationProbe } from "./gate_reads_types";
 export { collationProbe } from "./gate_collation";
 export { lookupProbe } from "./admission_lookup";
 export {
+   admissionMode,
    observeAdmission,
    readAdmissionModeFrom,
+   reportQueryWalk,
+   shadowFact,
    shadowProbe,
 } from "./admission_parity";
 

@@ -26,12 +26,15 @@ import {
    getPersistStorageMode,
 } from "../config";
 import {
+   admissionMode,
    type CollationProbe,
    collationProbe,
    lookupProbe,
    observeAdmission,
    readAdmissionModeFrom,
    ReadAdmission,
+   reportQueryWalk,
+   shadowFact,
    shadowProbe,
 } from "./materialization/serve/read_admission";
 import {
@@ -42,11 +45,6 @@ import {
 } from "../materialization_metrics";
 import { logger } from "../logger";
 import { SourceMap, sourceChain } from "./materialization/text/source_map";
-import {
-   admissionMode,
-   reportQueryWalk,
-   shadowFact,
-} from "./materialization/serve/admission_parity";
 import {
    type Binding,
    isDatabase,
