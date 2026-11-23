@@ -81,6 +81,7 @@ import type {
 import { runRollupKeyCheck } from "./inline_uniqueness";
 import { storedKeyCheckSql } from "../text/key_check_text";
 import {
+   carriedLedgerExtensions,
    ledgerFields,
    lateRowsFields,
    refreshFields,
@@ -871,6 +872,7 @@ export class StorageBuildStrategy
          ...ledgerFields(
             incrementalRefresh?.lineage,
             result.refresh?.coveredThrough ?? result.seededThrough,
+            carriedLedgerExtensions(incrementalRefresh, instruction.reseed),
          ),
          ...refreshFields(
             result.refresh?.refresh ??

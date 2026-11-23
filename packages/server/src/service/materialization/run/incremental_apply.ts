@@ -990,7 +990,16 @@ export type RecordedBoundary = Pick<
    | "physicalTableName"
    | "connectionName"
    | "storageDestinationName"
->;
+> & {
+   /**
+    * The keys of a caller-returned wire entry this release does not know,
+    * exactly as sent. The ledger is opaque to hosts and the publisher may add
+    * keys to it, so they are carried onto the entry the run reports
+    * (carriedLedgerExtensions) rather than stripped. Absent for a local ledger
+    * row, and for an entry with no such keys.
+    */
+   extensions?: Readonly<Record<string, unknown>>;
+};
 
 /**
  * Why a recorded boundary cannot be built on, or undefined when it can. Each
