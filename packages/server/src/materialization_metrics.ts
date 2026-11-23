@@ -485,7 +485,7 @@ const admissionParityDriftCounter = lazyCounter(
       "query whose probe and lookup judged a stored answer's string " +
       "comparisons differently, or whose walk and recorded fact differ. The " +
       "probe or walk decided. Labels: side ('source'|'stored'|" +
-      "'served_copy_declines'|'scope'|'rollup_candidates'|'gate_exact'), direction ('probe_refuses'|" +
+      "'served_copy_declines'|'scope'|'rollup_candidates'|'path_chain'|'gate_exact'), direction ('probe_refuses'|" +
       "'lookup_refuses'|'differs').",
 );
 /**
@@ -496,13 +496,14 @@ const admissionParityDriftCounter = lazyCounter(
 export type QueryWalkSite =
    | "served_copy_declines"
    | "scope"
-   | "rollup_candidates";
+   | "rollup_candidates"
+   | "path_chain";
 const queryWalkCounter = lazyCounter(
    "publisher_query_walks_total",
    "IR walks a query made for a fact the served copy's compile or the bind " +
       "records, because the record did not cover the query (an inline " +
       "extend, an unrecorded lane or stored set). Labels: site " +
-      "('served_copy_declines'|'scope'|'rollup_candidates').",
+      "('served_copy_declines'|'scope'|'rollup_candidates'|'path_chain').",
 );
 const storageTableRetainedCounter = lazyCounter(
    "publisher_storage_tables_retained_total",

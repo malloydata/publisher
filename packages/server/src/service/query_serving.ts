@@ -43,6 +43,11 @@ import {
 import { logger } from "../logger";
 import { SourceMap, sourceChain } from "./materialization/text/source_map";
 import {
+   admissionMode,
+   reportQueryWalk,
+   shadowFact,
+} from "./materialization/serve/admission_parity";
+import {
    type Binding,
    isDatabase,
    type Pinned,
@@ -391,12 +396,14 @@ export async function queryPathFor(
             ? (host.persistedViews.reportedTable(args.queryString, pinned) ??
               host.persistedQueries.reportedTable(args.queryString, pinned))
             : undefined);
+      // The `#(materialize)` tables the served copy reads at this pin.
+      const servedBound = host.servedCopy.materializeBindings(pinned, "bound");
       // Nothing materialized for this model: the answer is live and there is
       // nothing to name, so skip the chain walks and the catalog reads.
       if (
          (catalog?.planned.size ?? 0) === 0 &&
          host.storageTables(pinned.snapshot).length === 0 &&
-         host.servedCopy.materializeBindings(pinned, "bound").length === 0 &&
+         servedBound.length === 0 &&
          variantRollups.length === 0 &&
          viewTable === undefined &&
          answer.considered.length === 0
@@ -422,7 +429,7 @@ export async function queryPathFor(
       return buildQueryPath({
          shape,
          modelPath: host.modelPath,
-         chain: chainOfQuerySource(struct, modelDef, host.modelDef()),
+         chain: queriedChain(host, struct, modelDef),
          catalog,
          freshDatabase: pinned.hasEntries
             ? new Set(Object.keys(pinned.compilerManifest.entries))
@@ -433,7 +440,7 @@ export async function queryPathFor(
          storage: {
             all: [
                ...storageTables,
-               ...host.servedCopy.materializeBindings(pinned, "bound"),
+               ...servedBound,
                ...host.rollupVariants.rollupBindings(pinned, "bound"),
             ].map(toTable),
             fresh: [
@@ -456,13 +463,9 @@ export async function queryPathFor(
               }
             : {}),
          ...(answer.leg === "served" ? { via: "served_copy" as const } : {}),
-         servedCopyTables: new Set(
-            host.servedCopy
-               .materializeBindings(pinned, "bound")
-               .map((b) => b.tablePath),
-         ),
+         servedCopyTables: new Set(servedBound.map((b) => b.tablePath)),
          servedCopyDetails: servedCopyDetailsOf(
-            host.servedCopy.materializeBindings(pinned, "bound"),
+            servedBound,
             host.servedCopy.problems(),
          ),
          runFailed: answer.leg !== "live" && answer.runFailed,
@@ -513,6 +516,37 @@ function servedCopyDetailsOf(
       }
    }
    return out;
+}
+
+/**
+ * The queried source's chain for the path report, by
+ * `materialize.admissionMode`: under `lookup`, the chain the model recorded
+ * for a source it declares ({@link QueryServingHost.sourceChains}, read once
+ * per compile); a source it does not declare (one only the query's compile
+ * holds) is walked, and counted. Under `probe` it is walked; under `shadow`
+ * both, the walk deciding.
+ */
+export function queriedChain(
+   host: Pick<QueryServingHost, "modelDef" | "sourceChains">,
+   struct: unknown,
+   queryModelDef: unknown,
+): string[] {
+   const walk = () =>
+      chainOfQuerySource(struct, queryModelDef, host.modelDef());
+   const mode = admissionMode();
+   if (mode === "probe") return walk();
+   const id = (struct as { sourceID?: unknown } | undefined)?.sourceID;
+   const recorded =
+      typeof id === "string" ? host.sourceChains().get(id) : undefined;
+   if (mode === "lookup") {
+      if (recorded) return [...recorded];
+      reportQueryWalk("path_chain");
+      return walk();
+   }
+   const walked = walk();
+   return recorded === undefined
+      ? walked
+      : shadowFact("path_chain", walked, [...recorded], (c) => c.join(" > "));
 }
 
 /**

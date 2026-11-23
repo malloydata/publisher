@@ -3144,6 +3144,9 @@ export class Model {
     * compile.
     */
    public async prepareServedCopy(): Promise<void> {
+      // Each source's chain, for the path report: recorded once per
+      // compile, so a query looks its source's up.
+      this.sourceChains();
       await this.refreshStringCapabilities();
       const snapshot = this.servingSnapshot();
       await this.prepareServedCopyOver(snapshot);
@@ -3749,7 +3752,11 @@ export class Model {
       };
    }
 
-   /** Every source's `sourceID` chain in this model, for the path report's `notConsidered`. */
+   /**
+    * Every source's `sourceID` chain in this model, by the source's own: the
+    * queried source's chain and the path report's `notConsidered`. Read once
+    * per compile ({@link prepareServedCopy} reads it at load).
+    */
    private sourceChains(): ReadonlyMap<string, readonly string[]> {
       const modelDef = this.modelDef;
       const cached = this.sourceChainCache;

@@ -28,9 +28,15 @@ export type AdmissionReadSite = "source_probe" | "stored_probe";
  * the record does not hold) or because admission runs in `probe` or
  * `shadow`: the served copy's per-source declines (`served_copy_declines`),
  * the gates' and row scope's reads and flags (`scope`), the rollups a
- * query's source could read (`rollup_candidates`).
+ * query's source could read and what it declines by before its shape is
+ * read (`rollup_candidates`), the queried source's chain for the path
+ * report (`path_chain`).
  */
-type QueryWalkSite = "served_copy_declines" | "scope" | "rollup_candidates";
+type QueryWalkSite =
+   | "served_copy_declines"
+   | "scope"
+   | "rollup_candidates"
+   | "path_chain";
 
 /** Which way admission judges: `materialize.admissionMode`. */
 type AdmissionMode = "probe" | "lookup" | "shadow";
