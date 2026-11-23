@@ -192,6 +192,7 @@ import {
    ZONED_TRUNCATION_REASON,
 } from "./served_copy_checks";
 import { admissionMode, reportQueryWalk, shadowFact } from "./admission_parity";
+import type { ScopeLane } from "./scope_facts";
 
 export type { ServedCopyProblem } from "./served_copy_types";
 
@@ -558,6 +559,20 @@ export class ServedCopyServe {
       const compiled = this.lanes.kept(0);
       if (!compiled) return undefined;
       return new Set(compiled.rerooted.flatMap((b) => b.sourceIDs ?? []));
+   }
+
+   /**
+    * Lane 0's stored and re-rooted sources, for the scope facts a bind
+    * records (`scope_facts.ts`): the sources whose tables the copy reads,
+    * and those its answers report re-rooted. Undefined before a compile.
+    */
+   scopeLane(): ScopeLane | undefined {
+      const compiled = this.lanes.kept(0);
+      if (!compiled?.materializer) return undefined;
+      return {
+         stored: new Set(compiled.rerooted.flatMap((b) => b.sourceIDs ?? [])),
+         rerooted: compiled.rerootedSourceIDs ?? new Set(),
+      };
    }
 
    /**

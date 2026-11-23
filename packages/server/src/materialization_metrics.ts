@@ -485,7 +485,7 @@ const admissionParityDriftCounter = lazyCounter(
       "query whose probe and lookup judged a stored answer's string " +
       "comparisons differently, or whose walk and recorded fact differ. The " +
       "probe or walk decided. Labels: side ('source'|'stored'|" +
-      "'served_copy_declines'|'scope'), direction ('probe_refuses'|" +
+      "'served_copy_declines'|'scope'|'gate_exact'), direction ('probe_refuses'|" +
       "'lookup_refuses'|'differs').",
 );
 /**
@@ -873,7 +873,7 @@ export function recordQueryProbeCompile(site: QueryAdmissionReadSite): void {
 
 /** Record one disagreement shadow admission found. */
 export function recordAdmissionParityDrift(
-   side: "source" | "stored" | QueryWalkSite,
+   side: "source" | "stored" | QueryWalkSite | "gate_exact",
    direction: "probe_refuses" | "lookup_refuses" | "differs",
 ): void {
    admissionParityDriftCounter().add(1, { side, direction });

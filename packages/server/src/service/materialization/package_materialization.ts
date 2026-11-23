@@ -960,6 +960,14 @@ export class PackageMaterialization {
             );
             this.bindTypeFindings(next.bindings);
          }
+         // What each source's gates and row scope read, over this commit's
+         // tables: a commit that changes only the manifest entries (a
+         // database table) is a new snapshot too.
+         if (next.bindings.length > 0 || Object.keys(next.entries).length > 0) {
+            for (const model of this.owner.models().values()) {
+               model.recordScopeFactsOver(next);
+            }
+         }
       } finally {
          this.committing = undefined;
       }

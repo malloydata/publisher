@@ -179,6 +179,7 @@ import {
 } from "./materialization/serve/storage_bindings";
 import type { MaterializePlan } from "./materialization/domain/table_plans";
 import { RollupVariantServe } from "./materialization/serve/rollup_variants";
+import { recordScopeFacts } from "./materialization/serve/scope_facts";
 import {
    planSourceRollups,
    rollupGateEnforcedAtRead,
@@ -3171,6 +3172,36 @@ export class Model {
    }
 
    /**
+    * Record, for read admission's lookups, what each named source's gates
+    * and row scope read over the tables `snapshot` binds, and its gate and
+    * composite flags (`serve/scope_facts.ts`): every bind commit, so a
+    * query pinned to `snapshot` walks none of it. The served copy's lane is
+    * the one compiled last, over the same bindings when its compile ran.
+    */
+   public recordScopeFactsOver(snapshot: Snapshot): void {
+      const lane = this.servedCopyEnabled()
+         ? this.servedCopy.scopeLane()
+         : undefined;
+      const runtime = (
+         this.modelMaterializer as unknown as { runtime?: object } | undefined
+      )?.runtime;
+      const modelDef = this.modelDef;
+      if (!runtime || !modelDef || this.modelType !== "model") return;
+      try {
+         recordScopeFacts(runtime, {
+            modelDef,
+            snapshot,
+            ...(lane ? { lane } : {}),
+         });
+      } catch (err) {
+         logger.warn("Could not record this model's scope facts", {
+            modelPath: this.modelPath,
+            error: err instanceof Error ? err.message : String(err),
+         });
+      }
+   }
+
+   /**
     * {@link prepareServedCopy} over `snapshot`, the tables a bind is about
     * to swap in (`PackageMaterialization.bindCompiled`): the copy is then
     * current the moment the swap makes `snapshot` the one this model reads.
@@ -3178,8 +3209,12 @@ export class Model {
    public async prepareServedCopyOver(snapshot: Snapshot): Promise<void> {
       const pinned = pin(snapshot, new Date());
       this.storageTables(pinned.snapshot);
-      if (!this.servedCopyEnabled()) return;
+      if (!this.servedCopyEnabled()) {
+         this.recordScopeFactsOver(snapshot);
+         return;
+      }
       await this.servedCopy.prepare(pinned);
+      this.recordScopeFactsOver(snapshot);
       // Once per source per model per snapshot it compiles (a load or a
       // rebind): each source the copy does not serve whole, `declined`
       // beating `partial`, and `partial` only while it is still re-rooted.

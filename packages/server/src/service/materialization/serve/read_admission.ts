@@ -25,7 +25,6 @@ import {
    sqlTargetRef,
 } from "../../governance/ir/prepared_query";
 import { readsAGiven } from "../../governance/ir/compiled_model";
-import { parseAuthorizeAnnotation } from "../../authorize";
 import { rowFilterOnComposite } from "../../composite_row_filter";
 import { extractRunQueryCall, extractRunViewCall } from "../../query_text";
 import {
@@ -38,8 +37,10 @@ import {
    type QueryFilterFacts,
    type ReadFacts,
    type ResultOrderFacts,
+   gateColumnReading,
 } from "../domain/admission";
-import type { Binding } from "../domain/binding";
+import type { Binding, Snapshot } from "../domain/binding";
+import type { ColumnContract } from "../domain/column_contract";
 import type { GateSwitches, TableRead } from "../domain/gate_policy";
 import { LegDecline } from "../domain/leg_decline";
 import {
@@ -55,6 +56,19 @@ import type {
 } from "./gate_reads_types";
 import type { LegAnswer, LegKind, QueryFacts } from "./leg";
 import { type ResultReads, resultReadsOfQuery } from "./result_reads";
+import {
+   admissionMode,
+   type FactSide,
+   reportQueryWalk,
+   shadowFact,
+} from "./admission_parity";
+import {
+   carriesAGate,
+   type RecordedScope,
+   recordedReads,
+   scopeFactsOf,
+   showReads,
+} from "./scope_facts";
 
 // The port, and its implementation for the query pipeline to hand in.
 export type { CollationProbe } from "./gate_reads_types";
@@ -102,6 +116,7 @@ export class ReadAdmission {
    private access: Promise<boolean> | undefined;
    private readonly gathered = new WeakMap<LegAnswer, Promise<Gathered>>();
    private readonly givens: Record<string, unknown> | undefined;
+   private entry: Promise<EntryRef> | undefined;
 
    constructor(
       private readonly query: QueryFacts,
@@ -195,25 +210,154 @@ export class ReadAdmission {
    private gateReadsFor(
       tables: readonly TableRead[],
       onTables: ReadonlySet<string> = new Set(),
+      /** The served copy's answer: its lane's recorded reads apply. */
+      lane = false,
    ): Promise<GateReads | undefined> {
       const stored = storedSourceIDs(tables);
-      const key = [[...stored].sort(), [...onTables].sort()].join("\n\n");
+      const key = [[...stored].sort(), [...onTables].sort(), lane].join("\n\n");
       let r = this.reads.get(key);
       if (r === undefined) {
-         r = gateReadsOfQuery(this.query.authorRunnable, stored, onTables);
+         r = this.fact(
+            "scope",
+            async () => {
+               const facts = this.scopeFacts();
+               const { name } = await this.entryRef();
+               if (facts === undefined || name === undefined) {
+                  return "unrecorded";
+               }
+               return lane &&
+                  facts.lane !== undefined &&
+                  sameSet(onTables, facts.lane.rerooted)
+                  ? recordedReads(
+                       facts,
+                       name,
+                       facts.lane.stored,
+                       facts.lane.rerooted,
+                    )
+                  : recordedReads(facts, name, stored, onTables);
+            },
+            () => gateReadsOfQuery(this.query.authorRunnable, stored, onTables),
+            showReads,
+         );
          this.reads.set(key, r);
       }
       return r;
    }
 
+   /**
+    * A fact a bind records, by `materialize.admissionMode`: under `probe`
+    * walked; under `lookup` looked up, walked only when nothing recorded
+    * it (and the walk counted); under `shadow` both, the walk deciding and
+    * a disagreement recorded.
+    */
+   private async fact<T>(
+      side: FactSide,
+      recorded: () => Promise<T | "unrecorded">,
+      walk: () => Promise<T> | T,
+      show: (fact: T) => string | undefined,
+   ): Promise<T> {
+      const mode = admissionMode();
+      if (mode === "probe") return walk();
+      const r = await recorded();
+      if (mode === "lookup") {
+         if (r !== "unrecorded") return r;
+         reportQueryWalk(side === "gate_exact" ? "scope" : side);
+         return walk();
+      }
+      const walked = await walk();
+      return r === "unrecorded" ? walked : shadowFact(side, walked, r, show);
+   }
+
+   /** What the bind commit recorded for this query's model and snapshot. */
+   private scopeFacts(): RecordedScope | undefined {
+      const runtime = (
+         this.query.authorRunnable as unknown as { runtime?: object }
+      ).runtime;
+      return scopeFactsOf(runtime, this.bind);
+   }
+
+   /**
+    * The named source the query runs on (its compiled `structRef`), and the
+    * one its SQL is generated from: undefined for a source written inline,
+    * whose facts are walked.
+    */
+   private entryRef(): Promise<EntryRef> {
+      return (this.entry ??= readPreparedQuery(this.query.authorRunnable).then(
+         (p) => ({
+            name: typeof p.structRef === "string" ? p.structRef : undefined,
+            sqlTarget: (() => {
+               const ref = sqlTargetRef(p as never);
+               return typeof ref === "string" ? ref : undefined;
+            })(),
+         }),
+         () => ({ name: undefined, sqlTarget: undefined }),
+      ));
+   }
+
+   /**
+    * The tables an answer read, each with what the gate policy judges its
+    * gate columns by: under `lookup`, their stored types and exactness from
+    * each table's column contract, recorded at build and held at bind
+    * ({@link withRecordedGateColumns}); under `probe`, the bind's types and
+    * the warehouse types they copy ({@link withGateColumnTypes}).
+    */
+   private gateColumnsOf(
+      tables: readonly TableRead[],
+      readsOf: () => Promise<GateReads | undefined>,
+   ): Promise<readonly TableRead[]> {
+      const contracts = (this.bind as Snapshot | undefined)?.contracts;
+      return this.fact(
+         "gate_exact",
+         async () =>
+            // A stored table the snapshot holds no contract for (a bind
+            // never binds one) was not recorded: judged as before.
+            tables.every(
+               (t) =>
+                  (t.tier !== "storage" && t.tier !== "database") ||
+                  contracts?.has(
+                     (t as { virtualHandle?: string }).virtualHandle ?? "",
+                  ) === true,
+            )
+               ? withRecordedGateColumns(tables, readsOf, contracts)
+               : "unrecorded",
+         () => withGateColumnTypes(tables, readsOf),
+         showGateColumns,
+      );
+   }
+
    /** See {@link queryReadsAccess}; read once per query. */
    private readsAccessOnce(): Promise<boolean> {
-      return (this.access ??= queryReadsAccess(this.query.authorRunnable));
+      return (this.access ??= queryReadsAccess(
+         this.query.authorRunnable,
+         (walk) =>
+            this.fact(
+               "scope",
+               async () => {
+                  const facts = this.scopeFacts();
+                  const { sqlTarget } = await this.entryRef();
+                  const f =
+                     sqlTarget === undefined
+                        ? undefined
+                        : facts?.flags.get(sqlTarget);
+                  return f === undefined ? "unrecorded" : f.carriesGate;
+               },
+               walk,
+               (b) => `carriesGate=${b}`,
+            ),
+      ));
    }
 
    private compositeOnce(): Promise<boolean> {
-      return (this.composite ??= entryRowFilterOnComposite(
-         this.query.authorRunnable,
+      return (this.composite ??= this.fact(
+         "scope",
+         async () => {
+            const facts = this.scopeFacts();
+            const { name } = await this.entryRef();
+            const f = name === undefined ? undefined : facts?.flags.get(name);
+            return f === undefined ? "unrecorded" : f.compositeRowFilter;
+         },
+         () => entryRowFilterOnComposite(this.query.authorRunnable),
+         (b) => `compositeRowFilter=${b}`,
       ));
    }
 
@@ -231,11 +375,12 @@ export class ReadAdmission {
       // The served copy reads each source it re-rooted from its table, so a
       // join to one never re-applies that source's own query.
       const rerooted = leg === "served" ? answer.rerootedSourceIDs : undefined;
-      const scopeReads = () => this.gateReadsFor(read, rerooted);
+      const scopeReads = () =>
+         this.gateReadsFor(read, rerooted, leg === "served");
       // Only the served copy and a rollup re-apply a row scope, and only
       // past a gate is the scope's reads needed otherwise; both read through
       // the one memo.
-      const judged = await withGateColumnTypes(read, scopeReads);
+      const judged = await this.gateColumnsOf(read, scopeReads);
       const reads =
          leg === "served" || leg === "rollup" ? await scopeReads() : undefined;
       const filters = await this.queryFilters(leg, answer);
@@ -462,6 +607,17 @@ export class ReadAdmission {
    }
 }
 
+/** The query's named source, and the one its SQL is generated from. */
+interface EntryRef {
+   readonly name: string | undefined;
+   readonly sqlTarget: string | undefined;
+}
+
+/** Whether two sets hold the same members. */
+function sameSet(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
+   return a.size === b.size && [...a].every((x) => b.has(x));
+}
+
 /** The leg's own decline for an answer admission declined. */
 function legDecline(
    leg: LegKind,
@@ -490,61 +646,26 @@ function legDecline(
  * `#(authorize)` or `#(access_filter)` gate anywhere beneath it. Fails
  * closed: a query that cannot be read counts.
  */
-async function queryReadsAccess(runnable: QueryMaterializer): Promise<boolean> {
+async function queryReadsAccess(
+   runnable: QueryMaterializer,
+   /** The source's half, recorded at bind: `walk` reads it from the IR. */
+   sourceCarriesGate: (walk: () => boolean) => Promise<boolean>,
+): Promise<boolean> {
    try {
       const prepared = await runnable.getPreparedQuery();
       const usage = queryGivenUsageIds(prepared);
       if (usage === undefined || usage.length > 0) return true;
       const view = preparedQueryView(prepared);
       if (readsAGiven(view.query)) return true;
-      const source = resolveStructRefSource<unknown>(
-         sqlTargetRef(view),
-         view.modelDef,
+      if (carriesAGate(view.query)) return true;
+      return await sourceCarriesGate(() =>
+         carriesAGate(
+            resolveStructRefSource<unknown>(sqlTargetRef(view), view.modelDef),
+         ),
       );
-      return carriesAGate(source) || carriesAGate(view.query);
    } catch {
       return true;
    }
-}
-
-/** Max IR depth {@link carriesAGate} walks; past it, a gate is assumed. */
-const MAX_GATE_WALK_DEPTH = 200;
-
-/**
- * Whether a slice of IR carries an `#(authorize)` or `#(access_filter)`
- * note anywhere (the plan's gate walk, `referencesAuthorize`, read with the
- * same parser). Fails closed.
- */
-function carriesAGate(
-   node: unknown,
-   seen: WeakSet<object> = new WeakSet(),
-   depth = 0,
-): boolean {
-   if (depth > MAX_GATE_WALK_DEPTH) return true;
-   if (node === null || typeof node !== "object") return false;
-   if (seen.has(node)) return false;
-   seen.add(node);
-   if (Array.isArray(node)) {
-      return node.some((item) => carriesAGate(item, seen, depth + 1));
-   }
-   const record = node as Record<string, unknown>;
-   for (const key of ["blockNotes", "notes"]) {
-      const notes = record[key];
-      if (!Array.isArray(notes)) continue;
-      for (const note of notes) {
-         const text =
-            typeof note === "string"
-               ? note
-               : (note as { text?: unknown } | null)?.text;
-         if (typeof text !== "string") continue;
-         try {
-            if (parseAuthorizeAnnotation(text) !== null) return true;
-         } catch {
-            return true;
-         }
-      }
-   }
-   return Object.values(record).some((v) => carriesAGate(v, seen, depth + 1));
 }
 
 /** The tables' virtual handles, so the path report names each one declined. */
@@ -636,6 +757,85 @@ async function withGateColumnTypes(
          ).map((c) => c.type),
       };
    });
+}
+
+/**
+ * {@link withGateColumnTypes} from what each table's build recorded: a gate
+ * column's stored type and its exactness (`gateExact`) are read from the
+ * table's column contract, which the bind holds the table to, so neither the
+ * bind's schema nor the warehouse types a column copies are read per answer.
+ * Fail closed as the types are: a `storage=` table with no contract, or whose
+ * gates cannot be read or name a column no table read holds, keeps no gate.
+ */
+async function withRecordedGateColumns(
+   tables: readonly TableRead[],
+   readsOf: () => Promise<GateReads | undefined>,
+   contracts: ReadonlyMap<string, ColumnContract> | undefined,
+): Promise<readonly TableRead[]> {
+   const contractOf = (t: TableRead) => {
+      const handle = (t as { virtualHandle?: unknown }).virtualHandle;
+      return typeof handle === "string" ? contracts?.get(handle) : undefined;
+   };
+   const inexact = (t: TableRead) =>
+      (contractOf(t)?.columns ?? []).filter((c) => !c.gateExact);
+   const storage = tables.filter((t) => t.tier === "storage");
+   if (
+      storage.length === 0 &&
+      !tables.some((t) => t.tier === "database" && inexact(t).length > 0)
+   ) {
+      return tables;
+   }
+   const reads = await readsOf();
+   const schemas = storage.map((t) =>
+      contractOf(t)?.columns.map((c) => ({
+         name: c.name,
+         type: c.nativeType,
+      })),
+   );
+   const types = gateColumnTypesOf(reads, schemas as never);
+   const held = new Set((reads?.columns ?? []).flat());
+   const readsNoColumn =
+      reads !== undefined &&
+      !reads.unresolved &&
+      reads.columns.length === 0 &&
+      reads.names.size === 0;
+   return tables.map((t) => {
+      if (t.tier === "storage") {
+         const i = storage.indexOf(t);
+         const listed = types[i];
+         const columns = contractOf(t)?.columns ?? [];
+         return {
+            ...t,
+            gateColumnTypes: listed,
+            ...(listed !== undefined
+               ? {
+                    gateColumnsExactRecorded: columns
+                       .filter((c) => held.has(c.name))
+                       .every((c) => c.gateExact),
+                 }
+               : {}),
+            ...(readsNoColumn ? { gatesReadNoColumn: true } : {}),
+         };
+      }
+      // A database table holds the source's own types; only a column its
+      // contract records as not exact (a DuckLake double) is judged.
+      const moved = inexact(t);
+      if (moved.length === 0) return t;
+      const judged =
+         reads === undefined || reads.unresolved
+            ? moved
+            : moved.filter((c) => held.has(c.name));
+      return {
+         ...t,
+         gateColumnTypes: judged.map((c) => c.nativeType),
+         gateColumnsExactRecorded: judged.length === 0,
+      };
+   });
+}
+
+/** Admission's reading of each table, for comparing two judgements. */
+function showGateColumns(tables: readonly TableRead[]): string {
+   return tables.map(gateColumnReading).join(",");
 }
 
 /**

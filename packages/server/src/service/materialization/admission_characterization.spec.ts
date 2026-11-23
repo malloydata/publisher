@@ -49,7 +49,7 @@ import {
    keepsGatesWhenReadExact,
    type ReadFacts,
 } from "./domain/admission";
-import type { TableRead } from "./domain/gate_policy";
+import { gateTypeInexact, type TableRead } from "./domain/gate_policy";
 import { keptTableAddresses, ungatedTableAddresses } from "./serve/bind";
 import * as gateReads from "./serve/gate_reads";
 import { type LegContext, makeLegs } from "./serve/leg";
@@ -230,7 +230,15 @@ function contractsOf(args: {
                nativeType: c.type,
                collation: c.type === "VARCHAR" ? collation : null,
                compare: "exact" as const,
-               gateExact: true,
+               // As a build records it (`deriveContract`): a `storage=`
+               // column of a type a gate compares inexactly is not exact;
+               // a database column is unless held as a double.
+               gateExact:
+                  t.tier === "storage"
+                     ? !gateTypeInexact(c.type)
+                     : !(t.retypedColumns ?? []).some(
+                          (r) => r.name === c.name && gateTypeInexact(r.type),
+                       ),
             })),
          },
       ]),

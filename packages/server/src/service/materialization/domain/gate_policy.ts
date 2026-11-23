@@ -273,6 +273,13 @@ export interface TableRead {
     * false.
     */
    readonly gatesReadNoColumn?: boolean;
+   /**
+    * Whether every column the entry point's gates read is stored exactly,
+    * read from the table's column contract (`gateExact`, recorded at build)
+    * rather than judged from {@link gateColumnTypes}: when present, the
+    * policy's exactness rule reads it alone.
+    */
+   readonly gateColumnsExactRecorded?: boolean;
 }
 
 /**
@@ -324,6 +331,9 @@ function gateColumnTypeExact(
  * be listed is not.
  */
 export function gateColumnsExact(t: TableRead): boolean {
+   if (t.gateColumnsExactRecorded !== undefined) {
+      return t.gateColumnsExactRecorded;
+   }
    if (t.gateColumnTypes === undefined) return t.tier === "database";
    return t.gateColumnTypes.every((type, i) =>
       gateColumnTypeExact(type, t.gateColumnUpstreamTypes?.[i]),

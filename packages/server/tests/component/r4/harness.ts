@@ -1391,6 +1391,14 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
    model.setServeBindings([], contracts);
    model.setStringCapabilityReader(refreshStringCapabilities);
    await model.refreshStringCapabilities();
+   // And, as the bind commit that serves these tables does, the served
+   // copy's compile and what each source's gates and row scope read over
+   // them (a run sets the bindings beside the package, with no commit).
+   model.setServeBindings(bindings);
+   manifestOn = true;
+   await model.prepareServedCopy();
+   model.setServeBindings([]);
+   manifestOn = false;
 
    // The ordering the author's query asks for, from compiling it against the
    // author's model: the served answer is held to it, not to its own.

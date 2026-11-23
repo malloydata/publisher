@@ -29,16 +29,23 @@ export type AdmissionReadSite = "source_probe" | "stored_probe";
  * `shadow`: the served copy's per-source declines (`served_copy_declines`),
  * the gates' and row scope's reads and flags (`scope`).
  */
-export type QueryWalkSite = "served_copy_declines" | "scope";
+type QueryWalkSite = "served_copy_declines" | "scope";
 
 /** Which way admission judges: `materialize.admissionMode`. */
-export type AdmissionMode = "probe" | "lookup" | "shadow";
+type AdmissionMode = "probe" | "lookup" | "shadow";
 
 /**
  * The comparisons shadow admission runs: the collation ports' two sides,
  * and each recorded fact against the walk it replaces.
  */
-export type ParitySide = "source" | "stored" | QueryWalkSite;
+type ParitySide = "source" | "stored" | FactSide;
+
+/**
+ * The recorded facts shadow admission compares with the walks they replace:
+ * each walk site, and `gate_exact`, a stored gate column's exactness read
+ * from its column contract against the one judged from the bind's types.
+ */
+export type FactSide = QueryWalkSite | "gate_exact";
 
 /**
  * What admission reports as it judges, for the shell to count and log: this
@@ -215,7 +222,7 @@ function disagree(a: string | undefined, b: string | undefined): boolean {
  * none), so two facts that lead to the same verdict agree.
  */
 export function shadowFact<T>(
-   side: QueryWalkSite,
+   side: FactSide,
    walked: T,
    recorded: T,
    show: (fact: T) => string | undefined,
