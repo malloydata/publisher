@@ -7,6 +7,7 @@
 // its grain columns (a computed dimension, a timeframe) theirs, built or not,
 // in a nest too. The truth is a sibling file declaring the same source without
 // the `#@ preaggregate` line, so nothing routes it.
+import { contractFor } from "../../src/test_helpers/contract_fixture";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "fs/promises";
@@ -164,8 +165,12 @@ describe("a v1 #@ preaggregate rollup's annotations", () => {
          `CREATE OR REPLACE TABLE built_rollup AS ${rollup.sql}`,
       );
       pkg.materialization().bind({
-         colocated: {
-            [ids[0]]: { tableName: "built_rollup", connectionName: "duckdb" },
+         database: {
+            [ids[0]]: {
+               tableName: "built_rollup",
+               connectionName: "duckdb",
+               contract: contractFor(),
+            },
          } as never,
       });
 

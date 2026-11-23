@@ -23,78 +23,31 @@ const compat = new FlatCompat({
    allConfig: js.configs.all,
 });
 
-// `@malloydata/malloy-interfaces` writes a string value into Malloy text
-// unescaped: its `escapeString` is a TODO, so a value holding a double quote
-// closes the literal and the rest is read as Malloy. `ASTQuery.toMalloy()` and
-// `queryToMalloy` both go through it, and the Explorer is built on them, so a
-// drilled `27" Monitor` is a compile error and a crafted value widens the
-// filter it is drilled into. `filterToMalloy` goes through the same function,
-// and `@malloydata/malloy-query-builder`'s `ASTQuery` writes through them, so
-// nothing new may load that package. The two writers are refused where they
-// are imported, aliased or re-exported, and where they are called; the SDK
-// reads `@malloydata/malloy-interfaces` for its types alone, through `import
-// type`. The Explorer's own files are exempt by name (EXPLORER_FILES, below)
-// while `PUBLISHER_MODEL_PAGE=explorer` still shows it. Lift these once a
-// `@malloydata/*` bump carries the upstream fix.
-const UNESCAPED_MALLOY_MESSAGE =
-   "writes string values into Malloy unescaped (escapeString in @malloydata/malloy-interfaces is a TODO), so a value holding a double quote rewrites the query. Run a named query, or write the text with malloyLiteral / escapeMalloyString.";
-const UNESCAPED_MALLOY_IMPORTS = [
+// The Explorer package itself. Only a page that has checked
+// `useServer().modelPage` may show it, so only its own files may import it
+// (EXPLORER_FILES, below), statically or lazily; the rest reach it through the
+// SDK's Explorer modules (EXPLORER_MODULE_IMPORTS). Its stylesheet is the one
+// exception (EXPLORER_STYLESHEET_FILES).
+const EXPLORER_PACKAGE_MESSAGE =
+   "The Explorer is shown only where useServer().modelPage allows it (PUBLISHER_MODEL_PAGE=viewer hides it): reach it through the SDK's SourcesExplorer, ModelExplorer or ExplorerPage.";
+const EXPLORER_PACKAGE_IMPORTS = [
    {
       group: ["@malloydata/malloy-explorer", "@malloydata/malloy-explorer/**"],
-      message: `The Explorer ${UNESCAPED_MALLOY_MESSAGE}`,
-   },
-   {
-      group: [
-         "@malloydata/malloy-query-builder",
-         "@malloydata/malloy-query-builder/**",
-      ],
-      message: `The query builder's ASTQuery ${UNESCAPED_MALLOY_MESSAGE}`,
+      message: EXPLORER_PACKAGE_MESSAGE,
    },
 ];
-// typescript-eslint's rule, so a type-only namespace import (`import type * as
-// Malloy`) stays allowed: the core rule refuses every namespace import of a
-// module with a restricted name in it.
-const UNESCAPED_MALLOY_IMPORT_NAMES = [
+const EXPLORER_PACKAGE_LAZY_IMPORT = [
    "error",
    {
-      paths: [
-         {
-            name: "@malloydata/malloy-interfaces",
-            importNames: ["queryToMalloy", "filterToMalloy"],
-            allowTypeImports: true,
-            message: `queryToMalloy or filterToMalloy ${UNESCAPED_MALLOY_MESSAGE}`,
-         },
-      ],
-   },
-];
-const UNESCAPED_MALLOY_CALLS = [
-   "error",
-   {
-      // Any reach for the member, called or not: `q.toMalloy()`,
-      // `q.toMalloy.call(q)`, `const f = q.toMalloy`, `q["toMalloy"]()`, and
-      // `const { toMalloy } = q`.
-      selector:
-         "MemberExpression[property.name=/^(toMalloy|queryToMalloy|filterToMalloy)$/], MemberExpression[computed=true][property.value=/^(toMalloy|queryToMalloy|filterToMalloy)$/], ObjectPattern > Property[key.name=/^(toMalloy|queryToMalloy|filterToMalloy)$/]",
-      message: `ASTQuery.toMalloy(), queryToMalloy or filterToMalloy ${UNESCAPED_MALLOY_MESSAGE}`,
-   },
-   {
-      selector:
-         "CallExpression[callee.name=/^(queryToMalloy|filterToMalloy)$/]",
-      message: `queryToMalloy or filterToMalloy ${UNESCAPED_MALLOY_MESSAGE}`,
-   },
-   {
-      // The Explorer was loaded lazily, which no-restricted-imports does not see.
-      // esquery ends a regex at its first slash, escaped or not.
-      selector:
-         "ImportExpression[source.value=/malloy-explorer|malloy-query-builder/]",
-      message: `The Explorer or the query builder ${UNESCAPED_MALLOY_MESSAGE}`,
+      // no-restricted-imports does not see a lazy import.
+      selector: "ImportExpression[source.value=/malloy-explorer/]",
+      message: EXPLORER_PACKAGE_MESSAGE,
    },
 ];
 // The Explorer itself. A server shows it unless `PUBLISHER_MODEL_PAGE=viewer`,
 // and the Console keeps both pages, so it is exempt from every rule above.
 // Named one by one, so a new file that reaches for the Explorer is still
-// refused. The query builder's loader, `loadQueryBuilder` in the shared
-// `loadMalloy.ts`, disables the one rule its dynamic import needs, inline.
+// refused.
 const EXPLORER_FILES = [
    "packages/sdk/src/components/Model/SourcesExplorer.tsx",
 ];
@@ -133,7 +86,6 @@ const EXPLORER_IMPORT_NAMES = [
    "error",
    {
       paths: [
-         ...UNESCAPED_MALLOY_IMPORT_NAMES[1].paths,
          {
             name: "@malloy-publisher/sdk",
             importNames: [
@@ -155,40 +107,34 @@ const EXPLORER_CALLERS = [
    "packages/sdk/src/components/Model/ExplorerPage.tsx",
    "packages/sdk/src/components/Model/ModelExplorer.tsx",
    "packages/sdk/src/components/Model/ModelExplorerDialog.tsx",
-   "packages/sdk/src/components/legacy/malloynb/NotebookCell.tsx",
+   "packages/sdk/src/components/Report/malloynb/NotebookCell.tsx",
    "packages/sdk/src/**/*.spec.{ts,tsx}",
 ];
 // Files that load only the Explorer's stylesheet: that one import is allowed,
-// and every other ban, the unescaped writers' among them, still holds.
+// and every other ban still holds.
 const EXPLORER_STYLESHEET_FILES = [
    "packages/app/src/App.tsx",
    "packages/sdk/src/components/Model/ExplorerPage.tsx",
-   "packages/sdk/src/components/legacy/malloynb/CellRunnerView.tsx",
+   "packages/sdk/src/components/Report/malloynb/CellRunnerView.tsx",
 ];
 // The bare package goes in `paths`: a negated pattern cannot re-include
 // `styles.css` once a pattern matching its parent has excluded it.
-const UNESCAPED_MALLOY_IMPORTS_BUT_STYLESHEET = {
+const EXPLORER_PACKAGE_IMPORTS_BUT_STYLESHEET = {
    paths: [
       {
          name: "@malloydata/malloy-explorer",
-         message: UNESCAPED_MALLOY_IMPORTS[0].message,
+         message: EXPLORER_PACKAGE_MESSAGE,
       },
    ],
    patterns: [
       {
-         ...UNESCAPED_MALLOY_IMPORTS[0],
+         ...EXPLORER_PACKAGE_IMPORTS[0],
          group: [
             "@malloydata/malloy-explorer/**",
             "!@malloydata/malloy-explorer/styles.css",
          ],
       },
-      UNESCAPED_MALLOY_IMPORTS[1],
    ],
-};
-const LEGACY_MALLOYNB_IMPORT = {
-   group: ["**/legacy/malloynb", "**/legacy/malloynb/**"],
-   message:
-      "legacy/malloynb is the deprecated .malloynb renderer: only legacy/ may import it. A .malloy report is tiles, drawn by DashboardView.",
 };
 
 // ---------------------------------------------------------------------------
@@ -348,6 +294,18 @@ const IMPORT_DIRECTION_RULES = [
       message:
          "telemetry is emitted from run/, the facade and the query pipeline only: return a value and let the shell log or count it",
    },
+   {
+      id: "H6",
+      from: (f) =>
+         MZ_PLAN.test(f) ||
+         MZ_SERVE.test(f) ||
+         MZ_DOMAIN.test(f) ||
+         MZ_TEXT.test(f),
+      to: (m) => m === "config",
+      allowTypeImports: true,
+      message:
+         "plan/, serve/, domain/ and text/ read no setting: the shell reads the switches once (domain/switches.ts) and passes them down",
+   },
 ];
 export const IMPORT_DIRECTION_ALLOWLIST = {
    ...MATERIALIZATION_IMPORT_ALLOWLIST,
@@ -432,8 +390,10 @@ const importDirectionRule = {
 //   H1  every non-spec module under materialization/ opens, after the
 //       license, with a block comment saying what it is responsible for.
 //   H2  no history in a comment there: no ticket number, `phase N`, `step N`
-//       or `pull request N` label, or date. History belongs in the commit
-//       message.
+//       or `pull request N` label, or date, and no plan or review label
+//       standing for a concept (`P10`, `G3`, `known limitation 29`,
+//       `question 14`, `g-mixed`): spell the concept. History belongs in the
+//       commit message.
 //
 // Both allow no exceptions: their lists in materialization_allowlists.mjs are
 // empty, and src/service/materialization/layer_rules.spec.ts fails on any
@@ -482,7 +442,18 @@ const moduleHeaderRule = {
  * date, in a comment.
  */
 export const HISTORY_IN_COMMENT =
-   /#\d{3,}\b|\bphase \d|\bstep \d+[a-z]?\b|\bpull request \d|\b20\d\d-\d\d-\d\d\b/gi;
+   /#\d{3,}\b|\bphase \d|\bstep \d+[a-z]?\b|\bpull request \d|\b20\d\d-\d\d-\d\d\b|\bknown limitation \d|\bquestion \d|\bg-mixed\b|\bPR \d|\b\w+\/\w+#\d/gi;
+/**
+ * A plan or review label standing for a concept, from the plan's own
+ * series: the plan audit's P1–P14, the gate findings G1–G8, the architecture
+ * audit's A1–A7, D1–D3, H1–H6 and R3–R10, a finding id (`P2-41`, `F-08`).
+ * Labels that collide with ordinary words (R1/R2, the leaks L1–L3, a
+ * question Qn) count only in parentheses, as the plan cites them (`(R2)`);
+ * a percentile (`P95`), a quarter (`Q1`) or a cache level (`L2`) do not.
+ * Case-sensitive, so a duration (`2d`) or a directory (`r4`) is not one.
+ */
+export const LABEL_IN_COMMENT =
+   /\b(?:P(?:1[0-4]|[1-9])|G[1-8]|A[1-7]|D[1-3]|H[1-6]|R(?:10|[3-9]))(?:-\d+)?\b|\((?:R[12]|L[1-3]|Q\d{1,2})\)|\bF-\d{2}\b/g;
 const noHistoryCommentsRule = {
    meta: {
       type: "suggestion",
@@ -505,11 +476,12 @@ const noHistoryCommentsRule = {
             let count = 0;
             for (const c of source.getAllComments()) {
                count += (c.value.match(HISTORY_IN_COMMENT) ?? []).length;
+               count += (c.value.match(LABEL_IN_COMMENT) ?? []).length;
             }
             if (count > allowed) {
                context.report({
                   node,
-                  message: `History in comments H2: ${file} has ${count} ticket numbers, phase or step labels or dates in comments, ${allowed} allowed. Move them to the commit message.`,
+                  message: `History in comments H2: ${file} has ${count} ticket numbers, phase, step or plan labels or dates in comments, ${allowed} allowed. Move them to the commit message.`,
                });
             }
          },
@@ -591,10 +563,10 @@ export default [
       rules: {
          "no-restricted-imports": [
             "error",
-            { patterns: UNESCAPED_MALLOY_IMPORTS },
+            { patterns: EXPLORER_PACKAGE_IMPORTS },
          ],
          "@typescript-eslint/no-restricted-imports": EXPLORER_IMPORT_NAMES,
-         "no-restricted-syntax": UNESCAPED_MALLOY_CALLS,
+         "no-restricted-syntax": EXPLORER_PACKAGE_LAZY_IMPORT,
       },
    },
    {
@@ -612,40 +584,18 @@ export default [
       },
    },
    {
-      // The Explorer's callers (see EXPLORER_CALLERS): the unescaped writers'
-      // names stay refused.
+      // The Explorer's callers (see EXPLORER_CALLERS).
       files: EXPLORER_CALLERS,
       rules: {
-         "@typescript-eslint/no-restricted-imports":
-            UNESCAPED_MALLOY_IMPORT_NAMES,
-      },
-   },
-   {
-      // `.malloynb` is deprecated and fenced off: its renderer lives in
-      // `legacy/malloynb/` and nothing outside `legacy/` may import it, so the
-      // format is deleted by deleting that folder and the legacy exports.
-      // Restates the unescaped-Malloy imports: a later block's rule replaces an
-      // earlier one's for the files both match, rather than adding to it.
-      files: ["packages/sdk/src/**/*.{ts,tsx}"],
-      ignores: ["packages/sdk/src/components/legacy/**"],
-      rules: {
-         "no-restricted-imports": [
-            "error",
-            {
-               patterns: [LEGACY_MALLOYNB_IMPORT, ...UNESCAPED_MALLOY_IMPORTS],
-            },
-         ],
+         "@typescript-eslint/no-restricted-imports": "off",
       },
    },
    {
       // The Explorer's own files (see EXPLORER_FILES). Last, so it replaces the
-      // blocks above for them; the legacy fence still holds.
+      // blocks above for them.
       files: EXPLORER_FILES,
       rules: {
-         "no-restricted-imports": [
-            "error",
-            { patterns: [LEGACY_MALLOYNB_IMPORT] },
-         ],
+         "no-restricted-imports": "off",
          "@typescript-eslint/no-restricted-imports": "off",
          "no-restricted-syntax": "off",
       },
@@ -659,11 +609,8 @@ export default [
          "no-restricted-imports": [
             "error",
             {
-               paths: UNESCAPED_MALLOY_IMPORTS_BUT_STYLESHEET.paths,
-               patterns: [
-                  LEGACY_MALLOYNB_IMPORT,
-                  ...UNESCAPED_MALLOY_IMPORTS_BUT_STYLESHEET.patterns,
-               ],
+               paths: EXPLORER_PACKAGE_IMPORTS_BUT_STYLESHEET.paths,
+               patterns: EXPLORER_PACKAGE_IMPORTS_BUT_STYLESHEET.patterns,
             },
          ],
       },

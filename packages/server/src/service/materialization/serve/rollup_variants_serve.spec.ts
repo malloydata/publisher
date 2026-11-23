@@ -57,13 +57,13 @@ async function outcomeOf(
    };
 }
 
-describe("RollupVariantServe (colocated)", () => {
+describe("RollupVariantServe (database)", () => {
    let f: PersistedResultFixture;
    let tableId: string;
    beforeAll(async () => {
       f = await persistedResultFixture(MODEL);
       const planned = [...f.catalog.planned.values()].find(
-         (t) => t.origin === "preaggregate",
+         (t) => t.origin === "rollup",
       );
       if (!planned) throw new Error("no rollup planned");
       tableId = planned.sourceEntityId;
@@ -244,7 +244,7 @@ const STORAGE_MODEL = `##! experimental { persistence composite_sources }
 source: orders is duckdb.sql("""
   SELECT * FROM (VALUES (10, 'A', 'east'), (20, 'B', 'west')) AS t(amount, category, region)
 """) extend {
-  #(preaggregate) grain=["category"] storage="lake"
+  #(rollup) grain=["category"] storage="lake"
   measure: total is amount.sum()
 }
 `;
@@ -296,7 +296,7 @@ describe("RollupVariantServe (storage=)", () => {
       const pinned = pinnedOf([
          mine,
          { ...mine, kind: "persist" },
-         { ...mine, tier: "colocated" },
+         { ...mine, tier: "database" },
       ]);
       expect(f.rollups.rollupBindings(pinned, "bound")).toEqual([mine]);
       expect(f.rollups.rollupBindings(pinned, "fresh")).toEqual([mine]);
@@ -407,7 +407,7 @@ describe("RollupVariantServe (storage=)", () => {
             .filter(
                (call) =>
                   (call.args as unknown as [string])[0] ===
-                  "A #(preaggregate) rollup variant did not compile",
+                  "A #(rollup) rollup variant did not compile",
             );
          expect(compileWarnings.length).toBe(1);
       } finally {
@@ -420,13 +420,13 @@ const JOIN_MODEL = `source: segments is duckdb.sql("""
   select * from (values (10, 1, 'p', 2.0), (11, 1, 'q', 3.0)) as t(seg_id, flight_id, kind, miles)
 """) extend {
   primary_key: seg_id
-  #(preaggregate) grain=["flight_id"]
+  #(rollup) grain=["flight_id"]
   measure: seg_miles is miles.sum()
 }
 
 source: crew is duckdb.sql("select * from (values (1, 3)) as t(flight_id, size)") extend {
   primary_key: flight_id
-  #(preaggregate) grain=["flight_id"]
+  #(rollup) grain=["flight_id"]
   measure: crew_size is size.sum()
 }
 
@@ -442,7 +442,7 @@ source: flights is duckdb.sql("select * from (values (1, 'AA', 100)) as t(id, ca
  * P4-03 (F-14): a rollup with no `storage=` that a host instructed into a
  * storage destination (a database origin) is bound as a storage table, and
  * the binding decides the tier: it is read from the destination exactly as a
- * `storage=` rollup's is, never looked for in the colocated manifest.
+ * `storage=` rollup's is, never looked for in the database manifest.
  */
 describe("RollupVariantServe (a host-chosen destination, no storage=)", () => {
    let f: PersistedResultFixture;
@@ -590,7 +590,10 @@ describe("RollupVariantServe (a joined source's rollup, read through the join)",
       expect(
          await outcomeOf(
             attempt(query, {
-               segments: { parentKeys: { [flightsID]: false } },
+               segments: {
+                  parentKeys: { [flightsID]: false },
+                  parentKeyColumns: { [flightsID]: "id" },
+               },
             }),
          ),
       ).toMatchObject({
@@ -598,9 +601,29 @@ describe("RollupVariantServe (a joined source's rollup, read through the join)",
          detail:
             "the query source holds a value of its primary key `id` more than once or NULL, so a row of the rollup of `segments` would be read once per row that shares it",
       });
+      // A check of the key `flights` declared at build, not now, says nothing.
       expect(
          await outcomeOf(
-            attempt(query, { segments: { parentKeys: { [flightsID]: true } } }),
+            attempt(query, {
+               segments: {
+                  parentKeys: { [flightsID]: true },
+                  parentKeyColumns: { [flightsID]: "old_id" },
+               },
+            }),
+         ),
+      ).toMatchObject({
+         code: "rollup_count_semantics",
+         detail:
+            "the query source's primary key `id` was not checked unique and never NULL when the rollup of `segments` was built, so a row of it could be read once per row that shares it",
+      });
+      expect(
+         await outcomeOf(
+            attempt(query, {
+               segments: {
+                  parentKeys: { [flightsID]: true },
+                  parentKeyColumns: { [flightsID]: "id" },
+               },
+            }),
          ),
       ).toMatchObject({
          code: "rollup_count_semantics",
@@ -608,7 +631,10 @@ describe("RollupVariantServe (a joined source's rollup, read through the join)",
             "`segments`'s primary key `seg_id` was not checked unique and never NULL when its rollup was built, and live counts and sums `segments.seg_miles` once per non-NULL key where its rollup reads every row",
       });
       const answer = await attempt(query, {
-         segments: { parentKeys: { [flightsID]: true, [segmentsID]: true } },
+         segments: {
+            parentKeys: { [flightsID]: true, [segmentsID]: true },
+            parentKeyColumns: { [flightsID]: "id", [segmentsID]: "seg_id" },
+         },
       });
       expect(answer.rollupSourceName).toStartWith("segments__rollup__");
    });
@@ -635,5 +661,62 @@ describe("RollupVariantServe (a joined source's rollup, read through the join)",
             ),
          ),
       ).toEqual({ name: "NoRollupForQuery", detail: "no rollup" });
+   });
+});
+
+const FOLDED_MODEL = `##! experimental { persistence composite_sources }
+source: trips_named is duckdb.sql("select * from (values (1, 1)) as t(trip_id, station_id)") extend {
+  primary_key: trip_id
+  #(rollup) grain=["station_id"] name="scratch.trips_by_station"
+  measure: trip_count is count()
+}
+
+source: trips_default is duckdb.sql("select * from (values (1, 1)) as t(trip_id, station_id)") extend {
+  primary_key: trip_id
+  #(rollup) grain=["station_id"]
+  measure: trip_count is count()
+}
+`;
+
+/**
+ * Campaign R-01: two rollups of one build placed apart are two addresses that
+ * Malloy files under one key. The moved one is read under that key, also
+ * when the manifest holds no entry at the key (its twin stored elsewhere, or
+ * not built), where before its compile recomputed and it read as NOT_BUILT.
+ */
+describe("RollupVariantServe (a rollup whose address is not Malloy's key)", () => {
+   let f: PersistedResultFixture;
+   let named: { sourceEntityId: string; compilerKey?: string };
+   beforeAll(async () => {
+      f = await persistedResultFixture(FOLDED_MODEL);
+      const found = [...f.catalog.planned.values()].find((t) =>
+         t.name.startsWith("trips_named__rollup__"),
+      );
+      if (!found) throw new Error("no rollup of trips_named planned");
+      named = found;
+   });
+   afterAll(async () => {
+      await f?.cleanup();
+   });
+
+   it("answers from its own table with only its own entry bound", async () => {
+      expect(named.compilerKey).toBeDefined();
+      expect(named.compilerKey).not.toBe(named.sourceEntityId);
+      const query =
+         "run: trips_named -> { group_by: station_id; aggregate: trip_count }";
+      const entries = {
+         [named.sourceEntityId]: { tableName: "named_rollup_t" },
+      };
+      const answer = await f.rollups.attempt({
+         queryString: query,
+         givens: undefined,
+         authorRunnable: f.materializer.loadQuery(query),
+         pinned: pinnedOf([], entries as never),
+      });
+      expect(answer.databaseTablePath).toBe("named_rollup_t");
+      expect(answer.keyedTable).toEqual({
+         tableId: named.sourceEntityId,
+         compilerKey: named.compilerKey!,
+      });
    });
 });

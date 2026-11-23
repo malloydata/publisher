@@ -70,7 +70,8 @@ export function withReferenceTable(doc: string): string {
 /**
  * `publisher.config.json.example`: every setting the file can hold, at its
  * key, with its default, so a copy of it changes nothing. A launch setting is
- * left out, since it decides which file is read. `null`, which the file reads
+ * left out, since it decides which file is read, and a temporary one, so no
+ * copy comes to depend on it. `null`, which the file reads
  * as unset, stands where the default is unset, follows another setting
  * (`mcp.host`), or is a secret's, which the file can give only as a `${VAR}`
  * reference. It also stands for a setting another default follows (`host`,
@@ -93,7 +94,9 @@ export function exampleConfig(): Record<string, unknown> {
    const example: Record<string, unknown> = {};
    for (const entry of REGISTRY) {
       const block = validatedBlockOf(entry.key);
-      if (entry.kind === "launch" || block === entry.key) continue;
+      if (entry.kind === "launch" || entry.temporary || block === entry.key) {
+         continue;
+      }
       const fallback = entry.default;
       const value =
          entry.secret ||

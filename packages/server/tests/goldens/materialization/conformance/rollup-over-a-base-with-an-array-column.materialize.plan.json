@@ -121,7 +121,7 @@
         "freshness": null,
         "modelPath": "m.malloy",
         "name": "listed__rollup__g__ab53ae01",
-        "origin": "preaggregate",
+        "origin": "rollup",
         "preaggregate": {
           "baseSourceName": "listed",
           "grainDimensions": [

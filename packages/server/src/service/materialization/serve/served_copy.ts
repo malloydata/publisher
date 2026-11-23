@@ -111,7 +111,7 @@ export interface Reroot {
    zone?: string;
    /**
     * The stored table's columns, under the author's spelling (a hidden one
-    * with its access modifier, P3), each with
+    * with its access modifier), each with
     * the annotation lines its field carries (`#(doc) "…"`, `#(classification)
     * …`), written on the field in the `type:` so they read back on it.
     */
@@ -144,9 +144,9 @@ export interface Reroot {
    /**
     * The trailing `extend` runs of the bases the source is built from in this
     * file, root first, as their own declarations wrote them
-    * (kept_ancestors.ts). For an extension table (P10), whose table holds
+    * (kept_ancestors.ts). For an extension table, whose table holds
     * every one of their rows and stored columns, and for a source whose bases
-    * declare a measure, view or join it inherits (G8). The re-root keeps their
+    * declare a measure, view or join it inherits. The re-root keeps their
     * blocks ahead of its own, and their measures, joins and views stay the
     * source's.
     */
@@ -185,7 +185,7 @@ export interface Reroot {
    refinementRooted?: true;
    /**
     * For a `#(materialize)` source that inlines a join_many: its stored table
-    * is a pair table (P5), read as the source itself with no join
+    * is a pair table, read as the source itself with no join
     * ({@link PairReroot}).
     */
    pair?: PairReroot;
@@ -197,7 +197,7 @@ export interface Reroot {
    inlinedJoins?: readonly InlinedJoin[];
    /**
     * The hidden dimensions the kept text defines, computed at read rather
-    * than read from a stored column (set by the rewriter, P3). A rolling
+    * than read from a stored column (set by the rewriter). A rolling
     * window over one cannot be written on the stored table, where it is not
     * yet defined: the kept text's own `where:` applies it
     * ({@link ServedCopySpan.termsKeptAsWritten}).
@@ -206,7 +206,7 @@ export interface Reroot {
 }
 
 /**
- * How the served copy reads a pair table (an inlined join_many, P5): as the
+ * How the served copy reads a pair table (an inlined join_many): as the
  * source itself, one row per row of live's LEFT JOIN, with no join at read.
  * The join's name is a record of the joined source's stored columns, so
  * `<join>.<field>` reads the column on the same row; the join_many statement
@@ -296,7 +296,7 @@ export interface PairReroot {
    block?: PairBlockReroot;
    /**
     * The join_many's access modifier on the author's source, when it is not
-    * public (known limitation 24), read off the author's compiled source. The
+    * public, read off the author's compiled source. The
     * record is declared under it in place of the join_many statement, and
     * the stored columns it reads (every level of a path) are renamed
     * `private` in that same block, the only one that reads them, so a caller
@@ -412,7 +412,7 @@ export interface ServedColumn {
    notes?: readonly string[];
    /**
     * The access modifier the author's source gives the field, when it is not
-    * public (P3). The re-root writes it again on the stored table,
+    * public. The re-root writes it again on the stored table,
     * `include { public: *; private: org_id }`, so a caller cannot select the
     * column, and the source's own `extend` reads it as it read the field.
     */
@@ -429,7 +429,7 @@ export interface ServedColumn {
    timeframe?: string;
    /**
     * The native SQL type the stored column is read through (`HUGEINT`), for a
-    * big-integer field (`bigIntegerReads`, known limitation 12): a `type:`
+    * big-integer field (`bigIntegerReads`): a `type:`
     * field can only be a `number`, which Malloy reads through a JavaScript
     * number and rounds above 2^53, so the column is renamed internally, as a
     * timeframe column is, and the field redefined as it cast to that type,
@@ -592,11 +592,7 @@ interface RerootRefusal {
     * not keep, or the `include { … }` it keeps hides a column its table does
     * not store ({@link hiddenUnstored}).
     */
-   reason:
-      | "range_not_found"
-      | "definition_not_parsed"
-      | "not_query_shaped"
-      | "pair_join_not_found";
+   reason: "definition_not_parsed" | "not_query_shaped" | "pair_join_not_found";
    /**
     * With `definition_not_parsed`: the columns the declaration's kept
     * `include { … }` hides that its table does not store.
@@ -639,7 +635,7 @@ export const SERVED_COPY_FLAG = "##! experimental { virtual_source }";
 
 /**
  * The flag for a served copy that writes access modifiers again on a stored
- * table (P3): `include { … }` needs `access_modifiers` too.
+ * table: `include { … }` needs `access_modifiers` too.
  */
 export const SERVED_COPY_ACCESS_FLAG =
    "##! experimental { virtual_source access_modifiers }";
@@ -669,7 +665,7 @@ export function buildServedCopy(
             refused.push({
                sourceName: r.sourceName,
                url,
-               reason: "range_not_found",
+               reason: "definition_not_parsed",
             });
          }
          continue;
@@ -696,7 +692,7 @@ export function buildServedCopy(
             refused.push({
                sourceName: r.sourceName,
                url,
-               reason: "range_not_found",
+               reason: "definition_not_parsed",
             });
             continue;
          }
@@ -757,7 +753,7 @@ export function buildServedCopy(
             spans &&
             // Without the pair it re-roots: what failed is the pair's join,
             // not the declaration (an inverse rename block behind an
-            // include, known limitation 30, fails either way).
+            // include, fails either way).
             rerootDeclaration(declaration, {
                ...effective,
                pair: undefined,
@@ -818,7 +814,7 @@ export function buildServedCopy(
 /**
  * The re-root with each hidden stored dimension the kept text defines (the
  * declaration's own trailing `extend`, and for an extension table the kept
- * blocks of its ancestors, P10) left to that definition (P3): its column is left
+ * blocks of its ancestors) left to that definition: its column is left
  * out of the `type:` and its definition is kept as written, access modifier
  * and all, and computed at read from the stored columns it reads. Dropping
  * it instead would leave the stored column in its place, public. A hidden
@@ -842,7 +838,7 @@ function keepHiddenDefinitions(
       spans.extendStart === undefined
          ? ""
          : declaration.slice(spans.extendStart);
-   // Every block the re-root keeps: an extension table's ancestors' (P10),
+   // Every block the re-root keeps: an extension table's ancestors',
    // then its own. A hidden dimension an ancestor's kept block defines is
    // kept as that block wrote it, as one the source's own block defines is.
    const extend = [r.keptBlocks?.trim() ?? "", own].filter(Boolean).join(" ");
@@ -865,7 +861,7 @@ function keepHiddenDefinitions(
 
 /**
  * The `include { … }` that writes the author's access modifiers again on the
- * stored table's hidden columns (P3), or "" when it has none. Every other
+ * stored table's hidden columns, or "" when it has none. Every other
  * column stays public (`public: *`; an `include` makes what it does not list
  * private). It sits just before the author's own `extend`, which reads a
  * field the `include` hides as it read the field on the author's source.
@@ -997,8 +993,8 @@ export function rerootDeclaration(
       ...joinRenames,
    ];
    // The author's access modifiers written again on the stored hidden
-   // columns (P3), on the stored table under its stored names, so before the
-   // inverse renames and every kept block (an ancestor's, P10, and the
+   // columns, on the stored table under its stored names, so before the
+   // inverse renames and every kept block (an ancestor's, and the
    // author's own), which read them as they read the author's fields. Only a
    // hidden column kept under its own name needs that `include`: when the
    // re-root writes one, every internal name is renamed ahead of it and the
@@ -1048,8 +1044,8 @@ export function rerootDeclaration(
       }
       if (replaced === undefined) return undefined;
       // Behind an include, the pair's renames go ahead of it with the
-      // others (Malloy refuses a rename in the block just after an include,
-      // known limitation 30), and the include hides each internally.
+      // others (Malloy refuses a rename in the block just after an include),
+      // and the include hides each internally.
       if (ahead) {
          generated.push(
             ...pairStoredColumns(r.pair).map((c) => ({
@@ -1387,7 +1383,7 @@ function readTimeTermText(term: MaterializeReadTimeTerm): string | undefined {
             term.window.offset,
          );
       case "given":
-         // Kept, not written: a given-reading term (P2) is in the
+         // Kept, not written: a given-reading term is in the
          // declaration's own trailing `extend` or a kept base's
          // (`keptBlocks`), which the re-root keeps as the author wrote it (the
          // build generator takes a term out only there).
@@ -1467,7 +1463,7 @@ function timeframedColumns(
 function timeframeExpression(c: Timeframed): string {
    const stored = identifier(c.internalName);
    // A big-integer column read as its native type, which Malloy types as a
-   // `bigint` number (known limitation 12).
+   // `bigint` number.
    if (c.nativeCast) return `${stored}::${doubleQuotedString(c.nativeCast)}`;
    const read =
       c.castTo === "date"

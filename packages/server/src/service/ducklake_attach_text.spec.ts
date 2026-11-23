@@ -25,6 +25,7 @@ import {
    attachDuckLakeReadOnlyIfPresent,
    attachDuckLakeReadWrite,
 } from "./connection";
+import { pgAttachSecretName } from "./postgres_conninfo";
 
 let restoreSettings: () => void;
 beforeAll(() => {
@@ -52,7 +53,17 @@ function recorder(answer: (sql: string) => Rows = () => []): {
          return { rows, totalRows: rows.length };
       },
    } as unknown as DuckDBConnection;
-   return { conn, statements: () => sql.map(normalize) };
+   return {
+      conn,
+      statements: () => {
+         const all = sql.map(normalize);
+         // The catalog's password appears in its secret and nowhere else.
+         expect(
+            all.filter((q) => q.includes("test-password") && q !== PG_SECRET),
+         ).toEqual([]);
+         return all;
+      },
+   };
 }
 
 function normalize(sql: string): string {
@@ -90,10 +101,28 @@ const S3 = {
 };
 const GCS = { keyId: "GOOGTESTKEY", secret: "test-gcs-secret" };
 
+// The attach path: the catalog's user and password are in its secret.
 const CONNINFO_VERIFY_FULL =
-   "host=catalog.test port=5433 dbname=lakemeta user=lake_user password=test-password sslmode=verify-full sslrootcert=<ambient-bundle>";
+   "host=catalog.test port=5433 dbname=lakemeta sslmode=verify-full sslrootcert=<ambient-bundle>";
 const CONNINFO_DISABLE =
-   "host=catalog.test port=5433 dbname=lakemeta user=lake_user password=test-password sslmode=disable";
+   "host=catalog.test port=5433 dbname=lakemeta sslmode=disable";
+
+/** The catalog's credential, created before anything attaches. */
+const PG_SECRET_NAME = pgAttachSecretName("lake");
+const PG_SECRET = `CREATE OR REPLACE TEMPORARY SECRET ${PG_SECRET_NAME} (TYPE postgres, USER 'lake_user', PASSWORD 'test-password');`;
+/** How the DuckLake ATTACH names that secret for its metadata catalog. */
+const META_SECRET = `METADATA_PARAMETERS MAP {'SECRET': '${PG_SECRET_NAME}'}`;
+
+/**
+ * After every httpfs load: the AWS_* keys httpfs seeds blanked, and the global
+ * S3 fallback off (duckdb_lockdown.ts).
+ */
+const HTTPFS_AMBIENT_OFF = [
+   "SET GLOBAL enable_global_s3_configuration=false",
+   "SET GLOBAL s3_access_key_id=''",
+   "SET GLOBAL s3_secret_access_key=''",
+   "SET GLOBAL s3_session_token=''",
+];
 
 /** Extension policy and the explicit DuckLake stack, before every attach. */
 const EXTENSIONS = [
@@ -107,6 +136,7 @@ const EXTENSIONS = [
    "LOAD aws;",
    "INSTALL httpfs;",
    "LOAD httpfs;",
+   ...HTTPFS_AMBIENT_OFF,
 ];
 /** Before an S3 credential reaches anything: no ambient AWS_* fallback. */
 const S3_GLOBAL_OFF = "SET GLOBAL enable_global_s3_configuration=false";
@@ -115,7 +145,8 @@ const S3_GLOBAL_OFF = "SET GLOBAL enable_global_s3_configuration=false";
 function preflight(conninfo: string, metadataSchema?: string): string[] {
    const alias = `"lake_fmt_preflight_N"`;
    return [
-      `ATTACH '${conninfo}' AS ${alias} (TYPE postgres, READ_ONLY);`,
+      PG_SECRET,
+      `ATTACH '${conninfo}' AS ${alias} (TYPE postgres, READ_ONLY, SECRET ${PG_SECRET_NAME});`,
       ...(metadataSchema
          ? [
               `SELECT count(*) AS n FROM duckdb_tables() WHERE database_name = 'lake_fmt_preflight_N' AND schema_name = '${metadataSchema}' AND table_name = 'ducklake_metadata';`,
@@ -133,6 +164,7 @@ function s3Secret(scope: string): string[] {
    return [
       "INSTALL httpfs;",
       "LOAD httpfs;",
+      ...HTTPFS_AMBIENT_OFF,
       "SELECT COUNT(*) AS count FROM duckdb_secrets() WHERE name = 'secret_s3_lake_storage';",
       `CREATE OR REPLACE SECRET secret_s3_lake_storage ( TYPE s3, KEY_ID 'AKIATESTKEY', SECRET 'test-secret-key', REGION 'us-east-1', SCOPE '${scope}' );`,
    ];
@@ -142,6 +174,7 @@ function gcsSecret(scope: string): string[] {
    return [
       "INSTALL httpfs;",
       "LOAD httpfs;",
+      ...HTTPFS_AMBIENT_OFF,
       "SELECT COUNT(*) AS count FROM duckdb_secrets() WHERE name = 'secret_gcs_lake_storage';",
       `CREATE OR REPLACE SECRET secret_gcs_lake_storage ( TYPE gcs, KEY_ID 'GOOGTESTKEY', SECRET 'test-gcs-secret', SCOPE '${scope}' );`,
    ];
@@ -166,8 +199,10 @@ describe("the DuckLake ATTACH text: a Postgres catalog with a metadata schema an
          S3_GLOBAL_OFF,
          ...preflight(CONNINFO_VERIFY_FULL, "lake_meta"),
          attach(
-            "DATA_PATH 's3://test-bucket/lake', OVERRIDE_DATA_PATH true, METADATA_SCHEMA 'lake_meta'",
+            `DATA_PATH 's3://test-bucket/lake', OVERRIDE_DATA_PATH true, METADATA_SCHEMA 'lake_meta', ${META_SECRET}`,
          ),
+         // The inlining limit the catalog records (ducklake_inlining.ts): a read.
+         'SELECT key, value FROM "__ducklake_metadata_lake"."lake_meta".ducklake_metadata WHERE scope IS NULL',
          ...s3Secret("s3://test-bucket/lake/"),
       ]);
    });
@@ -180,8 +215,10 @@ describe("the DuckLake ATTACH text: a Postgres catalog with a metadata schema an
          S3_GLOBAL_OFF,
          ...preflight(CONNINFO_VERIFY_FULL, "lake_meta"),
          attach(
-            "DATA_PATH 's3://test-bucket/lake', OVERRIDE_DATA_PATH true, READ_ONLY true, METADATA_SCHEMA 'lake_meta'",
+            `DATA_PATH 's3://test-bucket/lake', OVERRIDE_DATA_PATH true, READ_ONLY true, METADATA_SCHEMA 'lake_meta', ${META_SECRET}`,
          ),
+         // The inlining limit the catalog records (ducklake_inlining.ts): a read.
+         'SELECT key, value FROM "__ducklake_metadata_lake"."lake_meta".ducklake_metadata WHERE scope IS NULL',
          ...s3Secret("s3://test-bucket/lake/"),
       ]);
    });
@@ -196,8 +233,10 @@ describe("the DuckLake ATTACH text: a Postgres catalog with a metadata schema an
          S3_GLOBAL_OFF,
          ...preflight(CONNINFO_VERIFY_FULL, "lake_meta"),
          attach(
-            "DATA_PATH 's3://test-bucket/lake', OVERRIDE_DATA_PATH true, READ_ONLY true, METADATA_SCHEMA 'lake_meta'",
+            `DATA_PATH 's3://test-bucket/lake', OVERRIDE_DATA_PATH true, READ_ONLY true, METADATA_SCHEMA 'lake_meta', ${META_SECRET}`,
          ),
+         // The inlining limit the catalog records (ducklake_inlining.ts): a read.
+         'SELECT key, value FROM "__ducklake_metadata_lake"."lake_meta".ducklake_metadata WHERE scope IS NULL',
          ...s3Secret("s3://test-bucket/lake/"),
       ]);
    });
@@ -210,7 +249,8 @@ describe("the DuckLake ATTACH text: a Postgres catalog with a metadata schema an
       expect(r.statements()).toEqual([
          ...EXTENSIONS,
          S3_GLOBAL_OFF,
-         `ATTACH '${CONNINFO_VERIFY_FULL}' AS "lake_fmt_preflight_N" (TYPE postgres, READ_ONLY);`,
+         PG_SECRET,
+         `ATTACH '${CONNINFO_VERIFY_FULL}' AS "lake_fmt_preflight_N" (TYPE postgres, READ_ONLY, SECRET ${PG_SECRET_NAME});`,
          "SELECT count(*) AS n FROM duckdb_tables() WHERE database_name = 'lake_fmt_preflight_N' AND schema_name = 'lake_meta' AND table_name = 'ducklake_metadata';",
          'DETACH "lake_fmt_preflight_N";',
       ]);
@@ -229,7 +269,8 @@ describe("the DuckLake ATTACH text: a Postgres catalog with no metadata schema a
       expect(r.statements()).toEqual([
          ...EXTENSIONS,
          ...preflight(CONNINFO_VERIFY_FULL),
-         `ATTACH OR REPLACE 'ducklake:postgres:${CONNINFO_VERIFY_FULL}' AS "lake" (DATA_PATH 'gs://test-bucket/lake/', OVERRIDE_DATA_PATH true);`,
+         `ATTACH OR REPLACE 'ducklake:postgres:${CONNINFO_VERIFY_FULL}' AS "lake" (DATA_PATH 'gs://test-bucket/lake/', OVERRIDE_DATA_PATH true, ${META_SECRET});`,
+         'SELECT key, value FROM "__ducklake_metadata_lake".ducklake_metadata WHERE scope IS NULL',
          ...gcsSecret("gs://test-bucket/lake/"),
       ]);
    });
@@ -240,7 +281,8 @@ describe("the DuckLake ATTACH text: a Postgres catalog with no metadata schema a
       expect(r.statements()).toEqual([
          ...EXTENSIONS,
          ...preflight(CONNINFO_VERIFY_FULL),
-         `ATTACH OR REPLACE 'ducklake:postgres:${CONNINFO_VERIFY_FULL}' AS "lake" (DATA_PATH 'gs://test-bucket/lake/', OVERRIDE_DATA_PATH true, READ_ONLY true);`,
+         `ATTACH OR REPLACE 'ducklake:postgres:${CONNINFO_VERIFY_FULL}' AS "lake" (DATA_PATH 'gs://test-bucket/lake/', OVERRIDE_DATA_PATH true, READ_ONLY true, ${META_SECRET});`,
+         'SELECT key, value FROM "__ducklake_metadata_lake".ducklake_metadata WHERE scope IS NULL',
          ...gcsSecret("gs://test-bucket/lake/"),
       ]);
    });
@@ -253,7 +295,8 @@ describe("the DuckLake ATTACH text: a Postgres catalog with no metadata schema a
       expect(r.statements()).toEqual([
          ...EXTENSIONS,
          ...preflight(CONNINFO_VERIFY_FULL),
-         `ATTACH OR REPLACE 'ducklake:postgres:${CONNINFO_VERIFY_FULL}' AS "lake" (DATA_PATH 'gs://test-bucket/lake/', OVERRIDE_DATA_PATH true, READ_ONLY true);`,
+         `ATTACH OR REPLACE 'ducklake:postgres:${CONNINFO_VERIFY_FULL}' AS "lake" (DATA_PATH 'gs://test-bucket/lake/', OVERRIDE_DATA_PATH true, READ_ONLY true, ${META_SECRET});`,
+         'SELECT key, value FROM "__ducklake_metadata_lake".ducklake_metadata WHERE scope IS NULL',
          ...gcsSecret("gs://test-bucket/lake/"),
       ]);
    });
@@ -268,7 +311,10 @@ describe("the DuckLake ATTACH text: no configured data path", () => {
       expect(r.statements()).toEqual([
          ...EXTENSIONS,
          ...preflight(CONNINFO_DISABLE),
-         `ATTACH OR REPLACE 'ducklake:postgres:${CONNINFO_DISABLE}' AS "lake" (CREATE_IF_NOT_EXISTS false);`,
+         `ATTACH OR REPLACE 'ducklake:postgres:${CONNINFO_DISABLE}' AS "lake" (CREATE_IF_NOT_EXISTS false, ${META_SECRET});`,
+         'SELECT key, value FROM "__ducklake_metadata_lake".ducklake_metadata WHERE scope IS NULL',
+         // The recorded data path, which the lock allows (duckdb_lockdown.ts).
+         `SELECT key, value FROM "__ducklake_metadata_lake".ducklake_metadata WHERE scope IS NULL`,
       ]);
    });
 
@@ -280,7 +326,10 @@ describe("the DuckLake ATTACH text: no configured data path", () => {
       expect(r.statements()).toEqual([
          ...EXTENSIONS,
          ...preflight(CONNINFO_DISABLE),
-         `ATTACH OR REPLACE 'ducklake:postgres:${CONNINFO_DISABLE}' AS "lake" (READ_ONLY true);`,
+         `ATTACH OR REPLACE 'ducklake:postgres:${CONNINFO_DISABLE}' AS "lake" (READ_ONLY true, ${META_SECRET});`,
+         'SELECT key, value FROM "__ducklake_metadata_lake".ducklake_metadata WHERE scope IS NULL',
+         // The recorded data path, which the lock allows (duckdb_lockdown.ts).
+         `SELECT key, value FROM "__ducklake_metadata_lake".ducklake_metadata WHERE scope IS NULL`,
       ]);
    });
 
@@ -301,7 +350,8 @@ describe("the DuckLake ATTACH text: no configured data path", () => {
          ...EXTENSIONS,
          S3_GLOBAL_OFF,
          ...preflight(CONNINFO_DISABLE, "lake_meta"),
-         `ATTACH OR REPLACE 'ducklake:postgres:${CONNINFO_DISABLE}' AS "lake" (CREATE_IF_NOT_EXISTS false, METADATA_SCHEMA 'lake_meta');`,
+         `ATTACH OR REPLACE 'ducklake:postgres:${CONNINFO_DISABLE}' AS "lake" (CREATE_IF_NOT_EXISTS false, METADATA_SCHEMA 'lake_meta', ${META_SECRET});`,
+         'SELECT key, value FROM "__ducklake_metadata_lake"."lake_meta".ducklake_metadata WHERE scope IS NULL',
          'SELECT key, value FROM "__ducklake_metadata_lake"."lake_meta".ducklake_metadata WHERE scope IS NULL',
          ...s3Secret("s3://test-bucket/recorded/"),
       ]);
@@ -318,8 +368,10 @@ describe("the DuckLake ATTACH text: no configured data path", () => {
             storage: { s3Connection: S3 },
          } as DucklakeConnection),
       ).rejects.toThrow(/No storage secret could be scoped/);
-      expect(r.statements().slice(-3)).toEqual([
-         `ATTACH OR REPLACE 'ducklake:postgres:${CONNINFO_DISABLE}' AS "lake" (CREATE_IF_NOT_EXISTS false, METADATA_SCHEMA 'lake_meta');`,
+      expect(r.statements().slice(-4)).toEqual([
+         `ATTACH OR REPLACE 'ducklake:postgres:${CONNINFO_DISABLE}' AS "lake" (CREATE_IF_NOT_EXISTS false, METADATA_SCHEMA 'lake_meta', ${META_SECRET});`,
+         // The inlining limit the catalog records (ducklake_inlining.ts): a read.
+         'SELECT key, value FROM "__ducklake_metadata_lake"."lake_meta".ducklake_metadata WHERE scope IS NULL',
          'SELECT key, value FROM "__ducklake_metadata_lake"."lake_meta".ducklake_metadata WHERE scope IS NULL',
          'DETACH "lake";',
       ]);

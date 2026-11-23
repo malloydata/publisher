@@ -124,7 +124,7 @@
         "freshness": null,
         "modelPath": "pu.malloy",
         "name": "orders__rollup__category_qty__f372ae9d",
-        "origin": "preaggregate",
+        "origin": "rollup",
         "preaggregate": {
           "baseSourceName": "orders",
           "grainDimensions": [
@@ -136,6 +136,12 @@
           ]
         },
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.pu_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "1617c9e023a20383d7cdf30ed898350020ea2562b0b5e17b9ce4035d6e9af9f9",
         "sourceID": "orders__rollup__category_qty__f372ae9d@<hammer>/pu/pu.malloy.preaggregate.malloy",

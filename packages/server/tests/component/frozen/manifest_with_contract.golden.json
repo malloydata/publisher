@@ -1,0 +1,668 @@
+{
+   "_comment": "Entries a build of this server wrote (DuckDB database tier: #@ persist, #(materialize), a pair table, a persisted view; Postgres with a DuckLake storage= destination), frozen for mixed_version_manifest.component.spec.ts. Regenerate only when what a build writes changes on purpose.",
+   "entries": {
+      "5aecc37b3c85cd8a4483442e35cf4b5e9419f592e32cf018b77de21f2038b5a9": {
+         "sourceEntityId": "5aecc37b3c85cd8a4483442e35cf4b5e9419f592e32cf018b77de21f2038b5a9",
+         "sourceName": "orders",
+         "materializedTableId": "local-5aecc37b3c85",
+         "physicalTableName": "pkg__m__orders__p51c80782",
+         "connectionName": "warehouse",
+         "realization": "COPY",
+         "rowCount": null,
+         "buildDurationMs": 5,
+         "queryCostBytes": null,
+         "schema": [
+            {
+               "name": "id",
+               "type": "BIGINT"
+            },
+            {
+               "name": "cat",
+               "type": "VARCHAR"
+            },
+            {
+               "name": "amount",
+               "type": "DOUBLE"
+            },
+            {
+               "name": "items__item_id",
+               "type": "BIGINT"
+            },
+            {
+               "name": "items__order_id",
+               "type": "BIGINT"
+            },
+            {
+               "name": "__parent_row",
+               "type": "BOOLEAN"
+            }
+         ],
+         "nativeSchema": [
+            {
+               "name": "id",
+               "type": "INTEGER"
+            },
+            {
+               "name": "cat",
+               "type": "VARCHAR"
+            },
+            {
+               "name": "amount",
+               "type": "DECIMAL(10,1)"
+            },
+            {
+               "name": "items__item_id",
+               "type": "INTEGER"
+            },
+            {
+               "name": "items__order_id",
+               "type": "INTEGER"
+            },
+            {
+               "name": "__parent_row",
+               "type": "BOOLEAN"
+            }
+         ],
+         "contract": {
+            "v": 1,
+            "producer": "0.17.2",
+            "dialect": "duckdb",
+            "columns": [
+               {
+                  "name": "id",
+                  "nativeType": "INTEGER",
+                  "collation": null,
+                  "compare": "exact",
+                  "gateExact": true,
+                  "declaredType": "number"
+               },
+               {
+                  "name": "cat",
+                  "nativeType": "VARCHAR",
+                  "collation": "binary",
+                  "compare": "exact",
+                  "gateExact": true,
+                  "declaredType": "string"
+               },
+               {
+                  "name": "amount",
+                  "nativeType": "DECIMAL(10,1)",
+                  "collation": null,
+                  "compare": "exact",
+                  "gateExact": true,
+                  "declaredType": "number"
+               },
+               {
+                  "name": "items__item_id",
+                  "nativeType": "INTEGER",
+                  "collation": null,
+                  "compare": "exact",
+                  "gateExact": true,
+                  "declaredType": "number"
+               },
+               {
+                  "name": "items__order_id",
+                  "nativeType": "INTEGER",
+                  "collation": null,
+                  "compare": "exact",
+                  "gateExact": true,
+                  "declaredType": "number"
+               },
+               {
+                  "name": "__parent_row",
+                  "nativeType": "BOOLEAN",
+                  "collation": null,
+                  "compare": "exact",
+                  "gateExact": true,
+                  "declaredType": "boolean"
+               }
+            ],
+            "keys": {
+               "leaf:items.item_id": {
+                  "unique": true,
+                  "level": "leaf"
+               }
+            }
+         },
+         "upstreamSchemas": [
+            {
+               "connectionName": "warehouse",
+               "table": "main.mv_items",
+               "columns": [
+                  {
+                     "name": "item_id",
+                     "nativeType": "INTEGER"
+                  },
+                  {
+                     "name": "order_id",
+                     "nativeType": "INTEGER"
+                  }
+               ],
+               "dialect": "duckdb"
+            },
+            {
+               "connectionName": "warehouse",
+               "table": "main.mv_orders",
+               "columns": [
+                  {
+                     "name": "id",
+                     "nativeType": "INTEGER"
+                  },
+                  {
+                     "name": "cat",
+                     "nativeType": "VARCHAR"
+                  },
+                  {
+                     "name": "amount",
+                     "nativeType": "DECIMAL(10,1)"
+                  }
+               ],
+               "dialect": "duckdb"
+            }
+         ],
+         "builtAt": "2026-11-23T03:59:49.316Z"
+      },
+      "a0aab12a36af8347222a27a059326fdf6e182111f3427e1260d4bd535a3a5664": {
+         "sourceEntityId": "a0aab12a36af8347222a27a059326fdf6e182111f3427e1260d4bd535a3a5664",
+         "sourceName": "plain",
+         "materializedTableId": "local-a0aab12a36af",
+         "physicalTableName": "pkg__m__plain__p2bdfc98e",
+         "connectionName": "warehouse",
+         "realization": "COPY",
+         "rowCount": null,
+         "buildDurationMs": 3,
+         "queryCostBytes": null,
+         "schema": [
+            {
+               "name": "id",
+               "type": "BIGINT"
+            },
+            {
+               "name": "cat",
+               "type": "VARCHAR"
+            },
+            {
+               "name": "amount",
+               "type": "DOUBLE"
+            },
+            {
+               "name": "cat2",
+               "type": "VARCHAR"
+            }
+         ],
+         "nativeSchema": [
+            {
+               "name": "id",
+               "type": "INTEGER"
+            },
+            {
+               "name": "cat",
+               "type": "VARCHAR"
+            },
+            {
+               "name": "amount",
+               "type": "DECIMAL(10,1)"
+            },
+            {
+               "name": "cat2",
+               "type": "VARCHAR"
+            }
+         ],
+         "contract": {
+            "v": 1,
+            "producer": "0.17.2",
+            "dialect": "duckdb",
+            "columns": [
+               {
+                  "name": "id",
+                  "nativeType": "INTEGER",
+                  "collation": null,
+                  "compare": "exact",
+                  "gateExact": true,
+                  "declaredType": "number"
+               },
+               {
+                  "name": "cat",
+                  "nativeType": "VARCHAR",
+                  "collation": "binary",
+                  "compare": "exact",
+                  "gateExact": true,
+                  "declaredType": "string"
+               },
+               {
+                  "name": "amount",
+                  "nativeType": "DECIMAL(10,1)",
+                  "collation": null,
+                  "compare": "exact",
+                  "gateExact": true,
+                  "declaredType": "number"
+               },
+               {
+                  "name": "cat2",
+                  "nativeType": "VARCHAR",
+                  "collation": "binary",
+                  "compare": "exact",
+                  "gateExact": true,
+                  "declaredType": "string"
+               }
+            ]
+         },
+         "upstreamSchemas": [
+            {
+               "connectionName": "warehouse",
+               "table": "main.mv_orders",
+               "columns": [
+                  {
+                     "name": "id",
+                     "nativeType": "INTEGER"
+                  },
+                  {
+                     "name": "cat",
+                     "nativeType": "VARCHAR"
+                  },
+                  {
+                     "name": "amount",
+                     "nativeType": "DECIMAL(10,1)"
+                  }
+               ],
+               "dialect": "duckdb"
+            }
+         ],
+         "builtAt": "2026-11-23T03:59:49.322Z"
+      },
+      "c6c25c072e081ffb3ad2baf129d53027c15789e94ca26383f8591502125d746d": {
+         "sourceEntityId": "c6c25c072e081ffb3ad2baf129d53027c15789e94ca26383f8591502125d746d",
+         "sourceName": "daily",
+         "materializedTableId": "local-c6c25c072e08",
+         "physicalTableName": "main.mv_daily",
+         "connectionName": "warehouse",
+         "realization": "COPY",
+         "rowCount": null,
+         "buildDurationMs": 2,
+         "queryCostBytes": null,
+         "schema": [
+            {
+               "name": "cat",
+               "type": "VARCHAR"
+            },
+            {
+               "name": "total",
+               "type": "DOUBLE"
+            }
+         ],
+         "nativeSchema": [
+            {
+               "name": "cat",
+               "type": "VARCHAR"
+            },
+            {
+               "name": "total",
+               "type": "DECIMAL(38,1)"
+            }
+         ],
+         "contract": {
+            "v": 1,
+            "producer": "0.17.2",
+            "dialect": "duckdb",
+            "columns": [
+               {
+                  "name": "cat",
+                  "nativeType": "VARCHAR",
+                  "collation": "binary",
+                  "compare": "exact",
+                  "gateExact": true,
+                  "declaredType": "string"
+               },
+               {
+                  "name": "total",
+                  "nativeType": "DECIMAL(38,1)",
+                  "collation": null,
+                  "compare": "exact",
+                  "gateExact": true,
+                  "declaredType": "number"
+               }
+            ]
+         },
+         "upstreamSchemas": [
+            {
+               "connectionName": "warehouse",
+               "table": "main.mv_orders",
+               "columns": [
+                  {
+                     "name": "id",
+                     "nativeType": "INTEGER"
+                  },
+                  {
+                     "name": "cat",
+                     "nativeType": "VARCHAR"
+                  },
+                  {
+                     "name": "amount",
+                     "nativeType": "DECIMAL(10,1)"
+                  }
+               ],
+               "dialect": "duckdb"
+            }
+         ],
+         "builtAt": "2026-11-23T03:59:49.329Z"
+      },
+      "5f8ee1f458a0236a7cec71baf32a616af74b17ed804487591cf7715f879a94a8": {
+         "sourceEntityId": "5f8ee1f458a0236a7cec71baf32a616af74b17ed804487591cf7715f879a94a8",
+         "sourceName": "s__top__view",
+         "materializedTableId": "local-5f8ee1f458a0",
+         "physicalTableName": "main.mv_view",
+         "connectionName": "warehouse",
+         "realization": "COPY",
+         "rowCount": null,
+         "buildDurationMs": 2,
+         "queryCostBytes": null,
+         "schema": [
+            {
+               "name": "cat",
+               "type": "VARCHAR"
+            },
+            {
+               "name": "t",
+               "type": "DOUBLE"
+            }
+         ],
+         "nativeSchema": [
+            {
+               "name": "cat",
+               "type": "VARCHAR"
+            },
+            {
+               "name": "t",
+               "type": "DECIMAL(38,1)"
+            }
+         ],
+         "upstreamReuse": "reused",
+         "contract": {
+            "v": 1,
+            "producer": "0.17.2",
+            "dialect": "duckdb",
+            "columns": [
+               {
+                  "name": "cat",
+                  "nativeType": "VARCHAR",
+                  "collation": "binary",
+                  "compare": "exact",
+                  "gateExact": true,
+                  "declaredType": "string"
+               },
+               {
+                  "name": "t",
+                  "nativeType": "DECIMAL(38,1)",
+                  "collation": null,
+                  "compare": "exact",
+                  "gateExact": true,
+                  "declaredType": "number"
+               }
+            ]
+         },
+         "upstreamSchemas": [
+            {
+               "connectionName": "warehouse",
+               "table": "main.mv_orders",
+               "columns": [
+                  {
+                     "name": "id",
+                     "nativeType": "INTEGER"
+                  },
+                  {
+                     "name": "cat",
+                     "nativeType": "VARCHAR"
+                  },
+                  {
+                     "name": "amount",
+                     "nativeType": "DECIMAL(10,1)"
+                  }
+               ],
+               "dialect": "duckdb"
+            }
+         ],
+         "builtAt": "2026-11-23T03:59:49.336Z",
+         "builtFrom": [
+            {
+               "sourceEntityId": "c6c25c072e081ffb3ad2baf129d53027c15789e94ca26383f8591502125d746d",
+               "physicalTableName": "main.mv_daily",
+               "builtAt": "2026-11-23T03:59:49.329Z"
+            }
+         ]
+      },
+      "16d803e80b0578203fae603fea7c89f804ba660174fc8a63744dad5a47270953": {
+         "sourceEntityId": "16d803e80b0578203fae603fea7c89f804ba660174fc8a63744dad5a47270953",
+         "sourceName": "lake_plain",
+         "materializedTableId": "local-16d803e80b05",
+         "physicalTableName": "pkg__m__lake_plain__pf46fe69c",
+         "connectionName": "warehouse",
+         "storageDestinationName": "lake",
+         "schema": [
+            {
+               "name": "id",
+               "type": "INTEGER"
+            },
+            {
+               "name": "cat",
+               "type": "VARCHAR"
+            },
+            {
+               "name": "amount",
+               "type": "DECIMAL(10,1)"
+            },
+            {
+               "name": "cat2",
+               "type": "VARCHAR"
+            }
+         ],
+         "realization": "COPY",
+         "rowCount": 2,
+         "buildDurationMs": 253,
+         "queryCostBytes": null,
+         "contract": {
+            "v": 1,
+            "producer": "0.17.2",
+            "dialect": "duckdb",
+            "columns": [
+               {
+                  "name": "id",
+                  "nativeType": "INTEGER",
+                  "collation": null,
+                  "compare": "exact",
+                  "gateExact": true,
+                  "declaredType": "number"
+               },
+               {
+                  "name": "cat",
+                  "nativeType": "VARCHAR",
+                  "collation": "binary",
+                  "compare": "equality",
+                  "gateExact": true,
+                  "declaredType": "string"
+               },
+               {
+                  "name": "amount",
+                  "nativeType": "DECIMAL(10,1)",
+                  "collation": null,
+                  "compare": "exact",
+                  "gateExact": true,
+                  "declaredType": "number"
+               },
+               {
+                  "name": "cat2",
+                  "nativeType": "VARCHAR",
+                  "collation": "binary",
+                  "compare": "equality",
+                  "gateExact": true,
+                  "declaredType": "string"
+               }
+            ]
+         },
+         "upstreamSchemas": [
+            {
+               "connectionName": "warehouse",
+               "table": "public.mv_orders",
+               "columns": [
+                  {
+                     "name": "id",
+                     "nativeType": "integer"
+                  },
+                  {
+                     "name": "cat",
+                     "nativeType": "text"
+                  },
+                  {
+                     "name": "amount",
+                     "nativeType": "numeric(10,1)"
+                  }
+               ],
+               "dialect": "postgres"
+            }
+         ],
+         "builtAt": "2026-11-23T03:59:40.975Z"
+      },
+      "bad3b388e14ed5c376ed5bfd168e48830ec735d1c25585e15bc1f176362c7ac1": {
+         "sourceEntityId": "bad3b388e14ed5c376ed5bfd168e48830ec735d1c25585e15bc1f176362c7ac1",
+         "sourceName": "daily",
+         "materializedTableId": "local-bad3b388e14e",
+         "physicalTableName": "public.mv_daily",
+         "connectionName": "warehouse",
+         "realization": "COPY",
+         "rowCount": null,
+         "buildDurationMs": 30,
+         "queryCostBytes": null,
+         "schema": [
+            {
+               "name": "cat",
+               "type": "VARCHAR"
+            },
+            {
+               "name": "total",
+               "type": "DOUBLE"
+            }
+         ],
+         "nativeSchema": [
+            {
+               "name": "cat",
+               "type": "text"
+            },
+            {
+               "name": "total",
+               "type": "numeric"
+            }
+         ],
+         "contract": {
+            "v": 1,
+            "producer": "0.17.2",
+            "dialect": "postgres",
+            "columns": [
+               {
+                  "name": "cat",
+                  "nativeType": "text",
+                  "collation": "postgres:db|c|en_US.utf8|en_US.utf8||||2.41",
+                  "compare": "exact",
+                  "gateExact": true,
+                  "declaredType": "string"
+               },
+               {
+                  "name": "total",
+                  "nativeType": "numeric",
+                  "collation": null,
+                  "compare": "exact",
+                  "gateExact": true,
+                  "declaredType": "number"
+               }
+            ]
+         },
+         "upstreamSchemas": [
+            {
+               "connectionName": "warehouse",
+               "table": "public.mv_orders",
+               "columns": [
+                  {
+                     "name": "id",
+                     "nativeType": "integer"
+                  },
+                  {
+                     "name": "cat",
+                     "nativeType": "text"
+                  },
+                  {
+                     "name": "amount",
+                     "nativeType": "numeric(10,1)"
+                  }
+               ],
+               "dialect": "postgres"
+            }
+         ],
+         "builtAt": "2026-11-23T03:59:41.052Z"
+      },
+      "86d362d8f010dc8610e1a39850f0d812707bc856d7d386c13dcf7dc728e92861": {
+         "sourceEntityId": "86d362d8f010dc8610e1a39850f0d812707bc856d7d386c13dcf7dc728e92861",
+         "sourceName": "lake_daily",
+         "materializedTableId": "local-86d362d8f010",
+         "physicalTableName": "mv_lake_daily",
+         "connectionName": "warehouse",
+         "storageDestinationName": "lake",
+         "schema": [
+            {
+               "name": "cat",
+               "type": "VARCHAR"
+            },
+            {
+               "name": "total",
+               "type": "DECIMAL(38,1)"
+            }
+         ],
+         "realization": "COPY",
+         "rowCount": 2,
+         "buildDurationMs": 139,
+         "queryCostBytes": null,
+         "contract": {
+            "v": 1,
+            "producer": "0.17.2",
+            "dialect": "duckdb",
+            "columns": [
+               {
+                  "name": "cat",
+                  "nativeType": "VARCHAR",
+                  "collation": "binary",
+                  "compare": "equality",
+                  "gateExact": true,
+                  "declaredType": "string"
+               },
+               {
+                  "name": "total",
+                  "nativeType": "DECIMAL(38,1)",
+                  "collation": null,
+                  "compare": "exact",
+                  "gateExact": true,
+                  "declaredType": "number"
+               }
+            ]
+         },
+         "upstreamSchemas": [
+            {
+               "connectionName": "warehouse",
+               "table": "public.mv_orders",
+               "columns": [
+                  {
+                     "name": "id",
+                     "nativeType": "integer"
+                  },
+                  {
+                     "name": "cat",
+                     "nativeType": "text"
+                  },
+                  {
+                     "name": "amount",
+                     "nativeType": "numeric(10,1)"
+                  }
+               ],
+               "dialect": "postgres"
+            }
+         ],
+         "builtAt": "2026-11-23T03:59:41.375Z"
+      }
+   }
+}

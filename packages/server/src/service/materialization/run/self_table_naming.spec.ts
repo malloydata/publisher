@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { contractFor } from "../../../test_helpers/contract_fixture";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import path from "path";
 import { pathToFileURL } from "url";
@@ -139,6 +140,7 @@ const prior = (table: string, sourceEntityId: string): ManifestEntry =>
    ({
       sourceEntityId,
       physicalTableName: table,
+      contract: contractFor(),
       connectionName: "duckdb",
    }) as ManifestEntry;
 
@@ -497,7 +499,7 @@ describe("a table named before readable names", () => {
                `summary${packageTableSuffix({ environmentName: "e2", packageName: "pa" })}`,
                "a1",
             ),
-            // In a storage destination, where this run builds it colocated.
+            // In a storage destination, where this run builds it database.
             a3: {
                ...prior(`qualified${LEGACY_PKG}`, "a3"),
                storageDestinationName: "lake",
@@ -579,6 +581,7 @@ describe("a table named before readable names", () => {
          b1aaaaaaaaaaaaaa: {
             sourceEntityId: "b1aaaaaaaaaaaaaa",
             physicalTableName: legacy,
+            contract: contractFor(),
             connectionName: "wh",
          } as ManifestEntry,
       };
@@ -647,7 +650,7 @@ describe("two sources whose readable names meet", () => {
       // Refused, with its own reason, so the run's record says why.
       expect(r.refused["orders@second"]).toMatchObject({
          reason: "table_name_collision",
-         tier: "colocated",
+         tier: "database",
          modelPath: "m.malloy",
       });
    });

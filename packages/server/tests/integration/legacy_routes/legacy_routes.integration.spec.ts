@@ -159,17 +159,6 @@ describe("Legacy /api/v0/projects/* REST routes (E2E)", () => {
       });
    });
 
-   describe("notebooks", () => {
-      it("GET /projects/:projectName/packages/:packageName/notebooks returns 200", async () => {
-         const res = await fetch(
-            `${baseUrl}/api/v0/projects/${PROJECT_NAME}/packages/${PACKAGE_NAME}/notebooks`,
-         );
-         expect(res.status).toBe(200);
-         const body = await res.json();
-         expect(Array.isArray(body)).toBe(true);
-      });
-   });
-
    describe("databases", () => {
       it("GET /projects/:projectName/packages/:packageName/databases returns 200", async () => {
          const res = await fetch(

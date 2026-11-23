@@ -1,7 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 /**
- * Joins a served copy moves across connections (question 11).
+ * Joins a served copy moves across connections.
  *
  * Malloy refuses a join whose source is on another connection than the source
  * it joins into (`join-connection-mismatch`), and it
@@ -150,17 +150,81 @@ export async function leaveOutCrossConnectionJoins(args: {
    { overlay: Map<string, string>; leftOut: LeftOutDefinition[] } | undefined
 > {
    if (!isCrossConnectionRefusal(args.firstError)) return undefined;
+   // A refused join that cannot be left out alone (what reads it sits where
+   // no definition can be cut, or the text does not compile without it)
+   // costs the source or query declaring it, and only that one: every other
+   // refused join is still left out alone, so a source whose join can be
+   // cut keeps serving beside one that cannot. Each attempt that is blocked
+   // names the declaration that blocked it, which the next attempt leaves
+   // out whole; a block no declaration with a refused join answers falls
+   // back to leaving out every declaring source whole.
+   const escalated = new Set<string>();
+   for (let attempt = 0; attempt < 8; attempt++) {
+      const result = await leaveOut(args, escalated);
+      if ("overlay" in result) return result;
+      const key = result.blocked;
+      if (key === undefined || escalated.has(key)) break;
+      escalated.add(key);
+   }
+   const all = await leaveOut(args, "all");
+   return "overlay" in all ? all : undefined;
+}
+
+/** A top-level declaration's identity: its file and where it starts. */
+function declarationKey(url: string, start: number): string {
+   return `${url}\u0000${start}`;
+}
+
+/**
+ * One attempt of {@link leaveOutCrossConnectionJoins}: each refused join cut
+ * as its own definition, or, in a declaration `escalated` names (every one,
+ * for `all`), as the top-level source or query declaring it. When it does
+ * not compile, `blocked` names the declaration holding what stopped it, if
+ * that declaration declares a refused join.
+ */
+async function leaveOut(
+   args: Parameters<typeof leaveOutCrossConnectionJoins>[0],
+   escalated: ReadonlySet<string> | "all",
+): Promise<
+   | { overlay: Map<string, string>; leftOut: LeftOutDefinition[] }
+   | { blocked?: string }
+> {
+   // The declarations that declare a refused join, by key.
+   const declaring = new Set<string>();
+   // Where an attempt stopped, as the declaration around it (if it declares
+   // a refused join).
+   const blockedAt = (
+      url: string | undefined,
+      text: string | undefined,
+      offset: number,
+   ): { blocked?: string } => {
+      if (!url || text === undefined || offset < 0) return {};
+      const around = definitionCutAt(text, offset, true);
+      if (!around) return {};
+      const key = declarationKey(url, around.start);
+      return declaring.has(key) ? { blocked: key } : {};
+   };
+   const textOf = (url: string | undefined): string | undefined =>
+      url === undefined ? undefined : (overlay.get(url) ?? args.readText(url));
+   const offsetIn = (p: ProblemLike): number => {
+      const text = textOf(p.at?.url);
+      return text === undefined
+         ? -1
+         : offsetOf(text, p.at?.range?.start ?? NOWHERE);
+   };
    const overlay = new Map(args.overlay ?? []);
    const leftOut: LeftOutDefinition[] = [];
    const first = errorProblems(args.firstError) ?? [];
-   // What the first compile reported beside the refused joins must follow
-   // from them (an importer that could not find a source whose file failed),
-   // so it is never left out itself: each pass leaves out what fails anew,
-   // and once nothing else fails, one still there is the author's own error
-   // and the file is left to fail with it.
-   const followOn = new Set(
-      first.filter((p) => p.code !== JOIN_CONNECTION_MISMATCH).map(problemKey),
-   );
+   // What a compile reports beside refused joins must follow from them (an
+   // importer that could not find a source whose file failed), so it is
+   // never left out itself: each pass leaves out what fails anew, and once
+   // nothing else fails, one still there is the author's own error and the
+   // file is left to fail with it. Reset by each compile that reports refused
+   // joins: an imported file's refusal hides its importer's own refusals
+   // behind what follows from the failed import, and those follow-ons are
+   // answered by the importer's joins, refused only on a later pass.
+   let reported: ProblemLike[] = [];
+   let followOn = new Set<string>();
    let problems = first;
    const maxPasses = args.maxPasses ?? 8;
    for (let pass = 0; pass < maxPasses; pass++) {
@@ -168,33 +232,40 @@ export async function leaveOutCrossConnectionJoins(args: {
       const refusedJoins = problems.filter(
          (p) => p.code === JOIN_CONNECTION_MISMATCH,
       );
+      if (refusedJoins.length > 0) {
+         reported = problems.filter((p) => p.code !== JOIN_CONNECTION_MISMATCH);
+         followOn = new Set(reported.map(problemKey));
+      }
       const toCut =
          refusedJoins.length > 0
             ? refusedJoins
             : problems.filter((p) => !followOn.has(problemKey(p)));
-      if (
-         toCut.length === 0 ||
-         toCut.some(
-            (p) =>
-               p.code !== JOIN_CONNECTION_MISMATCH &&
-               (p.code === undefined || !FOLLOWS_FROM_LEFT_OUT.has(p.code)),
-         )
-      ) {
-         return undefined;
+      if (toCut.length === 0) return {};
+      const notFollowing = toCut.find(
+         (p) =>
+            p.code !== JOIN_CONNECTION_MISMATCH &&
+            (p.code === undefined || !FOLLOWS_FROM_LEFT_OUT.has(p.code)),
+      );
+      if (notFollowing) {
+         return blockedAt(
+            notFollowing.at?.url,
+            textOf(notFollowing.at?.url),
+            offsetIn(notFollowing),
+         );
       }
       // Every cut of a pass is found in the same text, before any is applied,
       // so two errors in one definition leave it out once.
       const byUrl = new Map<string, ProblemLike[]>();
       for (const p of toCut) {
          const url = p.at?.url;
-         if (!url || !p.at?.range) return undefined;
+         if (!url || !p.at?.range) return {};
          const list = byUrl.get(url) ?? [];
          list.push(p);
          byUrl.set(url, list);
       }
       for (const [url, list] of byUrl) {
          const text = overlay.get(url) ?? args.readText(url);
-         if (text === undefined) return undefined;
+         if (text === undefined) return {};
          const cuts: Cut[] = [];
          for (const p of list) {
             const offset = offsetOf(
@@ -204,9 +275,35 @@ export async function leaveOutCrossConnectionJoins(args: {
                   character: 0,
                },
             );
-            if (offset < 0) return undefined;
-            const cut = definitionCutAt(text, offset);
-            if (!cut) return undefined;
+            if (offset < 0) return {};
+            const refused = p.code === JOIN_CONNECTION_MISMATCH;
+            const own = definitionCutAt(text, offset);
+            const declaration = refused
+               ? definitionCutAt(text, offset, true)
+               : undefined;
+            if (declaration) {
+               declaring.add(declarationKey(url, declaration.start));
+            }
+            const cut =
+               declaration &&
+               (escalated === "all" ||
+                  escalated.has(declarationKey(url, declaration.start)))
+                  ? declaration
+                  : own;
+            if (!cut) return blockedAt(url, text, offset);
+            // A declaration left out whole must not take with it a problem
+            // its compile reported beside the refusal: that one must be gone
+            // because the join is out, not because its text is.
+            if (
+               cut !== own &&
+               reported.some((q) => {
+                  if (q.at?.url !== url) return false;
+                  const at = offsetOf(text, q.at?.range?.start ?? NOWHERE);
+                  return at >= cut.start && at < cut.end;
+               })
+            ) {
+               return {};
+            }
             if (cuts.some((c) => c.start === cut.start && c.end === cut.end)) {
                continue;
             }
@@ -214,22 +311,53 @@ export async function leaveOutCrossConnectionJoins(args: {
             leftOut.push({
                url,
                ...cut.left,
-               crossConnection: p.code === JOIN_CONNECTION_MISMATCH,
+               crossConnection: refused,
+               ...(cut !== own && own?.left.keyword.startsWith("join_")
+                  ? { join: own.left.name }
+                  : {}),
             });
          }
-         overlay.set(url, blank(text, cuts));
+         overlay.set(url, blank(text, wholeStatements(cuts)));
       }
       try {
          await args.compile(overlay);
          return { overlay, leftOut };
       } catch (error) {
          const next = errorProblems(error);
-         if (!next || next.length === 0) return undefined;
+         if (!next || next.length === 0) return {};
          problems = next;
       }
    }
-   return undefined;
+   return {};
 }
+
+/**
+ * `cuts` with every set that leaves out each definition of one statement
+ * (`join_one: a is …, b is …`, both refused) replaced by that statement
+ * whole: blanking each alone would leave its keyword with nothing after it.
+ */
+function wholeStatements(cuts: readonly Cut[]): Cut[] {
+   const byStatement = new Map<number, Cut[]>();
+   for (const c of cuts) {
+      if (!c.statement) continue;
+      const list = byStatement.get(c.statement.start) ?? [];
+      list.push(c);
+      byStatement.set(c.statement.start, list);
+   }
+   const out = cuts.filter((c) => !c.statement);
+   for (const list of byStatement.values()) {
+      const { start, end, definitions } = list[0].statement!;
+      out.push(
+         ...(list.length >= definitions
+            ? [{ start, end, left: list[0].left }]
+            : list),
+      );
+   }
+   return out;
+}
+
+/** A position no text holds, for a problem that names none. */
+const NOWHERE = { line: -1, character: 0 };
 
 /** `text` with each cut's characters turned to spaces, newlines kept. */
 function blank(text: string, cuts: readonly Cut[]): string {

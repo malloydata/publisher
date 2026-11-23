@@ -1,16 +1,18 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { binaryCollationRuntime } from "../test_helpers/binary_collation_runtime";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {
    type QueryMaterializer,
    SingleConnectionRuntime,
    type VirtualMap,
 } from "@malloydata/malloy";
-import { afterAll, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import {
    type Binding,
    EMPTY_SNAPSHOT,
+   makeSnapshot,
    pin,
 } from "./materialization/domain/binding";
 import type { BuildManifest } from "./materialization/domain/types";
@@ -30,8 +32,15 @@ import {
 import type { RollupVariantServe } from "./materialization/serve/rollup_variants";
 import { tablesReadForGates } from "./materialization/serve/bindings";
 import { answerOf, recordingManifest, variantsOf } from "./query_serving";
+import {
+   readStringCapabilities,
+   recordStringCapabilities,
+} from "./materialization/serve/source_capability";
 
-const runnable = { tag: "routed" } as unknown as QueryMaterializer;
+const runnable = {
+   tag: "routed",
+   runtime: binaryCollationRuntime(),
+} as unknown as QueryMaterializer;
 const virtualMap = new Map() as unknown as VirtualMap;
 
 // The author's compile the router reads an entry point's gate columns from:
@@ -137,7 +146,7 @@ describe("Answer", () => {
       expect(servedFromOf(answer)).toBe("storage");
    });
 
-   it("reads a colocated rollup route as a colocated hit, not a storage hit", () => {
+   it("reads a database rollup route as a database hit, not a storage hit", () => {
       const answer = answerOf(rollupRoute) as RoutedAnswer;
       expect(answer.leg).toBe("rollup");
       expect(answer.answer.rollupMember).toBe("orders__by_day");
@@ -145,7 +154,7 @@ describe("Answer", () => {
       expect(servedFromOf(answer)).toBe("database");
    });
 
-   it("reads a storage= #(preaggregate) rollup route as a storage hit", () => {
+   it("reads a storage= #(rollup) rollup route as a storage hit", () => {
       const b = { ...binding("rollup"), kind: "rollup" as const };
       const answer = answerOf({
          ...rollupRoute,
@@ -194,9 +203,9 @@ describe("Answer", () => {
       }
       expect(routed.runFailed).toBe(false);
       expect((failed as RoutedAnswer).runFailed).toBe(true);
-      expect(failed.colocatedRead.size).toBe(0);
-      expect(answered.colocatedRead).toBe(read);
-      expect(LIVE_ANSWER.colocatedRead.size).toBe(0);
+      expect(failed.databaseRead.size).toBe(0);
+      expect(answered.databaseRead).toBe(read);
+      expect(LIVE_ANSWER.databaseRead.size).toBe(0);
    });
 
    it("reads a failed storage run answered live as live_fallback, never a hit", () => {
@@ -224,10 +233,23 @@ describe("canDegradeToLive", () => {
       ).toBe(true);
    });
 
-   it("never degrades a live or rollup answer (nothing stored was read)", () => {
+   it("never degrades a live answer (nothing stored was read)", () => {
       expect(canDegradeToLive(LIVE_ANSWER, new Error("x"), open)).toBe(false);
+   });
+
+   it("degrades a database rollup, read through the build manifest, on any store failure", () => {
       expect(
          canDegradeToLive(answerOf(rollupRoute), new Error("x"), open),
+      ).toBe(true);
+      const given = Object.assign(new Error("bad given"), {
+         code: "runtime-given-missing",
+      });
+      expect(canDegradeToLive(answerOf(rollupRoute), given, open)).toBe(false);
+      expect(
+         canDegradeToLive(answerOf(rollupRoute), new Error("x"), {
+            hasLiveRunnable: true,
+            aborted: true,
+         }),
       ).toBe(false);
    });
 
@@ -304,7 +326,7 @@ describe("recordingManifest", () => {
    });
 });
 
-describe("the #(preaggregate) rollup candidate past an entry-point gate (row 1)", () => {
+describe("the #(rollup) rollup candidate past an entry-point gate (row 1)", () => {
    const pinned = pin(EMPTY_SNAPSHOT, new Date(0));
    const rollupCandidate = (rollupVariants: unknown = {}) =>
       variantsOf(
@@ -321,7 +343,7 @@ describe("the #(preaggregate) rollup candidate past an entry-point gate (row 1)"
       ).find((c) => c.kind === "rollup");
 
    for (const on of [true, false]) {
-      it(`is tried past the gate with gated sources ${on ? "on" : "off (G3)"}, and keeps it off only for a colocated rollup`, async () => {
+      it(`is tried past the gate with gated sources ${on ? "on" : "off (G3)"}, and keeps it off only for a database rollup`, async () => {
          const { restore } = installSettings({
             env: {
                PUBLISHER_MATERIALIZE: "true",
@@ -331,7 +353,7 @@ describe("the #(preaggregate) rollup candidate past an entry-point gate (row 1)"
          try {
             const candidate = rollupCandidate();
             expect(candidate?.keepsContracts).toBe(true);
-            const read = (tier: "colocated" | "storage") =>
+            const read = (tier: "database" | "storage") =>
                candidate?.keepsContractsFor?.({
                   runnable,
                   tablesRead: undefined,
@@ -339,13 +361,17 @@ describe("the #(preaggregate) rollup candidate past an entry-point gate (row 1)"
                      tier === "storage"
                         ? {
                              tier,
+                             destinationName: "lake",
+                             tablePath: "t_rollup",
                              schema: [{ name: "acct", type: "DECIMAL(38,0)" }],
                           }
                         : { tier },
                   ],
                   shapeBindings: [],
                } as never);
-            expect(await read("colocated")).toBe(true);
+            expect(await read("database")).toBe(true);
+            // A `storage=` rollup plan did not mark keeps the gate only
+            // under the switch (P3/P4).
             expect(await read("storage")).toBe(on);
          } finally {
             restore();
@@ -389,10 +415,35 @@ describe("the #(preaggregate) rollup candidate past an entry-point gate (row 1)"
 });
 
 describe("the served copy past an entry-point gate under G3 (gated sources off)", () => {
-   const pinned = pin(EMPTY_SNAPSHOT, new Date(0));
-   const colocated = binding("c", {
+   // What a bind records for the lookups: the author model's capabilities,
+   // and each stored table's contract, its strings byte-wise.
+   beforeAll(async () => {
+      recordStringCapabilities(
+         (authorModel as unknown as { runtime: object }).runtime,
+         await readStringCapabilities({
+            modelDef: (await authorModel.getModel())._modelDef,
+            load: (q) => authorModel.loadQuery(q),
+            connection: async () => authorConnection,
+         }),
+      );
+   });
+   const byteWise = { v: 1, dialect: "duckdb", columns: [] };
+   const pinned = pin(
+      makeSnapshot(
+         [],
+         {},
+         undefined,
+         undefined,
+         new Map([
+            ["eid-s", byteWise],
+            ["eid-c", byteWise],
+         ]),
+      ),
+      new Date(0),
+   );
+   const database = binding("c", {
       kind: "materialize",
-      tier: "colocated",
+      tier: "database",
       destinationName: "duckdb",
       tablePath: '"c_tbl"',
    });
@@ -400,7 +451,7 @@ describe("the served copy past an entry-point gate under G3 (gated sources off)"
       kind: "materialize",
       tablePath: "main.s_tbl",
    });
-   // The storage table read unquoted beside the colocated one. Only the
+   // The storage table read unquoted beside the database one. Only the
    // quoting defeats the served copy's exact match against the bound
    // `"main"."s_tbl"` (sqlTableReads ignores case), so it finds only "c_tbl".
    const sql =
@@ -416,9 +467,9 @@ describe("the served copy past an entry-point gate under G3 (gated sources off)"
                loadQuery: async () => ({
                   runnable,
                   virtualMap,
-                  bindings: [colocated, storage],
+                  bindings: [database, storage],
                   // The exact-match result, which gateTablesRead overrides.
-                  tablesRead: [colocated],
+                  tablesRead: [database],
                   gateTablesRead,
                   graftScope: undefined,
                }),
@@ -450,23 +501,23 @@ describe("the served copy past an entry-point gate under G3 (gated sources off)"
       await withG3(async () => {
          const judged = tablesReadForGates(
             sql,
-            [colocated, storage],
-            [colocated],
+            [database, storage],
+            [database],
          );
-         expect(judged).toEqual([colocated, storage]);
+         expect(judged).toEqual([database, storage]);
          const candidate = servedCandidate(judged);
-         // Tried past the gate (every table it may read could be colocated)…
+         // Tried past the gate (every table it may read could be in the database tier)…
          expect(candidate.keepsContracts).toBe(true);
          const routed = await candidate.attempt();
          // …but the answer it produced reads a storage table: not kept.
-         expect(routed.extra?.gateTablesRead).toEqual([colocated, storage]);
+         expect(routed.extra?.gateTablesRead).toEqual([database, storage]);
          expect(await candidate.keepsContractsFor!(routed.extra!)).toBe(false);
       });
    });
 
-   it("still keeps a colocated-only answer under G3", async () => {
+   it("still keeps a database-only answer under G3", async () => {
       await withG3(async () => {
-         const candidate = servedCandidate([colocated]);
+         const candidate = servedCandidate([database]);
          const routed = await candidate.attempt();
          expect(await candidate.keepsContractsFor!(routed.extra!)).toBe(true);
       });
@@ -481,7 +532,7 @@ describe("the served copy past an entry-point gate under G3 (gated sources off)"
       await withG3(async () => {
          for (const [read, keeps] of [
             [[kept], true],
-            [[colocated, kept], true],
+            [[database, kept], true],
             [[kept, other], false],
             [[storage], false],
          ] as const) {
@@ -600,7 +651,7 @@ describe("the served copy past an entry-point gate under G3 (gated sources off)"
                [[{ name: "total", type: "DOUBLE" }], true],
             ] as const) {
                const lake = servedCandidate([
-                  { ...colocated, retypedColumns: [...moved] },
+                  { ...database, retypedColumns: [...moved] },
                ]);
                expect(
                   await lake.keepsContractsFor!((await lake.attempt()).extra!),

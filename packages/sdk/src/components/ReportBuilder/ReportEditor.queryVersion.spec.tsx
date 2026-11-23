@@ -114,7 +114,6 @@ mockServerProvider(
    {
       models: { getModel, executeQueryModel, updateModelSource, listModels },
       reports: { getReport, listReports },
-      notebooks: { getNotebook: () => pending() },
    },
    serverContext,
 );

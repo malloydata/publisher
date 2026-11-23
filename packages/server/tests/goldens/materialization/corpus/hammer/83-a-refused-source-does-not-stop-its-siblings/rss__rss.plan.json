@@ -63,6 +63,7 @@
         "message": "Source 'scoped_rollup' cannot be materialized into a storage destination: a given is read while the persisted relation is BUILT, so its value is substituted at build time — from the declaration's default, the only value available then — and every caller is served that one slice. Move the given out of the persisted query and into the source's extend block (`where: …`), where it is left out of the build and applied per caller when the artifact is read.",
         "modelPath": "rss.malloy",
         "name": "scoped_rollup",
+        "origin": "persist",
         "reason": "reads_given",
         "sourceID": "scoped_rollup@<hammer>/rss/rss.malloy",
         "tier": "storage"
@@ -92,6 +93,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.rss_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "d6ce0dba9f8d006ca13abcbcf57fa6f08b5d02dc1dfcf2a7b8a1914d7ae5f7f2",
         "sourceID": "by_date@<hammer>/rss/rss.malloy",

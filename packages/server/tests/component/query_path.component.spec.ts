@@ -2,9 +2,13 @@
 // SPDX-License-Identifier: MIT
 
 // The path report (materialization v2, D1) over a real compiled package with
-// a real bound colocated manifest: which table answered, which could not and
+// a real bound database manifest: which table answered, which could not and
 // why, and the nearby tables the query could not use. The `storage=` tier is
 // covered over the R4 harness in r4/path_report.component.spec.ts.
+import {
+   recordedNativeSchema,
+   withNativeSchema,
+} from "../../src/test_helpers/host_manifest";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "fs/promises";
@@ -12,6 +16,7 @@ import * as os from "os";
 import * as path from "path";
 import { unrecordedAudit } from "../../src/service/access_record";
 import { Environment } from "../../src/service/environment";
+import type { Model } from "../../src/service/model";
 import { parsePackageName } from "../../src/service/identity";
 import { QueryPrivileges } from "../../src/service/model_query_request";
 import type { Package } from "../../src/service/package";
@@ -93,13 +98,12 @@ async function buildAndBind(
       await connection.runSQL(
          `CREATE OR REPLACE TABLE ${table} AS ${source.sql}`,
       );
-      bound[source.sourceEntityId] = {
-         tableName: table,
-         connectionName: "duckdb",
-         ...extra,
-      };
+      bound[source.sourceEntityId] = withNativeSchema(
+         { tableName: table, connectionName: "duckdb", ...extra },
+         await recordedNativeSchema(connection, table),
+      );
    }
-   pkg.materialization().bind({ colocated: bound as never });
+   pkg.materialization().bind({ database: bound as never });
 }
 
 async function pathOf(
@@ -163,10 +167,12 @@ describe("the access record's copy of the path report", () => {
          pkg,
          "run: daily -> { group_by: region; aggregate: t is total.sum() }",
       );
-      // The served copy answers a v1 colocated table (the v1 cutover).
+      // The served copy answers a v1 database table (the v1 cutover).
       expect(audit.path).toEqual({
          servedBy: {
             kind: "materialized",
+            origin: "persist",
+            tier: "database",
             tableId: entityIdOf(pkg, "daily"),
             via: "served_copy",
          },
@@ -194,7 +200,7 @@ source: orders is duckdb.sql("SELECT 1 AS id, 'east' AS region") extend {
    });
 });
 
-describe("the path report over colocated #@ persist", () => {
+describe("the path report over database #@ persist", () => {
    it("reports an unbuilt table as NOT_BUILT and answers live", async () => {
       const pkg = await loadPackage();
       const report = await pathOf(
@@ -206,6 +212,7 @@ describe("the path report over colocated #@ persist", () => {
          {
             tableId: entityIdOf(pkg, "daily"),
             kind: "materialized",
+            origin: "persist",
             outcome: "skipped",
             reason: "NOT_BUILT",
          },
@@ -229,6 +236,7 @@ describe("the path report over colocated #@ persist", () => {
       );
       expect(report.servedBy).toEqual({
          kind: "materialized",
+         origin: "persist",
          tier: "database",
          tableId: entityIdOf(pkg, "daily"),
          dataAsOf: "2026-11-01T00:00:00.000Z",
@@ -238,6 +246,7 @@ describe("the path report over colocated #@ persist", () => {
          {
             tableId: entityIdOf(pkg, "daily"),
             kind: "materialized",
+            origin: "persist",
             outcome: "used",
          },
       ]);
@@ -252,6 +261,7 @@ describe("the path report over colocated #@ persist", () => {
       );
       expect(report.servedBy).toMatchObject({
          kind: "materialized",
+         origin: "persist",
          tableId: entityIdOf(pkg, "daily"),
       });
       // Persistence is inherited, and an extension that adds only a dimension
@@ -261,6 +271,7 @@ describe("the path report over colocated #@ persist", () => {
          {
             tableId: entityIdOf(pkg, "daily"),
             kind: "materialized",
+            origin: "persist",
             outcome: "used",
          },
       ]);
@@ -285,6 +296,7 @@ describe("the path report over colocated #@ persist", () => {
          {
             tableId: entityIdOf(pkg, "daily"),
             kind: "materialized",
+            origin: "persist",
             outcome: "skipped",
             reason: "STALE",
          },
@@ -304,6 +316,7 @@ describe("the path report over colocated #@ persist", () => {
          {
             tableId: entityIdOf(pkg, "by_region"),
             kind: "materialized",
+            origin: "persist",
             sourceName: "by_region",
             relationship: "below",
             built: true,
@@ -311,6 +324,7 @@ describe("the path report over colocated #@ persist", () => {
          {
             tableId: entityIdOf(pkg, "daily"),
             kind: "materialized",
+            origin: "persist",
             sourceName: "daily",
             relationship: "below",
             built: false,
@@ -346,6 +360,7 @@ describe("the path report over colocated #@ persist", () => {
          {
             tableId: entityIdOf(pkg, "daily"),
             kind: "materialized",
+            origin: "persist",
             sourceName: "daily",
             relationship: "sibling",
             built: false,
@@ -385,8 +400,9 @@ describe("the path report reading the serve verdicts", () => {
          {
             tableId: entityIdOf(pkg, "by_region"),
             kind: "materialized",
+            origin: "persist",
             outcome: "skipped",
-            reason: "WARNED",
+            reason: "NOT_SERVED",
             code: "unreachable",
          },
       ]);
@@ -411,7 +427,7 @@ describe("the path report reading the serve verdicts", () => {
    });
 });
 
-describe("the path report over a colocated rollup", () => {
+describe("the path report over a database rollup", () => {
    async function builtRollup(): Promise<{ pkg: Package; rollupId: string }> {
       const pkg = await loadPackage(ROLLUP_MODEL);
       const [rollupId] = [...pkg.materialization().getPreaggregateEntityIds()];
@@ -426,8 +442,11 @@ describe("the path report over a colocated rollup", () => {
          `CREATE OR REPLACE TABLE built_rollup AS ${rollup.sql}`,
       );
       pkg.materialization().bind({
-         colocated: {
-            [rollupId]: { tableName: "built_rollup", connectionName: "duckdb" },
+         database: {
+            [rollupId]: withNativeSchema(
+               { tableName: "built_rollup", connectionName: "duckdb" },
+               await recordedNativeSchema(connection, "built_rollup"),
+            ),
          } as never,
       });
       return { pkg, rollupId };
@@ -441,11 +460,17 @@ describe("the path report over a colocated rollup", () => {
       );
       expect(report.servedBy).toEqual({
          kind: "rollup",
+         origin: "rollup",
          tableId: rollupId,
          tier: "database",
       });
       expect(report.considered).toEqual([
-         { tableId: rollupId, kind: "rollup", outcome: "used" },
+         {
+            tableId: rollupId,
+            kind: "rollup",
+            origin: "rollup",
+            outcome: "used",
+         },
       ]);
    });
 
@@ -460,6 +485,7 @@ describe("the path report over a colocated rollup", () => {
          {
             tableId: rollupId,
             kind: "rollup",
+            origin: "rollup",
             outcome: "skipped",
             reason: "COUNT_SEMANTICS",
             // The rollup leg's reason: the count reads the rollup's rows.
@@ -480,6 +506,7 @@ describe("the path report over a colocated rollup", () => {
          {
             tableId: rollupId,
             kind: "rollup",
+            origin: "rollup",
             outcome: "skipped",
             reason: "GRAIN_TOO_COARSE",
             detail: expect.stringContaining("`amount`"),
@@ -492,7 +519,7 @@ describe("the path report over a colocated rollup", () => {
 // `reloadAllModels`, which leaves the whole unfiltered manifest on each
 // model's Runtime. Malloy reads a run handed no `buildManifest` as "use the
 // Runtime's", so a run that passes none substitutes a table its freshness
-// window should have dropped. `bindColocatedServeManifest` stores nothing on
+// window should have dropped. `bindDatabaseServeManifest` stores nothing on
 // the Runtime, which is why the STALE test above cannot see this.
 describe("a table past its freshness window, bound by a host's reload", () => {
    let restore: () => void = () => {};
@@ -538,11 +565,10 @@ describe("a table past its freshness window, bound by a host's reload", () => {
          await connection.runSQL(
             `CREATE OR REPLACE TABLE ${t.table} AS ${t.sql}`,
          );
-         entries[t.entityId] = {
-            tableName: t.table,
-            connectionName: "duckdb",
-            ...t.extra,
-         };
+         entries[t.entityId] = withNativeSchema(
+            { tableName: t.table, connectionName: "duckdb", ...t.extra },
+            await recordedNativeSchema(connection, t.table),
+         );
       }
       await pkg.reloadAllModels(entries as never);
    }
@@ -592,6 +618,7 @@ describe("a table past its freshness window, bound by a host's reload", () => {
          expect(res.path?.considered).toContainEqual({
             tableId: staleId,
             kind: "materialized",
+            origin: "persist",
             outcome: "skipped",
             reason: "STALE",
          });
@@ -652,6 +679,7 @@ describe("a table past its freshness window, bound by a host's reload", () => {
          ] as never);
          expect(res.path?.servedBy).toMatchObject({
             kind: "materialized",
+            origin: "persist",
             tableId: dailyId,
          });
       }, 60_000);
@@ -694,6 +722,7 @@ describe("a table past its freshness window, bound by a host's reload", () => {
          );
          expect(rolled.path?.servedBy).toMatchObject({
             kind: "rollup",
+            origin: "rollup",
             tableId: rollupId,
          });
          expect(rolled.result.sql).toContain("built_rollup");
@@ -729,16 +758,17 @@ describe("a table past its freshness window, bound by a host's reload", () => {
          const called = await run(pkg, "run: orders -> by_region");
          expect(called.path?.servedBy).toMatchObject({
             kind: "view",
+            origin: "view",
             tableId: viewId,
          });
          expect(called.result.sql).toContain("built_view");
       }, 60_000);
    }
 
-   // A notebook runs each cell against the cell's own model, which carries
-   // `##! experimental.persistence` only through what it imports. Malloy
-   // refuses a non-empty manifest on a model without the flag, so a table
-   // bound for another model must not reach such a cell.
+   // A notebook's model carries `##! experimental.persistence` only through
+   // what it imports. Malloy refuses a non-empty manifest on a model without
+   // the flag, so a table bound for another model must not reach a query on
+   // such a notebook's path.
    for (const mode of ["on"] as const) {
       it(`runs a notebook cell whose model has no persistence flag, beside a bound table [${mode}]`, async () => {
          await underMode(mode);
@@ -746,8 +776,7 @@ describe("a table past its freshness window, bound by a host's reload", () => {
             "flagless.malloy": `source: plain is duckdb.sql("SELECT 1 AS x")`,
             "persisting.malloynb": `>>>malloy\nimport "model.malloy"\n${DAILY_QUERY}\n`,
             "flagless.malloynb": `>>>malloy\nimport "flagless.malloy"\nrun: plain -> { aggregate: c is count() }\n`,
-            // Decided per cell, not per file: the file's last cell imports
-            // the flagged model, its first does not.
+            // The file's last cell imports the flagged model, its first does not.
             "mixed.malloynb": `>>>malloy\nimport "flagless.malloy"\nrun: plain -> { aggregate: c is count() }\n>>>malloy\nimport "model.malloy"\n${DAILY_QUERY}\n`,
          });
          const dailyId = entityIdOf(pkg, "daily");
@@ -767,23 +796,30 @@ describe("a table past its freshness window, bound by a host's reload", () => {
          const persisting = pkg.getModel("persisting.malloynb");
          if (!flagless || !persisting)
             throw new Error("notebooks did not load");
+         // Each cell's query, run on its notebook's own path.
+         const onNotebook = (model: Model, query: string) =>
+            model.runQuery(
+               unrecordedAudit(),
+               { query },
+               QueryPrivileges.of({ includeHiddenFilesAndSources: true }),
+            );
+         const PLAIN_QUERY = "run: plain -> { aggregate: c is count() }";
          // Before the fix: "A non-empty `buildManifest` was supplied, but the
          // model is missing `##! experimental.persistence`".
-         const plain = await flagless.executeNotebookCell(unrecordedAudit(), 0);
-         expect(plain.result).toContain('"number_value":1');
-         // A cell that imports the persisting model still reads its table.
-         const read = await persisting.executeNotebookCell(
-            unrecordedAudit(),
-            0,
-         );
-         expect(read.result).toContain("built_daily_sentinel");
+         const plain = await onNotebook(flagless, PLAIN_QUERY);
+         expect(plain.compactResult).toEqual([{ c: 1 }]);
+         // A notebook's path has no served copy, so a query on it answers
+         // live, where the removed cell route read the bound table.
+         const read = await onNotebook(persisting, DAILY_QUERY);
+         expect(read.result.sql).not.toContain("built_daily_sentinel");
+         expect(read.compactResult).toEqual(DAILY_LIVE);
          const mixed = pkg.getModel("mixed.malloynb");
          if (!mixed) throw new Error("mixed.malloynb did not load");
-         const first = await mixed.executeNotebookCell(unrecordedAudit(), 0);
-         expect(first.result).toContain('"number_value":1');
-         const second = await mixed.executeNotebookCell(unrecordedAudit(), 1);
-         expect(second.result).toContain("built_daily_sentinel");
-         // Still freshness-filtered: past its window, a cell reads live.
+         const first = await onNotebook(mixed, PLAIN_QUERY);
+         expect(first.compactResult).toEqual([{ c: 1 }]);
+         const second = await onNotebook(mixed, DAILY_QUERY);
+         expect(second.compactResult).toEqual(DAILY_LIVE);
+         // Past its window too, a cell reads live.
          await bindThroughReload(pkg, [
             {
                entityId: dailyId,
@@ -794,9 +830,9 @@ describe("a table past its freshness window, bound by a host's reload", () => {
          ]);
          const reloaded = pkg.getModel("persisting.malloynb");
          if (!reloaded) throw new Error("persisting.malloynb did not reload");
-         const live = await reloaded.executeNotebookCell(unrecordedAudit(), 0);
-         expect(live.result).not.toContain("built_daily_sentinel");
-         expect(live.result).toContain("107.5");
+         const live = await onNotebook(reloaded, DAILY_QUERY);
+         expect(live.result.sql).not.toContain("built_daily_sentinel");
+         expect(live.compactResult).toEqual(DAILY_LIVE);
       }, 60_000);
    }
 

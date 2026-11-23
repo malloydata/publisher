@@ -96,7 +96,7 @@ describe("MaterializationScheduler restart recovery (E2E, real store)", () => {
       return rows.filter(
          (m) =>
             (m.metadata as { trigger?: string } | null)?.trigger ===
-            "SCHEDULER",
+            "scheduler",
       ).length;
    }
 

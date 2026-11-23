@@ -17,7 +17,7 @@ import {
 import { tempBuildPlanPackages } from "../../../test_helpers/incremental_test_harness";
 import { installSettings } from "../../../test_helpers/settings_env";
 import { compilePackageBuildPlan } from "../plan/build_plan_compile";
-import { deriveBuildPlanOutcome, sharedTables } from "../plan/build_plan";
+import { derivePackagePlan, sharedTables } from "../plan/build_plan";
 import { loadGateText } from "../plan/load_gate_text";
 import type { BuildInstruction } from "../domain/types";
 import { computeSourceEntityId } from "../plan/addressing";
@@ -311,7 +311,7 @@ describe("one table per stored projection", () => {
       expect(results[1].addresses).toEqual(results[0].addresses);
    });
 
-   it("leaves a colocated source of the build on the address it had", () => {
+   it("leaves a database source of the build on the address it had", () => {
       const built = withStorage(() =>
          tables(
             derive(
@@ -322,11 +322,11 @@ describe("one table per stored projection", () => {
          ),
       );
       // Twins in two tiers (P2-21): the stored one moves to an address of its
-      // own, the colocated `b` keeps the one it had.
+      // own, the database `b` keeps the one it had.
       expect(built).toHaveLength(2);
-      const colocated = built.find(([, t]) => t.includes("__b__"));
+      const database = built.find(([, t]) => t.includes("__b__"));
       const stored = built.find(([, t]) => t.includes("__a__"));
-      expect(colocated?.[0]).toBe(ADDRESS);
+      expect(database?.[0]).toBe(ADDRESS);
       expect(stored?.[0]).not.toBe(ADDRESS);
    });
 
@@ -441,7 +441,7 @@ describe("a bare name between two schemas", () => {
    }
 
    for (const storage of [false, true]) {
-      it(`gives each of s1.t and s2.t its own address, and t neither's, in every order (${storage ? "storage=" : "colocated"})`, () => {
+      it(`gives each of s1.t and s2.t its own address, and t neither's, in every order (${storage ? "storage=" : "database"})`, () => {
          const results = withStorage(() =>
             ORDERS3.map((order) => {
                const compiled = trio(order, storage);
@@ -522,7 +522,7 @@ describe("a bare name between two schemas, over the real compiler", () => {
          ["t", "s2.t", "s1.t"],
          ["s2.t", "t", "s1.t"],
       ]) {
-         it(`fails the load with materialization-table-collision (${storage ? "storage=" : "colocated"}, ${order.join(" ")})`, async () => {
+         it(`fails the load with materialization-table-collision (${storage ? "storage=" : "database"}, ${order.join(" ")})`, async () => {
             const model = [
                "##! experimental.persistence",
                RAW,
@@ -538,7 +538,7 @@ describe("a bare name between two schemas, over the real compiler", () => {
                const compiled = await compilePackageBuildPlan(
                   await packages.create(model),
                );
-               const outcome = deriveBuildPlanOutcome(compiled, null);
+               const outcome = derivePackagePlan(compiled, null);
                const text = loadGateText(
                   {
                      plan: outcome.plan,

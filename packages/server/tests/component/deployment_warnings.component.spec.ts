@@ -3,7 +3,7 @@
 
 // P13's publish warnings over a real Environment and Package: a `storage=`
 // source naming a destination the environment does not configure, and a
-// colocated source on a connection that cannot hold a table. Each is a coded
+// database source on a connection that cannot hold a table. Each is a coded
 // package warning and a `live` serve verdict; the package still loads, and the
 // warning is read live, so fixing the deployment clears it with no reload.
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
@@ -26,8 +26,8 @@ source: orders is duckdb.sql("SELECT 1 AS id, 'east' AS region")
 #@ persist name="by_region" storage=lake
 source: by_region is orders -> { group_by: region; aggregate: n is count() }
 
-#@ persist name="colocated"
-source: colocated is orders -> { group_by: region }
+#@ persist name="database"
+source: database is orders -> { group_by: region }
 `;
 
 /** A destination of the one declarable type; nothing connects to it at load. */
@@ -125,14 +125,14 @@ describe("a storage= destination the environment does not configure (P13)", () =
          verdict: "live",
          reason: "destination_missing",
       });
-      // The colocated source on a writable connection warns nothing.
+      // The database source on a writable connection warns nothing.
       expect(warningsWith(pkg, CANNOT_HOLD_TABLE)).toEqual([]);
    });
 
    it("warns nothing when the destination is configured", async () => {
       const { pkg } = await load([LAKE]);
       expect(warningsWith(pkg, DESTINATION_MISSING)).toEqual([]);
-      expect(verdictOf(pkg, "by_region")?.verdict).toBe("not_built");
+      expect(verdictOf(pkg, "by_region")?.verdict).toBe("awaiting_build");
    });
 
    it("clears once the destination is configured, with no reload, and returns when it is removed", async () => {
@@ -164,7 +164,7 @@ describe("a storage= destination the environment does not configure (P13)", () =
    });
 });
 
-describe("a colocated source on a connection that cannot hold a table (P13)", () => {
+describe("a database source on a connection that cannot hold a table (P13)", () => {
    it("warns with a code naming the connection, serves live, and clears when the capability changes", async () => {
       const { pkg } = await load([LAKE]);
       // The environment answers from each connection's configured type; no
@@ -177,18 +177,18 @@ describe("a colocated source on a connection that cannot hold a table (P13)", ()
       });
       const [warning] = warningsWith(pkg, CANNOT_HOLD_TABLE);
       expect(warning).toMatchObject({
-         subject: "colocated",
+         subject: "database",
          severity: "warn",
       });
       expect(warning.message).toContain("'duckdb'");
-      expect(verdictOf(pkg, "colocated")).toMatchObject({
+      expect(verdictOf(pkg, "database")).toMatchObject({
          verdict: "live",
          reason: "connection_cannot_hold_table",
       });
       // A storage= source only reads its connection: not warned.
       expect(
          warningsWith(pkg, CANNOT_HOLD_TABLE).map((w) => w.subject),
-      ).toEqual(["colocated"]);
+      ).toEqual(["database"]);
       canHold = true;
       expect(warningsWith(pkg, CANNOT_HOLD_TABLE)).toEqual([]);
    });
@@ -196,6 +196,6 @@ describe("a colocated source on a connection that cannot hold a table (P13)", ()
    it("reads a connection's configured type from the environment: a writable type warns nothing", async () => {
       const { pkg } = await load([LAKE]);
       expect(warningsWith(pkg, CANNOT_HOLD_TABLE)).toEqual([]);
-      expect(verdictOf(pkg, "colocated")?.verdict).toBe("not_built");
+      expect(verdictOf(pkg, "database")?.verdict).toBe("awaiting_build");
    });
 });

@@ -14,7 +14,7 @@ import { PROBES } from "../test_helpers/settings_probes";
 /**
  * What each setting gives for each way an operator can set it, today. One
  * entry per setting, under its key in the configuration design
- * (docs/configuration-design.md), with today's variable, flag and file key as
+ * (docs/publisher-v1.md, Appendix C), with today's variable, flag and file key as
  * the sources. Every row is a case a deployment can hit: unset, each source
  * read today, a blank variable, and values that are wrong. The expected result
  * is today's, quirks included, so a change to how a setting is read shows up
@@ -979,6 +979,40 @@ export const CONTRACT: Record<string, Case[]> = {
          expect: value("127.0.0.1"),
       },
    ],
+   "admin.requestTimeoutMs": [
+      { name: "unset is ten minutes (600000 ms)", expect: value(600_000) },
+      {
+         name: "PUBLISHER_ADMIN_REQUEST_TIMEOUT_MS",
+         env: { PUBLISHER_ADMIN_REQUEST_TIMEOUT_MS: "3600000" },
+         expect: value(3_600_000),
+      },
+      {
+         name: "--admin-request-timeout-ms",
+         argv: ["--admin-request-timeout-ms", "1800000"],
+         expect: value(1_800_000),
+      },
+      {
+         name: "the flag wins over the variable",
+         env: { PUBLISHER_ADMIN_REQUEST_TIMEOUT_MS: "3600000" },
+         argv: ["--admin-request-timeout-ms", "1800000"],
+         expect: value(1_800_000),
+      },
+      {
+         name: "blank",
+         env: { PUBLISHER_ADMIN_REQUEST_TIMEOUT_MS: "" },
+         expect: value(600_000),
+      },
+      {
+         name: "zero fails",
+         env: { PUBLISHER_ADMIN_REQUEST_TIMEOUT_MS: "0" },
+         expect: fails("PUBLISHER_ADMIN_REQUEST_TIMEOUT_MS"),
+      },
+      {
+         name: "not a number fails",
+         env: { PUBLISHER_ADMIN_REQUEST_TIMEOUT_MS: "abc" },
+         expect: fails("PUBLISHER_ADMIN_REQUEST_TIMEOUT_MS"),
+      },
+   ],
    "admin.catalogDatabase": [
       { name: "unset is off", expect: value(null) },
       {
@@ -1647,6 +1681,19 @@ export const CONTRACT: Record<string, Case[]> = {
          name: "not a boolean",
          env: { PUBLISHER_MATERIALIZE_GATED_SOURCES: "sometimes" },
          expect: fails("PUBLISHER_MATERIALIZE_GATED_SOURCES"),
+      },
+   ],
+   "materialize.admissionMode": [
+      { name: "unset", expect: value("lookup") },
+      {
+         name: "PUBLISHER_ADMISSION_MODE",
+         env: { PUBLISHER_ADMISSION_MODE: "shadow" },
+         expect: value("shadow"),
+      },
+      {
+         name: "not a mode",
+         env: { PUBLISHER_ADMISSION_MODE: "sometimes" },
+         expect: fails("PUBLISHER_ADMISSION_MODE"),
       },
    ],
    "persist.collisionEnforcementEnabled": [

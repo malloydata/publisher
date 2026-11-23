@@ -71,6 +71,12 @@ function fakeSession(answers: { columns?: string[]; nonEmpty?: boolean } = {}) {
          if (sql.includes("LIMIT 1")) {
             return { rows: answers.nonEmpty === false ? [] : [{ present: 1 }] };
          }
+         // The newest stored watermark at or below the recorded boundary,
+         // read as text: a table holding rows right up to it.
+         if (/ <= (DATE|TIMESTAMP) '/.test(sql)) {
+            const atOrBelow = /<= (?:DATE|TIMESTAMP) '([^']+)'/.exec(sql)?.[1];
+            return { rows: [{ watermark_max: atOrBelow ?? null }] };
+         }
          if (sql.includes("MAX(")) {
             return { rows: [{ watermark_max: "2024-06-10" }] };
          }
@@ -84,13 +90,14 @@ function targetFor(
    opts: {
       lineage?: IncrementalLineage;
       sourceDialect?: string;
+      sourceType?: "postgres" | "bigquery" | "snowflake";
       answers?: Parameters<typeof fakeSession>[0];
    } = {},
 ) {
    const { session, seen } = fakeSession(opts.answers);
    const { target, readCost } = storageDeltaTarget({
       session,
-      sourceType: "postgres",
+      sourceType: opts.sourceType ?? "postgres",
       handle: "orders_pg_db",
       destinationName: "lake",
       physicalTableName: "orders__g000__abc",
@@ -341,6 +348,23 @@ describe("planIncrementalStep against a storage destination", () => {
       expect(step.mode).toBe("seed");
       if (step.mode !== "seed") return;
       expect(step.reasonCode).toBe("table_unreadable");
+   });
+});
+
+describe("the late-row check on a stored source", () => {
+   it("reads the window through the passthrough from Postgres and Snowflake", () => {
+      expect(targetFor().target.windowRows).toBeDefined();
+      expect(
+         targetFor({ sourceType: "snowflake", sourceDialect: "snowflake" })
+            .target.windowRows,
+      ).toBeDefined();
+   });
+
+   it("is not run on BigQuery, whose window read is a job no interrupt cancels", () => {
+      expect(
+         targetFor({ sourceType: "bigquery", sourceDialect: "standardsql" })
+            .target.windowRows,
+      ).toBeUndefined();
    });
 });
 

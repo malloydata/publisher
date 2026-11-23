@@ -115,14 +115,14 @@
   "loadWarnings": [
     {
       "code": "deprecated-preaggregate-annotation",
-      "message": "Measure summe on source bestellungen uses #@ preaggregate, which is deprecated: its v2 spelling is #(preaggregate) grain=[…] (see https://github.com/malloydata/publisher/blob/main/docs/materialization-migration.md). Until you switch, #@ preaggregate still builds and serves its rollups.",
+      "message": "Measure summe on source bestellungen uses #@ preaggregate, which is deprecated: its v2 spelling is #(rollup) grain=[…] (see https://github.com/malloydata/publisher/blob/main/docs/materialization-migration.md). Until you switch, #@ preaggregate still builds and serves its rollups.",
       "model": "m.malloy",
       "severity": "warn",
       "subject": "bestellungen"
     },
     {
       "code": "deprecated-preaggregate-annotation",
-      "message": "Measure 件数 on source bestellungen uses #@ preaggregate, which is deprecated: its v2 spelling is #(preaggregate) grain=[…] (see https://github.com/malloydata/publisher/blob/main/docs/materialization-migration.md). Until you switch, #@ preaggregate still builds and serves its rollups.",
+      "message": "Measure 件数 on source bestellungen uses #@ preaggregate, which is deprecated: its v2 spelling is #(rollup) grain=[…] (see https://github.com/malloydata/publisher/blob/main/docs/materialization-migration.md). Until you switch, #@ preaggregate still builds and serves its rollups.",
       "model": "m.malloy",
       "severity": "warn",
       "subject": "bestellungen"
@@ -169,7 +169,7 @@
         "freshness": null,
         "modelPath": "m.malloy",
         "name": "bestellungen__rollup______278821ac",
-        "origin": "preaggregate",
+        "origin": "rollup",
         "preaggregate": {
           "baseSourceName": "bestellungen",
           "grainDimensions": [

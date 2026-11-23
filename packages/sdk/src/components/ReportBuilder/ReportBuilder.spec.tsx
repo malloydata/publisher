@@ -111,8 +111,8 @@ describe("ReportBuilder", () => {
       expect(screen.getByText("Storefront")).toBeDefined();
    });
 
-   // The point of taking the rule from `Dashboard` rather than restating it:
-   // what you arrange is what a reader sees.
+   // The point of taking the rule from `DashboardView` rather than restating
+   // it: what you arrange is what a reader sees.
    it("lays tiles out on the dashboard's own grid rule", async () => {
       await mount();
       expect(itemStyleOf("by_cat")).toContain("grid-column: span 6");

@@ -6,7 +6,7 @@
  * `freshness.fallback=` as on `#@ persist` and `#(materialize)`, where a key
  * outside the group or a value the publisher cannot read is a malformed
  * declaration, which fails the publish and the load (the load-vs-refused
- * policy). Read by both rollup spellings, `#(preaggregate)` and
+ * policy). Read by both rollup spellings, `#(rollup)` and
  * `#@ preaggregate`.
  *
  * Pure.
@@ -14,6 +14,7 @@
 
 import {
    FRESHNESS_FALLBACKS,
+   FRESHNESS_WINDOW_PROBLEM,
    freshnessWindowSeconds,
    isFreshnessFallback,
    type DeclaredFreshness,
@@ -36,7 +37,8 @@ type FreshnessGroupRead =
  * The `freshness` group at `path` (`["freshness"]`, or
  * `["preaggregate", "freshness"]` for the nested form): nothing when it is
  * not written; its unknown keys; or why a value is unusable (a window that is
- * not a whole number and one unit of `s`, `m`, `h`, `d`, `w`, a fallback
+ * not a whole number greater than zero and one unit of `s`, `m`, `h`, `d`,
+ * `w`, a fallback
  * outside `live`, `stale_ok`, `fail`, or a group written as a plain value).
  */
 export function readFreshnessGroup(
@@ -61,11 +63,7 @@ export function readFreshnessGroup(
          window === undefined ||
          freshnessWindowSeconds(window) === undefined
       ) {
-         return {
-            invalid:
-               "has a freshness.window= that is not a whole number and a unit " +
-               '(s, m, h, d or w), such as freshness.window="24h"',
-         };
+         return { invalid: FRESHNESS_WINDOW_PROBLEM };
       }
       freshness.window = window.trim();
    }

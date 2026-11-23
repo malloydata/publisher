@@ -9,6 +9,7 @@
  * hashed with. The one place an address is computed.
  */
 
+import { storageWritable } from "../domain/placement";
 import type {
    BuildManifest,
    BuildTarget,
@@ -30,6 +31,13 @@ import {
 import type { SourceBuild } from "../domain/compiled_build_plan";
 import { notesDeclarePersist } from "./declaration";
 import { reachableSourceIDs } from "../text/source_map";
+import { sourceReads } from "../../governance/ir/source_reads";
+import {
+   type UpstreamSchemaReadings,
+   type UpstreamTableSchema,
+   upstreamSchemaFold,
+   upstreamSchemasOf,
+} from "../domain/upstream_schemas";
 import {
    plannedModelDefOf,
    sourceDefOf,
@@ -61,7 +69,7 @@ function sourceBuildOf(
  * The upstream sources `source` reads, of those its target depends on. Malloy
  * groups same-SQL sources into one target and gives each target the union of
  * its sources' upstream targets, so a target's dependency holds every source
- * of the upstream target: a colocated twin and its `storage=` twin alike. Each
+ * of the upstream target: a database twin and its `storage=` twin alike. Each
  * upstream target is narrowed to the sources `source`'s own definition reaches
  * ({@link reachableSourceIDs}); an upstream target none of whose sources it is
  * seen to reach keeps every source, so an edge is never lost to a walk that
@@ -250,7 +258,20 @@ export function presentAs(
    if (target !== undefined) buildTargets.set(presented, target);
    const problem = unkeyable.get(source);
    if (problem !== undefined) unkeyable.set(presented, problem);
+   presentedSourceIDs.set(presented, source.sourceID);
    return presented;
+}
+
+/** Each presented source's own sourceID ({@link presentAs}). */
+const presentedSourceIDs = new WeakMap<PersistSource, string>();
+
+/**
+ * The sourceID `source` was compiled under, when {@link presentAs} presents
+ * it under another (a `#(materialize)` build source's `<src>__mat@…`, which
+ * a downstream compiled over its table names), else undefined.
+ */
+export function compiledSourceIDOf(source: PersistSource): string | undefined {
+   return presentedSourceIDs.get(source);
 }
 
 /** `build` with each sourceID `rename` maps replaced, everywhere it appears. */
@@ -269,6 +290,55 @@ export function renameBuildSourceIDs(
          ]),
       ),
    };
+}
+
+/**
+ * `builds` with an edge from each downstream, a persisted view's or named
+ * query's build source or a rollup (`kind` `view` or `rollup`), to every
+ * planned table its definition reaches ({@link reachedBy}). Their companions
+ * are compiled over the author's files with the source-level `#@` lines
+ * blanked, so Malloy's own targets name no upstream for them; the edges say
+ * what their rows are computed from, which a run orders by
+ * (`sourcesInDependencyOrder`) and a host walks for a rerun's upstream
+ * closure. An upstream is a table of another kind: nothing reads a view's or
+ * a rollup's table. A definition that cannot be read adds no edge.
+ */
+export function withDownstreamEdges(
+   builds: readonly SourceBuild[],
+   tables: Readonly<
+      Record<string, { kind: string; source: PersistSource } | undefined>
+   >,
+): SourceBuild[] {
+   const upstreamIDs = new Set(
+      Object.entries(tables).flatMap(([id, table]) =>
+         table && table.kind !== "view" && table.kind !== "rollup" ? [id] : [],
+      ),
+   );
+   const edges = new Map<string, string[]>();
+   const edgesOf = (sourceID: string): string[] => {
+      let found = edges.get(sourceID);
+      if (found !== undefined) return found;
+      const table = tables[sourceID];
+      const reached =
+         table && (table.kind === "view" || table.kind === "rollup")
+            ? reachedBy(table.source)
+            : undefined;
+      found = [...(reached ?? [])]
+         .filter((id) => id !== sourceID && upstreamIDs.has(id))
+         .sort();
+      edges.set(sourceID, found);
+      return found;
+   };
+   return builds.map((build) => {
+      let changed = false;
+      const dependsOn: Record<string, string[]> = {};
+      for (const [sourceID, reads] of Object.entries(build.dependsOn)) {
+         const added = edgesOf(sourceID).filter((id) => !reads.includes(id));
+         if (added.length > 0) changed = true;
+         dependsOn[sourceID] = added.length > 0 ? [...reads, ...added] : reads;
+      }
+      return changed ? { ...build, dependsOn } : build;
+   });
 }
 
 /** `build` without the sourceIDs `drop` names, wherever they appear. */
@@ -309,6 +379,13 @@ export function computeSourceEntityId(
    target?: BuildTarget,
    /** The plan's {@link TableFolds}; absent, nothing is folded. */
    tableFolds?: TableFolds,
+   /**
+    * The plan's readings of the tables its sources read
+    * (`CompiledBuildPlan.upstreamSchemas`); absent, none is folded. Pass it
+    * wherever a plan's source is addressed, so a retyped upstream moves the
+    * address everywhere at once.
+    */
+   upstreamSchemas?: UpstreamSchemaReadings,
 ): string {
    // The target's `sql` is load-bearing: this address keys the covered_through
    // ledger (incremental_build.ts), so it must describe WHAT the source
@@ -323,17 +400,67 @@ export function computeSourceEntityId(
    // (build_targets_address_equality pins that); otherwise the two differ and
    // `manifestForCompiler` carries an entry under both. The digest stays the
    // caller's, so the same SQL on another connection is another table.
+   //
+   // The upstream fold names each table the build reads with its columns'
+   // native types (domain/upstream_schemas.ts), so a column retyped upstream,
+   // which leaves the SQL as it was, still re-addresses the table.
    const resolved = buildTargetOf(source, target);
    const fold = tableFolds?.[source.sourceID];
+   const upstream = upstreamFoldOf(source, upstreamSchemas, resolved.sql);
    const chosen = testAddresses.get(resolved);
    if (chosen !== undefined) {
-      const layout = addressText(source, "", fold);
+      const layout = addressText(source, "", fold, upstream);
       return layout === "" ? chosen : makeDigest(chosen, layout);
    }
    return makeDigest(
       connectionDigests[source.connectionName],
-      addressText(source, resolved.sql, fold),
+      addressText(source, resolved.sql, fold, upstream),
    );
+}
+
+/**
+ * What `source`'s address folds in from `readings`: its `reads` with each
+ * table's reading. Undefined when its tables cannot be known, which keeps
+ * the address its SQL gives it.
+ */
+function upstreamFoldOf(
+   source: PersistSource,
+   readings: UpstreamSchemaReadings | undefined,
+   /** The target's SQL: the columns it names are the ones folded. */
+   sql: string,
+): string | undefined {
+   if (!readings) return undefined;
+   return upstreamSchemaFold(upstreamTablesOf(source), readings, sql);
+}
+
+/** Each source's `reads`, walked once: a compiled source never changes. */
+const readsBySource = new WeakMap<
+   PersistSource,
+   { reads: ReturnType<typeof sourceReads> }
+>();
+
+/** {@link sourceReads} of `source`, memoized. */
+export function upstreamTablesOf(
+   source: PersistSource,
+): ReturnType<typeof sourceReads> {
+   let known = readsBySource.get(source);
+   if (!known) {
+      known = { reads: sourceReads(source) };
+      readsBySource.set(source, known);
+   }
+   return known.reads;
+}
+
+/**
+ * The tables `source`'s build reads with their readings, as its manifest
+ * entry records them; undefined when its address folded none.
+ */
+export function upstreamSchemasOfSource(
+   source: PersistSource,
+   readings: UpstreamSchemaReadings | undefined,
+): UpstreamTableSchema[] | undefined {
+   if (!readings) return undefined;
+   return upstreamSchemasOf(upstreamTablesOf(source), readings);
 }
 
 /**
@@ -362,28 +489,28 @@ export function compilerBuildId(
  * destination it declares with `storage=`, when
  * `PUBLISHER_PERSIST_ADDRESS_INCLUDES_DESTINATION` is on and
  * `PERSIST_STORAGE_MODE` is not `off` (off, `storage=` is inert and the source
- * builds colocated). Undefined for every colocated source, so turning the
- * switch on moves no colocated address (P12).
+ * builds in the database tier). Undefined for every database source, so turning the
+ * switch on moves no database address.
  */
 export function addressDestination(source: PersistSource): string | undefined {
    if (!getPersistAddressIncludesDestination()) return undefined;
-   if (getPersistStorageMode() === "off") return undefined;
+   if (!storageWritable(getPersistStorageMode())) return undefined;
    try {
       return declaredStorage(source);
    } catch {
-      // An unreadable annotation addresses as colocated.
+      // An unreadable annotation addresses as database.
       return undefined;
    }
 }
 
 /**
  * Fold what the target's `sql` cannot carry into the text a source's address
- * is computed from: (P12, behind a switch) the storage destination it builds
+ * is computed from: (behind a switch) the storage destination it builds
  * into, and the author's `name=` (or stored projection) where another source
  * of the same build names (or stores) another table
  * ({@link foldDistinctTableNames}). The target's `sql` carries no annotation
  * bytes, so without this a source moved to `storage=` would keep its
- * colocated address, and two `name=`s on one build would get one
+ * database address, and two `name=`s on one build would get one
  * table.
  *
  * The destination is derived here rather than passed in so every caller
@@ -397,11 +524,14 @@ export function addressText(
    sql: string,
    /** The source's entry in its plan's {@link TableFolds}. */
    tableFold?: string,
+   /** What its upstream tables' readings fold in (upstreamSchemaFold). */
+   upstream?: string,
 ): string {
    let text = sql;
    const destination = addressDestination(source);
    if (destination !== undefined) text += `\n-- stored in: ${destination}`;
    if (tableFold) text += `\n-- table: ${tableFold}`;
+   if (upstream) text += `\n-- upstream schemas: ${upstream}`;
    return text;
 }
 
@@ -442,7 +572,7 @@ export function declaresOwnPersist(source: PersistSource): boolean {
 
 /**
  * The columns a `storage=` build of `source` stores (as
- * projectToStoredColumns writes them), sorted; "" for a colocated source,
+ * projectToStoredColumns writes them), sorted; "" for a database source,
  * whose build writes its whole query, or one whose columns cannot be read
  * (its storage build refuses on its own).
  */
@@ -484,6 +614,7 @@ export function planAddresses(plan: {
    >;
    connectionDigests: Record<string, string>;
    tableFolds?: TableFolds;
+   upstreamSchemas?: UpstreamSchemaReadings;
 }): PlanAddresses {
    const addresses: Record<string, string | { unaddressable: string }> = {};
    for (const [sourceID, { source, target }] of Object.entries(plan.tables)) {
@@ -493,6 +624,7 @@ export function planAddresses(plan: {
             plan.connectionDigests,
             target,
             plan.tableFolds,
+            plan.upstreamSchemas,
          );
       } catch (err) {
          addresses[sourceID] = {
@@ -542,8 +674,8 @@ export function planAddressOf(
  * Likewise twins: two sources of one build in two places, one in its own
  * warehouse and one with `storage=` (or two destinations), are two tables.
  * Each `storage=` twin is addressed with its destination folded in and the
- * colocated one keeps the plain address, so a run's manifest holds both and
- * the colocated chain over the colocated twin is never handed the stored
+ * database one keeps the plain address, so a run's manifest holds both and
+ * the database chain over the database twin is never handed the stored
  * one. `PUBLISHER_PERSIST_ADDRESS_INCLUDES_DESTINATION` folds every
  * `storage=` destination in already, so there no twin shares an address.
  *
@@ -647,7 +779,7 @@ export function foldDistinctTableNames(
       );
       const nameOf = (m: (typeof group)[number]) =>
          m.defaulted ? "" : tables.get(m.name)!;
-      // A colocated build stores its whole query, so only `storage=`
+      // A database build stores its whole query, so only `storage=`
       // sources are told apart by what they store, and only one declaration
       // from another: an extension that inherits its base's `#@ persist` is
       // its base's table, whatever it renames or adds.
@@ -670,9 +802,9 @@ export function foldDistinctTableNames(
       const storesOf = (m: (typeof group)[number]) =>
          m.stores === "" ? "" : declared.get(m.declaration)!.stores;
       const projections = new Set(group.map(storesOf).filter((p) => p !== ""));
-      // Twins: one SQL built in two places (colocated and `storage=`, or two
+      // Twins: one SQL built in two places (database and `storage=`, or two
       // destinations) are two tables, so each `storage=` member folds in its
-      // destination and the colocated one keeps the plain address. An address
+      // destination and the database one keeps the plain address. An address
       // whose sources all build in one place never moves.
       const tiers = new Set(group.map((m) => m.tier));
       const tableOf = (m: (typeof group)[number]) =>
@@ -685,7 +817,7 @@ export function foldDistinctTableNames(
             : tableOf(m);
       if (new Set(group.map(keyOf)).size < 2) continue;
       // When only where they build tells them apart (twins under one name,
-      // or none), only the stored twins move: the colocated twin keeps its
+      // or none), only the stored twins move: the database twin keeps its
       // plain address, whatever `name=` both declare.
       const byTierOnly = new Set(group.map(tableOf)).size < 2;
       for (const member of group) {
@@ -701,10 +833,10 @@ export function foldDistinctTableNames(
  * The storage destination a source builds into, "" for its own warehouse:
  * its `storage=`, unless `PERSIST_STORAGE_MODE` is `off`, where a `storage=`
  * source is not built at all (it is skipped and served live), so it is no
- * twin of anything. An unreadable annotation reads as colocated.
+ * twin of anything. An unreadable annotation reads as database.
  */
 function storedTierOf(source: PersistSource): string {
-   if (getPersistStorageMode() === "off") return "";
+   if (!storageWritable(getPersistStorageMode())) return "";
    try {
       return declaredStorage(source)?.trim() ?? "";
    } catch {

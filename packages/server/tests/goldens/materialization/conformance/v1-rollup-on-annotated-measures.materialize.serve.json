@@ -256,6 +256,7 @@
         "considered": [
           {
             "kind": "rollup",
+            "origin": "rollup",
             "outcome": "used",
             "tableId": "f59e28dc263a95a93f57a37ddad239cafd219f8863304c4da1c005bc52e8ec18"
           }
@@ -274,6 +275,7 @@
         },
         "servedBy": {
           "kind": "rollup",
+          "origin": "rollup",
           "tableId": "f59e28dc263a95a93f57a37ddad239cafd219f8863304c4da1c005bc52e8ec18",
           "tier": "storage"
         },
@@ -331,6 +333,7 @@
         "considered": [
           {
             "kind": "rollup",
+            "origin": "rollup",
             "outcome": "used",
             "tableId": "f59e28dc263a95a93f57a37ddad239cafd219f8863304c4da1c005bc52e8ec18"
           }
@@ -349,6 +352,7 @@
         },
         "servedBy": {
           "kind": "rollup",
+          "origin": "rollup",
           "tableId": "f59e28dc263a95a93f57a37ddad239cafd219f8863304c4da1c005bc52e8ec18",
           "tier": "storage"
         },
@@ -403,6 +407,7 @@
           {
             "detail": "the query reads `status`, which the rollup's grain does not keep",
             "kind": "rollup",
+            "origin": "rollup",
             "outcome": "skipped",
             "reason": "GRAIN_TOO_COARSE",
             "tableId": "f59e28dc263a95a93f57a37ddad239cafd219f8863304c4da1c005bc52e8ec18"

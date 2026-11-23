@@ -37,7 +37,8 @@ concurrency:
 jobs:
   hammer:
     name: hammer (PUBLISHER_MATERIALIZE=${{ matrix.materialize }})
-    runs-on: ubuntu-latest
+    # On Credible's donated runners when CREDIBLE_RUNNERS is on.
+    runs-on: ${{ vars.CREDIBLE_RUNNERS == 'true' && 'credible-ubuntu-24.04' || 'ubuntu-latest' }}
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -45,11 +46,16 @@ jobs:
         materialize: ["true", "false"]
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: ${{ env.BUN_VERSION }}
+      # GitHub's runners only: on Credible's, `bun install` reads the npm mirror
+      # (see .github/actions/setup-workspace).
       - name: Cache Bun dependencies
+        if: runner.environment == 'github-hosted'
         uses: actions/cache@v4
         with:
           path: ~/.bun/install/cache
@@ -57,7 +63,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-bun-${{ env.BUN_VERSION }}-
       - name: Install dependencies
-        run: bun install --frozen-lockfile
+        run: scripts/ci-install-with-retry.sh bun install --frozen-lockfile
       # The harness would build on first use; building here keeps the build's
       # time and any failure in a step of its own.
       - name: Build the server
@@ -76,6 +82,14 @@ jobs:
           args=(--workers 4)
           if [ -n "$SCENARIOS" ]; then args+=(--scenarios "$SCENARIOS"); fi
           bun hammer/run.ts "${args[@]}" 2>&1 | tee "$HAMMER_LOG_DIR/hammer.log"
+      # Every failed scenario and check, from the hammer-report.json the run
+      # writes into HAMMER_LOG_DIR (uploaded below with the logs).
+      - name: Job summary
+        if: always()
+        env:
+          REPORT: ${{ runner.temp }}/hammer-logs/hammer-report.json
+          HEADING: hammer (PUBLISHER_MATERIALIZE=${{ matrix.materialize }})
+        run: bun hammer/summary.ts "$REPORT" "$HEADING" >> "$GITHUB_STEP_SUMMARY"
       - name: Upload logs
         if: always()
         uses: actions/upload-artifact@v4

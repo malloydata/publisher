@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { internalErrorToHttpError } from "../../../errors";
 import { unrecordedAudit } from "../../access_record";
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "fs";
@@ -522,11 +523,19 @@ describe("reclaiming an archived version's tables", () => {
          "UPDATE materializations SET status = 'MANIFEST_ROWS_READY', active_key = ?, completed_at = NULL, error = NULL WHERE id = ?",
          [`${ENV_ID}|${PKG}@1.0.0`, built.id],
       );
-      await expect(
-         service.createMaterialization(ENV, PKG, {
+      const active = await service
+         .createMaterialization(ENV, PKG, {
             versionId: VersionRef.parse("1.0.0"),
-         }),
-      ).rejects.toThrow("already has an active materialization");
+         })
+         .then(
+            () => new Error("not refused"),
+            (error: unknown) => error as Error,
+         );
+      expect(active.message).toContain("already has an active materialization");
+      expect(internalErrorToHttpError(active).json).toMatchObject({
+         code: 409,
+         reason: "MATERIALIZATION_CONFLICT",
+      });
       // A record still running keeps its tables through an archive.
       await archive("1.0.0");
       expect(await statusOf(built.id)).toBe("MANIFEST_ROWS_READY");
@@ -573,6 +582,62 @@ describe("reclaiming an archived version's tables", () => {
       await env
          .getVersionService()!
          .setArchiveStatus(PKG, "1.0.0", "unarchive");
+      await tamper("summary", 101);
+      expect(await answerOf("1.0.0")).toBe(101);
+   });
+
+   it("a retired run's drop keeps a table a sibling version's committed run serves, and drops one only it wrote", async () => {
+      // 1.0.0 built the shared `summary`; a run of 2.0.0 that a retire
+      // aborted wrote `summary` again and a table of its own.
+      await publish("1.0.0", 1, "package");
+      expect((await build({})).status).toBe("MANIFEST_FILE_READY");
+      await publish("2.0.0", 2, "package");
+      const aborted = await repo.createMaterialization(
+         ENV_ID,
+         PKG,
+         "PENDING",
+         { scope: "package", mode: "auto" },
+         { version: "2.0.0", lockVersion: "2.0.0" },
+      );
+      const warehouse = await env.getMalloyConnection("warehouse");
+      await warehouse.runSQL("CREATE TABLE only_aborted AS SELECT 2 AS answer");
+      const retire = (runId: string) =>
+         service.reclaimer.reclaimRetiredRunTables({
+            environment: env,
+            environmentName: ENV,
+            environmentId: ENV_ID,
+            packageName: PKG,
+            runId,
+            targets: ["summary", "only_aborted"].map((physicalTableName) => ({
+               sourceEntityId: "aborted",
+               physicalTableName,
+               connectionName: "warehouse",
+            })),
+            connectionFor: async (name) => env.getMalloyConnection(name),
+         });
+
+      // Nothing at all once the run's record is gone: what other runs
+      // name can no longer be read.
+      const gone = "no-such-run";
+      await retire(gone);
+      expect(await tablesIn(env)).toEqual(["only_aborted", "summary"]);
+
+      // Another run is writing `only_aborted` now (its record says so):
+      // kept, as it may hold that run's rows by now.
+      const writing = await repo.createMaterialization(
+         ENV_ID,
+         PKG,
+         "PENDING",
+         { scope: "package", mode: "auto", writesTables: ["only_aborted"] },
+         { version: "1.0.0", lockVersion: "1.0.0" },
+      );
+      await retire(aborted.id);
+      expect(await tablesIn(env)).toEqual(["only_aborted", "summary"]);
+      await repo.deleteMaterialization(writing.id);
+
+      await retire(aborted.id);
+      expect(await tablesIn(env)).toEqual(["summary"]);
+      // 1.0.0 still serves the shared table its run built.
       await tamper("summary", 101);
       expect(await answerOf("1.0.0")).toBe(101);
    });

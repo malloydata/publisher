@@ -1464,7 +1464,7 @@ describe('scope "package": the versions share the package\'s tables', () => {
          const auto = await service.createMaterialization(ENV, PKG, {});
          expect(
             await refusal(service.createMaterialization(ENV, PKG, {})),
-         ).toEqual({ status: 409, reason: undefined });
+         ).toEqual({ status: 409, reason: "MATERIALIZATION_CONFLICT" });
          const instructed = await service.createMaterialization(ENV, PKG, {
             versionId: VersionRef.parse("1.0.0"),
             buildInstructions: [
@@ -1756,7 +1756,7 @@ describe("the scheduler, per published version", () => {
 
    async function scheduledRuns(): Promise<Materialization[]> {
       const runs = (await repo.listMaterializations(ENV_ID, PKG)).filter(
-         (m) => m.metadata?.trigger === "SCHEDULER",
+         (m) => m.metadata?.trigger === "scheduler",
       );
       return Promise.all(runs.map((m) => settled(m.id)));
    }
@@ -1965,13 +1965,13 @@ describe("what a run's load binds, read back from the store", () => {
       await env.loadRunManifest({
          packageName: PKG,
          versionId: "1.0.0",
-         colocated: {},
+         database: {},
          // As the committer passes them: every entry, the stored one with its key check.
          storage: { rollup: { ...stored, keyUniqueness } as never },
          commit: async () => {},
       });
       const reloads = spyOn(pkg, "reloadAllModels");
-      const bind = spyOn(pkg.materialization(), "bind");
+      const bind = spyOn(pkg.materialization(), "bindCompiled");
       const storageBinds = () =>
          bind.mock.calls.filter(([update]) => update.storage !== undefined)
             .length;

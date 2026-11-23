@@ -5,6 +5,7 @@ import type { PackageLookup } from "../service/environment_ports";
 import {
    EnvironmentNotFoundError,
    errorMapping,
+   errorReason,
    logInternalFailure,
    ModelNotFoundError,
    type ErrorMapping,
@@ -44,6 +45,16 @@ export { BACK_PRESSURE_SUGGESTIONS } from "../errors";
  * @param identifier The resource it failed on (e.g. 'env/package').
  */
 export function classifyToolError(
+   operation: string,
+   identifier: string,
+   error: unknown,
+): ErrorDetails {
+   const details = toolErrorDetails(operation, identifier, error);
+   const reason = errorReason(error);
+   return reason ? { ...details, reason } : details;
+}
+
+function toolErrorDetails(
    operation: string,
    identifier: string,
    error: unknown,

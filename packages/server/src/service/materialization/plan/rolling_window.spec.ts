@@ -39,6 +39,13 @@ let contents: Record<string, unknown>;
 
 const model = `##! experimental.givens
 source: events is duckdb.table('events')
+source: filter_last is events extend { where: ts ~ f'last 7 days' }
+source: filter_today is events extend { where: d ~ f'today' }
+source: filter_absolute is events extend { where: ts ~ f'2024' }
+source: filter_dim is events extend {
+  dimension: this_month is d ~ f'this month'
+  dimension: in_2024 is d ~ f'2024'
+}
 #(materialize) storage="lake"
 source: lower_w is events extend { where: ts >= now - 30 days }
 source: lower_bare is events extend { where: ts > now }
@@ -299,6 +306,32 @@ describe("rollingWindowTerms, over compiled sources", () => {
       }
    });
 
+   it("refuses a relative filter string, which reads the clock but is no window it can store", () => {
+      for (const name of ["filter_last", "filter_today"]) {
+         expect(classifyWhereTerms(def(name))).toEqual([
+            { code: expect.any(String), dependsOn: { kind: "current_time" } },
+         ]);
+         expect(classify(name)).toMatchObject({
+            ok: false,
+            reason: "current_time_shape",
+         });
+      }
+   });
+
+   it("builds an absolute filter string as a fixed term", () => {
+      expect(classifyWhereTerms(def("filter_absolute"))).toEqual([
+         { code: "ts ~ f'2024'", dependsOn: { kind: "fixed" } },
+      ]);
+      expect(classify("filter_absolute")).toEqual({ ok: true, terms: [] });
+   });
+
+   it("finds a dimension over a relative filter string, not one over an absolute one", () => {
+      const fields = (contents.filter_dim as { fields: unknown[] }).fields;
+      const timed = currentTimeFields(fields);
+      expect(timed.has("this_month")).toBe(true);
+      expect(timed.has("in_2024")).toBe(false);
+   });
+
    it("refuses a field that is not a stored timestamp", () => {
       expect(
          rollingWindowTerms(
@@ -544,6 +577,10 @@ describe("the incremental delete, run on DuckDB", () => {
             return { rows: [{ column_name: "ts" }, { column_name: "loaded" }] };
          }
          if (sql.includes("LIMIT 1")) return { rows: [{ present: 1 }] };
+         // The newest stored watermark, where the delta starts.
+         if (/ <= (DATE|TIMESTAMP) '/.test(sql)) {
+            return { rows: [{ watermark_max: "2026-11-08 23:00:00" }] };
+         }
          throw new Error(`unexpected probe: ${sql}`);
       };
       const step = await planIncrementalStep({

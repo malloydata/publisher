@@ -22,6 +22,7 @@ import { parsePackageName } from "./identity";
 import type { FreshnessManifest } from "./materialization/domain/types";
 import { GeneratedFiles } from "./materialization/text/generated_files";
 import type { Package } from "./package";
+import { contractFor } from "../test_helpers/contract_fixture";
 
 const MODEL = `##! experimental.persistence
 source: base is duckdb.sql("SELECT 1 AS a")
@@ -46,7 +47,7 @@ describe("a rebind of the same manifest", () => {
       offThread.mock.results.filter(
          (r: { value: unknown }) => r.value !== undefined,
       ).length;
-   /** The colocated entry for `summary`, on `table`. */
+   /** The database entry for `summary`, on `table`. */
    let manifest: (table: string) => FreshnessManifest;
 
    beforeEach(async () => {
@@ -72,6 +73,7 @@ describe("a rebind of the same manifest", () => {
       manifest = (table) => ({
          [id!]: {
             tableName: table,
+            contract: contractFor(),
             connectionName: "duckdb",
             schema: [
                { name: "a", type: "INTEGER" },
@@ -213,8 +215,8 @@ describe("a rebind of the same manifest", () => {
       await pkg.reloadAllModels({});
       seen = reloads.mock.calls.length;
       expect(await recompiled(manifest("summary_b"))).toBe(true);
-      // A colocated bind with no reload moves what is bound.
-      pkg.materialization().bind({ colocated: manifest("summary_a") });
+      // A database bind with no reload moves what is bound.
+      pkg.materialization().bind({ database: manifest("summary_a") });
       expect(await recompiled(manifest("summary_b"))).toBe(true);
    });
 

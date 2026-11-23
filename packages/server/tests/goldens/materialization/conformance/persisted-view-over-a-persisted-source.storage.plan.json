@@ -5,7 +5,9 @@
       {
         "connectionName": "duckdb",
         "dependsOn": {
-          "pv_base__by_region__view@<pkg>/m.malloy.persist-view.malloy": []
+          "pv_base__by_region__view@<pkg>/m.malloy.persist-view.malloy": [
+            "pv_base@<pkg>/m.malloy"
+          ]
         },
         "order": [
           "pv_base__by_region__view@<pkg>/m.malloy.persist-view.malloy"
@@ -51,7 +53,9 @@
         "nodes": [
           [
             {
-              "dependsOn": [],
+              "dependsOn": [
+                "pv_base@<pkg>/m.malloy"
+              ],
               "sourceID": "pv_base__by_region__view@<pkg>/m.malloy.persist-view.malloy"
             }
           ]
@@ -129,7 +133,7 @@
         "freshness": null,
         "modelPath": "m.malloy",
         "name": "pv_base__by_region__view",
-        "origin": "persist",
+        "origin": "view",
         "preaggregate": null,
         "queryMetadata": null,
         "refresh": null,

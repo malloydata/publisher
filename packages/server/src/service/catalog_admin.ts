@@ -22,20 +22,22 @@ import type { components } from "../api";
 import { BadRequestError, ConflictError } from "../errors";
 import { logger } from "../logger";
 import {
-   applySessionResourceLimits,
    attachDuckLakeForCreate,
    attachDuckLakeReadOnly,
    attachDuckLakeReadWrite,
-   escapeSQL,
-   isDuckLakeInitRace,
-   tablePartitionKeys,
-   type PartitionKey,
 } from "./connection";
+import { isDuckLakeInitRace } from "./dialects/ducklake";
+import {
+   type PartitionKey,
+   tablePartitionKeys,
+} from "./dialects/ducklake_catalog";
+import { applySessionResourceLimits, escapeSQL } from "./duckdb_session_setup";
+import { createPgAttachSecret } from "./postgres_conninfo";
+import { createIsolatedBuildSession } from "./materialization/run/materialization_build_session";
 import {
    cleanupStorageFiles,
-   createIsolatedBuildSession,
    dropStorageTable,
-} from "./materialization/run/materialization_build_session";
+} from "./materialization/run/storage_admin";
 import { parseS3Endpoint } from "./gcs_s3_utils";
 import { redactPgSecrets } from "../pg_helpers";
 import { quoteIdentifier } from "./quoting";
@@ -478,6 +480,8 @@ export class CatalogAdmin {
             {
                environment: "",
                connection: name,
+               // The admin API addresses a catalog by its own name.
+               catalog: name,
                surface: source.kind === "table" ? "copy" : "load",
             },
             () =>
@@ -719,8 +723,13 @@ export class CatalogAdmin {
       try {
          await applySessionResourceLimits(session, { tempDirectory: workDir });
          await session.runSQL("INSTALL postgres; LOAD postgres;");
+         const { path, secret } = await createPgAttachSecret(
+            session,
+            "admin_pg",
+            this.config.catalogDatabase,
+         );
          await session.runSQL(
-            `ATTACH '${escapeSQL(this.config.catalogDatabase)}' AS admin_pg (TYPE postgres, READ_ONLY)`,
+            `ATTACH '${escapeSQL(path)}' AS admin_pg (TYPE postgres, READ_ONLY${secret ? `, SECRET ${secret}` : ""})`,
          );
          return await fn((sql) =>
             rows(

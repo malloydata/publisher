@@ -3,7 +3,7 @@
 
 /**
  * The bind: committed manifest entries joined to the package's plan, as the
- * bindings and the colocated entries a snapshot holds, and the entries it
+ * bindings and the database entries a snapshot holds, and the entries it
  * declines with why. One function per half of a manifest, both pure.
  *
  * - {@link bindStorageEntries}: a `storage=` entry binds only when a plan
@@ -11,11 +11,11 @@
  *   alone: another version's or another edit's table is declined), and only
  *   for the sources the eligibility gate found eligible. Eligibility must be
  *   positive: no plan, or a source missing from it, declines.
- * - {@link bindColocatedEntries}: a colocated entry binds only when its
- *   content address is colocated-eligible, its table name quoted for its
+ * - {@link bindDatabaseEntries}: a database entry binds only when its
+ *   content address is database-eligible, its table name quoted for its
  *   plan's dialect (Malloy pastes a manifest's table name verbatim).
- * - {@link deriveColocatedServeBindings}: the served copy's bindings for the
- *   colocated `#(materialize)` and v1 `#@ persist` tables those entries name,
+ * - {@link deriveDatabaseServeBindings}: the served copy's bindings for the
+ *   database `#(materialize)` and v1 `#@ persist` tables those entries name,
  *   read on the source's own connection. A `#(materialize)` build source is
  *   read by no author query, so Malloy's own manifest substitution never
  *   serves it; the served copy re-roots the author's source on it, exactly as
@@ -35,11 +35,18 @@ import {
    isPersistedQuerySourceID,
    type MaterializePlan,
    type StoredColumn,
+   isRollupOrigin,
+   type TableOrigin,
 } from "../domain/table_plans";
 import { capabilitiesOf } from "../domain/dialect";
 import {
-   driftDeclaredType,
-   driftedColumnRead,
+   compatible,
+   declaredMoves as contractDeclaredMoves,
+   type IncompatibleCode,
+   parseContract,
+} from "../domain/column_contract";
+import {
+   spelledNativeType,
    storedColumnsOfOutput,
    storedMalloyType,
 } from "../stored_column_types";
@@ -54,6 +61,7 @@ import {
    type Binding,
    type BindingKind,
    deriveServeBindings,
+   primaryKeyColumnsOf,
    primaryKeysOf,
 } from "../domain/binding";
 import { groupAliasesByName, planSourceIds } from "../domain/source_aliases";
@@ -96,8 +104,10 @@ export function bindStorageEntries(args: {
       | {
            eligible: readonly string[];
            refused: Record<string, string>;
-           /** The eligible sourceIDs admitted past their own gate (G3). */
+           /** The eligible sourceIDs admitted past their own gate. */
            gateKept?: readonly string[];
+           /** The eligible sourceIDs whose tables hold only ungated rows. */
+           ungated?: readonly string[];
         }
       | undefined;
    /** Each binding's kind, from the plan (see {@link kindFromPlan}). */
@@ -167,29 +177,82 @@ export function bindStorageEntries(args: {
       });
       return [];
    });
-   // The table, not the name, is what G3 admits: every name a G3 table is
-   // bound under is marked, since every one reads that one table (an
-   // extension that shares its base's table re-roots the base). So any
-   // sharer of a gate-kept source's content address counts as G3, an
-   // ungated sharer included: a gated entry point that joins an ungated
-   // sharer is served from the table because a gated sibling stores into
-   // it. Nothing leaks: the SQL, and so the rows, are identical, and
-   // `govern()` grafts and proves the entry point's own gate on the answer
-   // as on live. A rollup or a view is never marked (their legs pass a gate
-   // only with the switch).
+   // The table, not the name, is what own-gate keeping admits: every name a
+   // gate-keeping table is bound under is marked, since every one reads that
+   // one table (an extension that shares its base's table re-roots the base).
+   // So any sharer of a gate-kept source's content address counts as
+   // gate-keeping, an ungated sharer included: a gated entry point that joins
+   // an ungated sharer is served from the table because a gated sibling stores
+   // into it. Nothing leaks: the SQL, and so the rows, are identical, and
+   // `govern()` grafts and proves the entry point's own gate on the answer as
+   // on live. A `storage=` rollup plan admitted past its base's gates is marked
+   // too: its variant grafts and proves them (rollup_variants.ts). A view is
+   // never marked (its leg passes a gate only with the switch).
    const bindings = admittedBindings.map((binding) =>
       keptTables.has(binding.virtualHandle) &&
-      (binding.kind === "persist" || binding.kind === "materialize")
+      (binding.kind === "persist" ||
+         binding.kind === "materialize" ||
+         binding.kind === "rollup")
          ? { ...binding, ownGateKept: true }
          : binding,
    );
-   return { bindings, otherDefinition, declined };
+   // A table that holds only ungated rows is read past a gated entry point's
+   // gate as a database table is (the ungated-rows rule): every source stored
+   // at its address, by the plan, not only those bound, is proven ungated. A
+   // rollup too (its base ungated): the rollup leg's join branch reads one past
+   // a gated query source in a storage destination. A persisted view's or
+   // query's leg decides a gate on its own, so neither is marked.
+   const ungatedTables = ungatedTableAddresses(
+      eligibility?.ungated,
+      plan?.sources ?? {},
+   );
+   const marked = bindings.map((binding) =>
+      ungatedTables.has(binding.virtualHandle) &&
+      (binding.kind === "persist" ||
+         binding.kind === "materialize" ||
+         binding.kind === "rollup") &&
+      (binding.sourceIDs ?? []).length > 0 &&
+      (binding.sourceIDs ?? []).every((id) =>
+         eligibility?.ungated?.includes(id),
+      )
+         ? { ...binding, holdsOnlyUngatedRows: true }
+         : binding,
+   );
+   return { bindings: marked, otherDefinition, declined };
+}
+
+/**
+ * The tables (content addresses) that hold only ungated rows: those at which
+ * every source the plan stores is in `ungated` (the plan's
+ * `SourceEligibility.ungated`). One source on the address that is gated,
+ * refused, or whose gates could not be read keeps the address out (fail
+ * closed). The one rule both the bind (which marks each binding of such a
+ * table `holdsOnlyUngatedRows`) and the serve verdict (for a table not bound
+ * yet) read.
+ */
+export function ungatedTableAddresses(
+   ungated: readonly string[] | undefined,
+   sources: Readonly<Record<string, { sourceEntityId?: string }>>,
+): Set<string> {
+   const proven = new Set(ungated ?? []);
+   const byAddress = new Map<string, boolean>();
+   for (const [id, source] of Object.entries(sources)) {
+      const address = source.sourceEntityId;
+      if (!address) continue;
+      byAddress.set(
+         address,
+         (byAddress.get(address) ?? true) && proven.has(id),
+      );
+   }
+   return new Set(
+      [...byAddress].filter(([, all]) => all).map(([address]) => address),
+   );
 }
 
 /**
  * The tables (content addresses) plan admitted past a stored source's own
- * row-level gate under G3: the address of every `gateKept` source. The one
- * rule both the bind (which marks each binding of such a table
+ * row-level gate under own-gate keeping: the address of every `gateKept`
+ * source. The one rule both the bind (which marks each binding of such a table
  * `ownGateKept`) and the serve verdict (for a table not bound yet) read.
  */
 export function keptTableAddresses(
@@ -204,22 +267,22 @@ export function keptTableAddresses(
    return out;
 }
 
-/** One colocated entry the bind declined, for the facade's log and counter. */
-interface ColocatedBindDecline {
+/** One database entry the bind declined, for the facade's log and counter. */
+interface DatabaseBindDecline {
    reason: BindDeclineReason;
    sourceEntityId: string;
    detail: string;
 }
 
 /**
- * The colocated entries a manifest binds, filtered POSITIVELY against the
- * colocated eligibility (a miss is declined, not fatal), each table name
+ * The database entries a manifest binds, filtered POSITIVELY against the
+ * database eligibility (a miss is declined, not fatal), each table name
  * quoted for its plan's dialect: a table named by a reserved word or needing
  * its case kept reaches the warehouse only quoted, as the builder created it.
  * A name written as SQL is parsed and re-quoted; one its dialect cannot read
  * or quote is declined (`unquotable_name`), and the rest still bind.
  */
-export function bindColocatedEntries(args: {
+export function bindDatabaseEntries(args: {
    entries: FreshnessManifest;
    eligibility:
       | {
@@ -229,10 +292,10 @@ export function bindColocatedEntries(args: {
       | undefined;
    /** Each planned source's dialect, by its content address. */
    dialects: ReadonlyMap<string, string>;
-}): { entries: FreshnessManifest; declined: ColocatedBindDecline[] } {
+}): { entries: FreshnessManifest; declined: DatabaseBindDecline[] } {
    const { eligibility } = args;
    const entries: FreshnessManifest = {};
-   const declined: ColocatedBindDecline[] = [];
+   const declined: DatabaseBindDecline[] = [];
    for (const [sourceEntityId, entry] of Object.entries(args.entries)) {
       if (eligibility?.eligibleEntityIds.has(sourceEntityId)) {
          const dialect = args.dialects.get(sourceEntityId);
@@ -301,17 +364,17 @@ export function kindFromPlan(
 }
 
 /** What a binding reads of a build-plan source. */
-interface ColocatedPlanSource {
+interface DatabasePlanSource {
    name: string;
    sourceEntityId: string;
    connectionName: string;
    dialect?: string;
-   origin?: "persist" | "preaggregate";
+   origin?: TableOrigin | "preaggregate";
    annotationFields?: Record<string, string>;
 }
 
 /**
- * The served copy's bindings for the colocated `#(materialize)` tables the
+ * The served copy's bindings for the database `#(materialize)` tables the
  * bound manifest holds: one per planned `#(materialize)` source without
  * `storage=` whose content address the manifest names, admitted by
  * `eligible` (the same positive eligibility a `storage=` binding needs).
@@ -322,11 +385,11 @@ interface ColocatedPlanSource {
  * source over one is bound as a `storage=` source is. With neither, it binds
  * nothing: its table's columns are unknown, so it serves live.
  */
-export function deriveColocatedServeBindings(args: {
-   /** The bound colocated manifest, freshness fields included. */
+export function deriveDatabaseServeBindings(args: {
+   /** The bound database manifest, freshness fields included. */
    entries: FreshnessManifest | undefined;
    /** The build plan's sources, by sourceID. */
-   planSources: Readonly<Record<string, ColocatedPlanSource>>;
+   planSources: Readonly<Record<string, DatabasePlanSource>>;
    /** The `#(materialize)` plans, by the author's sourceID. */
    materializePlans: Readonly<Record<string, MaterializePlan>>;
    /** Whether the bind admits a planned source (positive eligibility). */
@@ -348,7 +411,7 @@ export function deriveColocatedServeBindings(args: {
    const bindings: Binding[] = [];
    for (const [sourceID, source] of Object.entries(planSources)) {
       const plan = materializePlans[sourceID];
-      if (source.origin === "preaggregate") continue;
+      if (isRollupOrigin(source.origin)) continue;
       if (!plan && (!args.v1Schema || args.notV1?.(sourceID))) continue;
       // A `storage=` table is bound from the storage manifest, never here.
       if (
@@ -360,7 +423,12 @@ export function deriveColocatedServeBindings(args: {
       const entry = entries[source.sourceEntityId];
       if (!entry?.tableName) continue;
       const schema = plan
-         ? plannedWithCaptured(plan.storedColumns, entry.schema)
+         ? plannedWithCaptured(
+              plan.storedColumns,
+              entry.schema?.length
+                 ? entry.schema
+                 : capturedOfNative(entry.nativeSchema, source.dialect),
+           )
          : // What its build captured, else what its compiled output derives
            // (a table built before the capture).
            entry.schema?.length
@@ -388,7 +456,7 @@ export function deriveColocatedServeBindings(args: {
       }
       bindings.push({
          kind: plan ? "materialize" : "persist",
-         tier: "colocated",
+         tier: "database",
          sourceName: source.name,
          sourceIDs: [sourceID],
          destinationName: source.connectionName,
@@ -408,9 +476,12 @@ export function deriveColocatedServeBindings(args: {
             ? { freshnessFallback: entry.freshnessFallback }
             : {}),
          // The key checks the run that wrote the table recorded beside it
-         // (a pair table's leaf key, known limitation 40); internal, never
+         // (a pair table's leaf key); internal, never
          // from a host's manifest.
          ...(primaryKeysOf(entry) ? { primaryKeys: primaryKeysOf(entry) } : {}),
+         ...(primaryKeyColumnsOf(entry)
+            ? { primaryKeyColumns: primaryKeyColumnsOf(entry) }
+            : {}),
       });
    }
    return bindings;
@@ -420,7 +491,7 @@ export function deriveColocatedServeBindings(args: {
 const ZONED_TIMESTAMP = /^(TIMESTAMP WITH TIME ZONE|TIMESTAMPTZ)$/i;
 
 /**
- * A colocated `#(materialize)` table's columns: the plan's, typed as Malloy
+ * A database `#(materialize)` table's columns: the plan's, typed as Malloy
  * declares them (a truncation's `DATE`, which the warehouse may hold as a
  * timestamp), and each zoned timestamp the build captured, which the plan
  * cannot spell, as it captured it, as a `storage=` binding declares one. No
@@ -442,7 +513,30 @@ function plannedWithCaptured(
 }
 
 /**
- * The columns a v1 colocated `#@ persist` build wrote, derived from the
+ * A table's columns from the warehouse types its build captured, spelled as
+ * a capture spells them (`spelledNativeType`): for a table whose build could
+ * not read its columns back (Postgres's schema reader refuses a name with no
+ * schema, which is how a build names its tables). Undefined with none to
+ * read.
+ */
+function capturedOfNative(
+   nativeSchema: readonly { name: string; type: string }[] | undefined,
+   dialect: string | undefined,
+): StoredColumn[] | undefined {
+   if (!nativeSchema?.length || !dialect) return undefined;
+   try {
+      return nativeSchema.flatMap((c) => {
+         const type = spelledNativeType(c.type, dialect);
+         return type ? [{ name: c.name, type }] : [];
+      });
+   } catch {
+      // A dialect Malloy does not know: no spelling to read them with.
+      return undefined;
+   }
+}
+
+/**
+ * The columns a v1 database `#@ persist` build wrote, derived from the
  * source's compiled definition (for a table built before its build captured
  * a schema). A v1 build source is query-shaped, so its
  * stored columns are the query's output fields. They are read from the
@@ -505,7 +599,7 @@ export interface UnreadTable {
    detail?: string;
 }
 
-/** One bound colocated table whose warehouse columns moved since its build. */
+/** One bound database table whose warehouse columns moved since its build. */
 export interface ObservedDrift {
    sourceEntityId: string;
    /**
@@ -528,12 +622,36 @@ export interface ObservedDrift {
       leftOut?: true;
       /** A 128-bit integer a DuckLake table holds as a DOUBLE. */
       storedAsDouble?: true;
+      /**
+       * The table holds the type its build wrote, but its source now
+       * declares another: what the source reads changed type since the
+       * build ({@link declaredMoves}).
+       */
+      declaredMoved?: true;
+      /**
+       * Read through its faithful cast but not reported: a type a build
+       * writes for the declaration by design ({@link declaredMoves}).
+       */
+      castOnly?: true;
    }[];
 }
 
 /**
- * The colocated bindings and entries held to the columns the bind read from
- * each table's warehouse ({@link ObservedColumns}). A colocated table's types
+ * One bound table that no longer matches its column contract, which the bind
+ * left out (it answers live): the generation it judged (`tableName`, and the
+ * `builtAt` it compared against), what changed, and which columns.
+ */
+export interface IncompatibleTable {
+   sourceEntityId: string;
+   tableName: string;
+   builtAt?: string;
+   code: IncompatibleCode;
+   columns: string[];
+}
+
+/**
+ * The database bindings and entries held to the columns the bind read from
+ * each table's warehouse ({@link ObservedColumns}). A database table's types
  * are otherwise the plan's, or what its build captured, so a column altered
  * outside a build would be read with a type the table no longer holds.
  *
@@ -556,7 +674,11 @@ export interface ObservedDrift {
  *   ({@link driftedColumnRead}), so only a query reading a left-out column
  *   answers live;
  * - a table whose read failed (`unread`), or that was not read, is left out
- *   of both: it answers live (fail safe).
+ *   of both: it answers live (fail safe);
+ * - a table whose build captured neither its columns nor their native types
+ *   (`uncaptured`) is left out of both too: with no built type to compare,
+ *   no alter since the build can be seen (a float, or an exact type that
+ *   rounds its values), so every read of it answers live.
  *
  * With no observation (`observed` undefined) everything is returned as is.
  */
@@ -575,16 +697,16 @@ export function applyObservedColumns(args: {
    bindings: Binding[];
    drifted: ObservedDrift[];
    unread: UnreadTable[];
+   /** The tables left out because their build captured no column types. */
+   uncaptured: string[];
+   /** The tables left out because their entry carries no column contract. */
+   contractMissing: string[];
+   /** The tables left out because they no longer match their contract. */
+   incompatible: IncompatibleTable[];
 } {
    const { observed } = args;
-   if (!observed) {
-      return {
-         entries: args.entries,
-         bindings: [...args.bindings],
-         drifted: [],
-         unread: [],
-      };
-   }
+   if (!observed) return asBound(args.entries, args.bindings);
+   const uncaptured: string[] = [];
    const entries: FreshnessManifest = {};
    const drifted: ObservedDrift[] = [];
    const unread: UnreadTable[] = [];
@@ -595,10 +717,22 @@ export function applyObservedColumns(args: {
    >();
    const served = new Set(
       args.bindings
-         .filter((b) => b.tier === "colocated")
+         .filter((b) => b.tier === "database")
          .map((b) => b.virtualHandle),
    );
+   /** Each bound table's columns its engine holds lossily, by address. */
+   const lossy = new Map<string, string[]>();
+   const contractMissing: string[] = [];
+   const incompatible: IncompatibleTable[] = [];
    for (const [id, entry] of Object.entries(args.entries)) {
+      // A table with no contract is never served from (contract_missing):
+      // it answers live, and the next build rebuilds it in full.
+      const contract = parseContract(entry.contract);
+      if (!contract) {
+         contractMissing.push(id);
+         left.add(id);
+         continue;
+      }
       const read: ObservedColumns = observed.get(id) ?? {
          unread: "not_read",
       };
@@ -611,112 +745,246 @@ export function applyObservedColumns(args: {
          left.add(id);
          continue;
       }
-      reads.set(id, read);
-      const columns = entry.schema?.length
-         ? entry.schema.flatMap((c) => {
-              const d = columnDrift(
-                 c,
-                 nativeTypeOf(entry.nativeSchema, c.name),
-                 read,
-              );
-              return d.kind === "none" ? [] : [d.report];
-           })
-         : // A build that captured only native types (a warehouse whose
-           // schema reader refused the name): those are what moved or not.
-           nativeDriftOf(entry.nativeSchema ?? [], read);
-      if (columns.length > 0 && !served.has(id)) {
-         // Read by Malloy's manifest substitution alone: each moved column
-         // cast in a projection substituted for the table, or left out.
-         const substituted = substitutedRead(
-            entry,
-            columns,
-            read,
-            args.declared?.(id),
-         );
-         drifted.push({
-            sourceEntityId: id,
-            columns: substituted?.columns ?? columns,
+      // The one comparator: the table as read now against its contract.
+      // A table that no longer matches is left out, never cast or narrowed.
+      const verdict = compatible(contract, read);
+      const tableOf = {
+         sourceEntityId: id,
+         tableName: entry.tableName,
+         ...(entry.builtAt ? { builtAt: entry.builtAt } : {}),
+      };
+      if (!verdict.ok) {
+         incompatible.push({
+            ...tableOf,
+            code: verdict.code,
+            columns: verdict.columns,
          });
-         if (substituted) entries[id] = substituted.entry;
+         left.add(id);
          continue;
       }
-      if (columns.length > 0) drifted.push({ sourceEntityId: id, columns });
+      // A table whose address cannot see its source retyped (a `.sql()`
+      // source's, or a source reading one): its source now declaring a type
+      // the table's value does not read as is drift as surely as an altered
+      // column (the bind's declared-versus-stored check).
+      const declaration = args.declared?.(id);
+      const moved = declaration
+         ? contractDeclaredMoves(
+              contract,
+              declaration.columns.flatMap((c) =>
+                 c.name ? [{ name: c.name, type: c.type }] : [],
+              ),
+           )
+         : [];
+      if (moved.length > 0) {
+         incompatible.push({
+            ...tableOf,
+            code: "declared_moved",
+            columns: moved,
+         });
+         left.add(id);
+         continue;
+      }
+      reads.set(id, read);
+      // A column its engine holds as a DOUBLE whatever it was built as (a
+      // DuckLake 128-bit integer): a fact of what the build wrote, not a
+      // drift, so the table serves, but never that column, which no read
+      // gets exact.
+      const asDouble = read.columns
+         .filter((c) => c.storedAsDouble)
+         .map((c) => c.name);
+      if (asDouble.length > 0) {
+         lossy.set(id, asDouble);
+         if (!served.has(id)) {
+            const connectionName =
+               entry.connectionName ?? declaration?.connectionName;
+            if (!connectionName) {
+               left.add(id);
+               continue;
+            }
+            entries[id] = {
+               ...entry,
+               heldRead: {
+                  connectionName,
+                  columns: read.columns.flatMap((c) =>
+                     c.type !== undefined && !c.storedAsDouble
+                        ? [
+                             {
+                                name: c.name,
+                                type: c.type,
+                                ...(c.nativeType !== undefined
+                                   ? { nativeType: c.nativeType }
+                                   : {}),
+                             },
+                          ]
+                        : [],
+                  ),
+               },
+               leftOutColumns: asDouble,
+            };
+            continue;
+         }
+      }
       entries[id] = entry;
    }
    const bindings = args.bindings.flatMap((b): Binding[] => {
-      if (b.tier !== "colocated") return [b];
+      if (b.tier !== "database") return [b];
       if (left.has(b.virtualHandle)) return [];
-      const read = reads.get(b.virtualHandle);
-      if (!read) return [b];
-      const entry = args.entries[b.virtualHandle];
-      const built = new Map((entry?.schema ?? []).map((c) => [c.name, c]));
-      const extra: ObservedDrift["columns"] = [];
-      let moved = false;
-      const retyped = new Map<string, string>();
-      const movedColumns: { name: string; type: string }[] = [];
-      // The binding's decision for each drifted column.
-      const decided = new Map<string, ObservedDrift["columns"][number]>();
-      const schema = b.schema.flatMap((c) => {
-         const builtNative = nativeTypeOf(
-            b.nativeSchema ?? entry?.nativeSchema,
-            c.name,
-         );
-         const d = columnDrift(built.get(c.name) ?? c, builtNative, read);
-         if (d.kind === "none") return [c];
-         moved = true;
-         // With no captured type the binding's declared one stands in, which
-         // is not what the build wrote when the warehouse returns a type of
-         // its own (a date truncation as a timestamp): read with the type it
-         // holds, as any drift is, but not drift when its native type is the
-         // one the build captured.
-         if (built.has(c.name)) {
-            decided.set(c.name, d.report);
-         } else if (!asBuilt(builtNative, c.name, read)) {
-            extra.push(d.report);
-            decided.set(c.name, d.report);
-         }
-         if (d.kind === "drop") return [];
-         if (d.nativeType !== undefined) retyped.set(c.name, d.nativeType);
-         // What the gate policy judges a gate over this column by.
-         movedColumns.push({ name: c.name, type: d.nativeType ?? d.type });
-         return [{ name: c.name, type: d.type }];
-      });
-      const known = drifted.find((x) => x.sourceEntityId === b.virtualHandle);
-      if (known) {
-         known.columns = known.columns.map((k) => {
-            const d = decided.get(k.column);
-            return d?.leftOut ? { ...k, leftOut: true as const } : k;
-         });
-      }
-      if (extra.length > 0) {
-         if (known) {
-            for (const e of extra) {
-               if (!known.columns.some((k) => k.column === e.column)) {
-                  known.columns.push(e);
-               }
-            }
-         } else {
-            drifted.push({ sourceEntityId: b.virtualHandle, columns: extra });
-         }
-      }
-      if (!moved) return [b];
-      // A big-integer column is cast to its native type at read: the type
-      // the warehouse holds now, never the one it was built with.
-      const nativeSchema = b.nativeSchema?.map((n) =>
-         retyped.has(n.name) ? { ...n, type: retyped.get(n.name)! } : n,
-      );
+      // Each column declared as the type its table holds, as its contract
+      // recorded it (a date truncation a warehouse stores as a timestamp):
+      // a fact of what the build wrote, which the served copy reads its
+      // columns by, never a drift.
+      b = asStored(b, reads.get(b.virtualHandle));
+      const doubles = lossy.get(b.virtualHandle);
+      if (!doubles) return [b];
+      // Declared as the DOUBLE it holds, so the served copy's read plan
+      // leaves it out and a gate over it is never read as exact.
+      const named = new Set(doubles.map((n) => n.toLowerCase()));
       return [
          {
             ...b,
-            schema,
-            ...(nativeSchema ? { nativeSchema } : {}),
-            ...(movedColumns.length > 0
-               ? { retypedColumns: movedColumns }
+            schema: b.schema.map((c) =>
+               named.has(c.name.toLowerCase()) ? { ...c, type: "DOUBLE" } : c,
+            ),
+            ...(b.nativeSchema
+               ? {
+                    nativeSchema: b.nativeSchema.map((n) =>
+                       named.has(n.name.toLowerCase())
+                          ? { ...n, type: "DOUBLE" }
+                          : n,
+                    ),
+                 }
                : {}),
+            retypedColumns: doubles.map((name) => ({ name, type: "DOUBLE" })),
          },
       ];
    });
-   return { entries, bindings, drifted, unread };
+   return {
+      entries,
+      bindings,
+      drifted,
+      unread,
+      uncaptured,
+      contractMissing,
+      incompatible,
+   };
+}
+
+/**
+ * The `storage=` bindings held to their tables' column contracts, as
+ * {@link applyObservedColumns} holds a database table: a binding whose entry
+ * carries no contract is left out (`contractMissing`), and, with an
+ * observation, one whose table did not read is left out unread, and one that
+ * no longer matches its contract is left out incompatible. Never cast or
+ * narrowed. With no observation (a spec's bind), a binding with a contract
+ * is kept as it is.
+ */
+export function holdStorageToContracts(args: {
+   bindings: readonly Binding[];
+   entries: Readonly<Record<string, ManifestEntry>>;
+   observed: ReadonlyMap<string, ObservedColumns> | undefined;
+}): {
+   bindings: Binding[];
+   unread: UnreadTable[];
+   contractMissing: string[];
+   incompatible: IncompatibleTable[];
+} {
+   const unread: UnreadTable[] = [];
+   const contractMissing: string[] = [];
+   const incompatible: IncompatibleTable[] = [];
+   const left = new Set<string>();
+   const judged = new Set<string>();
+   for (const b of args.bindings) {
+      const id = b.virtualHandle;
+      if (judged.has(id)) continue;
+      judged.add(id);
+      const entry = args.entries[id];
+      const contract = parseContract(entry?.contract);
+      if (!contract) {
+         contractMissing.push(id);
+         left.add(id);
+         continue;
+      }
+      if (!args.observed) continue;
+      const read: ObservedColumns = args.observed.get(id) ?? {
+         unread: "not_read",
+      };
+      if ("unread" in read) {
+         unread.push({
+            sourceEntityId: id,
+            reason: read.unread,
+            ...(read.detail !== undefined ? { detail: read.detail } : {}),
+         });
+         left.add(id);
+         continue;
+      }
+      const verdict = compatible(contract, read);
+      if (!verdict.ok) {
+         incompatible.push({
+            sourceEntityId: id,
+            tableName: entry.physicalTableName,
+            ...(entry.builtAt ? { builtAt: entry.builtAt } : {}),
+            code: verdict.code,
+            columns: verdict.columns,
+         });
+         left.add(id);
+      }
+   }
+   return {
+      bindings: args.bindings.filter((b) => !left.has(b.virtualHandle)),
+      unread,
+      contractMissing,
+      incompatible,
+   };
+}
+
+/**
+ * `b` with each column declared as the type its table holds (`read`, the
+ * bind's read, which matched the table's contract), where that reads as
+ * another Malloy type than the binding declares: the stored type the served
+ * copy's read plan casts from. A column of no basic type keeps its own.
+ */
+function asStored(
+   b: Binding,
+   read: Extract<ObservedColumns, { columns: unknown }> | undefined,
+): Binding {
+   if (!read) return b;
+   const retyped: { name: string; type: string }[] = [];
+   const schema = b.schema.map((c) => {
+      const held = read.columns.find(
+         (r) => r.name.toLowerCase() === c.name.toLowerCase(),
+      );
+      if (!held?.type || held.type === c.type) return c;
+      const family = (t: string) =>
+         storedMalloyType(t) ?? t.trim().toUpperCase();
+      if (family(held.type) === family(c.type)) return c;
+      retyped.push({ name: c.name, type: held.nativeType ?? held.type });
+      return { ...c, type: held.type };
+   });
+   return retyped.length === 0 ? b : { ...b, schema, retypedColumns: retyped };
+}
+
+/** With no observation, everything as bound: nothing drifted, read or left out. */
+function asBound(
+   entries: FreshnessManifest,
+   bindings: readonly Binding[],
+): ReturnType<typeof applyObservedColumns> {
+   const contractMissing = Object.entries(entries)
+      .filter(([, e]) => !parseContract(e.contract))
+      .map(([id]) => id);
+   const missing = new Set(contractMissing);
+   return {
+      entries: Object.fromEntries(
+         Object.entries(entries).filter(([id]) => !missing.has(id)),
+      ),
+      bindings: bindings.filter(
+         (b) => b.tier !== "database" || !missing.has(b.virtualHandle),
+      ),
+      drifted: [],
+      unread: [],
+      uncaptured: [],
+      contractMissing,
+      incompatible: [],
+   };
 }
 
 /** What a substituted table's moved columns must read as. */
@@ -727,466 +995,4 @@ export interface DriftDeclaration {
    connectionName?: string;
    /** The time zone its reader reads it in ({@link BuildCastOptions}). */
    queryTimezone?: string;
-}
-
-/**
- * A table read by Malloy's build-manifest substitution whose columns moved,
- * each column left out where the bind's own rule leaves it out (gone, a type
- * Malloy reads as no basic type, a zone gained or lost off DuckDB), or where
- * its digits are lost (a 128-bit integer a DuckLake table holds as a DOUBLE,
- * a big integer now a float). Its leg reads the rest as they are now
- * (`heldRead`), through the one stored-column read plan, which casts a moved
- * column faithfully or leaves it out ({@link driftedColumnRead}). Each column
- * report carries `leftOut` as {@link driftedColumnRead} decides it, for the
- * warning. Undefined when the table's connection is not known: it answers
- * live (fail safe).
- */
-function substitutedRead(
-   entry: FreshnessManifest[string],
-   columns: ObservedDrift["columns"],
-   read: Extract<ObservedColumns, { columns: unknown }>,
-   declared: DriftDeclaration | undefined,
-):
-   | { entry: FreshnessManifest[string]; columns: ObservedDrift["columns"] }
-   | undefined {
-   const connectionName = entry.connectionName ?? declared?.connectionName;
-   if (!connectionName) return undefined;
-   const leftOut: string[] = [];
-   const decided = columns.map((c) => {
-      const lost =
-         c.leftOut ||
-         c.storedAsDouble ||
-         roundsBigInteger(c) ||
-         !c.observedType;
-      if (lost) leftOut.push(c.column);
-      // Decided on the type as the build's capture spells it, whatever the
-      // report names (a warehouse's own spelling, when the build captured
-      // only those).
-      const spelled = columnNamed(read.columns, c.column)?.type;
-      const how = lost
-         ? ({ read: "left_out" } as const)
-         : driftedColumnRead(
-              { ...c, ...(spelled ? { observedType: spelled } : {}) },
-              driftDeclaredType(
-                 declared?.columns,
-                 c.column,
-                 storedMalloyType(c.builtType) ?? c.builtType,
-              ),
-              declared?.queryTimezone
-                 ? { queryTimezone: declared.queryTimezone }
-                 : {},
-           );
-      // Read as is only when no value can change: a lossless widening
-      // (INTEGER to BIGINT, DECIMAL(10,1) to DECIMAL(12,2), FLOAT to DOUBLE).
-      // Any other move inside a type family (DECIMAL(10,1) to DECIMAL(10,0),
-      // a BIGINT past 2^53 to DOUBLE) rounds what the table holds, so the
-      // column is left out, never served as live's value.
-      const narrowed =
-         how.read === "as_is" &&
-         !losslessWidening(
-            nativeTypeOf(entry.nativeSchema, c.column) ?? c.builtType,
-            columnNamed(read.columns, c.column)?.nativeType ??
-               spelled ??
-               c.observedType ??
-               "",
-         );
-      if (narrowed) leftOut.push(c.column);
-      return how.read === "left_out" || narrowed
-         ? { ...c, leftOut: true as const }
-         : c;
-   });
-   const out = new Set(leftOut.map((c) => c.toLowerCase()));
-   const moved = new Set(columns.map((c) => c.column.toLowerCase()));
-   const held = read.columns.flatMap((c) =>
-      c.type !== undefined && !out.has(c.name.toLowerCase())
-         ? [
-              {
-                 name: c.name,
-                 type: c.type,
-                 ...(c.nativeType !== undefined
-                    ? { nativeType: c.nativeType }
-                    : {}),
-                 ...(moved.has(c.name.toLowerCase())
-                    ? { moved: true as const }
-                    : {}),
-              },
-           ]
-         : [],
-   );
-   return {
-      entry: {
-         ...entry,
-         heldRead: { connectionName, columns: held },
-         ...(leftOut.length > 0 ? { leftOutColumns: leftOut } : {}),
-      },
-      columns: decided,
-   };
-}
-
-/** A stored type, parsed as far as {@link losslessWidening} compares one. */
-type ParsedType =
-   | { kind: "int"; rank: number; unsigned: boolean }
-   | { kind: "decimal"; precision: number; scale: number }
-   | { kind: "float"; rank: number }
-   | { kind: "text"; length: number }
-   /** Fixed-length, blank-padded text (`character(n)`, `bpchar`). */
-   | { kind: "char"; length: number }
-   | { kind: "other"; spelling: string };
-
-/** Each integer's width, by its spellings, with the decimal digits it holds. */
-const INTEGER_WIDTHS: Record<string, { rank: number; unsigned: boolean }> = {
-   tinyint: { rank: 1, unsigned: false },
-   int1: { rank: 1, unsigned: false },
-   smallint: { rank: 2, unsigned: false },
-   int2: { rank: 2, unsigned: false },
-   short: { rank: 2, unsigned: false },
-   integer: { rank: 3, unsigned: false },
-   int: { rank: 3, unsigned: false },
-   int4: { rank: 3, unsigned: false },
-   signed: { rank: 3, unsigned: false },
-   bigint: { rank: 4, unsigned: false },
-   int8: { rank: 4, unsigned: false },
-   int64: { rank: 4, unsigned: false },
-   long: { rank: 4, unsigned: false },
-   hugeint: { rank: 5, unsigned: false },
-   int128: { rank: 5, unsigned: false },
-   utinyint: { rank: 1, unsigned: true },
-   usmallint: { rank: 2, unsigned: true },
-   uinteger: { rank: 3, unsigned: true },
-   ubigint: { rank: 4, unsigned: true },
-   uhugeint: { rank: 5, unsigned: true },
-};
-
-/** The decimal digits each integer width holds in full. */
-const INTEGER_DIGITS = [0, 3, 5, 10, 19, 39];
-
-function parsedType(type: string): ParsedType {
-   const t = type.trim().replace(/\s+/g, " ").toLowerCase();
-   const width = INTEGER_WIDTHS[t];
-   if (width) return { kind: "int", ...width };
-   const decimal =
-      /^(decimal|numeric|number|dec)\s*(?:\((\d+)\s*(?:,\s*(\d+))?\))?$/.exec(
-         t,
-      );
-   if (decimal) {
-      if (decimal[2] === undefined) {
-         // Unconstrained: Postgres's `numeric` holds any value exactly;
-         // Snowflake's `NUMBER` is NUMBER(38,0).
-         return decimal[1] === "number"
-            ? { kind: "decimal", precision: 38, scale: 0 }
-            : { kind: "decimal", precision: Infinity, scale: Infinity };
-      }
-      return {
-         kind: "decimal",
-         precision: Number(decimal[2]),
-         scale: Number(decimal[3] ?? 0),
-      };
-   }
-   if (t === "bignumeric") return { kind: "decimal", precision: 76, scale: 38 };
-   if (/^(real|float4|float)$/.test(t)) return { kind: "float", rank: 1 };
-   if (/^(double|double precision|float8|float64)$/.test(t)) {
-      return { kind: "float", rank: 2 };
-   }
-   // Fixed-length text pads with blanks, so a move to or from it adds or
-   // strips them ('ab' against 'ab '): a kind apart from varying text.
-   const fixed = /^(bpchar|char|character)\s*(?:\((\d+)\))?$/.exec(t);
-   if (fixed) {
-      return {
-         kind: "char",
-         length: fixed[2] !== undefined ? Number(fixed[2]) : Infinity,
-      };
-   }
-   const text =
-      /^(varchar|text|string|character varying|char varying|nvarchar)\s*(?:\((\d+)\))?$/.exec(
-         t,
-      );
-   if (text) {
-      return {
-         kind: "text",
-         length: text[2] !== undefined ? Number(text[2]) : Infinity,
-      };
-   }
-   return { kind: "other", spelling: t };
-}
-
-/**
- * Whether a column moved from `built` to `now` holds every value it held
- * exactly as before: the same type, or a widening that loses nothing (a
- * wider integer, a decimal with no fewer integer or fraction digits, an
- * integer into a decimal or float that holds all its digits, FLOAT to DOUBLE,
- * a longer varying text). A move between fixed-length text (`character(n)`)
- * and varying text, or between two fixed lengths, adds or strips padding, so
- * it is never one. Anything else inside a family may have rounded or cut a
- * value, so it is never read as is.
- */
-function losslessWidening(built: string, now: string): boolean {
-   const from = parsedType(built);
-   const to = parsedType(now);
-   if (from.kind === "int") {
-      if (to.kind === "int") {
-         return from.unsigned
-            ? to.rank > from.rank || (to.unsigned && to.rank === from.rank)
-            : !to.unsigned && to.rank >= from.rank;
-      }
-      if (to.kind === "decimal") {
-         return to.precision - to.scale >= INTEGER_DIGITS[from.rank];
-      }
-      // A DOUBLE holds every 32-bit integer exactly; a FLOAT every 16-bit one.
-      if (to.kind === "float") return from.rank <= to.rank + 1;
-      return false;
-   }
-   if (from.kind === "decimal") {
-      return (
-         to.kind === "decimal" &&
-         to.scale >= from.scale &&
-         to.precision - to.scale >= from.precision - from.scale
-      );
-   }
-   if (from.kind === "float") {
-      return to.kind === "float" && to.rank >= from.rank;
-   }
-   if (from.kind === "text") {
-      return to.kind === "text" && to.length >= from.length;
-   }
-   // Another length pads differently; varying text holds no padding.
-   if (from.kind === "char") {
-      return to.kind === "char" && to.length === from.length;
-   }
-   return to.kind === "other" && to.spelling === from.spelling;
-}
-
-/**
- * A 64- or 128-bit integer now held as a float: its digits past 2^53 are
- * already lost, so no read gives live's exact integer (the stored-column read
- * plan's refusal of a big integer stored as a float).
- */
-function roundsBigInteger(c: ObservedDrift["columns"][number]): boolean {
-   return (
-      /^(BIGINT|HUGEINT|UBIGINT|UHUGEINT|INT8|LONG)$/i.test(
-         c.builtType.trim(),
-      ) &&
-      /^(DOUBLE|FLOAT|REAL|FLOAT4|FLOAT8)$/i.test((c.observedType ?? "").trim())
-   );
-}
-
-/**
- * The built native columns whose native type moved, or that are gone, each
- * left out as {@link columnDrift} leaves one out: gone, now a type Malloy
- * reads as no basic type, or a timestamp that gained or lost its zone off
- * DuckDB.
- */
-function nativeDriftOf(
-   built: readonly { name: string; type: string }[],
-   read: Extract<ObservedColumns, { columns: unknown }>,
-): ObservedDrift["columns"] {
-   return built.flatMap((c) => {
-      const now = columnNamed(read.columns, c.name);
-      const report = {
-         column: c.name,
-         builtType: c.type,
-         ...(now?.nativeType !== undefined
-            ? { observedType: now.nativeType }
-            : {}),
-         ...(now?.storedAsDouble ? { storedAsDouble: true as const } : {}),
-      };
-      if (!now)
-         return [{ ...report, gone: true as const, leftOut: true as const }];
-      if (now.storedAsDouble) return [report];
-      if (
-         now.nativeType === undefined ||
-         normalizedType(now.nativeType) === normalizedType(c.type)
-      ) {
-         return [];
-      }
-      const zoneMoved =
-         isNativeTimestamp(c.type) &&
-         isNativeTimestamp(now.nativeType) &&
-         isNativeZoned(c.type) !== isNativeZoned(now.nativeType);
-      if (zoneMoved && capabilitiesOf(read.dialect).utcSessions) return [];
-      return now.type === undefined || zoneMoved
-         ? [{ ...report, leftOut: true as const }]
-         : [report];
-   });
-}
-
-/** A timestamp, as a warehouse's catalog names it. */
-function isNativeTimestamp(type: string): boolean {
-   return /^(timestamp|datetime)/i.test(type.trim());
-}
-
-/** A zoned timestamp, as a warehouse's catalog names it. */
-function isNativeZoned(type: string): boolean {
-   return /with time zone|^timestamptz|^timestamp_tz|^timestamp_ltz/i.test(
-      type.trim(),
-   );
-}
-
-/**
- * Whether a column is as its build wrote it: the warehouse's native type for
- * it now is the one the build captured. A DuckLake 128-bit integer held as a
- * DOUBLE is never as built: its read is guarded whatever its build wrote.
- */
-function asBuilt(
-   builtNative: string | undefined,
-   name: string,
-   read: Extract<ObservedColumns, { columns: unknown }>,
-): boolean {
-   const now = columnNamed(read.columns, name);
-   return (
-      builtNative !== undefined &&
-      now?.nativeType !== undefined &&
-      !now.storedAsDouble &&
-      normalizedType(now.nativeType) === normalizedType(builtNative)
-   );
-}
-
-/** A column's type as the build's native capture named it, by name. */
-function nativeTypeOf(
-   nativeSchema: readonly { name: string; type: string }[] | undefined,
-   name: string,
-): string | undefined {
-   return columnNamed(nativeSchema ?? [], name)?.type;
-}
-
-/** What one built column's observed type does to its read. */
-type ColumnDrift =
-   | { kind: "none" }
-   | {
-        kind: "retype";
-        /** The observed type, in the binding schema's spelling. */
-        type: string;
-        /** The observed native type, for a big-integer cast. */
-        nativeType?: string;
-        report: ObservedDrift["columns"][number];
-     }
-   | { kind: "drop"; report: ObservedDrift["columns"][number] };
-
-/**
- * Whether a built column drifted, and how it is read now:
- *
- * - gone, or a type Malloy reads as no basic type whose native type moved:
- *   `drop` (left out, so a query reading it answers live);
- * - a timestamp now zoned, or a zoned one now naive: `drop`, unless the
- *   dialect is DuckDB, whose serving sessions run in UTC so either reads
- *   alike;
- * - a 128-bit integer in a DuckLake table (`storedAsDouble`): `retype`, as
- *   the DOUBLE its Parquet files hold;
- * - the same Malloy type with another native type: `retype` (read as it
- *   is now) only when the move loses nothing (`losslessWidening`: a
- *   `bigint` altered to `numeric(22,2)`), else `drop` (a `bigint` altered
- *   to `numeric(10,2)`, DECIMAL(10,1) to DECIMAL(10,0));
- * - another Malloy type: `retype`, read through the one stored-column read
- *   plan with the type it holds now (a faithful cast, or left out);
- * - otherwise `none`.
- */
-function columnDrift(
-   built: { name: string; type: string },
-   builtNative: string | undefined,
-   read: Extract<ObservedColumns, { columns: unknown }>,
-): ColumnDrift {
-   const now = columnNamed(read.columns, built.name);
-   const report = {
-      column: built.name,
-      builtType: built.type,
-      ...(now?.type !== undefined ? { observedType: now.type } : {}),
-   };
-   if (!now) {
-      return {
-         kind: "drop",
-         report: { ...report, gone: true, leftOut: true },
-      };
-   }
-   const dropped = { ...report, leftOut: true as const };
-   const nativeMoved =
-      builtNative !== undefined &&
-      now.nativeType !== undefined &&
-      normalizedType(builtNative) !== normalizedType(now.nativeType);
-   if (now.type === undefined) {
-      return nativeMoved ? { kind: "drop", report: dropped } : { kind: "none" };
-   }
-   if (
-      typeFamily(now.type) === "timestamp" &&
-      typeFamily(built.type) === "timestamp" &&
-      isZoned(now.type) !== isZoned(built.type)
-   ) {
-      return capabilitiesOf(read.dialect).utcSessions
-         ? { kind: "none" }
-         : { kind: "drop", report: dropped };
-   }
-   // A DuckLake table's 128-bit integer holds a DOUBLE's digits, whatever its
-   // build wrote: read as the DOUBLE it is, never as exact.
-   if (now.storedAsDouble) {
-      return {
-         kind: "retype",
-         type: now.type,
-         ...(now.nativeType !== undefined
-            ? { nativeType: now.nativeType }
-            : {}),
-         report: { ...report, storedAsDouble: true },
-      };
-   }
-   // A move inside one Malloy type is read as it is only when it loses
-   // nothing (a lossless widening); any other (DECIMAL(10,1) to
-   // DECIMAL(10,0), a big integer into a decimal too narrow for its digits)
-   // may have rounded what the table holds, so the column is left out. A
-   // move across types goes to the read plan, which casts it faithfully or
-   // leaves it out.
-   // The spelled types decide only with no native capture to compare: a
-   // binding's declared type may stand in for a captured one, and a column
-   // whose native type is the one its build captured has not moved.
-   const spelledMoved =
-      builtNative === undefined &&
-      normalizedType(now.type) !== normalizedType(built.type);
-   if (
-      typeFamily(now.type) === typeFamily(built.type) &&
-      (nativeMoved || spelledMoved) &&
-      !losslessWidening(
-         nativeMoved ? builtNative! : built.type,
-         nativeMoved ? now.nativeType! : now.type,
-      )
-   ) {
-      return { kind: "drop", report: dropped };
-   }
-   if (typeFamily(now.type) !== typeFamily(built.type) || nativeMoved) {
-      return {
-         kind: "retype",
-         type: now.type,
-         ...(now.nativeType !== undefined
-            ? { nativeType: now.nativeType }
-            : {}),
-         report,
-      };
-   }
-   return { kind: "none" };
-}
-
-/** A native type compared by its spelling, case and spacing aside. */
-function normalizedType(type: string): string {
-   return type.trim().replace(/\s+/g, " ").toLowerCase();
-}
-
-/** A zoned timestamp, as the capture spells it. */
-function isZoned(type: string): boolean {
-   return /^(TIMESTAMP WITH TIME ZONE|TIMESTAMPTZ)$/i.test(type.trim());
-}
-
-/**
- * A column by name: exactly, else by a unique case-insensitive match (a
- * warehouse may fold the case its catalog reports).
- */
-function columnNamed<C extends { name: string }>(
-   columns: readonly C[],
-   name: string,
-): C | undefined {
-   const exact = columns.find((c) => c.name === name);
-   if (exact) return exact;
-   const folded = columns.filter(
-      (c) => c.name.toLowerCase() === name.toLowerCase(),
-   );
-   return folded.length === 1 ? folded[0] : undefined;
-}
-
-/** The Malloy type a stored type reads as, or its own spelling when none. */
-function typeFamily(type: string): string {
-   return storedMalloyType(type) ?? type.trim().toUpperCase();
 }

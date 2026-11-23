@@ -11,7 +11,7 @@ same and the guarantees are the same, but almost nothing about the mechanism is:
 the source warehouse computes the bounded range and DuckLake applies the DML, so
 this scenario is the proof that the two halves meet.
 
-Three things it establishes that the colocated scenario cannot:
+Three things it establishes that the database scenario cannot:
 
 - **The delta lands in the lake, not the warehouse.** Every assertion below reads
   through a served query, which for a `storage=` source resolves the stored table.
@@ -27,7 +27,7 @@ Three things it establishes that the colocated scenario cannot:
   been restated is only possible if a delta ran, and batch 3 present is only
   possible if a rebuild did.
 
-The watermark is `batch`, a number, for the same reason as in the colocated
+The watermark is `batch`, a number, for the same reason as in the database
 scenario: a `date` watermark takes its range end from the run's own clock, so two
 refreshes within one day produce an empty range and skip — correct, but nothing a
 test can watch advance.

@@ -87,6 +87,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.esi_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "5699b6e1d50645661a4ae27c571761c92aa7af8e56a55e7eb11a13b3f012145b",
         "sourceID": "daily@<hammer>/esi/esi.malloy",
@@ -119,6 +125,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.esi_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "5699b6e1d50645661a4ae27c571761c92aa7af8e56a55e7eb11a13b3f012145b",
         "sourceID": "daily_with_avg@<hammer>/esi/esi.malloy",

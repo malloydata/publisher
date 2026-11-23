@@ -1,0 +1,56 @@
+// conformance: persist over a zoned base [database]: files generated while serving
+
+// ==== <pkg>/m.malloy
+##! experimental { persistence }
+##! experimental { virtual_source }
+type: sets_zone__served is {
+   id::number,
+   created_at::timestamp,
+   h::number,
+   d::timestamp
+}
+type: inherits_zone__served is {
+   id::number,
+   customer_id::number,
+   region::string,
+   status::string,
+   amount::number,
+   discount::number,
+   order_date::date,
+   created_at::timestamp,
+   order::number
+}
+
+import "raw.malloy"
+
+source: orders_ny is orders_raw extend {
+  timezone: 'America/New_York'
+}
+
+#@ persist name="inherits_zone"
+source: inherits_zone is duckdb.virtual('2ea58d1747888cfe4c616813579a380b00f03d1a4bbfd28942e6665ee41bc306')::inherits_zone__served extend { timezone: 'America/New_York' } extend {
+  private rename:
+    id__stored is id
+    customer_id__stored is customer_id
+    order__stored is order
+  dimension:
+    id is id__stored::"BIGINT"
+    customer_id is customer_id__stored::"BIGINT"
+    order is order__stored::"BIGINT"
+  measure: total is amount.sum()
+}
+
+#@ persist name="sets_zone"
+source: sets_zone is duckdb.virtual('3cbd1059d9a03ac598fb3304141ff1896a1ff3cac14141df8d7ae75f46294a3a')::sets_zone__served extend {
+  private rename:
+    id__stored is id
+    d__stored is d
+  dimension:
+    id is id__stored::"BIGINT"
+    d is d__stored.day
+ primary_key: id }
+
+source: reader is orders_raw extend {
+  join_one: z is inherits_zone on z.id = id
+  join_one: s is sets_zone on s.id = id
+}

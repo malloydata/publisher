@@ -15,7 +15,10 @@ import { getPackageLoadPool } from "../../../package_load/package_load_pool";
 import { tempBuildPlanPackages } from "../../../test_helpers/incremental_test_harness";
 import { usePackageLoadPool } from "../../../test_helpers/temp_package";
 import { computePackageBuildPlan } from "./build_plan_compile";
-import type { BuildPlanOutcome } from "./build_plan";
+import type { PackageAnnotationFinding } from "../../annotation_reader";
+import type { PackagePlan } from "../domain/package_plan";
+
+type BuildPlanOutcome = PackagePlan<PackageAnnotationFinding>;
 
 const RAW = `##! experimental { persistence composite_sources }
 source: raw is duckdb.sql("""SELECT 1 AS id, DATE '2024-01-01' AS d, 'A' AS c""")
@@ -52,7 +55,62 @@ source: b is raw -> { group_by: c }
 source: a is raw extend { where: id > 0 }
 `,
    ],
+   [
+      "a #(rollup) and a v1 #@ preaggregate",
+      `${RAW}source: r is raw extend {
+  #(rollup) grain=["c"]
+  measure: n is count()
+}
+source: v is raw extend {
+  #@ preaggregate grain="c"
+  measure: total is id.sum()
+}
+`,
+   ],
+   [
+      "a persisted view beside a #@ persist source",
+      `${RAW}#@ persist name="p"
+source: p is raw -> { group_by: c }
+source: d is raw extend {
+  #@ persist name="by_c"
+  view: by_c is { group_by: c }
+}
+`,
+   ],
+   [
+      "a gated #@ persist source and a gated #(materialize) source",
+      `${RAW.replace("composite_sources", "composite_sources givens")}given:
+  ORG :: number
+
+#(access_filter) id = $ORG
+#@ persist name="gp"
+source: gp is raw -> { select: id, c } extend {}
+#(access_filter) id = $ORG
+#(materialize) name="gm"
+source: gm is raw extend { where: id > 0 }
+`,
+   ],
 ];
+
+/**
+ * Everything a derived plan carries, as plain sorted data, so the two paths
+ * are compared field by field.
+ */
+function whole(outcome: BuildPlanOutcome) {
+   const sorted = <T>(values: Iterable<T>) => [...values].sort();
+   return {
+      ...outcome,
+      annotationFindings: sorted(
+         outcome.annotationFindings.map((f) => JSON.stringify(f)),
+      ),
+      databaseSourceEligibility: {
+         ...outcome.databaseSourceEligibility,
+         eligibleEntityIds: sorted(
+            outcome.databaseSourceEligibility.eligibleEntityIds,
+         ),
+      },
+   };
+}
 
 /** What both paths must agree on, order-free. */
 function judged(outcome: BuildPlanOutcome) {
@@ -72,10 +130,10 @@ function judged(outcome: BuildPlanOutcome) {
          refused: sorted(Object.keys(outcome.sourceEligibility.refused)),
          gateKept: sorted(outcome.sourceEligibility.gateKept ?? []),
       },
-      colocatedSourceEligibility: {
-         eligible: sorted(outcome.colocatedSourceEligibility.eligibleEntityIds),
+      databaseSourceEligibility: {
+         eligible: sorted(outcome.databaseSourceEligibility.eligibleEntityIds),
          refused: sorted(
-            Object.keys(outcome.colocatedSourceEligibility.refused),
+            Object.keys(outcome.databaseSourceEligibility.refused),
          ),
       },
       compilerKeys: Object.entries(outcome.compilerKeys).sort(),
@@ -125,9 +183,18 @@ describe("the load worker and compilePackageBuildPlan plan alike", () => {
          const { main, worker } = await bothPaths(packages, model);
          expect(worker?.ok).toBe(true);
          if (!worker?.ok) return;
-         expect(judged(worker.outcome)).toEqual(judged(main));
+         expect(judged(worker.packagePlan)).toEqual(judged(main));
+         // Every side table, not only the judgement.
+         expect(whole(worker.packagePlan)).toEqual(whole(main));
       });
    }
+
+   it("sends a plan that survives structured cloning unchanged", async () => {
+      const { worker } = await bothPaths(packages, SHAPES[4][1]);
+      expect(worker?.ok).toBe(true);
+      if (!worker?.ok) return;
+      expect(structuredClone(worker.packagePlan)).toEqual(worker.packagePlan);
+   });
 
    it("a published version of a scope: version package", async () => {
       // Two `name=` the same: each a readable name of its own per version,
@@ -140,7 +207,7 @@ describe("the load worker and compilePackageBuildPlan plan alike", () => {
       );
       expect(worker?.ok).toBe(true);
       if (!worker?.ok) return;
-      expect(judged(worker.outcome)).toEqual(judged(main));
+      expect(judged(worker.packagePlan)).toEqual(judged(main));
       expect(
          main.annotationFindings.filter(
             (f) => f.code === "materialization-table-collision",
@@ -170,7 +237,7 @@ source: d is raw extend {
       );
       expect(worker?.ok).toBe(true);
       if (!worker?.ok) return;
-      expect(judged(worker.outcome)).toEqual(judged(main));
+      expect(judged(worker.packagePlan)).toEqual(judged(main));
       // Each fails the load under its route's code; a name= lowercasing
       // alone changes (`Plain_T`) is planned.
       expect(
@@ -217,7 +284,7 @@ source: q is raw -> { group_by: c }
       );
       expect(worker?.ok).toBe(true);
       if (!worker?.ok) return;
-      expect(judged(worker.outcome)).toEqual(judged(main));
+      expect(judged(worker.packagePlan)).toEqual(judged(main));
       const malformed = main.annotationFindings
          .filter((f) => f.tier === "malformed")
          .map((f) => [f.code, f.subject]);

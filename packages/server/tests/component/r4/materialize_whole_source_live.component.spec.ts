@@ -6,11 +6,12 @@
  * `#(materialize)` source live, pinned as documented ("A column the served
  * copy cannot carry", docs/materialization.md).
  *
- * - A struct (record) column of the source's own. Malloy types it as a join,
- *   so the plan stores no column for it, and the served copy cannot carry the
- *   field: the source is left as written (`fields_not_carried`), in a
- *   `storage=` table and a colocated one alike. Every query over the source
- *   is answered live, equal to live.
+ * - A struct (record) column of the source's own holding a `BIGINT` live
+ *   keeps exact past 2^53 (`STRUCT(a BIGINT)`) no longer sends it live as a
+ *   whole: the build stores the struct, and the served copy, with no
+ *   faithful declaration for it, leaves it out per query, in a `storage=`
+ *   table and a database one alike. A query that does not read it is
+ *   served; one that reads it is answered live, equal to live.
  * - An inlined join's column with no stored declaration (a MAP, standing in
  *   for a warehouse GEOGRAPHY): the join's record cannot be declared, so the
  *   source is left as written (`column_types`).
@@ -52,7 +53,7 @@ async function expectWholeSourceLive(fixture: R4Fixture, malloy: string) {
    expect(path?.servedBy?.kind).toBe("live");
    expect(
       (path?.considered ?? []).map((c) => [c.outcome, c.reason, c.code]),
-   ).toEqual([["skipped", "WARNED", "served-copy-not-served"]]);
+   ).toEqual([["skipped", "NOT_SERVED", "served_copy"]]);
 }
 
 describe.each([
@@ -61,18 +62,18 @@ describe.each([
       model: `#(materialize) storage="lake"
 source: s is duckdb.table('ex') extend { primary_key: id }
 `,
-      colocated: undefined as string[] | undefined,
+      database: undefined as string[] | undefined,
    },
    {
-      tier: "colocated (a database origin)",
-      model: `#(materialize) name="p2_26_colocated"
+      tier: "database (a database origin)",
+      model: `#(materialize) name="p2_26_database"
 source: s is duckdb.table('ex') extend { primary_key: id }
 `,
-      colocated: ["s"] as string[] | undefined,
+      database: ["s"] as string[] | undefined,
    },
 ])(
-   "P2-26: a #(materialize) $tier source with a STRUCT(a BIGINT) column answers live as a whole",
-   ({ model, colocated }) => {
+   "P2-26: a #(materialize) $tier source with a STRUCT(a BIGINT) column leaves it out per query",
+   ({ model, database }) => {
       let fixture: R4Fixture;
       useMaterializationOn();
       beforeAll(async () => {
@@ -80,32 +81,47 @@ source: s is duckdb.table('ex') extend { primary_key: id }
             files: { "m.malloy": model },
             seedSql: OWN_SEED,
             materialize: true,
-            ...(colocated ? { colocated } : {}),
+            ...(database ? { database } : {}),
          });
       });
       afterAll(async () => {
          await disposeScenarios();
       });
 
-      it("stores no column for the struct, and the served copy leaves the source as written (fields_not_carried)", async () => {
+      it("stores the struct, and the served copy re-roots the source", async () => {
          const [binding] = fixture.bindings;
-         expect(binding.schema.map((c) => c.name)).not.toContain("st");
-         expect(
-            (await fixture.servedCopyProblems()).map((p) => [
-               p.sourceName,
-               p.reason,
-            ]),
-         ).toEqual([["s", "fields_not_carried"]]);
+         expect(binding.schema.map((c) => c.name)).toContain("st");
+         expect(await fixture.servedCopyProblems()).toEqual([]);
+      });
+
+      it("serves a query that reads neither the struct nor the list", async () => {
+         const run = await fixture.run({
+            name: NOT_READING,
+            malloy: NOT_READING,
+         });
+         expect(rowDifference(run.live, run.served)).toBeUndefined();
+         expect(run.servedVia).toBe("served_copy");
       });
 
       it.each([
-         NOT_READING,
          "run: s -> { select: id, a is st.a; order_by: id }",
          "run: s -> { aggregate: m is xs.each.max() }",
       ])(
-         "answers live, equal to live, and the path report says so: %s",
+         "answers a query reading a big-integer struct or list live, equal to live, declining the table for the missing field: %s",
          async (malloy) => {
-            await expectWholeSourceLive(fixture, malloy);
+            const run = await fixture.run({
+               name: malloy,
+               malloy,
+               expectLive: true,
+            });
+            expect(run.live.length).toBeGreaterThan(0);
+            expect(rowDifference(run.live, run.served)).toBeUndefined();
+            fixture.setBindings(fixture.bindings);
+            const { path } = await fixture.runAsIs(malloy);
+            expect(path?.servedBy?.kind).toBe("live");
+            expect((path?.considered ?? []).map((c) => c.reason)).toEqual([
+               "MISSING_FIELD",
+            ]);
          },
       );
    },

@@ -77,11 +77,17 @@ export interface ModelPolicy {
     *  author model's manifest. Undefined or empty strips nothing. */
    preaggregateEntityIds(): ReadonlySet<string> | undefined;
    /**
-    * The package's materialized tables (its build plan and bound colocated
+    * The package's materialized tables (its build plan and bound database
     * manifest), for the path report. Undefined outside a package, or before
-    * the package wires it; the report then names no colocated table.
+    * the package wires it; the report then names no database table.
     */
    materializedTables(): MaterializedTableCatalog | undefined;
+   /**
+    * Report that a stored read found these tables (by virtual handle) not as
+    * their bind found them (the drift handler's failed-read trigger). A
+    * model outside a package reports to nobody.
+    */
+   reportIncompatible?(handles: readonly string[]): void;
 }
 
 /**
@@ -182,6 +188,7 @@ export class PackageModelPolicy {
            snapshot: () => Snapshot;
            preaggregateEntityIds: () => ReadonlySet<string>;
            materializedTables?: () => MaterializedTableCatalog | undefined;
+           reportIncompatible?: (handles: readonly string[]) => void;
         }
       | undefined;
 
@@ -197,6 +204,8 @@ export class PackageModelPolicy {
          snapshot: () => this.serving?.snapshot(),
          preaggregateEntityIds: () => this.serving?.preaggregateEntityIds(),
          materializedTables: () => this.serving?.materializedTables?.(),
+         reportIncompatible: (handles: readonly string[]) =>
+            this.serving?.reportIncompatible?.(handles),
       });
    }
 
@@ -225,6 +234,11 @@ export class PackageModelPolicy {
       snapshot: () => Snapshot;
       preaggregateEntityIds: () => ReadonlySet<string>;
       materializedTables?: () => MaterializedTableCatalog | undefined;
+      /**
+       * A stored read found these tables (by virtual handle) not as their
+       * bind found them: the drift handler's failed-read trigger.
+       */
+      reportIncompatible?: (handles: readonly string[]) => void;
    }): void {
       this.serving = resolvers;
    }

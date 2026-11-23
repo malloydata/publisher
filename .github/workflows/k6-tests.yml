@@ -48,7 +48,7 @@ jobs:
       - name: Build server
         run: |
           echo "Bun cache hit: ${{ steps.bun-cache.outputs.cache-hit }}"
-          bun install --frozen-lockfile
+          scripts/ci-install-with-retry.sh bun install --frozen-lockfile
           bun run build
         env:
           BUN_CONFIG_SKIP_POSTINSTALL_SCRIPTS: "1"
@@ -60,7 +60,7 @@ jobs:
       - name: Install k6-tests dependencies
         run: |
           cd packages/server/k6-tests
-          bun install --frozen-lockfile
+          "$GITHUB_WORKSPACE/scripts/ci-install-with-retry.sh" bun install --frozen-lockfile
 
       - name: Generate k6 API clients
         run: |

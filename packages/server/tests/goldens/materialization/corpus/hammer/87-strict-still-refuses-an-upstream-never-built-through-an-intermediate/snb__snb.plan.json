@@ -87,6 +87,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.snb_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "432945af4a72e0facd92c4998840b95f47d3ad1963211977be51bf52921314d5",
         "sourceID": "daily@<hammer>/snb/snb.malloy",
@@ -111,6 +117,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.snb_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "8f067150c16e8a60bcd4fb8d4db1a38763cdf8254bc941872e56f2a680971e9f",
         "sourceID": "rollup@<hammer>/snb/snb.malloy",

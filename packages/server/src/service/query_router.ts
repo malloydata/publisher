@@ -28,6 +28,7 @@
  * built.
  */
 
+import type { Leg } from "./materialization/domain/vocabulary";
 import type { QueryMaterializer } from "@malloydata/malloy";
 import {
    declineOfCode,
@@ -36,6 +37,7 @@ import {
 import {
    recordQueryRoute,
    recordQueryRouteDuration,
+   routeLegOf,
    type RouteReason,
 } from "../materialization_metrics";
 
@@ -44,10 +46,10 @@ import {
  * whose `makeLegs` sets their order): `view`, a persisted view's table
  * (`#@ persist` on a view), which answers only an exact call of its view
  * (R1); `query`, a persisted named query's table, also by exact call;
- * `rollup`, the coarsest `#(preaggregate)` rollup that reproduces the query;
+ * `rollup`, the coarsest `#(rollup)` rollup that reproduces the query;
  * and `served`, the served copy on `virtual`.
  */
-export type VariantKind = "view" | "query" | "served" | "rollup";
+export type VariantKind = Leg;
 
 /**
  * Why a candidate did not answer, in the router's own terms. It is kept on
@@ -136,6 +138,8 @@ export interface ConsideredVariant {
     * source name ({@link VariantSkipExplanation.members}).
     */
    members?: VariantSkipExplanation["members"];
+   /** The tables a `does_not_answer` skip is about ({@link VariantSkipExplanation.tableIds}). */
+   tableIds?: VariantSkipExplanation["tableIds"];
 }
 
 /**
@@ -185,7 +189,7 @@ export async function routeQuery<Extra>(
    if (variants.some((v) => v.applicable)) {
       recordQueryRouteDuration(
          performance.now() - startedAt,
-         decision.served === "variant" ? decision.kind : "live",
+         routeLegOf(decision.served === "variant" ? decision.kind : "live"),
       );
    }
    if (recordMetrics) recordVariantRouting(decision.considered);
@@ -196,7 +200,7 @@ export async function routeQuery<Extra>(
  * One count per candidate the router considered, once the query is answered
  * (`publisher_query_route_total`). With `runFailed`, the variant it chose
  * failed at run time and the query was answered live, so that variant counts
- * as `fallback` with reason `RUN_FAILED`, not `used`. A candidate that did
+ * as `fallback` with reason `READ_FAILED`, not `used`. A candidate that did
  * not apply is not counted. When live answered a query the router counted a
  * candidate for, `live` counts as `used`.
  */
@@ -206,10 +210,11 @@ export function recordVariantRouting(
 ): void {
    for (const c of considered) {
       if (c.outcome === "used") {
-         if (runFailed) recordQueryRoute(c.kind, "fallback", "RUN_FAILED");
-         else recordQueryRoute(c.kind, "used", "NONE");
+         if (runFailed) {
+            recordQueryRoute(routeLegOf(c.kind), "fallback", "READ_FAILED");
+         } else recordQueryRoute(routeLegOf(c.kind), "used", "NONE");
       } else if (c.reason !== "not_applicable") {
-         recordQueryRoute(c.kind, "skipped", routeReasonOf(c));
+         recordQueryRoute(routeLegOf(c.kind), "skipped", routeReasonOf(c));
       }
    }
    const counted = considered.some((c) => c.reason !== "not_applicable");
@@ -223,11 +228,11 @@ export function recordVariantRouting(
 
 /**
  * The public reason for a skipped candidate: a gate it cannot keep is
- * `CONTRACT`; a decline is its code's `SkipReason`, and anything unexplained
+ * `ROW_LEVEL_GATE`; a decline is its code's `SkipReason`, and anything unexplained
  * is `MISSING_FIELD`, as the path report reads it.
  */
 function routeReasonOf(c: ConsideredVariant): RouteReason {
-   if (c.reason === "row_level_gate") return "CONTRACT";
+   if (c.reason === "row_level_gate") return "ROW_LEVEL_GATE";
    return declineOfCode(c.code)?.reason ?? "MISSING_FIELD";
 }
 
@@ -299,7 +304,9 @@ async function decideRoute<Extra>(
 function explanationOf(
    variant: Variant<unknown>,
    error: unknown,
-): Partial<Pick<ConsideredVariant, "code" | "callerDetail" | "members">> {
+): Partial<
+   Pick<ConsideredVariant, "code" | "callerDetail" | "members" | "tableIds">
+> {
    try {
       const explained = variant.explain?.(error);
       if (!explained) return {};
@@ -309,6 +316,7 @@ function explanationOf(
             ? { callerDetail: explained.callerDetail }
             : {}),
          ...(explained.members ? { members: explained.members } : {}),
+         ...(explained.tableIds ? { tableIds: explained.tableIds } : {}),
       };
    } catch {
       return {};

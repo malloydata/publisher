@@ -22,7 +22,7 @@ SPDX-License-Identifier: MIT
 
 ## What the SDK is
 
-A React component library (`ServerProvider`, `QueryResult`, `Notebook`, `Model`, page components, filter
+A React component library (`ServerProvider`, `QueryResult`, `Report`, `Model`, page components, filter
 widgets) that talks to Publisher's REST API and renders results with Malloy Render. The
 [`Publisher Console`](../packages/app) is composed entirely from it. Because it's the Console's
 internal toolkit, breaking changes ride along with Console redesigns.

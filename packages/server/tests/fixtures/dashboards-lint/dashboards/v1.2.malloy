@@ -1,6 +1,6 @@
-// A tagged dashboard whose derived name is "v1.2". The dot puts it outside the
-// pattern the API documents, so the package is warned about it, and it IS
-// served: the route matches and the published URL carries the name encoded.
+// A tagged dashboard whose derived name is "v1.2". The dot puts it outside
+// letters, digits, "-" and "_", and it IS served: the route matches and the
+// published URL carries the path encoded.
 // Deliberately NOT a dotfile: the loader ignores those outright, so a
 // leading-dot filename never becomes a model and cannot exercise this path.
 import { orders } from '../orders.malloy'

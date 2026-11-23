@@ -132,13 +132,13 @@ is the one way to do it:
 import { cacheKeys, clearCache, mockServerProvider, pending, serverWrapper }
    from "../../../test/serverProvider";
 
-const getDashboard = mock(() => pending());
-mockServerProvider({ dashboards: { getDashboard } });
+const getReport = mock(() => pending());
+mockServerProvider({ reports: { getReport } });
 
 // AFTER the line above, never a static import: it would hoist past the stub.
-const { default: Dashboard } = await import("./Dashboard");
+const { Report } = await import("./Report");
 
-render(<Dashboard resourceUri={URI} dashboard="ops" />, { wrapper: serverWrapper });
+render(<Report resourceUri={URI} path="ops.malloy" />, { wrapper: serverWrapper });
 ```
 
 Three things that file exists to get right.

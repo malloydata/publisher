@@ -113,9 +113,39 @@ export type ErrorReason =
    | "CONNECTION_AUTH_FAILED"
    // 424: the model names a connection the environment does not have.
    | "CONNECTION_NOT_FOUND"
-   // 403: the object store behind a table refused the database's read of its
-   // files; the query and the model are fine.
+   // 403: the object store under an environment-configured data path (a
+   // storage destination, a DuckLake catalog's data path) refused the
+   // database's read; the query and the model are fine, the operator's
+   // storage credentials are not.
    | "STORAGE_ACCESS_DENIED"
+   // 403: the object store at a path the query or the model reads itself (a
+   // file or table URL) refused access; the fix is the path or the caller's
+   // grant to it.
+   | "PATH_ACCESS_DENIED"
+   // 403: a gate (`#(authorize)` or `#(access_filter)`) refused the caller.
+   // A gate that could not be decided answers the same; only the metrics and
+   // the log tell the two apart.
+   | "ACCESS_DENIED"
+   // 422: a valid materialization declaration this server will not build;
+   // the body's `refusalReason` is its `RefusedSource.reason`.
+   | "MATERIALIZATION_REFUSED"
+   // 400: a build's `name=` is held by a table this package does not own.
+   | "TABLE_OWNED_ELSEWHERE"
+   // 400: who holds a build's `name=` could not be read. Both answer 409
+   // instead on a caller's drop of a materialized table (MaterializedTableDropRefusedError).
+   | "TABLE_OWNERSHIP_UNVERIFIED"
+   // 409: a caller's drop of a materialized table refused because a
+   // committed run of the package, or a loaded package's binding, names it.
+   | "TABLE_IN_USE"
+   // 400: a materialization create's body or build instructions are not a
+   // run this package can take (a field of the wrong shape, an unknown
+   // source, a table named twice, a ledger entry that does not fit); the
+   // message says which. Retrying unchanged fails the same way.
+   | "BUILD_INSTRUCTIONS_INVALID"
+   // 409: a materialization run conflicts with another run or the package's
+   // binding (a run already active, a table another run is writing, an
+   // auto-run of a package a host manifest serves).
+   | "MATERIALIZATION_CONFLICT"
    // 409: the package's build plan could not be derived at load; a reload
    // derives it again, a retry does not.
    | "BUILD_PLAN_UNAVAILABLE"
@@ -128,6 +158,10 @@ export type ErrorReason =
    // 409: a create-only report write found a file at the path; another name
    // may be free.
    | "FILE_EXISTS"
+   // 502: the database answered with fewer rows than it reported, and no row
+   // limit cut them (a BigQuery results page cut at its byte size).
+   | "RESULT_TRUNCATED"
+   | "RESULT_SHAPE_MISMATCH"
    // Package versions; each is raised only as a PackageVersionError, whose
    // reason fixes its status (see PACKAGE_VERSION_ERROR_STATUS).
    | PackageVersionErrorReason;
@@ -405,6 +439,8 @@ export interface HttpErrorAnswer {
       code: number;
       message: string;
       reason?: ErrorReason;
+      /** With `MATERIALIZATION_REFUSED`: the refusal's `RefusedSource.reason`. */
+      refusalReason?: string;
       problems?: ReturnType<typeof toQueryTextProblem>[];
    };
 }
@@ -453,7 +489,9 @@ export function internalErrorToHttpError(
          json: { code: status, message, problems: row.problems(error) },
       };
    }
-   const answer = httpError(status, message, resolve(row.reason, error));
+   const answer = httpError(status, message, errorReason(error));
+   const refusalReason = row.refusalReason?.(error);
+   if (refusalReason !== undefined) answer.json.refusalReason = refusalReason;
    return headers ? { ...answer, headers } : answer;
 }
 
@@ -526,6 +564,38 @@ export class BadRequestError extends Error {
    }
 
    constructor(message: string) {
+      super(message);
+   }
+}
+
+/**
+ * A materialization create's body or build instructions that no run of this
+ * package can take: a field of the wrong shape, an unknown `sourceEntityId`,
+ * a table named twice, a ledger entry that does not fit. 400 with `reason:
+ * BUILD_INSTRUCTIONS_INVALID`; the message says which.
+ */
+export class BuildInstructionsInvalidError extends BadRequestError {
+   override get kind(): "build_instructions_invalid" {
+      return "build_instructions_invalid";
+   }
+}
+
+/**
+ * A build refused before it wrote, because its table's `name=` is held by
+ * something that is not this package's (`table-owned-elsewhere`), or by
+ * something it cannot read (`table-ownership-unverified`). 400 with
+ * `reason` `TABLE_OWNED_ELSEWHERE` or `TABLE_OWNERSHIP_UNVERIFIED`. `code` is
+ * the kebab-case code a run's failure record carries (an open string).
+ */
+export class TableOwnershipError extends BadRequestError {
+   override get kind(): "table_ownership" {
+      return "table_ownership";
+   }
+
+   constructor(
+      readonly code: string,
+      message: string,
+   ) {
       super(message);
    }
 }
@@ -752,6 +822,28 @@ export class ConnectionFailedError extends ConnectionError {
 }
 
 /**
+ * The database reported more rows than it returned, and no row limit cut
+ * them: BigQuery returns one results page of about 10 MB, and the connector
+ * reads only that page (malloydata/malloy#3243). A short answer is a wrong
+ * answer, so it is refused rather than served: 502 with
+ * `reason: RESULT_TRUNCATED`. Retrying returns the same page, so the caller
+ * shrinks the answer instead.
+ */
+export class ResultTruncatedError extends ConnectionError {
+   override get kind(): "result_truncated" {
+      return "result_truncated";
+   }
+
+   constructor(returned: number, reported: number) {
+      super(
+         `The database returned ${returned} of the ${reported} rows it reported, and no row limit cut them: BigQuery returns one results page of about 10 MB, and the rest of the answer was not read. The query was refused rather than answered short. Project fewer columns or return fewer rows so the answer fits in one page.`,
+         { callerSafe: true },
+      );
+      this.name = "ResultTruncatedError";
+   }
+}
+
+/**
  * A model names a connection the environment does not have, usually one
  * deleted after the package loaded: 424 with `reason: CONNECTION_NOT_FOUND`.
  * Distinct from {@link ConnectionNotFoundError}, the 404 for a name the caller
@@ -781,6 +873,30 @@ export class ConnectionPoolExhaustedError extends ConnectionError {
    constructor(message: string) {
       super(message, { callerSafe: true });
       this.name = "ConnectionPoolExhaustedError";
+   }
+}
+
+/**
+ * The database answered, but a row does not fit the schema Malloy declared for
+ * the result, so the result could not be built (Malloy's wrapper threw on a
+ * value of the wrong type). A 502 like any other database-side failure: the
+ * query and the model are not the caller's to fix, and the server is not
+ * failing on its own. The message is server-authored; the wrapper's own text
+ * (a JavaScript TypeError) is logged where this is raised.
+ */
+export class ResultShapeError extends ConnectionError {
+   override get kind(): "result_shape" {
+      return "result_shape";
+   }
+
+   constructor(options?: { cause?: unknown }) {
+      super(
+         "The database returned a row that does not fit the result's schema, " +
+            "so the result could not be built.",
+         { callerSafe: true },
+      );
+      if (options?.cause !== undefined) this.cause = options.cause;
+      this.name = "ResultShapeError";
    }
 }
 
@@ -842,9 +958,12 @@ export class ConnectionAuthError extends Error {
 
 /**
  * The object store behind a table (a DuckLake data path, a bucket a file is
- * read from) refused the database's read of its files: 403, `reason:
- * STORAGE_ACCESS_DENIED`. The query ran and the model is fine; the storage
- * credentials the database reads with are not. The driver's text quotes the
+ * read from) refused the database's read of its files: 403. Under an
+ * environment-configured data path ({@link managed}), `reason:
+ * STORAGE_ACCESS_DENIED`: the query and the model are fine, the storage
+ * credentials the database reads with are not. At a path the query or the
+ * model names itself, `reason: PATH_ACCESS_DENIED`: the path, or the
+ * caller's grant to it, is what to fix. The driver's text quotes the
  * object's URL (bucket, organization and database paths), so it is this
  * error's message, which is logged, and the answer names only `subject`, the
  * source or connection the caller asked for.
@@ -1009,8 +1128,7 @@ export class MaterializationEligibilityError extends Error {
  * A chained `storage=` build depends on a persisted upstream it has no table
  * for (not built this run, not supplied, or in another destination).
  * Recomputing it from raw would rebuild a stored table nobody asked for, so
- * under `strictUpstreams` this is refused outright, while a shape failure
- * ({@link MaterializationEligibilityError}) falls back.
+ * the build fails: every build is strict, and none falls back.
  */
 export class ChainedUpstreamMissingError extends Error {
    get kind(): "chained_upstream_missing" {
@@ -1040,8 +1158,8 @@ export class ChainedUpstreamMissingError extends Error {
 /**
  * A chained `storage=` build had every stored upstream, but the model assembled
  * over them did not compile: a limit of what the build can carry, not of the
- * source. Recomputing from raw would rebuild the handed-in tables, so under
- * `strictUpstreams` it is refused like a missing upstream.
+ * source. Recomputing from raw would rebuild the handed-in tables, so it
+ * fails like a missing upstream: every build is strict.
  */
 export class ChainedShapeNotCarriedError extends Error {
    get kind(): "chained_shape_not_carried" {
@@ -1055,26 +1173,55 @@ export class ChainedShapeNotCarriedError extends Error {
 }
 
 /**
- * A strict, orchestrated `storage=` build refused the warehouse recompute
- * (ms2data/service#6756, publisher#1327): the source reaches the source
- * warehouse through an intermediate no stored table stands in for, so its only
- * build would recompute its stored upstreams from raw, and the orchestrator
- * said `warehouseReach: "refuse"`. A property of the model and the
- * instructions, so retrying the same ones fails the same way.
+ * A build wrote its table but could not read back the table's column
+ * contract (`ManifestEntry.contract`), which a table must carry to be served
+ * from. The source fails with SourceFailure code `contract_capture_failed`
+ * (non-terminal: a retry reads it again), and its previous table, if any, is
+ * left as it was: the read runs before the write is swapped in or committed
+ * wherever the build has a staging table or a transaction.
  */
-export class WarehouseRecomputeRefusedError extends Error {
-   get kind(): "warehouse_recompute_refused" {
-      return "warehouse_recompute_refused";
+export class ContractCaptureFailedError extends Error {
+   get kind(): "contract_capture_failed" {
+      return "contract_capture_failed";
    }
 
-   constructor(sourceName: string, destinationName: string, reason: string) {
+   /** The SourceFailure `code`. */
+   readonly code = "contract_capture_failed";
+
+   constructor(table: string, read: string) {
       super(
-         `Failed to materialize source '${sourceName}' into storage ` +
-            `destination '${destinationName}': its only build recomputes its ` +
-            `stored upstreams from the source warehouse, and the build ` +
-            `instructions refuse that (warehouseReach: refuse): ${reason}`,
+         `The column contract of the table ${table} could not be read back ` +
+            `(${read}), so the build is not recorded: a table with no ` +
+            `contract is never served from. The previous table, if any, is ` +
+            `left as it was; a retry reads it again.`,
       );
-      this.name = "WarehouseRecomputeRefusedError";
+      this.name = "ContractCaptureFailedError";
+   }
+}
+
+/**
+ * A build's upstream table is not what the plan it was planned from recorded
+ * for it (its stored columns read otherwise than the plan's proof assumed):
+ * the plan is stale, or the upstream incompatible. The source fails with
+ * SourceFailure code `schema_incompatible` (non-terminal), and the package
+ * reads its tables and derives its plan again, which then proves the build
+ * against the upstream's recorded columns or refuses it at plan.
+ */
+export class SchemaIncompatibleError extends Error {
+   get kind(): "schema_incompatible" {
+      return "schema_incompatible";
+   }
+
+   /** The SourceFailure `code`. */
+   readonly code = "schema_incompatible";
+
+   constructor(
+      message: string,
+      /** The tables found otherwise, by content address, for the drift handler. */
+      readonly handles: readonly string[] = [],
+   ) {
+      super(message);
+      this.name = "SchemaIncompatibleError";
    }
 }
 
@@ -1140,9 +1287,10 @@ export class FrozenConfigError extends Error {
 }
 
 /**
- * A request refused access to a source (403): an unsatisfied `#(authorize)`,
- * or a gate that could not apply at all. An `#(access_filter)` matching no row
- * is not this; that is a 200 with empty rows.
+ * A request refused access to a source (403, `reason: ACCESS_DENIED`): an
+ * unsatisfied `#(authorize)`, or a gate that could not apply at all. An
+ * `#(access_filter)` matching no row is not this; that is a 200 with empty
+ * rows.
  */
 export class AccessDeniedError extends Error {
    get kind(): "access_denied" {
@@ -1155,16 +1303,35 @@ export class AccessDeniedError extends Error {
     */
    readonly source?: string;
 
-   constructor(message: string, options?: { source?: string }) {
+   /**
+    * Which kind of gate refused, for the access record (operator-side,
+    * never sent): `lock`, an `#(authorize)` lock that does not admit the
+    * caller or could not be decided; `row_filter`, a row-level gate that
+    * could not apply to this query.
+    */
+   readonly gate: "lock" | "row_filter";
+
+   constructor(
+      message: string,
+      options?: { source?: string; gate?: "lock" | "row_filter" },
+   ) {
       super(message);
       this.name = "AccessDeniedError";
       if (options?.source !== undefined) this.source = options.source;
+      this.gate = options?.gate ?? "lock";
    }
 
-   /** The gate refusal for `source`. The message names the source and never the gate's logic. */
-   static forSource(source: string): AccessDeniedError {
+   /**
+    * The gate refusal for `source`. The message names the source and never
+    * the gate's logic, and is the same whichever gate refused.
+    */
+   static forSource(
+      source: string,
+      gate: "lock" | "row_filter" = "row_filter",
+   ): AccessDeniedError {
       return new AccessDeniedError(`Access denied for source "${source}".`, {
          source,
+         gate,
       });
    }
 }
@@ -1249,6 +1416,29 @@ export class MaterializationConflictError extends Error {
    }
 
    constructor(message: string) {
+      super(message);
+   }
+}
+
+/**
+ * A caller's drop of a materialized table, refused: the table is in use
+ * (`TABLE_IN_USE`), another's (`TABLE_OWNED_ELSEWHERE`), or not provably the
+ * package's (`TABLE_OWNERSHIP_UNVERIFIED`). 409 with that `reason`: the
+ * table's state, not the request, refuses it. A build refused for the same
+ * ownership reasons answers 400 instead ({@link TableOwnershipError}).
+ */
+export class MaterializedTableDropRefusedError extends Error {
+   get kind(): "materialized_table_drop_refused" {
+      return "materialized_table_drop_refused";
+   }
+
+   constructor(
+      readonly reason:
+         | "TABLE_IN_USE"
+         | "TABLE_OWNED_ELSEWHERE"
+         | "TABLE_OWNERSHIP_UNVERIFIED",
+      message: string,
+   ) {
       super(message);
    }
 }
@@ -1466,6 +1656,8 @@ type CompileRefusedKind =
    | "unparseable_text";
 type BadRequestKind =
    | "bad_request"
+   | "table_ownership"
+   | "build_instructions_invalid"
    | "invalid_argument"
    | "invalid_model_path"
    | "invalid_query_request"
@@ -1473,7 +1665,9 @@ type BadRequestKind =
 type ConnectionKind =
    | "connection"
    | "connection_failed"
-   | "connection_pool_exhausted";
+   | "connection_pool_exhausted"
+   | "result_truncated"
+   | "result_shape";
 type NotQueryableKind = "not_queryable" | "off_surface";
 type PackageAdmissionKind = "package_admission_refused" | "dry_run_capacity";
 type ServiceUnavailableKind = "service_unavailable" | PackageAdmissionKind;
@@ -1486,6 +1680,8 @@ interface ErrorByKind {
    build_plan_refreshing: BuildPlanRefreshingError;
    not_implemented: NotImplementedError;
    bad_request: BadRequestError;
+   table_ownership: TableOwnershipError;
+   build_instructions_invalid: BuildInstructionsInvalidError;
    invalid_argument: InvalidArgumentError;
    compile_refused: CompileRefusedError;
    invalid_model_path: InvalidModelPathError;
@@ -1505,6 +1701,8 @@ interface ErrorByKind {
    connection_failed: ConnectionFailedError;
    unconfigured_connection: UnconfiguredConnectionError;
    connection_pool_exhausted: ConnectionPoolExhaustedError;
+   result_truncated: ResultTruncatedError;
+   result_shape: ResultShapeError;
    destination_not_found: DestinationNotFoundError;
    storage_destination_not_found: StorageDestinationNotFoundError;
    storage_catalog_not_found: StorageCatalogNotFoundError;
@@ -1517,7 +1715,8 @@ interface ErrorByKind {
    materialization_eligibility: MaterializationEligibilityError;
    chained_upstream_missing: ChainedUpstreamMissingError;
    chained_shape_not_carried: ChainedShapeNotCarriedError;
-   warehouse_recompute_refused: WarehouseRecomputeRefusedError;
+   contract_capture_failed: ContractCaptureFailedError;
+   schema_incompatible: SchemaIncompatibleError;
    publisher_config: PublisherConfigError;
    server_configuration: ServerConfigurationError;
    frozen_config: FrozenConfigError;
@@ -1527,6 +1726,7 @@ interface ErrorByKind {
    off_surface: OffSurfaceError;
    materialization_not_found: MaterializationNotFoundError;
    materialization_conflict: MaterializationConflictError;
+   materialized_table_drop_refused: MaterializedTableDropRefusedError;
    write_conflict: WriteConflictError;
    installed_from_location: InstalledFromLocationError;
    write_rolled_back: WriteRolledBackError;
@@ -1570,6 +1770,8 @@ const ERROR_CLASSES: {
    build_plan_refreshing: BuildPlanRefreshingError,
    not_implemented: NotImplementedError,
    bad_request: BadRequestError,
+   table_ownership: TableOwnershipError,
+   build_instructions_invalid: BuildInstructionsInvalidError,
    invalid_argument: InvalidArgumentError,
    compile_refused: CompileRefusedError,
    invalid_model_path: InvalidModelPathError,
@@ -1589,6 +1791,8 @@ const ERROR_CLASSES: {
    connection_failed: ConnectionFailedError,
    unconfigured_connection: UnconfiguredConnectionError,
    connection_pool_exhausted: ConnectionPoolExhaustedError,
+   result_truncated: ResultTruncatedError,
+   result_shape: ResultShapeError,
    destination_not_found: DestinationNotFoundError,
    storage_destination_not_found: StorageDestinationNotFoundError,
    storage_catalog_not_found: StorageCatalogNotFoundError,
@@ -1601,7 +1805,8 @@ const ERROR_CLASSES: {
    materialization_eligibility: MaterializationEligibilityError,
    chained_upstream_missing: ChainedUpstreamMissingError,
    chained_shape_not_carried: ChainedShapeNotCarriedError,
-   warehouse_recompute_refused: WarehouseRecomputeRefusedError,
+   contract_capture_failed: ContractCaptureFailedError,
+   schema_incompatible: SchemaIncompatibleError,
    publisher_config: PublisherConfigError,
    server_configuration: ServerConfigurationError,
    frozen_config: FrozenConfigError,
@@ -1611,6 +1816,7 @@ const ERROR_CLASSES: {
    off_surface: OffSurfaceError,
    materialization_not_found: MaterializationNotFoundError,
    materialization_conflict: MaterializationConflictError,
+   materialized_table_drop_refused: MaterializedTableDropRefusedError,
    write_conflict: WriteConflictError,
    installed_from_location: InstalledFromLocationError,
    write_rolled_back: WriteRolledBackError,
@@ -1703,6 +1909,8 @@ export interface ErrorMapping<E> {
    message?: string | ((error: E) => string);
    /** The HTTP body's `reason`, for a caller that branches on it. */
    reason?: ErrorReason | ((error: E) => ErrorReason | undefined);
+   /** The HTTP body's `refusalReason`, beside `reason: MATERIALIZATION_REFUSED`. */
+   refusalReason?: (error: E) => string | undefined;
    /** Logged server-side by the HTTP mapping (unless the caller passed `log: false`). */
    log?: LogLine | ((error: E) => LogLine | undefined);
    /** The HTTP body also carries the compile problems. */
@@ -1805,6 +2013,30 @@ export const ERROR_TABLE: { [K in ErrorKind]: ErrorMapping<ErrorByKind[K]> } = {
       mcpSetup: "package",
    },
    bad_request: BAD_REQUEST,
+   build_instructions_invalid: {
+      status: 400,
+      reason: "BUILD_INSTRUCTIONS_INVALID",
+      mcp: {
+         advice: "fixed",
+         suggestions: [
+            "This is not transient. The request's build instructions or body fail the same way until they change; the message names what is wrong.",
+         ],
+      },
+   },
+   table_ownership: {
+      status: 400,
+      reason: (error) =>
+         error.code === "table-ownership-unverified"
+            ? "TABLE_OWNERSHIP_UNVERIFIED"
+            : "TABLE_OWNED_ELSEWHERE",
+      mcp: {
+         advice: "fixed",
+         suggestions: [
+            "This is not transient. The table at this name= is not this package's, or who holds it could not be read, so the build fails the same way until that changes.",
+            "Choose a name= no other package or table uses, or have the table's holder release it.",
+         ],
+      },
+   },
    // A malformed argument that is not about Malloy, so it must not get the
    // Malloy advice. BadRequestError keeps it: that class also wraps genuine
    // query-time compile failures, which do want the Malloy advice.
@@ -1831,6 +2063,9 @@ export const ERROR_TABLE: { [K in ErrorKind]: ErrorMapping<ErrorByKind[K]> } = {
    frozen_config: { status: 403, mcp: { advice: "internal" } },
    access_denied: {
       status: 403,
+      // Every gate 403, a gate that could not be decided included: the caller
+      // learns nothing the status does not already say.
+      reason: "ACCESS_DENIED",
       mcp: { advice: "malloy" },
       // The #(authorize) gate fires at query time, not setup, but a denial
       // must never surface as an opaque internal error.
@@ -1930,7 +2165,9 @@ export const ERROR_TABLE: { [K in ErrorKind]: ErrorMapping<ErrorByKind[K]> } = {
       // sent. warn: the storage credentials are the operator's to fix.
       status: 403,
       message: (error) => error.callerMessage,
-      reason: "STORAGE_ACCESS_DENIED",
+      // Who fixes it: the operator's credentials, or the path the query reads.
+      reason: (error) =>
+         error.managed ? "STORAGE_ACCESS_DENIED" : "PATH_ACCESS_DENIED",
       log: { summary: "Storage access denied", level: "warn" },
       mcp: {
          advice: "fixed",
@@ -1973,6 +2210,8 @@ export const ERROR_TABLE: { [K in ErrorKind]: ErrorMapping<ErrorByKind[K]> } = {
    unsupported_catalog_format: { status: 422, mcp: { advice: "internal" } },
    materialization_eligibility: {
       status: 422,
+      reason: "MATERIALIZATION_REFUSED",
+      refusalReason: (error) => error.reason,
       mcp: { advice: "internal" },
    },
    model_compilation: {
@@ -2007,8 +2246,38 @@ export const ERROR_TABLE: { [K in ErrorKind]: ErrorMapping<ErrorByKind[K]> } = {
          ],
       },
    },
+   result_truncated: {
+      ...CONNECTION,
+      reason: "RESULT_TRUNCATED",
+      log: { summary: "Database result truncated", level: "warn" },
+      mcp: {
+         advice: "fixed",
+         suggestions: [
+            NOT_TRANSIENT_CHANGE_QUERY,
+            "Shrink the answer so it fits in one results page of about 10 MB: select fewer columns, aggregate, or add a LIMIT.",
+         ],
+      },
+   },
+   result_shape: {
+      ...CONNECTION,
+      reason: "RESULT_SHAPE_MISMATCH",
+      log: {
+         summary: "Database result does not fit its schema",
+         level: "error",
+      },
+      mcp: { advice: "internal" },
+   },
    materialization_not_found: { status: 404, mcp: { advice: "internal" } },
-   materialization_conflict: { status: 409, mcp: { advice: "internal" } },
+   materialization_conflict: {
+      status: 409,
+      reason: "MATERIALIZATION_CONFLICT",
+      mcp: { advice: "internal" },
+   },
+   materialized_table_drop_refused: {
+      status: 409,
+      reason: (error) => error.reason,
+      mcp: { advice: "internal" },
+   },
    invalid_state_transition: { status: 409, mcp: { advice: "internal" } },
    write_conflict: {
       status: 409,
@@ -2064,7 +2333,8 @@ export const ERROR_TABLE: { [K in ErrorKind]: ErrorMapping<ErrorByKind[K]> } = {
    // No specific answer: a generalized 500, its detail only logged.
    chained_upstream_missing: UNHANDLED,
    chained_shape_not_carried: UNHANDLED,
-   warehouse_recompute_refused: UNHANDLED,
+   contract_capture_failed: UNHANDLED,
+   schema_incompatible: UNHANDLED,
    publisher_config: UNHANDLED,
    write_verify: UNHANDLED,
    unknown: UNHANDLED,
@@ -2074,4 +2344,9 @@ export const ERROR_TABLE: { [K in ErrorKind]: ErrorMapping<ErrorByKind[K]> } = {
 export function errorMapping(error: unknown): ErrorMapping<Error> {
    // The row is typed for its kind; errorKind guarantees `error` is of it.
    return ERROR_TABLE[errorKind(error)] as ErrorMapping<Error>;
+}
+
+/** The `reason` an error's HTTP body carries, which MCP errors carry too. */
+export function errorReason(error: unknown): ErrorReason | undefined {
+   return resolve(errorMapping(error).reason, error as Error);
 }

@@ -28,7 +28,6 @@ const SOURCE_DECLINES = {
    cross_connection_unbuilt: { stage: "served_copy" },
    column_types: { stage: "served_copy" },
    no_declaration: { stage: "served_copy" },
-   range_not_found: { stage: "served_copy" },
    definition_not_parsed: { stage: "served_copy" },
    pair_join_not_found: { stage: "served_copy" },
    pair_not_compiled: { stage: "served_copy" },
@@ -59,6 +58,42 @@ export type BindDeclineReason = DeclinedAt<"bind">;
 
 /** The served copy's reasons (`ServedCopyProblem`'s). */
 export type ServedCopyProblemReason = DeclinedAt<"served_copy">;
+
+/**
+ * The served copy's reasons, most actionable first: what an author changes
+ * in the model (a join across connections, a filter, inherited fields, a
+ * column's type) before what only a Publisher fix or a rebuild changes.
+ */
+const ACTIONABLE_ORDER: readonly string[] = [
+   "cross_connection_join",
+   "cross_connection_unbuilt",
+   "inline_join_kept",
+   "read_terms_not_kept",
+   "fields_not_carried",
+   "column_types",
+   "classification_not_kept",
+   "pair_join_not_found",
+   "pair_not_compiled",
+   "definition_not_parsed",
+   "compile_failed",
+   "no_declaration",
+   "reroot_not_compiled",
+] satisfies readonly ServedCopyProblemReason[];
+
+/**
+ * `reasons` without repeats, most actionable first; a reason the order does
+ * not know goes last, in the order given.
+ */
+export function byActionability(reasons: readonly string[]): string[] {
+   const rank = (r: string) => {
+      const at = ACTIONABLE_ORDER.indexOf(r);
+      return at < 0 ? ACTIONABLE_ORDER.length : at;
+   };
+   return [...new Set(reasons)]
+      .map((r, i) => ({ r, i }))
+      .sort((a, b) => rank(a.r) - rank(b.r) || a.i - b.i)
+      .map((x) => x.r);
+}
 
 /** Every reason, in the table's order. */
 export const SOURCE_DECLINE_REASONS = Object.keys(

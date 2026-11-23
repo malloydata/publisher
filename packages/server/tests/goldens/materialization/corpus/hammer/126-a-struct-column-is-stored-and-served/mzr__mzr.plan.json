@@ -1,0 +1,135 @@
+{
+  "droppedPersistSources": [],
+  "internal": {
+    "annotationFindings": [],
+    "builds": [
+      {
+        "connectionName": "lake_probe",
+        "dependsOn": {
+          "events@<hammer>/mzr/mzr.malloy": []
+        },
+        "order": [
+          "events@<hammer>/mzr/mzr.malloy"
+        ]
+      }
+    ],
+    "droppedPersistSources": [],
+    "kinds": {
+      "events@<hammer>/mzr/mzr.malloy": "materialize"
+    },
+    "materializePlans": {
+      "events@<hammer>/mzr/mzr.malloy": {
+        "buildSourceName": "events__mat",
+        "columns": [
+          {
+            "column": "event_id",
+            "computed": false,
+            "dimension": "event_id"
+          },
+          {
+            "column": "device",
+            "computed": false,
+            "dimension": "device"
+          },
+          {
+            "column": "geo",
+            "computed": false,
+            "dimension": "geo"
+          },
+          {
+            "column": "params",
+            "computed": false,
+            "dimension": "params"
+          }
+        ],
+        "nameDefaulted": true,
+        "persist": {
+          "name": "events",
+          "storage": "lake"
+        },
+        "sourceID": "events@<hammer>/mzr/mzr.malloy",
+        "sourceName": "events",
+        "storedColumns": [
+          {
+            "name": "event_id",
+            "type": "BIGINT"
+          },
+          {
+            "name": "device",
+            "type": "STRUCT(\"category\" VARCHAR, \"os\" VARCHAR)"
+          },
+          {
+            "name": "geo",
+            "type": "STRUCT(\"country\" VARCHAR, \"loc\" STRUCT(\"city\" VARCHAR))"
+          },
+          {
+            "name": "params",
+            "type": "STRUCT(\"tags\" VARCHAR[], \"src\" VARCHAR)"
+          }
+        ],
+        "zoneFreeRows": true
+      }
+    },
+    "rollupPlans": {},
+    "sourceGateOutcomes": {
+      "events@<hammer>/mzr/mzr.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      }
+    },
+    "sourceModelPaths": {
+      "events@<hammer>/mzr/mzr.malloy": "mzr.malloy"
+    }
+  },
+  "rollupsKeepingGates": [],
+  "wirePlan": {
+    "graphs": [
+      {
+        "connectionName": "lake_probe",
+        "nodes": [
+          [
+            {
+              "dependsOn": [],
+              "sourceID": "events@<hammer>/mzr/mzr.malloy"
+            }
+          ]
+        ]
+      }
+    ],
+    "omittedFiles": [],
+    "omittedSources": [],
+    "refusedSources": {},
+    "sources": {
+      "events@<hammer>/mzr/mzr.malloy": {
+        "annotationFields": {
+          "name": "events",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "event_id",
+            "type": "number"
+          }
+        ],
+        "connectionName": "lake_probe",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "mzr.malloy",
+        "name": "events",
+        "origin": "materialize",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "lake_probe",
+            "table": "lake_probe.main.mzr_events"
+          }
+        ],
+        "refresh": null,
+        "sourceEntityId": "d2d17e0403609ed0a9f6e9a224e7e124c13f72cce10e825ee0f90d56bce3a52c",
+        "sourceID": "events@<hammer>/mzr/mzr.malloy",
+        "sql": "sha256:2ed9b82635eb6e10"
+      }
+    }
+  }
+}

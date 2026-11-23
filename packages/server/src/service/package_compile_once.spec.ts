@@ -6,7 +6,7 @@
  * behalf (ms2data/service#7802):
  *
  * - a published version bound to a manifest compiles once: its models are
- *   hydrated over the manifest's colocated entries, so the bind that follows
+ *   hydrated over the manifest's database entries, so the bind that follows
  *   does not reload them, and it serves what the load-then-reload served;
  * - a rebind whose entries differ only in what a compile does not read
  *   (freshness, schemas) binds them without a package compile;
@@ -16,6 +16,7 @@
  * Driven on real Packages in a real Environment, counting package compiles
  * at the load pool.
  */
+import { withNativeSchema } from "../test_helpers/host_manifest";
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import fs from "fs/promises";
 import os from "os";
@@ -114,7 +115,13 @@ describe("a package compiles once per thing a compile reads", () => {
          sourceLocation: null,
       });
 
-   /** A host manifest binding `summary` to `summary_a`, and its colocated entries. */
+   /** `summary_a`'s columns, as its build records them (host_manifest.ts). */
+   const SUMMARY_TYPES = [
+      { name: "a", type: "INTEGER" },
+      { name: "n", type: "BIGINT" },
+   ];
+
+   /** A host manifest binding `summary` to `summary_a`, and its database entries. */
    async function writeManifest(
       pkg: Package,
    ): Promise<{ file: string; entries: FreshnessManifest }> {
@@ -128,19 +135,25 @@ describe("a package compiles once per thing a compile reads", () => {
             builtAt: new Date().toISOString(),
             strict: false,
             entries: {
-               [id!]: {
-                  sourceEntityId: id,
-                  sourceName: "summary",
-                  physicalTableName: "summary_a",
-                  connectionName: "duckdb",
-               },
+               [id!]: withNativeSchema(
+                  {
+                     sourceEntityId: id,
+                     sourceName: "summary",
+                     physicalTableName: "summary_a",
+                     connectionName: "duckdb",
+                  },
+                  SUMMARY_TYPES,
+               ),
             },
          }),
       );
       return {
          file,
          entries: {
-            [id!]: { tableName: "summary_a", connectionName: "duckdb" },
+            [id!]: withNativeSchema(
+               { tableName: "summary_a", connectionName: "duckdb" },
+               SUMMARY_TYPES,
+            ),
          },
       };
    }
@@ -190,7 +203,7 @@ describe("a package compiles once per thing a compile reads", () => {
       const pkg = await loadVersion(missing);
       expect(compiles).toHaveBeenCalledTimes(1);
       expect(pkg.getOperationalFields().manifestBindingStatus).toBe(
-         "live_fallback",
+         "bind_failed",
       );
       expect(pkg.materialization().getBuildManifestEntries()).toBeUndefined();
       expect(await total(pkg)).toBe(1);
@@ -235,9 +248,9 @@ describe("a package compiles once per thing a compile reads", () => {
       expect(pkg.getModel("m.malloy")).toBe(model);
       const bound = (
          pkg.materialization() as unknown as {
-            boundColocatedEntries(): FreshnessManifest;
+            boundDatabaseEntries(): FreshnessManifest;
          }
-      ).boundColocatedEntries();
+      ).boundDatabaseEntries();
       expect(bound[id]).toMatchObject({
          dataAsOf: "2026-11-02T00:00:00Z",
          schema: [

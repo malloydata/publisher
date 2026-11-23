@@ -7,8 +7,9 @@
  *
  *  - a `storage=` rollup over a base stored in the same destination groups
  *    the base's table in the destination, storing the rows its planned
- *    (warehouse) build stores, and answers as live; with no base table in
- *    the run it builds from the warehouse, as planned;
+ *    (warehouse) build stores, and answers as live; a run of the rollup
+ *    alone builds its base first; a base table it cannot read refuses it,
+ *    never builds it from the warehouse;
  *  - a `#(materialize) storage=` extension whose parent is declared in
  *    another file builds over the parent's table, as a chain in one file
  *    does.
@@ -35,11 +36,13 @@ import * as fs from "fs";
 import * as path from "path";
 import { unrecordedAudit } from "../../src/service/access_record";
 import * as connection from "../../src/service/connection";
+import * as dialects from "../../src/service/dialects";
 import { recordConnectionsAsForTests } from "../../src/service/connection_type";
 import { Environment } from "../../src/service/environment";
 import { parsePackageName } from "../../src/service/identity";
+import { MaterializationController } from "../../src/controller/materialization.controller";
 import { MaterializationService } from "../../src/service/materialization/run/materialization_service";
-import * as numericPrecision from "../../src/service/materialization/run/postgres_numeric_precision";
+import * as numericPrecision from "../../src/service/materialization/run/passthrough/postgres";
 import { StorageBuildStrategy } from "../../src/service/materialization/run/storage_build_strategy";
 import { QueryPrivileges } from "../../src/service/model_query_request";
 import type {
@@ -114,7 +117,7 @@ const CHAIN_QUERY =
 
 /** A `storage=` rollup over a `#(materialize) storage=` base, at `grain`. */
 const materializeRollupModel = (grain = "cat", rollupExtra = "") => {
-   const rollup = `#(preaggregate) grain=["${grain}"] storage="${LAKE}"${rollupExtra}`;
+   const rollup = `#(rollup) grain=["${grain}"] storage="${LAKE}"${rollupExtra}`;
    return `##! experimental.persistence
 source: raw is ${RAW}
 
@@ -152,8 +155,100 @@ source: child is mid extend {
 `,
 };
 
+/**
+ * A `#@ persist` query source (joining another stored source) and an `extend`
+ * of it that adds only a `where:` (gtm-funnel's `deals`): the extension runs
+ * the base's query, so it builds the base's rows. The base's query reads a
+ * stored source (`rates`), so both are chained builds. With a `name=` of
+ * each (`names`), the two are folded onto two tables and the extension is
+ * built from the base's; without, they are one table.
+ */
+const extendOnlyModel = (names: boolean) => {
+   const name = (n: string) => (names ? ` name="${n}"` : "");
+   return `##! experimental.persistence
+source: raw is ${RAW}
+source: rates_raw is warehouse.sql("""
+  SELECT * FROM (VALUES ('a', 10.0), ('b', 20.0), ('c', 30.0)) AS t(cat, rate)
+""")
+
+#@ persist storage="${LAKE}"${name("rates_t")}
+source: rates is rates_raw -> { group_by: cat; aggregate: rate is rate.max() }
+
+source: d_raw is raw extend {
+  join_one: rates on rates.cat = cat
+}
+
+#@ persist storage="${LAKE}"${name("d_incl_t")}
+source: d_incl is d_raw -> {
+  group_by: cat, sub, is_deleted is amt < 0, cur_rate is rates.rate
+  aggregate: total is amt.sum()
+}
+
+#@ persist storage="${LAKE}"${name("deals2_t")}
+source: deals2 is d_incl extend { where: not is_deleted }
+`;
+};
+const EXTEND_ONLY_QUERY =
+   "run: deals2 -> { group_by: cat, cur_rate; aggregate: t is total.sum() }";
+
+/**
+ * gtm-funnel's shape: the stored parent is a table-shaped `include` plus
+ * `extend` over an unpersisted query stage, joining warehouse sources (one
+ * keyed through another join), and the extension adds a `where:` and a
+ * dimension. Its joins read the warehouse, so it is built from there.
+ */
+const GTM_SHAPE_MODEL = `##! experimental { persistence access_modifiers }
+source: raw is ${RAW}
+source: attrs is warehouse.sql("""
+  SELECT * FROM (VALUES ('a', 1), ('b', 2), ('c', 1)) AS t(cat, company_id)
+""")
+source: companies is warehouse.sql("""
+  SELECT * FROM (VALUES (1, 'acme'), (2, 'globex')) AS t(company_id, company_name)
+""")
+
+source: progress is raw extend {
+  join_one: at is attrs on at.cat = cat
+} -> {
+  group_by: cat, sub, is_deleted is amt < 0, company_id is at.company_id
+  aggregate: total is amt.sum()
+}
+
+#@ persist storage="${LAKE}" name="gtm_deals_including_deleted"
+source: deals_including_deleted is progress include {
+  public: cat, sub, is_deleted, total
+} extend {
+  join_one: a is attrs on a.cat = cat
+  join_one: co is companies on co.company_id = a.company_id
+  dimension: company is co.company_name
+}
+
+#@ persist storage="${LAKE}" name="gtm_deals"
+source: deals is deals_including_deleted extend {
+  where: not is_deleted
+  dimension: loud is upper(company)
+}
+`;
+const GTM_SHAPE_QUERY =
+   "run: deals -> { group_by: cat, sub; aggregate: t is total.sum() }";
+const GTM_SHAPE_JOINED_QUERY =
+   "run: deals -> { group_by: loud, sub; aggregate: t is total.sum() }";
+
+/** Rows with every value as a string, sorted, to compare across engines. */
+const asStrings = (rows: Record<string, unknown>[]) =>
+   rows
+      .map((r) =>
+         Object.fromEntries(
+            Object.entries(r).map(([k, v]) => [
+               k,
+               v === null ? null : String(v),
+            ]),
+         ),
+      )
+      .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
+
 type Entry = {
    sourceName: string;
+   schema?: { name: string; type: string }[];
    sourceEntityId: string;
    physicalTableName: string;
    storageDestinationName?: string;
@@ -186,6 +281,7 @@ describe.skipIf(process.platform === "win32")(
       let service: MaterializationService;
       let restore: () => void;
       let serve: MalloyDuckDBConnection | undefined;
+      const retired: MalloyDuckDBConnection[] = [];
       let opened = 0;
       let statements: string[];
       const spies: { mockRestore(): void }[] = [];
@@ -205,9 +301,14 @@ describe.skipIf(process.platform === "win32")(
          );
       }
 
-      /** A fresh serve connection, so the catalog is read as it now is. */
+      /**
+       * A fresh serve connection, so the catalog is read as it now is. The
+       * previous one is retired, not closed: a bind's read of the stored
+       * tables, or a served copy compiling in the background, may still be
+       * on it. Every one is closed after the test.
+       */
       async function reopenServe(): Promise<void> {
-         await serve?.close().catch(() => undefined);
+         if (serve) retired.push(serve);
          serve = undefined;
          const config = new MalloyConfig({ connections: {} });
          config.wrapConnections(() => ({
@@ -337,15 +438,14 @@ describe.skipIf(process.platform === "win32")(
                await attachFileLake(session as never, dbName, true);
                return true;
             }),
-            spyOn(
-               connection,
-               "federateSourceForPassthrough",
-            ).mockImplementation(async (session, sourceType) => {
-               await session.runSQL(
-                  "CREATE OR REPLACE TEMP MACRO postgres_query(alias, q) AS TABLE SELECT * FROM query(q)",
-               );
-               return { handle: "warehouse", sourceType };
-            }),
+            spyOn(dialects, "federateSourceForPassthrough").mockImplementation(
+               async (session, sourceType) => {
+                  await session.runSQL(
+                     "CREATE OR REPLACE TEMP MACRO postgres_query(alias, q) AS TABLE SELECT * FROM query(q)",
+                  );
+                  return { handle: "warehouse", sourceType };
+               },
+            ),
             // The stand-in warehouse is DuckDB, which has no Postgres type
             // catalog to probe; it holds no numeric to read as text.
             spyOn(
@@ -364,6 +464,9 @@ describe.skipIf(process.platform === "win32")(
          for (const spy of spies.splice(0)) spy.mockRestore();
          await serve?.close().catch(() => undefined);
          serve = undefined;
+         for (const c of retired.splice(0)) {
+            await c.close().catch(() => undefined);
+         }
          await env?.closeAllConnections().catch(() => undefined);
          await db?.close();
          fs.rmSync(root, { recursive: true, force: true });
@@ -394,6 +497,30 @@ describe.skipIf(process.platform === "win32")(
                const settled = (await repo.getMaterializationById(created.id))!;
                await reopenServe();
                return settled;
+            }
+            if (Date.now() > deadline) throw new Error("run never settled");
+            await new Promise((resolve) => setTimeout(resolve, 20));
+         }
+      }
+
+      /** A run another caller started, to its settled record. */
+      async function settled(id: string): Promise<Materialization> {
+         const deadline = Date.now() + 120_000;
+         for (;;) {
+            const m = await repo.getMaterializationById(id);
+            if (
+               m &&
+               ["MANIFEST_FILE_READY", "FAILED", "CANCELLED"].includes(m.status)
+            ) {
+               const running = (
+                  service as unknown as {
+                     runningAbortControllers: Map<string, unknown>;
+                  }
+               ).runningAbortControllers;
+               while (running.has(id)) {
+                  await new Promise((resolve) => setTimeout(resolve, 10));
+               }
+               return (await repo.getMaterializationById(id))!;
             }
             if (Date.now() > deadline) throw new Error("run never settled");
             await new Promise((resolve) => setTimeout(resolve, 20));
@@ -486,8 +613,13 @@ describe.skipIf(process.platform === "win32")(
          const rollup = entryOf(m, /^daily__rollup__/);
          expect(rollup.storageDestinationName).toBe(LAKE);
          expect(rollup.upstreamReuse).toBe("reused");
+         // The base's table it grouped, named as what it was built from.
+         expect(
+            (
+               rollup as Entry & { builtFrom?: { sourceEntityId: string }[] }
+            ).builtFrom?.map((b) => b.sourceEntityId),
+         ).toEqual([base.sourceEntityId]);
          // Only the base's build read the warehouse.
-         expect(warehouseReads()).toHaveLength(1);
          expect(warehouseReads()[0]).toContain(base.physicalTableName);
          expect(createdBy(rollup.physicalTableName)).not.toContain(RAW_MARK);
          // The warehouse build's rows, and live's answer.
@@ -499,25 +631,88 @@ describe.skipIf(process.platform === "win32")(
          expect(served.rows).toEqual(live.rows);
       });
 
-      it("builds a storage= rollup from the warehouse when the run holds no table of its base", async () => {
+      it("records each stored table's column contract, read back as a bind reads it", async () => {
+         await setUp({ "m.malloy": ROLLUP_MODEL });
+         const m = await build();
+         expect([m.status, m.error]).toEqual(["MANIFEST_FILE_READY", null]);
+         const base = entryOf(m, "daily") as Entry & { contract?: unknown };
+         const rollup = entryOf(m, /^daily__rollup__/) as Entry & {
+            contract?: unknown;
+         };
+         const column = (e: { contract?: unknown }, name: string) =>
+            (
+               e.contract as {
+                  columns: { name: string; [k: string]: unknown }[];
+               }
+            ).columns.find((c) => c.name === name);
+         expect(base.contract).toMatchObject({ v: 1, dialect: "duckdb" });
+         // A string the warehouse compares byte-wise, stored byte-wise.
+         expect(column(base, "cat")).toEqual({
+            name: "cat",
+            nativeType: "VARCHAR",
+            collation: "binary",
+            compare: "exact",
+            gateExact: true,
+            declaredType: "string",
+         });
+         // A double the build computed (a sum): it copies no warehouse
+         // double, so no gate over it is exact.
+         expect(column(base, "total")).toMatchObject({
+            compare: "exact",
+            gateExact: false,
+         });
+         expect(column(base, "n")).toMatchObject({ gateExact: true });
+         // Stacked on the base's table: its strings compare as the base's.
+         expect(rollup.upstreamReuse).toBe("reused");
+         expect(column(rollup, "cat")).toMatchObject({
+            collation: "binary",
+            compare: "exact",
+         });
+      });
+
+      it("binds every stored table a build wrote as its contract recorded it: none incompatible or missing its contract", async () => {
+         await setUp({ "m.malloy": ROLLUP_MODEL });
+         const m = await build();
+         expect([m.status, m.error]).toEqual(["MANIFEST_FILE_READY", null]);
+         const pkg = await env.getPackage(parsePackageName(PKG), false);
+         const judged = pkg
+            .materialization()
+            .serveVerdicts()
+            .filter(
+               (v) =>
+                  v.reason === "incompatible" ||
+                  v.reason === "contract_missing",
+            );
+         expect(judged).toEqual([]);
+         expect(
+            pkg
+               .materialization()
+               .serveVerdicts()
+               .some((v) => v.tier === "storage" && v.verdict === "serves"),
+         ).toBe(true);
+      });
+
+      it("builds a storage= rollup's base first when a run names only the rollup, and groups its table", async () => {
          await setUp({ "m.malloy": ROLLUP_MODEL });
          const pkg = await env.getPackage(parsePackageName(PKG), false);
          const rollupName = Object.values(pkg.getBuildPlan()!.sources).find(
-            (s) => s.origin === "preaggregate",
+            (s) => s.origin === "rollup",
          )!.name;
          const m = await build({ sourceNames: [rollupName] });
          expect([m.status, m.error]).toEqual(["MANIFEST_FILE_READY", null]);
          const rollup = entryOf(m, /^daily__rollup__/);
-         // It read the warehouse, and says nothing of a stored upstream.
-         expect(rollup.upstreamReuse).toBeUndefined();
-         expect(warehouseReads()).toHaveLength(1);
-         expect(createdBy(rollup.physicalTableName)).toContain(RAW_MARK);
+         const base = entryOf(m, "daily");
+         expect(rollup.upstreamReuse).toBe("reused");
+         expect(createdBy(rollup.physicalTableName)).not.toContain(RAW_MARK);
+         expect(createdBy(rollup.physicalTableName)).toContain(
+            base.physicalTableName,
+         );
          expect(await storedRows(rollup.physicalTableName)).toEqual(
             await plannedRows(rollup),
          );
       });
 
-      it("reads the base's table carried from an earlier run, and a windowed rollup never reads one of unknown age", async () => {
+      it("reads the base's table carried from an earlier run, and a windowed rollup rebuilds one of unknown age and reads it", async () => {
          await setUp({ "m.malloy": ROLLUP_MODEL });
          const first = await build();
          expect(first.status).toBe("MANIFEST_FILE_READY");
@@ -546,7 +741,8 @@ describe.skipIf(process.platform === "win32")(
             await plannedRows(rollup),
          );
          // A windowed rollup over that base, whose table is of unknown age
-         // (it declares no window): built from the warehouse, as planned, so
+         // (it declares no window): the rollup's edge to its base rebuilds
+         // the base (its one warehouse read), and the rollup reads it, so
          // it is never fresher than the rows it holds.
          await regrain(
             '#@ preaggregate grain="sub" storage=lake freshness.window="1h"',
@@ -557,15 +753,14 @@ describe.skipIf(process.platform === "win32")(
             null,
          ]);
          const windowed = entryOf(third, /^daily__rollup__/);
-         expect(windowed.upstreamReuse).toBeUndefined();
-         expect(warehouseReads()).toHaveLength(1);
-         expect(createdBy(windowed.physicalTableName)).toContain(RAW_MARK);
+         expect(windowed.upstreamReuse).toBe("reused");
+         expect(createdBy(windowed.physicalTableName)).not.toContain(RAW_MARK);
          expect(await storedRows(windowed.physicalTableName)).toEqual(
             await plannedRows(windowed),
          );
       });
 
-      it("builds a storage= rollup from the warehouse, saying so, when its base's build fails in the same run", async () => {
+      it("refuses a storage= rollup as a missing upstream when its base's build fails in the same run", async () => {
          await setUp({ "m.malloy": ROLLUP_MODEL });
          const build_ = StorageBuildStrategy.prototype.build;
          spies.push(
@@ -579,12 +774,26 @@ describe.skipIf(process.platform === "win32")(
             ),
          );
          const m = await build();
-         const rollup = entryOf(m, /^daily__rollup__/);
-         expect(rollup.upstreamReuse).toBeUndefined();
-         expect(createdBy(rollup.physicalTableName)).toContain(RAW_MARK);
-         expect(await storedRows(rollup.physicalTableName)).toEqual(
-            await plannedRows(rollup),
+         expect(m.status).toBe("FAILED");
+         const failures = Object.values(
+            (
+               m.manifest as {
+                  failures?: Record<
+                     string,
+                     { sourceName?: string; reason: string }
+                  >;
+               } | null
+            )?.failures ?? {},
          );
+         const rollup = failures.find((f) =>
+            /^daily__rollup__/.test(f.sourceName ?? ""),
+         );
+         expect(rollup?.reason).toContain(
+            "a rollup is built over its base's table or not at all",
+         );
+         expect(
+            statements.some((q) => q.includes(RAW_MARK) && /rollup/.test(q)),
+         ).toBe(false);
       });
 
       it("builds a storage= extension over its parent's stored table in another file", async () => {
@@ -596,7 +805,6 @@ describe.skipIf(process.platform === "win32")(
          const parent = entryOf(m, "parent");
          const child = entryOf(m, "child");
          expect(child.upstreamReuse).toBe("reused");
-         expect(warehouseReads()).toHaveLength(1);
          expect(createdBy(child.physicalTableName)).not.toContain(RAW_MARK);
          expect(createdBy(child.physicalTableName)).toContain(
             parent.physicalTableName,
@@ -615,7 +823,6 @@ describe.skipIf(process.platform === "win32")(
          const parent = entryOf(m, "parent");
          const child = entryOf(m, "child");
          expect(child.upstreamReuse).toBe("reused");
-         expect(warehouseReads()).toHaveLength(1);
          expect(createdBy(child.physicalTableName)).not.toContain(RAW_MARK);
          expect(createdBy(child.physicalTableName)).toContain(
             parent.physicalTableName,
@@ -626,13 +833,26 @@ describe.skipIf(process.platform === "win32")(
       }
 
       /** The child built from the warehouse, with the warehouse build's rows. */
-      async function expectWarehouseChild(m: Materialization) {
+      /**
+       * `child` is refused at plan as `upstream_table_unusable`, naming its
+       * parent, and never built from the warehouse; the parent still builds.
+       */
+      async function expectRefusedChild(m: Materialization) {
          expect([m.status, m.error]).toEqual(["MANIFEST_FILE_READY", null]);
-         const child = entryOf(m, "child");
-         expect(child.upstreamReuse).not.toBe("reused");
-         expect(createdBy(child.physicalTableName)).toContain(RAW_MARK);
-         expect(await storedRows(child.physicalTableName)).toEqual(
-            await plannedRows(child),
+         const entries = Object.values(
+            (m.manifest as { entries: Record<string, { sourceName: string }> })
+               .entries,
+         );
+         expect(entries.map((e) => e.sourceName)).not.toContain("child");
+         expect(entries.map((e) => e.sourceName)).toContain("parent");
+         const pkg = await env.getPackage(parsePackageName(PKG), false);
+         const refusal = Object.values(
+            pkg.getBuildPlan()?.refusedSources ?? {},
+         ).find((r) => r.name === "child");
+         expect(refusal?.reason).toBe("upstream_table_unusable");
+         expect(refusal?.message).toContain("it extends 'parent'");
+         expect(refusal?.message).toContain(
+            "never by recomputing its parent from the warehouse",
          );
       }
 
@@ -669,7 +889,7 @@ source: mid2 is mid extend {
          expect(served.rows).toEqual(live.rows);
       });
 
-      it("builds a storage= extension from the warehouse when a file between reads what its parent's stored table does not hold", async () => {
+      it("refuses a storage= extension at plan, never building it from the warehouse, when a file between reads what its parent's stored table does not hold", async () => {
          // `mid` reads a join of the parent's, which the destination does not
          // hold: the chain does not compile over the parent's stored table.
          await setUp({
@@ -691,13 +911,13 @@ source: mid is parent extend {
 `,
          });
          const live = await answer("b.malloy", THIRD_QUERY);
-         const m = await build();
-         await expectWarehouseChild(m);
+         await expectRefusedChild(await build());
+         // Answered live, equal to live.
          const served = await answer("b.malloy", THIRD_QUERY);
          expect(served.rows).toEqual(live.rows);
       });
 
-      it("builds a storage= extension from the warehouse when a file on the chain imports the next one selectively", async () => {
+      it("refuses a storage= extension at plan, never building it from the warehouse, when a file on the chain imports the next one selectively", async () => {
          await setUp({
             ...THROUGH_THIRD,
             "b.malloy": THROUGH_THIRD["b.malloy"].replace(
@@ -705,7 +925,7 @@ source: mid is parent extend {
                'import { mid } from "c.malloy"',
             ),
          });
-         await expectWarehouseChild(await build());
+         await expectRefusedChild(await build());
       });
 
       it("builds a storage= rollup over its #(materialize) base's stored table, reading the warehouse once for both", async () => {
@@ -718,7 +938,6 @@ source: mid is parent extend {
          const rollup = entryOf(m, /^orders__rollup__/);
          expect(rollup.storageDestinationName).toBe(LAKE);
          expect(rollup.upstreamReuse).toBe("reused");
-         expect(warehouseReads()).toHaveLength(1);
          expect(warehouseReads()[0]).toContain(base.physicalTableName);
          expect(createdBy(rollup.physicalTableName)).not.toContain(RAW_MARK);
          expect(createdBy(rollup.physicalTableName)).toContain(
@@ -763,26 +982,63 @@ source: mid is parent extend {
          return build();
       }
 
-      async function expectWarehouseRollup(m: Materialization) {
-         expect([m.status, m.error]).toEqual(["MANIFEST_FILE_READY", null]);
-         const rollup = entryOf(m, /^orders__rollup__/);
-         expect(rollup.upstreamReuse).toBeUndefined();
-         expect(createdBy(rollup.physicalTableName)).toContain(RAW_MARK);
+      /**
+       * The rollup refused over its base's carried table, as
+       * `schema_incompatible`, and the next run rebuilding that table and
+       * grouping it: never built from the warehouse.
+       */
+      async function expectRefusedThenRebuilt(m: Materialization) {
+         expect(m.status).toBe("FAILED");
+         const failures = Object.values(
+            (
+               m.manifest as {
+                  failures?: Record<string, { code?: string }>;
+               } | null
+            )?.failures ?? {},
+         );
+         expect(failures.map((f) => f.code)).toEqual(["schema_incompatible"]);
+         const next = await build();
+         expect([next.status, next.error]).toEqual([
+            "MANIFEST_FILE_READY",
+            null,
+         ]);
+         const base = entryOf(next, "orders");
+         const rollup = entryOf(next, /^orders__rollup__/);
+         expect(rollup.upstreamReuse).toBe("reused");
+         expect(createdBy(rollup.physicalTableName)).toContain(
+            base.physicalTableName,
+         );
          expect(await storedRows(rollup.physicalTableName)).toEqual(
             await plannedRows(rollup),
          );
       }
 
-      it("builds a storage= rollup from the warehouse when its #(materialize) base's carried table holds another type", async () => {
+      it("refuses a storage= rollup over its #(materialize) base's carried table holding another type, and rebuilds that table next", async () => {
          // Text, where the planned build writes a number.
-         await expectWarehouseRollup(
+         await expectRefusedThenRebuilt(
             await carriedBaseHolding("amt", "VARCHAR"),
          );
       });
 
-      it("never stacks a storage= rollup on a #(materialize) base's table holding a 128-bit integer", async () => {
+      it("refuses a storage= rollup over a #(materialize) base's table holding a 128-bit integer", async () => {
          // DuckLake holds a HUGEINT as a DOUBLE: its digits are rounded.
-         await expectWarehouseRollup(await carriedBaseHolding("id", "HUGEINT"));
+         // Its stored digits are not what the planned build writes, so it is
+         // refused (chained_shape_not_carried), never built from the
+         // warehouse in its place.
+         const m = await carriedBaseHolding("id", "HUGEINT");
+         expect(m.status).toBe("FAILED");
+         const failures = Object.values(
+            (
+               m.manifest as {
+                  failures?: Record<string, { reason: string }>;
+               } | null
+            )?.failures ?? {},
+         );
+         expect(failures).toHaveLength(1);
+         expect(failures[0].reason).toContain("was not built over its base");
+         expect(failures[0].reason).toContain(
+            "a downstream is never built by recomputing its upstreams from raw",
+         );
       });
 
       it("never stacks a storage= rollup on a gated #(materialize) base's table", async () => {
@@ -807,7 +1063,230 @@ source: mid is parent extend {
          }
       });
 
-      it("builds a windowed storage= rollup from the warehouse over a #(materialize) base's table of unknown age", async () => {
+      it("refuses an extend-only #@ persist source named apart from its base whose base joins a stored table to the warehouse: never recomputed, answered live", async () => {
+         await setUp({ "m.malloy": extendOnlyModel(true) });
+         const live = await answer("m.malloy", EXTEND_ONLY_QUERY);
+         expect(live.servedBy).toBe("live");
+         // `d_incl` joins the stored `rates` to the warehouse's `raw`: no
+         // engine reads both, so it has no build over its stored upstream,
+         // and it is refused rather than recomputed from raw; `deals2`,
+         // over it, with it.
+         const m = await build({ strictUpstreams: true });
+         for (const name of ["d_incl", "deals2"]) {
+            expect(
+               (entryOf(m, name) as { error?: string }).error ?? "",
+            ).toContain(
+               "a downstream is never built by recomputing its upstreams from raw",
+            );
+         }
+         const served = await answer("m.malloy", EXTEND_ONLY_QUERY);
+         expect(served.servedBy).toBe("live");
+         expect(asStrings(served.rows)).toEqual(asStrings(live.rows));
+      });
+
+      it("reads a host's reference to a stored upstream as stored, through the controller: stacked with its schema, refused without it, never recomputed", async () => {
+         await setUp({
+            "m.malloy": `##! experimental.persistence
+source: raw is ${RAW}
+
+#@ persist storage="${LAKE}" name="ref_daily_t"
+source: daily is raw -> { group_by: cat, sub; aggregate: total is amt.sum() }
+
+#@ persist storage="${LAKE}" name="ref_monthly_t"
+source: monthly is daily -> { group_by: cat; aggregate: grand is total.sum() }
+
+source: monthly_live is raw -> {
+  group_by: cat, sub; aggregate: total is amt.sum()
+} -> { group_by: cat; aggregate: grand is total.sum() }
+`,
+         });
+         const first = await build();
+         expect([first.status, first.error]).toEqual([
+            "MANIFEST_FILE_READY",
+            null,
+         ]);
+         const daily = entryOf(first, "daily");
+         const monthly = entryOf(first, "monthly");
+         expect(daily.storageDestinationName).toBe(LAKE);
+         // No run on record holds `daily` here, as on a host's worker that
+         // never built it and binds no manifest: the reference alone says
+         // where its table is.
+         await repo.deleteMaterialization(first.id);
+         // The host rebuilds `monthly` alone, `daily` by reference, as
+         // Credible's control plane sends it: through the HTTP controller,
+         // which must keep the reference's destination. Before, it dropped
+         // it, so the reference read as a warehouse table and the build
+         // failed as a host-supplied upstream at the wrong tier.
+         const host = async (
+            table: string,
+            strictUpstreams: boolean,
+            schema?: unknown,
+            contract?: unknown,
+         ) => {
+            const created = await new MaterializationController(
+               service,
+            ).createMaterialization(ENV, PKG, {
+               buildInstructions: {
+                  sources: [
+                     {
+                        sourceEntityId: monthly.sourceEntityId,
+                        materializedTableId: `host-${table}`,
+                        physicalTableName: table,
+                        realization: "COPY",
+                        destination: LAKE,
+                     },
+                  ],
+                  referenceManifest: [
+                     {
+                        sourceEntityId: daily.sourceEntityId,
+                        physicalTableName: daily.physicalTableName,
+                        connectionName: "warehouse",
+                        storageDestinationName: LAKE,
+                        ...(schema ? { schema } : {}),
+                        ...(contract ? { contract } : {}),
+                     },
+                  ],
+                  strictUpstreams,
+               },
+            });
+            return settled(created.id);
+         };
+         // A reference that carries no column list, which stacking on a
+         // stored table needs (a bound manifest or this worker's own record
+         // fills it): refused, strict or not, and says why; never recomputed.
+         for (const [table, strictUpstreams] of [
+            ["host_monthly_t", false],
+            ["host_monthly_strict_t", true],
+         ] as const) {
+            const refused = await host(table, strictUpstreams);
+            expect(refused.status).toBe("FAILED");
+            expect(refused.error).toContain(
+               "'daily' is materialized in destination 'lake', but by a reference that carries no column list",
+            );
+         }
+         // With the schema the host stored from daily's entry, but not its
+         // contract, the strings `monthly` groups cannot be judged: refused.
+         const unjudged = await host(
+            "host_monthly_no_contract_t",
+            true,
+            daily.schema,
+         );
+         expect(unjudged.status).toBe("FAILED");
+         expect(unjudged.error).toContain(
+            "an upstream it reads has no column contract",
+         );
+         // With the schema and the contract the host stored, it stacks.
+         const stacked = await host(
+            "host_monthly_schema_t",
+            true,
+            daily.schema,
+            (daily as { contract?: unknown }).contract,
+         );
+         expect([stacked.status, stacked.error]).toEqual([
+            "MANIFEST_FILE_READY",
+            null,
+         ]);
+         const rebuilt = entryOf(stacked, "monthly");
+         expect(rebuilt.upstreamReuse).toBe("reused");
+         const live = await answer(
+            "m.malloy",
+            "run: monthly_live -> { group_by: cat, grand }",
+         );
+         expect(asStrings(await storedRows(rebuilt.physicalTableName))).toEqual(
+            asStrings(live.rows),
+         );
+      });
+
+      it("refuses a host's reference to a storage destination the environment does not configure", async () => {
+         await setUp({
+            "m.malloy": `##! experimental.persistence
+source: raw is ${RAW}
+
+#@ persist storage="${LAKE}"
+source: daily is raw -> { group_by: cat; aggregate: total is amt.sum() }
+
+#@ persist storage="${LAKE}"
+source: monthly is daily -> { group_by: cat; aggregate: grand is total.sum() }
+`,
+         });
+         const pkg = await env.getPackage(parsePackageName(PKG), false);
+         const sources = Object.values(pkg.getBuildPlan()!.sources);
+         const of = (name: string) => sources.find((s) => s.name === name)!;
+         await expect(
+            new MaterializationController(service).createMaterialization(
+               ENV,
+               PKG,
+               {
+                  buildInstructions: {
+                     sources: [
+                        {
+                           sourceEntityId: of("monthly").sourceEntityId,
+                           materializedTableId: "host-monthly",
+                           physicalTableName: "host_monthly_t",
+                           destination: LAKE,
+                        },
+                     ],
+                     referenceManifest: [
+                        {
+                           sourceEntityId: of("daily").sourceEntityId,
+                           physicalTableName: "daily_t",
+                           storageDestinationName: "nowhere",
+                        },
+                     ],
+                  },
+               },
+            ),
+         ).rejects.toThrow(
+            "names storage destination 'nowhere', which this environment does not configure",
+         );
+      });
+
+      it("builds gtm-funnel's shape (an include over a query stage, joins through a join, a name= on each) from the warehouse, strict, equal to live", async () => {
+         await setUp({ "m.malloy": GTM_SHAPE_MODEL });
+         const live = await answer("m.malloy", GTM_SHAPE_QUERY);
+         const liveJoined = await answer("m.malloy", GTM_SHAPE_JOINED_QUERY);
+         expect(live.servedBy).toBe("live");
+         const m = await build({ strictUpstreams: true });
+         expect([m.status, m.error]).toEqual(["MANIFEST_FILE_READY", null]);
+         const base = entryOf(m, "deals_including_deleted");
+         const deals = entryOf(m, "deals");
+         expect(deals.physicalTableName).not.toBe(base.physicalTableName);
+         // The query stage reads no stored source, so neither table is a
+         // chained build: each is its own warehouse build, and the stacked
+         // path that refused deals2 is never taken.
+         expect(
+            statements.filter(
+               (x) =>
+                  /\bCREATE\b/i.test(x) &&
+                  x.includes(`"${deals.physicalTableName}"`),
+            )[0],
+         ).toContain(RAW_MARK);
+         expect(asStrings(await storedRows(deals.physicalTableName))).toEqual(
+            asStrings(await plannedRows(deals)),
+         );
+         const served = await answer("m.malloy", GTM_SHAPE_QUERY);
+         expect(served.servedBy).toBe("materialized");
+         expect(asStrings(served.rows)).toEqual(asStrings(live.rows));
+         // A field read through its warehouse joins answers live, equal.
+         const joined = await answer("m.malloy", GTM_SHAPE_JOINED_QUERY);
+         expect(asStrings(joined.rows)).toEqual(asStrings(liveJoined.rows));
+      });
+
+      it("refuses the same shape when neither names its table: never recomputed, answered live", async () => {
+         await setUp({ "m.malloy": extendOnlyModel(false) });
+         const live = await answer("m.malloy", EXTEND_ONLY_QUERY);
+         const m = await build({ strictUpstreams: true });
+         expect(
+            (entryOf(m, /^(d_incl|deals2)$/) as { error?: string }).error ?? "",
+         ).toContain(
+            "a downstream is never built by recomputing its upstreams from raw",
+         );
+         const served = await answer("m.malloy", EXTEND_ONLY_QUERY);
+         expect(served.servedBy).toBe("live");
+         expect(asStrings(served.rows)).toEqual(asStrings(live.rows));
+      });
+
+      it("rebuilds a #(materialize) base's table of unknown age for a windowed storage= rollup, and builds the rollup from it", async () => {
          await setUp({ "m.malloy": materializeRollupModel() });
          const first = await build();
          expect(first.status).toBe("MANIFEST_FILE_READY");
@@ -823,8 +1302,8 @@ source: mid is parent extend {
             null,
          ]);
          const rollup = entryOf(second, /^orders__rollup__/);
-         expect(rollup.upstreamReuse).toBeUndefined();
-         expect(createdBy(rollup.physicalTableName)).toContain(RAW_MARK);
+         expect(rollup.upstreamReuse).toBe("reused");
+         expect(createdBy(rollup.physicalTableName)).not.toContain(RAW_MARK);
          expect(await storedRows(rollup.physicalTableName)).toEqual(
             await plannedRows(rollup),
          );

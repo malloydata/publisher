@@ -1,6 +1,8 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { contractFor } from "../../../test_helpers/contract_fixture";
+import { deriveSelfInstructions } from "./run_instructions";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { MaterializationEligibilityError } from "../../../errors";
 import { BuildInstruction } from "../domain/types";
@@ -13,7 +15,7 @@ import { installSettings } from "../../../test_helpers/settings_env";
 
 /**
  * Auto-run self-instructions: which sources an auto run instructs itself to
- * build, and which it refuses (eligibility, the colocated #(authorize) gate,
+ * build, and which it refuses (eligibility, the database #(authorize) gate,
  * a refused source beside admitted ones).
  */
 
@@ -43,6 +45,7 @@ describe("deriveSelfInstructions", () => {
             sourceEntityId: "b1aaaaaaaaaaaaaa",
             // At the name this run writes: carried only there.
             physicalTableName: "s1",
+            contract: contractFor(),
             connectionName: "duckdb",
          },
       };
@@ -84,6 +87,7 @@ describe("deriveSelfInstructions", () => {
             sourceEntityId: "b1aaaaaaaaaaaaaa",
             // At the name this run writes: carried only there.
             physicalTableName: "s1",
+            contract: contractFor(),
             connectionName: "duckdb",
          },
       };
@@ -163,7 +167,7 @@ describe("deriveSelfInstructions", () => {
       }
    });
 
-   it("self-assigns the name= verbatim for a storage= source, exactly as a colocated build", () => {
+   it("self-assigns the name= verbatim for a storage= source, exactly as a database build", () => {
       const { restore } = installSettings({
          env: { PERSIST_STORAGE_MODE: "on" },
       });
@@ -197,10 +201,10 @@ describe("deriveSelfInstructions", () => {
          const lake = byId["aa11aa11aa11aa11aa11"];
          const wh = byId["bb22bb22bb22bb22bb22"];
          // storage= → the `name=` value verbatim in the destination (no
-         // content-hash decoration); only the destination differs from a colocated build.
+         // content-hash decoration); only the destination differs from a database build.
          expect(lake.destination).toBe("lake");
          expect(lake.physicalTableName).toBe("daily");
-         // colocated → the plain logical (source) name, no destination.
+         // database → the plain logical (source) name, no destination.
          expect(wh.destination).toBeUndefined();
          expect(wh.physicalTableName).toBe("wh_src");
       } finally {
@@ -221,25 +225,25 @@ describe("deriveSelfInstructions", () => {
       ).deriveSelfInstructions(compiled, undefined, {});
    }
 
-   /** A colocated (no `storage=`) fakeSource carrying an #(access_filter) gate. */
-   const authorizeGatedColocated = fakeSource({
+   /** A database (no `storage=`) fakeSource carrying an #(access_filter) gate. */
+   const authorizeGatedDatabase = fakeSource({
       name: "s1",
       sourceEntityId: "c1c1c1c1c1c1c1c1",
       sourceDef: { blockNotes: ["#(authorize) true"] },
    });
 
-   describe("colocated #(authorize) gate", () => {
+   describe("database #(authorize) gate", () => {
       let restoreSettings: (() => void) | undefined;
       afterEach(() => {
          restoreSettings?.();
          restoreSettings = undefined;
       });
 
-      it("refuses a colocated authorize-gated source with no compile-time gate outcome (fail-closed default)", () => {
+      it("refuses a database authorize-gated source with no compile-time gate outcome (fail-closed default)", () => {
          // No `sourceGateOutcomes` supplied — the relaxation below requires a
          // PROVEN row_level+attributed outcome, so an unclassified gate keeps
          // refusing exactly as it always has.
-         const compiled = compiledWith({ s1: authorizeGatedColocated }, [
+         const compiled = compiledWith({ s1: authorizeGatedDatabase }, [
             ["s1"],
          ]);
          expect(() => derive(compiled)).toThrow(
@@ -250,11 +254,11 @@ describe("deriveSelfInstructions", () => {
 
       // A `row_level` + `attributed` compile-time gate outcome proves the
       // entry point's own gate is a row filter and nothing else is reachable
-      // beneath it, so colocated serving grafts exactly what a live query
-      // would — see `assertColocatedPersistNotAuthorizeGated`'s doc.
-      it("admits a colocated authorize-gated source whose compile-time outcome is row_level and attributed", () => {
+      // beneath it, so database serving grafts exactly what a live query
+      // would — see `assertDatabasePersistNotAuthorizeGated`'s doc.
+      it("admits a database authorize-gated source whose compile-time outcome is row_level and attributed", () => {
          const compiled = compiledWith(
-            { s1: authorizeGatedColocated },
+            { s1: authorizeGatedDatabase },
             [["s1"]],
             new Map(),
             { s1: { classification: "row_level", attributed: true } },
@@ -264,7 +268,7 @@ describe("deriveSelfInstructions", () => {
 
       it("still refuses when the compile-time outcome is row_level but NOT attributed (a join-only gate outside identity reach)", () => {
          const compiled = compiledWith(
-            { s1: authorizeGatedColocated },
+            { s1: authorizeGatedDatabase },
             [["s1"]],
             new Map(),
             { s1: { classification: "row_level", attributed: false } },
@@ -276,7 +280,7 @@ describe("deriveSelfInstructions", () => {
 
       it("still refuses when the compile-time outcome is rejected", () => {
          const compiled = compiledWith(
-            { s1: authorizeGatedColocated },
+            { s1: authorizeGatedDatabase },
             [["s1"]],
             new Map(),
             { s1: { classification: "rejected", attributed: true } },
@@ -286,7 +290,7 @@ describe("deriveSelfInstructions", () => {
          );
       });
 
-      it("leaves an ungated colocated source unaffected", () => {
+      it("leaves an ungated database source unaffected", () => {
          const compiled = compiledWith(
             {
                s1: fakeSource({
@@ -311,7 +315,7 @@ describe("deriveSelfInstructions", () => {
          });
          const compiled = compiledWith({ s1: storageGated }, [["s1"]]);
          // Same message as assertMaterializationEligible's storage-destination
-         // refusal (no double-refusal, no changed message from the colocated path).
+         // refusal (no double-refusal, no changed message from the database path).
          expect(() => derive(compiled)).toThrow(
             /cannot be materialized into a storage destination/,
          );
@@ -363,7 +367,7 @@ describe("deriveSelfInstructions", () => {
          expect(Object.keys(refused)).toEqual(["refused"]);
          expect(refused.refused).toMatchObject({
             name: "refused",
-            tier: "colocated",
+            tier: "database",
          });
          expect(refused.refused.message).toMatch(/authorize/i);
       });
@@ -412,6 +416,7 @@ describe("deriveSelfInstructions", () => {
                a0a0a0a0a0a0a0a0: {
                   sourceEntityId: "a0a0a0a0a0a0a0a0",
                   physicalTableName: "ok",
+                  contract: contractFor(),
                   connectionName: "duckdb",
                },
             },
@@ -440,7 +445,10 @@ describe("deriveSelfInstructions", () => {
          const { instructions, refused } = deriveWith(compiled);
 
          expect(instructions).toHaveLength(0);
-         expect(refused.rollup.tier).toBe("preaggregate");
+         expect(refused.rollup).toMatchObject({
+            origin: "rollup",
+            tier: "database",
+         });
       });
 
       it("still throws when sourceNames names the refused source", () => {
@@ -545,6 +553,7 @@ describe("deriveSelfInstructions", () => {
          b1aaaaaaaaaaaaaa: {
             sourceEntityId: "b1aaaaaaaaaaaaaa",
             physicalTableName: "s1",
+            contract: contractFor(),
             connectionName: "wh",
          },
       };
@@ -582,6 +591,7 @@ describe("deriveSelfInstructions", () => {
          b1aaaaaaaaaaaaaa: {
             sourceEntityId: "b1aaaaaaaaaaaaaa",
             physicalTableName: "s1",
+            contract: contractFor(),
             connectionName: "duckdb",
          },
       };
@@ -616,5 +626,205 @@ describe("deriveSelfInstructions", () => {
       expect(instructions).toHaveLength(1);
       expect(instructions[0].sourceEntityId).toBe("b2bbbbbbbbbbbbbb");
       expect(Object.keys(carried as Record<string, unknown>)).toHaveLength(0);
+   });
+});
+
+describe("a prior table its bind cannot serve is rebuilt in full", () => {
+   const compiled = () =>
+      compiledWith(
+         {
+            s1: fakeSource({ name: "s1", sourceEntityId: "b1aaaaaaaaaaaaaa" }),
+         },
+         [["s1"]],
+      );
+   const prior = (contract?: unknown) => ({
+      b1aaaaaaaaaaaaaa: {
+         sourceEntityId: "b1aaaaaaaaaaaaaa",
+         physicalTableName: "s1",
+         connectionName: "duckdb",
+         ...(contract !== undefined ? { contract } : {}),
+      },
+   });
+
+   it("never carries a table whose entry has no contract (built before contracts were recorded)", () => {
+      const { instructions, carried } = deriveSelfInstructions(
+         compiled(),
+         undefined,
+         prior() as never,
+      );
+      expect(instructions.map((i) => i.sourceEntityId)).toEqual([
+         "b1aaaaaaaaaaaaaa",
+      ]);
+      expect(carried).toEqual({});
+   });
+
+   it("never carries a table a bind found incompatible with its contract", () => {
+      const { instructions, carried } = deriveSelfInstructions(
+         compiled(),
+         undefined,
+         prior(contractFor()) as never,
+         undefined,
+         undefined,
+         { incompatible: new Set(["b1aaaaaaaaaaaaaa"]) },
+      );
+      expect(instructions.map((i) => i.sourceEntityId)).toEqual([
+         "b1aaaaaaaaaaaaaa",
+      ]);
+      expect(carried).toEqual({});
+   });
+
+   it("still carries a table whose contract it holds", () => {
+      const { instructions, carried } = deriveSelfInstructions(
+         compiled(),
+         undefined,
+         prior(contractFor()) as never,
+      );
+      expect(instructions).toEqual([]);
+      expect(Object.keys(carried)).toEqual(["b1aaaaaaaaaaaaaa"]);
+   });
+});
+
+describe("a run of named sources pulls in their upstreams", () => {
+   // `s2` reads `s1`'s table (the plan's edge).
+   const compiled = () => {
+      const c = compiledWith(
+         {
+            s1: fakeSource({ name: "s1", sourceEntityId: "b1aaaaaaaaaaaaaa" }),
+            s2: fakeSource({ name: "s2", sourceEntityId: "b2bbbbbbbbbbbbbb" }),
+         },
+         [["s1"], ["s2"]],
+      );
+      c.builds[0].dependsOn = { s1: [], s2: ["s1"] };
+      return c;
+   };
+   const upstream = {
+      b1aaaaaaaaaaaaaa: {
+         sourceEntityId: "b1aaaaaaaaaaaaaa",
+         physicalTableName: "s1",
+         connectionName: "duckdb",
+         contract: contractFor(),
+      },
+   };
+
+   it("builds an upstream with no table beside the named source", () => {
+      const { instructions } = deriveSelfInstructions(compiled(), ["s2"], {});
+      expect(instructions.map((i) => i.sourceEntityId).sort()).toEqual([
+         "b1aaaaaaaaaaaaaa",
+         "b2bbbbbbbbbbbbbb",
+      ]);
+   });
+
+   it("carries an upstream whose table it can serve, even on a forced run", () => {
+      for (const forceRefresh of [false, true]) {
+         const { instructions, carried } = deriveSelfInstructions(
+            compiled(),
+            ["s2"],
+            upstream as never,
+            undefined,
+            undefined,
+            { forceRefresh },
+         );
+         expect(instructions.map((i) => i.sourceEntityId)).toEqual([
+            "b2bbbbbbbbbbbbbb",
+         ]);
+         expect(Object.keys(carried)).toEqual(["b1aaaaaaaaaaaaaa"]);
+      }
+   });
+
+   it("rebuilds an upstream a bind found incompatible", () => {
+      const { instructions, carried } = deriveSelfInstructions(
+         compiled(),
+         ["s2"],
+         upstream as never,
+         undefined,
+         undefined,
+         { incompatible: new Set(["b1aaaaaaaaaaaaaa"]) },
+      );
+      expect(instructions.map((i) => i.sourceEntityId).sort()).toEqual([
+         "b1aaaaaaaaaaaaaa",
+         "b2bbbbbbbbbbbbbb",
+      ]);
+      expect(carried).toEqual({});
+   });
+});
+
+describe("a carried reader of a table not the one it was built from is rebuilt", () => {
+   // `s2` reads `s1`'s table (the plan's edge), and was built from it.
+   const compiled = () => {
+      const c = compiledWith(
+         {
+            s1: fakeSource({ name: "s1", sourceEntityId: "c1aaaaaaaaaaaaaa" }),
+            s2: fakeSource({ name: "s2", sourceEntityId: "c2bbbbbbbbbbbbbb" }),
+         },
+         [["s1"], ["s2"]],
+      );
+      c.builds[0].dependsOn = { s1: [], s2: ["s1"] };
+      return c;
+   };
+   const prior = (s1BuiltAt: string, readBuiltAt: string) => ({
+      c1aaaaaaaaaaaaaa: {
+         sourceEntityId: "c1aaaaaaaaaaaaaa",
+         physicalTableName: "s1",
+         connectionName: "duckdb",
+         builtAt: s1BuiltAt,
+         contract: contractFor(),
+      },
+      c2bbbbbbbbbbbbbb: {
+         sourceEntityId: "c2bbbbbbbbbbbbbb",
+         physicalTableName: "s2",
+         connectionName: "duckdb",
+         builtAt: "2026-11-02T00:00:00.000Z",
+         contract: contractFor(),
+         builtFrom: [
+            {
+               sourceEntityId: "c1aaaaaaaaaaaaaa",
+               physicalTableName: "s1",
+               builtAt: readBuiltAt,
+            },
+         ],
+      },
+   });
+   const T1 = "2026-11-01T00:00:00.000Z";
+   const T2 = "2026-11-03T00:00:00.000Z";
+
+   it("carries a reader built from the upstream table it would read now", () => {
+      const { instructions, carried } = deriveSelfInstructions(
+         compiled(),
+         undefined,
+         prior(T1, T1) as never,
+      );
+      expect(instructions).toEqual([]);
+      expect(Object.keys(carried).sort()).toEqual([
+         "c1aaaaaaaaaaaaaa",
+         "c2bbbbbbbbbbbbbb",
+      ]);
+   });
+
+   it("rebuilds a reader whose upstream this run rebuilds", () => {
+      const { instructions, carried } = deriveSelfInstructions(
+         compiled(),
+         undefined,
+         prior(T1, T1) as never,
+         undefined,
+         undefined,
+         { incompatible: new Set(["c1aaaaaaaaaaaaaa"]) },
+      );
+      expect(instructions.map((i) => i.sourceEntityId).sort()).toEqual([
+         "c1aaaaaaaaaaaaaa",
+         "c2bbbbbbbbbbbbbb",
+      ]);
+      expect(carried).toEqual({});
+   });
+
+   it("rebuilds a reader of an older build of a carried upstream", () => {
+      const { instructions, carried } = deriveSelfInstructions(
+         compiled(),
+         undefined,
+         prior(T2, T1) as never,
+      );
+      expect(instructions.map((i) => i.sourceEntityId)).toEqual([
+         "c2bbbbbbbbbbbbbb",
+      ]);
+      expect(Object.keys(carried)).toEqual(["c1aaaaaaaaaaaaaa"]);
    });
 });

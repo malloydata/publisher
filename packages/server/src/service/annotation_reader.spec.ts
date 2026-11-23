@@ -4,6 +4,8 @@
 import { describe, expect, it } from "bun:test";
 import { Annotations } from "@malloydata/malloy";
 import {
+   codedLine,
+   codesOfLines,
    findingSeverity,
    indexNotePayload,
    isIndexNote,
@@ -105,6 +107,7 @@ describe("the #@ route's keys", () => {
             "refresh",
             "watermark",
             "merge_key",
+            "lookback",
             "freshness",
             "queryMetadata",
             "partition",
@@ -231,16 +234,22 @@ describe("the materialization v2 routes", () => {
       );
    });
 
-   it("registers #(preaggregate) with its keys: grain, storage, name (and the deprecated namespace), and freshness", () => {
-      expect(PUBLISHER_ROUTES["preaggregate"]).toMatchObject({
-         payload: "tag",
-      });
-      expect(
-         [...(PUBLISHER_ROUTES["preaggregate"]?.keys ?? [])].sort(),
-      ).toEqual(["freshness", "grain", "name", "namespace", "storage"]);
+   it("registers #(rollup) with its keys: grain, storage, name (and the deprecated namespace), and freshness", () => {
+      // `#(preaggregate)` is its deprecated spelling, read the same.
+      for (const route of ["rollup", "preaggregate"]) {
+         expect(PUBLISHER_ROUTES[route]).toMatchObject({ payload: "tag" });
+         expect([...(PUBLISHER_ROUTES[route]?.keys ?? [])].sort()).toEqual([
+            "freshness",
+            "grain",
+            "name",
+            "namespace",
+            "storage",
+         ]);
+      }
       expect([...MATERIALIZE_V2_ROUTES].sort()).toEqual([
          "materialize",
          "preaggregate",
+         "rollup",
       ]);
    });
 
@@ -252,11 +261,16 @@ describe("the materialization v2 routes", () => {
             "nmae=",
             "name",
          ],
+         ["rollup", '#(rollup) grian=["a"]', "grian=", "grain"],
+         // The deprecated spelling's code is `#(rollup)`'s.
          ["preaggregate", '#(preaggregate) grian=["a"]', "grian=", "grain"],
       ] as const) {
          const { findings } = readRouteTag(annotationsOf([line]), route);
          expect(findings.map((f) => [f.code, f.tier])).toEqual([
-            [`${route}-unknown-key`, "malformed"],
+            [
+               `${route === "materialize" ? "materialize" : "rollup"}-unknown-key`,
+               "malformed",
+            ],
          ]);
          expect(findings[0]?.message).toContain(`\`${key}\``);
          expect(findings[0]?.message).toContain(`did you mean \`${near}=\`?`);
@@ -273,7 +287,7 @@ describe("the materialization v2 routes", () => {
 
    it("does not read a v2 route glued to its payload, which Malloy routes nowhere", () => {
       expect(publisherRouteOf('#(materialize)name="t"')).toBeUndefined();
-      expect(publisherRouteOf('#(preaggregate)grain=["a"]')).toBeUndefined();
+      expect(publisherRouteOf('#(rollup)grain=["a"]')).toBeUndefined();
       expect(publisherRouteOf('#(materialize) name="t"')).toBe("materialize");
       // The routes that were always read glued still are.
       expect(publisherRouteOf('#(carries)["none"]')).toBe("carries");
@@ -554,5 +568,26 @@ describe("tagPayloadKeys", () => {
       expect(tagPayloadKeys("n=(1 sharing=x)")).toEqual(["n", "sharing"]);
       expect(tagPayloadKeys("'sharing'=x")).toEqual(["sharing"]);
       expect(tagPayloadKeys("@env.X= n=")).toEqual(["n"]);
+   });
+});
+
+describe("codesOfLines", () => {
+   it("reads each coded line's code, in order, each once", () => {
+      const message = [
+         codedLine("orders: storage= names nothing", "persist-invalid"),
+         "a line with no code",
+         codedLine("daily: unknown key merge_keys=", "persist-unknown-key"),
+         codedLine("again", "persist-invalid"),
+      ].join("\n");
+      expect(codesOfLines(message)).toEqual([
+         "persist-invalid",
+         "persist-unknown-key",
+      ]);
+   });
+
+   it("reads nothing from a message with no coded line", () => {
+      expect(codesOfLines("the model does not compile [see the log]")).toEqual(
+         [],
+      );
    });
 });

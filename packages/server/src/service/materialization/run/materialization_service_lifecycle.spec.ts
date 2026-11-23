@@ -122,7 +122,7 @@ describe("MaterializationService", () => {
                reseed: false,
                sourceNames: ["orders"],
                mode: "auto",
-               trigger: "ON_DEMAND",
+               trigger: "on_demand",
             },
          ]);
       });
@@ -141,7 +141,7 @@ describe("MaterializationService", () => {
                reseed: false,
                sourceNames: null,
                mode: "auto",
-               trigger: "ON_DEMAND",
+               trigger: "on_demand",
             },
          );
       });
@@ -154,12 +154,12 @@ describe("MaterializationService", () => {
 
          await ctx.service.createMaterialization("my-env", "pkg", {
             forceRefresh: true,
-            trigger: "SCHEDULER",
+            trigger: "scheduler",
          });
 
          expect(
             ctx.repository.createMaterialization.firstCall.args[3],
-         ).toMatchObject({ mode: "auto", trigger: "SCHEDULER" });
+         ).toMatchObject({ mode: "auto", trigger: "scheduler" });
       });
 
       it("rejects when an active materialization already exists", async () => {
@@ -186,6 +186,121 @@ describe("MaterializationService", () => {
          await expect(
             ctx.service.createMaterialization("my-env", "pkg"),
          ).rejects.toThrow(/winner/);
+      });
+   });
+
+   describe("createMaterialization while its package retires", () => {
+      it("cancels a run whose package's builds were aborted during its record's insert, and starts no build", async () => {
+         const runBuild = sinon.stub().resolves();
+         const service = serviceWith(ctx, {
+            runBuild: runBuild as unknown as RunCollaborators["runBuild"],
+         });
+         ctx.repository.getActiveMaterialization.resolves(null);
+         const pending = makeMaterialization({
+            id: "m-slow",
+            status: "PENDING",
+         });
+         let insert!: () => void;
+         ctx.repository.createMaterialization.callsFake(
+            () =>
+               new Promise((resolve) => {
+                  insert = () => resolve(pending);
+               }),
+         );
+         let status = "PENDING" as MaterializationStatus;
+         ctx.repository.getMaterializationById.callsFake(async () => ({
+            ...pending,
+            status,
+         }));
+         ctx.repository.updateMaterialization.callsFake(async (_id, update) => {
+            status = (update.status as MaterializationStatus) ?? status;
+            return { ...pending, ...update } as never;
+         });
+
+         const created = service.createMaterialization("my-env", "pkg");
+         while (!ctx.repository.createMaterialization.called) {
+            await new Promise((r) => setTimeout(r, 1));
+         }
+         // The package is deleted or unloaded while the record is written:
+         // its abort waits for the create to settle.
+         const retired = service.abortPackageRuns("my-env", "pkg", 5_000);
+         insert();
+         const result = await created;
+         await retired;
+
+         expect(result.status).toBe("CANCELLED");
+         expect(status).toBe("CANCELLED");
+         expect(runBuild.called).toBe(false);
+      });
+
+      it("cancels a run whose start waited on the package lock until a delete had removed the package", async () => {
+         const runBuild = sinon.stub().resolves();
+         const service = serviceWith(ctx, {
+            runBuild: runBuild as unknown as RunCollaborators["runBuild"],
+         });
+         ctx.repository.getActiveMaterialization.resolves(null);
+         const pending = makeMaterialization({
+            id: "m-late",
+            status: "PENDING",
+         });
+         ctx.repository.createMaterialization.resolves(pending);
+         let status = "PENDING" as MaterializationStatus;
+         ctx.repository.getMaterializationById.callsFake(async () => ({
+            ...pending,
+            status,
+         }));
+         ctx.repository.updateMaterialization.callsFake(async (_id, update) => {
+            status = (update.status as MaterializationStatus) ?? status;
+            return { ...pending, ...update } as never;
+         });
+         // The create found the package lock-free; its start queues on the
+         // lock the delete holds, and runs once the package is gone.
+         let loaded = true;
+         let releaseLock!: () => void;
+         const lockFree = new Promise<void>((resolve) => {
+            releaseLock = resolve;
+         });
+         const environment = await (
+            ctx.environmentStore.getEnvironment as sinon.SinonStub
+         )();
+         (ctx.environmentStore.getEnvironment as sinon.SinonStub).resolves({
+            ...environment,
+            hasLoadedPackage: () => loaded,
+            withPackageLock: async (
+               _name: string,
+               fn: () => Promise<unknown>,
+            ) => {
+               await lockFree;
+               return fn();
+            },
+         });
+
+         // The delete's aborts ran before this create began, so they found
+         // nothing to stop; it then removes the package while holding the
+         // lock the create's start waits on.
+         await service.abortPackageRuns("my-env", "pkg", 0);
+         const created = service.createMaterialization("my-env", "pkg");
+         await new Promise((r) => setTimeout(r, 5));
+         loaded = false;
+         releaseLock();
+         const result = await created;
+
+         expect(result.status).toBe("CANCELLED");
+         expect(runBuild.called).toBe(false);
+      });
+
+      it("starts the build when no abort lands during the insert", async () => {
+         const runBuild = sinon.stub().resolves();
+         const service = serviceWith(ctx, {
+            runBuild: runBuild as unknown as RunCollaborators["runBuild"],
+         });
+         ctx.repository.getActiveMaterialization.resolves(null);
+         ctx.repository.createMaterialization.resolves(
+            makeMaterialization({ status: "PENDING" }),
+         );
+         const result = await service.createMaterialization("my-env", "pkg");
+         expect(result.status).toBe("PENDING");
+         expect(runBuild.calledOnce).toBe(true);
       });
    });
 
@@ -514,9 +629,7 @@ describe("runBuild (branch behavior)", () => {
                     connectionName?: string;
                  }[]
                | undefined;
-            strictUpstreams?: boolean | undefined;
-            warehouseReach?: "recompute" | "refuse";
-            trigger?: "ON_DEMAND" | "SCHEDULER";
+            trigger?: "on_demand" | "scheduler";
          },
          signal: AbortSignal,
       ) => Promise<void>;
@@ -598,7 +711,7 @@ describe("runBuild (branch behavior)", () => {
       expect(svc.autoLoadManifest.called).toBe(false);
    });
 
-   it("orchestrated: seeds the build from referenceManifest and honors strictUpstreams", async () => {
+   it("orchestrated: seeds the build from referenceManifest, always strict", async () => {
       const svc = stubEngine();
       const instructions = [makeInstruction()];
 
@@ -617,7 +730,6 @@ describe("runBuild (branch behavior)", () => {
                   connectionName: "sf",
                },
             ],
-            strictUpstreams: true,
          },
          new AbortController().signal,
       );
@@ -634,7 +746,7 @@ describe("runBuild (branch behavior)", () => {
             connectionName: "sf",
          },
       });
-      // strictUpstreams flows through as the strict flag (6th arg).
+      // Every build is strict.
       expect(svc.executeInstructedBuild.firstCall.args[0].strict).toBe(true);
       // Reused upstreams are counted as carried, not built.
       expect(svc.commitManifest.firstCall.args[3]).toMatchObject({
@@ -647,28 +759,6 @@ describe("runBuild (branch behavior)", () => {
    });
 
    // ms2data/service#6756: the host's warehouseReach reaches the run, last.
-   it("orchestrated: passes warehouseReach through to the instructed build", async () => {
-      const svc = stubEngine();
-      await svc.runBuild(
-         "mat-1",
-         "my-env",
-         "pkg",
-         {
-            sourceNames: undefined,
-            forceRefresh: false,
-            buildInstructions: [makeInstruction()],
-            strictUpstreams: true,
-            warehouseReach: "refuse",
-         },
-         new AbortController().signal,
-      );
-      const [options] = svc.executeInstructedBuild.firstCall.args;
-      expect(options.strict).toBe(true);
-      expect(options.warehouseReach).toBe("refuse");
-      // A host's build relies on no earlier uniqueness check.
-      expect(options.uniqueness).toBeUndefined();
-   });
-
    it("auto-run: derives instructions and auto-loads the manifest", async () => {
       const svc = stubEngine();
 
@@ -811,7 +901,7 @@ describe("runBuild (branch behavior)", () => {
                sourceNames: undefined,
                forceRefresh: true,
                buildInstructions: undefined,
-               trigger: "SCHEDULER",
+               trigger: "scheduler",
             },
             new AbortController().signal,
          );
@@ -875,7 +965,7 @@ describe("runBuild (branch behavior)", () => {
             reportSourceBuilt(
                {
                   kind: "persist",
-                  tier: "colocated",
+                  tier: "database",
                   sourceEntityId: "build-orders",
                   sourceName: "orders",
                },
@@ -920,7 +1010,7 @@ describe("runBuild (branch behavior)", () => {
          ).toEqual([
             {
                kind: "persist",
-               tier: "colocated",
+               tier: "database",
                outcome: "built",
                failure_class: "none",
             },
@@ -1145,7 +1235,7 @@ describe("runBuild (branch behavior)", () => {
       opts: Partial<{
          forceRefresh: boolean;
          reseed: boolean;
-         trigger: "ON_DEMAND" | "SCHEDULER";
+         trigger: "on_demand" | "scheduler";
          buildInstructions: unknown[];
          ledger: unknown[];
       }>,
@@ -1162,7 +1252,7 @@ describe("runBuild (branch behavior)", () => {
             forceRefresh: false,
             reseed: false,
             buildInstructions: undefined,
-            trigger: "ON_DEMAND",
+            trigger: "on_demand",
             ...opts,
          } as unknown as Parameters<typeof svc.runBuild>[3],
          new AbortController().signal,
@@ -1192,7 +1282,7 @@ describe("runBuild (branch behavior)", () => {
       // Including an ON_DEMAND API caller, which is the case that used to
       // re-seed. A force says "do not reuse an unchanged table"; for an
       // incremental source, which is never reused, that is not a request at all.
-      for (const trigger of ["ON_DEMAND", "SCHEDULER"] as const) {
+      for (const trigger of ["on_demand", "scheduler"] as const) {
          expect(
             await contextArgsFor({ forceRefresh: true, trigger }),
          ).toMatchObject({ forceRefresh: false });
@@ -1213,7 +1303,7 @@ describe("runBuild (branch behavior)", () => {
       // Not conditioned on the trigger: a scheduled run that explicitly asks to
       // rebuild gets a rebuild.
       expect(
-         await contextArgsFor({ reseed: true, trigger: "SCHEDULER" }),
+         await contextArgsFor({ reseed: true, trigger: "scheduler" }),
       ).toMatchObject({ forceRefresh: true });
       expect(
          await contextArgsFor({ reseed: false, forceRefresh: true }),
@@ -1275,7 +1365,7 @@ describe("runInBackground (terminal recording)", () => {
 
    it("keeps the real error's message in the metadata when a cancel races a failure", async () => {
       ctx.repository.getMaterializationById.resolves(
-         makeMaterialization({ metadata: { trigger: "ON_DEMAND" } }),
+         makeMaterialization({ metadata: { trigger: "on_demand" } }),
       );
       const bg = background();
       bg.runInBackground("bg-race", async () => {
@@ -1289,7 +1379,7 @@ describe("runInBackground (terminal recording)", () => {
       ).toMatchObject({
          status: "CANCELLED",
          error: "Cancelled",
-         metadata: { trigger: "ON_DEMAND", errorAtCancel: "deadlock detected" },
+         metadata: { trigger: "on_demand", errorAtCancel: "deadlock detected" },
       });
    });
 

@@ -19,7 +19,7 @@ import { DuckDBConnection } from "./DuckDBConnection";
  * address and package name are recorded but are NOT keys, so a table shared across
  * package versions keeps one boundary (see the schema comment).
  *
- * The key includes the STORE: a colocated table and a destination table with the
+ * The key includes the STORE: a database table and a destination table with the
  * same name are different tables. Without it they would share one row and each
  * would overwrite the other, so both would re-seed forever.
  *
@@ -43,7 +43,7 @@ export class IncrementalLedgerRepository {
          [
             environmentId,
             table.connectionName,
-            // '' is the colocated sentinel the key stores; see the schema comment
+            // '' is the database sentinel the key stores; see the schema comment
             // for why the key cannot carry a NULL.
             table.storageDestinationName ?? "",
             table.physicalTableName,

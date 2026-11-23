@@ -13,10 +13,10 @@ import {
 } from "bun:test";
 import { type ChildProcess, spawn } from "child_process";
 import fs from "fs";
-import net from "net";
 import os from "os";
 import path from "path";
 import { fileURLToPath } from "url";
+import { getFreePort } from "../../harness/spawn_server";
 
 /**
  * Published versions across a real restart: a server process publishes,
@@ -43,20 +43,6 @@ const ENV_NAME = "restart-env";
 const json = { "Content-Type": "application/json" };
 
 setDefaultTimeout(300_000);
-
-async function freePort(): Promise<number> {
-   return new Promise<number>((resolve, reject) => {
-      const srv = net.createServer();
-      srv.on("error", reject);
-      srv.listen(0, "127.0.0.1", () => {
-         const addr = srv.address();
-         const found = typeof addr === "object" && addr ? addr.port : 0;
-         srv.close(() =>
-            found ? resolve(found) : reject(new Error("no free port")),
-         );
-      });
-   });
-}
 
 async function poll(
    predicate: () => Promise<boolean>,
@@ -106,9 +92,8 @@ class Server {
       // A hook that timed out keeps running after teardown; it must not
       // spawn a server nothing will stop.
       if (this.closed) throw new Error("server closed");
-      const port = await freePort();
-      let mcpPort = await freePort();
-      while (mcpPort === port) mcpPort = await freePort();
+      const port = await getFreePort();
+      const mcpPort = await getFreePort();
       this.baseUrl = `http://127.0.0.1:${port}`;
       this.exited = false;
       // Again here: teardown can land during the port lookups above.
@@ -395,7 +380,7 @@ describe("published versions across a restart", () => {
       };
       expect(bound.manifestLocation).toBe(manifestUri);
       // It tried its own manifest, which cannot be fetched here.
-      expect(bound.manifestBindingStatus).toBe("live_fallback");
+      expect(bound.manifestBindingStatus).toBe("bind_failed");
       const res = await fetch(`${pkgApi("kept")}?versionId=1.1.0`);
       expect(res.status).toBe(200);
       const other = (await res.json()) as {

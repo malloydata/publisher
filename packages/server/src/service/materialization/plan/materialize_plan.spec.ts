@@ -16,7 +16,7 @@ import {
 import {
    addressSQL,
    computeSourceEntityId,
-   deriveBuildPlanOutcome,
+   derivePackagePlan,
 } from "./build_plan";
 import { compilePackageBuildPlan } from "./build_plan_compile";
 import {
@@ -112,7 +112,7 @@ source: orders is orders_raw extend {
    );
 
    it(
-      "builds an extension in another destination than its parent and an incremental one over the raw chain, and one in another file over its parent's build source",
+      "chains an extension in another destination than its parent, an incremental one in its parent's destination, and one in another file over its parent's build source",
       async () => {
          const c = await compiled({
             "m.malloy": `${BASE}
@@ -133,9 +133,26 @@ source: other_ext is orders extend { dimension: n is 1 }
          for (const p of generatedPlans(c)) {
             expect([p.sourceName, p.buildsOver?.sourceName]).toEqual([
                p.sourceName,
-               p.sourceName === "other_ext" ? "orders" : undefined,
+               p.sourceName === "orders" ? undefined : "orders",
             ]);
          }
+         // Read with the parent's destination attached beside its own.
+         expect(
+            generatedPlans(c).find((p) => p.sourceName === "stored_ext")
+               ?.buildsOver?.mode,
+         ).toEqual({ tier: "across_destinations", parentDestination: "lake" });
+         // An incremental extension of a full parent deltas over its table.
+         expect(
+            generatedPlans(c).find((p) => p.sourceName === "inc_ext")
+               ?.buildsOver?.mode,
+         ).toEqual({ tier: "same", incremental: { coordinate: "delta" } });
+         // Never over the raw chain: nothing here is refused.
+         expect(
+            (c.annotationFindings ?? [])
+               .filter((f) => f.code === "materialize-not-built")
+               .map((f) => [f.subject, f.refused?.reason])
+               .sort(),
+         ).toEqual([]);
          // Across files (P10): imported from a copy of `m.malloy` with the
          // parent re-rooted on its build source.
          const other = generatedPlans(c).find(
@@ -604,7 +621,7 @@ source: orders is orders_raw
    );
 
    it(
-      "chains a colocated extension over its colocated parent, and builds a storage= extension of a colocated parent over the raw chain (P10, phase 3 pull request 6)",
+      "chains a database extension over its database parent, and a storage= extension of a database parent over its table in the warehouse (P10, phase 3 pull request 6)",
       async () => {
          const c = await compiled(`${BASE}
 #(materialize)
@@ -624,11 +641,17 @@ source: stored_ext is orders extend { dimension: east is region = 'east' }
             ]),
          ).toEqual([
             ["orders", undefined, true],
-            ["stored_ext", undefined, true],
-            // Colocated: its build reads the parent's build source in the
+            // Database: its build reads the parent's build source in the
             // warehouse, so nothing is compiled over a stored table.
             ["orders_ext", "orders", true],
+            // Built in the warehouse over the parent's table too, then copied
+            // into its destination.
+            ["stored_ext", "orders", true],
          ]);
+         expect(
+            generatedPlans(c).find((p) => p.sourceName === "stored_ext")
+               ?.buildsOver?.mode,
+         ).toEqual({ tier: "storage_over_database" });
          expect(
             (c.annotationFindings ?? []).filter(
                (f) => f.code === "materialize-not-built",
@@ -785,7 +808,7 @@ source: orders is orders_raw -> { select: * }
          expect(Object.values(sourcesIn(c)).map((s) => s.name)).toEqual([
             "orders",
          ]);
-         const wire = deriveBuildPlanOutcome(c, null).plan;
+         const wire = derivePackagePlan(c, null).plan;
          expect(Object.values(wire?.sources ?? {}).map((s) => s.name)).toEqual([
             "orders",
          ]);
@@ -797,7 +820,7 @@ source: orders is orders_raw -> { select: * }
       { timeout: 30000 },
    );
 
-   it("builds a colocated source at its name=, or under its own name without one", () => {
+   it("builds a database source at its name=, or under its own name without one", () => {
       const notes = (text: string) => ({
          notes: [
             {
@@ -830,9 +853,9 @@ source: orders is orders_raw -> { select: * }
             fields: [field],
          },
       });
-      // A named colocated source is built at its name=; one without is
+      // A named database source is built at its name=; one without is
       // built under its own name (the run adds its package's or version's
-      // suffix, or a host its own name), colocated or stored.
+      // suffix, or a host its own name), database or stored.
       expect(
          plans.map((p) => [p.sourceName, p.persist, p.nameDefaulted]),
       ).toEqual([
@@ -843,7 +866,7 @@ source: orders is orders_raw -> { select: * }
       expect(refused).toEqual([]);
    });
 
-   it("refuses a colocated BigQuery source with no dataset-qualified name=, which alone places its table", () => {
+   it("refuses a database BigQuery source with no dataset-qualified name=, which alone places its table", () => {
       const declared = (text: string) => ({
          sourceID: "orders@file:///pkg/m.malloy",
          dialect: "standardsql",
@@ -936,7 +959,7 @@ source: orders is orders_raw -> { select: * }
             sourceID: "empty@file:///pkg/m.malloy",
             reason: "the source has no dimension to store",
             outcome: {
-               refused: { reason: "no_stored_columns", tier: "colocated" },
+               refused: { reason: "no_stored_columns", tier: "database" },
             },
          },
       ]);
@@ -1055,29 +1078,34 @@ source:
                .map((p) => [p.sourceName, p.buildSourceName])
                .sort(),
          ).toEqual([
-            ["first_copy", "first_copy__mat"],
             ["orders", "orders__mat"],
-            ["second_copy", "second_copy__mat"],
             ["west_orders", "west_orders__mat"],
          ]);
+         // Both copies are read as declaring it; each is a database
+         // extension of a storage= parent, whose table a database build
+         // cannot read, so each is refused rather than built from raw.
          expect(
-            (c.annotationFindings ?? []).filter(
-               (f) => f.code === "materialize-not-built",
-            ),
-         ).toEqual([]);
+            (c.annotationFindings ?? [])
+               .filter((f) => f.code === "materialize-not-built")
+               .map((f) => [f.subject, f.refused?.reason])
+               .sort(),
+         ).toEqual([
+            ["first_copy", "upstream_table_unusable"],
+            ["second_copy", "upstream_table_unusable"],
+         ]);
       },
       { timeout: 30000 },
    );
 });
 
-describe("a colocated incremental pair table", () => {
+describe("a database incremental pair table", () => {
    it(
-      "plans a colocated incremental pair table outside DuckDB as a full rebuild, saying why",
+      "plans a database incremental pair table outside DuckDB as a full rebuild, saying why",
       async () => {
-         const colocated = pairSource(
+         const database = pairSource(
             'watermark=["order_date", "lines.loaded_on"]',
          ).replace(' storage="lake"', ' name="orders_pairs"');
-         const pkg = await packages.create(colocated);
+         const pkg = await packages.create(database);
          const contents = await contentsOf(pkg);
          // In a DuckDB warehouse its delta applies in place.
          const [inDuckDB] = planModelMaterialize(contents).plans;
@@ -1095,7 +1123,7 @@ describe("a colocated incremental pair table", () => {
          );
          const [plan] = planModelMaterialize(inPostgres).plans;
          expect(plan.pairFullRefresh).toMatch(
-            /colocated in its source's warehouse \(dialect postgres\).*declare storage=/,
+            /in its source's warehouse \(dialect postgres\).*declare storage=/,
          );
          expect(plan.persist).not.toHaveProperty("refresh");
          expect(plan.persist).not.toHaveProperty("watermark");
@@ -1142,7 +1170,7 @@ source: orders is orders_raw
       });
       const c = await compiled(text);
       const [sourceID] = Object.keys(materializePlansIn(c) ?? {});
-      return { c, sourceID, outcome: deriveBuildPlanOutcome(c, null) };
+      return { c, sourceID, outcome: derivePackagePlan(c, null) };
    }
 
    it(
@@ -1171,7 +1199,7 @@ source: orders is orders_raw
    );
 
    it(
-      "builds a gated #@ persist storage= source under its own gate, switch on or off (G3), as a colocated one",
+      "builds a gated #@ persist storage= source under its own gate, switch on or off (G3), as a database one",
       async () => {
          for (const gatedSources of [true, false]) {
             const { outcome: o } = await outcome(

@@ -14,14 +14,24 @@
  * store's unique index; every table write goes through its collaborators.
  */
 
+import { errorCodeOf } from "../../../error_code";
+import { leafKey } from "../domain/physical_table";
 import {
    BadRequestError,
+   BuildInstructionsInvalidError,
+   DestinationNotFoundError,
    BuildPlanUnavailableError,
+   ConnectionNotFoundError,
+   databaseAccessFailure,
+   InvalidArgumentError,
    InvalidStateTransitionError,
    MaterializationConflictError,
    MaterializationNotFoundError,
    PackageVersionError,
+   UnconfiguredConnectionError,
 } from "../../../errors";
+import { quoteTablePath, UnquotableIdentifierError } from "../../quoting";
+import { isUsableTableName } from "./manifest_loader";
 import { logger } from "../../../logger";
 import { getPersistCollisionEnforce } from "../../../config";
 import { MaterializationMode } from "../../../materialization_metrics";
@@ -32,7 +42,6 @@ import {
 import { DuplicateActiveMaterializationError } from "../../../storage/duckdb/MaterializationRepository";
 import type { components } from "../../../api";
 import { withSpan } from "../../../telemetry";
-import { errMessage } from "../../../utils";
 import {
    parseEnvironmentName,
    parsePackageName,
@@ -42,19 +51,15 @@ import { resolveEnvironmentId } from "../../resolve_environment";
 import {
    ownedVersionOf,
    ServingReader,
-   tableIdentity,
    tableNamesIn,
    WRITES_TABLES_KEY,
 } from "../../versions/materialization_scope";
 import type { MaterializationHost } from "../host";
-import { type CompiledBuildPlan } from "../domain/compiled_build_plan";
-import {
-   compilePackageBuildPlan,
-   runLoadGateText,
-} from "../plan/build_plan_compile";
+import { compileRunPlan, type RunPlan, runPlanGateText } from "./run_plan";
 import {
    BuildInstruction,
    LedgerEntry,
+   MalformedLedgerEntry,
    ManifestEntry,
    ManifestReference,
    RefusedSource,
@@ -68,6 +73,7 @@ import {
    incrementalRunContext,
    type IncrementalRunContext,
 } from "./incremental_build";
+import { boundParentReads, incrementalEntriesOf } from "./incremental_upstream";
 import {
    INLINE_UNIQUENESS_KEY,
    rollupKeyRecordsIn,
@@ -83,14 +89,9 @@ import {
    referenceManifestToEntries,
 } from "./manifest_committer";
 import type { EligibilityTier } from "./materialization_instructed_run";
-import {
-   isActiveRun,
-   outcomeFor,
-   packageRelativeRun,
-   tallySources,
-   type WarehouseReach,
-   withChainBuildText,
-} from "./materialization_run_support";
+import { isActiveRun, outcomeFor } from "./run_status";
+import { packageRelativeRun, withChainBuildText } from "./build_upstreams";
+import { tallySources } from "./run_telemetry";
 import type { QueryContext } from "../../query_metadata";
 import { packageOwner } from "./table_mark_sql";
 import { Reclaimer, RENAMED_TABLES_KEY } from "./reclaimer";
@@ -98,7 +99,6 @@ import { RunLifecycle } from "./run_lifecycle";
 import {
    buildKindOf,
    buildKindsByAddress,
-   markRunFailureReported,
    reportSourceRefused,
    reportSourceReused,
    RunTelemetry,
@@ -120,7 +120,8 @@ import { packageRelativeText } from "../../../package_relative_text";
 import { buildSource } from "./source_build";
 import { StorageBuildStrategy } from "./storage_build_strategy";
 import { TableClaims } from "./table_claims";
-import { uncarryUnownedTables } from "./table_ownership";
+import { uncarryLostTables, uncarryUnownedTables } from "./table_ownership";
+import { isRollupOrigin } from "../domain/table_plans";
 
 /** What a run is asked to do: createMaterialization's options, resolved. */
 export interface RunBuildOptions {
@@ -129,10 +130,10 @@ export interface RunBuildOptions {
    reseed: boolean;
    buildInstructions: BuildInstruction[] | undefined;
    ledger: LedgerEntry[] | undefined;
+   /** The caller's ledger entries the controller dropped as malformed. */
+   malformedLedger?: MalformedLedgerEntry[];
    referenceManifest: ManifestReference[] | undefined;
-   strictUpstreams: boolean | undefined;
-   warehouseReach?: WarehouseReach;
-   trigger: "ON_DEMAND" | "SCHEDULER";
+   trigger: "on_demand" | "scheduler";
    runContext?: components["schemas"]["RunContext"];
    /** The version createMaterialization resolved; null when unversioned. */
    version: string | null;
@@ -157,7 +158,7 @@ export interface RunCollaborators {
    deriveSelfInstructions: typeof deriveSelfInstructions;
    /** The run's incremental context, over the service's ledger store. */
    incrementalRunContext(
-      compiled: CompiledBuildPlan,
+      compiled: RunPlan,
       run: Parameters<typeof incrementalRunContext>[1],
    ): IncrementalRunContext | undefined;
    /** The instructed build loop ({@link InstructedBuild.run}). */
@@ -198,12 +199,6 @@ interface CreateMaterializationOptions {
    sourceNames?: string[];
    buildInstructions?: BuildInstruction[];
    referenceManifest?: ManifestReference[];
-   strictUpstreams?: boolean;
-   /**
-    * What a strict build does with a source whose only build recomputes
-    * a stored upstream from the warehouse. Orchestrated-only.
-    */
-   warehouseReach?: WarehouseReach;
    /**
     * The caller-supplied incremental ledger (each entry a
     * `ManifestEntry.ledger` an earlier run reported). When present, even
@@ -212,10 +207,16 @@ interface CreateMaterializationOptions {
     */
    ledger?: LedgerEntry[];
    /**
-    * What initiated this run: `ON_DEMAND` (default, manual/API) or
-    * `SCHEDULER` (the standalone scheduler). Recorded on the run metadata.
+    * The `ledger` entries dropped as malformed, each by the table it named:
+    * its source seeds under `ledger_entry_malformed`. Not validated against
+    * the plan, since a dropped entry is as good as absent.
     */
-   trigger?: "ON_DEMAND" | "SCHEDULER";
+   malformedLedger?: MalformedLedgerEntry[];
+   /**
+    * What initiated this run: `on_demand` (default, manual/API) or
+    * `scheduler` (the standalone scheduler). Recorded on the run metadata.
+    */
+   trigger?: "on_demand" | "scheduler";
    /**
     * Caller context attached as query metadata to the build's statements.
     * Its `trigger` can express a publish, which `trigger` cannot; its
@@ -261,6 +262,13 @@ function runQueryContext(run: RunScope): QueryContext {
 interface RunState {
    markedShared: boolean;
    packagePath: string | undefined;
+   /** The package the run builds, once loaded. */
+   target?: RunTarget;
+   /**
+    * Each instruction whose build started, in order, and whether the author
+    * chose its table's name.
+    */
+   buildsStarted: { instruction: BuildInstruction; authorNamed: boolean }[];
 }
 
 /** The package a run builds, loaded and compiled. */
@@ -271,7 +279,7 @@ interface RunTarget {
    pkg: Awaited<ReturnType<RunTarget["environment"]["getPackage"]>>;
    owned: string | undefined;
    reader: ServingReader;
-   compiled: CompiledBuildPlan;
+   compiled: RunPlan;
 }
 
 /** A run's instructions, and what deriving them decided. */
@@ -293,8 +301,14 @@ interface CommittedRun {
    served: Awaited<ReturnType<RunCollaborators["commitManifest"]>>;
    failures: ReturnType<typeof packageRelativeRun>["failures"];
    sourcesFailed: number;
-   durationMs: number;
 }
+
+/**
+ * How long deleting or unloading a package waits for its aborted runs to
+ * settle. A run stops at its next check; a statement already sent to a
+ * database that ignores the abort runs to its end first.
+ */
+const PACKAGE_RUNS_SETTLE_MS = 30_000;
 
 /**
  * Orchestrates single-call materialization builds: the facade the controller,
@@ -330,6 +344,15 @@ export class MaterializationService {
     * the startup sweep call it directly.
     */
    readonly reclaimer: Reclaimer;
+   /**
+    * The tables each unsettled run in this process has started writing, by
+    * run, so a retired run's drop keeps a table another run may have
+    * rewritten since (Reclaimer.reclaimRetiredRunTables).
+    */
+   private readonly buildsInFlight = new Map<
+      string,
+      { environmentName: string; packageName: string; tables: string[] }
+   >();
    /**
     * The steps a run takes: the constructor's, else the real ones. Specs
     * also drive a step through it.
@@ -376,6 +399,8 @@ export class MaterializationService {
                this.claims.withTableLock(environmentId, packageName, fn),
             );
          },
+         withTableLock: (environmentId, packageName, fn) =>
+            this.claims.withTableLock(environmentId, packageName, fn),
       });
       const real = this.realCollaborators();
       this.collaborators = {
@@ -450,8 +475,9 @@ export class MaterializationService {
       run: (signal: AbortSignal) => Promise<void>,
       // Called once the run has settled and its final status is recorded.
       onSettled?: () => void,
+      owner?: { environmentName: string; packageName: string },
    ): void {
-      this.lifecycle.runInBackground(id, run, onSettled);
+      this.lifecycle.runInBackground(id, run, onSettled, owner);
    }
 
    // ==================== QUERIES ====================
@@ -598,11 +624,39 @@ export class MaterializationService {
     * validated synchronously against the compiled build plan, so a bad
     * instruction is rejected at create time rather than failing the background
     * run.
+    *
+    * The create is registered with the package's runs before its first
+    * await, so a delete or unload of the package while it runs aborts it: a
+    * create aborted before its run starts records CANCELLED and builds
+    * nothing.
     */
    async createMaterialization(
       environmentName: string,
       packageName: string,
       options: CreateMaterializationOptions = {},
+   ): Promise<Materialization> {
+      const creating = this.lifecycle.beginCreate({
+         environmentName,
+         packageName,
+      });
+      try {
+         return await this.createRun(
+            environmentName,
+            packageName,
+            options,
+            creating.signal,
+         );
+      } finally {
+         creating.done();
+      }
+   }
+
+   /** {@link createMaterialization}'s body; `retired` aborts it before the run starts. */
+   private async createRun(
+      environmentName: string,
+      packageName: string,
+      options: CreateMaterializationOptions,
+      retired: AbortSignal,
    ): Promise<Materialization> {
       const {
          environmentId,
@@ -628,7 +682,7 @@ export class MaterializationService {
 
       const forceRefresh = options.forceRefresh ?? false;
       const reseed = options.reseed ?? false;
-      const trigger = options.trigger ?? "ON_DEMAND";
+      const trigger = options.trigger ?? "on_demand";
       const metadata = {
          forceRefresh,
          // Recorded separately: it says whether an incremental source rebuilt
@@ -670,6 +724,7 @@ export class MaterializationService {
             forceRefresh,
             reseed,
             trigger,
+            retired,
          });
 
       // An unversioned package's run is created under the package's lock,
@@ -797,14 +852,27 @@ export class MaterializationService {
             options.ledger,
             options.reseed ?? false,
          );
+         // A stored reference's destination must be one this environment
+         // configures: an unknown one would read its table from nowhere.
+         for (const ref of options.referenceManifest ?? []) {
+            if (ref.storageDestinationName === undefined) continue;
+            try {
+               environment.getStorageDestination(ref.storageDestinationName);
+            } catch (err) {
+               if (!(err instanceof DestinationNotFoundError)) throw err;
+               throw new BuildInstructionsInvalidError(
+                  `Manifest reference for '${ref.sourceEntityId}' names storage destination '${ref.storageDestinationName}', which this environment does not configure`,
+               );
+            }
+         }
          if (version !== null) {
             // One table, two writers in one run: it would hold the last
             // one's rows under both definitions.
             const seen = new Set<string>();
             for (const i of buildInstructions) {
-               const table = tableIdentity(i.physicalTableName);
+               const table = leafKey(i.physicalTableName);
                if (seen.has(table)) {
-                  throw new BadRequestError(
+                  throw new BuildInstructionsInvalidError(
                      `buildInstructions name table ${i.physicalTableName} more than once; give each source a table of its own.`,
                   );
                }
@@ -840,7 +908,9 @@ export class MaterializationService {
       buildInstructions: BuildInstruction[] | undefined;
       forceRefresh: boolean;
       reseed: boolean;
-      trigger: "ON_DEMAND" | "SCHEDULER";
+      trigger: "on_demand" | "scheduler";
+      /** Aborted when the package retired while this create ran. */
+      retired: AbortSignal;
    }): Promise<Materialization> {
       const {
          environmentId,
@@ -856,6 +926,7 @@ export class MaterializationService {
          forceRefresh,
          reseed,
          trigger,
+         retired,
       } = args;
       const active = await this.repository.getActiveMaterialization(
          environmentId,
@@ -907,6 +978,21 @@ export class MaterializationService {
          }
          throw err;
       }
+      // The package was deleted or unloaded while the record was written
+      // (its abort found no run to stop), or before this start took the
+      // package's lock (a create that began after the delete's last abort
+      // found the package lock-free, then queued on the lock the delete
+      // held): either way none starts. A version's start has already
+      // re-resolved the version under its lock.
+      if (
+         retired.aborted ||
+         (version === null && !environment.hasLoadedPackage(packageName))
+      ) {
+         return this.lifecycle.transition(created.id, "CANCELLED", {
+            completedAt: new Date(),
+            error: "Cancelled",
+         });
+      }
 
       // Registered before the version's lock is released (see below), and
       // released once the run has settled.
@@ -939,11 +1025,10 @@ export class MaterializationService {
                         // Orchestrated-only: an auto-run depends on the
                         // local store, which a supplied ledger would replace.
                         ledger: orchestrated ? options.ledger : undefined,
+                        ...(orchestrated && options.malformedLedger?.length
+                           ? { malformedLedger: options.malformedLedger }
+                           : {}),
                         referenceManifest: options.referenceManifest,
-                        strictUpstreams: options.strictUpstreams,
-                        warehouseReach: orchestrated
-                           ? options.warehouseReach
-                           : undefined,
                         trigger,
                         runContext: options.runContext ?? undefined,
                         version,
@@ -952,6 +1037,7 @@ export class MaterializationService {
                   ),
             ),
          release,
+         { environmentName, packageName },
       );
       return created;
    }
@@ -996,9 +1082,10 @@ export class MaterializationService {
          // Where the package is on this server, once known: a whole-run failure
          // names its files package-relative too (see packageRelativeRun).
          packagePath: undefined,
+         buildsStarted: [],
       };
       const mode: MaterializationMode = telemetry.mode;
-      const startedAt = Date.now();
+      const startedAt = telemetry.startedAtMs;
       const run: RunScope = {
          telemetry,
          id,
@@ -1018,6 +1105,7 @@ export class MaterializationService {
          });
 
          const target = await this.loadRunPackage(run, state);
+         state.target = target;
          const { environmentId, pkg, compiled } = target;
 
          // Assembled BEFORE the instructions because skip-if-unchanged consults
@@ -1033,8 +1121,25 @@ export class MaterializationService {
                forceRefresh: opts.reseed ?? false,
                now: new Date(startedAt),
                ledger: opts.ledger,
+               ...(opts.malformedLedger
+                  ? { malformedLedger: opts.malformedLedger }
+                  : {}),
             },
          );
+         // What earlier deltas found missing, from the manifest bound now;
+         // a delta or skip carries it until a rebuild.
+         if (incremental) {
+            incremental.priorLateRows = pkg.boundLateRows?.();
+            incremental.noteIncrementalCheck = (sourceEntityId, finding) =>
+               pkg.noteIncrementalCheck?.(sourceEntityId, finding);
+            incremental.boundEntries = pkg.boundIncrementalEntries?.();
+            // Standalone only: which build of its parent's table each
+            // incremental extension last read, when the local ledger store
+            // cannot say. A caller's ledger carries it (incremental_build.ts).
+            if (opts.ledger === undefined) {
+               incremental.boundParentReads = pkg.boundParentReads?.();
+            }
+         }
 
          const derived = await this.deriveRunInstructions(
             run,
@@ -1058,7 +1163,7 @@ export class MaterializationService {
             reportSourceRefused(
                {
                   kind: buildKindOf(compiled, refusal.sourceID),
-                  tier: refusal.tier === "storage" ? "storage" : "colocated",
+                  tier: refusal.tier === "storage" ? "storage" : "database",
                   sourceName: refusal.name,
                },
                refusal.reason,
@@ -1066,7 +1171,7 @@ export class MaterializationService {
          }
 
          // A rollup this run may rewrite in place no longer holds what its
-         // bound key check said (known limitation 29): forget it before any
+         // bound key check said: forget it before any
          // table is written, so a run that fails part-way never leaves a
          // check bound over rows it did not read. This run's own commit binds
          // what it checks.
@@ -1079,14 +1184,19 @@ export class MaterializationService {
             target,
             derived,
             incremental,
+            state,
          );
          const committed = await this.commitRun(run, target, derived, built);
+         // The extensions this run rebuilt for want of a record of their
+         // parent's build, which the package warns about until a run proves
+         // them again.
+         if (incremental) {
+            pkg.setUnprovenGenerations?.(incremental.unprovenGenerations ?? []);
+         }
          await this.finishCommittedRun(run, target, derived, committed, state);
       } catch (err) {
          const outcome = outcomeFor(signal);
-         this.lifecycle.recordRun(mode, outcome, startedAt);
-         telemetry.finished(outcome, Date.now() - startedAt, err);
-         markRunFailureReported(err);
+         telemetry.finished(outcome, err);
          if (state.packagePath !== undefined && err instanceof Error) {
             err.message = packageRelativeText(err.message, state.packagePath);
             // Each source's reason on the failed run's manifest, as a
@@ -1112,8 +1222,82 @@ export class MaterializationService {
                opts.version,
             );
          }
+         await this.reclaimIfRetired(run, state);
          throw err;
+      } finally {
+         this.buildsInFlight.delete(id);
       }
+   }
+
+   /** Record that `run` started writing `table` (see buildsInFlight). */
+   private buildInFlight(run: RunScope, table: string): void {
+      const { id, environmentName, packageName } = run;
+      let entry = this.buildsInFlight.get(id);
+      if (!entry) {
+         entry = { environmentName, packageName, tables: [] };
+         this.buildsInFlight.set(id, entry);
+      }
+      entry.tables.push(table);
+   }
+
+   /**
+    * A run its package's delete or unload aborted gives back, before it
+    * settles, the tables its builds may have written: once the package goes
+    * nothing serves them and nothing else would reclaim them. An auto-run
+    * only: a host's tables are its own. Never throws.
+    */
+   private async reclaimIfRetired(
+      run: RunScope,
+      state: RunState,
+   ): Promise<void> {
+      const { id, environmentName, packageName, orchestrated, signal } = run;
+      const target = state.target;
+      if (
+         orchestrated ||
+         !signal.aborted ||
+         !this.lifecycle.isRetiring(id) ||
+         target === undefined ||
+         state.buildsStarted.length === 0
+      ) {
+         return;
+      }
+      const { environment, environmentId, pkg } = target;
+      // A table at the author's `name=` may have stood before this run
+      // wrote it, and a reader outside Malloy may rely on it: kept.
+      const kept = state.buildsStarted.filter((b) => b.authorNamed);
+      if (kept.length > 0) {
+         logger.info(
+            "Keeping the tables at an author's name= that a retired run wrote",
+            {
+               runId: id,
+               packageName,
+               tables: kept.map((b) => b.instruction.physicalTableName),
+            },
+         );
+      }
+      await this.reclaimer.reclaimRetiredRunTables({
+         environment,
+         environmentName,
+         environmentId,
+         packageName,
+         runId: id,
+         targets: writeTargetsFor(
+            pkg.getBuildPlan(),
+            state.buildsStarted
+               .filter((b) => !b.authorNamed)
+               .map((b) => b.instruction),
+         ),
+         // The package is still loaded: a retire stops its runs first.
+         connectionFor: (name) => pkg.getMalloyConnection(name),
+         inFlightElsewhere: [...this.buildsInFlight]
+            .filter(
+               ([runId, other]) =>
+                  runId !== id &&
+                  other.environmentName === environmentName &&
+                  other.packageName === packageName,
+            )
+            .flatMap(([, other]) => other.tables),
+      });
    }
 
    /**
@@ -1150,11 +1334,11 @@ export class MaterializationService {
 
       // A published version's tree never changes, so compiling it needs
       // no lock; an unversioned package's can be replaced under it.
-      const compiled =
+      const { runPlan: compiled, packagePlan } =
          versionId !== undefined
-            ? await compilePackageBuildPlan(pkg, signal)
+            ? await compileRunPlan(pkg, signal)
             : await environment.withPackageLock(packageName, () =>
-                 compilePackageBuildPlan(pkg, signal),
+                 compileRunPlan(pkg, signal),
               );
 
       // A `#@ persist` source Malloy's build walk did not plan fails the
@@ -1170,7 +1354,7 @@ export class MaterializationService {
          versionId === undefined &&
          environment.getStaleCompileErrors().has(packageName);
       // The load gate's own text, so the run and the load agree.
-      const invalid = runLoadGateText(compiled, pkg, {
+      const invalid = runPlanGateText(packagePlan, {
          enforceCollisions: getPersistCollisionEnforce(),
          versionScoped: owned !== undefined,
       });
@@ -1252,7 +1436,30 @@ export class MaterializationService {
             id,
             reader,
          );
+         if (incremental) {
+            // Each incremental source's newest entry, over the bound
+            // manifest's: a run of some sources binds a manifest naming only
+            // those, while an extension's last read and its parent's last
+            // build are on the newest entry of each (incremental_upstream.ts).
+            const newest = Object.entries(
+               await this.committer.newestIncrementalEntries(
+                  environmentId,
+                  packageName,
+                  id,
+                  reader,
+               ),
+            );
+            incremental.boundParentReads = new Map([
+               ...(incremental.boundParentReads ?? []),
+               ...boundParentReads(newest),
+            ]);
+            incremental.boundEntries = new Map([
+               ...(incremental.boundEntries ?? []),
+               ...incrementalEntriesOf(newest),
+            ]);
+         }
          let recheck: Record<string, BuildInstruction>;
+         let confirmExists: Record<string, BuildInstruction>;
          const freshness = declaredFreshnessIndex(pkg.getBuildPlan());
          ({
             instructions,
@@ -1260,6 +1467,7 @@ export class MaterializationService {
             refused: derivedRefused,
             cleared: clearedTiers,
             recheck = {},
+            confirmExists = {},
             renamed = [],
          } = this.collaborators.deriveSelfInstructions(
             compiled,
@@ -1286,24 +1494,38 @@ export class MaterializationService {
                   upstreamsOf: (address) => freshness.upstreamsOf(address),
                   at: new Date(run.startedAt),
                },
+               incompatible:
+                  pkg.incompatibleTables?.(priorEntries) ?? new Set(),
             },
          ));
          // A carried table at the author's `name=` is reused only while
          // it is still marked as this package's (table_ownership.ts).
+         const siteContext = () =>
+            tableSiteContext({
+               compiled,
+               environment,
+               buildMetadata: {
+                  packageMaterialization: pkg.getMaterializationConfig(),
+                  context: runQueryContext(run),
+               },
+            });
          if (Object.keys(recheck).length > 0) {
             await uncarryUnownedTables(
                recheck,
                carried,
                instructions,
                packageOwner(environmentName, packageName),
-               tableSiteContext({
-                  compiled,
-                  environment,
-                  buildMetadata: {
-                     packageMaterialization: pkg.getMaterializationConfig(),
-                     context: runQueryContext(run),
-                  },
-               }),
+               siteContext(),
+            );
+         }
+         // A carried table in the package's in-memory sandbox is reused
+         // only while it still exists: a restart empties the sandbox.
+         if (Object.keys(confirmExists).length > 0) {
+            await uncarryLostTables(
+               confirmExists,
+               carried,
+               instructions,
+               siteContext(),
             );
          }
       }
@@ -1395,6 +1617,7 @@ export class MaterializationService {
       target: RunTarget,
       derived: RunInstructions,
       incremental: IncrementalRunContext | undefined,
+      state: RunState,
    ): Promise<InstructedBuildResult> {
       const { id, packageName, opts, signal, orchestrated } = run;
       const { environmentId, environment, versionId, pkg, compiled } = target;
@@ -1419,7 +1642,9 @@ export class MaterializationService {
          instructions,
          seedEntries: carried,
          signal,
-         strict: opts.strictUpstreams ?? false,
+         // Always strict: a downstream is built over its upstreams' tables
+         // or not at all.
+         strict: true,
          // Orchestrated-only; see reclaimStorageTablesFromFailedRun.
          owner: orchestrated ? { environmentId, packageName } : undefined,
          buildMetadata: {
@@ -1432,7 +1657,6 @@ export class MaterializationService {
          priorRefusals: Object.values(derivedRefused),
          clearedTiers,
          hostInstructed: orchestrated,
-         warehouseReach: opts.warehouseReach,
          freshness: (() => {
             const index = declaredFreshnessIndex(pkg.getBuildPlan());
             return {
@@ -1467,6 +1691,10 @@ export class MaterializationService {
                environmentId,
                packageName,
             )) ?? [],
+         onBuildStarted: (instruction, authorNamed) => {
+            state.buildsStarted.push({ instruction, authorNamed });
+            this.buildInFlight(run, instruction.physicalTableName);
+         },
       });
    }
 
@@ -1616,7 +1844,7 @@ export class MaterializationService {
                        ),
                  ),
       );
-      return { served, failures, sourcesFailed, durationMs };
+      return { served, failures, sourcesFailed };
    }
 
    /**
@@ -1631,18 +1859,10 @@ export class MaterializationService {
       committed: CommittedRun,
       state: RunState,
    ): Promise<void> {
-      const {
-         telemetry,
-         id,
-         environmentName,
-         packageName,
-         orchestrated,
-         mode,
-         startedAt,
-      } = run;
+      const { telemetry, id, environmentName, packageName, orchestrated } = run;
       const { versionId, pkg, reader, compiled } = target;
       const { carried, renamed } = derived;
-      const { served, failures, sourcesFailed, durationMs } = committed;
+      const { served, failures, sourcesFailed } = committed;
       // Whether every loaded copy of the package now reads this run: its
       // own load, then the other versions' rebinds below.
       let bound = !orchestrated && served?.autoLoad === "loaded";
@@ -1710,20 +1930,15 @@ export class MaterializationService {
          }
          reportSourceReused(
             kindByAddress.get(address) ??
-               (entry.origin === "preaggregate" ? "rollup" : "persist"),
-            entry.storageDestinationName ? "storage" : "colocated",
+               (isRollupOrigin(entry.origin) ? "rollup" : "persist"),
+            entry.storageDestinationName ? "storage" : "database",
          );
       }
       // A run that lost sources is partial: its manifest is missing tables a
       // consumer expected. An auto-run refusal is not a loss: it is a property
       // of the model, and counting it would make every run partial.
       const partial = sourcesFailed > 0;
-      this.lifecycle.recordRun(
-         mode,
-         partial ? "partial" : "success",
-         startedAt,
-      );
-      telemetry.finished(partial ? "partial" : "success", durationMs);
+      telemetry.finished(partial ? "partial" : "success");
    }
 
    // ==================== UNIQUENESS PASSES ====================
@@ -1756,7 +1971,7 @@ export class MaterializationService {
       } catch (err) {
          logger.warn(
             "Could not list earlier runs; every inline uniqueness check runs",
-            { packageName, error: errMessage(err) },
+            { packageName, code: errorCodeOf(err) },
          );
          return undefined;
       }
@@ -1790,6 +2005,25 @@ export class MaterializationService {
    }
 
    // ==================== CANCELLATION ====================
+
+   /**
+    * Abort every run of a package running in this process, and every create
+    * of one whose run has not started, for a package being deleted or
+    * unloaded: the abort lands before this returns, so call
+    * it before the package goes. Resolves once those runs have settled
+    * (CANCELLED unless one finished first), or after `settleWithinMs`.
+    */
+   abortPackageRuns(
+      environmentName: string,
+      packageName: string,
+      settleWithinMs = PACKAGE_RUNS_SETTLE_MS,
+   ): Promise<void> {
+      return this.lifecycle.abortPackageRuns(
+         environmentName,
+         packageName,
+         settleWithinMs,
+      );
+   }
 
    /** Cancel a non-terminal materialization. */
    async stopMaterialization(
@@ -1852,6 +2086,84 @@ export class MaterializationService {
       // (Mirrors the load-time Environment.rebindServeBindingsFromLocalStore;
       // best-effort: a failure leaves the bindings for a later reload or build.)
       await this.committer.rebindLoadedVersions(environmentName, packageName);
+   }
+
+   /**
+    * Drop one database-tier table a materialization of the package built on
+    * `connectionName`, at a caller's request (`drop-materialized-table`),
+    * when Publisher can prove it is the package's and that nothing uses it
+    * (Reclaimer.dropConnectionTable). "absent" when the table is already
+    * gone and a run record of the package still names it there.
+    *
+    * Resolved here, before any lock: the version (404 unknown, 410
+    * archived), the run `materializationId` names (404 unless it is the
+    * package's), the table name (400 unless every dialect parses it and the
+    * connection's quotes it), the package (which may load it) and the
+    * connection it reaches by that name (404 otherwise).
+    */
+   async dropMaterializedTable(
+      environmentName: string,
+      packageName: string,
+      connectionName: string,
+      tableName: string,
+      options: { materializationId?: string; versionId?: VersionRef } = {},
+   ): Promise<"dropped" | "absent"> {
+      const versionId = options.versionId ?? VersionRef.LATEST;
+      const environmentId = await this.resolveEnvironmentId(environmentName);
+      const environment = await this.host.getEnvironment(
+         parseEnvironmentName(environmentName),
+         false,
+      );
+      await this.resolveRunVersion(environmentName, packageName, versionId);
+      if (options.materializationId !== undefined) {
+         await this.getMaterialization(
+            environmentName,
+            packageName,
+            options.materializationId,
+            versionId,
+         );
+      }
+      if (!isUsableTableName(tableName)) {
+         throw new InvalidArgumentError(
+            `tableName '${tableName}' must be a table path with no empty part, no backslash or control character, and only whole quoted parts`,
+         );
+      }
+      const pkg = await environment.getPackage(
+         parsePackageName(packageName),
+         false,
+         { versionId },
+      );
+      let connection: Awaited<ReturnType<typeof pkg.getMalloyConnection>>;
+      try {
+         connection = await pkg.getMalloyConnection(connectionName);
+      } catch (error) {
+         if (error instanceof UnconfiguredConnectionError) {
+            throw new ConnectionNotFoundError(
+               `Package ${packageName} reaches no connection ${connectionName}`,
+            );
+         }
+         throw databaseAccessFailure(error) ?? error;
+      }
+      try {
+         quoteTablePath(tableName, connection.dialectName);
+      } catch (error) {
+         if (error instanceof UnquotableIdentifierError) {
+            throw new InvalidArgumentError(error.message);
+         }
+         throw error;
+      }
+      return this.reclaimer.dropConnectionTable({
+         environment,
+         environmentName,
+         environmentId,
+         packageName,
+         connectionName,
+         connection,
+         physicalTableName: tableName,
+         ...(options.materializationId !== undefined
+            ? { materializationId: options.materializationId }
+            : {}),
+      });
    }
 
    private resolveEnvironmentId(environmentName: string): Promise<string> {

@@ -17,6 +17,7 @@
  * its base data.
  */
 
+import { withNativeSchema } from "../../../src/test_helpers/host_manifest";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import fs from "fs";
 import os from "os";
@@ -31,7 +32,12 @@ import {
 const ENV_NAME = "manifest-location-env";
 const PKG = "persist-test";
 const FIXTURE = path.resolve(__dirname, "../../fixtures/persist-test");
-const BOUND_TABLE = "order_summary_from_manifest";
+/**
+ * The table every manifest here binds: a temporary table on the version's
+ * sandbox, made from one SELECT (raw SQL on the sandbox runs only as a single
+ * SELECT, duckdb_lockdown.ts), so its name is the one the route returns.
+ */
+let BOUND_TABLE = "";
 /** The rows BOUND_TABLE holds: a count no live answer gives. */
 const BOUND_ROWS = 13;
 
@@ -81,12 +87,21 @@ function writeManifest(name: string, sourceEntityId: string): string {
          builtAt: new Date().toISOString(),
          strict: false,
          entries: {
-            [sourceEntityId]: {
-               sourceEntityId,
-               sourceName: "order_summary",
-               physicalTableName: BOUND_TABLE,
-               connectionName: "duckdb",
-            },
+            // With the column types its build would record, as a host
+            // sends them (host_manifest.ts).
+            [sourceEntityId]: withNativeSchema(
+               {
+                  sourceEntityId,
+                  sourceName: "order_summary",
+                  physicalTableName: BOUND_TABLE,
+                  connectionName: "duckdb",
+               },
+               [
+                  { name: "category", type: "VARCHAR" },
+                  { name: "total_orders", type: "BIGINT" },
+                  { name: "total_revenue", type: "BIGINT" },
+               ],
+            ),
          },
       }),
    );
@@ -167,16 +182,18 @@ describe("a version bound to a manifest on this server's disk", () => {
       // The table every manifest here binds, in the version's own DuckDB:
       // BOUND_ROWS rows, so an answer read from it is told from live's.
       const created_ = await fetch(
-         `${api(`/${PKG}/connections/duckdb/sqlQuery`)}?versionId=1.0.0`,
+         `${api(`/${PKG}/connections/duckdb/sqlTemporaryTable`)}?versionId=1.0.0`,
          {
             method: "POST",
             headers: { "content-type": "application/json" },
             body: JSON.stringify({
-               sqlStatement: `CREATE OR REPLACE TABLE ${BOUND_TABLE} AS SELECT 'c' || i AS category, 1 AS total_orders, 1.0 AS total_revenue FROM range(${BOUND_ROWS}) t(i)`,
+               sqlStatement: `SELECT 'c' || i AS category, 1::BIGINT AS total_orders, 1::BIGINT AS total_revenue FROM range(${BOUND_ROWS}) t(i)`,
             }),
          },
       );
       expect(created_.status).toBeLessThan(300);
+      BOUND_TABLE = ((await created_.json()) as { table?: string }).table ?? "";
+      expect(BOUND_TABLE).not.toBe("");
    }, 180_000);
 
    afterAll(async () => {

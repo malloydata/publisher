@@ -625,7 +625,7 @@ source: orders is scoped extend { where: amount >= $MIN_AMT }
 `,
          ],
          [
-            "colocated",
+            "database",
             `${SCOPED}
 #(materialize) name="orders"
 source: orders is scoped extend { measure: n is count() }
@@ -668,7 +668,10 @@ source: parent is raw extend { where: org_id = $ORG_ID }
 source: child is parent extend { dimension: tag is 'x' }
 `);
             expect(materializePlanNamed(c, "child")).toBeUndefined();
-            expect(notBuiltMessage(c, "child")).toContain(MOVE_WHERE);
+            // Never over the raw chain: its rows depend on the caller.
+            expect(notBuiltMessage(c, "child")).toContain(
+               "one shared table cannot serve every caller",
+            );
             const parent = materializePlanNamed(c, "parent");
             expect(parent?.readTimeTerms?.map((t) => t.code)).toEqual([
                "org_id = $ORG_ID",

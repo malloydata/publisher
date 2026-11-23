@@ -1,0 +1,5 @@
+// A required #(filter): a query that sends no filterParams is refused.
+#(filter) name=region dimension=region type=equal required
+source: filtered is duckdb.table('data/orders.csv') extend {
+   measure: n is count()
+}

@@ -49,7 +49,6 @@ import {
    type RowLevelGateRejectionCause,
 } from "../authorize";
 import { ACCESS_FILTER_ROUTE, AUTHORIZE_ROUTE } from "../authorize_routes";
-import { type NotebookFormat } from "../../notebook_metrics";
 import { OracleGuard } from "./oracle_guard";
 import { parseFilterAnnotation, type FilterDefinition } from "../filter";
 import {
@@ -109,7 +108,9 @@ import {
    collectEntryPointGates as collectEntryPointGatesImpl,
    createGateClassificationDeps,
    resolveGateShape as resolveGateShapeImpl,
+   derivationLevel,
    resolveGraftTarget as resolveGraftTargetImpl,
+   type DerivationLanding,
    type GateClassificationDeps,
    type GateEntry,
    type GraftScope,
@@ -124,14 +125,7 @@ import {
    type AuthorizeGateSite,
 } from "../../authorize_metrics";
 import { decideLock } from "../authorize_lock";
-import {
-   type HydrationMaterializer,
-   type HydrationRuntime,
-} from "../model_runtime";
-import {
-   type CellDeclaredGivens,
-   type RunnableNotebookCell,
-} from "../model_notebook_cell";
+import { type HydrationRuntime } from "../model_runtime";
 
 /** One caller join the live query reaches, and what it resolves to. */
 type ResolvedCallerJoin = {
@@ -178,7 +172,15 @@ function denyUnlessAdmitted(
          outcome === "unresolvable" ? "denied_unresolvable" : "denied_by_lock",
          site,
       );
-      throw AccessDeniedError.forSource(label);
+      if (outcome === "unresolvable") {
+         // The caller's 403 is the same `ACCESS_DENIED` either way; the log
+         // and the metric are where a gate that could not be decided shows.
+         logger.info("A lock could not be decided; denying", {
+            source: label,
+            site,
+         });
+      }
+      throw AccessDeniedError.forSource(label, "lock");
    }
    recordLockDecision("denied_unresolvable", site);
    // Also booked on the row-level counter: a gate refused at shape resolution
@@ -186,7 +188,13 @@ function denyUnlessAdmitted(
    // `cause` is a finer label, not a substitute.
    recordRowLevelGateDecision("denied_by_gate", site);
    if (resolution.cause) recordRowLevelGateRejected(resolution.cause);
-   throw AccessDeniedError.forSource(label);
+   logger.info("A gate could not be resolved; denying", {
+      source: label,
+      site,
+      ...(resolution.cause ? { cause: resolution.cause } : {}),
+   });
+   // Booked as a row filter's refusal, as the row-level metric books it.
+   throw AccessDeniedError.forSource(label, "row_filter");
 }
 
 /**
@@ -255,8 +263,7 @@ export interface GovernRequest {
    /**
     * The compiled half of the query boundary, for an admission the early
     * check DEFERRED (see `Model.assertQueryBoundaryEarly`). Absent when the
-    * boundary is already settled: cleared early, lifted by privilege, or (a
-    * notebook cell) checked by the caller before anything ran.
+    * boundary is already settled: cleared early, or lifted by privilege.
     */
    boundary?: { compiledSource: string | undefined; query?: string };
    /**
@@ -271,11 +278,10 @@ export interface GovernRequest {
       materializer: ModelMaterializer,
       grafts: ReadonlyArray<{
          graftTarget: string;
+         landing?: DerivationLanding;
          condition: FilterCondition;
       }>,
    ) => QueryMaterializer;
-   /** See `authorizeAndBindRunnable`'s options. */
-   proveGraft?: (recompiled: QueryMaterializer) => Promise<void>;
    /** See `authorizeAndBindRunnable`'s options. */
    graftScope?: GraftScope;
    /**
@@ -289,7 +295,7 @@ export interface GovernRequest {
    routedPastEntryPointGate?: boolean;
    /**
     * The routed compile writes again the run target's given-reading `where:`
-    * terms its stored table left out (a `#(preaggregate)` rollup's variant).
+    * terms its stored table left out (a `#(rollup)` rollup's variant).
     * Re-proven on that compile: its run target must apply exactly the
     * given-reading terms the live run target does, by text, or the query is
     * denied, so a variant that lost one never answers with every caller's
@@ -372,11 +378,8 @@ export interface GovernorHost {
    queries(): ApiQuery[] | undefined;
    givens(): ApiGiven[] | undefined;
    filterMap(): Map<string, FilterDefinition[]>;
-   runnableNotebookCells(): RunnableNotebookCell[] | undefined;
    siblingModelDefResolver(): SiblingModelDefResolver | undefined;
    queryBoundary(): QueryBoundaryPolicy;
-   isNotebook(): boolean;
-   notebookFormat(): NotebookFormat;
    isCuratedSource(name: string): boolean;
    isCuratedQuery(name: string): boolean;
    derivesFromCurated(
@@ -431,20 +434,11 @@ export class QueryGovernor {
    private get filterMap(): Map<string, FilterDefinition[]> {
       return this.host.filterMap();
    }
-   private get runnableNotebookCells(): RunnableNotebookCell[] | undefined {
-      return this.host.runnableNotebookCells();
-   }
    private get siblingModelDefResolver(): SiblingModelDefResolver | undefined {
       return this.host.siblingModelDefResolver();
    }
    private get queryBoundary(): QueryBoundaryPolicy {
       return this.host.queryBoundary();
-   }
-   private isNotebook(): boolean {
-      return this.host.isNotebook();
-   }
-   private notebookFormat(): NotebookFormat {
-      return this.host.notebookFormat();
    }
    private isCuratedSource(name: string): boolean {
       return this.host.isCuratedSource(name);
@@ -523,7 +517,8 @@ export class QueryGovernor {
     * A graft never depends on a caller's givens or query text (those bind at
     * `run()`), so requests hitting the same gate set share the expensive
     * `structuredClone`. `cacheScope` is in the key so a graft built against
-    * one notebook cell's modelDef is never served for another scope.
+    * one scope's modelDef, such as a served copy's or a rollup's, is never
+    * served for another scope.
     */
    private graftedMaterializerCache: Map<string, ModelMaterializer> = new Map();
    /**
@@ -612,8 +607,6 @@ export class QueryGovernor {
                givens,
                bypassAuthorize,
             ),
-         probeEntryPointGates: (runnable, givens, graftScope) =>
-            this.probeEntryPointGates(runnable, givens, graftScope),
          sources: () => this.sources,
          queries: () => this.queries,
       });
@@ -700,14 +693,29 @@ export class QueryGovernor {
          // model and silently answer live under a routed answer record.
          await this.denyRoutedPastGate(compiled.runnable, "no_graft_scope");
       }
+      if (
+         request.routedPastEntryPointGate &&
+         !request.bypassAuthorize &&
+         (!live || (await this.liveHasDerivationBaseRowGate(live)))
+      ) {
+         // A row filter the live entry point inherits through `->` filters
+         // the base's rows before the derivation runs. A routed variant keeps
+         // gates on its own output only, so it cannot answer that: the plan
+         // never builds such a source, and this refuses one that slipped by.
+         await this.denyRoutedPastGate(
+            compiled.runnable,
+            "derivation_base_row_gate",
+         );
+      }
       const runnable = await this.authorizeAndBindRunnable(
          compiled.runnable,
          request.givens ?? {},
          {
             recompile: request.recompile,
-            proveGraft: request.proveGraft,
             bypassAuthorize: request.bypassAuthorize,
             graftScope: request.graftScope,
+            routedVariant:
+               request.routedPastEntryPointGate && !request.bypassAuthorize,
             skipOwnSourceGate: request.skipOwnSourceGate,
             compileCallerText: request.compileCallerText,
             callerQueryText: request.callerQueryText,
@@ -783,7 +791,11 @@ export class QueryGovernor {
     */
    private async denyRoutedPastGate(
       routed: QueryMaterializer,
-      why: "no_graft_scope" | "no_gate_found" | "gate_set_differs",
+      why:
+         | "no_graft_scope"
+         | "no_gate_found"
+         | "gate_set_differs"
+         | "derivation_base_row_gate",
    ): Promise<never> {
       const source = await this.resolveAuthorizeSourceFromRunnable(routed);
       recordRowLevelGateDecision("denied_by_gate", "entry_point");
@@ -841,6 +853,18 @@ export class QueryGovernor {
    }
 
    /**
+    * Whether the live entry point carries a row filter read on a `->`
+    * derivation's base; undefined gates read as true (fail closed).
+    */
+   private async liveHasDerivationBaseRowGate(
+      live: QueryMaterializer,
+   ): Promise<boolean> {
+      const walked = await this.entryPointGatesInForce(live);
+      if (!walked) return true;
+      return walked.some((g) => g.route !== AUTHORIZE_ROUTE && g.baseHops > 0);
+   }
+
+   /**
     * The gates governing the LIVE compile would evaluate on its entry point:
     * the walk ({@link entryPointGatesInForce}: own, inherited, a derivation's
     * base, a composite's resolved branch) plus this model's on-disk gates for
@@ -865,10 +889,6 @@ export class QueryGovernor {
     * The graft scope for the query path and the compile-time probe backstop:
     * this model's cumulative (modelDef, modelMaterializer), scoped `"model"`.
     * `undefined` for a compilation-failure placeholder (callers fail closed).
-    *
-    * A notebook cell never uses this (see {@link resolveNotebookCellGraftScope}):
-    * the cumulative model already holds the cell's own declarations, so
-    * recompiling the cell against it fails with "Cannot redefine".
     */
    private defaultGraftScope(): GraftScope | undefined {
       if (!this.modelDef || !this.modelMaterializer) return undefined;
@@ -878,95 +898,6 @@ export class QueryGovernor {
          cacheScope: "model",
          runtime: this.gateRuntime,
       };
-   }
-
-   /**
-    * The EARLIER-scope half of a notebook cell's row-level graft: the nearest
-    * earlier code cell's own (modelDef, modelMaterializer), skipping markdown.
-    * Never this cell's own scope nor the cumulative {@link defaultGraftScope}
-    * ("Cannot redefine"). `undefined` when no earlier code cell exists;
-    * {@link resolveNotebookCellGraftScope} then falls back to
-    * {@link selfGraftScopeForCell}.
-    *
-    * `cacheScope` is keyed on the SUPPLYING cell's index, so later cells
-    * sharing one earlier cell share a cache entry, and cells with different
-    * earlier cells never collide on a same-named source.
-    */
-   private graftScopeForCell(cellIndex: number): GraftScope | undefined {
-      const cells = this.runnableNotebookCells;
-      if (!cells) return undefined;
-      for (let i = cellIndex - 1; i >= 0; i--) {
-         const prior = cells[i];
-         if (
-            prior.type === "code" &&
-            prior.modelDef &&
-            prior.modelMaterializer
-         ) {
-            return {
-               modelDef: prior.modelDef,
-               materializer: prior.modelMaterializer,
-               cacheScope: `cell:${i}`,
-               runtime: this.gateRuntime,
-            };
-         }
-      }
-      return undefined;
-   }
-
-   /**
-    * The {@link GraftScope} built from `cellIndex`'s OWN post-declaration
-    * model: the fallback for a cell that declares a gated source and runs it
-    * in the same cell, so no earlier scope holds it. Safe only because the
-    * paired bind (`_loadQueryFromQueryDef` in `executeNotebookCell`) repoints
-    * the compiled queryDef and never recompiles the cell's text, so "Cannot
-    * redefine" cannot arise.
-    */
-   private selfGraftScopeForCell(cellIndex: number): GraftScope | undefined {
-      const cell = this.runnableNotebookCells?.[cellIndex];
-      if (!cell?.modelDef || !cell.modelMaterializer) return undefined;
-      return {
-         modelDef: cell.modelDef,
-         materializer: cell.modelMaterializer,
-         cacheScope: `cell-self:${cellIndex}`,
-         runtime: this.gateRuntime,
-      };
-   }
-
-   /**
-    * The {@link GraftScope} for a notebook cell's row-level gate and, via
-    * `usesOwnScope`, how the caller must bind against it. Decided by where the
-    * RUN TARGET resolves, never by the cell's index (a later cell can declare
-    * and run its own gated source just like cell 0):
-    *  - the target resolves against the EARLIER scope: use it and recompile the
-    *    cell text normally (the earlier scope lacks this cell's declarations,
-    *    so redeclaring succeeds);
-    *  - otherwise: the cell's OWN scope (`usesOwnScope: true`); the caller must
-    *    repoint the compiled queryDef, not recompile.
-    *
-    * Reachability uses {@link resolveGraftTarget}, the same check
-    * {@link resolveGateShape} applies later, so the two cannot disagree.
-    */
-   public async resolveNotebookCellGraftScope(
-      cellIndex: number,
-      runnable: QueryMaterializer,
-   ): Promise<{ graftScope: GraftScope | undefined; usesOwnScope: boolean }> {
-      // A served notebook's query cell is a bare `run:` over the whole compiled file, so it declares nothing to collide with.
-      if (this.isNotebook() && this.notebookFormat() === "malloy") {
-         return { graftScope: this.defaultGraftScope(), usesOwnScope: false };
-      }
-      const selfScope = this.selfGraftScopeForCell(cellIndex);
-      const earlierScope = this.graftScopeForCell(cellIndex);
-      if (!earlierScope) return { graftScope: selfScope, usesOwnScope: true };
-
-      const { struct, modelDef } = await this.resolveRunTargetStruct(runnable);
-      if (
-         struct &&
-         modelDef &&
-         this.resolveGraftTarget(struct, modelDef, earlierScope.modelDef)
-      ) {
-         return { graftScope: earlierScope, usesOwnScope: false };
-      }
-      return { graftScope: selfScope, usesOwnScope: true };
    }
 
    /**
@@ -992,33 +923,17 @@ export class QueryGovernor {
     * the query's closure), dropping would bind that declaration's default, so
     * a name in `queryReadNames` ({@link givenNamesReadByQuery}) is forwarded
     * and Malloy decides: it 400s a name off the entry surface.
-    *
-    * `cellDeclared` (a notebook cell's declared set) also drops a surface name
-    * the cell's closure never declares, i.e. one only a later cell imports.
-    * Nothing the cell runs can reference such a name, so no default can bind.
-    * Match by id as well as name: an aliased import (`import { T is TENANT }`)
-    * surfaces `T` while the registry keeps the declaration name `TENANT`.
-    * Do NOT instead scope the gate-only rule to the cell's surface: a name
-    * declared deep in the cell would be dropped while its `where:` still reads
-    * it, binding the default where the cell must 400.
     */
    public filterGivensToModelSurface(
       givens: Record<string, GivenValue> | undefined,
       queryReadNames: ReadonlySet<string>,
-      cellDeclared?: CellDeclaredGivens,
    ): Record<string, GivenValue> | undefined {
       if (!givens) return givens;
-      const surfaceNames = new Set((this.givens ?? []).map((g) => g.name));
       const filtered: Record<string, GivenValue> = {};
       for (const [name, value] of Object.entries(givens)) {
          const authorizeOnly =
             this.isGateOnlyGivenName(name) && !queryReadNames.has(name);
-         const outOfCellScope =
-            cellDeclared !== undefined &&
-            surfaceNames.has(name) &&
-            !cellDeclared.names.has(name) &&
-            !this.cellDeclaresGivenId(name, cellDeclared);
-         if (!authorizeOnly && !outOfCellScope) filtered[name] = value;
+         if (!authorizeOnly) filtered[name] = value;
       }
       return filtered;
    }
@@ -1123,16 +1038,6 @@ export class QueryGovernor {
          for (const name of candidates) names.add(name);
       }
       return names;
-   }
-
-   // The id/name OR is safe only because Malloy refuses a second given of one
-   // name across a notebook's extendModel chain, so it never picks between two.
-   private cellDeclaresGivenId(
-      surfaceName: string,
-      cellDeclared: CellDeclaredGivens,
-   ): boolean {
-      const entry = this.modelDef?.contents[surfaceName];
-      return entry?.type === "given" && cellDeclared.ids.has(entry.id);
    }
 
    /**
@@ -1268,7 +1173,7 @@ export class QueryGovernor {
       givens: Record<string, GivenValue>,
       bypassAuthorize = false,
       /** The scope a row-level gate classifies against; defaults to the
-       *  model-wide scope (a notebook cell passes its own). */
+       *  model-wide scope. */
       graftScope: GraftScope | undefined = this.defaultGraftScope(),
    ): Promise<void> {
       if (bypassAuthorize) {
@@ -1300,8 +1205,7 @@ export class QueryGovernor {
       }
       // Not a declared top-level source: nothing gates it here. A caller
       // cannot reach the warehouse through an inline source without restricted
-      // mode refusing it first (see `runQuery`); a notebook cell's
-      // inline source is author-written.
+      // mode refusing it first (see `runQuery`).
    }
 
    /**
@@ -1615,7 +1519,12 @@ export class QueryGovernor {
       runnable: QueryMaterializer,
       givens: Record<string, GivenValue>,
       graftScope: GraftScope | undefined,
-      options: { skipOwnSourceGate?: boolean; callerText?: string } = {},
+      options: {
+         skipOwnSourceGate?: boolean;
+         callerText?: string;
+         /** Graft every row filter at the run target (a routed variant). */
+         atRunTarget?: boolean;
+      } = {},
       /** Receives every gate that was evaluated and did not deny. */
       evaluated?: GateEntry[],
    ): Promise<RowLevelGraftEntry[]> {
@@ -1633,12 +1542,19 @@ export class QueryGovernor {
       const rowLevel: RowLevelGraftEntry[] = [];
       for (const entry of entryPointGates) {
          const resolution = modelDef
-            ? await this.resolveGateShape(entry, modelDef, graftScope)
+            ? await this.resolveGateShape(
+                 options.atRunTarget ? { ...entry, baseHops: 0 } : entry,
+                 modelDef,
+                 graftScope,
+              )
             : ({ shape: "rejected", cause: undefined } as const);
          if (resolution.shape === "row_level") {
             rowLevel.push({
                label: entry.label,
                graftTarget: resolution.graftTarget,
+               ...(resolution.landing !== undefined
+                  ? { landing: resolution.landing }
+                  : {}),
                filterText: resolution.filterText,
                condition: resolution.condition,
                givenNames: resolution.givenNames,
@@ -1723,15 +1639,20 @@ export class QueryGovernor {
     * routed shape that keeps the author's gates (the served copy, R3) can
     * have them grafted and proven by `govern()`; `caller_join` when a caller
     * join reaches a gated source, which `govern()` refuses on any routed
-    * compile (`routed_past_caller_join_gate`); `unproven` when the walk could
-    * not decide. Only `entry_point` may let a routed shape through.
+    * compile (`routed_past_caller_join_gate`); `derivation_base` when the
+    * run target inherits a row filter through `->`, which filters the
+    * derivation's base before it runs, so no stored table of the
+    * derivation's output can answer it; `unproven` when the walk could not
+    * decide. Only `entry_point` may let a routed shape through.
     */
    public async rowLevelGateVeto(
       runnable: {
          getPreparedQuery(): Promise<unknown>;
       },
       callerRegion?: CallerRegion,
-   ): Promise<"none" | "entry_point" | "caller_join" | "unproven"> {
+   ): Promise<
+      "none" | "entry_point" | "caller_join" | "derivation_base" | "unproven"
+   > {
       try {
          const { struct, modelDef, compositeResolvedSourceDef } =
             await this.resolveRunTargetStruct(runnable);
@@ -1761,6 +1682,9 @@ export class QueryGovernor {
                   struct ? ownLevelNotes(struct.annotations) : [],
                ),
             );
+         }
+         if (gates.some((g) => g.route !== AUTHORIZE_ROUTE && g.baseHops > 0)) {
+            return "derivation_base";
          }
          const entryGated = gates.length > 0;
          if (!callerRegion) return entryGated ? "entry_point" : "none";
@@ -2417,6 +2341,9 @@ export class QueryGovernor {
                grafts.push({
                   label: alias,
                   graftTarget: shape.graftTarget,
+                  ...(shape.landing !== undefined
+                     ? { landing: shape.landing }
+                     : {}),
                   filterText: shape.filterText,
                   condition: shape.condition,
                   givenNames: shape.givenNames,
@@ -2669,20 +2596,24 @@ export class QueryGovernor {
             materializer: ModelMaterializer,
             grafts: ReadonlyArray<{
                graftTarget: string;
+               landing?: DerivationLanding;
                condition: FilterCondition;
             }>,
          ) => QueryMaterializer;
-         /**
-          * Replaces {@link assertGateLanded} where the IR proof would be
-          * vacuous: the notebook own-scope queryDef graft mutates the object
-          * the prover would read. Supplied with `recompile` by
-          * {@link ownScopeQueryDefBinder} so the two cannot drift.
-          */
-         proveGraft?: (recompiled: QueryMaterializer) => Promise<void>;
          bypassAuthorize?: boolean;
          /** The scope a row-level gate grafts against; defaults to
-          *  {@link defaultGraftScope}. A notebook cell must pass its own. */
+          *  {@link defaultGraftScope}. */
          graftScope?: GraftScope;
+         /**
+          * The runnable is a routed variant (a served copy, a persisted view
+          * or a rollup) answering past its entry point's gate. A variant keeps
+          * the author's gates on its own output, where its plan proved them
+          * exact, so every row filter is grafted there, at the run target,
+          * even where the variant's text reaches it through a derivation.
+          * `govern` refuses a variant whose live entry point inherits a row
+          * filter through `->`.
+          */
+         routedVariant?: boolean;
          /** See {@link assertAuthorizedFromCompiledRunnable}. */
          skipOwnSourceGate?: boolean;
          /**
@@ -2693,8 +2624,8 @@ export class QueryGovernor {
          /**
           * The CALLER-written query text, read by
           * {@link assertRequestDeclaredEntryPointIsNotLaundered} and
-          * {@link foldRequestDeclaredTwins}. Absent for a notebook cell, whose
-          * text is the author's and keeps the author-side fail-open.
+          * {@link foldRequestDeclaredTwins}. Absent for text the author wrote,
+          * which keeps the author-side fail-open.
           */
          callerQueryText?: string;
          /**
@@ -2706,8 +2637,8 @@ export class QueryGovernor {
           * Where caller-written text sits, and the LIVE compiled query to find
           * its joins in — never a storage serve shape or pre-aggregation
           * runnable, which re-emit author joins with no annotations. Absent
-          * for text the author wrote (a notebook cell, a named query, a
-          * whole-file `/compile`). See {@link probeCallerJoinGates}.
+          * for text the author wrote, such as a named query or a whole-file
+          * `/compile`. See {@link probeCallerJoinGates}.
           */
          callerJoins?: { runnable: QueryMaterializer; region: CallerRegion };
          /**
@@ -2756,6 +2687,7 @@ export class QueryGovernor {
          {
             skipOwnSourceGate: options?.skipOwnSourceGate,
             callerText: options?.compileCallerText ?? options?.callerQueryText,
+            atRunTarget: options?.routedVariant,
          },
          evaluated,
       );
@@ -2840,7 +2772,7 @@ export class QueryGovernor {
          const grafts = Array.from(
             new Map(
                rowLevel.map((g) => [
-                  `${g.graftTarget}\u0000${g.filterText}`,
+                  `${g.graftTarget}\u0000${JSON.stringify(g.landing ?? null)}\u0000${g.filterText}`,
                   g,
                ]),
             ).values(),
@@ -2851,15 +2783,7 @@ export class QueryGovernor {
          );
          await this.ensureSharedQueryModel(graftedMaterializer);
          const recompiled = options.recompile(graftedMaterializer, grafts);
-         if (options.proveGraft) {
-            // The own-scope binder proves the run target only.
-            if (callerJoinRowLevel.length > 0) {
-               throw new Error("a caller-join graft has no prover here");
-            }
-            await options.proveGraft(recompiled);
-         } else {
-            await this.assertGateLanded(recompiled, rowLevel);
-         }
+         await this.assertGateLanded(recompiled, rowLevel);
          // `assertGateLanded` proves only that the condition is present; a
          // `rename:`/`except:` misbind still satisfies that, because Malloy
          // resolves field references late. This proves it reads the field it
@@ -2997,6 +2921,7 @@ export class QueryGovernor {
       | {
            shape: "row_level";
            graftTarget: string;
+           landing?: DerivationLanding;
            filterText: string;
            condition: FilterCondition;
            givenNames: readonly string[];
@@ -3027,15 +2952,6 @@ export class QueryGovernor {
       return result;
    }
 
-   /** See `./gate_classification`'s {@link resolveGraftTarget}. */
-   private resolveGraftTarget(
-      struct: SourceDef,
-      originModelDef: ModelDef,
-      graftModelDef: ModelDef,
-   ): string | undefined {
-      return resolveGraftTargetImpl(struct, originModelDef, graftModelDef);
-   }
-
    /**
     * Build (or reuse, see {@link graftedMaterializerCache}) the
     * `ModelMaterializer` every row-level gate on this run target grafts onto.
@@ -3043,6 +2959,7 @@ export class QueryGovernor {
    private getOrBuildGraftedMaterializer(
       grafts: ReadonlyArray<{
          graftTarget: string;
+         landing?: DerivationLanding;
          filterText: string;
          condition: FilterCondition;
       }>,
@@ -3054,7 +2971,10 @@ export class QueryGovernor {
       const key =
          `${graftScope.cacheScope}\u0000` +
          grafts
-            .map((g) => `${g.graftTarget}\u0000${g.filterText}`)
+            .map(
+               (g) =>
+                  `${g.graftTarget}\u0000${JSON.stringify(g.landing ?? null)}\u0000${g.filterText}`,
+            )
             .sort()
             .join("\u0001");
       const materializer = this.graftedMaterializerCache.get(key);
@@ -3097,6 +3017,7 @@ export class QueryGovernor {
    private buildGraftedMaterializer(
       grafts: ReadonlyArray<{
          graftTarget: string;
+         landing?: DerivationLanding;
          condition: FilterCondition;
       }>,
       { modelDef, runtime }: GraftScope,
@@ -3107,21 +3028,34 @@ export class QueryGovernor {
          );
       }
       const copy = structuredClone(modelDef);
-      for (const { graftTarget, condition } of grafts) {
+      for (const { graftTarget, landing, condition } of grafts) {
          const target = copy.contents[graftTarget];
          if (!target || !isSourceDef(target)) {
             throw new Error(
                `graft target "${graftTarget}" is not a source in this model`,
             );
          }
+         // A gate read on a derivation's base filters that base's copy inside
+         // the derivation, so the derivation groups, ranks and limits only the
+         // rows the gate admits.
+         const site =
+            landing === undefined
+               ? target
+               : derivationLevel(target, landing, copy.contents);
+         if (!site) {
+            throw new Error(
+               `graft target "${graftTarget}" does not derive from the gated base`,
+            );
+         }
          // Spread-assign a NEW array; never `push`. Malloy shares `filterList`
          // arrays across its spread copies and `structuredClone` preserves
          // that aliasing, so pushing would land the gate on author join copies.
-         target.filterList = [...(target.filterList ?? []), condition];
+         site.filterList = [...(site.filterList ?? []), condition];
          this.graftIntoNamedQuerySnapshots(
             copy,
             graftTarget,
             target,
+            landing,
             condition,
          );
       }
@@ -3142,7 +3076,7 @@ export class QueryGovernor {
     *  - match `sourceID` ONLY, never `referenceID`: join copies carry the
     *    base's `referenceID`, so matching it would leak the gate onto joins.
     *    The one exception is a snapshot with no `sourceID` at all, an inline
-    *    `gated extend { … }`, matched by {@link resolveGraftTarget}, the same
+    *    `gated extend { … }`, matched by {@link resolveGraftTargetImpl}, the same
     *    resolution the request path used to choose `graftTarget`;
     *  - APPEND to the snapshot; never repoint `structRef` at the name, which
     *    would drop the reference's `sourceArguments`;
@@ -3157,6 +3091,7 @@ export class QueryGovernor {
       copy: ModelDef,
       graftTarget: string,
       target: SourceDef,
+      landing: DerivationLanding | undefined,
       condition: FilterCondition,
    ): void {
       const sourceID = target.sourceID;
@@ -3180,21 +3115,30 @@ export class QueryGovernor {
          // so the two decisions cannot disagree. The bind guards that run
          // after the graft still prove the condition reads `graftTarget`'s
          // own column on this struct.
+         // The gated base's copy inside the snapshot when the gate was read
+         // on a derivation's base; none leaves it ungrafted, and the prover
+         // then denies.
+         const siteIn = (snapshot: SourceDef) =>
+            landing === undefined
+               ? snapshot
+               : derivationLevel(snapshot, landing, copy.contents);
          if (struct.sourceID === undefined) {
             if (resolveGraftTargetImpl(struct, copy, copy) !== graftTarget)
                continue;
+            const site = siteIn(struct);
             // Identity, not `code`: a `where:` the query's author wrote with
             // the same text must not stand in for the gate's own condition.
-            if (struct.filterList?.includes(condition)) continue;
-            struct.filterList = [...(struct.filterList ?? []), condition];
+            if (!site || site.filterList?.includes(condition)) continue;
+            site.filterList = [...(site.filterList ?? []), condition];
             continue;
          }
          if (struct.sourceID !== sourceID) continue;
-         if (struct.filterList?.some((f) => f.code === condition.code))
+         const site = siteIn(struct);
+         if (!site || site.filterList?.some((f) => f.code === condition.code))
             continue;
          // Spread-assign, never `push` — same aliasing reason as the graft
          // site above.
-         struct.filterList = [...(struct.filterList ?? []), condition];
+         site.filterList = [...(site.filterList ?? []), condition];
       }
    }
 
@@ -3209,6 +3153,7 @@ export class QueryGovernor {
       recompiled: QueryMaterializer,
       rowLevel: ReadonlyArray<{
          graftTarget: string;
+         landing?: DerivationLanding;
          condition: FilterCondition;
          label: string;
          callerJoinPath?: CallerJoinPath;
@@ -3217,9 +3162,26 @@ export class QueryGovernor {
    ): Promise<void> {
       // Resolved lazily: a caller-join-only `rowLevel` never reads it.
       let executedStruct: SourceDef | undefined;
+      let executedModelDef: ModelDef | undefined;
       let preparedForCallerJoins: PreparedQueryIr | undefined;
-      for (const { graftTarget, condition, callerJoinPath } of rowLevel) {
-         const entryPointStruct = graftScope.modelDef.contents[graftTarget];
+      for (const {
+         graftTarget,
+         landing,
+         condition,
+         callerJoinPath,
+      } of rowLevel) {
+         const graftTargetStruct = graftScope.modelDef.contents[graftTarget];
+         // The declaring side of a gate read on a derivation's base is that
+         // base's copy inside the graft target as the model compiled it: the
+         // condition was lifted in the base's field space.
+         const entryPointStruct =
+            landing === undefined || !isSourceDef(graftTargetStruct)
+               ? graftTargetStruct
+               : derivationLevel(
+                    graftTargetStruct,
+                    landing,
+                    graftScope.modelDef.contents,
+                 );
          let site: SourceDef | undefined;
          if (callerJoinPath) {
             preparedForCallerJoins ??=
@@ -3231,12 +3193,19 @@ export class QueryGovernor {
             // A query-source join's own struct is its output columns; bind against the inner base the graft landed on.
             site =
                located && condition.code
-                  ? this.resolveFilterListLandingStruct(
-                       located,
-                       graftScope.modelDef,
-                       condition.code,
-                       0,
-                    )
+                  ? landing === undefined
+                     ? this.resolveFilterListLandingStruct(
+                          located,
+                          graftScope.modelDef,
+                          condition.code,
+                          0,
+                       )
+                     : derivationLevel(
+                          located,
+                          landing,
+                          preparedQueryView(preparedForCallerJoins).modelDef
+                             ?.contents,
+                       )
                   : undefined;
             if (!site) {
                throw new Error(
@@ -3245,9 +3214,10 @@ export class QueryGovernor {
             }
          } else {
             if (executedStruct === undefined) {
-               const { struct, compositeResolvedSourceDef } =
+               const { struct, compositeResolvedSourceDef, modelDef } =
                   await this.resolveRunTargetStruct(recompiled);
                executedStruct = compositeResolvedSourceDef ?? struct;
+               executedModelDef = modelDef;
                // Unlike `assertNoMisboundInheritedFilters`, this IS the
                // authoritative proof for a grafted gate, so unresolvable
                // must deny rather than skip.
@@ -3257,10 +3227,30 @@ export class QueryGovernor {
                   );
                }
             }
-            site = executedStruct;
+            if (landing === undefined) {
+               site = executedStruct;
+            } else {
+               // The base's copy the graft landed on, inside the run target.
+               site = derivationLevel(
+                  executedStruct,
+                  landing,
+                  executedModelDef?.contents,
+               );
+               if (
+                  !site ||
+                  !condition.code ||
+                  !site.filterList?.some((f) => f.code === condition.code)
+               ) {
+                  throw new Error(
+                     "a row-security gate did not land on its derivation base",
+                  );
+               }
+            }
          }
          assertGraftedGateBindsToDeclaringSource(
-            isSourceDef(entryPointStruct) ? entryPointStruct : undefined,
+            entryPointStruct && isSourceDef(entryPointStruct)
+               ? entryPointStruct
+               : undefined,
             site,
             condition,
             graftScope.modelDef,
@@ -3354,6 +3344,7 @@ export class QueryGovernor {
       recompiled: QueryMaterializer,
       grafts: ReadonlyArray<{
          condition: FilterCondition;
+         landing?: DerivationLanding;
          callerJoinPath?: CallerJoinPath;
       }>,
    ): Promise<void> {
@@ -3365,7 +3356,7 @@ export class QueryGovernor {
       // generate SQL would let unfiltered rows pass behind a green proof.
       // A string `structRef` names a `contents` entry; an object one IS it.
       const struct = resolveStructRef(sqlTargetRef(view), modelDef);
-      for (const { condition, callerJoinPath } of grafts) {
+      for (const { condition, landing, callerJoinPath } of grafts) {
          // A caller join's graft is proven on that join, found again by the
          // path the walk recorded; the run target's on the run target.
          const site = callerJoinPath
@@ -3373,122 +3364,23 @@ export class QueryGovernor {
                  | SourceDef
                  | undefined)
             : struct;
-         if (
-            !condition.code ||
-            !this.filterListContainsCode(site, modelDef, condition.code, 0)
-         ) {
+         // A gate read on a derivation's base must sit on exactly that base's
+         // copy, never on another level that happens to carry the same text.
+         const landed =
+            landing === undefined
+               ? condition.code !== undefined &&
+                 this.filterListContainsCode(site, modelDef, condition.code, 0)
+               : condition.code !== undefined &&
+                 (
+                    derivationLevel(site, landing, modelDef?.contents)
+                       ?.filterList ?? []
+                 ).some((f) => f.code === condition.code);
+         if (!landed) {
             throw new Error(
                "a row-level gate condition did not land on the recompiled query",
             );
          }
       }
-   }
-
-   /**
-    * The bind pair for a notebook cell that must graft against its OWN scope:
-    * a `recompile` that grafts the cell's compiled queryDef, and the `prove`
-    * that checks it. Returned together because one without the other is a
-    * silent fail-OPEN.
-    *
-    * The queryDef is grafted rather than the text recompiled because the
-    * grafted clone, loaded from a ModelDef, has no base URL, so a relative
-    * `import` in the cell would fail to resolve. When the queryDef holds an
-    * inlined run-target struct the condition is appended to it, on a deep
-    * clone: `cell.runnable` is memoized, and mutating it would leak one
-    * caller's filter into the next caller's query.
-    */
-   public ownScopeQueryDefBinder(
-      queryDef: unknown,
-      scope: GraftScope,
-   ): {
-      recompile: (
-         materializer: ModelMaterializer,
-         grafts: ReadonlyArray<{
-            graftTarget: string;
-            condition: FilterCondition;
-         }>,
-      ) => QueryMaterializer;
-      prove: (recompiled: QueryMaterializer) => Promise<void>;
-   } {
-      let graftedStruct: SourceDef | undefined;
-      let expectedCodes: string[] = [];
-      let appliedGrafts: ReadonlyArray<{ condition: FilterCondition }> = [];
-      return {
-         recompile: (materializer, grafts) => {
-            const clone = structuredClone(queryDef) as { structRef?: unknown };
-            expectedCodes = [];
-            appliedGrafts = grafts;
-            graftedStruct = undefined;
-            const snapshot = clone.structRef;
-            if (typeof snapshot === "string") {
-               // A NAME resolves against the grafted clone, which already
-               // carries the condition; `assertGateLanded` stays honest.
-               return (
-                  materializer as HydrationMaterializer
-               )._loadQueryFromQueryDef(clone);
-            }
-            if (!snapshot || typeof snapshot !== "object") {
-               // Unprovable shape: deny rather than run ungated.
-               throw new Error(
-                  "own-scope run target is neither a named source nor an inlined struct",
-               );
-            }
-            const struct = snapshot as SourceDef;
-            for (const { graftTarget, condition } of grafts) {
-               const target = scope.modelDef.contents[graftTarget];
-               // `sourceID` identity, never name: two structs in one
-               // inheritance chain share a name, and appending a condition
-               // lifted in `graftTarget`'s field space to a renamed or
-               // projected relative binds it to the wrong column.
-               if (
-                  !target ||
-                  !isSourceDef(target) ||
-                  !target.sourceID ||
-                  struct.sourceID !== target.sourceID
-               ) {
-                  throw new Error(
-                     `own-scope run target does not match graft target "${graftTarget}"`,
-                  );
-               }
-               if (!struct.filterList?.some((f) => f.code === condition.code)) {
-                  struct.filterList = [...(struct.filterList ?? []), condition];
-               }
-               expectedCodes.push(condition.code ?? "");
-            }
-            graftedStruct = struct;
-            return (
-               materializer as HydrationMaterializer
-            )._loadQueryFromQueryDef(clone);
-         },
-         /**
-          * Re-reading the condition off `graftedStruct` is VACUOUS (this binder
-          * just wrote it); the load-bearing check is object IDENTITY: the
-          * struct the materializer executes must be the one grafted, so a
-          * `_loadQueryFromQueryDef` that copies its argument denies. A NAME
-          * run target defers to {@link assertGateLanded}. SQL-level honoring
-          * is pinned by `tests/component/authorize/import_hop.spec.ts`.
-          */
-         prove: async (recompiled) => {
-            if (!graftedStruct) {
-               await this.assertGateLanded(recompiled, appliedGrafts);
-               return;
-            }
-            if (
-               (await readPreparedQuery(recompiled)).structRef !== graftedStruct
-            ) {
-               throw new Error(
-                  "the grafted run target is not the one the query will execute",
-               );
-            }
-            for (const code of expectedCodes) {
-               if (!graftedStruct.filterList?.some((f) => f.code === code)) {
-                  throw new Error(
-                     "a row-level gate condition did not land on the recompiled query",
-                  );
-               }
-            }
-         },
-      };
    }
 
    /** Depth bound for {@link assertGateLanded}'s query-source base recursion. */

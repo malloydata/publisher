@@ -11,7 +11,7 @@ import {
    numericStorageFor,
    postgresNumericColumns,
    stageNumericColumns,
-} from "./postgres_numeric_precision";
+} from "./passthrough/postgres";
 
 describe("numericStorageFor", () => {
    const stats = (

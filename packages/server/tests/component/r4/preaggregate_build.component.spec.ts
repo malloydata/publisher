@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * R4 for the `#(preaggregate)` build side (materialization v2, phase 4): each
+ * R4 for the `#(rollup)` build side (materialization v2, phase 4): each
  * rollup the companion builds holds the partials its measures merge from, so
  * re-aggregating the stored table, in plain SQL and independently of Malloy,
  * equals the live query. Rollups are not served yet (that is the router leg);
@@ -47,36 +47,36 @@ source: orders is duckdb.table('orders_raw') extend {
   dimension:
     order_day is order_time.day
     line_kind is lines.kind
-  #(preaggregate) grain=["category", "order_day"]
+  #(rollup) grain=["category", "order_day"]
   measure: total is amount.sum()
-  #(preaggregate) grain=["category"]
+  #(rollup) grain=["category"]
   measure: per_order is coalesce(amount.sum() / count(), 0)
-  #(preaggregate) grain=["category"]
+  #(rollup) grain=["category"]
   measure: east_total is amount.sum() { where: region = 'east' }
-  #(preaggregate) grain=["carrier"]
+  #(rollup) grain=["carrier"]
   measure: fleet is carriers.fleet.sum()
-  #(preaggregate) grain=["carrier"]
+  #(rollup) grain=["carrier"]
   measure: top_fleet is carriers.fleet.max()
-  #(preaggregate) grain=["category", "line_kind"]
+  #(rollup) grain=["category", "line_kind"]
   measure: line_total is amount.sum()
 }
 
 source: recent is duckdb.table('orders_raw') extend {
   where: order_time > now - 40 days
-  #(preaggregate) grain=["category"]
+  #(rollup) grain=["category"]
   measure: recent_total is amount.sum()
 }
 
 #(access_filter) region = $REGION
 source: gated is duckdb.table('orders_raw') extend {
-  #(preaggregate) grain=["category", "region"]
+  #(rollup) grain=["category", "region"]
   measure: gated_total is amount.sum()
 }
 `;
 
-describe("R4: #(preaggregate) rollups build the partials their measures merge from", () => {
+describe("R4: #(rollup) rollups build the partials their measures merge from", () => {
    let fixture: R4Fixture;
-   /** The colocated table of the rollup of `base` at `grain`. */
+   /** The database table of the rollup of `base` at `grain`. */
    const table = (base: string, grain: string[]) => {
       const prefix = `${base}__rollup__${grain.join("_")}__`;
       const names = Object.keys(fixture.rollupTables).filter((n) =>

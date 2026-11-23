@@ -15,7 +15,7 @@ name: create-malloy-package
 # is what runs on a PR) on every PR, so this workflow should never run on a push
 # or a PR.
 #
-# The "Release (NPM + Docker + PyPI)" workflow also triggers this one, so a single
+# The "Release (NPM + Docker)" workflow also triggers this one, so a single
 # release publishes every package. It dispatches this file through the Actions
 # API rather than calling it with workflow_call, which is what keeps this
 # workflow_dispatch entry point working as well; see the trusted-publishing note
@@ -65,10 +65,10 @@ jobs:
     timeout-minutes: 45
     # These steps are a full frozen-lockfile install, a build and the package's
     # suite, and cross-platform-tests.yml already runs that suite on every PR
-    # (`Run create-malloy-package tests` at :169, plus the Linux-only e2e at
-    # :177) — reached through build.yml, which is the workflow that triggers,
-    # but NOT defined in it: grep build.yml for this package and you get
-    # nothing. Named precisely because the next person to trim
+    # (`Run create-malloy-package tests`, plus the Linux-only e2e, in its
+    # `linux_clients` job) — reached through build.yml, which is the workflow
+    # that triggers, but NOT defined in it: grep build.yml for this package and
+    # you get nothing. Named precisely because the next person to trim
     # cross-platform-tests.yml will otherwise check build.yml, find no
     # reference, and conclude the coverage was never there.
     runs-on: ubuntu-latest
@@ -83,7 +83,7 @@ jobs:
           bun-version: ${{ env.BUN_VERSION }}
 
       - name: Install dependencies
-        run: bun install --frozen-lockfile
+        run: scripts/ci-install-with-retry.sh bun install --frozen-lockfile
 
       # A dropped dist/ or templates/ file packs to a bin that scaffolds nothing,
       # with exit 0 and no warning; this is the only thing that would catch it.
@@ -350,7 +350,7 @@ jobs:
           no-cache: true
 
       - name: Install dependencies
-        run: bun install --frozen-lockfile
+        run: scripts/ci-install-with-retry.sh bun install --frozen-lockfile
 
       # Decide what to publish, before "Read version" reads it back out of the
       # manifest: the input if the dispatch named one (release.yml always

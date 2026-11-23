@@ -9,7 +9,8 @@ import {
    MaterializationUpdate,
 } from "../DatabaseInterface";
 import { DuckDBConnection } from "./DuckDBConnection";
-import { newId, Row, rowTimestamps, updateRow, updateRowSql } from "./rows";
+import { logger } from "../../logger";
+import { newId, Row, rowTimestamps, updateRowSql } from "./rows";
 import { OWED_RECLAIM_RUN, RUNNING_VERSION_RUN } from "./VersionRepository";
 
 const TERMINAL_STATUSES: ReadonlySet<MaterializationStatus> = new Set([
@@ -102,7 +103,7 @@ export class MaterializationRepository {
    }
 
    /**
-    * `created_at` of the newest scheduler-fired (metadata.trigger=SCHEDULER)
+    * `created_at` of the newest scheduler-fired (metadata.trigger `scheduler`)
     * materialization for (env, package), or null if none. The standalone
     * scheduler re-anchors `nextFireAt` to `nextAfter(lastScheduledFire)` so a
     * restart fires exactly one catch-up instead of skipping the occurrence.
@@ -116,7 +117,7 @@ export class MaterializationRepository {
       const row = await this.db.get<{ created_at: unknown }>(
          `SELECT created_at FROM materializations
            WHERE environment_id = ? AND package_name = ?
-             AND json_extract_string(metadata, '$.trigger') = 'SCHEDULER'
+             AND json_extract_string(metadata, '$.trigger') = 'scheduler'
              ${version !== undefined ? "AND version = ?" : ""}
            ORDER BY created_at DESC
            LIMIT 1`,
@@ -196,7 +197,7 @@ export class MaterializationRepository {
          );
          return mapRow(rows[0]);
       } catch (err) {
-         if (isUniqueViolation(err, "idx_materializations_active_key")) {
+         if (isActiveSlotViolation(err)) {
             throw new DuplicateActiveMaterializationError(
                environmentId,
                packageName,
@@ -210,18 +211,16 @@ export class MaterializationRepository {
       id: string,
       updates: MaterializationUpdate,
    ): Promise<Materialization> {
-      await updateRow(
-         this.db,
+      const { sql, params } = updateRowSql(
          "materializations",
          id,
          ...updateColumns(updates),
       );
-
-      const updated = await this.getById(id);
-      if (!updated) {
+      const rows = await this.db.all<Row>(`${sql} RETURNING *`, params);
+      if (rows.length === 0) {
          throw new Error(`Materialization ${id} not found after update`);
       }
-      return updated;
+      return mapRow(rows[0]);
    }
 
    /**
@@ -309,23 +308,19 @@ export class MaterializationRepository {
 
 /**
  * The columns an update writes. Clears active_key on any transition to a
- * terminal state; keeps it on a transition between non-terminal states, so a
+ * terminal state; leaves it on a transition between non-terminal states, so a
  * run keeps the slot it was created holding (its package's or its version's).
- * A terminal state has no way out, so a key is never set again; the fallback
- * only covers a row written without one. The unique index guarantees no two
- * active rows ever hold one slot.
+ * Every active row is created with its key, and a terminal state has no way
+ * out, so a key is never set here. The unique index guarantees no two active
+ * rows ever hold one slot.
  */
 function updateColumns(
    updates: MaterializationUpdate,
 ): [values: Record<string, unknown>, rawAssignments: string[]] {
    const activeKey =
-      updates.status === undefined
-         ? []
-         : TERMINAL_STATUSES.has(updates.status)
-           ? ["active_key = NULL"]
-           : [
-                "active_key = COALESCE(active_key, environment_id || '|' || package_name)",
-             ];
+      updates.status !== undefined && TERMINAL_STATUSES.has(updates.status)
+         ? ["active_key = NULL"]
+         : [];
    return [
       {
          status: updates.status,
@@ -340,13 +335,17 @@ function updateColumns(
 }
 
 function mapRow(row: Row): Materialization {
-   const metadata = parseJsonColumn<Row>(row.metadata);
+   const metadata = parseJsonColumn<Row>(row.metadata, "metadata", row.id);
    return {
       id: row.id as string,
       environmentId: row.environment_id as string,
       packageName: row.package_name as string,
       status: row.status as MaterializationStatus,
-      manifest: parseJsonColumn<BuildManifestResult>(row.manifest),
+      manifest: parseJsonColumn<BuildManifestResult>(
+         row.manifest,
+         "manifest",
+         row.id,
+      ),
       metadata,
       startedAt: row.started_at ? new Date(row.started_at as string) : null,
       completedAt: row.completed_at
@@ -366,24 +365,39 @@ function jsonOrNull(
    return value ? JSON.stringify(value) : null;
 }
 
-/** Parse a nullable JSON text column, returning null on absence or parse error. */
-function parseJsonColumn<T>(value: unknown): T | null {
+/**
+ * Parse a nullable JSON column. The columns are JSON-typed, so the store
+ * refuses a write that is not JSON; one that cannot be parsed anyway reads as
+ * null, said in the log rather than silently.
+ */
+function parseJsonColumn<T>(
+   value: unknown,
+   column: string,
+   id: unknown,
+): T | null {
    if (value == null) return null;
    try {
       return JSON.parse(value as string) as T;
    } catch {
+      logger.warn(
+         "A run record's JSON column did not parse; reading it as empty",
+         {
+            runId: id,
+            column,
+         },
+      );
       return null;
    }
 }
 
 /**
- * DuckDB surfaces unique-constraint violations as plain Errors. Matches the
- * index name, or DuckDB's generic duplicate-key / unique-constraint wording.
+ * Whether `err` is DuckDB's unique-constraint violation on the active slot
+ * (`Duplicate key "active_key: ..."`). DuckDB does not name the index, so the
+ * key column identifies it; any other collision (an `id`) is not a lost race
+ * for the slot, and is rethrown.
  */
-function isUniqueViolation(err: unknown, indexName: string): boolean {
-   if (!(err instanceof Error)) return false;
-   const msg = err.message;
+function isActiveSlotViolation(err: unknown): boolean {
    return (
-      msg.includes(indexName) || /duplicate key|unique constraint/i.test(msg)
+      err instanceof Error && err.message.includes('Duplicate key "active_key:')
    );
 }

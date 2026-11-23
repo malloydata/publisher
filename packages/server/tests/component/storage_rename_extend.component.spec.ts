@@ -26,6 +26,7 @@ import * as os from "os";
 import * as path from "path";
 import { unrecordedAudit } from "../../src/service/access_record";
 import * as connection from "../../src/service/connection";
+import * as dialects from "../../src/service/dialects";
 import { Environment } from "../../src/service/environment";
 import { parsePackageName } from "../../src/service/identity";
 import { MaterializationService } from "../../src/service/materialization/run/materialization_service";
@@ -89,7 +90,7 @@ source: r_daily is raw -> {
   aggregate: total is v.sum()
 } extend {
   rename: kind is sub
-  #(preaggregate) grain=["kind"] storage="lake"
+  #(rollup) grain=["kind"] storage="lake"
   measure: amount is total.sum()
 }
 `;
@@ -108,7 +109,7 @@ const CASES: { name: string; malloy: string; column: string }[] = [
       column: "amount",
    },
    {
-      name: "P2-45 #(preaggregate) storage=: a rollup over a renamed base",
+      name: "P2-45 #(rollup) storage=: a rollup over a renamed base",
       malloy:
          "run: r_daily -> { group_by: kind; aggregate: amount; order_by: kind }",
       column: "amount",
@@ -237,15 +238,14 @@ describe.skipIf(process.platform === "win32")(
                await attachFileLake(session as never, dbName, true);
                return true;
             }),
-            spyOn(
-               connection,
-               "federateSourceForPassthrough",
-            ).mockImplementation(async (session, sourceType) => {
-               await session.runSQL(
-                  "CREATE OR REPLACE TEMP MACRO postgres_query(alias, q) AS TABLE SELECT * FROM query(q)",
-               );
-               return { handle: "warehouse", sourceType };
-            }),
+            spyOn(dialects, "federateSourceForPassthrough").mockImplementation(
+               async (session, sourceType) => {
+                  await session.runSQL(
+                     "CREATE OR REPLACE TEMP MACRO postgres_query(alias, q) AS TABLE SELECT * FROM query(q)",
+                  );
+                  return { handle: "warehouse", sourceType };
+               },
+            ),
          );
 
          env = await Environment.create(

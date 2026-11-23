@@ -194,13 +194,22 @@ export function addressesOf(compiled: CompiledBuildPlan): SourceAddressing[] {
       const target = compiled.tables[source.sourceID]?.target;
       try {
          const folds = compiled.tableFolds;
+         // The upstream readings are folded on both sides: only the
+         // digest is fixed.
          const realAddress = computeSourceEntityId(
             source,
             digests,
             target,
             folds,
+            compiled.upstreamSchemas,
          );
-         const address = computeSourceEntityId(source, fixed, target, folds);
+         const address = computeSourceEntityId(
+            source,
+            fixed,
+            target,
+            folds,
+            compiled.upstreamSchemas,
+         );
          const addressSQL = target
             ? target.sql
             : buildSQLOf(source, { entries: {} });

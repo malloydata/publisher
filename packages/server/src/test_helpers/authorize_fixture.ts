@@ -254,11 +254,6 @@ export interface ModelInternals {
          bypassAuthorize?: boolean;
       },
    ): Promise<QueryMaterializer>;
-   resolveGraftTarget(
-      struct: SourceDef,
-      originModelDef: ModelDef,
-      graftModelDef: ModelDef,
-   ): string | undefined;
    resolveGateShape(
       entry: {
          label: string;

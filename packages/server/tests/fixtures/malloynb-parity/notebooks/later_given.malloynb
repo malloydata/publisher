@@ -1,0 +1,10 @@
+>>>malloy
+import "../models/orders.malloy"
+run: orders -> { aggregate: order_count }
+>>>malloy
+##! experimental.givens
+given: REGION :: string is 'US'
+run: orders -> { where: region = $REGION; aggregate: total is amount.sum() }
+>>>malloy
+import "../models/secured.malloy"
+run: gated -> { aggregate: n }

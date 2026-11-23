@@ -69,15 +69,18 @@ export function generatePersistedViewFile(
    plans: readonly PersistedViewPlan[],
    importPath: string,
    extra?: { imports: string; sources: string },
+   /** Another file a build source's source is imported from, by build sourceID. */
+   importOf: (buildSourceID: string) => string | undefined = () => undefined,
 ): string | undefined {
    if (plans.length === 0 && !extra) return undefined;
    const sources = [...new Set(plans.map((p) => p.sourceName))].sort(
       byCodepoint,
    );
-   const viewImports = sources.map(
-      (s) =>
-         `import { ${identifier(baseAlias(s))} is ${identifier(s)} } from ${doubleQuotedString(importPath)}`,
-   );
+   const viewImports = sources.map((s) => {
+      const first = plans.find((p) => p.sourceName === s);
+      const from = (first && importOf(first.buildSourceID)) ?? importPath;
+      return `import { ${identifier(baseAlias(s))} is ${identifier(s)} } from ${doubleQuotedString(from)}`;
+   });
    const viewSources = plans.map(
       (p) =>
          // malloy-text: the author's own `#@` lines, verbatim (single lines, no `@env.`; see planSourcePersistedViews)
@@ -111,18 +114,27 @@ ${sourcesText}
 function persistedQueryCompanionParts(
    plans: readonly PersistedQueryPlan[],
    importPath: string,
+   importOf: (buildSourceID: string) => string | undefined = () => undefined,
 ): { imports: string; sources: string } | undefined {
    if (plans.length === 0) return undefined;
-   const names = [
-      ...new Set(
-         plans.flatMap((p) =>
-            p.sourceName !== undefined
-               ? [p.queryName, p.sourceName]
-               : [p.queryName],
-         ),
-      ),
-   ].sort(byCodepoint);
-   const imports = `import { ${names.map((n) => identifier(n)).join(", ")} } from ${doubleQuotedString(importPath)}`;
+   // One import per file, in the order each is first named.
+   const byFile = new Map<string, Set<string>>();
+   for (const p of plans) {
+      const from = importOf(p.buildSourceID) ?? importPath;
+      const names = byFile.get(from) ?? new Set<string>();
+      names.add(p.queryName);
+      if (p.sourceName !== undefined) names.add(p.sourceName);
+      byFile.set(from, names);
+   }
+   const imports = [...byFile]
+      .map(
+         ([from, names]) =>
+            `import { ${[...names]
+               .sort(byCodepoint)
+               .map((n) => identifier(n))
+               .join(", ")} } from ${doubleQuotedString(from)}`,
+      )
+      .join("\n");
    const sources = plans
       .map(
          (p) =>
@@ -143,11 +155,14 @@ export function generatePersistedResultFile(
    views: readonly PersistedViewPlan[],
    queries: readonly PersistedQueryPlan[],
    importPath: string,
+   /** Another file a build source's source is imported from, by build sourceID. */
+   importOf?: (buildSourceID: string) => string | undefined,
 ): string | undefined {
    return generatePersistedViewFile(
       views,
       importPath,
-      persistedQueryCompanionParts(queries, importPath),
+      persistedQueryCompanionParts(queries, importPath, importOf),
+      importOf,
    );
 }
 
@@ -224,7 +239,7 @@ function emitRollupBuildSource(plan: RollupVariantPlan): string {
       .join("\n");
    // A grain an `internal` gate field is in reads it through
    // `include { public: * }`, which lifts the fields the base hides from a
-   // query (A4); the SQL, and so the table's address, is the same.
+   // query; the SQL, and so the table's address, is the same.
    const base = identifier(rollupBaseAlias(plan.baseDeclaredName));
    const from =
       (plan.internalGrain ?? []).length > 0
@@ -281,13 +296,18 @@ export function readsBuildCopy(
  * replaced by `true` (each found where the compiler says it is, {@link
  * termSpans}) and, with `lift`, its own access modifiers lifted and its
  * declaration wrapped in `include { public: * }` under the flag that needs
- * (as a `#(materialize)` build copy lifts them). Made the same by the plan's
+ * (as a `#(materialize)` build copy lifts them), and those of the sources
+ * it extends that declare a private grain dimension (`liftedAncestors`).
+ * Made the same by the plan's
  * companion and the serving variant, so the build source's SQL, and so its
  * table, is one. Or why it cannot be made.
  */
 export function rollupBuildCopyText(
    text: string,
-   plan: Pick<RollupVariantPlan, "readTimeTerms" | "declaration">,
+   plan: Pick<
+      RollupVariantPlan,
+      "readTimeTerms" | "declaration" | "liftedAncestors"
+   >,
    lift: boolean,
 ): { copy: string } | { reason: string } {
    const edits: TextEdit[] = [];
@@ -320,6 +340,30 @@ export function rollupBuildCopyText(
          { start: to, end: to, insert: " include { public: * }" },
          { start: 0, end: 0, insert: "##! experimental.access_modifiers\n" },
       );
+      // A private grain dimension a source it extends declares: that
+      // source's statement, and each between it and the base, lifted too,
+      // so the field reaches the base public in the copy.
+      for (const ancestor of plan.liftedAncestors ?? []) {
+         const at = offsetOf(text, ancestor.range.start);
+         const end = offsetOf(text, ancestor.range.end);
+         const ancestorLifts =
+            at >= 0 && end >= at
+               ? accessLiftEdits(text.slice(at, end))
+               : undefined;
+         if (!ancestorLifts) {
+            return {
+               reason:
+                  "the declaration of a source it extends could not be read to lift its access modifiers for the build",
+            };
+         }
+         edits.push(
+            ...ancestorLifts.map((e) => ({
+               ...e,
+               start: at + e.start,
+               end: at + e.end,
+            })),
+         );
+      }
    }
    const copy = applyEdits(text, edits);
    return copy === undefined ? { reason: TERM_NOT_FOUND } : { copy };

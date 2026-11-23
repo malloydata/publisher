@@ -369,9 +369,19 @@
         "freshness": null,
         "modelPath": "pfx.malloy",
         "name": "flights",
-        "origin": "persist",
+        "origin": "materialize",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.pfx_flights"
+          },
+          {
+            "connectionName": "orders_pg",
+            "table": "public.pfx_segments"
+          }
+        ],
         "refresh": "incremental",
         "sourceEntityId": "6d7c8ec876bb43d20d0fe128a9b6496061993c33daf789899eb25136c28ca4b0",
         "sourceID": "flights@<hammer>/pfx/pfx.malloy",
@@ -421,9 +431,19 @@
         "freshness": null,
         "modelPath": "pfx.malloy",
         "name": "flights_full",
-        "origin": "persist",
+        "origin": "materialize",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.pfx_flights"
+          },
+          {
+            "connectionName": "orders_pg",
+            "table": "public.pfx_segments"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "e9a0423e9691ec2a22099a295c06be1e716754975b61b5cbd847b1dbfb02da77",
         "sourceID": "flights_full@<hammer>/pfx/pfx.malloy",

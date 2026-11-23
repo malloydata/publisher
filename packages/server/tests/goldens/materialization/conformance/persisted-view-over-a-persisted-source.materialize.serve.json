@@ -5,17 +5,19 @@
       {
         "name": "pv_base",
         "tier": "storage"
-      },
-      {
-        "name": "pv_base__by_region__view",
-        "tier": "colocated"
       }
     ],
     "verdicts": [
       "pv_base:serves",
-      "pv_base__by_region__view:serves"
+      "pv_base__by_region__view:live:refused"
     ],
-    "warnings": []
+    "warnings": [
+      {
+        "code": "persist-view-not-built",
+        "message": "#@ persist on view \"by_region\" of source \"pv_base\" is not built, so the view is served live: its upstream 'pv_base' is stored in the storage= destination 'lake', whose table a build in the warehouse cannot read, and a downstream is never built by recomputing its upstream from raw; it is answered live, over 'pv_base''s table.",
+        "subject": "pv_base -> by_region"
+      }
+    ]
   },
   "queries": [
     {
@@ -61,6 +63,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "materialize",
             "outcome": "used",
             "tableId": "cca1df00b9373e067e5ea94d46dc1396e1ca1d6841cf3b625670efbda19b4da2"
           }
@@ -78,6 +81,7 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "materialize",
           "tableId": "cca1df00b9373e067e5ea94d46dc1396e1ca1d6841cf3b625670efbda19b4da2",
           "tier": "storage",
           "via": "served_copy"
@@ -132,6 +136,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "materialize",
             "outcome": "used",
             "tableId": "cca1df00b9373e067e5ea94d46dc1396e1ca1d6841cf3b625670efbda19b4da2"
           }
@@ -149,6 +154,7 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "materialize",
           "tableId": "cca1df00b9373e067e5ea94d46dc1396e1ca1d6841cf3b625670efbda19b4da2",
           "tier": "storage",
           "via": "served_copy"
@@ -202,9 +208,10 @@
       "path": {
         "considered": [
           {
-            "kind": "view",
+            "kind": "materialized",
+            "origin": "materialize",
             "outcome": "used",
-            "tableId": "a634b528cb34b67c79aaa476de57cdfa5f64b1c47abd877843a927606a776a4b"
+            "tableId": "cca1df00b9373e067e5ea94d46dc1396e1ca1d6841cf3b625670efbda19b4da2"
           }
         ],
         "notConsidered": [],
@@ -219,15 +226,17 @@
           "sourceName": "pv_base"
         },
         "servedBy": {
-          "kind": "view",
-          "tableId": "a634b528cb34b67c79aaa476de57cdfa5f64b1c47abd877843a927606a776a4b",
-          "tier": "database"
+          "kind": "materialized",
+          "origin": "materialize",
+          "tableId": "cca1df00b9373e067e5ea94d46dc1396e1ca1d6841cf3b625670efbda19b4da2",
+          "tier": "storage",
+          "via": "served_copy"
         },
         "warnings": []
       },
       "query": "the view called",
-      "servedBy": "view",
-      "servedFrom": "database",
+      "servedBy": "materialized",
+      "servedFrom": "storage",
       "switch": "on"
     },
     {
@@ -273,6 +282,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "materialize",
             "outcome": "used",
             "tableId": "cca1df00b9373e067e5ea94d46dc1396e1ca1d6841cf3b625670efbda19b4da2"
           }
@@ -290,6 +300,7 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "materialize",
           "tableId": "cca1df00b9373e067e5ea94d46dc1396e1ca1d6841cf3b625670efbda19b4da2",
           "tier": "storage",
           "via": "served_copy"

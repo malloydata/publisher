@@ -48,9 +48,10 @@ const fullModel = {
    compileDurationMs: 3,
    problems: [],
    compilationError: undefined,
-   authorizeWarnings: ["w"],
+   gateWarnings: [
+      { sourceName: "s", code: "row-level-gate-reads-no-given", message: "w" },
+   ],
    renderTagResults: [{ label: "v" }],
-   preaggregateCompanion: {},
    entities: plannedEntities(),
 };
 
@@ -139,9 +140,9 @@ describe("decodeSerializedModel", () => {
          /filterMap entry that is not a \[sourceName, filters\[\]\] pair/,
       ],
       [
-         "authorizeWarnings that are not strings",
-         { modelPath: "m.malloy", modelType: "model", authorizeWarnings: [1] },
-         /authorizeWarnings of kind array; expected string\[\]/,
+         "gateWarnings that are not an array",
+         { modelPath: "m.malloy", modelType: "model", gateWarnings: "w" },
+         /gateWarnings of kind string; expected array/,
       ],
       [
          "a governsAccess that is not a boolean",

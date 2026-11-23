@@ -3,7 +3,7 @@
 
 /**
  * A host-computed build manifest, fetched and split by tier
- * ({@link fetchManifestEntries}, {@link splitManifestEntries}): colocated
+ * ({@link fetchManifestEntries}, {@link splitManifestEntries}): database
  * entries become the same-connection `tableName` substitution, `storage=`
  * entries are kept whole for their serve bindings. Read by environment.ts when
  * it binds a package's manifest, and by the manifest committer.
@@ -37,7 +37,7 @@ type WireBuildManifest = components["schemas"]["BuildManifest"];
  * same-connection `tableName` substitution.
  */
 export interface FetchedManifest {
-   /** Colocated entries: same-connection `tableName` substitution. */
+   /** Database entries: same-connection `tableName` substitution. */
    tableNameManifest: FreshnessManifest;
    /** `storage=` entries by sourceEntityId, kept whole for serve bindings. */
    storageEntries: Record<string, ManifestEntry>;
@@ -127,7 +127,7 @@ export function isUsableTableName(name: string): boolean {
 }
 
 /**
- * Split a manifest entry map by tier into {@link FetchedManifest}. A colocated
+ * Split a manifest entry map by tier into {@link FetchedManifest}. A database
  * entry's wire `physicalTableName` becomes the runtime's `tableName`, keeping
  * the freshness fields (gated per query) and `connectionName` (for
  * dialect-specific quoting). Pure; `source` labels the skip log, which
@@ -203,6 +203,14 @@ export function splitManifestEntries(
          freshnessFallback: entry.freshnessFallback,
          ...boundSchemaOf(entry.schema),
          ...boundNativeSchemaOf(entry.nativeSchema),
+         ...(entry.lateRows ? { lateRows: entry.lateRows } : {}),
+         // Every incremental entry's: which build of its table it describes
+         // (`advancedBy`, `seededBy`, `advances`), what an extension over it
+         // compares with the build it last read (incremental_upstream.ts).
+         ...(entry.ledger ? { ledger: entry.ledger } : {}),
+         ...(entry.builtFrom?.length ? { builtFrom: entry.builtFrom } : {}),
+         ...(entry.contract !== undefined ? { contract: entry.contract } : {}),
+         ...(entry.builtAt ? { builtAt: entry.builtAt } : {}),
          // Set only by a bind from the local store (withRollupKeyRecords);
          // a host's manifest never carries it.
          ...(readKeyUniqueness && keyUniquenessOnEntry(entry)
@@ -230,8 +238,24 @@ function keyUniquenessOnEntry(entry: ManifestEntry): KeyUniqueness | undefined {
               ),
            )
          : {};
+   const parentKeyColumns =
+      k.parentKeyColumns && typeof k.parentKeyColumns === "object"
+         ? Object.fromEntries(
+              Object.entries(k.parentKeyColumns).filter(
+                 ([, column]) => typeof column === "string",
+              ),
+           )
+         : {};
    const anyParent = Object.keys(parentKeys).length > 0;
+   // A record from before the columns were kept carries none: each of its
+   // checks then reads as unknown, and answers live until the next run.
    return own || anyParent
-      ? { ...(own ?? {}), ...(anyParent ? { parentKeys } : {}) }
+      ? {
+           ...(own ?? {}),
+           ...(anyParent ? { parentKeys } : {}),
+           ...(anyParent && Object.keys(parentKeyColumns).length > 0
+              ? { parentKeyColumns }
+              : {}),
+        }
       : undefined;
 }

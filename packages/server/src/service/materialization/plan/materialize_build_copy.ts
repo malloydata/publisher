@@ -38,6 +38,7 @@ import { identifier, stringLiteral } from "../../malloy_text";
 import type { TermUse } from "../domain/read_time_terms";
 import { givenReadTerms, type SourceDefLike } from "./build_file_generator";
 import { leftOutWindowTerms } from "./rolling_window";
+import { pairRerootBase, pairRerootJoins } from "./pair_reroot";
 import {
    dropJoinDefinition,
    intoFirstExtend,
@@ -48,7 +49,7 @@ import {
 
 /**
  * Ends the name of a build copy: the author's file with one materialized
- * source's given-reading `where:` terms taken out (P2).
+ * source's given-reading `where:` terms taken out.
  */
 const MATERIALIZE_BUILD_COPY_SUFFIX = ".materialize-build.malloy";
 
@@ -63,12 +64,12 @@ export function buildCopyName(modelFileName: string, index: number): string {
 
 /**
  * The build copy of one planned source's declaring file: `text` with that
- * source's left-out read-time terms replaced by `true` (P2, and a current-time
+ * source's left-out read-time terms replaced by `true` (and a current-time
  * upper bound), so a query over the
  * copy's source applies every `where:` but those, or why a term cannot be
  * placed (see {@link termSpans}), which refuses the source rather than guess.
  *
- * With `liftAccess` (P3), the source's own access modifiers are lifted too
+ * With `liftAccess`, the source's own access modifiers are lifted too
  * ({@link accessLiftEdits}) and the declaration is wrapped in
  * `include { public: * }`, which lifts the `internal` fields it inherits, so
  * the build can select its hidden fields. A field private on a source it
@@ -82,7 +83,7 @@ export function buildCopyName(modelFileName: string, index: number): string {
  * reads that one's given, and the eligibility gate refuses its build
  * (`reads_given`).
  *
- * For an extension table (P10), `chain` names its parent's plan and the file
+ * For an extension table, `chain` names its parent's plan and the file
  * the parent's build source is imported from: the copy also re-roots the
  * parent's declaration on that build source ({@link rerootOnBuildSource}) and
  * imports it, so the extension, as written, reads the parent's table.
@@ -223,7 +224,7 @@ export function buildCopyDeclarationAt(
    return undefined;
 }
 
-/** Lifts the `internal` fields a build copy's source inherits (P3). */
+/** Lifts the `internal` fields a build copy's source inherits. */
 const LIFT_INHERITED = " include { public: * }";
 
 /** The compiler flag `include { … }` needs, as the build copy's first line. */
@@ -235,11 +236,11 @@ const ACCESS_NOT_LIFTED =
 
 /**
  * The edits {@link buildCopyText} makes to `text`: the plan's given-reading
- * terms (P2) and its current-time terms that hold an upper bound (Rolling
+ * terms and its current-time terms that hold an upper bound (Rolling
  * windows), its own or inherited, replaced by `true`; with `parent`, the parent's declaration
- * re-rooted on its build source (P10); and with `liftAccess`, the plan's own
+ * re-rooted on its build source; and with `liftAccess`, the plan's own
  * declaration's access modifiers lifted and the declaration wrapped in
- * `include { public: * }` (P3), with the flag `include` needs as the copy's
+ * `include { public: * }`, with the flag `include` needs as the copy's
  * first line. The lift edits only the plan's own declaration, so a chained
  * extension's build sees its hidden fields lifted over its parent's re-root
  * exactly as over the raw chain.
@@ -267,6 +268,13 @@ export function ownAndParentEdits(
 ): { edits: TextEdit[] } | { reason: string } {
    const edits: TextEdit[] = [];
    const given = givenReadTerms(plan);
+   const range = parent ? plan.buildsOver?.declaration.range : undefined;
+   const parentFrom = range ? offsetOf(text, range.start) : -1;
+   const parentTo = range ? offsetOf(text, range.end) : -1;
+   // A window the parent writes is left out of its re-root instead
+   // (`leftOutParentTerms`).
+   const inParent = (span: { start: number; end: number }) =>
+      parentFrom >= 0 && span.start >= parentFrom && span.end <= parentTo;
    if (given.length > 0) {
       const found = termSpans(text, plan, given);
       if ("reason" in found) return found;
@@ -274,6 +282,7 @@ export function ownAndParentEdits(
    }
    for (const term of leftOutWindowTerms(plan.readTimeTerms)) {
       const span = writtenSpan(text, term);
+      if (span !== undefined && inParent(span)) continue;
       if (
          span === undefined ||
          edits.some((e) => e.start < span.end && span.start < e.end)
@@ -328,13 +337,38 @@ export function parentRerootEdit(
    parent: MaterializePlan,
    joinRecords = false,
 ): TextEdit | undefined {
-   const range = plan.buildsOver?.declaration.range;
+   const over = plan.buildsOver;
+   const range = over?.declaration.range;
    const from = range ? offsetOf(text, range.start) : -1;
    const to = range ? offsetOf(text, range.end) : -1;
-   const rerooted =
-      from >= 0 && to >= from
-         ? rerootOnBuildSource(text.slice(from, to), parent, { joinRecords })
-         : undefined;
+   if (from < 0 || to < from) return undefined;
+   // The terms the parent's build leaves out, left out of its re-root too,
+   // so the extension's table holds every caller's and window's rows; one
+   // a base of the parent writes is not in the declaration, nor the re-root.
+   const leftOut: TextEdit[] = [];
+   for (const term of over?.mode.leftOutParentTerms ?? []) {
+      const span = writtenSpan(text, term);
+      if (span === undefined) return undefined;
+      if (span.start < from || span.end > to) continue;
+      leftOut.push({
+         start: span.start - from,
+         end: span.end - from,
+         insert: "true",
+      });
+   }
+   const declaration = applyEdits(text.slice(from, to), leftOut);
+   if (declaration === undefined) return undefined;
+   // A pair parent is re-rooted on its join put back, so the extension
+   // reads one row per parent (case 3), as a view over it does.
+   const pair = parent.pair !== undefined || parent.pairBlocks !== undefined;
+   const pairBase = pair ? pairRerootBase(parent) : undefined;
+   if (pair && pairBase === undefined) return undefined;
+   const rerooted = rerootOnBuildSource(declaration, parent, {
+      joinRecords,
+      ...(pairBase === undefined
+         ? {}
+         : { base: pairBase, dropJoinManys: pairRerootJoins(parent) }),
+   });
    return rerooted === undefined
       ? undefined
       : { start: from, end: to, insert: rerooted };
@@ -358,7 +392,7 @@ export function chainCopyName(
 
 /**
  * The build copy of an extension table whose parent is declared in another
- * file (P10 across files), as two texts:
+ * file (across files), as two texts:
  *
  *  - `parentCopy`, the parent's file with the parent re-rooted on its build
  *    source ({@link rerootOnBuildSource}), which it imports from
@@ -450,8 +484,10 @@ const PARENT_NOT_REROOTED =
  * ({@link rerootOnBuildSource}), and the build source imported from
  * `importFrom`: a query over the source in the copy reads its stored table
  * through a run's build manifest. Read by the rollup companion, so a
- * colocated rollup over a colocated `#(materialize)` base builds from the
- * base's table (rollup_compile.ts). Undefined when the declaration is not
+ * database rollup over a database `#(materialize)` base builds from the
+ * base's table (rollup_compile.ts). A pair table's source is re-rooted on
+ * its join put back ({@link pairRerootBase}), its inlined join_manys' own
+ * definitions taken out. Undefined when the declaration is not
  * where `declaration` says or does not re-root.
  */
 export function storedSourceCopyText(
@@ -463,7 +499,18 @@ export function storedSourceCopyText(
    const from = offsetOf(text, declaration.range.start);
    const to = offsetOf(text, declaration.range.end);
    if (from < 0 || to < from) return undefined;
-   const rerooted = rerootOnBuildSource(text.slice(from, to), plan);
+   const pairBase =
+      plan.pair || plan.pairBlocks ? pairRerootBase(plan) : undefined;
+   if ((plan.pair || plan.pairBlocks) && pairBase === undefined) {
+      return undefined;
+   }
+   const rerooted = rerootOnBuildSource(
+      text.slice(from, to),
+      plan,
+      pairBase === undefined
+         ? {}
+         : { base: pairBase, dropJoinManys: pairRerootJoins(plan) },
+   );
    if (rerooted === undefined) return undefined;
    const copy = applyEdits(text, [{ start: from, end: to, insert: rerooted }]);
    if (copy === undefined) return undefined;
@@ -473,7 +520,7 @@ export function storedSourceCopyText(
 }
 
 /**
- * A parent's declaration in an extension's build copy (P10): `<name> is
+ * A parent's declaration in an extension's build copy: `<name> is
  * <build source>`, then the blocks that undo its renames
  * ({@link inverseRenameBlocks}), then its own trailing `extend` run less each
  * computed dimension its table stores, so the stored column stands in for it,
@@ -489,7 +536,13 @@ export function storedSourceCopyText(
 function rerootOnBuildSource(
    declaration: string,
    parent: MaterializePlan,
-   options: { joinRecords?: boolean } = {},
+   options: {
+      joinRecords?: boolean;
+      /** The source expression to re-root on, in place of the build source. */
+      base?: string;
+      /** The join_manys the base declares, whose own definitions go. */
+      dropJoinManys?: readonly string[];
+   } = {},
 ): string | undefined {
    const spans = declarationSpans(declaration);
    if (!spans) return undefined;
@@ -522,6 +575,11 @@ function rerootOnBuildSource(
    );
    if (renames === undefined) return undefined;
    let text = excepted.text;
+   for (const join of options.dropJoinManys ?? []) {
+      const dropped = dropJoinDefinition(text, join, "join_many");
+      if (dropped === undefined) return undefined;
+      text = dropped;
+   }
    if (options.joinRecords) {
       const records = parentJoinRecords(parent);
       for (const j of records) {
@@ -545,20 +603,22 @@ function rerootOnBuildSource(
          text = opened;
       }
    }
-   const base = identifier(parent.buildSourceName);
+   const base = options.base ?? identifier(parent.buildSourceName);
    return `${name} is ${base}${renames}${text ? ` ${text}` : ""}`;
 }
 
 /**
  * The join_ones a parent's table stores inline (`inline=`), each with its
  * stored columns and the join's modifier, as {@link inlinedJoinStatements}
- * writes their records. A pair table's join_many is not one: its table is
- * a row per pair, never chained on as the parent's rows.
+ * writes their records. A pair table's join_manys are not: its re-root puts
+ * each back as a join over the table's own rows (plan/pair_reroot.ts).
  */
 function parentJoinRecords(parent: MaterializePlan): InlinedJoinText[] {
    const out: InlinedJoinText[] = [];
+   // A pair table's join_manys are put back by its re-root, not recorded.
+   const pairJoins = new Set(pairRerootJoins(parent));
    for (const join of parent.inline ?? []) {
-      if (join === parent.pair?.join) continue;
+      if (pairJoins.has(join.split(".")[0])) continue;
       const columns = parent.columns.filter((c) => c.join === join);
       if (columns.length === 0) continue;
       const access = columns[0].access;

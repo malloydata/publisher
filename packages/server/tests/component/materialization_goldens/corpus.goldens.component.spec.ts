@@ -5,7 +5,7 @@
  * Materialization characterization goldens over the repo's persist corpus
  * (phase 5, step 1): every hammer scenario model that materializes, through
  * v1 `#@ persist` / `#@ preaggregate` or v2 `#(materialize)` /
- * `#(preaggregate)` (`test_helpers/persist_corpus.ts`), compiled against its
+ * `#(rollup)` (`test_helpers/persist_corpus.ts`), compiled against its
  * DuckDB stand-in and planned through `collectModelBuildPlan` with the
  * materialize switch on, as a package load plans each model. The persist fixtures are packages,
  * and run through the package goldens instead.
@@ -38,11 +38,12 @@ import * as path from "path";
 import { pathToFileURL } from "url";
 import {
    collectModelBuildPlan,
-   deriveBuildPlanOutcome,
+   derivePackagePlan,
    finishBuildPlan,
    emptyBuildPlanParts,
    type FinishedBuildPlan,
 } from "../../../src/service/materialization/plan/build_plan";
+import { chainBuildStringReads } from "../../../src/service/materialization";
 import { overlayKey } from "../../../src/service/overlay_key";
 import {
    closeCorpus,
@@ -67,6 +68,11 @@ import {
    UPDATING,
 } from "./golden_files";
 import { Normalizer } from "./normalize";
+
+/** A compile error's first diagnostic line (`line 3: …`), if it has one. */
+function firstDiagnostic(message: string): string | undefined {
+   return message.split("\n").find((l) => /^line \d+:/.test(l));
+}
 
 /** The prefix the corpus gives a hammer model's in-memory URL. */
 const HAMMER_URL = "file:///hammer/";
@@ -134,6 +140,8 @@ async function planModel(model: CorpusModel, root: string): Promise<Planned> {
                importBaseURL: new URL(".", entry),
             };
          },
+         // As a package load reads them: the strings a stacked build compares.
+         stringReads: { read: chainBuildStringReads },
       });
       const connectionDigests: Record<string, string> = {};
       for (const [name, c] of model.connections) {
@@ -151,7 +159,17 @@ async function planModel(model: CorpusModel, root: string): Promise<Planned> {
       const message = error instanceof Error ? error.message : String(error);
       return {
          plan: JSON.stringify(
-            { compileError: normalizer.text(message.split("\n")[0]) },
+            {
+               compileError: normalizer.text(message.split("\n")[0]),
+               // The first diagnostic, so a change of cause is a golden diff.
+               ...(firstDiagnostic(message)
+                  ? {
+                       firstDiagnostic: normalizer.text(
+                          firstDiagnostic(message)!,
+                       ),
+                    }
+                  : {}),
+            },
             null,
             2,
          ),
@@ -161,7 +179,7 @@ async function planModel(model: CorpusModel, root: string): Promise<Planned> {
    const addresses = addressesOf(compiled);
    learnAddresses(normalizer, addresses);
    const { connections: _connections, ...collected } = compiled;
-   const outcome = deriveBuildPlanOutcome(collected, null);
+   const outcome = derivePackagePlan(collected, null);
    const wirePlan = outcome.plan && {
       ...outcome.plan,
       sources: Object.fromEntries(

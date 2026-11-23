@@ -113,6 +113,7 @@ import {
 } from "./compile_source";
 import { type OverlayFile } from "./request_overlay";
 import { destinationSchemaOf } from "./materialization/domain/storage_table_path";
+import { storageWritable } from "./materialization/domain/placement";
 
 export {
    COMPILE_SCOPES,
@@ -126,6 +127,7 @@ import {
 } from "./configured_publish_retry";
 import { VersionRegistry, VersionService } from "./versions/version_service";
 import { StatusSnapshot } from "./status_snapshot";
+import { recordedInliningLimit } from "./dialects/ducklake_inlining";
 import { getPackageLoadWorkerCount } from "../package_load/package_load_pool";
 import { readManifestVersion, VersionStore } from "./versions/version_store";
 import {
@@ -353,17 +355,17 @@ export type PackageListingOptions = {
 
 /**
  * What a version binds from a set of entries, in one form whoever bound it:
- * the colocated entries its models compile and bind over, and the `storage=`
+ * the database entries its models compile and bind over, and the `storage=`
  * entries as {@link splitManifestEntries} gives them, keys sorted at every
  * depth. A read of the store and a run's own load compare equal exactly when
  * they bind the same, whatever key order the store (a jsonb column, say)
  * gives back.
  */
 function storeBindingSignature(
-   colocated: FreshnessManifest,
+   database: FreshnessManifest,
    storage: Record<string, ManifestEntry>,
 ): string {
-   return canonicalJson({ colocated, storage });
+   return canonicalJson({ database, storage });
 }
 
 /**
@@ -564,12 +566,10 @@ export class Environment {
    private readonly storeBindingReads = new WeakMap<Package, string>();
    // The loaded versions already settled once they became findable.
    private readonly settledVersions = new WeakSet<Package>();
-   // The loaded versions a host owns: bound to a host manifest that bound,
-   // or built by a host's instructed run (their registry row's `hostOwned`).
-   // See isHostOwned.
-   private readonly hostOwnedVersions = new WeakSet<Package>();
-   // The same, by `package@version`, for every version marked in this
-   // process: a copy whose load read its row before the mark still counts.
+   // The versions a host owns (see isHostOwned), by `package@version`, for
+   // every version marked in this process: a copy whose load read its row
+   // before the mark still counts. A loaded copy's own mark is on its
+   // materialization (PackageMaterialization.isHostOwned).
    private readonly hostOwnedVersionKeys = new Set<string>();
    // Called when a version is archived, to reclaim the tables it alone owns.
    // Set by EnvironmentStore (see setVersionArchivedHook).
@@ -581,6 +581,12 @@ export class Environment {
    // setVersionDeletedHook).
    private versionDeletedHook:
       | ((packageName: string, versionId: string) => void)
+      | null = null;
+   // Called before a package is deleted or unloaded, to abort its running
+   // builds. It aborts them before it returns and resolves once they settle.
+   // Set by EnvironmentStore (see setPackageRetiringHook).
+   private packageRetiringHook:
+      | ((packageName: string) => Promise<void>)
       | null = null;
    // Called before a publish creates a version's row, to reclaim what a
    // deleted version of that id still owes. Set by EnvironmentStore (see
@@ -983,6 +989,13 @@ export class Environment {
                ? getStaticConnectionAttributes(connection.type)?.canPersist
                : undefined;
          },
+         dataInliningLimit: (name) =>
+            recordedInliningLimit(
+               (
+                  this.destinations.find((d) => d.name === name) ??
+                  this.apiConnections.find((c) => c.name === name)
+               )?.ducklakeConnection,
+            ),
       });
       // Live, like the config: a destination list swap needs no reload.
       _package
@@ -1013,7 +1026,12 @@ export class Environment {
             this.destinations,
             destinationRoot,
             false,
-            { origin: "storage-destination" },
+            {
+               origin: "storage-destination",
+               // A destination reopened without its catalog: serve shapes
+               // compiled against the closed connection recompile.
+               onDuckLakeReopened: () => this.invalidateCompiledLegs(),
+            },
          );
       } catch (error) {
          logger.error(
@@ -2126,6 +2144,39 @@ export class Environment {
    }
 
    /**
+    * Attach (or detach with `null`) the callback run before a package is
+    * deleted or unloaded, which aborts its running builds: the abort lands
+    * before it returns, and the promise resolves once they have settled.
+    */
+   public setPackageRetiringHook(
+      hook: ((packageName: string) => Promise<void>) | null,
+   ): void {
+      this.packageRetiringHook = hook;
+   }
+
+   /**
+    * Abort `packageName`'s running builds. Waited on, outside the package
+    * lock (a run takes it to compile), when `settle` is set; a run the
+    * waited abort missed, started before the lock was taken, is aborted
+    * again under it, unwaited.
+    */
+   private async abortPackageRuns(
+      packageName: string,
+      settle: boolean,
+   ): Promise<void> {
+      const settled = this.packageRetiringHook?.(packageName);
+      if (!settled) return;
+      const logged = settled.catch((error) => {
+         logger.warn("Could not stop a retiring package's builds", {
+            environmentName: this.environmentName,
+            packageName,
+            error,
+         });
+      });
+      if (settle) await logged;
+   }
+
+   /**
     * Attach (or detach with `null`) the callback run once a version is
     * deleted, which stops its builds and reclaims the tables that version
     * alone owns. It must only schedule work, and must not throw.
@@ -2256,7 +2307,7 @@ export class Environment {
     * build. Best-effort: a lookup failure leaves the package serving live.
     *
     * Both tiers come from the same manifest ({@link splitManifestEntries}):
-    *  - colocated → {@link Package.bindColocatedServeManifest}, a per-query
+    *  - database → {@link Package.bindDatabaseServeManifest}, a per-query
     *    override with no recompile; restored regardless of
     *    `PERSIST_STORAGE_MODE`, which does not gate a plain `#@ persist`.
     *  - storage= → {@link Package.bindStorageServeBindings}; only when the
@@ -2305,18 +2356,24 @@ export class Environment {
          }
          if (Object.keys(rawEntries).length === 0) return;
          if (Object.keys(tableNameManifest).length > 0) {
-            pkg.materialization().bind({
-               colocated: tableNameManifest,
+            await pkg.materialization().bindCompiled({
+               database: tableNameManifest,
                observed: await pkg
                   .materialization()
                   .readDatabaseColumns(tableNameManifest),
             });
          }
          if (
-            getPersistStorageMode() !== "off" &&
+            storageWritable(getPersistStorageMode()) &&
             Object.keys(storageEntries).length > 0
          ) {
-            pkg.materialization().bind({ storage: storageEntries });
+            await pkg.materialization().bindCompiled({
+               storage: storageEntries,
+               storageObserved: await pkg
+                  .materialization()
+                  .readStorageColumns(storageEntries, this),
+               storageSite: this,
+            });
          }
       } catch (err) {
          logger.warn(
@@ -2930,9 +2987,14 @@ export class Environment {
          environmentId,
          new VersionStore(this.environmentPath),
          {
-            loadVersion: (packageName, versionPath, version) =>
+            loadVersion: (packageName, versionPath, version, options) =>
                this.trackPackageLoad(packageName, () =>
-                  this.loadVersionPackage(packageName, versionPath, version),
+                  this.loadVersionPackage(
+                     packageName,
+                     versionPath,
+                     version,
+                     options?.refreshSchemas === true,
+                  ),
                ),
             trackPublish: (packageName, fn) =>
                this.trackPackageLoad(packageName, fn),
@@ -2973,7 +3035,7 @@ export class Environment {
             ensurePackageRecord: hooks.ensurePackageRecord,
             removePackageRecord: hooks.removePackageRecord,
             boundManifestOf: (loaded) => loaded.getManifestLocation() ?? null,
-            hostMarked: (loaded) => this.hostOwnedVersions.has(loaded),
+            hostMarked: (loaded) => loaded.materialization().isHostOwned(),
             isVersionBuilding: (packageName, versionId) =>
                this.versionBuilds.has(`${packageName}@${versionId}`),
             onVersionArchived: (packageName, versionId) =>
@@ -3030,12 +3092,13 @@ export class Environment {
          sourceLocation: string | null;
          hostOwned: boolean;
       },
+      refreshSchemas: boolean = false,
    ): Promise<Package> {
       // A failed load names the version's files package-relative, as a
       // failed reload does, never this server's version folder.
       return withPackageRelativeErrors(versionPath, async () => {
          // Read the manifest while the version compiles, and compile it
-         // once: its models hydrate over the colocated entries, so the bind
+         // once: its models hydrate over the database entries, so the bind
          // below binds them without the reload a bind after a plain load
          // would run. A read that fails is reported by that bind.
          const manifest = version.manifestPath
@@ -3050,10 +3113,11 @@ export class Environment {
             false,
             {
                versionId: version.versionId,
-               colocated: manifest?.then(
+               database: manifest?.then(
                   (fetched) => fetched.tableNameManifest,
                   () => undefined,
                ),
+               ...(refreshSchemas ? { refreshSchemas } : {}),
             },
          );
          this.attachDestinationServeConfig(loaded);
@@ -3069,7 +3133,7 @@ export class Environment {
          });
          // Marked by its row; one whose manifest binds below is marked by
          // that bind (markHostOwned).
-         if (version.hostOwned) this.hostOwnedVersions.add(loaded);
+         if (version.hostOwned) loaded.materialization().markHostOwned();
          await this.bindManifestIfConfigured(loaded, manifest);
          await this.rebindServeBindingsFromLocalStore(loaded);
          return loaded;
@@ -3257,7 +3321,7 @@ export class Environment {
 
    /**
     * Bind store entries ({@link splitStoreEntries}) to a package bound to no
-    * host manifest: the colocated ones recompile the models when there is
+    * host manifest: the database ones recompile the models when there is
     * something to substitute or clear, the `storage=` ones replace the
     * storage bindings (unless the storage tier is off). A version remembers
     * what it bound (see storeBindingReads).
@@ -3278,8 +3342,14 @@ export class Environment {
          await pkg.reloadAllModels(tableNameManifest);
          reloaded = true;
       }
-      if (getPersistStorageMode() !== "off") {
-         pkg.materialization().bind({ storage: storageEntries });
+      if (storageWritable(getPersistStorageMode())) {
+         await pkg.materialization().bindCompiled({
+            storage: storageEntries,
+            storageObserved: await pkg
+               .materialization()
+               .readStorageColumns(storageEntries, this),
+            storageSite: this,
+         });
       }
       if (pkg.getVersionId() !== undefined) {
          this.storeBindingReads.set(pkg, signature);
@@ -3338,7 +3408,7 @@ export class Environment {
       if (!wasBound) return false;
       // Drop both tiers so nothing still routes to a materialized table.
       await pkg.reloadAllModels({});
-      pkg.materialization().bind({ storage: {} });
+      await pkg.materialization().bindCompiled({ storage: {} });
       return true;
    }
 
@@ -3350,8 +3420,9 @@ export class Environment {
     */
    private async markHostOwned(pkg: Package): Promise<void> {
       const versionId = pkg.getVersionId();
-      if (versionId === undefined || this.hostOwnedVersions.has(pkg)) return;
-      this.hostOwnedVersions.add(pkg);
+      const mz = pkg.materialization();
+      if (versionId === undefined || mz.isHostOwned()) return;
+      mz.markHostOwned();
       this.hostOwnedVersionKeys.add(`${pkg.getPackageName()}@${versionId}`);
       await this.versionService
          ?.markHostOwned(pkg.getPackageName(), versionId)
@@ -3405,7 +3476,7 @@ export class Environment {
             ) {
                // Never fails the run before it commits: its tables would
                // go unrecorded. A copy that does not recompile keeps its
-               // colocated tables until it next loads, live (host-owned).
+               // database tables until it next loads, live (host-owned).
                try {
                   await loaded.reloadAllModels({});
                } catch (error) {
@@ -3414,7 +3485,7 @@ export class Environment {
                      { packageName, versionId, error: errMessage(error) },
                   );
                }
-               mz.bind({ storage: {} });
+               await mz.bindCompiled({ storage: {} });
             }
             mz.markServingLive();
          }),
@@ -3434,7 +3505,7 @@ export class Environment {
       const versionId = pkg.getVersionId();
       return (
          Boolean(pkg.getManifestLocation()) ||
-         this.hostOwnedVersions.has(pkg) ||
+         pkg.materialization().isHostOwned() ||
          (versionId !== undefined &&
             this.hostOwnedVersionKeys.has(
                `${pkg.getPackageName()}@${versionId}`,
@@ -3480,9 +3551,15 @@ export class Environment {
       /**
        * `versionId`: which version to read; absent means `latest`. A
        * malformed one is refused (400) only when this environment has
-       * versions to consult.
+       * versions to consult. `refreshSchemas`: a reload refetches the
+       * schemas the package reads (an explicit reload; a watch-mode reload
+       * keeps them).
        */
-      options: { allowAdmission?: boolean; versionId?: VersionRef } = {},
+      options: {
+         allowAdmission?: boolean;
+         versionId?: VersionRef;
+         refreshSchemas?: boolean;
+      } = {},
    ): Promise<Package> {
       // The sink-side check (path_safety.ts); the brand says it already ran.
       assertSafePackageName(packageName);
@@ -3550,7 +3627,11 @@ export class Environment {
             );
             if (versioned) return versioned.loaded;
          }
-         return this._loadOrGetPackageLocked(packageName, reload);
+         return this._loadOrGetPackageLocked(
+            packageName,
+            reload,
+            options.refreshSchemas === true,
+         );
       });
    }
 
@@ -3558,6 +3639,7 @@ export class Environment {
    private async _loadOrGetPackageLocked(
       packageName: string,
       reload: boolean = false,
+      refreshSchemas: boolean = false,
    ): Promise<Package> {
       const existingPackage = this.packages.get(packageName);
       if (existingPackage !== undefined && !reload) {
@@ -3565,7 +3647,8 @@ export class Environment {
       }
       await this.assertNotVersionedLocked(packageName, existingPackage);
 
-      const load = () => this.loadPackageLocked(packageName, existingPackage);
+      const load = () =>
+         this.loadPackageLocked(packageName, existingPackage, refreshSchemas);
       if (!reload) return load();
       return withSpan(
          "publisher.package.reload",
@@ -3581,6 +3664,7 @@ export class Environment {
    private loadPackageLocked(
       packageName: string,
       existingPackage: Package | undefined,
+      refreshSchemas: boolean = false,
    ): Promise<Package> {
       return this.trackPackageLoad(packageName, async () => {
          this.transition(packageName, { type: "beginLoad" });
@@ -3602,6 +3686,8 @@ export class Environment {
                      packageName,
                      packagePath,
                      () => this.malloyConfig.malloyConfig,
+                     false,
+                     refreshSchemas ? { refreshSchemas } : {},
                   );
                   this.attachDestinationServeConfig(created);
                   await this.commitLoadedPackage(packageName, created, {
@@ -3622,12 +3708,24 @@ export class Environment {
                // only on success) rather than evicting the package. Recorded
                // here so every reload caller (watcher, MCP, REST) reports the
                // staleness to /status; cleared on the next successful load.
+               // An explicit refresh that found an upstream table changed
+               // stops serving the stored tables built from it: the kept
+               // model would answer from them as if nothing moved.
+               const withdrawn = refreshSchemas
+                  ? await existingPackage
+                       .withdrawChangedUpstreams()
+                       .catch(() => ({ sources: [], tables: [] }))
+                  : { sources: [], tables: [] };
+               const message = redactPgSecrets(
+                  error instanceof Error ? error.message : String(error),
+               );
                this.transition(packageName, {
                   type: "reloadFailed",
                   stale: {
-                     message: redactPgSecrets(
-                        error instanceof Error ? error.message : String(error),
-                     ),
+                     message:
+                        withdrawn.sources.length > 0
+                           ? `${message} Upstream table ${withdrawn.tables.join(", ")} changed since the last build, so ${withdrawn.sources.join(", ")} answer live until a reload compiles and a run rebuilds them.`
+                           : message,
                      failedAt: new Date().toISOString(),
                   },
                });
@@ -3681,7 +3779,8 @@ export class Environment {
 
    public async addPackage(
       packageName: string,
-      options: { allowAdmission?: boolean } = {},
+      /** `refreshSchemas`: a publish refetches the schemas the package reads. */
+      options: { allowAdmission?: boolean; refreshSchemas?: boolean } = {},
    ) {
       assertSafePackageName(packageName);
       const packagePath = safeJoinUnderRoot(this.environmentPath, packageName);
@@ -3709,12 +3808,13 @@ export class Environment {
       );
 
       return this.withPackageLock(packageName, () =>
-         this._addPackageLocked(packageName),
+         this._addPackageLocked(packageName, options.refreshSchemas === true),
       );
    }
 
    private async _addPackageLocked(
       packageName: string,
+      refreshSchemas: boolean,
    ): Promise<Package | undefined> {
       const packagePath = safeJoinUnderRoot(this.environmentPath, packageName);
       const existingPackage = this.packages.get(packageName);
@@ -3731,6 +3831,8 @@ export class Environment {
                packageName,
                packagePath,
                () => this.malloyConfig.malloyConfig,
+               false,
+               refreshSchemas ? { refreshSchemas } : {},
             );
             this.attachDestinationServeConfig(addedPackage);
             await this.commitLoadedPackage(packageName, addedPackage, {
@@ -3952,6 +4054,10 @@ export class Environment {
             ...(options.versionId !== undefined
                ? { versionId: options.versionId }
                : {}),
+            // A publish, a PATCH that reinstalls, a reload from a location
+            // and their dry run are all explicit, so each reads its tables'
+            // columns as the warehouse holds them now.
+            refreshSchemas: true,
          },
       );
       this.attachDestinationServeConfig(pkg);
@@ -4089,6 +4195,27 @@ export class Environment {
                stagingPath,
                oldPackage,
             });
+            // The package it would have replaced keeps serving: like a failed
+            // reload, it stops serving the stored tables built from an
+            // upstream table that changed (the publish refetched them).
+            if (
+               oldPackage !== undefined &&
+               this.packages.get(packageName) === oldPackage
+            ) {
+               const withdrawn = await oldPackage
+                  .withdrawChangedUpstreams()
+                  .catch(() => ({ sources: [], tables: [] }));
+               if (withdrawn.sources.length > 0) {
+                  logger.warn(
+                     "A failed publish found upstream tables changed; their stored tables answer live",
+                     {
+                        environmentName: this.environmentName,
+                        packageName,
+                        sources: withdrawn.sources,
+                     },
+                  );
+               }
+            }
             throw err;
          }
 
@@ -4230,7 +4357,7 @@ export class Environment {
     * Every materialization run lands here, so the recompile (~1.1 MB of RSS
     * never reclaimed) is skipped when there is nothing to substitute now and
     * nothing was before: a `tableName` manifest is resolved at compile time,
-    * and a package that dropped its last colocated entry must still recompile
+    * and a package that dropped its last database entry must still recompile
     * to revert it.
     */
    public async reloadAllModelsForPackage(
@@ -4298,8 +4425,8 @@ export class Environment {
    public async loadRunManifest(params: {
       packageName: string;
       versionId?: string;
-      /** The colocated entries, compiled in as the build manifest. */
-      colocated: FreshnessManifest;
+      /** The database entries, compiled in as the build manifest. */
+      database: FreshnessManifest;
       /** The full entries, of which the `storage=` ones are bound. */
       storage: Record<string, ManifestEntry>;
       commit: (outcome: RunManifestLoad) => Promise<void>;
@@ -4360,15 +4487,21 @@ export class Environment {
             };
          }
          try {
-            const has = Object.keys(params.colocated).length > 0;
+            const has = Object.keys(params.database).length > 0;
             if (has || pkg.materialization().hasBoundTableNameManifest()) {
-               await pkg.reloadAllModels(params.colocated);
+               await pkg.reloadAllModels(params.database);
             }
          } catch (err) {
             return { loaded: false, step: "reload", error: errMessage(err) };
          }
          try {
-            pkg.materialization().bind({ storage: params.storage });
+            await pkg.materialization().bindCompiled({
+               storage: params.storage,
+               storageObserved: await pkg
+                  .materialization()
+                  .readStorageColumns(params.storage, this),
+               storageSite: this,
+            });
          } catch (err) {
             return { loaded: false, step: "bind", error: errMessage(err) };
          }
@@ -4381,7 +4514,7 @@ export class Environment {
             this.storeBindingReads.set(
                pkg,
                storeBindingSignature(
-                  params.colocated,
+                  params.database,
                   splitManifestEntries(
                      params.storage,
                      `run (package ${packageName} version ${versionId})`,
@@ -4420,7 +4553,7 @@ export class Environment {
     * store says it serves, and is called under the package's lock, which
     * the bind holds too, so nothing created under the same lock (a load, a
     * reload, an unversioned run's start) lands between the read and the
-    * bind. The colocated entries recompile the models when there is
+    * bind. The database entries recompile the models when there is
     * something to substitute or clear (a build's auto-load baked the
     * substitution in); the `storage=` entries, when `read` returns them,
     * replace the storage bindings, empty reverting to live. Used after a
@@ -4431,7 +4564,7 @@ export class Environment {
    public async rebindPackageFromStore(
       packageName: string,
       read: () => Promise<{
-         colocated: FreshnessManifest;
+         database: FreshnessManifest;
          storage?: Record<string, ManifestEntry>;
       }>,
    ): Promise<void> {
@@ -4455,14 +4588,22 @@ export class Environment {
                );
                return;
             }
-            const { colocated, storage } = await read();
+            const { database, storage } = await read();
             if (
-               Object.keys(colocated).length > 0 ||
+               Object.keys(database).length > 0 ||
                pkg.materialization().hasBoundTableNameManifest()
             ) {
-               await pkg.reloadAllModels(colocated);
+               await pkg.reloadAllModels(database);
             }
-            if (storage) pkg.materialization().bind({ storage: storage });
+            if (storage) {
+               await pkg.materialization().bindCompiled({
+                  storage: storage,
+                  storageObserved: await pkg
+                     .materialization()
+                     .readStorageColumns(storage, this),
+                  storageSite: this,
+               });
+            }
          }),
       );
    }
@@ -4510,22 +4651,28 @@ export class Environment {
          const hasStorage = Object.keys(storageEntries).length > 0;
          const hadStorage = pkg.materialization().hasStorageServeBindings();
 
-         // Colocated substitution is resolved at compile time, so it needs a
+         // Database substitution is resolved at compile time, so it needs a
          // recompile, skipped when there is nothing to substitute or clear.
-         const hasColocated = Object.keys(tableNameManifest).length > 0;
-         const hadColocated = pkg.materialization().hasBoundTableNameManifest();
+         const hasDatabase = Object.keys(tableNameManifest).length > 0;
+         const hadDatabase = pkg.materialization().hasBoundTableNameManifest();
 
          // Recompile first: it is the only step that can throw, and the catch
          // reports "no manifest applied", which would be false if the new
          // storage bindings were already routing.
          const recompiled =
-            (hasColocated || hadColocated) &&
+            (hasDatabase || hadDatabase) &&
             (await pkg.reloadAllModels(tableNameManifest, {
                ifChanged: recompile === "if-changed",
             }));
 
          if (hasStorage || hadStorage) {
-            pkg.materialization().bind({ storage: storageEntries });
+            await pkg.materialization().bindCompiled({
+               storage: storageEntries,
+               storageObserved: await pkg
+                  .materialization()
+                  .readStorageColumns(storageEntries, this),
+               storageSite: this,
+            });
          }
 
          // Unconditionally bound, even for a manifest that binds nothing:
@@ -5152,7 +5299,11 @@ export class Environment {
       // cleaned up as deleting that version alone is: its own running
       // auto-runs stopped and its own tables reclaimed, in the background.
       let deletedVersions: string[] = [];
+      // Its builds stop before anything of it goes, so none writes into a
+      // package being removed.
+      await this.abortPackageRuns(packageName, true);
       await this.withPackageLock(packageName, async () => {
+         void this.abortPackageRuns(packageName, false);
          // Before the early return: a failed package is never in `packages`,
          // and a stale entry would report a loadError for an unconfigured one.
          this.clearPackageLoadFailure(packageName);
@@ -5309,11 +5460,13 @@ export class Environment {
     */
    public async unloadPackage(packageName: string): Promise<void> {
       assertSafePackageName(packageName);
+      await this.abortPackageRuns(packageName, true);
       return this.withPackageLock(packageName, async () => {
          const _package = this.packages.get(packageName);
          if (!_package) {
             return;
          }
+         void this.abortPackageRuns(packageName, false);
          this.transition(packageName, { type: "beginUnload" });
          this.retireConnectionGeneration(`package ${packageName}`, () =>
             _package.releaseConnections(),

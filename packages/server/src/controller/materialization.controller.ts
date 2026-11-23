@@ -1,25 +1,27 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { logger } from "../logger";
 import type { components } from "../api";
-import { BadRequestError, PackageVersionError } from "../errors";
+import { BuildInstructionsInvalidError, PackageVersionError } from "../errors";
 import { Materialization } from "../storage/DatabaseInterface";
 import {
    BuildInstruction,
    LedgerEntry,
+   MalformedLedgerEntry,
    ManifestReference,
 } from "../service/materialization/domain/types";
 import { MaterializationService } from "../service/materialization/run/materialization_service";
-import type { WarehouseReach } from "../service/materialization/run/materialization_run_support";
 import { VersionRef } from "../service/identity";
 import { isUsableTableName } from "../service/materialization";
 import { queryMetadataViolations } from "../service/query_metadata";
 
-/** The values `buildInstructions.warehouseReach` accepts (ms2data/service#6756). */
-const WAREHOUSE_REACH_VALUES: readonly WarehouseReach[] = [
-   "recompute",
-   "refuse",
-];
+/**
+ * The values `buildInstructions.warehouseReach` accepts (ms2data/service#6756).
+ * Accepted and ignored: every build is strict, and none recomputes a stored
+ * upstream from the warehouse.
+ */
+const WAREHOUSE_REACH_VALUES: readonly string[] = ["recompute", "refuse"];
 
 type RunContext = components["schemas"]["RunContext"];
 
@@ -48,23 +50,25 @@ export class MaterializationController {
          await this.materializationService.createMaterialization(
             environmentName,
             packageName,
-            this.validateCreateBody(body),
+            this.validateCreateBody(body, { environmentName, packageName }),
          ),
       );
    }
 
    // Whitelist of client body fields. Never accept `trigger` here: only the
-   // in-process scheduler (which calls the service directly) sets `SCHEDULER`,
+   // in-process scheduler (which calls the service directly) sets `scheduler`,
    // and accepting it would let an API caller forge a scheduled run.
-   private validateCreateBody(body: Record<string, unknown>): {
+   private validateCreateBody(
+      body: Record<string, unknown>,
+      context: { environmentName: string; packageName: string },
+   ): {
       forceRefresh?: boolean;
       reseed?: boolean;
       sourceNames?: string[];
       buildInstructions?: BuildInstruction[];
       referenceManifest?: ManifestReference[];
-      strictUpstreams?: boolean;
-      warehouseReach?: WarehouseReach;
       ledger?: LedgerEntry[];
+      malformedLedger?: MalformedLedgerEntry[];
       runContext?: RunContext;
       versionId?: VersionRef;
    } {
@@ -74,9 +78,8 @@ export class MaterializationController {
          sourceNames?: string[];
          buildInstructions?: BuildInstruction[];
          referenceManifest?: ManifestReference[];
-         strictUpstreams?: boolean;
-         warehouseReach?: WarehouseReach;
          ledger?: LedgerEntry[];
+         malformedLedger?: MalformedLedgerEntry[];
          runContext?: RunContext;
          versionId?: VersionRef;
       } = {};
@@ -101,24 +104,34 @@ export class MaterializationController {
          body.buildInstructions !== undefined &&
          body.buildInstructions !== null
       ) {
-         const parsed = this.validateBuildInstructions(body.buildInstructions);
+         const parsed = this.validateBuildInstructions(
+            body.buildInstructions,
+            context,
+         );
          result.buildInstructions = parsed.sources;
          if (parsed.referenceManifest !== undefined) {
             result.referenceManifest = parsed.referenceManifest;
          }
-         if (parsed.strictUpstreams !== undefined) {
-            result.strictUpstreams = parsed.strictUpstreams;
-         }
-         if (parsed.warehouseReach !== undefined) {
-            result.warehouseReach = parsed.warehouseReach;
+         const deprecated = parsed.deprecatedOptions;
+         if (deprecated.length > 0) {
+            // Once per request that sends either; neither changes the run.
+            logger.warn(
+               "buildInstructions options are deprecated and ignored: every build is strict",
+               { ...context, options: deprecated },
+            );
          }
          if (parsed.ledger !== undefined) {
             result.ledger = parsed.ledger;
          }
+         if (parsed.malformedLedger?.length) {
+            result.malformedLedger = parsed.malformedLedger;
+         }
       }
       if (body.forceRefresh !== undefined) {
          if (typeof body.forceRefresh !== "boolean") {
-            throw new BadRequestError("forceRefresh must be a boolean");
+            throw new BuildInstructionsInvalidError(
+               "forceRefresh must be a boolean",
+            );
          }
          result.forceRefresh = body.forceRefresh;
       }
@@ -127,7 +140,7 @@ export class MaterializationController {
       // would make every scheduled fire (always forced) a full rebuild.
       if (body.reseed !== undefined) {
          if (typeof body.reseed !== "boolean") {
-            throw new BadRequestError("reseed must be a boolean");
+            throw new BuildInstructionsInvalidError("reseed must be a boolean");
          }
          result.reseed = body.reseed;
       }
@@ -136,7 +149,7 @@ export class MaterializationController {
             !Array.isArray(body.sourceNames) ||
             body.sourceNames.some((n) => typeof n !== "string")
          ) {
-            throw new BadRequestError(
+            throw new BuildInstructionsInvalidError(
                "sourceNames must be an array of strings",
             );
          }
@@ -153,7 +166,9 @@ export class MaterializationController {
     */
    private validateRunContext(raw: unknown): RunContext {
       if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
-         throw new BadRequestError("runContext must be an object");
+         throw new BuildInstructionsInvalidError(
+            "runContext must be an object",
+         );
       }
       const obj = raw as Record<string, unknown>;
       const context: RunContext = {};
@@ -162,7 +177,7 @@ export class MaterializationController {
             typeof obj.trigger !== "string" ||
             !RUN_TRIGGERS.includes(obj.trigger as (typeof RUN_TRIGGERS)[number])
          ) {
-            throw new BadRequestError(
+            throw new BuildInstructionsInvalidError(
                `runContext.trigger must be one of ${RUN_TRIGGERS.join(" | ")}`,
             );
          }
@@ -170,14 +185,16 @@ export class MaterializationController {
       }
       if (obj.runId !== undefined && obj.runId !== null) {
          if (typeof obj.runId !== "string") {
-            throw new BadRequestError("runContext.runId must be a string");
+            throw new BuildInstructionsInvalidError(
+               "runContext.runId must be a string",
+            );
          }
          // Held to the metadata contract: it becomes `run_id` on every
          // statement, and a rejected value would otherwise be silently
          // rewritten, leaving the caller an id it cannot join on.
          const violations = queryMetadataViolations({ run_id: obj.runId });
          if (violations.length > 0) {
-            throw new BadRequestError(
+            throw new BuildInstructionsInvalidError(
                `runContext.runId is attached to every statement as the run_id ` +
                   `property: ${violations.join("; ")}`,
             );
@@ -193,94 +210,133 @@ export class MaterializationController {
     * into the parts the service consumes: the flattened instruction list, the
     * optional upstream reference manifest, and the strict flag.
     */
-   private validateBuildInstructions(raw: unknown): {
+   private validateBuildInstructions(
+      raw: unknown,
+      context: { environmentName: string; packageName: string },
+   ): {
       sources: BuildInstruction[];
       referenceManifest?: ManifestReference[];
-      strictUpstreams?: boolean;
-      warehouseReach?: WarehouseReach;
+      /** The deprecated options the payload sent, which are ignored. */
+      deprecatedOptions: ("strictUpstreams" | "warehouseReach")[];
       ledger?: LedgerEntry[];
+      malformedLedger?: MalformedLedgerEntry[];
    } {
       if (typeof raw !== "object" || raw === null) {
-         throw new BadRequestError("buildInstructions must be an object");
+         throw new BuildInstructionsInvalidError(
+            "buildInstructions must be an object",
+         );
       }
       const obj = raw as Record<string, unknown>;
       const sources = obj.sources;
       if (!Array.isArray(sources) || sources.length === 0) {
-         throw new BadRequestError(
+         throw new BuildInstructionsInvalidError(
             "buildInstructions requires a non-empty 'sources' array of BuildInstruction",
          );
       }
       const result: {
          sources: BuildInstruction[];
          referenceManifest?: ManifestReference[];
-         strictUpstreams?: boolean;
-         warehouseReach?: WarehouseReach;
+         deprecatedOptions: ("strictUpstreams" | "warehouseReach")[];
          ledger?: LedgerEntry[];
+         malformedLedger?: MalformedLedgerEntry[];
       } = {
          sources: sources.map((instruction) =>
             this.validateInstruction(instruction),
          ),
+         deprecatedOptions: [],
       };
       if (
          obj.referenceManifest !== undefined &&
          obj.referenceManifest !== null
       ) {
          if (!Array.isArray(obj.referenceManifest)) {
-            throw new BadRequestError(
+            throw new BuildInstructionsInvalidError(
                "buildInstructions.referenceManifest must be an array of ManifestReference",
             );
          }
          result.referenceManifest = obj.referenceManifest.map((ref) =>
-            this.validateManifestReference(ref),
+            this.validateManifestReference(ref, context),
          );
       }
       if (obj.strictUpstreams !== undefined) {
          if (typeof obj.strictUpstreams !== "boolean") {
-            throw new BadRequestError(
+            throw new BuildInstructionsInvalidError(
                "buildInstructions.strictUpstreams must be a boolean",
             );
          }
-         result.strictUpstreams = obj.strictUpstreams;
+         result.deprecatedOptions.push("strictUpstreams");
       }
-      // Null is read as absent (the default, `recompute`): Credible's clients
-      // drop null fields, so null and absent must mean the same.
+      // Null is read as absent: Credible's clients drop null fields, so null
+      // and absent must mean the same.
       if (obj.warehouseReach !== undefined && obj.warehouseReach !== null) {
          if (
             typeof obj.warehouseReach !== "string" ||
-            !WAREHOUSE_REACH_VALUES.includes(
-               obj.warehouseReach as WarehouseReach,
-            )
+            !WAREHOUSE_REACH_VALUES.includes(obj.warehouseReach)
          ) {
-            throw new BadRequestError(
+            throw new BuildInstructionsInvalidError(
                `buildInstructions.warehouseReach must be one of ${WAREHOUSE_REACH_VALUES.join(" | ")}`,
             );
          }
-         result.warehouseReach = obj.warehouseReach as WarehouseReach;
+         result.deprecatedOptions.push("warehouseReach");
       }
       // Null is read as absent ("use the local store"), not as an empty ledger:
       // the two mean opposite things, and a caller that means "I own the ledger
       // and it is empty" says so with `[]`.
       if (obj.ledger !== undefined && obj.ledger !== null) {
          if (!Array.isArray(obj.ledger)) {
-            throw new BadRequestError(
+            throw new BuildInstructionsInvalidError(
                "buildInstructions.ledger must be an array",
             );
          }
-         result.ledger = obj.ledger.map((entry) =>
-            this.validateLedgerEntry(entry),
-         );
+         // A malformed entry is dropped, so its source seeds: hosts courier
+         // entries whole, and one corrupted entry must not wedge every build
+         // of the package. Errors about the REQUEST (duplicates, a table not
+         // instructed, a moved definition) stay 400s in validateInstructions.
+         const ledger: LedgerEntry[] = [];
+         const malformed: MalformedLedgerEntry[] = [];
+         for (const entry of obj.ledger) {
+            const checked = this.validateLedgerEntry(entry);
+            if ("defect" in checked) {
+               logger.warn(
+                  "Dropped a malformed buildInstructions.ledger entry; its source seeds",
+                  {
+                     ...context,
+                     table: checked.table,
+                     defect: checked.defect,
+                     reasonCode: "ledger_entry_malformed",
+                  },
+               );
+               // Its source seeds under its own reason, told apart from a
+               // source the caller sent no entry for.
+               if (checked.table !== undefined) {
+                  malformed.push({
+                     physicalTableName: checked.table,
+                     defect: checked.defect,
+                  });
+               }
+               continue;
+            }
+            ledger.push(checked.entry);
+         }
+         result.ledger = ledger;
+         if (malformed.length > 0) result.malformedLedger = malformed;
       }
       return result;
    }
 
-   private validateManifestReference(raw: unknown): ManifestReference {
+   private validateManifestReference(
+      raw: unknown,
+      context: { environmentName: string; packageName: string },
+   ): ManifestReference {
       if (typeof raw !== "object" || raw === null) {
-         throw new BadRequestError("Each manifest reference must be an object");
+         throw new BuildInstructionsInvalidError(
+            "Each manifest reference must be an object",
+         );
       }
       const ref = raw as Record<string, unknown>;
       for (const field of ["sourceEntityId", "physicalTableName"] as const) {
          if (typeof ref[field] !== "string") {
-            throw new BadRequestError(
+            throw new BuildInstructionsInvalidError(
                `Manifest reference is missing required string field '${field}'`,
             );
          }
@@ -298,12 +354,97 @@ export class MaterializationController {
          ...(typeof ref.connectionName === "string"
             ? { connectionName: ref.connectionName }
             : {}),
+         // Where a stored upstream's table lives. Without it a reference to
+         // a stored table reads as a warehouse table, and a chained
+         // `storage=` build over it refuses or recomputes it. The service
+         // checks it names a configured destination.
+         ...(referenceDestination(ref.storageDestinationName) !== undefined
+            ? {
+                 storageDestinationName: referenceDestination(
+                    ref.storageDestinationName,
+                 ),
+              }
+            : {}),
+         // An empty list is no types, as an absent one is.
+         ...(ref.nativeSchema !== undefined &&
+         validReferenceSchema(ref.nativeSchema).length > 0
+            ? { nativeSchema: validReferenceSchema(ref.nativeSchema) }
+            : {}),
+         // A stored upstream's columns, as its build reported them.
+         ...(ref.schema !== undefined &&
+         validReferenceSchema(ref.schema, "schema").length > 0
+            ? { schema: validReferenceSchema(ref.schema, "schema") }
+            : {}),
+         ...(ref.dataAsOf !== undefined
+            ? { dataAsOf: referenceInstant(ref.dataAsOf, "dataAsOf") }
+            : {}),
+         ...(ref.builtAt !== undefined
+            ? { builtAt: referenceInstant(ref.builtAt, "builtAt") }
+            : {}),
+         // Carried unparsed, as a host stores it: a contract that does not
+         // read is none (domain/column_contract.ts).
+         ...(ref.contract !== undefined && ref.contract !== null
+            ? { contract: ref.contract as ManifestReference["contract"] }
+            : {}),
+         // The upstream's ledger entry, for an incremental extension over it
+         // (incremental_upstream.ts). Null reads as absent.
+         ...this.validateReferenceLedger(ref, context),
       };
+   }
+
+   /**
+    * A reference's `ledger`, checked as an echoed ledger entry is
+    * ({@link validateLedgerEntry}) and held to the reference's own table and
+    * source: the same `sourceEntityId`, so a host whose physical names are
+    * stable across versions cannot carry the ledger of the parent's previous
+    * definition. A malformed or mismatched one is dropped with a warning,
+    * never a 400, as if absent: the extensions over that upstream read the
+    * bound manifest's or this worker's entry instead, and reseed only when
+    * neither proves which build they read over (incremental_upstream.ts).
+    * Returned whole, keys this release does not know included.
+    */
+   private validateReferenceLedger(
+      ref: Record<string, unknown>,
+      context: { environmentName: string; packageName: string },
+   ): { ledger?: LedgerEntry } {
+      if (ref.ledger === undefined || ref.ledger === null) return {};
+      const checked = this.validateLedgerEntry(ref.ledger);
+      let defect: string;
+      if ("defect" in checked) {
+         defect = checked.defect;
+      } else if (
+         checked.entry.connectionName !== ref.connectionName ||
+         checked.entry.physicalTableName !== ref.physicalTableName ||
+         checked.entry.storageDestinationName !==
+            referenceDestination(ref.storageDestinationName)
+      ) {
+         defect =
+            "it names another table than the reference (connectionName, " +
+            "physicalTableName, storageDestinationName)";
+      } else if (checked.entry.sourceEntityId !== ref.sourceEntityId) {
+         defect =
+            "it names another source than the reference (sourceEntityId): " +
+            "an entry from another definition of the upstream";
+      } else {
+         return { ledger: checked.entry };
+      }
+      logger.warn(
+         "Dropped a referenceManifest entry's ledger; extensions over it fall back to the bound or local ledger",
+         {
+            ...context,
+            table: ref.physicalTableName,
+            defect,
+            reasonCode: "reference_ledger_dropped",
+         },
+      );
+      return {};
    }
 
    private validateInstruction(raw: unknown): BuildInstruction {
       if (typeof raw !== "object" || raw === null) {
-         throw new BadRequestError("Each build instruction must be an object");
+         throw new BuildInstructionsInvalidError(
+            "Each build instruction must be an object",
+         );
       }
       const instruction = raw as Record<string, unknown>;
       const required = [
@@ -313,7 +454,7 @@ export class MaterializationController {
       ] as const;
       for (const field of required) {
          if (typeof instruction[field] !== "string") {
-            throw new BadRequestError(
+            throw new BuildInstructionsInvalidError(
                `Build instruction is missing required string field '${field}'`,
             );
          }
@@ -329,7 +470,7 @@ export class MaterializationController {
          instruction.realization !== "COPY" &&
          instruction.realization !== "SNAPSHOT"
       ) {
-         throw new BadRequestError(
+         throw new BuildInstructionsInvalidError(
             "Build instruction 'realization' must be COPY or SNAPSHOT",
          );
       }
@@ -337,7 +478,7 @@ export class MaterializationController {
          instruction.reseed !== undefined &&
          typeof instruction.reseed !== "boolean"
       ) {
-         throw new BadRequestError(
+         throw new BuildInstructionsInvalidError(
             "Build instruction 'reseed' must be a boolean",
          );
       }
@@ -353,7 +494,7 @@ export class MaterializationController {
             ? { realization: instruction.realization }
             : {}),
          // The `storage=` destination. Must be carried through, or an
-         // orchestrated build silently falls back to a colocated build.
+         // orchestrated build silently falls back to a database build.
          ...(typeof instruction.destination === "string"
             ? { destination: instruction.destination }
             : {}),
@@ -366,17 +507,30 @@ export class MaterializationController {
    }
 
    /**
-    * Validate one `buildInstructions.ledger` entry's SHAPE only. Each echoes a
+    * Check one `buildInstructions.ledger` entry's SHAPE only. Each echoes a
     * `ManifestEntry.ledger` the publisher reported; what it claims is checked
     * against the build plan by the service at create time.
+    *
+    * The entry is opaque to hosts and the publisher may add keys to it, so it
+    * is returned whole: keys this release does not know pass through untouched.
+    * A malformed entry is returned as its defect (and the table, when it names
+    * one) for the caller to drop, not thrown.
     */
-   private validateLedgerEntry(raw: unknown): LedgerEntry {
-      if (typeof raw !== "object" || raw === null) {
-         throw new BadRequestError(
-            "Each buildInstructions.ledger entry must be an object",
-         );
+   private validateLedgerEntry(
+      raw: unknown,
+   ): { entry: LedgerEntry } | { defect: string; table?: string } {
+      if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+         return { defect: "the entry is not an object" };
       }
       const entry = raw as Record<string, unknown>;
+      const table =
+         typeof entry.physicalTableName === "string"
+            ? entry.physicalTableName
+            : undefined;
+      const malformed = (defect: string) => ({
+         defect,
+         ...(table !== undefined ? { table } : {}),
+      });
       for (const field of [
          "connectionName",
          "physicalTableName",
@@ -386,54 +540,40 @@ export class MaterializationController {
          "sourceEntityId",
       ] as const) {
          if (typeof entry[field] !== "string" || entry[field] === "") {
-            throw new BadRequestError(
-               `Ledger entry '${field}' must be a non-empty string`,
-            );
+            return malformed(`'${field}' must be a non-empty string`);
          }
       }
-      assertUsableTableName(entry.physicalTableName as string, "Ledger entry");
-      if (entry.strategy !== "merge" && entry.strategy !== "range_replace") {
-         throw new BadRequestError(
-            "Ledger entry 'strategy' must be 'merge' or 'range_replace'",
+      try {
+         assertUsableTableName(
+            entry.physicalTableName as string,
+            "Ledger entry",
          );
+      } catch (err) {
+         return malformed(err instanceof Error ? err.message : String(err));
+      }
+      if (entry.strategy !== "merge" && entry.strategy !== "range_replace") {
+         return malformed("'strategy' must be 'merge' or 'range_replace'");
       }
       if (
          entry.mergeKeys !== undefined &&
          (!Array.isArray(entry.mergeKeys) ||
             entry.mergeKeys.some((k) => typeof k !== "string"))
       ) {
-         throw new BadRequestError(
-            "Ledger entry 'mergeKeys' must be an array of strings",
-         );
+         return malformed("'mergeKeys' must be an array of strings");
       }
       if (
          entry.storageDestinationName !== undefined &&
          (typeof entry.storageDestinationName !== "string" ||
             entry.storageDestinationName === "")
       ) {
-         throw new BadRequestError(
-            "Ledger entry 'storageDestinationName' must be a non-empty string when present",
+         return malformed(
+            "'storageDestinationName' must be a non-empty string when present",
          );
       }
-      return {
-         connectionName: entry.connectionName as string,
-         physicalTableName: entry.physicalTableName as string,
-         coveredThrough: entry.coveredThrough as string,
-         coveredThroughType: entry.coveredThroughType as string,
-         watermark: entry.watermark as string,
-         strategy: entry.strategy,
-         sourceEntityId: entry.sourceEntityId as string,
-         // Absent and empty both mean a keyless (range-replace) source.
-         ...(Array.isArray(entry.mergeKeys)
-            ? { mergeKeys: entry.mergeKeys as string[] }
-            : {}),
-         // Absent means colocated. Part of the table identity: an entry indexed
-         // without its destination is never found by its source, which then
-         // rebuilds in full on every refresh instead of advancing.
-         ...(typeof entry.storageDestinationName === "string"
-            ? { storageDestinationName: entry.storageDestinationName }
-            : {}),
-      };
+      // Absent and empty `mergeKeys` both mean a keyless (range-replace)
+      // source; absent `storageDestinationName` means database. Both stay as
+      // sent, like every other key.
+      return { entry: { ...entry } as LedgerEntry };
    }
 
    async stopMaterialization(
@@ -482,6 +622,28 @@ export class MaterializationController {
       );
    }
 
+   /**
+    * `drop-materialized-table`: drop one database-tier table a run of the
+    * package built on one of its connections, when Publisher can prove it
+    * is the package's and unused (MaterializationService.dropMaterializedTable).
+    * Answers nothing: 204 whether the table was dropped or was already gone.
+    */
+   async dropMaterializedTable(
+      environmentName: string,
+      packageName: string,
+      connectionName: string,
+      tableName: string,
+      options: { materializationId?: string; versionId?: VersionRef } = {},
+   ): Promise<void> {
+      await this.materializationService.dropMaterializedTable(
+         environmentName,
+         packageName,
+         connectionName,
+         tableName,
+         options,
+      );
+   }
+
    async deleteMaterialization(
       environmentName: string,
       packageName: string,
@@ -504,8 +666,68 @@ export class MaterializationController {
  */
 function assertUsableTableName(name: string, what: string): void {
    if (!isUsableTableName(name)) {
-      throw new BadRequestError(
+      throw new BuildInstructionsInvalidError(
          `${what} 'physicalTableName' must be a table path with no empty part, no backslash or control character, and only whole quoted parts`,
       );
    }
+}
+
+/**
+ * A reference's `nativeSchema`: the columns its upstream's build reported,
+ * each a name and a type, both non-empty strings. Anything else is refused
+ * (400), so a malformed list never reads as "no types recorded".
+ */
+function validReferenceSchema(
+   raw: unknown,
+   field: "nativeSchema" | "schema" = "nativeSchema",
+): { name: string; type: string }[] {
+   if (
+      !Array.isArray(raw) ||
+      !raw.every(
+         (c) =>
+            typeof c === "object" &&
+            c !== null &&
+            typeof (c as { name?: unknown }).name === "string" &&
+            (c as { name: string }).name !== "" &&
+            typeof (c as { type?: unknown }).type === "string" &&
+            (c as { type: string }).type !== "",
+      )
+   ) {
+      throw new BuildInstructionsInvalidError(
+         `Manifest reference '${field}' must be an array of { name, type } objects with non-empty string fields`,
+      );
+   }
+   return raw.map((c: { name: string; type: string }) => ({
+      name: c.name,
+      type: c.type,
+   }));
+}
+
+/**
+ * A reference's instant (`dataAsOf`, `builtAt`): a string `Date` reads as
+ * an instant, refused otherwise (400), so a malformed one never reads as
+ * "of unknown age".
+ */
+function referenceInstant(raw: unknown, field: string): string {
+   if (typeof raw !== "string" || Number.isNaN(Date.parse(raw))) {
+      throw new BuildInstructionsInvalidError(
+         `Manifest reference '${field}' must be a date-time string when present`,
+      );
+   }
+   return raw;
+}
+
+/**
+ * A reference's `storageDestinationName`: absent, or a non-empty string
+ * (refused otherwise, 400). Whether it names a configured destination is
+ * the service's check, which holds the environment.
+ */
+function referenceDestination(raw: unknown): string | undefined {
+   if (raw === undefined) return undefined;
+   if (typeof raw !== "string" || raw === "") {
+      throw new BuildInstructionsInvalidError(
+         "Manifest reference 'storageDestinationName' must be a non-empty string when present",
+      );
+   }
+   return raw;
 }

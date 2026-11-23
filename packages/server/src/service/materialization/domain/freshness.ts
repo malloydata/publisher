@@ -18,7 +18,7 @@
  * Pure: the caller passes the instant.
  *
  * One model for every mechanism and mode: a `#@ persist`, `#(materialize)` or
- * rollup table, colocated or `storage=`, built by a standalone run or a host,
+ * rollup table, database or `storage=`, built by a standalone run or a host,
  * carries the same three facts on its manifest entry, and they mean the same
  * thing. A host stamps them on the manifest it distributes; a standalone run
  * stamps them from the declarations ({@link declaredFreshnessFacts}).
@@ -88,6 +88,53 @@ export function freshnessWindowSeconds(window: string): number | undefined {
    const count = Number(match[1]);
    if (!Number.isSafeInteger(count) || count <= 0) return undefined;
    return count * WINDOW_UNITS[match[2]];
+}
+
+/**
+ * Why a `freshness.window=` value is refused, as a declaration's message
+ * says it after the route's name: the window must be a positive duration,
+ * a whole number greater than zero and one unit, so `0h`, `-1h` and `1.5h`
+ * are each refused with the same rule.
+ */
+export const FRESHNESS_WINDOW_PROBLEM =
+   "has a freshness.window= that is not a positive duration: write a whole " +
+   'number greater than zero and one unit (s, m, h, d or w), such as freshness.window="24h"';
+
+/**
+ * Seconds per unit of a duration a `#@ persist` key takes (`lookback=`): the
+ * window's letters, and each unit's word, singular or plural. No month or
+ * year, whose length varies.
+ */
+const DURATION_UNITS: Readonly<Record<string, number>> = {
+   ...WINDOW_UNITS,
+   second: 1,
+   seconds: 1,
+   minute: 60,
+   minutes: 60,
+   hour: 3600,
+   hours: 3600,
+   day: 86_400,
+   days: 86_400,
+   week: 604_800,
+   weeks: 604_800,
+};
+
+/** The units {@link durationSeconds} reads, for a message. */
+export const DURATION_UNIT_TEXT =
+   "seconds, minutes, hours, days or weeks (s, m, h, d or w)";
+
+/**
+ * A declared duration in seconds: a positive whole number and one unit,
+ * written as a window is (`36h`, `2d`) or in words (`2 days`, `1 hour`,
+ * `90 minutes`). Undefined for any other text. Lower case, as every
+ * annotation value is case-sensitive.
+ */
+export function durationSeconds(text: string): number | undefined {
+   const match = /^\s*(\d+)\s*([a-z]+)\s*$/.exec(text);
+   if (!match || !Object.hasOwn(DURATION_UNITS, match[2])) return undefined;
+   const count = Number(match[1]);
+   if (!Number.isSafeInteger(count) || count <= 0) return undefined;
+   return count * DURATION_UNITS[match[2]];
 }
 
 /** A declared freshness policy, as a plan source carries it. */

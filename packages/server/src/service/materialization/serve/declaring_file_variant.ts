@@ -4,14 +4,14 @@
 /**
  * The declaring-file overlay both router legs that compile a caller's text
  * over a stored table share: the persisted-view leg (`view_variants.ts`) and
- * the `#(preaggregate)` rollup leg (`rollup_variants.ts`).
+ * the `#(rollup)` rollup leg (`rollup_variants.ts`).
  *
  * The queried source is redeclared IN AN OVERLAY OF ITS OWN DECLARING FILE,
  * over the stored table, so it keeps the author's `sourceID`, with the
  * source's entry-point gates written on it as note lines ({@link gateLines}):
  * every gate the governor keys on that source (by name, then by `sourceID`)
  * finds its graft target in the variant, exactly as the served copy keeps it
- * by re-rooting the author's own file (R3, route then govern). The file's
+ * by re-rooting the author's own file (route then govern). The file's
  * other names come from a copy of it (`<file><copySuffix>`), and the query
  * model imports every name of the author's model from its declaring file,
  * the redeclared source from the overlay.
@@ -119,6 +119,18 @@ export async function compileDeclaringFileVariant(args: {
    queryModelURL: URL;
    /** The `##!` line both generated files start with. */
    flags: string;
+   /**
+    * The file set the variant is compiled over in place of the author's
+    * blanked files: a served copy's (`ServedCopyJoinBasis`), keyed by the
+    * author's own file URLs, so the redeclared source keeps its `sourceID`.
+    * Its `modelDef` (the copy's) names what the query model imports; the
+    * gates are still the author's (`modelDef`). The copy's files are read
+    * and compiled with `config`.
+    */
+   basis?: {
+      files: ReadonlyMap<string, string>;
+      modelDef: ModelDef;
+   };
    declare(
       ctx: DeclaringFileContext,
    ): string | { error: string } | Promise<string | { error: string }>;
@@ -133,11 +145,19 @@ export async function compileDeclaringFileVariant(args: {
    if ("error" in declared) return declared;
    const { declaringURL, copyURL, copyName } = declared;
    const modelFile = path.join(packagePath, modelPath);
-   const authorFiles = packageFiles(packagePath, modelPath, packageConfig);
-   // The author's files with source-level `#@` lines blanked, the declaring
-   // file's under the copy.
-   const blanked = await authorFiles.blanked(modelDef);
+   const authorFiles = packageFiles(
+      packagePath,
+      modelPath,
+      args.basis ? args.config : packageConfig,
+   );
+   // The author's files with source-level `#@` lines blanked (or the
+   // basis's), the declaring file's under the copy.
+   const blanked = args.basis
+      ? new Map(args.basis.files)
+      : await authorFiles.blanked(modelDef);
    if (!blanked) return { error: "a source-level #@ line not set aside" };
+   // The model whose names the overlay and the query model import.
+   const namesModel = args.basis?.modelDef ?? modelDef;
    const overlay = new Map<string, string>();
    for (const [url, text] of blanked) {
       if (url !== overlayKey(declaringURL)) overlay.set(url, text);
@@ -166,11 +186,13 @@ export async function compileDeclaringFileVariant(args: {
    // so a declaration there (a sibling extension of the redeclared source
    // that reads a column the stored table lacks) compiles as the author's
    // model does, and only the query model's run target reads the stored
-   // table (P2-41). The author's model is left alone when it exports a
+   // table. The author's model is left alone when it exports a
    // redeclared name: the query model imports that name from it.
-   const exported = new Set((modelDef as { exports?: string[] }).exports ?? []);
+   const exported = new Set(
+      (namesModel as { exports?: string[] }).exports ?? [],
+   );
    const modelHref = overlayKey(pathToFileURL(modelFile));
-   for (const importer of importersOf(modelDef, declaringURL)) {
+   for (const importer of importersOf(namesModel, declaringURL)) {
       if (
          overlayKey(importer) === modelHref &&
          [...redeclared].some((n) => exported.has(n))
@@ -227,7 +249,7 @@ ${exportAll}`,
    // The query model: the author's model's names, each from the file that
    // declares it (the redeclared source from its declaring file's overlay).
    const imports = authorNameImports(
-      modelDef,
+      namesModel,
       args.queryModelURL,
       pathToFileURL(modelFile).href,
       {
@@ -384,7 +406,7 @@ const GATE_ROUTES = new Set(["authorize", "access_filter"]);
 /**
  * The source's entry-point gates (the governor's walk: own, inherited, a
  * derivation's base), as note lines for the variant's source, so `govern()`
- * finds them there (R3). Throws when one cannot be written as a single line:
+ * finds them there. Throws when one cannot be written as a single line:
  * the variant is then not compiled and the stored table not read.
  */
 function gateLines(modelDef: ModelDef, sourceID: string): string {

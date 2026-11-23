@@ -42,19 +42,25 @@ export async function closeCorpus(): Promise<void> {
 }
 
 /**
- * Each model of `corpus` in turn, its connections closed once the loop body
- * is done with it. The corpus is a few hundred models with a DuckDB instance
+ * Each model of `corpus` in turn, each of its connections closed once the
+ * loop body is done with the last model that reads it (a scenario's models
+ * share theirs). The corpus is a few hundred models with a DuckDB instance
  * each; held open together until {@link closeCorpus}, they are most of the
  * instances a serial unit run holds at its peak.
  */
 export async function* releasingEach(
    corpus: CorpusModel[],
 ): AsyncGenerator<CorpusModel> {
-   for (const model of corpus) {
+   const lastUse = new Map<DuckDBConnection, number>();
+   corpus.forEach((model, i) => {
+      for (const c of model.connections.values()) lastUse.set(c, i);
+   });
+   for (const [i, model] of corpus.entries()) {
       try {
          yield model;
       } finally {
          for (const c of model.connections.values()) {
+            if (lastUse.get(c) !== i) continue;
             const at = opened.indexOf(c);
             if (at >= 0) opened.splice(at, 1);
             await c.close().catch(() => {});
@@ -62,6 +68,9 @@ export async function* releasingEach(
       }
    }
 }
+
+/** A corpus scenario the stand-ins cannot set up: fails the corpus. */
+class CorpusSetupError extends Error {}
 
 /** One model to plan: its files, entry file, and connections. */
 export interface CorpusModel {
@@ -72,10 +81,14 @@ export interface CorpusModel {
 }
 
 function connection(name: string, workingDirectory?: string): DuckDBConnection {
-   const dbPath = path.join(
+   // Named for its connection, so its catalog is too: a model that qualifies
+   // a table with the connection's name (`lake_probe.main.t`) resolves.
+   const dir = path.join(
       scratchDir(),
-      `${name}-${opened.length}-${Math.random().toString(36).slice(2)}.db`,
+      `${opened.length}-${Math.random().toString(36).slice(2)}`,
    );
+   fs.mkdirSync(dir, { recursive: true });
+   const dbPath = path.join(dir, `${name}.db`);
    const c = workingDirectory
       ? new DuckDBConnection(name, dbPath, workingDirectory)
       : new DuckDBConnection(name, dbPath);
@@ -90,10 +103,10 @@ const persists = (text: string): boolean =>
 /**
  * A model that materializes anything: a v1 `#@ persist` or `#@ preaggregate`
  * under the persistence flag ({@link persists}), or a v2 `#(materialize)` or
- * `#(preaggregate)`, which needs no flag.
+ * `#(rollup)`, which needs no flag.
  */
 export const materializes = (text: string): boolean =>
-   persists(text) || /#\((materialize|preaggregate)\)/.test(text);
+   persists(text) || /#\((materialize|rollup|preaggregate)\)/.test(text);
 
 /** The persist fixtures, each compiled as its own package. */
 export function fixtureModels(): CorpusModel[] {
@@ -123,11 +136,15 @@ export function fixtureModels(): CorpusModel[] {
    return out;
 }
 
-/** A hammer scenario's `## Data conn.table` tables and `## Model` files. */
+/**
+ * A hammer scenario's `## Data conn.table` tables, `## Model` files and the
+ * SQL of its `## Operator lake` steps.
+ */
 interface Scenario {
    id: string;
    pkg: string;
    models: Map<string, string>;
+   lakeSql: string[];
    data: {
       conn: string;
       table: string;
@@ -146,6 +163,7 @@ function parseScenario(dir: string): Scenario {
    const pkg = /^package:\s*(\S+)/m.exec(text)?.[1] ?? path.basename(dir);
    const models = new Map<string, string>();
    const data: Scenario["data"] = [];
+   const lakeSql: string[] = [];
    const sections = text.split(/^## /m).slice(1);
    for (const section of sections) {
       const [header, ...rest] = section.split("\n");
@@ -155,6 +173,11 @@ function parseScenario(dir: string): Scenario {
          const code = /```malloy\n([\s\S]*?)```/.exec(body)?.[1];
          const rel = model[1].includes("/") ? model[1] : `${pkg}/${model[1]}`;
          if (code !== undefined && !models.has(rel)) models.set(rel, code);
+         continue;
+      }
+      if (/^Operator\s+lake\s*$/.test(header)) {
+         const sql = /```sql\n([\s\S]*?)```/.exec(body)?.[1];
+         if (sql !== undefined) lakeSql.push(sql);
          continue;
       }
       const seed = /^Data\s+(?:\([^)]*\)\s*)?([\w-]+)\.([\w.]+)/.exec(header);
@@ -178,7 +201,7 @@ function parseScenario(dir: string): Scenario {
          data.push({ conn: seed[1], table: seed[2], cols, rows });
       }
    }
-   return { id: path.basename(dir), pkg, models, data };
+   return { id: path.basename(dir), pkg, models, data, lakeSql };
 }
 
 const DUCK_TYPES: Record<string, string> = {
@@ -262,6 +285,19 @@ export async function hammerModels(
                conn(m[1]);
             }
          }
+         // `lake_probe` reaches the destination's own catalog, so what the
+         // operator writes there is a table it reads. A statement the
+         // stand-in cannot run fails the corpus, naming it.
+         const probe = connections.get("lake_probe");
+         for (const sql of probe ? scenario.lakeSql : []) {
+            try {
+               await probe?.runSQL(sql);
+            } catch (err) {
+               throw new CorpusSetupError(
+                  `${scenario.id}: its operator SQL does not run on the lake_probe stand-in: ${(err as Error).message}`,
+               );
+            }
+         }
          const files = new Map<string, string>();
          for (const [rel, text] of scenario.models) {
             files.set(`file:///hammer/${rel}`, text);
@@ -275,6 +311,7 @@ export async function hammerModels(
             });
          }
       } catch (err) {
+         if (err instanceof CorpusSetupError) throw err;
          skipped.push(
             `${scenario.id}: ${(err as Error).message.split("\n")[0]}`,
          );

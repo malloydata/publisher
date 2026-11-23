@@ -6,9 +6,10 @@ import type { MaterializePlan } from "../domain/table_plans";
 import { storedColumnsOfOutput } from "../stored_column_types";
 import {
    applyObservedColumns,
-   bindColocatedEntries,
+   bindDatabaseEntries,
    bindStorageEntries,
-   deriveColocatedServeBindings,
+   deriveDatabaseServeBindings,
+   holdStorageToContracts,
    kindFromPlan,
    v1StoredColumnsOf,
 } from "./bind";
@@ -50,7 +51,7 @@ function derive(
       eligible?: boolean;
    } = {},
 ) {
-   return deriveColocatedServeBindings({
+   return deriveDatabaseServeBindings({
       entries: {
          addr1: {
             tableName: "analytics.orders_all",
@@ -65,12 +66,12 @@ function derive(
    });
 }
 
-describe("deriveColocatedServeBindings", () => {
-   it("binds a colocated #(materialize) table on its own connection, keyed by its content address", () => {
+describe("deriveDatabaseServeBindings", () => {
+   it("binds a database #(materialize) table on its own connection, keyed by its content address", () => {
       expect(derive()).toEqual([
          {
             kind: "materialize",
-            tier: "colocated",
+            tier: "database",
             sourceName: "orders",
             sourceIDs: [ID],
             destinationName: "pg",
@@ -123,6 +124,24 @@ describe("deriveColocatedServeBindings", () => {
       ]);
    });
 
+   it("reads a zoned timestamp from the captured warehouse types when the build captured no columns (a Postgres table, whose name its schema reader refuses)", () => {
+      const [binding] = derive({
+         entry: {
+            nativeSchema: [
+               { name: "id", type: "bigint" },
+               { name: "region", type: "text" },
+               { name: "seen", type: "timestamp with time zone" },
+               { name: "tags", type: "text[]" },
+            ],
+         },
+      });
+      expect(binding?.schema).toEqual([
+         { name: "id", type: "BIGINT" },
+         { name: "region", type: "VARCHAR" },
+         { name: "seen", type: "TIMESTAMP WITH TIME ZONE" },
+      ]);
+   });
+
    it("binds nothing when the build's columns are unknown, so the source serves live", () => {
       expect(derive({ plan: { storedColumns: undefined } })).toEqual([]);
       expect(derive({ plan: { storedColumns: [] } })).toEqual([]);
@@ -130,7 +149,7 @@ describe("deriveColocatedServeBindings", () => {
 
    it("binds nothing for a v1 #@ persist source (no #(materialize) plan) or a manifest without its address", () => {
       expect(
-         deriveColocatedServeBindings({
+         deriveDatabaseServeBindings({
             entries: { addr1: { tableName: "t" } },
             planSources: { [ID]: SOURCE },
             materializePlans: {},
@@ -138,7 +157,7 @@ describe("deriveColocatedServeBindings", () => {
          }),
       ).toEqual([]);
       expect(
-         deriveColocatedServeBindings({
+         deriveDatabaseServeBindings({
             entries: { other: { tableName: "t" } },
             planSources: { [ID]: SOURCE },
             materializePlans: { [ID]: plan() },
@@ -146,7 +165,7 @@ describe("deriveColocatedServeBindings", () => {
          }),
       ).toEqual([]);
       expect(
-         deriveColocatedServeBindings({
+         deriveDatabaseServeBindings({
             entries: undefined,
             planSources: { [ID]: SOURCE },
             materializePlans: { [ID]: plan() },
@@ -155,8 +174,8 @@ describe("deriveColocatedServeBindings", () => {
       ).toEqual([]);
    });
 
-   it("puts a colocated table's path in the virtual map as bound, a storage table's quoted for DuckDB", () => {
-      const colocated = {
+   it("puts a database table's path in the virtual map as bound, a storage table's quoted for DuckDB", () => {
+      const database = {
          ...derive()[0],
          destinationName: "bq",
          tablePath: "proj.ds.orders_all",
@@ -170,9 +189,9 @@ describe("deriveColocatedServeBindings", () => {
          tablePath: "main.s",
          schema: [],
       };
-      expect(boundTablePath(colocated)).toBe("proj.ds.orders_all");
+      expect(boundTablePath(database)).toBe("proj.ds.orders_all");
       expect(boundTablePath(storage)).toBe('"main"."s"');
-      expect(buildVirtualMap([colocated, storage])).toEqual(
+      expect(buildVirtualMap([database, storage])).toEqual(
          new Map([
             ["bq", new Map([["addr1", "proj.ds.orders_all"]])],
             ["lake", new Map([["addr2", '"main"."s"']])],
@@ -231,7 +250,7 @@ describe("storedColumnsOfOutput", () => {
    });
 });
 
-describe("deriveColocatedServeBindings: v1 colocated #@ persist (the v1 cutover, G1)", () => {
+describe("deriveDatabaseServeBindings: v1 database #@ persist (the v1 cutover, G1)", () => {
    const V1 = "daily@file:///pkg/m.malloy";
    const VIEW = "ov__by_region__view@file:///pkg/m.malloy";
    const sources = {
@@ -255,7 +274,7 @@ describe("deriveColocatedServeBindings: v1 colocated #@ persist (the v1 cutover,
       storage?: boolean;
       eligible?: boolean;
    }) =>
-      deriveColocatedServeBindings({
+      deriveDatabaseServeBindings({
          entries: {
             "addr-v1": {
                tableName: "daily",
@@ -297,7 +316,7 @@ describe("deriveColocatedServeBindings: v1 colocated #@ persist (the v1 cutover,
       expect(derive({ schema: captured })).toEqual([
          {
             kind: "persist",
-            tier: "colocated",
+            tier: "database",
             sourceName: "daily",
             sourceIDs: [V1],
             destinationName: "duckdb",
@@ -432,7 +451,7 @@ describe("bindStorageEntries", () => {
       expect(bound.bindings.map((b) => b.kind)).toEqual(["materialize"]);
    });
 
-   it("marks a source's own table kept past its own gate only as plan decided (G3), and never a rollup's or a view's", () => {
+   it("marks a source's or a rollup's table kept past its own gate only as plan decided (G3), and never a view's", () => {
       const eligibility = {
          eligible: ["orders@m", "gated@m"],
          refused: {},
@@ -445,13 +464,13 @@ describe("bindStorageEntries", () => {
             eligibility,
             kindOf: () => kind,
          }).bindings.map((b) => [b.sourceName, b.ownGateKept === true]);
-      for (const kind of ["persist", "materialize"] as const) {
+      for (const kind of ["persist", "materialize", "rollup"] as const) {
          expect(kept(kind)).toEqual([
             ["orders", false],
             ["gated", true],
          ]);
       }
-      for (const kind of ["rollup", "view"] as const) {
+      for (const kind of ["view"] as const) {
          expect(kept(kind)).toEqual([
             ["orders", false],
             ["gated", false],
@@ -496,11 +515,103 @@ describe("bindStorageEntries", () => {
          ),
       ).toEqual([false, false]);
    });
+
+   it("marks a table as holding only ungated rows only when every source on its address is proven ungated (g-mixed)", () => {
+      const ungated = (
+         kind: Binding["kind"],
+         eligibility: Parameters<typeof bindStorageEntries>[0]["eligibility"],
+      ) =>
+         bindStorageEntries({
+            entries,
+            plan,
+            eligibility,
+            kindOf: () => kind,
+         }).bindings.map((b) => [
+            b.sourceName,
+            b.holdsOnlyUngatedRows === true,
+         ]);
+      const proven = {
+         eligible: ["orders@m", "gated@m"],
+         refused: {},
+         ungated: ["orders@m"],
+      };
+      for (const kind of ["persist", "materialize", "rollup"] as const) {
+         expect(ungated(kind, proven)).toEqual([
+            ["orders", true],
+            ["gated", false],
+         ]);
+      }
+      // A persisted view or query decides a gate on its own leg.
+      for (const kind of ["view", "query"] as const) {
+         expect(ungated(kind, proven)).toEqual([
+            ["orders", false],
+            ["gated", false],
+         ]);
+      }
+      // No record of it (an older plan's): none, failing closed.
+      expect(
+         ungated("persist", { eligible: ["orders@m", "gated@m"], refused: {} }),
+      ).toEqual([
+         ["orders", false],
+         ["gated", false],
+      ]);
+      // A gated source on the same address, whether the plan admitted it
+      // past its own gate or refused it: the table holds its rows, so no
+      // name of it is marked.
+      const sharing = (eligibility: {
+         eligible: string[];
+         refused: Record<string, string>;
+         gateKept?: string[];
+         ungated?: string[];
+      }) =>
+         bindStorageEntries({
+            entries: { addr_orders: entry("orders", "addr_orders") },
+            plan: {
+               sources: {
+                  "orders@m": {
+                     name: "orders",
+                     sourceEntityId: "addr_orders",
+                     connectionName: "duckdb",
+                  },
+                  "orders_gated@m": {
+                     name: "orders_gated",
+                     sourceEntityId: "addr_orders",
+                     connectionName: "duckdb",
+                  },
+               },
+            } as unknown as BuildPlan,
+            eligibility,
+            kindOf: () => "persist",
+         }).bindings.map((b) => b.holdsOnlyUngatedRows === true);
+      expect(
+         sharing({
+            eligible: ["orders@m", "orders_gated@m"],
+            refused: {},
+            gateKept: ["orders_gated@m"],
+            ungated: ["orders@m"],
+         }),
+      ).toEqual([false, false]);
+      expect(
+         sharing({
+            eligible: ["orders@m"],
+            refused: { "orders_gated@m": "an inherited row filter" },
+            ungated: ["orders@m"],
+         }),
+      ).toEqual([false]);
+      // Both proven ungated: the one table is marked under both names.
+      expect(
+         sharing({
+            eligible: ["orders@m", "orders_gated@m"],
+            refused: {},
+            ungated: ["orders@m", "orders_gated@m"],
+         }),
+      ).toEqual([true, true]);
+   });
 });
 
-describe("bindColocatedEntries", () => {
+describe("bindDatabaseEntries", () => {
    it("keeps the eligible entries, quoted for their dialect, and declines the rest", () => {
-      const bound = bindColocatedEntries({
+      const bound = bindDatabaseEntries({
          entries: {
             a: { tableName: "order" },
             b: { tableName: "kept" },
@@ -532,7 +643,7 @@ describe("bindColocatedEntries", () => {
    });
 
    it("declines only an entry whose name its dialect cannot read or quote, and binds the rest", () => {
-      const bound = bindColocatedEntries({
+      const bound = bindDatabaseEntries({
          entries: {
             bad: { tableName: "`ds`.`a``b`" },
             good: { tableName: "`ds`.`a\\`b`" },
@@ -560,7 +671,7 @@ describe("bindColocatedEntries", () => {
    });
 
    it("declines every entry when the plan's eligibility is unknown", () => {
-      const bound = bindColocatedEntries({
+      const bound = bindDatabaseEntries({
          entries: { a: { tableName: "t" } },
          eligibility: undefined,
          dialects: new Map(),
@@ -675,8 +786,8 @@ describe("the bind functions at their edges", () => {
       ]);
    });
 
-   it("passes a colocated name already quoted, and says why an unrefused miss declines", () => {
-      const bound = bindColocatedEntries({
+   it("passes a database name already quoted, and says why an unrefused miss declines", () => {
+      const bound = bindDatabaseEntries({
          entries: {
             a: { tableName: '"order"' },
             b: { tableName: "missed" },
@@ -705,15 +816,34 @@ describe("the bind functions at their edges", () => {
    });
 });
 
-describe("applyObservedColumns", () => {
+describe("applyObservedColumns: each table held to its column contract", () => {
+   const contract = {
+      v: 1,
+      dialect: "postgres",
+      columns: [
+         {
+            name: "id",
+            nativeType: "bigint",
+            collation: null,
+            compare: "exact",
+            gateExact: true,
+         },
+         {
+            name: "name",
+            nativeType: "text",
+            collation: "postgres:db|c|en_US.utf8",
+            compare: "exact",
+            gateExact: true,
+         },
+      ],
+   };
    const built = [
       { name: "id", type: "BIGINT" },
-      { name: "amt", type: "DOUBLE" },
-      { name: "d", type: "DATE" },
+      { name: "name", type: "VARCHAR" },
    ];
    const binding: Binding = {
       kind: "materialize",
-      tier: "colocated",
+      tier: "database",
       sourceName: "orders",
       sourceIDs: [ID],
       destinationName: "pg",
@@ -722,532 +852,153 @@ describe("applyObservedColumns", () => {
       schema: built,
    };
    const entries = {
-      addr1: { tableName: "orders_t", schema: built },
-      rollup1: {
-         tableName: "orders_by_d",
-         schema: [{ name: "total__partial", type: "DOUBLE" }],
+      addr1: {
+         tableName: "orders_t",
+         schema: built,
+         contract,
+         builtAt: "2026-11-20T00:00:00.000Z",
       },
    };
-
-   it("with no observation, returns everything as bound", () => {
-      const out = applyObservedColumns({
-         entries,
+   const collations = {
+      byColumn: new Map([
+         ["id", null],
+         ["name", "postgres:db|c|en_US.utf8"],
+      ]),
+      otherwise: null,
+   };
+   const asBuilt = {
+      dialect: "postgres",
+      columns: [
+         { name: "id", type: "BIGINT", nativeType: "bigint" },
+         { name: "name", type: "VARCHAR", nativeType: "text" },
+      ],
+      collations,
+   };
+   const apply = (observed: unknown, e: object = entries) =>
+      applyObservedColumns({
+         entries: e as never,
          bindings: [binding],
-         observed: undefined,
+         observed: new Map([["addr1", observed as never]]),
       });
-      expect(out.entries).toBe(entries);
-      expect(out.bindings).toEqual([binding]);
-      expect(out.drifted).toEqual([]);
-   });
 
-   it("keeps a table whose columns read as their built types, a wider number included", () => {
-      const out = applyObservedColumns({
-         entries,
-         bindings: [binding],
-         observed: new Map([
-            [
-               "addr1",
-               {
-                  columns: [
-                     // A wider integer: a widening that loses nothing.
-                     { name: "id", type: "HUGEINT" },
-                     { name: "amt", type: "DOUBLE" },
-                     { name: "d", type: "DATE" },
-                  ],
-               },
-            ],
-            ["rollup1", { columns: entries.rollup1.schema }],
-         ]),
-      });
+   it("binds a table that reads as its contract recorded, as it is", () => {
+      const out = apply(asBuilt);
       expect(out.bindings).toEqual([binding]);
       expect(out.entries).toEqual(entries);
-      expect(out.drifted).toEqual([]);
+      expect(out.incompatible).toEqual([]);
+      expect(out.contractMissing).toEqual([]);
    });
 
-   it("declares a served-copy table's drifted column with its observed type, and leaves a gone one out", () => {
-      const out = applyObservedColumns({
-         entries,
-         bindings: [binding],
-         observed: new Map([
-            [
-               "addr1",
-               {
-                  columns: [
-                     { name: "ID", type: "BIGINT" },
-                     { name: "amt", type: "VARCHAR" },
-                  ],
-               },
-            ],
-            ["rollup1", { columns: entries.rollup1.schema }],
-         ]),
-      });
-      expect(out.bindings[0].schema).toEqual([
-         { name: "id", type: "BIGINT" },
-         { name: "amt", type: "VARCHAR" },
-      ]);
-      // A served-copy table stays bound: its read plan casts or leaves out.
-      expect(Object.keys(out.entries).sort()).toEqual(["addr1", "rollup1"]);
-      expect(out.drifted).toEqual([
-         {
-            sourceEntityId: "addr1",
-            columns: [
-               { column: "amt", builtType: "DOUBLE", observedType: "VARCHAR" },
-               // The bind's decision rides on the report.
-               { column: "d", builtType: "DATE", gone: true, leftOut: true },
-            ],
-         },
-      ]);
-   });
-
-   // P4-01: a DuckLake table's 128-bit integer holds a DOUBLE's digits
-   // (the bind's read marks it `storedAsDouble`), whatever its build wrote.
-   it("P4-01: reads a DuckLake 128-bit integer as the DOUBLE it holds, and leaves it out of a rollup that stores one", () => {
-      const huge = [
-         { name: "id", type: "HUGEINT" },
-         { name: "amt", type: "DOUBLE" },
-         { name: "d", type: "DATE" },
-      ];
-      const lake: Binding = {
-         ...binding,
-         schema: huge,
-         nativeSchema: [{ name: "id", type: "HUGEINT" }],
-      };
-      const asDouble = {
-         name: "id",
-         type: "DOUBLE",
-         nativeType: "DOUBLE",
-         storedAsDouble: true as const,
-      };
-      const out = applyObservedColumns({
-         entries: {
-            addr1: { tableName: "orders_t", schema: huge },
-            rollup1: {
-               tableName: "orders_by_d",
-               connectionName: "lake",
-               schema: [{ name: "total__partial", type: "HUGEINT" }],
-            },
-         },
-         bindings: [lake],
-         observed: new Map([
-            ["addr1", { columns: [asDouble, ...huge.slice(1)] }],
-            ["rollup1", { columns: [{ ...asDouble, name: "total__partial" }] }],
-         ]),
-      });
-      expect(out.bindings[0].schema[0]).toEqual({ name: "id", type: "DOUBLE" });
-      expect(out.bindings[0].nativeSchema).toEqual([
-         { name: "id", type: "DOUBLE" },
-      ]);
-      // The rollup keeps its table, its 128-bit partial left out: a query
-      // reading it answers live, never the DOUBLE's rounded digits.
-      expect(out.entries.rollup1).toEqual({
-         tableName: "orders_by_d",
-         connectionName: "lake",
-         schema: [{ name: "total__partial", type: "HUGEINT" }],
-         heldRead: { connectionName: "lake", columns: [] },
-         leftOutColumns: ["total__partial"],
-      });
-      expect(out.drifted.map((d) => d.columns)).toEqual([
-         [
-            {
-               column: "id",
-               builtType: "HUGEINT",
-               observedType: "DOUBLE",
-               storedAsDouble: true,
-            },
+   it("tolerates a column the table gained, and case and spacing in a type", () => {
+      const out = apply({
+         ...asBuilt,
+         columns: [
+            { name: "ID", nativeType: " BIGINT " },
+            { name: "name", nativeType: "TEXT" },
+            { name: "extra", nativeType: "integer" },
          ],
-         [
-            {
-               column: "total__partial",
-               builtType: "HUGEINT",
-               observedType: "DOUBLE",
-               storedAsDouble: true,
-               leftOut: true,
-            },
-         ],
-      ]);
-   });
-
-   it("keeps a substituted table (a rollup) whose column no cast reads, with that column left out", () => {
-      const out = applyObservedColumns({
-         entries,
-         bindings: [binding],
-         observed: new Map([
-            ["addr1", { columns: built }],
-            [
-               "rollup1",
-               { columns: [{ name: "total__partial", type: "VARCHAR" }] },
-            ],
-         ]),
-         declared: () => ({ columns: [], connectionName: "pg" }),
-      });
-      // Held as it is now, for the read plan, which reads no text as a
-      // number: the warning's column is left out.
-      expect(out.entries).toEqual({
-         addr1: entries.addr1,
-         rollup1: {
-            ...entries.rollup1,
-            heldRead: {
-               connectionName: "pg",
-               columns: [
-                  { name: "total__partial", type: "VARCHAR", moved: true },
-               ],
-            },
-         },
       });
       expect(out.bindings).toEqual([binding]);
-      expect(out.drifted[0].columns).toEqual([
-         {
-            column: "total__partial",
-            builtType: "DOUBLE",
-            observedType: "VARCHAR",
-            leftOut: true,
-         },
-      ]);
    });
 
-   describe("a substituted table (a rollup, a persisted view or query) whose columns moved", () => {
-      const view = {
-         tableName: '"s"."by_day"',
-         schema: [
-            { name: "flag", type: "BOOLEAN" },
-            { name: "d2", type: "DATE" },
-            { name: "n", type: "BIGINT" },
-            { name: "amt", type: "DOUBLE" },
-            { name: "gone", type: "VARCHAR" },
-         ],
-      };
-      const observed = (dialect: string) =>
-         new Map([
-            [
-               "v1",
-               {
-                  dialect,
-                  columns: [
-                     { name: "flag", type: "INTEGER" },
-                     { name: "d2", type: "TIMESTAMP" },
-                     { name: "n", type: "DECIMAL(22,2)" },
-                     { name: "amt", type: "VARCHAR" },
-                     { name: "other", type: "VARCHAR" },
-                  ],
-               },
-            ],
-         ]);
-
-      it("records the columns it holds now for a typed read, leaving out those no read gives live's values", () => {
-         const out = applyObservedColumns({
-            entries: { v1: view },
-            bindings: [],
-            observed: observed("postgres"),
-            declared: () => ({ columns: [], connectionName: "pg" }),
-         });
-         // A boolean now an integer, and a date now a timestamp, are held
-         // for the read plan's faithful cast; text where a number was, and a
-         // gone column, are left out.
-         expect(out.entries.v1).toEqual({
-            ...view,
-            heldRead: {
-               connectionName: "pg",
-               columns: [
-                  { name: "flag", type: "INTEGER", moved: true },
-                  { name: "d2", type: "TIMESTAMP", moved: true },
-                  { name: "n", type: "DECIMAL(22,2)" },
-                  { name: "amt", type: "VARCHAR", moved: true },
-                  { name: "other", type: "VARCHAR" },
-               ],
-            },
-            leftOutColumns: ["gone"],
-         });
-         // `n` still a number: not drift. `amt` is held, but no cast reads
-         // it as declared: the warning's and the read plan's left out.
-         expect(
-            out.drifted[0].columns.map((c) => [c.column, c.leftOut ?? false]),
-         ).toEqual([
-            ["flag", false],
-            ["d2", false],
-            ["amt", true],
-            ["gone", true],
-         ]);
-      });
-
-      it("answers live, whole, a table whose connection is not known (fail safe)", () => {
-         const out = applyObservedColumns({
-            entries: { v1: view },
-            bindings: [],
-            observed: observed("duckdb"),
-         });
-         expect(out.entries).toEqual({});
-         expect(out.drifted).toHaveLength(1);
-      });
-
-      it("takes each column's declared type and reader's time zone from its build source", () => {
-         const out = applyObservedColumns({
-            entries: {
-               v1: {
-                  tableName: "t",
-                  schema: [{ name: "d", type: "DATE" }],
-               },
-            },
-            bindings: [],
-            observed: new Map([
-               [
-                  "v1",
-                  {
-                     dialect: "duckdb",
-                     columns: [{ name: "d", type: "TIMESTAMP WITH TIME ZONE" }],
-                  },
-               ],
-            ]),
-            // An instant's date in a query time zone is not UTC's: no cast.
-            declared: () => ({
-               columns: [{ name: "d", type: "date" }],
-               connectionName: "duckdb",
-               queryTimezone: "America/New_York",
-            }),
-         });
-         expect(out.drifted[0].columns).toEqual([
+   it("leaves out a table whose column was retyped, gone, or recollated: incompatible, never cast", () => {
+      for (const [observed, code, columns] of [
+         [
             {
-               column: "d",
-               builtType: "DATE",
-               observedType: "TIMESTAMP WITH TIME ZONE",
-               leftOut: true,
+               ...asBuilt,
+               columns: [
+                  { name: "id", nativeType: "numeric(22,2)" },
+                  { name: "name", nativeType: "text" },
+               ],
+            },
+            "column_retyped",
+            ["id"],
+         ],
+         [
+            { ...asBuilt, columns: [{ name: "name", nativeType: "text" }] },
+            "column_gone",
+            ["id"],
+         ],
+         [
+            {
+               ...asBuilt,
+               collations: {
+                  byColumn: new Map([["name", "binary"]]),
+                  otherwise: null,
+               },
+            },
+            "collation_changed",
+            ["name"],
+         ],
+      ] as const) {
+         const out = apply(observed);
+         expect(out.bindings).toEqual([]);
+         expect(out.entries).toEqual({});
+         expect(out.incompatible).toEqual([
+            {
+               sourceEntityId: "addr1",
+               tableName: "orders_t",
+               builtAt: "2026-11-20T00:00:00.000Z",
+               code,
+               columns: [...columns],
             },
          ]);
-      });
-
-      // C1/H1: a move inside one Malloy type that may round a value is left
-      // out; only a widening that loses nothing is read as it is.
-      for (const [built, now, kept] of [
-         ["INTEGER", "BIGINT", true],
-         ["DECIMAL(10,1)", "DECIMAL(12,2)", true],
-         ["FLOAT", "DOUBLE", true],
-         ["INTEGER", "DECIMAL(10,0)", true],
-         ["DECIMAL(10,1)", "DECIMAL(10,0)", false],
-         ["DECIMAL(20,0)", "DOUBLE", false],
-         ["BIGINT", "INTEGER", false],
-         ["DOUBLE", "FLOAT", false],
-         ["BIGINT", "DECIMAL(18,0)", false],
-      ] as const) {
-         it(`reads ${built} now ${now} ${kept ? "as it is" : "left out"}`, () => {
-            const out = applyObservedColumns({
-               entries: {
-                  v1: {
-                     tableName: "t",
-                     connectionName: "duckdb",
-                     schema: [{ name: "x", type: built }],
-                     nativeSchema: [{ name: "x", type: built }],
-                  },
-               },
-               bindings: [],
-               observed: new Map([
-                  [
-                     "v1",
-                     {
-                        dialect: "duckdb",
-                        columns: [{ name: "x", type: now, nativeType: now }],
-                     },
-                  ],
-               ]),
-            });
-            expect(out.entries.v1?.leftOutColumns ?? []).toEqual(
-               kept ? [] : ["x"],
-            );
-            expect(
-               out.entries.v1?.heldRead?.columns.map((c) => c.name) ?? [],
-            ).toEqual(kept ? ["x"] : []);
-         });
       }
-
-      // Fixed-length text pads with blanks: a move to or from it, or to
-      // another fixed length, is never read as it is ('ab' against 'ab ').
-      for (const [built, now, kept] of [
-         ["character(2)", "character varying(2)", false],
-         ["character varying(2)", "character(2)", false],
-         ["bpchar", "varchar", false],
-         ["character(2)", "character(3)", false],
-         ["character varying(2)", "character varying(3)", true],
-         ["character varying(3)", "character varying(2)", false],
-      ] as const) {
-         it(`reads ${built} now ${now} ${kept ? "as it is" : "left out"} (Postgres)`, () => {
-            const out = applyObservedColumns({
-               entries: {
-                  v1: {
-                     tableName: "t",
-                     connectionName: "pg",
-                     schema: [{ name: "x", type: "VARCHAR" }],
-                     nativeSchema: [{ name: "x", type: built }],
-                  },
-               },
-               bindings: [],
-               observed: new Map([
-                  [
-                     "v1",
-                     {
-                        dialect: "postgres",
-                        columns: [
-                           { name: "x", type: "VARCHAR", nativeType: now },
-                        ],
-                     },
-                  ],
-               ]),
-            });
-            expect(out.entries.v1?.leftOutColumns ?? []).toEqual(
-               kept ? [] : ["x"],
-            );
-         });
-      }
-
-      it("keeps the bare table when every moved column still reads as declared", () => {
-         const out = applyObservedColumns({
-            entries: {
-               v1: { tableName: "t", schema: [{ name: "n", type: "INTEGER" }] },
-            },
-            bindings: [],
-            observed: new Map([
-               [
-                  "v1",
-                  {
-                     dialect: "duckdb",
-                     columns: [{ name: "n", type: "BIGINT" }],
-                  },
-               ],
-            ]),
-         });
-         expect(out.entries.v1).toEqual({
-            tableName: "t",
-            schema: [{ name: "n", type: "INTEGER" }],
-         });
-         expect(out.drifted).toEqual([]);
-      });
    });
 
-   it("leaves out a table that was not read, binding and entry alike (fail safe)", () => {
-      const out = applyObservedColumns({
-         entries,
-         bindings: [binding],
-         observed: new Map([
-            [
-               "addr1",
-               {
-                  unread: "connection_failed" as const,
-                  detail: "connection refused",
-               },
-            ],
-         ]),
-      });
-      expect(out.entries).toEqual({});
+   it("leaves out a table whose read failed as unread, never incompatible", () => {
+      const out = apply({ unread: "timed_out" });
       expect(out.bindings).toEqual([]);
       expect(out.unread).toEqual([
-         {
-            sourceEntityId: "addr1",
-            reason: "connection_failed",
-            detail: "connection refused",
-         },
-         { sourceEntityId: "rollup1", reason: "not_read" },
+         { sourceEntityId: "addr1", reason: "timed_out" },
       ]);
+      expect(out.incompatible).toEqual([]);
    });
 
-   // A big integer altered to a decimal is read with its new type only when
-   // the decimal holds all its digits; a narrower one may have rounded it.
-   for (const [native, served] of [
-      ["numeric(22,2)", true],
-      ["numeric(10,2)", false],
-   ] as const) {
-      it(`a big integer altered to ${native}: ${served ? "retyped, and cast to the type it holds now" : "left out"}`, () => {
-         const big: Binding = {
-            ...binding,
-            schema: [{ name: "n", type: "BIGINT" }],
-            nativeSchema: [{ name: "n", type: "bigint" }],
-         };
-         const out = applyObservedColumns({
-            entries: {
-               addr1: {
-                  tableName: "orders_t",
-                  schema: [{ name: "n", type: "BIGINT" }],
-                  nativeSchema: [{ name: "n", type: "bigint" }],
-               },
-            },
-            bindings: [big],
-            observed: new Map([
-               [
-                  "addr1",
-                  {
-                     dialect: "postgres",
-                     columns: [
-                        { name: "n", type: "DOUBLE", nativeType: native },
-                     ],
-                  },
-               ],
-            ]),
-         });
-         if (served) {
-            // Never cast to the bigint it was built as: that truncates a
-            // fraction.
-            expect(out.bindings[0].schema).toEqual([
-               { name: "n", type: "DOUBLE" },
-            ]);
-            expect(out.bindings[0].nativeSchema).toEqual([
-               { name: "n", type: native },
-            ]);
-         } else {
-            expect(out.bindings[0].schema).toEqual([]);
-         }
-         expect(out.drifted.map((d) => d.columns.map((c) => c.column))).toEqual(
-            [["n"]],
-         );
-         expect(out.drifted[0].columns[0].leftOut).toBe(
-            served ? undefined : true,
-         );
-      });
-   }
-
-   it("leaves out a timestamp whose zone changed, unless the session is DuckDB's UTC", () => {
-      const ts: Binding = {
-         ...binding,
-         schema: [{ name: "at", type: "TIMESTAMP" }],
-      };
-      const read = (dialect: string) =>
+   it("leaves out a table whose entry carries no contract, with or without an observation", () => {
+      const bare = { addr1: { tableName: "orders_t", schema: built } };
+      for (const out of [
+         apply(asBuilt, bare),
          applyObservedColumns({
-            entries: {
-               addr1: {
-                  tableName: "orders_t",
-                  schema: [{ name: "at", type: "TIMESTAMP" }],
-               },
-            },
-            bindings: [ts],
-            observed: new Map([
-               [
-                  "addr1",
-                  {
-                     dialect,
-                     columns: [
-                        {
-                           name: "at",
-                           type: "TIMESTAMP WITH TIME ZONE",
-                           nativeType: "timestamp with time zone",
-                        },
-                     ],
-                  },
-               ],
-            ]),
-         });
-      expect(read("postgres").bindings[0].schema).toEqual([]);
-      expect(read("duckdb").bindings[0].schema).toEqual(ts.schema);
+            entries: bare as never,
+            bindings: [binding],
+            observed: undefined,
+         }),
+      ]) {
+         expect(out.bindings).toEqual([]);
+         expect(out.entries).toEqual({});
+         expect(out.contractMissing).toEqual(["addr1"]);
+      }
    });
 
-   it("leaves a rollup's big integer now held as a float out of its reads", () => {
-      const out = applyObservedColumns({
-         entries: {
-            rollup1: {
-               tableName: "orders_by_d",
-               connectionName: "pg",
-               schema: [{ name: "total__partial", type: "BIGINT" }],
-               nativeSchema: [{ name: "total__partial", type: "bigint" }],
+   it("leaves out a substituted table whose source now declares another type: declared_moved", () => {
+      const rollup = {
+         r1: {
+            tableName: "orders_by_d",
+            schema: [{ name: "total__partial", type: "DOUBLE" }],
+            contract: {
+               v: 1,
+               dialect: "postgres",
+               columns: [
+                  {
+                     name: "total__partial",
+                     nativeType: "double precision",
+                     collation: null,
+                     compare: "exact",
+                     gateExact: false,
+                     // What its build source declared when it was built.
+                     declaredType: "number",
+                  },
+               ],
             },
          },
+      };
+      const out = applyObservedColumns({
+         entries: rollup as never,
          bindings: [],
          observed: new Map([
             [
-               "rollup1",
+               "r1",
                {
                   dialect: "postgres",
                   columns: [
@@ -1257,204 +1008,100 @@ describe("applyObservedColumns", () => {
                         nativeType: "double precision",
                      },
                   ],
+                  collations: { byColumn: new Map(), otherwise: null },
                },
             ],
          ]),
+         declared: () => ({
+            columns: [{ name: "total__partial", type: "date" }],
+         }),
       });
-      // Its digits past 2^53 are lost: left out, never read as exact.
-      expect(out.entries.rollup1?.leftOutColumns).toEqual(["total__partial"]);
-   });
-
-   // A build whose schema read failed (an unqualified Postgres table) records
-   // only native types, so the binding's declared `date` stands in for what
-   // it wrote: a date truncation the warehouse returns as a timestamp.
-   for (const { dialect, nativeType, observedType } of [
-      {
-         dialect: "postgres",
-         nativeType: "timestamp with time zone",
-         observedType: "TIMESTAMP WITH TIME ZONE",
-      },
-      {
-         dialect: "postgres",
-         nativeType: "timestamp without time zone",
-         observedType: "TIMESTAMP",
-      },
-      { dialect: "duckdb", nativeType: "TIMESTAMP", observedType: "TIMESTAMP" },
-   ]) {
-      const truncation = (now: string) =>
-         applyObservedColumns({
-            entries: {
-               addr1: {
-                  tableName: "orders_t",
-                  nativeSchema: [{ name: "d_month", type: nativeType }],
-               },
-            },
-            bindings: [
-               {
-                  ...binding,
-                  schema: [{ name: "d_month", type: "DATE" }],
-                  nativeSchema: [{ name: "d_month", type: nativeType }],
-               },
-            ],
-            observed: new Map([
-               [
-                  "addr1",
-                  {
-                     dialect,
-                     columns: [
-                        {
-                           name: "d_month",
-                           type: now === nativeType ? observedType : "VARCHAR",
-                           nativeType: now,
-                        },
-                     ],
-                  },
-               ],
-            ]),
-         });
-
-      it(`a date truncation stored as its build wrote it (${dialect} ${nativeType}) is read as it holds, and is not drift`, () => {
-         const out = truncation(nativeType);
-         expect(out.drifted).toEqual([]);
-         expect(Object.keys(out.entries)).toEqual(["addr1"]);
-         // Still read with the type it holds, so the read plan casts it.
-         expect(out.bindings[0].schema).toEqual([
-            { name: "d_month", type: observedType },
-         ]);
-      });
-
-      it(`a date truncation altered after its build (${dialect} ${nativeType} to text) is still drift`, () => {
-         const out = truncation(dialect === "postgres" ? "text" : "VARCHAR");
-         expect(out.bindings[0].schema).toEqual([
-            { name: "d_month", type: "VARCHAR" },
-         ]);
-         // Reported against the native type its build captured.
-         expect(out.drifted.map((d) => d.columns.map((c) => c.column))).toEqual(
-            [["d_month"]],
-         );
-      });
-   }
-
-   it("with no native type captured, a column that reads as another type than declared is still drift", () => {
-      const out = applyObservedColumns({
-         entries: { addr1: { tableName: "orders_t" } },
-         bindings: [{ ...binding, schema: [{ name: "d", type: "DATE" }] }],
-         observed: new Map([
-            [
-               "addr1",
-               {
-                  dialect: "postgres",
-                  columns: [
-                     { name: "d", type: "TIMESTAMP", nativeType: "timestamp" },
-                  ],
-               },
-            ],
-         ]),
-      });
-      expect(out.drifted).toEqual([
-         {
-            sourceEntityId: "addr1",
-            columns: [
-               { column: "d", builtType: "DATE", observedType: "TIMESTAMP" },
-            ],
-         },
+      expect(out.entries).toEqual({});
+      expect(out.incompatible).toMatchObject([
+         { sourceEntityId: "r1", code: "declared_moved" },
       ]);
-   });
-
-   it("passes a storage binding through untouched", () => {
-      const storage: Binding = {
-         ...binding,
-         tier: "storage",
-         virtualHandle: "s1",
-      };
-      const out = applyObservedColumns({
-         entries: {},
-         bindings: [storage],
-         observed: new Map(),
-      });
-      expect(out.bindings).toEqual([storage]);
    });
 });
 
-/** One colocated served-copy binding over `x`, with what its build captured. */
-function bindSpelled(args: {
-   declared: string;
-   builtNative?: string;
-   builtSchema?: string;
-   now: string;
-   nowNative: string;
-}) {
+describe("holdStorageToContracts", () => {
+   const storageBinding: Binding = {
+      kind: "persist",
+      tier: "storage",
+      sourceName: "daily",
+      sourceIDs: [ID],
+      destinationName: "lake",
+      virtualHandle: "s1",
+      tablePath: "lake.daily_t",
+      schema: [{ name: "cat", type: "VARCHAR" }],
+   };
    const entry = {
-      tableName: "t",
-      connectionName: "c",
-      ...(args.builtSchema
-         ? { schema: [{ name: "x", type: args.builtSchema }] }
-         : {}),
-      ...(args.builtNative
-         ? { nativeSchema: [{ name: "x", type: args.builtNative }] }
-         : {}),
-   };
-   const binding = {
-      kind: "materialize",
-      tier: "colocated",
-      sourceName: "s",
-      destinationName: "c",
-      virtualHandle: "e",
-      tablePath: "t",
-      schema: [{ name: "x", type: args.declared }],
-   };
-   const out = applyObservedColumns({
-      entries: { e: entry } as never,
-      bindings: [binding] as never,
-      observed: new Map([
-         [
-            "e",
+      sourceEntityId: "s1",
+      physicalTableName: "daily_t",
+      storageDestinationName: "lake",
+      builtAt: "2026-11-20T00:00:00.000Z",
+      contract: {
+         v: 1,
+         dialect: "duckdb",
+         columns: [
             {
-               dialect: "postgres",
-               columns: [
-                  { name: "x", type: args.now, nativeType: args.nowNative },
-               ],
+               name: "cat",
+               nativeType: "VARCHAR",
+               collation: "binary",
+               compare: "exact",
+               gateExact: true,
             },
          ],
-      ]) as never,
-   });
-   return {
-      column: out.bindings[0]?.schema.find((c) => c.name === "x"),
-      drifted: out.drifted.length > 0,
+      },
    };
-}
-
-// The bind compares spelled types for a narrowing only when the build
-// captured no native type: a binding's declared type may stand in for a
-// captured one, and a column whose native type is as built has not moved.
-describe("the spelled-type narrowing check runs only with no native capture", () => {
-   it("a column natively as built is read, not left out, when its declared type stands in", () => {
-      const r = bindSpelled({
-         declared: "BIGINT",
-         builtNative: "integer",
-         now: "INTEGER",
-         nowNative: "integer",
-      });
-      expect(r.column).toBeDefined();
-      expect(r.drifted).toBe(false);
+   const read = (collation: string) => ({
+      dialect: "duckdb",
+      columns: [{ name: "cat", nativeType: "VARCHAR" }],
+      collations: { byColumn: new Map(), otherwise: collation },
    });
-   it("with no native capture, a narrowing seen only in the spelled types is left out", () => {
+
+   it("keeps a stored table as its contract recorded, and leaves out one recollated or missing a contract", () => {
       expect(
-         bindSpelled({
-            declared: "DECIMAL(10,1)",
-            builtSchema: "DECIMAL(10,1)",
-            now: "DECIMAL(10,0)",
-            nowNative: "numeric(10,0)",
-         }).column,
-      ).toBeUndefined();
-      // A gate column: two tenants either side of 2^53 would read alike.
-      expect(
-         bindSpelled({
-            declared: "BIGINT",
-            builtSchema: "BIGINT",
-            now: "DOUBLE",
-            nowNative: "double precision",
-         }).column,
-      ).toBeUndefined();
+         holdStorageToContracts({
+            bindings: [storageBinding],
+            entries: { s1: entry as never },
+            observed: new Map([["s1", read("binary") as never]]),
+         }).bindings,
+      ).toEqual([storageBinding]);
+      const recollated = holdStorageToContracts({
+         bindings: [storageBinding],
+         entries: { s1: entry as never },
+         observed: new Map([["s1", read("duckdb:nocase") as never]]),
+      });
+      expect(recollated.bindings).toEqual([]);
+      expect(recollated.incompatible).toEqual([
+         {
+            sourceEntityId: "s1",
+            tableName: "daily_t",
+            builtAt: "2026-11-20T00:00:00.000Z",
+            code: "collation_changed",
+            columns: ["cat"],
+         },
+      ]);
+      const { contract: _none, ...bare } = entry;
+      const missing = holdStorageToContracts({
+         bindings: [storageBinding],
+         entries: { s1: bare as never },
+         observed: undefined,
+      });
+      expect(missing.bindings).toEqual([]);
+      expect(missing.contractMissing).toEqual(["s1"]);
+   });
+
+   it("leaves out a stored table whose read failed as unread, never incompatible", () => {
+      const out = holdStorageToContracts({
+         bindings: [storageBinding],
+         entries: { s1: entry as never },
+         observed: new Map([["s1", { unread: "connection_failed" } as never]]),
+      });
+      expect(out.bindings).toEqual([]);
+      expect(out.unread).toEqual([
+         { sourceEntityId: "s1", reason: "connection_failed" },
+      ]);
+      expect(out.incompatible).toEqual([]);
    });
 });

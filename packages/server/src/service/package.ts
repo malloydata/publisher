@@ -1,10 +1,28 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import {
+   bigqueryBuildCompareBinary,
+   chainBuildStringReads,
+   planChainBuildText,
+} from "./materialization";
+import type {
+   BoundStorageColumns,
+   BoundStorageContract,
+   BoundTableContract,
+   PlanChainBuildText,
+   PlanChainStringReads,
+} from "./materialization/domain/chain_build";
 import { quotedIdentifier, quotedPath, stringLiteral } from "./malloy_text";
 import { INCREMENTAL_NO_MERGE_KEY_CODE } from "./materialization/plan/incremental_policy";
-import { recordConnectionType } from "./connection_type";
-import { nearMissGateLines } from "./materialization";
+import { isManagedConnection, recordConnectionType } from "./connection_type";
+import { readUpstreamSchemas, withNameProblems } from "./materialization";
+import {
+   type UpstreamSchemaReadings,
+   type UpstreamTable,
+   upstreamSchemaFold,
+   upstreamTableKey,
+} from "./materialization/domain/upstream_schemas";
 import * as fs from "fs/promises";
 import * as path from "path";
 import { pathToFileURL } from "url";
@@ -61,7 +79,8 @@ import {
    PackageNotFoundError,
    ServiceUnavailableError,
 } from "../errors";
-import { applyExtensionSessionSettings } from "./connection";
+import { applyExtensionSessionSettings } from "./duckdb_session_setup";
+import { authorSqlRefusals, sandboxedDuckDBOptions } from "./duckdb_lockdown";
 import { closeMalloyConfig, ownDuckDBConnection } from "./duckdb_hard_close";
 import { formatDuration, logger } from "../logger";
 import {
@@ -99,12 +118,19 @@ import {
    BuildManifest,
    BuildPlan,
    FreshnessManifest,
+   ManifestEntry,
 } from "./materialization/domain/types";
 import type {
    ChainBuildRequest,
    ChainBuildText,
 } from "./materialization/domain/chain_build";
-import type { KeptTable } from "./materialization/domain/types";
+import type { KeptTable, LateRows } from "./materialization/domain/types";
+import type {
+   IncrementalCheckFinding,
+   LedgerParent,
+   UnprovenGeneration,
+} from "./materialization/domain/incremental";
+import { underCompilerKeys } from "./materialization/domain/binding";
 import {
    confinedPackagePath,
    errMessage,
@@ -114,9 +140,10 @@ import {
 import { packageResource } from "../api_resource";
 import { isPackageInlineFieldsEnabled } from "../config";
 import type {
-   ColocatedSourceEligibility,
+   DatabaseSourceEligibility,
+   PersistNameProblem,
    SourceEligibility,
-} from "./materialization/plan/build_plan";
+} from "./materialization/domain/package_plan";
 import {
    PackageMaterialization,
    type PackageMaterializationView,
@@ -155,12 +182,15 @@ import {
    JOIN_BYPASS,
    joinBypasses,
 } from "./join_bypass";
-import {
-   ambiguousDashboardNameWarnings,
-   type ReportViewPackage,
-} from "./legacy_report_views";
+import { type ReportViewPackage } from "./legacy_report_views";
 import { recordDeprecatedManifestKeys } from "./deprecated/manifest_keys";
-import { isMalloynbPath } from "./deprecated/malloynb";
+import {
+   isMalloynbPath,
+   listMalloynbCellFindings,
+   MALLOYNB_CELL_CHECK_FAILED,
+   MALLOYNB_CELL_REFUSED,
+   MALLOYNB_CELLS_LISTED,
+} from "./deprecated/malloynb";
 import {
    EXPLORES_IMPORTER,
    exploresSurfaceFiles,
@@ -172,7 +202,6 @@ import {
    buildReportManifest,
    dropGridTileLayoutFindings,
    factsReportTag,
-   matchesDocumentedReportName,
    lintReport,
    lintDrillTargets,
    lintGivenTags,
@@ -208,10 +237,7 @@ import {
    type ApiSecureGivenSummary,
    summarizeSecureGivens,
 } from "./secure_givens";
-import {
-   persistNameProblems,
-   type PersistNameProblem,
-} from "./materialization/plan/persist_annotation_validation";
+import { persistNameProblems } from "./materialization/plan/persist_annotation_validation";
 import {
    applyLoadGates,
    assertOutcomeStagesAvailable,
@@ -224,7 +250,7 @@ type ApiDatabase = components["schemas"]["Database"];
 type ApiModel = components["schemas"]["Model"];
 type ApiReport = components["schemas"]["Report"];
 type ApiReportManifest = components["schemas"]["ReportManifest"];
-type ApiRawNotebook = components["schemas"]["RawNotebook"];
+type ApiReportCells = components["schemas"]["ReportCells"];
 
 /** One report discovery found and serves, keyed by its path. */
 interface ServedReport {
@@ -402,6 +428,12 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
     */
    private dryRun = false;
    /**
+    * This load is an explicit refresh (a reload, a publish): it reads its
+    * upstream tables' column types from their catalogs again rather than
+    * keep this process's readings (readUpstreamSchemas).
+    */
+   private refreshesUpstreamSchemas = false;
+   /**
     * The package's materialization state: build plan, eligibility, bound
     * manifest, serve routing and persistence-policy findings.
     */
@@ -435,10 +467,10 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    protected set sourceEligibility(eligibility: SourceEligibility | undefined) {
       this.mz.plan.sourceEligibility = eligibility;
    }
-   protected set colocatedSourceEligibility(
-      eligibility: ColocatedSourceEligibility | undefined,
+   protected set databaseSourceEligibility(
+      eligibility: DatabaseSourceEligibility | undefined,
    ) {
-      this.mz.plan.colocatedSourceEligibility = eligibility;
+      this.mz.plan.databaseSourceEligibility = eligibility;
    }
    // Non-fatal render-tag findings across the models; a bad tag does not fail
    // the load, so this is its signal.
@@ -450,7 +482,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
     * ({@link compileKeyOf}); `bound` the whole entries last bound (freshness
     * and schemas too), undefined while none has been; `quoted` the entries
     * the compile quoted, from `quotedFrom`. Every other part is compared by
-    * identity: any other reload, colocated bind or plan change since makes
+    * identity: any other reload, database bind or plan change since makes
     * the next rebind recompile.
     */
    private reloadedFor:
@@ -460,7 +492,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
            quotedFrom: string;
            quoted: FreshnessManifest;
            models: Map<string, Model>;
-           colocated: unknown;
+           database: unknown;
            buildPlan: unknown;
            connectionEdits: number;
         }
@@ -470,6 +502,8 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    /** The annotations the entities extraction left out, as warnings. */
    private entitiesWarnings: ApiPackageWarning[] = [];
    private reportWarnings: ApiPackageWarning[] = [];
+   /** Refused `.malloynb` cells the last lint named only in a summary warning. */
+   private malloynbCellsUnlisted = 0;
    /** Linear reports whose cells the reader refused; set with the reports. */
    private readerWarnings: ApiPackageWarning[] = [];
    // Every served report keyed by path, in path order, computed per load (the
@@ -947,14 +981,20 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
           */
          versionId?: string;
          /**
-          * The colocated entries of the manifest the package is about to be
+          * The database entries of the manifest the package is about to be
           * bound to, read while it compiles: its models are hydrated over
           * them, so the bind that follows (`reloadAllModels` with
           * `ifChanged`) binds without compiling the package a second time.
           * Undefined, or a read that fails, loads it as with none; nothing is
           * bound until that bind.
           */
-         colocated?: Promise<FreshnessManifest | undefined>;
+         database?: Promise<FreshnessManifest | undefined>;
+         /**
+          * An explicit refresh (a reload, a publish): every table and SQL
+          * schema the package reads is fetched again rather than read from
+          * the schema caches, which keep it after.
+          */
+         refreshSchemas?: boolean;
       } = {},
    ): Promise<Package> {
       return withSpan(
@@ -976,7 +1016,8 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
                   cleanupDirectoryOnFailure,
                   options.dryRun === true,
                   options.versionId,
-                  options.colocated,
+                  options.database,
+                  options.refreshSchemas === true,
                ),
             ),
       );
@@ -990,7 +1031,8 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       cleanupDirectoryOnFailure: boolean,
       dryRun: boolean,
       versionId?: string,
-      colocated?: Promise<FreshnessManifest | undefined>,
+      database?: Promise<FreshnessManifest | undefined>,
+      refreshSchemas: boolean = false,
    ): Promise<Package> {
       assertSafeEnvironmentPath(packagePath);
       const startTime = performance.now();
@@ -1023,7 +1065,8 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             manifestValidationTime,
             dryRun,
             versionId,
-            colocated,
+            database,
+            refreshSchemas,
          );
       } catch (error) {
          // No caller ever holds a package whose load failed, so its own
@@ -1423,29 +1466,31 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       manifestValidationTime: number,
       dryRun: boolean,
       versionId?: string,
-      colocated?: Promise<FreshnessManifest | undefined>,
+      database?: Promise<FreshnessManifest | undefined>,
+      refreshSchemas: boolean = false,
    ): Promise<Package> {
       const pool = getPackageLoadPool();
       const dispatchTime = performance.now();
       // Wrapped on its own so the 503 mapping never touches readDatabases' errors.
       const workerOutcome = loadOutcomeOrThrow(
          pool.loadPackage({
+            upstreamSchemas: readUpstreamSchemas,
             packagePath,
             packageName,
             environmentName,
             malloyConfig,
             defaultConnectionName: "duckdb",
             computeBuildPlan: true,
-            withPreaggregateCompanions: true,
             withEntities: true,
             ...(versionId !== undefined ? { publishedVersion: true } : {}),
+            ...(refreshSchemas ? { refreshSchemas: true } : {}),
          }),
       );
-      const [outcome, databases, colocatedEntries] = await Promise.all([
+      const [outcome, databases, databaseEntries] = await Promise.all([
          workerOutcome,
          Package.readDatabases(packagePath, malloyConfig),
          // The bind that follows reports a failed read; this load serves live.
-         colocated?.catch(() => undefined),
+         database?.catch(() => undefined),
       ]);
       assertOutcomeStagesAvailable(outcome);
       const workerDoneTime = performance.now();
@@ -1460,23 +1505,31 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
               quoted: FreshnessManifest;
            }
          | undefined;
-      if (colocatedEntries && Object.keys(colocatedEntries).length > 0) {
+      if (databaseEntries && Object.keys(databaseEntries).length > 0) {
          compiledFor = {
-            key: Package.compileKeyOf(colocatedEntries),
-            requested: JSON.stringify(colocatedEntries),
+            key: Package.compileKeyOf(databaseEntries),
+            requested: JSON.stringify(databaseEntries),
             quoted: await Package.quoteTableNames(
                packageName,
                (connectionName) =>
                   malloyConfig.connections.lookupConnection(connectionName),
-               colocatedEntries,
+               databaseEntries,
                Package.planConnectionsOf(
-                  outcome.buildPlan?.ok ? outcome.buildPlan.outcome.plan : null,
+                  outcome.buildPlan?.ok
+                     ? outcome.buildPlan.packagePlan.plan
+                     : null,
                ),
             ),
          };
       }
+      // As Malloy reads it: each entry also under its compiler key.
       const buildManifest = compiledFor
-         ? toTableNameManifest(compiledFor.quoted)
+         ? underCompilerKeys(
+              { entries: toTableNameManifest(compiledFor.quoted) },
+              outcome.buildPlan?.ok
+                 ? outcome.buildPlan.packagePlan.compilerKeys
+                 : undefined,
+           ).entries
          : undefined;
       logger.info("Package load via worker pool completed", {
          packageName,
@@ -1565,6 +1618,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          modelPolicy,
       );
       pkg.dryRun = dryRun;
+      pkg.refreshesUpstreamSchemas = refreshSchemas;
       pkg.persistNameProblems = nameProblems;
       let reportTimings: Awaited<ReturnType<Package["discoverReports"]>>;
       let buildPlanMs: Awaited<
@@ -1586,7 +1640,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          pkg.refreshServingIdentity();
 
          buildPlanMs = await pkg.mz.applyLoadBuildPlan(outcome.buildPlan);
-         // Before any bind, so a colocated rollup bound later is routed.
+         // Before any bind, so a database rollup bound later is routed.
          pkg.mz.pushServedCopyContextToModels();
 
          await applyLoadGates(pkg);
@@ -1594,7 +1648,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          await pkg.computeEntities(Package.entityPlansOf(outcome));
          entitiesMs = performance.now() - entitiesStarted;
          pkg.logEmptyDiscoveryWarnings();
-         // Compiled against them, bound to none yet (see `colocated`).
+         // Compiled against them, bound to none yet (see `database`).
          if (compiledFor) {
             pkg.reloadedFor = pkg.reloadKey(compiledFor.key, undefined, {
                from: compiledFor.requested,
@@ -1671,8 +1725,56 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
     * tables drops their bound key checks first (see
     * PackageMaterialization.forgetKeyUniqueness).
     */
+   /** The host port's `boundLateRows` (PackageMaterialization.boundLateRows). */
+   public boundLateRows(): ReadonlyMap<string, LateRows> {
+      return this.mz.boundLateRows();
+   }
+
+   /** The host port's `boundParentReads` (PackageMaterialization.boundParentReads). */
+   public boundParentReads(): ReadonlyMap<string, readonly LedgerParent[]> {
+      return this.mz.boundParentReads();
+   }
+
+   /** The host port's `boundIncrementalEntries` (PackageMaterialization.boundIncrementalEntries). */
+   public boundIncrementalEntries(): ReadonlyMap<
+      string,
+      Pick<ManifestEntry, "builtAt" | "ledger">
+   > {
+      return this.mz.boundIncrementalEntries();
+   }
+
+   /** The host port's `setUnprovenGenerations`. */
+   public setUnprovenGenerations(list: readonly UnprovenGeneration[]): void {
+      this.mz.setUnprovenGenerations(list);
+   }
+
    public forgetKeyUniqueness(sourceEntityIds: Iterable<string>): void {
       this.mz.forgetKeyUniqueness(sourceEntityIds);
+   }
+
+   /** The host port's `boundTableNames`: every database table bound now. */
+   public boundTableNames(): string[] {
+      const names = new Set<string>();
+      for (const entries of [
+         this.mz.getBuildManifestEntries(),
+         this.mz.boundDatabaseEntries(),
+      ]) {
+         for (const entry of Object.values(entries ?? {})) {
+            if (entry.tableName) names.add(entry.tableName);
+         }
+      }
+      return [...names];
+   }
+
+   /**
+    * The host port's `noteIncrementalCheck`: what a run found of a source's
+    * incremental checks (see PackageMaterialization.noteIncrementalCheck).
+    */
+   public noteIncrementalCheck(
+      sourceEntityId: string,
+      finding: IncrementalCheckFinding,
+   ): void {
+      this.mz.noteIncrementalCheck(sourceEntityId, finding);
    }
 
    /**
@@ -1683,10 +1785,25 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       this.mz.setKeptTables(tables);
    }
 
+   /** The host port's `incompatibleTables` (see PackageMaterialization.incompatibleTables). */
+   public incompatibleTables(
+      prior?: Readonly<Record<string, ManifestEntry>>,
+   ): ReadonlySet<string> {
+      return this.mz.incompatibleTables(prior);
+   }
+
    /** The host port's `chainBuildText` (see PackageMaterialization.chainBuildText). */
+   /** See {@link BuildEnvironment.reportIncompatible}. */
+   public reportIncompatible(handles: readonly string[]): void {
+      this.mz.reportIncompatible(handles);
+   }
+
    public chainBuildText(request: ChainBuildRequest): ChainBuildText {
       return this.mz.chainBuildText(request);
    }
+
+   /** See {@link BuildEnvironment.bigqueryBuildCompareBinary}. */
+   public readonly bigqueryBuildCompareBinary = bigqueryBuildCompareBinary;
 
    /** The persist build plan, or null when the package declares no persist source. */
    public getBuildPlan(): BuildPlan | null {
@@ -2121,15 +2238,20 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             severity: "warn" as const,
          })),
          ...this.mz.storageWarnings(),
+         ...this.mz.dataInliningWarnings(),
          ...this.mz.storedColumnTypeWarnings(),
          ...this.mz.nativeSchemaWarnings(),
          ...this.mz.databaseTableUnreadWarnings(),
          ...this.mz.servedCopyWarnings(),
          ...this.mz.repeatedJoinOneKeyWarnings(),
+         ...this.mz.lateRowWarnings(),
+         ...this.mz.incrementalCheckWarnings(),
+         ...this.mz.unprovenGenerationWarnings(),
          ...this.mz.keptTableWarnings(),
          ...this.mz.annotationFindingWarnings(),
          ...this.annotationNearMissWarnings(),
          ...this.mz.persistRefusalWarnings(),
+         ...this.mz.asOfBuildWarnings(),
          // One verdict pass: unreachable, and the deployment facts (P13).
          ...this.mz.verdictWarnings(),
          // Not in exploresWarnings: an import-only file must not block publish.
@@ -2137,7 +2259,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          ...deprecatedFormatWarnings(this.models),
          ...this.classificationWarningsMemoized(),
          ...this.joinBypassWarnings(),
-         ...ambiguousDashboardNameWarnings(this),
+         ...this.gateLoadWarnings(),
          // The 404s a broken surface causes name models that are not broken.
          ...this.brokenSurfaceWarnings(),
          ...(this.surfaceWidenedWarning !== undefined
@@ -2210,6 +2332,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       return this.mz.refreshBuildPlan(async () => {
          const outcome = await loadOutcomeOrThrow(
             getPackageLoadPool().loadPackage({
+               upstreamSchemas: readUpstreamSchemas,
                packagePath: this.packagePath,
                packageName: this.packageName,
                environmentName: this.environmentName,
@@ -2351,6 +2474,29 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       return messages.join("\n");
    }
 
+   /**
+    * Author SQL in this package's models that would not run read-only on a
+    * DuckDB connection, one line per refusal (duckdb_lockdown.ts).
+    */
+   public async formatAuthorSqlRefusals(): Promise<string> {
+      const lines: string[] = [];
+      // A connection the model compiled against resolves; one that no longer
+      // does is held to the managed scope too, failing closed.
+      const isManaged = (connectionName: string) =>
+         this.getMalloyConnection(connectionName).then(
+            (connection) => isManagedConnection(connection),
+            () => true,
+         );
+      for (const [modelPath, model] of this.models) {
+         lines.push(
+            ...(await authorSqlRefusals(modelPath, model.getModelDef(), {
+               isManagedConnection: isManaged,
+            })),
+         );
+      }
+      return lines.join("\n");
+   }
+
    /** The async input of {@link formatCarriesCeilingLeaks}, prepared before a listing is judged. */
    public prepareCeilingQueries(): Promise<PreparedCeilingQueries> {
       return prepareCeilingQueries(this.models);
@@ -2415,53 +2561,48 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
     * and the load.
     */
    public formatInvalidAnnotations(): string {
-      return this.withNameProblems([
+      return withNameProblems(this.persistNameProblems, [
          this.mz.formatInvalidAnnotations(),
-         ...this.materializationNearMissLines(),
+         ...this.mz.nearMissLines(),
       ]);
-   }
-
-   /** A misspelled materialization route or directive, one line each. */
-   private materializationNearMissLines(): string[] {
-      return [...this.models].flatMap(([modelPath, model]) =>
-         nearMissGateLines(modelPath, model.annotationNearMisses?.() ?? []),
-      );
    }
 
    /**
     * The load gate's text: every invalid materialization annotation in the
     * package, one line each with its code, or "" when it is valid. The load
-    * fails with it; a run over the package's files and a re-derivation read
-    * the same text off the plan they derive (plan/load_gate_text.ts).
+    * fails with it; a run over the package's files, a re-derivation and a
+    * package compile read the same text off the plan they derive
+    * (plan/load_gate_text.ts).
     */
    public formatLoadGateText(): string {
-      return this.withNameProblems([
-         this.mz.formatLoadGateText(),
-         ...this.materializationNearMissLines(),
-      ]);
+      return this.mz.loadGateText(this.persistNameProblems);
    }
 
    /**
-    * `text`'s lines with the raw-text `name=` problems first, less the plan's
-    * own line for a name the raw text already reports unsafe: one line per
-    * mistake.
+    * One warning per non-fatal gate finding a model's load made: a gate an
+    * entry point cannot express (it denies every request), or one that reads
+    * no given or negates a membership test. Logged at load as well.
     */
-   private withNameProblems(text: string[]): string {
-      const unsafe = this.persistNameProblems.flatMap((p) =>
-         p.unsafeValue !== undefined
-            ? [`its name= "${p.unsafeValue}" is not a plain identifier path`]
-            : [],
-      );
-      return [
-         ...this.persistNameProblems.map((p) => p.line),
-         ...text
-            .filter(Boolean)
-            .join("\n")
-            .split("\n")
-            .filter((line) => !unsafe.some((u) => line.includes(u))),
-      ]
-         .filter(Boolean)
-         .join("\n");
+   private gateLoadWarnings(): ApiPackageWarning[] {
+      // A source several models import is checked in each; it is reported
+      // once, on the first model that found it.
+      const seen = new Set<string>();
+      const warnings: ApiPackageWarning[] = [];
+      for (const [modelPath, model] of this.models) {
+         for (const w of model.gateLoadWarnings()) {
+            const key = `${w.code}\u0000${w.sourceName}\u0000${w.message}`;
+            if (seen.has(key)) continue;
+            seen.add(key);
+            warnings.push({
+               model: modelPath,
+               subject: w.sourceName,
+               code: w.code,
+               severity: "warn",
+               message: w.message,
+            });
+         }
+      }
+      return warnings;
    }
 
    /**
@@ -2665,6 +2806,88 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    }
 
    /**
+    * After a reload or publish of this package failed to compile, so this
+    * copy keeps serving: read again the tables its plan's sources read, and
+    * stop serving the stored tables of every source a column of whose
+    * tables that its build SQL names changed or is gone (its address would
+    * move), so they answer live as the warehouse now stands. A source whose tables did not change, or whose
+    * tables cannot be known (no `reads`), keeps serving. A read that fails
+    * keeps the table's last reading, so it changes nothing. Returns the
+    * names of the sources it stopped serving, with the tables that changed.
+    */
+   public async withdrawChangedUpstreams(): Promise<{
+      sources: string[];
+      tables: string[];
+   }> {
+      const known = this.mz.plan.upstreamSchemas;
+      const tables = Object.keys(known).map((key) => {
+         const [connectionName, table] = JSON.parse(key) as [string, string];
+         return { connectionName, table };
+      });
+      if (tables.length === 0) return { sources: [], tables: [] };
+      const now = await readUpstreamSchemas({
+         tables,
+         connection: (name) => this.getMalloyConnection(name),
+         refresh: true,
+      });
+      // A source moves when a column its build SQL names changed or is
+      // gone, as its address would (upstreamSchemaFold).
+      const moved = (reads: UpstreamTable[], sql: string) =>
+         upstreamSchemaFold(reads, known, sql) !==
+         upstreamSchemaFold(reads, now, sql);
+      const withdrawn = Object.entries(
+         this.mz.plan.servingPlan()?.sources ?? {},
+      ).filter(
+         ([, source]) =>
+            source.reads !== undefined && moved(source.reads, source.sql),
+      );
+      const names = [...new Set(withdrawn.map(([, s]) => s.name))].sort();
+      const tableNames = [
+         ...new Set(
+            withdrawn.flatMap(([, source]) =>
+               (source.reads ?? [])
+                  .filter((r) => moved([r], source.sql))
+                  .map((r) => r.table),
+            ),
+         ),
+      ].sort();
+      this.mz.plan.withdraw(withdrawn.map(([sourceID]) => sourceID));
+      return { sources: names, tables: tableNames };
+   }
+
+   /** See {@link BuildPlanPackage.readUpstreamSchemas}. */
+   public async readUpstreamSchemas(
+      tables: UpstreamTable[],
+      use: "load" | "run",
+   ): Promise<UpstreamSchemaReadings> {
+      const connection = (name: string) => this.getMalloyConnection(name);
+      if (use === "load") {
+         return readUpstreamSchemas({
+            tables,
+            connection,
+            refresh: this.refreshesUpstreamSchemas,
+         });
+      }
+      // A run addresses each source as the plan in force does: its load's
+      // readings, and a reading only of a table that plan did not read.
+      const known = this.mz.plan.upstreamSchemas;
+      const unknown = tables.filter((t) => !(upstreamTableKey(t) in known));
+      const read = unknown.length
+         ? await readUpstreamSchemas({
+              tables: unknown,
+              connection,
+              refresh: false,
+           })
+         : {};
+      return Object.fromEntries(
+         tables.map((t) => {
+            const key = upstreamTableKey(t);
+            return [key, known[key] ?? read[key]];
+         }),
+      );
+   }
+
+   /**
     * Quote each manifest table path for its connection's dialect, mirroring how
     * the builder CREATEs it: Malloy pastes `tableName` into `FROM` verbatim, so
     * on a case-folding engine the case-preserved name is reachable only quoted.
@@ -2785,6 +3008,35 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       return this.malloyConfig;
    }
 
+   /** See {@link BuildPlanPackage.boundStorageColumns}. */
+   public readonly boundStorageColumns: BoundStorageColumns = (
+      sourceID,
+      destination,
+   ) => this.mz.boundStorageColumns(sourceID, destination);
+
+   /** See {@link BuildPlanPackage.boundStorageContract}. */
+   public readonly boundStorageContract: BoundStorageContract = (
+      sourceID,
+      destination,
+   ) => this.mz.boundStorageContract(sourceID, destination);
+
+   /** See {@link BuildPlanPackage.boundTableContract}. */
+   public readonly boundTableContract: BoundTableContract = (
+      sourceID,
+      storage,
+   ) => this.mz.boundTableContract(sourceID, storage);
+
+   /** See {@link BuildPlanPackage.planChainStringReads}. */
+   public readonly planChainStringReads: PlanChainStringReads =
+      chainBuildStringReads;
+
+   /** See {@link BuildPlanPackage.planChainBuildText}. */
+   public readonly planChainBuildText: PlanChainBuildText = (request, model) =>
+      planChainBuildText(this.getPackagePath(), this.getMalloyConfig())(
+         request,
+         model,
+      );
+
    public getPackagePath(): string {
       return this.packagePath;
    }
@@ -2831,9 +3083,9 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             last.quotedFrom === requested
                ? last.quoted
                : await this.quoteBoundTableNames(entries);
-         this.mz.bind({
-            colocated: quoted,
-            colocatedAsGiven: true,
+         await this.mz.bindCompiled({
+            database: quoted,
+            databaseAsGiven: true,
             // Each table's columns as its warehouse holds them now.
             observed: await this.mz.readDatabaseColumns(quoted),
             // The first bind over a load's models publishes to them, as the
@@ -2854,7 +3106,11 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       // Each table's columns as its warehouse holds them now, read once for
       // this bind (one schema read per table), before the models move.
       const observed = await this.mz.readDatabaseColumns(entries);
-      const buildManifest = toTableNameManifest(entries);
+      // As Malloy reads it: each entry also under its compiler key.
+      const buildManifest = underCompilerKeys(
+         { entries: toTableNameManifest(entries) },
+         this.mz.plan.compilerKeys,
+      ).entries;
       const modelPaths = Array.from(this.models.keys());
       logger.info("Reloading all models with build manifest", {
          packageName: this.packageName,
@@ -2864,13 +3120,13 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
 
       const outcome = await loadOutcomeOrThrow(
          getPackageLoadPool().loadPackage({
+            upstreamSchemas: readUpstreamSchemas,
             packagePath: this.packagePath,
             packageName: this.packageName,
             environmentName: this.environmentName,
             malloyConfig: this.malloyConfig,
             defaultConnectionName: "duckdb",
             buildManifest,
-            withPreaggregateCompanions: true,
          }),
       );
 
@@ -2924,9 +3180,9 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       // publish starts is not invalidated and started again.
       this.mz.wireServingResolvers();
       this.mz.pushServeDestinationConfigToModels();
-      this.mz.bind({
-         colocated: entries,
-         colocatedAsGiven: true,
+      await this.mz.bindCompiled({
+         database: entries,
+         databaseAsGiven: true,
          observed,
          models: "installed",
       });
@@ -2951,7 +3207,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    }
 
    /**
-    * The part of colocated entries a compile reads: each table's name and
+    * The part of database entries a compile reads: each table's name and
     * the connection it is quoted for (the models' build manifest is
     * `toTableNameManifest` of the quoted entries). Freshness, schemas and key
     * checks are read per query and by the bind, never by a compile.
@@ -2985,7 +3241,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          quotedFrom: quoting.from,
          quoted: quoting.quoted,
          models: this.models,
-         colocated: this.mz.boundColocatedEntries(),
+         database: this.mz.boundDatabaseEntries(),
          buildPlan: this.mz.getBuildPlan(),
          connectionEdits: this.connectionEdits,
       };
@@ -3008,7 +3264,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       return (
          last.compiledFor === compiledFor &&
          last.models === this.models &&
-         last.colocated === this.mz.boundColocatedEntries() &&
+         last.database === this.mz.boundDatabaseEntries() &&
          last.buildPlan === this.mz.getBuildPlan() &&
          last.connectionEdits === this.connectionEdits
       );
@@ -3182,7 +3438,14 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             status,
             layout: report?.layout,
          })),
-         findings,
+         [
+            ...findings,
+            // Each refused cell counts once, listed or only named in a summary.
+            ...Array.from({ length: this.malloynbCellsUnlisted }, () => ({
+               code: MALLOYNB_CELL_REFUSED,
+               severity: "warn",
+            })),
+         ],
       );
       recordReportDiscovery(summary);
       logger.info("Report discovery", {
@@ -3419,9 +3682,9 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    }
 
    /**
-    * Read each linear report's definition cells, for the deprecated notebook
-    * route. A reader refusal is returned as a finding, since the model still
-    * compiles and nothing else would say so.
+    * Read each linear report's definition cells. A reader refusal is returned
+    * as a finding, since the model still compiles and nothing else would say
+    * so.
     */
    private attachNotebookCells(
       models: ReadonlyMap<string, Model>,
@@ -3462,6 +3725,153 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    }
 
    /**
+    * How a surface refusal is explained, and its fix, under the surface this
+    * package declares: `index.malloy`, or the deprecated `explores`. `source`
+    * is absent when the refusal would not name it (a gated model).
+    */
+   private surfaceFix(): {
+      unexported: string;
+      fixFor: (source: string | undefined) => string;
+   } {
+      return this.surfaceIsIndexModel()
+         ? {
+              unexported: `which ${INDEX_MODEL_NAME} doesn't export`,
+              fixFor: (source: string | undefined) =>
+                 `Fix: add ${source ?? "the source it reads"} to the ` +
+                 `export { ... } in ${INDEX_MODEL_NAME}.`,
+           }
+         : exploresSurfaceFix(this.packageMetadata.explores, (entry) =>
+              this.isServedReport(entry),
+           );
+   }
+
+   /**
+    * DEPRECATED (`.malloynb` only; deleted with the format). One finding per
+    * `.malloynb` code cell the query route refuses for every reader in the
+    * Console ({@link Model.malloynbCellRefusals}, which runs the route's own
+    * checks), since a cell's errors otherwise show only when a reader opens
+    * it. A cell only a reader's givens refuse (`#(authorize)`, a row-level
+    * gate) is not reported. One yielder spans every notebook, so the event
+    * loop gets a turn between cells. A notebook whose check throws gets one
+    * finding saying so, and the other notebooks and lints are unaffected.
+    * The findings are bounded by {@link listMalloynbCellFindings}, and the
+    * cells it names only in a summary are kept in
+    * {@link malloynbCellsUnlisted} so the lint metric counts every one.
+    */
+   private async lintMalloynbCells(): Promise<ApiPackageWarning[]> {
+      const findings: ApiPackageWarning[] = [];
+      const curated = this.queryBoundaryActive();
+      const { unexported, fixFor } = this.surfaceFix();
+      const home = !curated
+         ? "a source the notebook declares"
+         : this.surfaceIsIndexModel()
+           ? `a model file that ${INDEX_MODEL_NAME} exports`
+           : "a source the package surface publishes";
+      const restrictedFix =
+         `Fix: declare the table, or a dimension over the sql_* ` +
+         `expression, in ${home}, and run that source.`;
+      const yielder = createEventLoopYielder();
+      const notebooks: {
+         model: string;
+         refusals: { cell: number; finding: ApiPackageWarning }[];
+      }[] = [];
+      for (const [modelPath, model] of this.models) {
+         if (!isMalloynbPath(modelPath)) continue;
+         let refusals: Awaited<ReturnType<Model["malloynbCellRefusals"]>>;
+         try {
+            refusals = await model.malloynbCellRefusals(yielder);
+         } catch (err) {
+            logger.warn(".malloynb cell check failed", {
+               packageName: this.packageName,
+               modelPath,
+               error: errMessage(err),
+            });
+            findings.push({
+               model: modelPath,
+               code: MALLOYNB_CELL_CHECK_FAILED,
+               severity: "warn",
+               message:
+                  `The .malloynb cell check could not run for ${modelPath}, ` +
+                  `so a cell the query route refuses may have no warning ` +
+                  `here. An operator can find the cause in the server log ` +
+                  `under ".malloynb cell check failed".`,
+            });
+            continue;
+         }
+         const cells: { cell: number; finding: ApiPackageWarning }[] = [];
+         for (const refusal of refusals) {
+            const { source, problem } = refusal;
+            let why: string;
+            if (refusal.reason === "off_surface") {
+               if (problem) {
+                  why =
+                     `the package surface refuses it (404), and restricted ` +
+                     `mode refuses it too: ${problem} ${restrictedFix}`;
+               } else if (source === undefined) {
+                  why =
+                     `it reads a source the package surface does not ` +
+                     `publish, or one the notebook declares (404). ` +
+                     `${fixFor(undefined).replace(/\.$/, "")}, declaring ` +
+                     `it in a model file first if the notebook declares it.`;
+               } else if (refusal.via) {
+                  why =
+                     `it runs the query ${refusal.via}, and ${refusal.via} ` +
+                     `reads ${source}, ${unexported} (404). ${fixFor(source)}`;
+               } else if (refusal.declared) {
+                  why =
+                     `it reads ${source}, a source the notebook declares, and ` +
+                     `the query route takes only a source the package ` +
+                     `surface publishes (404). Declare ${source} in a model ` +
+                     `file instead. ${fixFor(source)}`;
+               } else {
+                  why = `it reads ${source}, ${unexported} (404). ${fixFor(source)}`;
+               }
+            } else if (refusal.reason === "caller_annotation") {
+               why =
+                  `the query route refuses query text that carries an ` +
+                  `annotation only the model author may write (400): ` +
+                  `${problem} Fix: remove the annotation, or the text that ` +
+                  `spells it, from the cell's run: statement, comments ` +
+                  `included.`;
+            } else if (refusal.reason === "required_filter") {
+               why =
+                  `the source it runs declares a required #(filter), and the ` +
+                  `Console sends no filter value for a notebook cell (400): ` +
+                  `${problem}. Fix: move the filter to a given: declaration, ` +
+                  `as docs/givens.md#coming-from-filter describes.`;
+            } else if (refusal.reason === "restricted_mode") {
+               why =
+                  `the query route runs its run: statement in restricted ` +
+                  `mode, which refuses it (400): ${problem} ${restrictedFix}`;
+            } else {
+               why =
+                  `its run: statement does not compile on its own (400): ` +
+                  `${problem}`;
+            }
+            cells.push({
+               cell: refusal.cell,
+               finding: {
+                  model: modelPath,
+                  code: MALLOYNB_CELL_REFUSED,
+                  reason: refusal.reason,
+                  severity: "warn",
+                  message:
+                     `Cell ${refusal.cell} of ${modelPath} won't run for any ` +
+                     `reader in the Console: ${why}`,
+               },
+            });
+         }
+         notebooks.push({ model: modelPath, refusals: cells });
+      }
+      const { warnings, unlisted } = listMalloynbCellFindings(
+         notebooks,
+         MALLOYNB_CELLS_LISTED,
+      );
+      this.malloynbCellsUnlisted = unlisted;
+      return [...findings, ...warnings];
+   }
+
+   /**
     * One finding per tile or filter suggest the query route will refuse as
     * off-surface (/compile is exempt, so nothing else would say so). Uses the
     * query route's own check ({@link Model.surfaceRefusal}), so they cannot
@@ -3473,17 +3883,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    ): Promise<ApiPackageWarning[]> {
       const model = this.models.get(modelPath);
       if (!model || !this.queryBoundaryActive()) return [];
-      // `source` is absent when the refusal would not name it (a gated model).
-      const { unexported, fixFor } = this.surfaceIsIndexModel()
-         ? {
-              unexported: `which ${INDEX_MODEL_NAME} doesn't export`,
-              fixFor: (source: string | undefined) =>
-                 `Fix: add ${source ?? "the source it reads"} to the ` +
-                 `export { ... } in ${INDEX_MODEL_NAME}.`,
-           }
-         : exploresSurfaceFix(this.packageMetadata.explores, (entry) =>
-              this.isServedReport(entry),
-           );
+      const { unexported, fixFor } = this.surfaceFix();
       const checks: {
          request: { queryName?: string; query?: string };
          describe: (source: string) => string;
@@ -3542,6 +3942,8 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       discovery: ReportDiscovery,
       textLint: boolean,
    ): Promise<ApiPackageWarning[]> {
+      // Set again by the cell check; a pass that stops before it names none.
+      this.malloynbCellsUnlisted = 0;
       const warnings: ApiPackageWarning[] = [];
       const files = Array.from(discovery.files).filter(([modelPath]) =>
          modelPath.endsWith(MODEL_FILE_SUFFIX),
@@ -3559,24 +3961,6 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
                   `that path. The cause is in the server log. Reload the ` +
                   `package to try again.`,
                severity: "error",
-            });
-         }
-         for (const [modelPath, { report, name }] of files) {
-            // Served and only noted: the by-name route still works, encoded.
-            if (report?.layout !== "grid" || matchesDocumentedReportName(name))
-               continue;
-            warnings.push({
-               model: modelPath,
-               subject: name,
-               message:
-                  `is served, but "${name}" is outside the conventional ` +
-                  `dashboard name shape (letters, digits, "-" and "_"). This ` +
-                  `server routes it and its published URL carries the name ` +
-                  `encoded, so the dashboard works. The convention is worth ` +
-                  `keeping anyway: a name outside it has to be percent-encoded ` +
-                  `by every caller that builds the URL by hand. Rename the ` +
-                  `file if that matters to yours.`,
-               severity: "warn",
             });
          }
          for (const finding of this.curationWarnings(discovery)) {
@@ -3644,6 +4028,8 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          for (const finding of lintGivenTags(drillFacts)) {
             warnings.push(finding);
          }
+         // Last, and isolated per notebook: a throw there costs no other finding.
+         warnings.push(...(await this.lintMalloynbCells()));
       } catch (err) {
          logger.warn("Report lint failed", {
             packageName: this.packageName,
@@ -3654,8 +4040,8 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          warnings.push({
             message:
                `Report lint stopped early, so this list is incomplete: an ` +
-               `unknown subset of the tile, report, drill, given and curation ` +
-               `checks did not run. Treat a missing ` +
+               `unknown subset of the tile, report, drill, given, curation ` +
+               `and .malloynb cell checks did not run. Treat a missing ` +
                `finding of any of those kinds as unknown rather than clean. ` +
                `Reload the package to run the lint again. The ` +
                `reports themselves are unaffected, because they are ` +
@@ -3830,7 +4216,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       if (!report) return undefined;
       const entry = this.reportEntry(report);
       const manifest = report.manifest;
-      let notebook: ApiRawNotebook | undefined;
+      let notebook: ApiReportCells | undefined;
       if (
          !manifest &&
          report.layout === "linear" &&
@@ -3862,9 +4248,13 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       const malloyConfig = new MalloyConfig(
          {
             connections: {
+               // Caller SQL and model text reach the sandbox, so it runs
+               // under Malloy's sandboxed policy: no network, its filesystem
+               // confined to the package directory (duckdb_lockdown.ts).
                duckdb: {
                   is: "duckdb",
                   databasePath: ":memory:",
+                  ...sandboxedDuckDBOptions(packagePath),
                },
             },
          },

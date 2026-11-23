@@ -9,7 +9,7 @@ import {
 import { describe, expect, it } from "bun:test";
 import { planPackages } from "../../../test_helpers/materialization_fixture";
 import { accessLiftEdits, applyEdits } from "../text/declaration_text";
-import { addressSQL, buildSQLOf, deriveBuildPlanOutcome } from "./build_plan";
+import { addressSQL, buildSQLOf, derivePackagePlan } from "./build_plan";
 import { compilePackageBuildPlan } from "./build_plan_compile";
 import { type MaterializePlan } from "../domain/table_plans";
 import {
@@ -309,7 +309,7 @@ source: orders is raw include { internal: org_id; private: id; public: * }
                   "org_id:internal",
                   "amount",
                ]);
-               const outcome = deriveBuildPlanOutcome(c, null);
+               const outcome = derivePackagePlan(c, null);
                const [sourceID] = Object.keys(materializePlansIn(c) ?? {});
                expect(outcome.sourceEligibility.eligible).toEqual([sourceID]);
                expect(outcome.sourceEligibility.gateKept).toEqual([sourceID]);
@@ -895,6 +895,7 @@ source: child is parent extend {
          sourceID: parent.sourceID,
          sourceName: "parent",
          declaration: parentDecl,
+         mode: { tier: "same" },
          path: [],
          crossFile: {
             modelFile: "/p/a.malloy",

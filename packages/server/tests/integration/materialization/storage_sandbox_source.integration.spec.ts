@@ -69,12 +69,12 @@ source: sb_viewed is sb_orders extend {
 query: sb_query is sb_orders -> { group_by: g; aggregate: total is amount.sum() }
 
 source: sb_rolled is sb_orders extend {
-  #(preaggregate) grain=[g] storage="lake"
+  #(rollup) grain=[g] storage="lake"
   measure: total is amount.sum()
 }
 
-#@ persist name="sb_colocated"
-source: sb_colocated is sb_orders -> { group_by: g; aggregate: total is amount.sum() }
+#@ persist name="sb_database"
+source: sb_database is sb_orders -> { group_by: g; aggregate: total is amount.sum() }
 `;
 
 interface Warning {
@@ -136,7 +136,12 @@ describe.skipIf(!url)(
             name: "admin",
             connectionString: url!,
          });
-         await admin.runSQL(`CREATE DATABASE ${warehouse}`);
+         // A binary (`C`) warehouse: a `storage=` copy orders and ranges a
+         // string as live does only under a binary collation, so a string
+         // order here serves (the server default, often `en_US`, answers it live).
+         await admin.runSQL(
+            `CREATE DATABASE ${warehouse} LOCALE 'C' ENCODING 'UTF8' TEMPLATE template0`,
+         );
          await admin.runSQL(`CREATE DATABASE ${catalog}`);
          const parsed = new URL(url!);
          const pg = {
@@ -284,7 +289,7 @@ describe.skipIf(!url)(
             ["materialize-not-built", /^sb_materialized$/],
             ["persist-view-not-built", /by_g/],
             ["persist-query-not-built", /sb_query/],
-            ["preaggregate-not-built", /sb_rolled/],
+            ["rollup-not-built", /sb_rolled/],
          ] as const) {
             const warning = refused(code, subject);
             expect(warning, `${code} ${subject}`).toBeDefined();
@@ -292,17 +297,17 @@ describe.skipIf(!url)(
             expect(warning?.message).toContain("connection 'duckdb'");
             expect(warning?.message).toContain("Drop 'storage='");
          }
-         // The Postgres sibling and the colocated sandbox source are not refused.
+         // The Postgres sibling and the database sandbox source are not refused.
          expect(
             warnings.filter(
                (w) =>
-                  /pg_stored|sb_colocated/.test(w.subject ?? "") &&
+                  /pg_stored|sb_database/.test(w.subject ?? "") &&
                   w.code?.endsWith("-not-built"),
             ),
          ).toEqual([]);
       });
 
-      it("admits a storage= source on a DuckLake connection to the destination's own catalog", async () => {
+      it("refuses a storage= source on the destination's own DuckLake catalog for its author SQL, not as a sandbox source", async () => {
          const plan = (
             (await (
                await fetch(
@@ -311,17 +316,25 @@ describe.skipIf(!url)(
             ).json()) as {
                buildPlan?: {
                   sources?: Record<string, { name: string }>;
-                  refusedSources?: Record<string, { reason?: string }>;
+                  refusedSources?: Record<
+                     string,
+                     { name: string; reason?: string; message?: string }
+                  >;
                };
             }
          ).buildPlan;
-         expect(Object.values(plan?.sources ?? {}).map((s) => s.name)).toEqual([
-            "lk_stored",
+         // A DuckLake catalog is a connection a storage= build reads, so the
+         // sandbox rule does not refuse it; its `.sql()` does, at plan,
+         // where it used to fail at build (R-11).
+         expect(Object.values(plan?.sources ?? {})).toEqual([]);
+         const refused = Object.values(plan?.refusedSources ?? {});
+         expect(refused.map((r) => [r.name, r.reason])).toEqual([
+            ["lk_stored", "storage_source_unsupported"],
          ]);
-         expect(Object.values(plan?.refusedSources ?? {})).toEqual([]);
+         expect(refused[0].message).toContain("which is an .sql() source");
       });
 
-      it("builds the Postgres sibling and the colocated source, and fails nothing", () => {
+      it("builds the Postgres sibling and the database source, and fails nothing", () => {
          expect(run.status).toBe("MANIFEST_FILE_READY");
          expect(run.error ?? null).toBeNull();
          expect(run.manifest?.failures ?? {}).toEqual({});
@@ -329,7 +342,7 @@ describe.skipIf(!url)(
             (e) => e.sourceName,
          );
          expect(built).toContain("pg_stored");
-         expect(built).toContain("sb_colocated");
+         expect(built).toContain("sb_database");
          expect(built.some((name) => name?.startsWith("sb_stored"))).toBe(
             false,
          );

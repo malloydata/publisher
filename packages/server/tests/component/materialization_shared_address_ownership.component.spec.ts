@@ -26,7 +26,7 @@
  * the serve connection is reopened after each run and every look opens a
  * fresh instance.
  *
- * The colocated tier and a `scope: package` version are
+ * The database tier and a `scope: package` version are
  * src/service/materialization/run/shared_address_ownership.spec.ts.
  */
 
@@ -37,6 +37,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { unrecordedAudit } from "../../src/service/access_record";
 import * as connection from "../../src/service/connection";
+import * as dialects from "../../src/service/dialects";
 import { Environment } from "../../src/service/environment";
 import { parsePackageName } from "../../src/service/identity";
 import { MaterializationService } from "../../src/service/materialization/run/materialization_service";
@@ -286,15 +287,14 @@ describe.skipIf(process.platform === "win32")(
                await attachFileLake(session as never, dbName, true);
                return true;
             }),
-            spyOn(
-               connection,
-               "federateSourceForPassthrough",
-            ).mockImplementation(async (session, sourceType) => {
-               await session.runSQL(
-                  "CREATE OR REPLACE TEMP MACRO postgres_query(alias, q) AS TABLE SELECT * FROM query(q)",
-               );
-               return { handle: "warehouse", sourceType };
-            }),
+            spyOn(dialects, "federateSourceForPassthrough").mockImplementation(
+               async (session, sourceType) => {
+                  await session.runSQL(
+                     "CREATE OR REPLACE TEMP MACRO postgres_query(alias, q) AS TABLE SELECT * FROM query(q)",
+                  );
+                  return { handle: "warehouse", sourceType };
+               },
+            ),
          );
 
          env = await Environment.create(
@@ -620,7 +620,7 @@ describe.skipIf(process.platform === "win32")(
          expect([m.status, m.error]).toEqual(["MANIFEST_FILE_READY", null]);
          expect(outcome(m).failures).toEqual([]);
          const shared = (await catalog()).shared_t;
-         expect(shared.comment).toBe(OWN_MARK);
+         expect(shared.comment).toBe(`${OWN_MARK} table=${LAKE}.main.shared_t`);
          expect(shared.rows).toEqual([
             ["a", 1],
             ["a", 2],

@@ -17,7 +17,7 @@ type: orders__served is {
 import "raw.malloy"
 
 source: lines is lines_raw extend {
-  #(preaggregate) grain=["order_id"] storage="lake"
+  #(rollup) grain=["order_id"] storage="lake"
   measure: qty_total is qty.sum()
 }
 
@@ -52,7 +52,7 @@ type: orders__served is {
 import "raw.malloy"
 
 source: lines is lines_raw extend {
-  #(preaggregate) grain=["order_id"] storage="lake"
+  #(rollup) grain=["order_id"] storage="lake"
   measure: qty_total is qty.sum()
 }
 

@@ -3,12 +3,13 @@
 
 import type { DuckDBConnection } from "@malloydata/db-duckdb";
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
-import { mkdtempSync, rmSync } from "fs";
+import { existsSync, mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import type { components } from "../../../api";
 import { BadRequestError } from "../../../errors";
 import * as connection from "../../connection";
+import { allowForLockdown } from "../../duckdb_lockdown";
 import { createIsolatedBuildSession } from "./materialization_build_session";
 import { copyStorageTable } from "./storage_table_load";
 
@@ -79,9 +80,13 @@ describe("copyStorageTable on file catalogs", () => {
    let dir: string;
    const spies: { mockRestore(): void }[] = [];
 
-   /** Attach `alias` to the file catalog named for the connection's catalog. */
+   /**
+    * Attach `alias` to the file catalog named for the connection's catalog,
+    * recording its data path for the session's lock as the real attach does
+    * (unless `record` is false).
+    */
    const attachFile =
-      (readOnly: boolean) =>
+      (readOnly: boolean, record = true) =>
       async (
          session: DuckDBConnection,
          alias: string,
@@ -94,6 +99,7 @@ describe("copyStorageTable on file catalogs", () => {
             `ATTACH 'ducklake:${join(dir, `${name}.ducklake`)}' AS "${alias}" ` +
                `(DATA_PATH '${join(dir, name)}/'${readOnly ? ", READ_ONLY" : ""})`,
          );
+         if (record) allowForLockdown(session, join(dir, name));
       };
 
    // Each test has its own catalogs, and every session that attached one is
@@ -118,6 +124,9 @@ describe("copyStorageTable on file catalogs", () => {
             "src",
             lakeConnection("src").ducklakeConnection!,
          );
+         // As Parquet files, as a build writes them, not rows inlined in the
+         // catalog.
+         await seed.runSQL("SET ducklake_default_data_inlining_row_limit = 0");
          await seed.runSQL(
             "CREATE OR REPLACE TABLE src.main.events AS SELECT * FROM (VALUES (1, 'a'), (2, 'b'), (3, 'a')) AS v(id, kind)",
          );
@@ -146,6 +155,32 @@ describe("copyStorageTable on file catalogs", () => {
       });
    });
 
+   it("copies into a fresh catalog whose local data path does not exist yet", async () => {
+      // The session is locked before the write, and a locked session creates
+      // no directory above an allowed path: the copy creates the data path
+      // first.
+      expect(existsSync(join(dir, "dest"))).toBe(false);
+      expect((await copyStorageTable(base)).rowCount).toBe(3);
+      expect(existsSync(join(dir, "dest"))).toBe(true);
+   });
+
+   it("creates only the destination's data path, never the read-only source's", async () => {
+      // The source's attach also records a local path that does not exist.
+      const elsewhere = join(dir, "src-elsewhere");
+      const recordElsewhere = attachFile(true);
+      spies.push(
+         spyOn(connection, "attachDuckLakeReadOnly").mockImplementation(
+            async (session, alias, config) => {
+               await recordElsewhere(session, alias, config);
+               allowForLockdown(session, elsewhere);
+            },
+         ),
+      );
+      expect((await copyStorageTable(base)).rowCount).toBe(3);
+      expect(existsSync(join(dir, "dest"))).toBe(true);
+      expect(existsSync(elsewhere)).toBe(false);
+   });
+
    it("copies within one catalog to another name", async () => {
       const result = await copyStorageTable({
          ...base,
@@ -169,5 +204,18 @@ describe("copyStorageTable on file catalogs", () => {
             mode: "replace",
          }),
       ).rejects.toThrow("cannot be copied onto itself");
+   });
+
+   it("reads and writes only the catalogs' data paths: its session is locked before the copy runs", async () => {
+      // A source attach that records no data path: once the session is
+      // locked, the source's files are outside everything it may read.
+      spies.push(
+         spyOn(connection, "attachDuckLakeReadOnly").mockImplementation(
+            attachFile(true, false),
+         ),
+      );
+      await expect(copyStorageTable(base)).rejects.toThrow(
+         /Permission Error: .*disabled by configuration/,
+      );
    });
 });

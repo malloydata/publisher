@@ -57,7 +57,7 @@ The first versioned publish of a package that had an unversioned tree (one insta
 
 ## Which version a request gets
 
-Every route that reaches into a package takes `versionId`: the package itself, models, queries, compile, reports, dashboards, notebooks, databases, data apps, events, the package's own connections, static files, materializations, and its skills and agents. An agent's `source` pin carries the `versionId` it was read from, so the same definition can be fetched again after `latest` moves. An omitted or empty `versionId`, or `versionId=latest`, means `latest`; empty is what a proxy forwarding a page's query string may send. A named version is always that version, whatever `latest` is. Which version a request gets is decided from the package's registry rows, which the server reads once and keeps in memory; every publish, `latest` move, archive, unarchive, manifest binding and description change drops the kept copy, so the next request reads them again. A request costs no registry read.
+Every route that reaches into a package takes `versionId`: the package itself, models, queries, compile, reports, databases, data apps, events, the package's own connections, static files, materializations, and its skills and agents. An agent's `source` pin carries the `versionId` it was read from, so the same definition can be fetched again after `latest` moves. An omitted or empty `versionId`, or `versionId=latest`, means `latest`; empty is what a proxy forwarding a page's query string may send. A named version is always that version, whatever `latest` is. Which version a request gets is decided from the package's registry rows, which the server reads once and keeps in memory; every publish, `latest` move, archive, unarchive, manifest binding and description change drops the kept copy, so the next request reads them again. A request costs no registry read.
 
 | Request                                                       | Answer                                                                                   |
 | ------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
@@ -70,7 +70,7 @@ Every route that reaches into a package takes `versionId`: the package itself, m
 | Any version, of a package with no versions                    | 404 `VERSION_NOT_FOUND`. Its one tree never answers as if it were the version asked for. |
 | A version whose files are missing and cannot be fetched again | 424.                                                                                     |
 
-A query takes `versionId` in its body; one in the URL's query string is read too, and when both name a version they must agree (400 otherwise). Build metadata must be percent-encoded in a URL: `1.2.0+build.5` is sent as `1.2.0%2Bbuild.5`, since a bare `+` decodes to a space. The SDK does this for you.
+A query takes `versionId` in its body; one in the URL's query string is read too, and when both name a version they must agree (400 `VERSION_ID_INVALID` otherwise). Build metadata must be percent-encoded in a URL: `1.2.0+build.5` is sent as `1.2.0%2Bbuild.5`, since a bare `+` decodes to a space. The SDK does this for you.
 
 The package resource says which version answered: `versionId` is the version described, and `latestVersion` is the package's `latest`. A package listing names every package once, as its `latest`, and refuses a `versionId` other than empty or `latest` with 400.
 
@@ -164,7 +164,7 @@ There is no error state: a version that cannot load is simply refused as a `late
 
 ## Materializations
 
-A materialization of a versioned package builds one version: the one `versionId` names (in the create body), or `latest`. The run records it, in `metadata.versionId`, with the package's materialization scope in `metadata.scope`. The list, get, stop and delete routes take `versionId` too:
+A materialization of a versioned package builds one version: the one `versionId` names (in the create body, or in its URL, which must agree with the body when both name one: 400 `VERSION_ID_INVALID` otherwise), or `latest`. The run records it, in `metadata.versionId`, with the package's materialization scope in `metadata.scope`. The list, get, stop and delete routes take `versionId` too:
 
 - A list holds one version's runs (or `latest`'s), together with the runs from before the package's first versioned publish. A versioned package with no `latest` yet lists every run.
 - A run's id is unique, so get, stop and delete find a run whichever version built it. Naming a version also requires the run to be that version's, or one from before any version.

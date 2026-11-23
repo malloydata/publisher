@@ -42,7 +42,11 @@ import {
 import type { PackageAnnotationFinding } from "./annotation_reader";
 import { installSettings } from "../test_helpers/settings_env";
 import { BadRequestError } from "../errors";
-import { recordConnectionsAsForTests } from "./connection_type";
+import { unrecordedAudit } from "./access_record";
+import {
+   recordConnectionsAsForTests,
+   recordConnectionsManagedForTests,
+} from "./connection_type";
 
 // The package sandbox stands in for a warehouse in these fixtures: a
 // `storage=` build cannot read the sandbox, and the plan refuses a `storage=`
@@ -219,7 +223,7 @@ source: daily is raw -> { where: category = $CAT; group_by: category; aggregate:
 `;
    it.each([
       [
-         "a colocated",
+         "a database",
          `${RAW}#@ persist name="t" partition="category"\n${ROLLUP}\n`,
       ],
       [
@@ -283,6 +287,146 @@ source: daily is raw -> { where: category = $CAT; group_by: category; aggregate:
    );
 });
 
+describe("a storage= source on a DuckLake catalog that carries author SQL", () => {
+   // The sandbox stands in for a DuckLake catalog: its build runs inside the
+   // catalog, on a session that runs only SQL Malloy generated.
+   let restore: () => void;
+   beforeAll(() => {
+      restore = recordConnectionsAsForTests({ duckdb: "ducklake" });
+   });
+   afterAll(() => restore());
+
+   it(
+      "is refused at load with persist-not-built, not left to fail at build",
+      async () => {
+         const pkg = await loadPackage(
+            `${RAW}#@ persist name="t" storage=lake\n${ROLLUP}\n`,
+         );
+         const [warning] = coded(pkg, "persist-not-built");
+         expect(warning).toMatchObject({ severity: "warn", subject: "daily" });
+         const refused = Object.values(
+            pkg.getBuildPlan()?.refusedSources ?? {},
+         );
+         expect(refused.map((r) => [r.name, r.tier, r.reason])).toEqual([
+            ["daily", "storage", "storage_source_unsupported"],
+         ]);
+         expect(refused[0].message).toContain(
+            "cannot be materialized: it reads source 'raw', which is an .sql() source, and its connection 'duckdb' is a DuckLake catalog",
+         );
+         expect(Object.keys(pkg.getBuildPlan()?.sources ?? {})).toEqual([]);
+      },
+      { timeout: 30000 },
+   );
+});
+
+describe("a source over author SQL on a managed connection", () => {
+   // The sandbox stands in for a managed DuckLake catalog: every table built
+   // on one is built inside the catalog, by SQL Malloy generated only.
+   let restoreType: () => void;
+   let restoreManaged: (() => void) | undefined;
+   beforeAll(() => {
+      restoreType = recordConnectionsAsForTests({ duckdb: "ducklake" });
+   });
+   afterAll(() => restoreType());
+   afterEach(() => {
+      restoreManaged?.();
+      restoreManaged = undefined;
+   });
+   const managed = () => {
+      restoreManaged = recordConnectionsManagedForTests(["duckdb"]);
+   };
+   const refusals = (pkg: Package) =>
+      Object.values(pkg.getBuildPlan()?.refusedSources ?? {}).map((r) => [
+         r.name,
+         r.tier,
+         r.reason,
+      ]);
+
+   it(
+      "is refused at load in the database tier, with persist-not-built",
+      async () => {
+         managed();
+         const pkg = await loadPackage(
+            `${RAW}#@ persist name="t"\n${ROLLUP}\n`,
+         );
+         const [warning] = coded(pkg, "persist-not-built");
+         expect(warning).toMatchObject({ severity: "warn", subject: "daily" });
+         expect(warning.message).toContain(
+            "it reads source 'raw', which is an .sql() source, and its connection 'duckdb' is a managed database",
+         );
+         expect(refusals(pkg)).toEqual([
+            ["daily", "database", "storage_source_unsupported"],
+         ]);
+         expect(Object.keys(pkg.getBuildPlan()?.sources ?? {})).toEqual([]);
+         // Answered live: no table is bound, and the query reads the source.
+         const result = await pkg
+            .getModel("model.malloy")!
+            .runQuery(unrecordedAudit(), {
+               query: "run: daily -> { select: * }",
+               filterParams: {},
+               givens: {},
+               responseShape: "compact",
+            });
+         expect(result.servedFrom ?? null).toBeNull();
+      },
+      { timeout: 30000 },
+   );
+
+   it(
+      "names a source's own .sql() as its cause",
+      async () => {
+         managed();
+         const pkg = await loadPackage(
+            `${RAW}#@ persist name="s"
+source: lab_sql is duckdb.sql("""SELECT 'A' AS category""")
+`,
+         );
+         const [warning] = coded(pkg, "persist-not-built");
+         expect(warning.subject).toBe("lab_sql");
+         expect(warning.message).toContain(
+            "cannot be materialized: it is an .sql() source, and its connection",
+         );
+      },
+      { timeout: 30000 },
+   );
+
+   it(
+      "is refused at load as a #(materialize) source, with materialize-not-built",
+      async () => {
+         managed();
+         await withMaterialize(async () => {
+            const pkg = await loadPackage(
+               `${RAW}#(materialize)\nsource: kept is raw extend { where: amount > 0 }\n`,
+            );
+            const [warning] = coded(pkg, "materialize-not-built");
+            expect(warning).toMatchObject({
+               severity: "warn",
+               subject: "kept",
+            });
+            expect(refusals(pkg)).toEqual([
+               ["kept", "database", "storage_source_unsupported"],
+            ]);
+         });
+      },
+      { timeout: 30000 },
+   );
+
+   it(
+      "still plans the same source on a connection that is not managed",
+      async () => {
+         const pkg = await loadPackage(
+            `${RAW}#@ persist name="t"\n${ROLLUP}\n`,
+         );
+         expect(coded(pkg, "persist-not-built")).toEqual([]);
+         expect(refusals(pkg)).toEqual([]);
+         expect(
+            Object.values(pkg.getBuildPlan()?.sources ?? {}).map((s) => s.name),
+         ).toEqual(["daily"]);
+      },
+      { timeout: 30000 },
+   );
+});
+
 describe("annotation findings on a loaded package", () => {
    it(
       "codes a pre-aggregation of a field the source hides",
@@ -292,7 +436,7 @@ describe("annotation findings on a loaded package", () => {
   private measure: total is amount.sum()
 }
 `);
-         const [warning] = coded(pkg, "preaggregate-not-built");
+         const [warning] = coded(pkg, "rollup-not-built");
          expect(warning).toMatchObject({ severity: "warn" });
          expect(
             Object.values(pkg.getBuildPlan()?.refusedSources ?? {}).map((r) => [
@@ -300,12 +444,12 @@ describe("annotation findings on a loaded package", () => {
                r.tier,
                r.reason,
             ]),
-         ).toEqual([["orders.total", "preaggregate", "hidden_field"]]);
+         ).toEqual([["orders.total", "database", "hidden_field"]]);
          expect(
             await harness.collectCounter(
                "publisher_annotation_findings_total",
                {
-                  code: "preaggregate-not-built",
+                  code: "rollup-not-built",
                },
             ),
          ).toBe(1);
@@ -330,7 +474,7 @@ describe("annotation findings on a loaded package", () => {
    );
 
    it(
-      "plans #(materialize) name= at that name, whatever the package's scope, colocated or stored",
+      "plans #(materialize) name= at that name, whatever the package's scope, database or stored",
       async () => {
          await withMaterialize(
             async () => {
@@ -371,9 +515,9 @@ describe("annotation findings on a loaded package", () => {
                   force: true,
                });
                const message = await loadError(
-                  `${RAW}source: sales is raw extend {\n  #(preaggregate) grain=["category"] name="analytics."\n  measure: total is amount.sum()\n}\n`,
+                  `${RAW}source: sales is raw extend {\n  #(rollup) grain=["category"] name="analytics."\n  measure: total is amount.sum()\n}\n`,
                );
-               expect(message).toContain("[preaggregate-invalid]");
+               expect(message).toContain("[rollup-invalid]");
             },
             { PERSIST_STORAGE_MODE: "on" },
          );
@@ -389,8 +533,8 @@ describe("annotation findings on a loaded package", () => {
                for (const line of [
                   '#(materialize) nmae="t"',
                   '#(materialize) name="t',
-                  '#(preaggregate) grian=["category"]',
-                  '#(preaggregate) grain=["category"',
+                  '#(rollup) grian=["category"]',
+                  '#(rollup) grain=["category"',
                ]) {
                   const pkg = await loadPackage(
                      `${RAW}${line}\nsource: orders is raw\n`,
@@ -673,14 +817,14 @@ describe("the load failure for invalid materialization annotations", () => {
       });
       expect(
          failureOf([
-            finding("preaggregate", "malformed", "preaggregate-invalid"),
+            finding("preaggregate", "malformed", "rollup-invalid"),
             finding("materialize", "malformed", "materialize-unparseable"),
             finding("materialize", "unservable", "materialize-not-built"),
             finding("@", "malformed", "persist-unknown-key"),
             finding("@", "unservable", "persist-view-not-built"),
          ]).split("\n"),
       ).toEqual([
-         "m.malloy: preaggregate-invalid on preaggregate. [preaggregate-invalid]",
+         "m.malloy: rollup-invalid on preaggregate. [rollup-invalid]",
          "m.malloy: materialize-unparseable on materialize. [materialize-unparseable]",
          "m.malloy: persist-unknown-key on @. [persist-unknown-key]",
       ]);

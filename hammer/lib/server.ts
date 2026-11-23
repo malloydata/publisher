@@ -88,6 +88,31 @@ export interface ServerOptions {
    /** Pipe server stdout/stderr through (default false — captured to a log file). */
    inheritStdio?: boolean;
    logFile?: string;
+   /**
+    * The command that starts the server, before its flags. Default: this
+    * repo's build, `bun run ./dist/server.mjs` in packages/server. The upgrade
+    * test passes a released package's entry point instead.
+    */
+   command?: string[];
+   /** Working directory for `command` (default packages/server). */
+   cwd?: string;
+   /**
+    * Spell the flags as releases before 0.15.0 read them (`--server_root`,
+    * `--mcp_port`, `--init`), for the upgrade test's released server.
+    */
+   legacyFlags?: boolean;
+}
+
+/** Rejects with `error()` after `ms`, unless `signal` aborts first. */
+function deadline(
+   ms: number,
+   signal: AbortSignal,
+   error: () => Error,
+): Promise<never> {
+   return new Promise<never>((_resolve, reject) => {
+      const timer = setTimeout(() => reject(error()), ms);
+      signal.addEventListener("abort", () => clearTimeout(timer));
+   });
 }
 
 export interface ServerHandle {
@@ -103,21 +128,20 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
    const mcpUrl = `http://${HOST}:${opts.mcpPort}/mcp`;
 
    const args = [
-      "bun",
-      "run",
-      "./dist/server.mjs",
+      ...(opts.command ?? ["bun", "run", "./dist/server.mjs"]),
       // The settings' derived names (docs/configuration.md), so every
       // scenario starts a publisher the way the reference documents.
-      "--root",
+      opts.legacyFlags ? "--server_root" : "--root",
       opts.serverRoot,
       "--config",
       opts.configPath,
       "--port",
       String(opts.port),
-      "--mcp-port",
+      opts.legacyFlags ? "--mcp_port" : "--mcp-port",
       String(opts.mcpPort),
    ];
-   if (opts.init !== false) args.push("--initialize-storage");
+   if (opts.init !== false)
+      args.push(opts.legacyFlags ? "--init" : "--initialize-storage");
 
    log.step(
       `starting Publisher server (mode=${opts.mode}) on ${baseUrl} [mcp ${opts.mcpPort}]`,
@@ -135,7 +159,7 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
    delete inherited.MCP_HOST;
    delete inherited.PERSIST_STORAGE_MODE;
    const proc: Subprocess = Bun.spawn(args, {
-      cwd: serverDir,
+      cwd: opts.cwd ?? serverDir,
       env: {
          ...inherited,
          NODE_ENV: "production",
@@ -152,6 +176,16 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
    // (PUBLISHER_INIT_FAILED instead if initialization failed). Watching for it is
    // exact, where polling /status can only resolve to its own interval — and since
    // every mode switch costs a boot, that interval was a real share of a run.
+   //
+   // It is also the only signal that names THIS process. A port is free when it
+   // is allocated, but another process (another hammer run, say) can bind it
+   // before this server does; that process's Publisher then answers /status
+   // `serving` while ours is still starting and about to exit "in use". Taken for
+   // ours, it sent a scenario's requests to a server that had never heard of its
+   // environment (`Environment '<scenario>__default' not found`). So whenever the
+   // output is captured, only the line decides; /status is polled only when
+   // there is no output to watch (`inheritStdio`).
+   const watched = !opts.inheritStdio;
    let signalReady: (() => void) | undefined;
    let signalFailed: ((why: string) => void) | undefined;
    const readySignal = new Promise<void>((resolve, reject) => {
@@ -162,11 +196,11 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
    // Drain captured output to the log file so a hang/crash is diagnosable.
    let tail = "";
    const pumps: Promise<void>[] = [];
-   if (!opts.inheritStdio && logSink) {
+   if (watched) {
       const pump = async (stream: ReadableStream): Promise<void> => {
          for await (const chunk of stream as unknown as AsyncIterable<Uint8Array>) {
-            logSink.write(chunk);
-            logSink.flush();
+            logSink?.write(chunk);
+            logSink?.flush();
             // The marker can straddle a chunk boundary, so keep a short tail.
             tail = (tail + new TextDecoder().decode(chunk)).slice(-4096);
             if (tail.includes("PUBLISHER_READY")) signalReady?.();
@@ -201,24 +235,33 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
    // Ends the poll once the wait is decided either way, so a server that never
    // came up does not leave a poll running against its dead port.
    const pollDone = new AbortController();
-   // The poll is the backstop: it covers inheritStdio (nothing to watch) and any
-   // build predating the ready line. Whichever resolves first wins.
-   const poll = waitFor(
-      "server operationalState=serving",
-      async () => {
-         if (exited)
-            throw new Error(
-               `server process exited early (see ${opts.logFile ?? "stdio"})`,
-            );
-         const res = await fetch(`${baseUrl}/api/v0/status`, {
-            signal: pollDone.signal,
-         });
-         if (!res.ok) return false;
-         const body = (await res.json()) as { operationalState?: string };
-         return body.operationalState === "serving";
-      },
-      { timeoutMs: 180_000, intervalMs: 750, signal: pollDone.signal },
-   );
+   // Only with nothing to watch: any process holding the port can answer it.
+   // Watching, the same deadline bounds a server that never says it is ready.
+   const poll = watched
+      ? deadline(
+           180_000,
+           pollDone.signal,
+           () =>
+              new Error(
+                 `server never printed PUBLISHER_READY within 180s (see ${opts.logFile ?? "stdio"})`,
+              ),
+        )
+      : waitFor(
+           "server operationalState=serving",
+           async () => {
+              if (exited)
+                 throw new Error(
+                    `server process exited early (see ${opts.logFile ?? "stdio"})`,
+                 );
+              const res = await fetch(`${baseUrl}/api/v0/status`, {
+                 signal: pollDone.signal,
+              });
+              if (!res.ok) return false;
+              const body = (await res.json()) as { operationalState?: string };
+              return body.operationalState === "serving";
+           },
+           { timeoutMs: 180_000, intervalMs: 750, signal: pollDone.signal },
+        );
    // An exit before `serving` ends the wait at once. When it was a port taken
    // between allocation and bind (another run, or any process, got there first),
    // say so with a PortInUseError, so the caller can retry on fresh ports.

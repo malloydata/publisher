@@ -304,9 +304,9 @@ describe("versionId", () => {
       // Proof, not a proxy for one: the live query's key now ends in a
       // version slot rather than at `modelPath`, and the invalidate call
       // that follows a save has to end in the same slot to still match it.
-      // A version spliced into the middle of either key (as `Dashboard`
-      // does for its own, unrelated, key) would leave this read stale
-      // until something else happened to touch it.
+      // A version spliced into the middle of either key (as the removed
+      // `Dashboard` did for its own, unrelated, key) would leave this read
+      // stale until something else happened to touch it.
       await waitFor(() =>
          expect(
             getModel.mock.calls.filter(

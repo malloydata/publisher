@@ -902,7 +902,7 @@ describe("mergeConnectionUpdate", () => {
    });
 
    it("does not resurrect a private key when the patch switches to a password", () => {
-      // hasSnowflakePrivateKey routes to key-pair auth on presence, so a stale
+      // A Snowflake connection uses key-pair auth on presence, so a stale
       // key would beat the new password and make rotating off a revoked key
       // impossible through the API.
       const storedKeyPair = {

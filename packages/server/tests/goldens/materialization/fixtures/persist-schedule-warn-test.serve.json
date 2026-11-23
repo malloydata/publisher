@@ -4,7 +4,7 @@
     "built": [
       {
         "name": "order_summary",
-        "tier": "colocated"
+        "tier": "database"
       }
     ],
     "verdicts": [
@@ -45,8 +45,9 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "persist",
             "outcome": "used",
-            "tableId": "218fa4ffa546f2a111269e08a2004f00e5f76922c05e984890204e4a53107cb9"
+            "tableId": "4ab942004fa34a997237fa2e6b732c6b53cf7454f079c4345dea24a95d653bc6"
           }
         ],
         "notConsidered": [],
@@ -58,7 +59,8 @@
         },
         "servedBy": {
           "kind": "materialized",
-          "tableId": "218fa4ffa546f2a111269e08a2004f00e5f76922c05e984890204e4a53107cb9",
+          "origin": "persist",
+          "tableId": "4ab942004fa34a997237fa2e6b732c6b53cf7454f079c4345dea24a95d653bc6",
           "tier": "database",
           "via": "served_copy"
         },
@@ -101,8 +103,9 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "persist",
             "outcome": "used",
-            "tableId": "218fa4ffa546f2a111269e08a2004f00e5f76922c05e984890204e4a53107cb9"
+            "tableId": "4ab942004fa34a997237fa2e6b732c6b53cf7454f079c4345dea24a95d653bc6"
           }
         ],
         "notConsidered": [],
@@ -114,7 +117,8 @@
         },
         "servedBy": {
           "kind": "materialized",
-          "tableId": "218fa4ffa546f2a111269e08a2004f00e5f76922c05e984890204e4a53107cb9",
+          "origin": "persist",
+          "tableId": "4ab942004fa34a997237fa2e6b732c6b53cf7454f079c4345dea24a95d653bc6",
           "tier": "database",
           "via": "served_copy"
         },

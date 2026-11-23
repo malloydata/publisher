@@ -25,8 +25,8 @@ source: orders is shared_duckdb.sql("SELECT 1 AS id, 'east' AS region")
 #@ persist name="by_region" storage=lake
 source: by_region is orders -> { group_by: region; aggregate: n is count() }
 
-#@ persist name="colocated"
-source: colocated is orders -> { group_by: region }
+#@ persist name="database"
+source: database is orders -> { group_by: region }
 `;
 
 /** A destination of the one declarable type; nothing connects to it at load. */
@@ -63,7 +63,7 @@ afterEach(async () => {
 });
 
 describe("a storage= source on an environment DuckDB connection", () => {
-   it("is refused at plan, warns, and answers live; its colocated sibling plans", async () => {
+   it("is refused at plan, warns, and answers live; its database sibling plans", async () => {
       const envPath = path.join(rootDir, "env");
       writePackageFiles(
          path.join(envPath, "pkg"),
@@ -87,7 +87,7 @@ describe("a storage= source on an environment DuckDB connection", () => {
 
       const plan = pkg.getBuildPlan();
       expect(Object.values(plan?.sources ?? {}).map((s) => s.name)).toEqual([
-         "colocated",
+         "database",
       ]);
       expect(
          Object.values(plan?.refusedSources ?? {}).map((r) => [
@@ -103,8 +103,7 @@ describe("a storage= source on an environment DuckDB connection", () => {
       expect(warning?.message).toContain(
          "its connection 'shared_duckdb' is a 'duckdb' connection",
       );
-      // A refusal no earlier release raised is not repeated under the former
-      // `persist-source-refused`.
+      // No refusal is repeated under 0.14's `persist-source-refused`.
       expect(
          (pkg.getPackageMetadata().warnings ?? []).filter(
             (w) => w.code === "persist-source-refused",

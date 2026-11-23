@@ -3,6 +3,11 @@
 
 /// <reference types="bun-types" />
 
+import { contractFor } from "../../../src/test_helpers/contract_fixture";
+import {
+   type RecordedColumn,
+   runNativeSchema,
+} from "../../../src/test_helpers/host_manifest";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import * as fsp from "fs/promises";
 import os from "os";
@@ -180,6 +185,9 @@ describe("Manifest binding via Package.manifestLocation (E2E)", () => {
     * package to live (unbound) — keeping the table — so a subsequent
     * manifest-URI bind is what routes the served query.
     */
+   /** The column types the build reported for `order_summary`. */
+   let builtTypes: RecordedColumn[] = [];
+
    async function buildTableThenRevertToLive(): Promise<void> {
       const createRes = await fetch(url("/materializations"), {
          method: "POST",
@@ -190,6 +198,9 @@ describe("Manifest binding via Package.manifestLocation (E2E)", () => {
       const { id } = (await createRes.json()) as { id: string };
       const built = await pollUntilTerminal(id);
       expect(built.status).toBe("MANIFEST_FILE_READY");
+      // What the build reported of its table, for each manifest a test binds,
+      // as a host copies it (host_manifest.ts).
+      builtTypes = runNativeSchema(built);
       // Revert to live: drop the auto-load binding but leave the built table.
       await fetch(url("?reload=true"));
       // Retire the run record so it doesn't hold the per-package active slot.
@@ -213,6 +224,8 @@ describe("Manifest binding via Package.manifestLocation (E2E)", () => {
                   sourceName: "order_summary",
                   physicalTableName,
                   connectionName: "duckdb",
+                  nativeSchema: builtTypes,
+                  contract: contractFor(builtTypes),
                },
             },
          }),
@@ -244,6 +257,7 @@ describe("Manifest binding via Package.manifestLocation (E2E)", () => {
                   connectionName: "duckdb",
                   storageDestinationName: "lake",
                   schema: [{ name: "c", type: "BIGINT" }],
+                  contract: contractFor([{ name: "c", type: "BIGINT" }]),
                },
             },
          }),
@@ -265,6 +279,8 @@ describe("Manifest binding via Package.manifestLocation (E2E)", () => {
                   sourceName: "order_summary",
                   physicalTableName: "main.order_summary_mz",
                   connectionName: "duckdb",
+                  nativeSchema: builtTypes,
+                  contract: contractFor(builtTypes),
                },
             },
          }),
@@ -394,7 +410,7 @@ describe("Manifest binding via Package.manifestLocation (E2E)", () => {
          ]);
          // The bound URI is recorded even though no tableName manifest bound.
          expect(patched.boundManifestUri).toBe(manifestFile);
-         // And it reports BOUND despite the zero colocated entry count. This is
+         // And it reports BOUND despite the zero database entry count. This is
          // what a control plane reads to decide whether the worker honoured the
          // manifest it distributed; reporting `unbound` after a successful bind
          // reads as drift, and the package is rebound on every reconcile tick.
@@ -425,9 +441,9 @@ describe("Manifest binding via Package.manifestLocation (E2E)", () => {
          const failed = (await (
             await patchPackage({ manifestLocation: missing })
          ).json()) as Record<string, unknown>;
-         expect(failed.manifestBindingStatus).toBe("live_fallback");
+         expect(failed.manifestBindingStatus).toBe("bind_failed");
 
-         // A pure-`storage=` manifest binds with no colocated entry to recompile, so
+         // A pure-`storage=` manifest binds with no database entry to recompile, so
          // nothing on that path recomputes the status — the successful bind has to
          // report itself. Otherwise the package stays live_fallback while healthily
          // bound, which reads as degraded to a caller that alerts on it.
@@ -472,7 +488,7 @@ describe("Manifest binding via Package.manifestLocation (E2E)", () => {
          const failed = (await (
             await patchPackage({ manifestLocation: missing })
          ).json()) as Record<string, unknown>;
-         expect(failed.manifestBindingStatus).toBe("live_fallback");
+         expect(failed.manifestBindingStatus).toBe("bind_failed");
          expect(failed.manifestEntryCount).toBe(1);
          expect(failed.boundManifestUri).toBe(manifestFile);
          expect(await queryOrderSummaryStatus()).toBe(200);
@@ -537,7 +553,7 @@ describe("Manifest binding via Package.manifestLocation (E2E)", () => {
       expect(patched.manifestLocation).toBe(missing);
       // The configured location is retained, but the binding is reported as a
       // degraded live fallback (not "bound") with nothing actually bound.
-      expect(patched.manifestBindingStatus).toBe("live_fallback");
+      expect(patched.manifestBindingStatus).toBe("bind_failed");
       expect(patched.manifestEntryCount).toBe(0);
       expect(patched.boundManifestUri ?? null).toBeNull();
 

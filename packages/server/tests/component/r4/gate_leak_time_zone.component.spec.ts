@@ -96,7 +96,7 @@ source: srctz_mz is ev extend { timezone: 'America/Los_Angeles' } -> { where: id
 #(access_filter) dday = $ON_DAY
 source: rolled is ev extend {
   dimension: dday is ts.day
-  #(preaggregate) grain=["tenant", "dday"]
+  #(rollup) grain=["tenant", "dday"]
   measure: total is amount.sum()
 }
 `;

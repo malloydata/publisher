@@ -136,6 +136,6 @@ Expect:
 
 Before this, `storage=` on a `#@ preaggregate` line parsed, validated, and did nothing:
 the reader took only `grain` and `namespace`, no rule rejected the unknown key, and the
-rollup was built colocated in the source warehouse. Nothing documented the key, so no
+rollup was built in the source warehouse. Nothing documented the key, so no
 advertised path reached it — which is why the refusal for what is still unsupported and
 the support for what now works ship together rather than as two changes.

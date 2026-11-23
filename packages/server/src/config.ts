@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import type { StorageMode } from "./service/materialization/domain/switches";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -170,11 +171,8 @@ export type PackageVersioningMode = "off" | "on";
  * `PUBLISHER_MODEL_PAGE`: which page the Console shows for a model, `explorer`
  * (the default) or `viewer`. Read from the environment only, and reported on
  * `/status` as `modelPage`, where the Console reads it; the Console keeps both
- * pages. The Explorer writes the queries it builds back to Malloy text through
- * `@malloydata/malloy-interfaces`, which puts a string value in unescaped
- * (`escapeString` is a TODO), so a drilled value holding a double quote
- * rewrites the query. `viewer` shows a page that builds no query, and takes
- * the Explorer out of the legacy notebook too.
+ * pages. `viewer` shows a page that builds no query, and takes the Explorer out
+ * of the legacy notebook too.
  */
 export type ModelPageMode = "explorer" | "viewer";
 
@@ -889,7 +887,7 @@ export const getS3CredentialChainPolicy = (): S3CredentialChainPolicy =>
  *
  * No mode hard-fails a package on `storage=`; a stricter policy is the caller's.
  */
-export type PersistStorageMode = "off" | "write-only" | "on";
+export type PersistStorageMode = StorageMode;
 
 /**
  * The `storage=` deployment mode from `PERSIST_STORAGE_MODE` (default `off`).
@@ -908,7 +906,7 @@ export const getPersistAddressIncludesDestination = (): boolean =>
    settings.get("persist.addressIncludesDestination");
 
 /**
- * Whether materialization v2 is on: `#(materialize)` and `#(preaggregate)` read,
+ * Whether materialization v2 is on: `#(materialize)` and `#(rollup)` read,
  * built and served, from `PUBLISHER_MATERIALIZE` (default `true`). `false`
  * opts out, and the build plan is exactly what it was without it. The setting
  * is removed one release after this default ships.
@@ -926,24 +924,13 @@ export const getMaterializeGatedSources = (): boolean =>
    settings.get("materialize.gatedSources");
 
 /**
- * Whether a `storage=` rollup over a gated base may be read past its gate.
- * No setting turns it on until the managed-tier review; only a test does
- * ({@link allowGatedStorageRollupsForTests}).
+ * How read admission judges a stored answer's string comparisons
+ * (`PUBLISHER_ADMISSION_MODE`, temporary): `lookup` (the default) reads
+ * what load, bind and build recorded, `probe` reads the warehouse per query, and `shadow` runs both
+ * and decides by the probe (`serve/admission_parity.ts`). Read per query.
  */
-let gatedStorageRollupsReviewed = false;
-
-/**
- * For tests only: let `storage=` rollups over gated bases be built and read
- * (behind `materialize.gatedSources`), as they will be once the managed-tier
- * review passes. Returns the restore.
- */
-export function allowGatedStorageRollupsForTests(on = true): () => void {
-   const before = gatedStorageRollupsReviewed;
-   gatedStorageRollupsReviewed = on;
-   return () => {
-      gatedStorageRollupsReviewed = before;
-   };
-}
+export const getAdmissionMode = (): "probe" | "lookup" | "shadow" =>
+   settings.get("materialize.admissionMode");
 
 /**
  * The switches gate keeping reads, read once at a shell and passed to the
@@ -952,7 +939,6 @@ export function allowGatedStorageRollupsForTests(on = true): () => void {
 export const gateSwitches = (): GateSwitches => ({
    materialize: getMaterializeEnabled(),
    gatedSources: getMaterializeGatedSources(),
-   gatedStorageRollupsReviewed,
 });
 
 /**

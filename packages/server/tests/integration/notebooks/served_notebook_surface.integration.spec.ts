@@ -105,24 +105,6 @@ describe("Served notebook on a package with a surface (E2E)", () => {
       expect(runColumns(dashboard.modelInfo)).toEqual([["shown_count"]]);
    });
 
-   it("withholds from the deprecated notebook GET a tile over a source derived from a hidden one", async () => {
-      const res = await fetch(pkgUrl(`/notebooks/${NOTEBOOK}`));
-      expect(res.status).toBe(200);
-      const body = (await res.json()) as {
-         modelInfo?: string;
-         notebookCells?: { text?: string; queryInfo?: string }[];
-      };
-      expect(body.modelInfo).not.toContain("secret_total");
-      const infoOf = (text: string) =>
-         body.notebookCells?.find((cell) => cell.text === text)?.queryInfo;
-      expect(infoOf("run: loc -> { aggregate: secret_total }")).toBeUndefined();
-      // Positive control: the tiles over the surface and over a source derived from it.
-      expect(infoOf("run: orders -> { aggregate: order_count }")).toContain(
-         "order_count",
-      );
-      expect(infoOf("run: on_surface -> { aggregate: n }")).toBeDefined();
-   });
-
    it("serves the report's tiles, and runs one over a source derived from the surface", async () => {
       const report = (await (
          await fetch(pkgUrl(`/reports/${NOTEBOOK}`))

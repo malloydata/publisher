@@ -29,8 +29,8 @@ import {
 const MODEL = `##! experimental.persistence
 source: ev is duckdb.table('ev')
 
-#@ persist name="colocated_t"
-source: colocated is ev -> { group_by: id; aggregate: n is count() }
+#@ persist name="database_t"
+source: database is ev -> { group_by: id; aggregate: n is count() }
 
 #@ persist name="stored_t" storage="lake"
 source: stored is ev -> { group_by: id; aggregate: total is amount.sum() }
@@ -100,7 +100,7 @@ describe("P12: the storage destination in the content address", () => {
          PERSIST_STORAGE_MODE: "on",
          PUBLISHER_PERSIST_ADDRESS_INCLUDES_DESTINATION: "true",
       });
-      expect(address("colocated")).toBe(plain("colocated"));
+      expect(address("database")).toBe(plain("database"));
       expect(addressDestination(sources.stored)).toBe("lake");
       expect(address("stored")).toBe(
          makeDigest(
@@ -132,7 +132,7 @@ describe("P12: the storage destination in the content address", () => {
          PERSIST_STORAGE_MODE: "off",
          PUBLISHER_PERSIST_ADDRESS_INCLUDES_DESTINATION: "true",
       });
-      // Off, storage= is inert and the source builds colocated.
+      // Off, storage= is inert and the source builds in the database tier.
       expect(addressDestination(sources.stored)).toBeUndefined();
       expect(address("stored")).toBe(plain("stored"));
    });
@@ -151,4 +151,4 @@ describe("P12: the storage destination in the content address", () => {
 // A `#@ preaggregate` rollup is synthesized into a companion model, so the
 // author-model corpus never plans one; this pins that a rollup's own
 // `storage=` folds into its address like any `storage=` source, and that a
-// colocated rollup beside it stays put.
+// database rollup beside it stays put.

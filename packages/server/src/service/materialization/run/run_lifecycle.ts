@@ -9,7 +9,7 @@
  * manifest committer and the reclaimer.
  *
  * Effects: writes the run store, logs a failed or cancelled run (secrets
- * redacted), counts each run's outcome. In-process only: a run on another
+ * redacted). In-process only: a run on another
  * process cannot be cancelled from here.
  */
 
@@ -21,10 +21,6 @@ import {
 } from "../../../errors";
 import { classifyRunFailure, failedRunManifestOf } from "./build_failure_class";
 import { logger } from "../../../logger";
-import {
-   MaterializationMode,
-   recordMaterializationRun,
-} from "../../../materialization_metrics";
 import { redactPgSecrets, redactStorageUrls } from "../../../pg_helpers";
 import {
    Materialization,
@@ -33,8 +29,8 @@ import {
 } from "../../../storage/DatabaseInterface";
 import { errMessage } from "../../../utils";
 import { MaterializationStatus } from "../domain/types";
-import { VALID_TRANSITIONS } from "./materialization_run_support";
-import { errorCodeOf } from "./error_code";
+import { VALID_TRANSITIONS } from "./run_status";
+import { errorCodeOf } from "../../../error_code";
 import { runFailureReported } from "./run_telemetry";
 
 /**
@@ -48,8 +44,56 @@ import { runFailureReported } from "./run_telemetry";
 export class RunLifecycle {
    /** In-flight runs, so they can be cancelled. In-process only. */
    readonly runningAbortControllers = new Map<string, AbortController>();
+   /** Each in-flight run's package, and its settle. */
+   private readonly runningPackages = new Map<
+      string,
+      { environmentName: string; packageName: string; settled: Promise<void> }
+   >();
+
+   /**
+    * The runs {@link abortPackageRuns} aborted: their package is being
+    * deleted or unloaded, so the tables they wrote have no run to serve
+    * them. Cleared when the run settles.
+    */
+   private readonly retiring = new Set<string>();
+
+   /** Each create whose run has not started yet, so a retiring package's abort reaches it. */
+   private readonly creating = new Set<{
+      environmentName: string;
+      packageName: string;
+      controller: AbortController;
+      settled: Promise<void>;
+   }>();
 
    constructor(private readonly repository: () => ResourceRepository) {}
+
+   /**
+    * Register a create of `owner`'s run before the create's first await, so
+    * {@link abortPackageRuns} aborts it as it aborts a running run: the
+    * create reads `signal` once its record is written and, aborted, records
+    * CANCELLED rather than start the run. `done` ends the registration, once
+    * the create has started its run (which the abort then reaches as a run)
+    * or given up; the abort's settle waits for it.
+    */
+   beginCreate(owner: { environmentName: string; packageName: string }): {
+      signal: AbortSignal;
+      done: () => void;
+   } {
+      const controller = new AbortController();
+      let done!: () => void;
+      const settled = new Promise<void>((resolve) => {
+         done = resolve;
+      });
+      const entry = { ...owner, controller, settled };
+      this.creating.add(entry);
+      return {
+         signal: controller.signal,
+         done: () => {
+            this.creating.delete(entry);
+            done();
+         },
+      };
+   }
 
    validateTransition(
       current: MaterializationStatus,
@@ -116,6 +160,62 @@ export class RunLifecycle {
       });
    }
 
+   /**
+    * Abort every run of `packageName` in `environmentName` running in this
+    * process, and every create of one not yet started, before this returns, so a package about to be unloaded starts
+    * no further build. Resolves once each has settled (CANCELLED, or what it
+    * reached first), or after `settleWithinMs`, whichever is sooner: a
+    * statement already sent finishes on a database that ignores the abort,
+    * and the run stops at its next check.
+    */
+   abortPackageRuns(
+      environmentName: string,
+      packageName: string,
+      settleWithinMs: number,
+   ): Promise<void> {
+      const settles: Promise<void>[] = [];
+      for (const [id, run] of this.runningPackages) {
+         if (
+            run.environmentName !== environmentName ||
+            run.packageName !== packageName
+         ) {
+            continue;
+         }
+         // Before the abort, which the run may read as soon as it lands.
+         this.retiring.add(id);
+         this.runningAbortControllers.get(id)?.abort();
+         settles.push(run.settled);
+      }
+      for (const create of this.creating) {
+         if (
+            create.environmentName !== environmentName ||
+            create.packageName !== packageName
+         ) {
+            continue;
+         }
+         create.controller.abort();
+         settles.push(create.settled);
+      }
+      if (settles.length === 0) return Promise.resolve();
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const bound = new Promise<void>((resolve) => {
+         timer = setTimeout(resolve, settleWithinMs);
+         timer.unref?.();
+      });
+      return Promise.race([
+         Promise.all(settles).then(() => undefined),
+         bound,
+      ]).finally(() => clearTimeout(timer));
+   }
+
+   /**
+    * Whether `id` was aborted because its package is being deleted or
+    * unloaded ({@link abortPackageRuns}), rather than stopped.
+    */
+   isRetiring(id: string): boolean {
+      return this.retiring.has(id);
+   }
+
    /** The single-active conflict error, with the winning run's id when known. */
    activeConflict(
       packageName: string,
@@ -132,24 +232,18 @@ export class RunLifecycle {
       );
    }
 
-   recordRun(
-      mode: MaterializationMode,
-      outcome: "success" | "partial" | "failed" | "cancelled",
-      startedAtMs: number,
-   ): void {
-      recordMaterializationRun(mode, outcome, Date.now() - startedAtMs);
-   }
-
    runInBackground(
       id: string,
       run: (signal: AbortSignal) => Promise<void>,
       // Called once the run has settled and its final status is recorded.
       onSettled?: () => void,
+      // The run's package, so unloading it aborts the run.
+      owner?: { environmentName: string; packageName: string },
    ): void {
       const abortController = new AbortController();
       this.runningAbortControllers.set(id, abortController);
 
-      run(abortController.signal)
+      const settled = run(abortController.signal)
          .catch(async (err) => {
             // Per-source failures arrive already redacted. A whole-run throw has
             // no connection to redact against but can still echo a DSN, so
@@ -215,7 +309,7 @@ export class RunLifecycle {
                   } catch (readErr) {
                      logger.warn(
                         "Could not read a run's record; recording its status without its metadata",
-                        { runId: id, error: errMessage(readErr) },
+                        { runId: id, code: errorCodeOf(readErr) },
                      );
                   }
                }
@@ -268,14 +362,17 @@ export class RunLifecycle {
                logger.error("Failed to record materialization failure", {
                   runId: id,
                   code,
-                  transitionError: errMessage(transitionErr),
+                  transitionErrorCode: errorCodeOf(transitionErr),
                });
             }
          })
          .finally(() => {
             this.runningAbortControllers.delete(id);
+            this.runningPackages.delete(id);
+            this.retiring.delete(id);
             onSettled?.();
          });
+      if (owner) this.runningPackages.set(id, { ...owner, settled });
    }
 }
 

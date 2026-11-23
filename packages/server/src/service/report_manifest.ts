@@ -188,7 +188,7 @@ export interface ReportTileLayout {
 }
 
 export interface ServedReportManifest {
-   /** The filename basename: a display label, and the deprecated `…/dashboards/{name}` segment. Never the identity, which is `entryFile`. */
+   /** The filename basename: a display label. Never the identity, which is `entryFile`. */
    name: string;
    /** How the tiles are placed (`report.ts`, §2); a linear report lays out as one column. */
    layout: ReportLayout;
@@ -325,21 +325,6 @@ export function filterPublisherOwnedRenderLogs<T extends { message?: string }>(
       if (PUBLISHER_OWNED_TAGS.includes(match[1].split(".")[0])) return false;
       return !(couldBeATile && isTileLayoutTagOnRoot(log.message));
    });
-}
-
-/**
- * Whether a name matches the naming convention `api-doc.yaml` describes in
- * prose. Advisory only: every tagged dashboard is served whatever its name
- * (the name is percent-encoded into its URL, and the spec deliberately has no
- * pattern because the name comes from a filename). Worth reporting because a
- * name outside it must be percent-encoded by a caller building the URL by hand.
- *
- * Not a gate: an empty name cannot occur (`listPackageFiles` ignores
- * dotfiles), a dot mid-name does not break routing, and the lookup is a `Map`,
- * so there is no traversal risk.
- */
-export function matchesDocumentedReportName(slug: string): boolean {
-   return /^[a-zA-Z0-9_-]+$/.test(slug);
 }
 
 /**

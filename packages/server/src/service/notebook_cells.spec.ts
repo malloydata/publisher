@@ -14,8 +14,7 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { ModelCompilationError } from "../errors";
-import { resetNotebookMetricsForTest } from "../notebook_metrics";
+import { ModelCompilationError, ModelNotFoundError } from "../errors";
 import { resetReportMetricsForTest } from "../report_metrics";
 import {
    PackageLoadPool,
@@ -26,9 +25,8 @@ import {
    type MetricsHarness,
 } from "../test_helpers/metrics_harness";
 import { Model, ModelPolicy } from "./model";
-import { governorOf } from "../test_helpers/governor";
 import { Package } from "./package";
-import { listNotebooks } from "./legacy_report_views";
+import { attachedCells } from "../test_helpers/attached_cells";
 
 const FIXTURE_DIR = path.resolve(
    __dirname,
@@ -39,25 +37,9 @@ const LAYOUT = "notebooks/layout.malloy";
 const SETTINGS = "notebooks/settings.malloy";
 const REFUSED = "notebooks/refused_tiles.malloy";
 
-/** The rows of a cell result, as plain objects keyed by column. */
-function rowsOf(result: string | undefined): Record<string, unknown>[] {
-   const parsed = JSON.parse(result ?? "{}") as {
-      data?: {
-         array_value?: {
-            record_value?: { number_value?: number; string_value?: string }[];
-         }[];
-      };
-      schema?: { fields?: { name: string }[] };
-   };
-   const names = (parsed.schema?.fields ?? []).map((f) => f.name);
-   return (parsed.data?.array_value ?? []).map((row) =>
-      Object.fromEntries(
-         (row.record_value ?? []).map((cell, i) => [
-            names[i],
-            cell.number_value ?? cell.string_value,
-         ]),
-      ),
-   );
+/** A query's rows, as plain objects keyed by column. */
+function rowsOf(compactResult: unknown): Record<string, unknown>[] {
+   return (compactResult ?? []) as Record<string, unknown>[];
 }
 
 describe("served linear report cells", () => {
@@ -70,7 +52,6 @@ describe("served linear report cells", () => {
 
    beforeAll(async () => {
       harness = await startMetricsHarness();
-      resetNotebookMetricsForTest();
       resetReportMetricsForTest();
       pool = new PackageLoadPool(1);
       await __setPackageLoadPoolForTests(pool);
@@ -108,7 +89,6 @@ describe("served linear report cells", () => {
    afterAll(async () => {
       await __setPackageLoadPoolForTests(null);
       fs.rmSync(tempDir, { recursive: true, force: true });
-      resetNotebookMetricsForTest();
       resetReportMetricsForTest();
       await harness.shutdown();
    });
@@ -119,60 +99,31 @@ describe("served linear report cells", () => {
       return found;
    };
 
-   it("serves a report's definitions as cells, then its tiles in tile order", async () => {
-      const raw = await model(LAYOUT).getNotebook();
-      expect(raw.format).toBe("malloy");
-      expect(raw.notebookCells?.map((cell) => [cell.type, cell.kind])).toEqual([
+   it("refuses to read a linear .malloy report as cells", async () => {
+      await expect(model(LAYOUT).getNotebook()).rejects.toThrow(
+         ModelNotFoundError,
+      );
+   });
+
+   it("attaches a report's definitions as cells, then its tiles in tile order", async () => {
+      const cells = attachedCells(model(LAYOUT));
+      expect(cells.map((cell) => [cell.type, cell.kind])).toEqual([
          ["code", "definition"],
          ["code", "definition"],
          ["markdown", "markdown"],
          ["code", "query"],
          ["code", "query"],
       ]);
-      expect(raw.notebookCells?.[2].text).toContain("## How to read this page");
-      expect(raw.notebookCells?.[3].text).toBe("run: orders_tiles -> headline");
-      expect(raw.dashboard?.layout).toBe("linear");
+      expect(cells[2].text).toContain("## How to read this page");
+      expect(cells[3].text).toBe("run: orders_tiles -> headline");
+      expect(pkg.getReportLayout(LAYOUT)).toBe("linear");
    });
 
-   it("reads autorun and starting givens off the artifact tag", async () => {
-      const raw = await model(SETTINGS).getNotebook();
-      expect(raw.autorun).toBe(false);
-      expect(raw.startingGivens).toEqual({ REGION: "EU" });
-   });
-
-   it("runs a tile cell, and answers a definition or markdown cell with its text and kind, and no result", async () => {
+   it("runs a tile cell's query on the report's path", async () => {
       const nb = model(LAYOUT);
-      const query = await nb.executeNotebookCell(unrecordedAudit(), 4);
-      expect(query.kind).toBe("query");
-      expect(rowsOf(query.result).length).toBeGreaterThan(0);
-      const definition = await nb.executeNotebookCell(unrecordedAudit(), 0);
-      expect(definition).toMatchObject({ type: "code", kind: "definition" });
-      expect(definition.result).toBeUndefined();
-      const markdown = await nb.executeNotebookCell(unrecordedAudit(), 2);
-      expect(markdown).toMatchObject({ type: "markdown", kind: "markdown" });
-      expect(markdown.result).toBeUndefined();
-   });
-
-   it("grafts a tile cell against the whole compiled model", async () => {
-      const nb = governorOf(model(LAYOUT)) as unknown as {
-         runnableNotebookCells: { runnable?: unknown }[];
-         resolveNotebookCellGraftScope(
-            index: number,
-            runnable: unknown,
-         ): Promise<{
-            graftScope?: { cacheScope: string };
-            usesOwnScope: boolean;
-         }>;
-      };
-      // Cells 3 and 4 are the tile cells, `run: <tile>` over the compiled report.
-      for (const index of [3, 4]) {
-         const resolved = await nb.resolveNotebookCellGraftScope(
-            index,
-            nb.runnableNotebookCells[index].runnable,
-         );
-         expect(resolved.usesOwnScope).toBe(false);
-         expect(resolved.graftScope?.cacheScope).toBe("model");
-      }
+      const text = attachedCells(nb)[4].text;
+      const ran = await nb.runQuery(unrecordedAudit(), { query: text });
+      expect(rowsOf(ran.compactResult).length).toBeGreaterThan(0);
    });
 
    it("attaches identical cells on the worker path and on Model.create", async () => {
@@ -207,40 +158,34 @@ describe("served linear report cells", () => {
                   inProcess.getCompiledSourceText()!,
                ),
             ).toBe("ok");
-            const fromWorker = await model(modelPath).getNotebook();
-            const local = await inProcess.getNotebook();
-            // Each compile mints fresh drill reference ids; nothing else may differ.
-            const stable = (cells: unknown) =>
-               JSON.stringify(cells).replace(
-                  /reference_id = \\\\\\"[0-9a-f-]+\\\\\\"/g,
-                  "reference_id",
-               );
-            expect(stable(local.notebookCells)).toContain("reference_id");
-            expect(stable(local.notebookCells)).toEqual(
-               stable(fromWorker.notebookCells),
-            );
-            expect(local.annotations).toEqual(fromWorker.annotations);
-            const queryAt = (fromWorker.notebookCells ?? []).findIndex(
-               (cell) => cell.kind === "query",
-            );
+            // The reader's fields; the live runnable and modelDef differ by compile.
+            const read = (m: Model) =>
+               attachedCells(m).map((cell) => ({
+                  type: cell.type,
+                  kind: cell.kind,
+                  text: cell.text,
+                  markdown: cell.markdown,
+                  proseLines: cell.proseLines,
+                  codeLine: cell.codeLine,
+                  caption: cell.caption,
+               }));
+            const fromWorker = read(model(modelPath));
+            expect(fromWorker.length).toBeGreaterThan(0);
+            expect(read(inProcess)).toEqual(fromWorker);
+            const query =
+               fromWorker.find((cell) => cell.kind === "query")?.text ?? "";
             const givens =
                modelPath === SETTINGS ? { REGION: "EU" } : undefined;
-            const a = await inProcess.executeNotebookCell(
-               unrecordedAudit(),
-               queryAt,
-               undefined,
-               undefined,
+            const a = await inProcess.runQuery(unrecordedAudit(), {
+               query,
                givens,
-            );
-            const b = await model(modelPath).executeNotebookCell(
-               unrecordedAudit(),
-               queryAt,
-               undefined,
-               undefined,
+            });
+            const b = await model(modelPath).runQuery(unrecordedAudit(), {
+               query,
                givens,
-            );
-            expect(rowsOf(a.result)).toEqual(rowsOf(b.result));
-            expect(rowsOf(a.result).length).toBeGreaterThan(0);
+            });
+            expect(rowsOf(a.compactResult)).toEqual(rowsOf(b.compactResult));
+            expect(rowsOf(a.compactResult).length).toBeGreaterThan(0);
          }
       } finally {
          await duckdb.close();
@@ -302,20 +247,16 @@ describe("served linear report cells", () => {
 
    describe("a report the reader refuses", () => {
       it("lists with the reader's error, naming the line", async () => {
-         const listed = (await listNotebooks(pkg, "env")).find(
-            (nb) => nb.path === REFUSED,
-         );
+         const listed = pkg
+            .listReports()
+            .find((report) => report.path === REFUSED);
          expect(listed?.error).toContain("Line 5:");
       });
 
-      it("fails the notebook GET and a cell run the way a notebook that did not compile does", async () => {
+      it("carries the reader's refusal as its error, the way a notebook that did not compile does, and no cells", async () => {
          const nb = model(REFUSED);
-         await expect(nb.getNotebook()).rejects.toBeInstanceOf(
-            ModelCompilationError,
-         );
-         await expect(
-            nb.executeNotebookCell(unrecordedAudit(), 0),
-         ).rejects.toBeInstanceOf(ModelCompilationError);
+         expect(nb.getNotebookError()).toBeInstanceOf(ModelCompilationError);
+         expect(attachedCells(nb)).toEqual([]);
       });
 
       it("is a package finding of severity error, counted at discovery", async () => {
@@ -333,30 +274,5 @@ describe("served linear report cells", () => {
             ),
          ).toBe(1);
       });
-   });
-
-   it("counts a cell run by format, kind and outcome", async () => {
-      await model(LAYOUT).executeNotebookCell(unrecordedAudit(), 3);
-      expect(
-         await harness.collectCounter(
-            "publisher_notebook_cell_executions_total",
-            { format: "malloy", kind: "query", outcome: "ok" },
-         ),
-      ).toBeGreaterThan(0);
-      await expect(
-         model(REFUSED).executeNotebookCell(unrecordedAudit(), 0),
-      ).rejects.toThrow();
-      expect(
-         await harness.collectCounter(
-            "publisher_notebook_cell_executions_total",
-            { format: "malloy", kind: "none", outcome: "error" },
-         ),
-      ).toBeGreaterThan(0);
-      expect(
-         await harness.collectCounter(
-            "publisher_notebook_cell_executions_total",
-            { format: "malloy", kind: "code" },
-         ),
-      ).toBe(0);
    });
 });

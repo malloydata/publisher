@@ -75,6 +75,17 @@ interface Fixture {
    committer(): {
       rebindLoadedVersions(env: string, pkg: string): Promise<boolean>;
    };
+   /**
+    * Unversioned only: bind `entries` as a host's manifest
+    * (`manifestLocation`), as an orchestrated deployment binds what its
+    * builds reported: no local run's key check records come with it.
+    */
+   hostManifest(entries: Record<string, unknown>): Promise<void>;
+   /**
+    * Write `model` over the package's model and reload it in place, as an
+    * edit does: the models recompile, and no `storage=` entry is bound again.
+    */
+   editModel(model: string): Promise<void>;
    dispose(): Promise<void>;
 }
 
@@ -131,7 +142,12 @@ async function fixture(
       connectionString: url!,
    });
    await admin.runSQL(`CREATE DATABASE ${catalog}`);
-   await admin.runSQL(`CREATE DATABASE ${warehouseDb}`);
+   // A binary (`C`) warehouse: a `storage=` copy orders and ranges a
+   // string as live does only under a binary collation, so a string
+   // order here serves (the server default, often `en_US`, answers it live).
+   await admin.runSQL(
+      `CREATE DATABASE ${warehouseDb} LOCALE 'C' ENCODING 'UTF8' TEMPLATE template0`,
+   );
    const parsed = new URL(url!);
    const pg = {
       host: parsed.hostname,
@@ -284,6 +300,33 @@ async function fixture(
                committer: ReturnType<Fixture["committer"]>;
             }
          ).committer,
+      editModel: async (edited) => {
+         const loaded = await pkg();
+         fs.writeFileSync(
+            path.join(loaded.getPackagePath(), "m.malloy"),
+            edited,
+         );
+         await loaded.reloadAllModels({});
+      },
+      hostManifest: async (entries) => {
+         const location = path.join(root, `host-${Date.now()}.json`);
+         fs.writeFileSync(
+            location,
+            JSON.stringify({ builtAt: new Date().toISOString(), entries }),
+         );
+         writePackageFiles(
+            source,
+            { "m.malloy": model },
+            {
+               manifest: {
+                  name: PKG,
+                  description: "fixture",
+                  manifestLocation: location,
+               } as never,
+            },
+         );
+         await env.getPackage(parsePackageName(PKG), true);
+      },
       dispose: async () => {
          await env.closeAllConnections().catch(() => undefined);
          await db.close();
@@ -319,7 +362,7 @@ const pairMeasures = `  measure:
 describe.skipIf(!url)(
    "a published version serves a pair table's counts through the inlined join, after its run's rebind",
    () => {
-      // `flights` is stored and `flights_co` colocated, over the same rows;
+      // `flights` is stored and `flights_co` database, over the same rows;
       // `flights_dup`'s leaf holds segment 20 twice, the same row, so its
       // check fails.
       const MODEL = `source: segs is warehouse.table('public.segs') extend {
@@ -419,7 +462,7 @@ ${pairMeasures}
          expect(served.servedFrom).toBe("storage");
       });
 
-      it("serves the same counts from the colocated pair table", async () => {
+      it("serves the same counts from the database pair table", async () => {
          const served = await f.query(
             byCarrier("flights_co", "flight_count, seg_n, seg_ids, seg_total"),
          );
@@ -590,7 +633,7 @@ describe.skipIf(!url)(
       // flight_id, its key, which must be unique.
       const MODEL = `source: crew is warehouse.table('public.crew') extend {
   primary_key: flight_id
-  #(preaggregate) grain=["flight_id"] storage="lake"
+  #(rollup) grain=["flight_id"] storage="lake"
   measure: crew_size is size.sum()
 }
 
@@ -654,7 +697,7 @@ describe.skipIf(!url)(
       // `segs`'s rollup through a join keyed on its primary key.
       const MODEL = `source: segs is warehouse.table('public.segs') extend {
   primary_key: seg_id
-  #(preaggregate) grain=["flight_id"] storage="lake"
+  #(rollup) grain=["flight_id"] storage="lake"
   measure: seg_miles is miles.sum()
 }
 
@@ -702,6 +745,313 @@ source: flights is warehouse.table('public.flights') extend {
          const rebound = await f.query(malloy);
          expect(rebound.servedFrom).toBeUndefined();
          expect(rebound.rows).toEqual(truth);
+      });
+   },
+);
+
+describe.skipIf(!url)(
+   "an orchestrated join to a rollup serves by the key checks its builds recorded in their contracts",
+   () => {
+      // A join_one to `crew`'s rollup at its key (the rollup's own check),
+      // and a join_many to `segs`'s rollup beside the stored `flights`
+      // (the stored source's own check). Bound from a host's manifest, so no
+      // local run's record is read: only each table's contract.
+      const MODEL = `source: crew is warehouse.table('public.crew') extend {
+  primary_key: flight_id
+  #(rollup) grain=["flight_id"] storage="lake"
+  measure: crew_size is size.sum()
+}
+
+source: segs is warehouse.table('public.segs') extend {
+  primary_key: seg_id
+  #(rollup) grain=["flight_id"] storage="lake"
+  measure: seg_miles is miles.sum()
+}
+
+#(materialize) storage="lake"
+source: flights is warehouse.table('public.flights') extend {
+  primary_key: id
+  join_one: crew with id
+  join_many: segs on segs.flight_id = id
+  measure: flight_count is count()
+}
+`;
+      const CREW =
+         "run: flights -> { group_by: carrier; aggregate: flight_count, crew.crew_size; order_by: carrier }";
+      const SEG =
+         "run: flights -> { group_by: carrier; aggregate: flight_count, segs.seg_miles; order_by: carrier }";
+      let f: Fixture;
+      let entries: Record<
+         string,
+         {
+            contract?: {
+               keys?: Record<string, { unique: boolean; level?: string }>;
+            };
+         }
+      >;
+      beforeAll(async () => {
+         f = await fixture(
+            MODEL,
+            [
+               FLIGHTS,
+               SEGS,
+               `CREATE TABLE crew AS SELECT * FROM (VALUES
+                  (1, 3), (3, 2), (4, 5)) AS t(flight_id, size)`,
+            ],
+            false,
+         );
+         const built = await f.build();
+         expect(built.status).toBe("MANIFEST_FILE_READY");
+         entries = (built.manifest as { entries: typeof entries }).entries;
+      }, 120_000);
+      afterAll(async () => {
+         await f?.dispose();
+      });
+
+      /** `entries` with every recorded rollup and source key check set to `unique`, or dropped. */
+      const withChecks = (unique: boolean | "none") =>
+         Object.fromEntries(
+            Object.entries(entries).map(([id, e]) => {
+               const keys = Object.fromEntries(
+                  Object.entries(e.contract?.keys ?? {}).flatMap(([k, v]) =>
+                     v.level === "leaf"
+                        ? [[k, v]]
+                        : unique === "none"
+                          ? []
+                          : [[k, { ...v, unique }]],
+                  ),
+               );
+               return [
+                  id,
+                  e.contract ? { ...e, contract: { ...e.contract, keys } } : e,
+               ];
+            }),
+         );
+
+      it("records the rollup's key and the stored source's key in the contracts, under the package-relative scheme", () => {
+         const names = Object.values(entries).flatMap((e) =>
+            Object.entries(e.contract?.keys ?? {}).map(([k, v]) => [
+               k,
+               v.level,
+            ]),
+         );
+         expect(names).toContainEqual(["rollup:flight_id", "rollup"]);
+         expect(names).toContainEqual(["stored:flights@m.malloy.id", "stored"]);
+      });
+
+      it("serves both joins from storage when the recorded checks passed", async () => {
+         await f.hostManifest(withChecks(true));
+         const crew = await f.query(CREW);
+         expect(crew.rows).toEqual([
+            { carrier: "AA", flight_count: 2, crew_size: 5 },
+            { carrier: "UA", flight_count: 2, crew_size: 5 },
+         ]);
+         expect(crew.servedFrom).toBe("storage");
+         const seg = await f.query(SEG);
+         expect(seg.rows).toEqual([
+            { carrier: "AA", flight_count: 2, seg_miles: 150 },
+            { carrier: "UA", flight_count: 2, seg_miles: 500 },
+         ]);
+         expect(seg.servedFrom).toBe("storage");
+      });
+
+      it("answers both live when the recorded checks failed, or none was recorded", async () => {
+         for (const checks of [false, "none"] as const) {
+            await f.hostManifest(withChecks(checks));
+            for (const q of [CREW, SEG]) {
+               expect({
+                  checks,
+                  q,
+                  from: (await f.query(q)).servedFrom,
+               }).toEqual({
+                  checks,
+                  q,
+                  from: undefined,
+               });
+            }
+         }
+      });
+   },
+);
+
+describe.skipIf(!url)(
+   "an orchestrated join to a rollup reads its stored source's key check under the primary key the model declares now",
+   () => {
+      // `flights` is stored and read beside `segs`'s rollup through a
+      // join_many on its primary key. Its build checked `id`; an edit then
+      // makes `alt_id`, which repeats, the key the join reads. The table and
+      // its contract stay bound, but the check under `id` says nothing of
+      // `alt_id`: read through the rollup, flight 1's segments would be met
+      // once per flight sharing alt_id 1.
+      const model = (
+         key: string,
+      ) => `source: segs is warehouse.table('public.segs') extend {
+  primary_key: seg_id
+  #(rollup) grain=["flight_id"] storage="lake"
+  measure: seg_miles is miles.sum()
+}
+
+#(materialize) storage="lake"
+source: flights is warehouse.table('public.flights') extend {
+  primary_key: ${key}
+  join_many: segs on segs.flight_id = ${key}
+  measure: flight_count is count()
+}
+`;
+      const SEG =
+         "run: flights -> { group_by: carrier; aggregate: flight_count, segs.seg_miles; order_by: carrier }";
+      let f: Fixture;
+      beforeAll(async () => {
+         f = await fixture(
+            model("id"),
+            [
+               `CREATE TABLE flights AS SELECT * FROM (VALUES
+                  (1, 1, 'AA'), (2, 2, 'UA'), (3, 1, 'AA'), (4, 4, 'UA'))
+                  AS t(id, alt_id, carrier)`,
+               SEGS,
+            ],
+            false,
+         );
+         const built = await f.build();
+         expect(built.status).toBe("MANIFEST_FILE_READY");
+         await f.hostManifest(
+            (built.manifest as { entries: Record<string, unknown> }).entries,
+         );
+      }, 120_000);
+      afterAll(async () => {
+         await f?.dispose();
+      });
+
+      it("serves the join from storage while the checked key is the one it reads", async () => {
+         const served = await f.query(SEG);
+         expect(served.rows).toEqual([
+            { carrier: "AA", flight_count: 2, seg_miles: 150 },
+            { carrier: "UA", flight_count: 2, seg_miles: 500 },
+         ]);
+         expect(served.servedFrom).toBe("storage");
+      });
+
+      it("answers live once a reload moves the primary key, with no storage rebind", async () => {
+         await f.editModel(model("alt_id"));
+         const answer = await f.query(SEG);
+         // Live's own answer over a key the data holds twice: it counts
+         // AA's two flights, both alt_id 1, as one flight, and meets
+         // flight 1's segments once per row. Read through the rollup, the
+         // stale check would have answered 2 and 150.
+         expect(answer.rows).toEqual([
+            { carrier: "AA", flight_count: 1, seg_miles: 300 },
+            { carrier: "UA", flight_count: 2, seg_miles: 500 },
+         ]);
+         expect(answer.servedFrom).toBeUndefined();
+         expect(answer.reasons).toContain("COUNT_SEMANTICS");
+      });
+   },
+);
+
+describe.skipIf(!url)(
+   "a standalone run's join to a rollup reads its stored source's key check under the primary key the model declares now",
+   () => {
+      // As above, but bound by this server's own run: the check is the run's
+      // own record, not a contract's, and a reload must not reuse it for a
+      // primary key it never checked.
+      const model = (
+         key: string,
+      ) => `source: segs is warehouse.table('public.segs') extend {
+  primary_key: seg_id
+  #(rollup) grain=["flight_id"] storage="lake"
+  measure: seg_miles is miles.sum()
+}
+
+#(materialize) storage="lake"
+source: flights is warehouse.table('public.flights') extend {
+  primary_key: ${key}
+  join_many: segs on segs.flight_id = ${key}
+  measure: flight_count is count()
+}
+`;
+      const SEG =
+         "run: flights -> { group_by: carrier; aggregate: flight_count, segs.seg_miles; order_by: carrier }";
+      let f: Fixture;
+      beforeAll(async () => {
+         f = await fixture(
+            model("id"),
+            [
+               `CREATE TABLE flights AS SELECT * FROM (VALUES
+                  (1, 1, 'AA'), (2, 2, 'UA'), (3, 1, 'AA'), (4, 4, 'UA'))
+                  AS t(id, alt_id, carrier)`,
+               SEGS,
+            ],
+            false,
+         );
+         expect((await f.build()).status).toBe("MANIFEST_FILE_READY");
+      }, 120_000);
+      afterAll(async () => {
+         await f?.dispose();
+      });
+
+      it("serves the join from storage while the checked key is the one it reads", async () => {
+         const served = await f.query(SEG);
+         expect(served.rows).toEqual([
+            { carrier: "AA", flight_count: 2, seg_miles: 150 },
+            { carrier: "UA", flight_count: 2, seg_miles: 500 },
+         ]);
+         expect(served.servedFrom).toBe("storage");
+      });
+
+      it("answers live once a reload moves the primary key, with no rebuild", async () => {
+         await f.editModel(model("alt_id"));
+         const answer = await f.query(SEG);
+         // Live's own answer over a key the data holds twice (see above).
+         expect(answer.rows).toEqual([
+            { carrier: "AA", flight_count: 1, seg_miles: 300 },
+            { carrier: "UA", flight_count: 2, seg_miles: 500 },
+         ]);
+         expect(answer.servedFrom).toBeUndefined();
+         expect(answer.reasons).toContain("COUNT_SEMANTICS");
+      });
+   },
+);
+
+describe.skipIf(!url)(
+   "a pair table's leaf key check is read under the leaf's primary key the model declares now",
+   () => {
+      // The run checked `segs`'s key `seg_id`, unique. An edit makes
+      // `flight_id`, which flight 1's two segments share, its key: the pair
+      // table and the run's record stay bound, but the record says nothing
+      // of `flight_id`, so counts through the inlined join answer live.
+      const model = (
+         key: string,
+      ) => `source: segs is warehouse.table('public.segs') extend {
+  primary_key: ${key}
+}
+
+#(materialize) storage="lake" inline=["segs"]
+source: flights is warehouse.table('public.flights') extend {
+  primary_key: id
+  join_many: segs on segs.flight_id = id
+${pairMeasures}
+}
+`;
+      const Q = byCarrier("flights", "flight_count, seg_n, seg_ids, seg_total");
+      let f: Fixture;
+      beforeAll(async () => {
+         f = await fixture(model("seg_id"), [FLIGHTS, SEGS], false);
+         expect((await f.build()).status).toBe("MANIFEST_FILE_READY");
+      }, 120_000);
+      afterAll(async () => {
+         await f?.dispose();
+      });
+
+      it("serves counts through the inlined join while the checked key is the leaf's", async () => {
+         const served = await f.query(Q);
+         expect(served.servedFrom).toBe("storage");
+         expect(served.reasons).not.toContain("COUNT_SEMANTICS");
+      });
+
+      it("answers live once a reload moves the leaf's primary key, with no rebuild", async () => {
+         await f.editModel(model("flight_id"));
+         const answer = await f.query(Q);
+         expect(answer.servedFrom).toBeUndefined();
       });
    },
 );

@@ -4,7 +4,7 @@
 /**
  * R4 for extension tables (materialization v2, P10): an extension that
  * declares its own `#(materialize)` has a table of its own, built over its
- * parent's build source when the two are on one tier, colocated or one
+ * parent's build source when the two are on one tier, database or one
  * `storage=` destination (so Malloy's planner orders the builds), and served
  * from its own re-root, which keeps the blocks between
  * it and its parent so it inherits every measure, join and view it had. Every
@@ -16,7 +16,7 @@
  * extension's tables on the queried source's chain, whether the served copy
  * answered or declined.
  *
- * Each scenario runs on both tiers: colocated (the chain's tables in the
+ * Each scenario runs on both tiers: database (the chain's tables in the
  * source's own warehouse, read by the served copy there, phase 3 pull request
  * 6) and `storage=`.
  */
@@ -25,7 +25,7 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { useMaterializationOn } from "../../../src/test_helpers/settings_env";
 import {
    buildScenario,
-   colocatedFiles,
+   databaseFiles,
    disposeScenarios,
    rowDifference,
    type R4Fixture,
@@ -44,7 +44,7 @@ const seedSql = [
 
 /**
  * One chain of extension tables, `storage` on each declaration (or none,
- * colocated, each named after its source).
+ * database, each named after its source).
  */
 // In a file of its own: truncated in the query's time zone and declared on a
 // base in another file, so every table stores it as the build computed it
@@ -168,12 +168,12 @@ function considered(
 }
 
 describe("R4: extension tables answer equal to live", () => {
-   let colocated: R4Fixture;
+   let database: R4Fixture;
    let storage: R4Fixture;
    useMaterializationOn();
    beforeAll(async () => {
-      colocated = await buildScenario({
-         files: colocatedFiles({
+      database = await buildScenario({
+         files: databaseFiles({
             "m.malloy": chainModel(""),
             "orders.malloy": ordersModel,
          }),
@@ -193,11 +193,11 @@ describe("R4: extension tables answer equal to live", () => {
       await disposeScenarios();
    });
 
-   it("builds each colocated extension over its parent's build source, in the order a storage= chain has", () => {
-      expect(colocated.buildReads).toEqual(storage.buildReads);
-      expect(Object.keys(colocated.buildReads).length).toBeGreaterThan(1);
+   it("builds each database extension over its parent's build source, in the order a storage= chain has", () => {
+      expect(database.buildReads).toEqual(storage.buildReads);
+      expect(Object.keys(database.buildReads).length).toBeGreaterThan(1);
       // In its own warehouse: nothing is compiled over a stored table.
-      expect(colocated.storedBuildSQL).toEqual({});
+      expect(database.storedBuildSQL).toEqual({});
    });
 
    it("builds a storage= extension over its parent's stored table, each after its parent", () => {
@@ -229,7 +229,7 @@ describe("R4: extension tables answer equal to live", () => {
    });
 
    for (const [label, fixture] of [
-      ["colocated", () => colocated],
+      ["database", () => database],
       ["storage=", () => storage],
    ] as const) {
       describe(label, () => {
@@ -239,9 +239,9 @@ describe("R4: extension tables answer equal to live", () => {
             it(name, async () => {
                const run = await fixture().run({ name, malloy });
                expect(run.servedVia).toBe("served_copy");
-               // A colocated table is the source's own warehouse.
+               // A database table is the source's own warehouse.
                expect(run.servedFrom).toBe(
-                  label === "colocated" ? "database" : "storage",
+                  label === "database" ? "database" : "storage",
                );
                expect(run.live.length).toBeGreaterThan(0);
                expect(rowDifference(run.live, run.served)).toBeUndefined();
@@ -264,18 +264,74 @@ describe("R4: extension tables answer equal to live", () => {
             expect(rows[0]).not.toEqual(rows[1]);
          });
 
-         it("answers each extension from its own table", async () => {
+         it("answers each extension from its own table, equal to live", async () => {
             const f = fixture();
-            f.setBindings(f.bindings);
-            for (const name of ["east", "east_big", "mid_ext", "renamed"]) {
-               const { path } = await f.runAsIs(
-                  `run: ${name} -> { group_by: region }`,
+            const names = ["east", "east_big", "mid_ext", "renamed"];
+            // `d` is read by no `where:` on the chain, so moving it moves
+            // only the answer, never which rows a re-applied filter keeps.
+            const query = (name: string) =>
+               `run: ${name} -> { group_by: region; aggregate: n is count(), last_d is d.max(); order_by: region }`;
+            const exact = (rows: Record<string, unknown>[]) =>
+               rows.map((r) =>
+                  Object.fromEntries(
+                     Object.entries(r).map(([k, v]) => [
+                        k,
+                        v instanceof Date ? v.toISOString() : String(v),
+                     ]),
+                  ),
                );
-               expect(path?.servedBy).toMatchObject({
-                  kind: "materialized",
-                  tableId: f.tableIds[name],
-                  via: "served_copy",
-               });
+            f.setBindings([]);
+            const live: Record<string, Record<string, unknown>[]> = {};
+            for (const name of names) {
+               live[name] = (await f.runAsIs(query(name))).rows;
+               expect(live[name].length).toBeGreaterThan(0);
+            }
+            // Each table, the parent's too, moved by its own number of days,
+            // so an answer read from another table on the chain is told apart.
+            const days: Record<string, number> = {
+               stored: 1000,
+               east: 2000,
+               east_big: 3000,
+               mid_ext: 4000,
+               renamed: 5000,
+            };
+            const shift = async (sign: 1 | -1) => {
+               for (const [name, n] of Object.entries(days)) {
+                  await f.duckdb.runSQL(
+                     `UPDATE ${f.physicalTables[name]} SET d = d + ${sign * n}`,
+                  );
+               }
+            };
+            const shifted = (value: unknown, n: number) =>
+               new Date(
+                  Date.parse(
+                     value instanceof Date
+                        ? value.toISOString()
+                        : String(value),
+                  ) +
+                     n * 86_400_000,
+               );
+            await shift(1);
+            try {
+               f.setBindings(f.bindings);
+               for (const name of names) {
+                  const { path, rows } = await f.runAsIs(query(name));
+                  expect(path?.servedBy).toMatchObject({
+                     kind: "materialized",
+                     tableId: f.tableIds[name],
+                     via: "served_copy",
+                  });
+                  expect(exact(rows)).toEqual(
+                     exact(
+                        live[name].map((r) => ({
+                           ...r,
+                           last_d: shifted(r.last_d, days[name]),
+                        })),
+                     ),
+                  );
+               }
+            } finally {
+               await shift(-1);
             }
          });
 
@@ -349,12 +405,12 @@ source: ev_week is ev_recent extend {
    useMaterializationOn();
    beforeAll(async () => {
       for (const [label, storage] of [
-         ["colocated", ""],
+         ["database", ""],
          ["storage=", 'storage="lake" '],
       ]) {
          const files = { "m.malloy": windowModel(storage) };
          fixtures[label] = await buildScenario({
-            files: storage ? files : colocatedFiles(files),
+            files: storage ? files : databaseFiles(files),
             seedSql: [
                `CREATE TABLE events AS
                   SELECT ts, row_number() OVER (ORDER BY ts) AS amount,
@@ -370,7 +426,7 @@ source: ev_week is ev_recent extend {
       await disposeScenarios();
    });
 
-   for (const label of ["colocated", "storage="]) {
+   for (const label of ["database", "storage="]) {
       describe(label, () => {
          it("builds each window's extension over its parent's table", () => {
             const f = fixtures[label];

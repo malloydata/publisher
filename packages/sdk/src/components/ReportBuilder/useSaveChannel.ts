@@ -212,12 +212,7 @@ export function useSaveChannel({
                },
             ],
          });
-         invalidateReportQueries(
-            queryClient,
-            environmentName,
-            packageName,
-            modelPath,
-         );
+         invalidateReportQueries(queryClient);
       },
       [
          apiClients,

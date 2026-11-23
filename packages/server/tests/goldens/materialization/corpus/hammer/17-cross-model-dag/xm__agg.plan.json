@@ -71,6 +71,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.xm_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "63d8dd1dc6aeee48cfe006a886d4bae882b9bcca39c2e0bf7708366cecdc0a9f",
         "sourceID": "daily@<hammer>/xm/agg.malloy",

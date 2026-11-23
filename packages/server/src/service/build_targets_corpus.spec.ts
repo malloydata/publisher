@@ -205,7 +205,7 @@ describe("build-target addresses over the repo's persist corpus", () => {
          const { models: corpus } = await corpusOnce();
          const unexpected: string[] = [];
          let storageSources = 0;
-         let colocatedSources = 0;
+         let databaseSources = 0;
          for await (const model of releasingEach(corpus)) {
             let sources: PersistSource[];
             let digests: Record<string, string>;
@@ -249,21 +249,21 @@ describe("build-target addresses over the repo's persist corpus", () => {
             sources.forEach((source, i) => {
                const stored = declaredStorage(source) !== undefined;
                if (stored) storageSources++;
-               else colocatedSources++;
+               else databaseSources++;
                const moved = off[i] !== on[i];
                if (moved !== stored) {
                   unexpected.push(
-                     `${model.label} ${source.name}: ${stored ? "storage= did not move" : "colocated moved"}`,
+                     `${model.label} ${source.name}: ${stored ? "storage= did not move" : "database moved"}`,
                   );
                }
             });
          }
          console.log(
             `destination switch: ${storageSources} storage= sources move, ` +
-               `${colocatedSources} colocated sources stay`,
+               `${databaseSources} database sources stay`,
          );
          expect(storageSources).toBeGreaterThan(0);
-         expect(colocatedSources).toBeGreaterThan(0);
+         expect(databaseSources).toBeGreaterThan(0);
          expect(unexpected).toEqual([]);
       },
       { timeout: 180000 },

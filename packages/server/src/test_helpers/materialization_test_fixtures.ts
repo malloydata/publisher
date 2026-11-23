@@ -11,11 +11,13 @@ import {
    BuildInstruction,
    BuildPlan,
 } from "../service/materialization/domain/types";
+import type { PackagePlan } from "../service/materialization/domain/package_plan";
 import {
    CompiledBuildPlan,
    setTestAddressForTarget,
    plannedSources,
 } from "../service/materialization/plan/build_plan";
+import type { WorkerBuildPlan } from "../package_load/protocol";
 import type {
    PersistSourceGateOutcome,
    TablePlan,
@@ -201,7 +203,7 @@ export function fakeSource(opts: {
    /**
     * The compiled `_sourceDef` the materialization-eligibility gate walks
     * (parameters/givens). Defaults to an empty def (eligible); the gate only
-    * runs for `storage=` sources, so colocated fakes never touch it.
+    * runs for `storage=` sources, so database fakes never touch it.
     */
    sourceDef?: unknown;
    /**
@@ -294,7 +296,7 @@ export function fakeSource(opts: {
  * tests need different connection mocks. A source's gate is left undefined
  * unless a test explicitly supplies one — a fixture that doesn't set it
  * exercises the fail-closed default (no compile-time gate outcome ⇒ the
- * colocated authorize relaxation never applies, same as before that outcome
+ * database authorize relaxation never applies, same as before that outcome
  * existed).
  */
 export function compiledWith(
@@ -390,4 +392,89 @@ export function gatesIn(
 /** Each planned table's stored-table key check, by sourceID. */
 export function storedKeyChecksIn(plan: Planned): Record<string, string> {
    return fieldIn(plan, "storedKeyCheck");
+}
+
+/**
+ * A two-source wire plan over two connections (`conn_a`, `conn_b`), for the
+ * specs that need sources on more than one connection: `a@m.malloy` at
+ * address `addr-a` on `conn_a`, and `b@m.malloy` at `addr-b` on `conn_b`.
+ */
+export function makeTwoConnectionPlan(): BuildPlan {
+   const source = (name: string, connectionName: string) => ({
+      name,
+      sourceID: `${name}@m.malloy`,
+      connectionName,
+      dialect: "duckdb",
+      sourceEntityId: `addr-${name}`,
+      sql: "SELECT 1",
+      columns: [],
+   });
+   return makeBuildPlan({
+      graphs: [],
+      sources: {
+         "a@m.malloy": source("a", "conn_a"),
+         "b@m.malloy": source("b", "conn_b"),
+      },
+   });
+}
+
+/**
+ * A package plan as the load worker hands it over, every side table empty
+ * unless given: what `PlanLifecycle.load` adopts.
+ */
+export function makePlanOutcome(
+   overrides: Partial<PackagePlan<never>> = {},
+): PackagePlan<never> {
+   return {
+      plan: makeBuildPlan(),
+      tables: {},
+      builds: [],
+      connectionDigests: {},
+      connectionTypes: {},
+      managedConnections: [],
+      versionScoped: false,
+      tableFolds: {},
+      upstreamSchemas: {},
+      addresses: {},
+      persistedViews: {},
+      eligibilityRefused: {},
+      droppedPersistSources: [],
+      annotationFindings: [],
+      modelGateLines: { preaggregate: [], nearMiss: [], nameProblems: [] },
+      sourceEligibility: { eligible: [], refused: {} },
+      databaseSourceEligibility: { eligibleEntityIds: new Set(), refused: {} },
+      incrementalDeclarations: {},
+      buildConnectionNames: [],
+      materializePlans: {},
+      rollupsKeepingGates: [],
+      refusedRollups: {},
+      refusalNotices: {},
+      compilerKeys: {},
+      ...overrides,
+   };
+}
+
+/** The load worker's plan, derived. */
+export function okWorkerPlan(
+   packagePlan: PackagePlan<never> = makePlanOutcome(),
+): WorkerBuildPlan {
+   return {
+      ok: true,
+      packagePlan,
+      durationMs: 1,
+      digestSkipped: [],
+   };
+}
+
+/** The load worker's plan, failed in the compute. */
+export function failedWorkerPlan(
+   error = "the plan compute failed",
+): WorkerBuildPlan {
+   return {
+      ok: false,
+      error,
+      durationMs: 1,
+      digestSkipped: [],
+      eligibilityRefused: {},
+   };
 }

@@ -18,7 +18,7 @@
     "warnings": [
       {
         "code": "served-copy-not-served",
-        "message": "This source is stored in a destination its join `c` cannot reach: the joined source reads another connection. Queries that use the join are answered live; the others read the stored table. To serve them too, inline the join (inline=), materialize the joined source into the same destination, or keep this source colocated.",
+        "message": "This source's join `c` reads a source the served copy reads from its storage destination, which this source's own connection cannot reach. Queries that use the join are answered live; the others are answered as before. To serve them too, store this source in the same destination, or build the joined source in its own database (drop its `storage=`).",
         "subject": "orders_k"
       }
     ]
@@ -72,6 +72,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "materialize",
             "outcome": "used",
             "tableId": "ced04b2336c2cf76901620ecf674c5152d408fad1d03e7774cd61f272389778e"
           }
@@ -90,6 +91,7 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "materialize",
           "tableId": "ced04b2336c2cf76901620ecf674c5152d408fad1d03e7774cd61f272389778e",
           "tier": "storage",
           "via": "served_copy"
@@ -146,6 +148,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
             "sourceName": "order_facts",
             "tableId": "ced04b2336c2cf76901620ecf674c5152d408fad1d03e7774cd61f272389778e"
@@ -219,6 +222,7 @@
         "considered": [
           {
             "kind": "materialized",
+            "origin": "materialize",
             "outcome": "used",
             "tableId": "ced04b2336c2cf76901620ecf674c5152d408fad1d03e7774cd61f272389778e"
           }
@@ -237,6 +241,7 @@
         },
         "servedBy": {
           "kind": "materialized",
+          "origin": "materialize",
           "tableId": "ced04b2336c2cf76901620ecf674c5152d408fad1d03e7774cd61f272389778e",
           "tier": "storage",
           "via": "served_copy"
@@ -293,6 +298,7 @@
           {
             "built": true,
             "kind": "materialized",
+            "origin": "materialize",
             "relationship": "sibling",
             "sourceName": "order_facts",
             "tableId": "ced04b2336c2cf76901620ecf674c5152d408fad1d03e7774cd61f272389778e"

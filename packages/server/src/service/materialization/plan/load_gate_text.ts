@@ -7,10 +7,11 @@
  * files on disk, and a connection edit's re-derivation all read it here, so
  * the three never disagree on what is invalid.
  *
- * It carries every `malformed` finding (the invalid annotations, near misses
- * excepted, which are the loaded models'), two sources an author's `name=`
- * puts on one table (unless `PERSIST_COLLISION_ENFORCE=false`), and the
- * invalid incremental declarations, each line with its code.
+ * It carries the `#@ persist name=` values the raw model text refuses, every
+ * `malformed` finding, two sources an author's `name=` puts on one table
+ * (unless `PERSIST_COLLISION_ENFORCE=false`), the invalid incremental
+ * declarations, and each model's invalid `#@ preaggregate` declarations and
+ * misspelled routes, each line with its code.
  */
 
 import {
@@ -21,7 +22,7 @@ import {
    PERSIST_INVALID_CODE,
    PERSIST_NOT_BUILT_CODE,
    PERSIST_VIEW_INVALID_CODE,
-   PREAGGREGATE_INVALID_CODE,
+   ROLLUP_INVALID_CODE,
    type AnnotationFinding,
    type PackageAnnotationFinding,
 } from "../../annotation_reader";
@@ -43,6 +44,11 @@ import {
    persistTableTarget,
 } from "./eligibility_collect";
 import type { IncrementalDeclaration } from "../domain/incremental";
+import type {
+   ModelGateLines,
+   PersistedViewName,
+   PersistNameProblem,
+} from "../domain/package_plan";
 import type { RefusedReason } from "../domain/types";
 import {
    incrementalPolicyRejections,
@@ -51,18 +57,19 @@ import {
 
 type BuildPlan = components["schemas"]["BuildPlan"];
 
-/** What the gate text reads of a derived plan. */
+/**
+ * What the gate text reads of a derived plan (a `PackagePlan`, or the load's
+ * own plan with the models' lines): the same fields on every path.
+ */
 interface GatedPlan {
    plan: BuildPlan | null;
    annotationFindings: readonly PackageAnnotationFinding[];
    incrementalDeclarations: Readonly<Record<string, IncrementalDeclaration>>;
    materializePlans?: Readonly<Record<string, MaterializePlan>>;
-   /**
-    * The models' own invalid `#@ preaggregate` and near-miss lines
-    * ({@link preaggregateGateLines}, {@link nearMissGateLines}), as the plan
-    * collected them from the files.
-    */
-   modelGateLines?: { preaggregate: string[]; nearMiss: string[] };
+   /** Each persisted view's build source, named as its author wrote it. */
+   persistedViews?: Readonly<Record<string, PersistedViewName>>;
+   /** The models' own lines, as the plan collected them from the files. */
+   modelGateLines?: Partial<ModelGateLines>;
 }
 
 /** How this deployment judges the plan. */
@@ -71,11 +78,6 @@ interface GateJudgement {
    enforceCollisions: boolean;
    /** A published version of a `scope: "version"` package. */
    versionScoped: boolean;
-   /** A persisted view's build source, by sourceID, named as its author wrote it. */
-   persistedViews?: ReadonlyMap<
-      string,
-      { sourceName: string; viewName: string }
-   >;
 }
 
 /**
@@ -98,6 +100,7 @@ export function relaxedCollision(
    return {
       ...finding,
       tier: "unservable",
+      reason: "table_name_collision",
       // Each source under its own not-built code.
       code:
          finding.route !== "@"
@@ -242,16 +245,13 @@ export function incrementalPolicySourcesOf(
    plan: BuildPlan | null,
    declarations: Readonly<Record<string, IncrementalDeclaration>>,
    materializePlans: Readonly<Record<string, MaterializePlan>> | undefined,
-   persistedViews: ReadonlyMap<
-      string,
-      { sourceName: string; viewName: string }
-   > = new Map(),
+   persistedViews: Readonly<Record<string, PersistedViewName>> = {},
 ): IncrementalPolicySource[] {
    return Object.entries(plan?.sources ?? {})
       .filter(([sourceID]) => declarations[sourceID])
       .map(([sourceID, source]) => ({
-         ...(persistedViews.get(sourceID) ?? { sourceName: source.name }),
-         invalidCode: persistedViews.has(sourceID)
+         ...(persistedViews[sourceID] ?? { sourceName: source.name }),
+         invalidCode: persistedViews[sourceID]
             ? PERSIST_VIEW_INVALID_CODE
             : materializePlans?.[sourceID]
               ? MATERIALIZE_INVALID_CODE
@@ -268,7 +268,7 @@ export function incrementalPolicySourcesOf(
 }
 
 /** The invalid incremental declarations, one line each with its route's code. */
-export function incrementalGateLines(
+function incrementalGateLines(
    sources: readonly IncrementalPolicySource[],
 ): string[] {
    return sources.flatMap((source) =>
@@ -288,17 +288,17 @@ export function collisionGateLines(
 }
 
 /**
- * The load-failure text of a derived plan, or "" when it is valid: its
- * invalid findings, its collisions (when enforced) and its invalid
- * incremental declarations, then the models' invalid `#@ preaggregate`
- * declarations and near misses as the plan collected them: the same text, in
- * the same order, as the load's (Package.formatLoadGateText).
+ * The load-failure text of a derived plan, or "" when it is valid: the raw
+ * text's `name=` problems, its invalid findings, its collisions (when
+ * enforced) and its invalid incremental declarations, then the models'
+ * invalid `#@ preaggregate` declarations and near misses. The one text the
+ * load, a run's guard, a re-derivation and a package compile read.
  */
 export function loadGateText(
    gated: GatedPlan,
    judgement: GateJudgement,
 ): string {
-   return [
+   return withNameProblems(gated.modelGateLines?.nameProblems ?? [], [
       ...invalidFindingLines(
          gated.annotationFindings.map((f) =>
             relaxedCollision(f, judgement.enforceCollisions),
@@ -318,18 +318,53 @@ export function loadGateText(
             gated.plan,
             gated.incrementalDeclarations,
             gated.materializePlans,
-            judgement.persistedViews,
+            gated.persistedViews,
          ),
       ),
       ...(gated.modelGateLines?.preaggregate ?? []),
       ...(gated.modelGateLines?.nearMiss ?? []),
-   ].join("\n");
+   ]);
+}
+
+/**
+ * `lines` with the raw text's `name=` problems first, less the plan's own
+ * line for a name the raw text already reports unsafe: one line per mistake.
+ * The raw value is as written, escapes included; the plan names the value
+ * the tag parser read, so both spellings are matched. Only a plan line the
+ * raw text already reports is dropped, so the text still fails closed.
+ */
+export function withNameProblems(
+   problems: readonly PersistNameProblem[],
+   lines: readonly string[],
+): string {
+   const unsafe = problems.flatMap((p) =>
+      p.unsafeValue === undefined
+         ? []
+         : [p.unsafeValue, unescapedTagValue(p.unsafeValue)].map(
+              (value) => `its name= "${value}" is not a plain identifier path`,
+           ),
+   );
+   return [
+      ...problems.map((p) => p.line),
+      ...lines
+         .filter(Boolean)
+         .join("\n")
+         .split("\n")
+         .filter((line) => !unsafe.some((u) => line.includes(u))),
+   ]
+      .filter(Boolean)
+      .join("\n");
+}
+
+/** A quoted tag value as the tag parser reads it: each backslash escape replaced by the character it escapes. */
+function unescapedTagValue(raw: string): string {
+   return raw.replace(/\\(.)/g, "$1");
 }
 
 /**
  * `#@ preaggregate` violations of a VALID declaration Publisher cannot build
  * here, and the reason each is refused under: that rollup alone is refused
- * (`preaggregate-not-built`), its measures answered live, and the package
+ * (`rollup-not-built`), its measures answered live, and the package
  * loads. Every other violation is an invalid declaration and fails the load
  * (see formatInvalidPreaggregatePolicy). The planner skips each of these
  * itself, so nothing is built.
@@ -341,27 +376,27 @@ export const PREAGG_WARN_ONLY: ReadonlyMap<
    // Governance: an extension that hides an inherited field cannot fix
    // its base's annotation.
    ["non_public_measure", "hidden_field"],
-   // A rollup over a fan-out join, as `#(preaggregate)` refuses one.
-   ["base_source_has_fanout_join", "join_level"],
+   // A rollup over a fan-out join, as `#(rollup)` refuses one.
+   ["base_source_has_fanout_join", "join_not_in_grain"],
 ]);
 
 /**
  * The code a `#@ preaggregate` violation that fails the load is named by, the
- * same as `#(preaggregate)`'s for the same mistake.
+ * same as `#(rollup)`'s for the same mistake.
  */
 function preaggregateViolationCode(code: PreaggregateViolationCode): string {
-   if (code === "unknown_key") return "preaggregate-unknown-key";
-   if (code === "unparseable") return "preaggregate-unparseable";
-   if (code === "non_additive_measure") return "preaggregate-not-mergeable";
-   if (code.startsWith("misplaced_")) return "preaggregate-not-a-measure";
+   if (code === "unknown_key") return "rollup-unknown-key";
+   if (code === "unparseable") return "rollup-unparseable";
+   if (code === "non_additive_measure") return "rollup-not-mergeable";
+   if (code.startsWith("misplaced_")) return "rollup-not-a-measure";
    if (
       code === "unknown_grain_dimension" ||
       code.startsWith("grain_") ||
       code === "truncation_on_non_temporal"
    ) {
-      return "preaggregate-unknown-grain";
+      return "rollup-unknown-grain";
    }
-   return PREAGGREGATE_INVALID_CODE;
+   return ROLLUP_INVALID_CODE;
 }
 
 /**

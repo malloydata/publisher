@@ -2,16 +2,16 @@
   "internal": {
     "annotationFindings": [
       {
-        "code": "preaggregate-not-built",
-        "message": "#(preaggregate) on measure \"total\" of source \"zoned\" is not built, so the measure is served live: the source sets its own time zone (`timezone: 'America/Los_Angeles'`), and a query on it is never read from a rollup, whose stored times would be read in another zone, nor through a join (no source in the same zone joins it), so its table would cost a build no query reads.",
+        "code": "rollup-not-built",
+        "message": "#(rollup) on measure \"total\" of source \"zoned\" is not built, so the measure is served live: the source sets its own time zone (`timezone: 'America/Los_Angeles'`), and a query on it is never read from a rollup, whose stored times would be read in another zone, nor through a join (no source in the same zone joins it), so its table would cost a build no query reads.",
         "model": "m.malloy",
         "refused": {
           "name": "zoned.total",
           "reason": "time_zone",
           "sourceID": "zoned.total[m,region]@<pkg>/m.malloy.preaggregate.malloy",
-          "tier": "preaggregate"
+          "tier": "database"
         },
-        "route": "preaggregate",
+        "route": "rollup",
         "subject": "zoned.total",
         "tier": "unservable"
       }
@@ -387,9 +387,10 @@
   },
   "loadWarnings": [
     {
-      "code": "preaggregate-not-built",
-      "message": "#(preaggregate) on measure \"total\" of source \"zoned\" is not built, so the measure is served live: the source sets its own time zone (`timezone: 'America/Los_Angeles'`), and a query on it is never read from a rollup, whose stored times would be read in another zone, nor through a join (no source in the same zone joins it), so its table would cost a build no query reads.",
+      "code": "rollup-not-built",
+      "message": "#(rollup) on measure \"total\" of source \"zoned\" is not built, so the measure is served live: the source sets its own time zone (`timezone: 'America/Los_Angeles'`), and a query on it is never read from a rollup, whose stored times would be read in another zone, nor through a join (no source in the same zone joins it), so its table would cost a build no query reads.",
       "model": "m.malloy",
+      "reason": "time_zone",
       "severity": "warn",
       "subject": "zoned.total"
     }
@@ -427,12 +428,13 @@
     "omittedSources": [],
     "refusedSources": {
       "zoned.total[m,region]@<pkg>/m.malloy.preaggregate.malloy": {
-        "message": "#(preaggregate) on measure \"total\" of source \"zoned\" is not built, so the measure is served live: the source sets its own time zone (`timezone: 'America/Los_Angeles'`), and a query on it is never read from a rollup, whose stored times would be read in another zone, nor through a join (no source in the same zone joins it), so its table would cost a build no query reads.",
+        "message": "#(rollup) on measure \"total\" of source \"zoned\" is not built, so the measure is served live: the source sets its own time zone (`timezone: 'America/Los_Angeles'`), and a query on it is never read from a rollup, whose stored times would be read in another zone, nor through a join (no source in the same zone joins it), so its table would cost a build no query reads.",
         "modelPath": "m.malloy",
         "name": "zoned.total",
+        "origin": "rollup",
         "reason": "time_zone",
         "sourceID": "zoned.total[m,region]@<pkg>/m.malloy.preaggregate.malloy",
-        "tier": "preaggregate"
+        "tier": "database"
       }
     },
     "sources": {
@@ -484,7 +486,7 @@
         "freshness": null,
         "modelPath": "m.malloy",
         "name": "mat",
-        "origin": "persist",
+        "origin": "materialize",
         "preaggregate": null,
         "queryMetadata": null,
         "refresh": null,
@@ -513,7 +515,7 @@
         "freshness": null,
         "modelPath": "m.malloy",
         "name": "orders__rollup__m_region__75e7c0f9",
-        "origin": "preaggregate",
+        "origin": "rollup",
         "preaggregate": {
           "baseSourceName": "orders",
           "grainDimensions": [
@@ -598,7 +600,7 @@
         "freshness": null,
         "modelPath": "m.malloy",
         "name": "wide",
-        "origin": "persist",
+        "origin": "materialize",
         "preaggregate": null,
         "queryMetadata": null,
         "refresh": null,

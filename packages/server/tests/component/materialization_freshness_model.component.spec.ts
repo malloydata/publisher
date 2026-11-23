@@ -3,7 +3,7 @@
 
 /**
  * One freshness model: `freshness.window=` and `freshness.fallback=` mean the
- * same thing on `#@ persist`, `#(materialize)` and `#(preaggregate)`, colocated
+ * same thing on `#@ persist`, `#(materialize)` and `#(rollup)`, database
  * and `storage=`, built by a standalone run. End to end through a real
  * Environment and MaterializationService:
  *
@@ -37,6 +37,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { unrecordedAudit } from "../../src/service/access_record";
 import * as connection from "../../src/service/connection";
+import * as dialects from "../../src/service/dialects";
 import { recordConnectionsAsForTests } from "../../src/service/connection_type";
 import { Environment } from "../../src/service/environment";
 import { parsePackageName } from "../../src/service/identity";
@@ -62,11 +63,11 @@ const WINDOW_SECONDS = 6;
 setDefaultTimeout(120_000);
 
 type Fallback = "live" | "stale_ok";
-type Tier = "colocated" | "storage";
+type Tier = "database" | "storage";
 
 /** One source per mechanism, each declaring the same window and fallback. */
 function modelOf(tier: Tier, fallback: Fallback): string {
-   const conn = tier === "colocated" ? "duckdb" : "warehouse";
+   const conn = tier === "database" ? "duckdb" : "warehouse";
    const place = tier === "storage" ? ` storage="${LAKE}"` : "";
    const fresh = `freshness.window="${WINDOW_SECONDS}s" freshness.fallback="${fallback}"`;
    return `##! experimental.persistence
@@ -83,7 +84,7 @@ source: orders is raw extend {
 }
 
 source: sales is raw extend {
-  #(preaggregate) grain=["cat"]${place} ${fresh}
+  #(rollup) grain=["cat"]${place} ${fresh}
   measure: amount is amt.sum()
 }
 `;
@@ -147,8 +148,8 @@ describe.skipIf(process.platform === "win32")(
       const spies: { mockRestore(): void }[] = [];
       const catalogFile = () => path.join(lakeDir, "catalog.ducklake");
       const PACKAGES: { name: string; tier: Tier; fallback: Fallback }[] = [
-         { name: "colocated_live", tier: "colocated", fallback: "live" },
-         { name: "colocated_ok", tier: "colocated", fallback: "stale_ok" },
+         { name: "database_live", tier: "database", fallback: "live" },
+         { name: "database_ok", tier: "database", fallback: "stale_ok" },
          { name: "storage_live", tier: "storage", fallback: "live" },
          { name: "storage_ok", tier: "storage", fallback: "stale_ok" },
       ];
@@ -236,15 +237,14 @@ describe.skipIf(process.platform === "win32")(
                await attachFileLake(session as never, dbName, true);
                return true;
             }),
-            spyOn(
-               connection,
-               "federateSourceForPassthrough",
-            ).mockImplementation(async (session, sourceType) => {
-               await session.runSQL(
-                  "CREATE OR REPLACE TEMP MACRO postgres_query(alias, q) AS TABLE SELECT * FROM query(q)",
-               );
-               return { handle: "warehouse", sourceType };
-            }),
+            spyOn(dialects, "federateSourceForPassthrough").mockImplementation(
+               async (session, sourceType) => {
+                  await session.runSQL(
+                     "CREATE OR REPLACE TEMP MACRO postgres_query(alias, q) AS TABLE SELECT * FROM query(q)",
+                  );
+                  return { handle: "warehouse", sourceType };
+               },
+            ),
          );
          env = await Environment.create(
             ENV,
@@ -478,12 +478,12 @@ describe.skipIf(process.platform === "win32")(
 
       it("stamps nothing on a host's run: the host's manifest decides", async () => {
          const pkg = await env.getPackage(
-            parsePackageName("colocated_live"),
+            parsePackageName("database_live"),
             false,
          );
          const sources = Object.values(pkg.getBuildPlan()?.sources ?? {});
          expect(sources.length).toBe(3);
-         const m = await build("colocated_live", {
+         const m = await build("database_live", {
             buildInstructions: sources.map((s) => ({
                sourceEntityId: s.sourceEntityId,
                materializedTableId: `host-${s.name}`,

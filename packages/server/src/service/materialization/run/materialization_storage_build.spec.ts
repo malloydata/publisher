@@ -18,11 +18,19 @@ import {
    createMocks,
 } from "../../../test_helpers/materialization_service_harness";
 import { StorageBuildStrategy } from "./storage_build_strategy";
+import {
+   indexCallerLedger,
+   type IncrementalRunContext,
+} from "./incremental_build";
 import { resetMaterializationTelemetryForTesting } from "../../../materialization_metrics";
 import {
    startMetricsHarness,
    type MetricsHarness,
 } from "../../../test_helpers/metrics_harness";
+import { fakeContractReads } from "../../../test_helpers/contract_fixture";
+
+// Builds over fake connections, which answer no catalog query.
+fakeContractReads();
 
 /**
  * The storage tier's build: the chained-build fallback ladder, destination
@@ -136,11 +144,10 @@ describe("the storage tier's build (chained-build fallback ladder)", () => {
          | "infra"
          | "wrongTier"
          | "wrongTierAndMissing"
-         | "withUndeclarable";
+         | "withUndeclarable"
+         | "collation";
       /** The host instructed the run (orchestrated). */
       hostInstructed?: boolean;
-      /** The host's `warehouseReach` (ms2data/service#6756). */
-      warehouseReach?: "recompute" | "refuse";
    }): Promise<{
       physicalTableName: string;
       storageDestinationName?: string;
@@ -196,6 +203,15 @@ describe("the storage tier's build (chained-build fallback ladder)", () => {
             new MaterializationEligibilityError({
                message:
                   "'monthly' reads the source warehouse (regions) through 'daily_regional'",
+            }),
+         ),
+         // Over the parents the build would compare a string byte-exact that
+         // its source compares under a collation (buildDownstreamViaParents):
+         // no build over them gives live's rows, as for `raw`.
+         collation: sinon.stub().rejects(
+            new MaterializationEligibilityError({
+               message:
+                  "'monthly' compares a string over its stored upstreams ('daily') that the destination, byte-exact, would compare otherwise than its source does: `region` compares under a unknown collation",
             }),
          ),
          // Every upstream is stored and present, yet the build could not carry
@@ -284,7 +300,7 @@ describe("the storage tier's build (chained-build fallback ladder)", () => {
             },
          },
          dependsOnStorageUpstream: true,
-         ...(opts.hostInstructed || opts.warehouseReach
+         ...(opts.hostInstructed
             ? {
                  planFacts: {
                     persistSourceIds: new Set<string>(),
@@ -292,9 +308,6 @@ describe("the storage tier's build (chained-build fallback ladder)", () => {
                     addressBySourceId: {},
                     compilerKeyBySourceId: {},
                     hostInstructed: true,
-                    ...(opts.warehouseReach
-                       ? { warehouseReach: opts.warehouseReach }
-                       : {}),
                  },
               }
             : {}),
@@ -309,56 +322,42 @@ describe("the storage tier's build (chained-build fallback ladder)", () => {
       expect(entry.upstreamRecomputeReason).toBeUndefined();
    });
 
-   it("strict + a persisted upstream the build cannot see: refuses, naming it, instead of recomputing from raw", async () => {
-      // The orchestrator meant to pin that upstream; recomputing it here would
-      // rebuild a table it did not ask for. The refusal carries the upstream's
-      // name so the dispatch, not the model, is what gets fixed.
-      const call = callInto({ strict: true, stackOnParent: "missing" });
-      await expect(call).rejects.toThrow(
-         /strict upstreams forbid.*persisted upstream 'daily'/is,
-      );
-      // Typed, so the run can attribute it to an upstream that failed.
-      await expect(call).rejects.toBeInstanceOf(ChainedUpstreamMissingError);
+   // Always strict: a chained build is built over its stored upstreams or
+   // refused, never by recomputing them from raw, whatever the run asks.
+   it("a persisted upstream the build cannot see: refuses, naming it, strict or not", async () => {
+      for (const strict of [true, false]) {
+         const call = callInto({ strict, stackOnParent: "missing" });
+         await expect(call).rejects.toThrow(
+            /never built by recomputing its upstreams from raw.*persisted upstream 'daily'/is,
+         );
+         // Typed, so the run can attribute it to an upstream that failed.
+         await expect(call).rejects.toBeInstanceOf(ChainedUpstreamMissingError);
+      }
    });
 
-   it("strict + a downstream that reaches the warehouse falls through to recompute-from-raw", async () => {
-      // No build over the parents exists for this source, so the recompute is
-      // the only build there is and strict permits it. Only the parent-reuse
-      // seam is stubbed, so the recompute runs for real and fails for its own
-      // reason (no destination file) — the proof it was reached, since the two
-      // paths report differently: "chained source" from the stack-on-parent
-      // path, "source" from the single-source recompute.
-      await expect(
-         callInto({ strict: true, stackOnParent: "raw" }),
-      ).rejects.toThrow(/Failed to materialize source 'monthly'/i);
+   it("a downstream that reaches the warehouse through a non-persisted source: refused, never recomputed, strict or not", async () => {
+      for (const opts of [{ strict: true }, { strict: false }]) {
+         const call = callInto({ ...opts, stackOnParent: "raw" });
+         await expect(call).rejects.toBeInstanceOf(ChainedShapeNotCarriedError);
+         await expect(call).rejects.toThrow(
+            /never built by recomputing its upstreams from raw.*reads the source warehouse \(regions\) through 'daily_regional'/is,
+         );
+      }
    });
 
-   it("strict + a shape over stored upstreams the build could not carry: refuses rather than recomputing them", async () => {
-      // Every upstream was handed to the build; recomputing them would rebuild
-      // pinned tables because of a limit in the carrying, which is not the
-      // source's doing and not a licence strict grants.
-      const call = callInto({ strict: true, stackOnParent: "uncarried" });
-      await expect(call).rejects.toThrow(
-         /strict upstreams forbid.*could not be built over them/is,
-      );
-      // Typed, so the run classifies it deterministic.
-      await expect(call).rejects.toBeInstanceOf(ChainedShapeNotCarriedError);
-   });
-
-   it("non-strict + a persisted upstream the build cannot see, or an uncarried shape, falls through to recompute-from-raw", async () => {
-      for (const stackOnParent of ["missing", "uncarried"] as const) {
-         await expect(
-            callInto({ strict: false, stackOnParent }),
-         ).rejects.toThrow(/Failed to materialize source 'monthly'/i);
+   it("a shape over stored upstreams the build could not carry: refused, strict or not", async () => {
+      for (const strict of [true, false]) {
+         const call = callInto({ strict, stackOnParent: "uncarried" });
+         await expect(call).rejects.toThrow(/could not be built over them/i);
+         // Typed, so the run classifies it deterministic.
+         await expect(call).rejects.toBeInstanceOf(ChainedShapeNotCarriedError);
       }
    });
 
    // Decided 2026-11-12: a host-instructed build refuses a host-supplied
    // upstream entry at the wrong tier, strict or not, instead of recomputing.
    it("host-instructed + a parent supplied at the wrong tier: refuses, strict or not, and never recomputes", async () => {
-      const { HostSuppliedWrongTierError } = await import(
-         "./materialization_run_support"
-      );
+      const { HostSuppliedWrongTierError } = await import("./build_upstreams");
       for (const strict of [false, true]) {
          const call = callInto({
             strict,
@@ -373,9 +372,7 @@ describe("the storage tier's build (chained-build fallback ladder)", () => {
    });
 
    it("host-instructed: names only the upstream supplied at the wrong tier, each with its own reason", async () => {
-      const { HostSuppliedWrongTierError } = await import(
-         "./materialization_run_support"
-      );
+      const { HostSuppliedWrongTierError } = await import("./build_upstreams");
       const err = await callInto({
          strict: false,
          stackOnParent: "wrongTierAndMissing",
@@ -393,19 +390,16 @@ describe("the storage tier's build (chained-build fallback ladder)", () => {
       expect(message.split("supplied at the wrong tier").length).toBe(2);
    });
 
-   it("self-instructed + a parent supplied at the wrong tier still recomputes when not strict", async () => {
-      // The recompute runs for real and fails for its own reason (no
-      // destination file): the single-source path's message proves it ran.
+   it("self-instructed + a parent supplied at the wrong tier: refused, never recomputed", async () => {
       await expect(
          callInto({ strict: false, stackOnParent: "wrongTier" }),
-      ).rejects.toThrow(/Failed to materialize source 'monthly'/i);
+      ).rejects.toBeInstanceOf(ChainedUpstreamMissingError);
    });
 
    it("an INFRA failure fails rather than recomputing from raw, strict or not", async () => {
       // Recompute-from-raw writes to the same destination, so retrying an outage
       // there just fails again — and metering it as a fallback files the outage
-      // under the same label as a legitimate shape miss. Only a shape failure is
-      // a reason to try the other path.
+      // under the same label as a legitimate shape miss.
       for (const strict of [false, true]) {
          await expect(
             callInto({ strict, stackOnParent: "infra" }),
@@ -413,65 +407,14 @@ describe("the storage tier's build (chained-build fallback ladder)", () => {
       }
    });
 
-   // ms2data/service#6756: the orchestrator can refuse the one recompute
-   // strict permits.
-   it("strict + warehouseReach refuse + a downstream that reaches the warehouse: refuses with the reason, never recomputing", async () => {
-      const { WarehouseRecomputeRefusedError } = await import(
-         "../../../errors"
-      );
-      const call = callInto({
-         strict: true,
-         stackOnParent: "raw",
-         warehouseReach: "refuse",
-      });
-      await expect(call).rejects.toBeInstanceOf(WarehouseRecomputeRefusedError);
-      // The reason the entry would have carried, and the knob that refused it.
-      await expect(call).rejects.toThrow(
-         /warehouseReach: refuse.*reads the source warehouse \(regions\) through 'daily_regional'/is,
-      );
-   });
-
-   it("warehouseReach recompute is today's behaviour: strict recomputes a downstream that reaches the warehouse", async () => {
-      await expect(
-         callInto({
-            strict: true,
-            stackOnParent: "raw",
-            warehouseReach: "recompute",
-         }),
-      ).rejects.toThrow(/Failed to materialize source 'monthly'/i);
-   });
-
-   it("a non-strict build ignores warehouseReach refuse, as it ignores strictUpstreams", async () => {
-      await expect(
-         callInto({
-            strict: false,
-            stackOnParent: "raw",
-            warehouseReach: "refuse",
-         }),
-      ).rejects.toThrow(/Failed to materialize source 'monthly'/i);
-   });
-
-   it("warehouseReach refuse changes no other rung: a missing upstream and an uncarried shape still refuse as before", async () => {
-      const missing = callInto({
-         strict: true,
-         stackOnParent: "missing",
-         warehouseReach: "refuse",
-      });
-      await expect(missing).rejects.toBeInstanceOf(ChainedUpstreamMissingError);
-      const uncarried = callInto({
-         strict: true,
-         stackOnParent: "uncarried",
-         warehouseReach: "refuse",
-      });
-      await expect(uncarried).rejects.toBeInstanceOf(
-         ChainedShapeNotCarriedError,
-      );
-   });
-
-   it("non-strict + a downstream that reaches the warehouse falls through to recompute-from-raw", async () => {
-      await expect(
-         callInto({ strict: false, stackOnParent: "raw" }),
-      ).rejects.toThrow(/Failed to materialize source 'monthly'/i);
+   it("a downstream whose strings its source compares otherwise: refused, never recomputed, strict or not", async () => {
+      for (const opts of [{ strict: true }, { strict: false }]) {
+         const call = callInto({ ...opts, stackOnParent: "collation" });
+         await expect(call).rejects.toBeInstanceOf(ChainedShapeNotCarriedError);
+         await expect(call).rejects.toThrow(
+            /compares under a unknown collation/i,
+         );
+      }
    });
 
    describe("telemetry", () => {
@@ -488,31 +431,19 @@ describe("the storage tier's build (chained-build fallback ladder)", () => {
 
       it("meters each rung under its own outcome", async () => {
          await callInto({ strict: false, stackOnParent: "ok" });
-         await callInto({ strict: true, stackOnParent: "raw" }).catch(
-            () => undefined,
-         );
-         await callInto({ strict: false, stackOnParent: "raw" }).catch(
-            () => undefined,
-         );
-         await callInto({ strict: true, stackOnParent: "missing" }).catch(
-            () => undefined,
-         );
-         await callInto({ strict: true, stackOnParent: "uncarried" }).catch(
-            () => undefined,
-         );
+         for (const stackOnParent of ["raw", "missing", "uncarried"] as const) {
+            await callInto({ strict: false, stackOnParent }).catch(
+               () => undefined,
+            );
+         }
          await callInto({ strict: true, stackOnParent: "infra" }).catch(
             () => undefined,
          );
-         // The refused recompute is a strict refusal, not a fallback.
-         await callInto({
-            strict: true,
-            stackOnParent: "raw",
-            warehouseReach: "refuse",
-         }).catch(() => undefined);
          for (const [outcome, n] of [
             ["parent_reuse", 1],
-            ["strict_shape_fallback", 1],
-            ["inline_fallback", 1],
+            // Retained, no longer produced: nothing recomputes from raw.
+            ["strict_shape_fallback", 0],
+            ["inline_fallback", 0],
             ["strict_refused", 3],
             ["infra_failure", 1],
          ] as const) {
@@ -767,5 +698,128 @@ describe("the storage tier's build destination resolution", () => {
       await run();
 
       expect(write.called).toBe(true);
+   });
+});
+
+// The ledger entry is opaque to hosts: a key this release does not know on the
+// echoed entry reaches the entry a stored build reports, unchanged.
+describe("the storage tier's build carries an echoed ledger entry's unknown keys", () => {
+   let ctx: ReturnType<typeof createMocks>;
+   beforeEach(() => {
+      ctx = createMocks();
+   });
+   afterEach(() => ctx.sandbox.restore());
+
+   const DECLARATION = {
+      refresh: "incremental",
+      incremental: true,
+      declaredWatermark: true,
+      declaredMergeKey: false,
+      watermark: { name: "order_month", kind: "dimension", malloyType: "date" },
+      watermarkOrderable: true,
+      mergeKeys: [],
+      scopeColumns: [],
+      scopeIncomplete: false,
+      watermarkInMergeKeys: false,
+      strategy: "range_replace",
+      malformed: [],
+      unknownKeys: [],
+      calculateFields: [],
+      outputColumns: ["order_month"],
+   };
+
+   async function build(reseed?: boolean) {
+      const context = {
+         environmentId: "env",
+         packageName: "pkg",
+         materializationId: "m1",
+         forceRefresh: false,
+         now: new Date("2024-07-01T00:00:00Z"),
+         declarations: { monthly: DECLARATION },
+         ledger: {},
+         callerLedger: indexCallerLedger([
+            {
+               connectionName: "duckdb",
+               physicalTableName: "monthly__mabc",
+               storageDestinationName: "shared",
+               coveredThrough: "2024-06-01",
+               coveredThroughType: "date",
+               watermark: "order_month",
+               strategy: "range_replace",
+               sourceEntityId: "abcdef1234567890",
+               futureKey: {
+                  sourceEntityId: "up",
+                  coveredThrough: "2024-06-01",
+               },
+            } as never,
+         ]),
+      } as unknown as IncrementalRunContext;
+      // A chained source rebuilds; the write reports the boundary it reached.
+      const write = sinon.stub().resolves({
+         storageDestinationName: "shared",
+         schema: [{ name: "order_month", type: "DATE" }],
+         seededThrough: { value: "2024-07-01", malloyType: "date" },
+      });
+      const strategy = new StorageBuildStrategy({
+         buildDownstreamViaParents: write,
+      }) as unknown as {
+         build: (p: unknown) => Promise<{
+            refresh?: string;
+            ledger?: Record<string, unknown>;
+         }>;
+      };
+      return strategy.build({
+         persistSource: fakeSource({
+            name: "monthly",
+            sourceEntityId: "abcdef1234567890",
+            connectionName: "duckdb",
+            dialectName: "postgres",
+            annotationFields: { storage: "shared", refresh: "incremental" },
+         }),
+         instruction: {
+            sourceEntityId: "abcdef1234567890",
+            materializedTableId: "mt",
+            physicalTableName: "monthly__mabc",
+            realization: "COPY",
+            destination: "shared",
+            ...(reseed ? { reseed } : {}),
+         },
+         manifest: new Manifest(),
+         environment: buildEnvironmentStub({
+            connections: { duckdb: { name: "duckdb", type: "postgres" } },
+            destinations: { shared: { name: "shared", type: "ducklake" } },
+         }),
+         storedBuildSQL: "SELECT 1",
+         buildSQL: "SELECT 1",
+         builtEntries: {
+            up: {
+               sourceEntityId: "up",
+               sourceName: "daily",
+               physicalTableName: "daily__mabc",
+               storageDestinationName: "shared",
+               schema: [{ name: "order_month", type: "DATE" }],
+            },
+         },
+         dependsOnStorageUpstream: true,
+         incremental: context,
+         contentSourceEntityId: "abcdef1234567890",
+      });
+   }
+
+   it("reports the carried key beside the boundary the build reached", async () => {
+      const entry = await build();
+      expect(entry.refresh).toBe("full");
+      expect(entry.ledger).toMatchObject({
+         physicalTableName: "monthly__mabc",
+         storageDestinationName: "shared",
+         coveredThrough: "2024-07-01",
+         futureKey: { sourceEntityId: "up", coveredThrough: "2024-06-01" },
+      });
+   });
+
+   it("carries nothing from an entry a reseed ignores", async () => {
+      const entry = await build(true);
+      expect(entry.ledger?.coveredThrough).toBe("2024-07-01");
+      expect(entry.ledger).not.toHaveProperty("futureKey");
    });
 });

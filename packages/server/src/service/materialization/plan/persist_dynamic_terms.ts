@@ -35,6 +35,7 @@
 
 import { sourceDefOf } from "../../governance/ir/compiled_model";
 import { Annotations, type PersistSource } from "@malloydata/malloy";
+import { TemporalFilterExpression } from "@malloydata/malloy-filter";
 import { destinationOf, readRouteIfAny } from "./declaration";
 import { collectGivenRefs } from "../../given";
 import { readsAGiven } from "../../probe_compiler";
@@ -214,6 +215,106 @@ export function buildReadsCurrentTime(persistSource: PersistSource): boolean {
    } catch {
       return true;
    }
+}
+
+/**
+ * Whether a planned table is stored as of its build: a v1 `#@ persist`
+ * source, a persisted view or a persisted query (`kind` `persist` or `view`)
+ * whose build reads the current time ({@link buildReadsCurrentTime}). Such a
+ * table is rebuilt on every run, never carried forward as unchanged, and its
+ * package says its answers are as of its build. A `#(materialize)` table
+ * stores a rolling window and applies it again at read, and a rollup that
+ * reads the clock is refused, so neither is one.
+ */
+export function storedAsOfBuild(
+   persistSource: PersistSource,
+   kind: string | undefined,
+): boolean {
+   if (kind !== "persist" && kind !== "view") return false;
+   // A source whose definition cannot be read is refused elsewhere; it is
+   // not called stored as of its build.
+   let def: unknown;
+   try {
+      def = sourceDefOf(persistSource) as unknown;
+   } catch {
+      return false;
+   }
+   if (def === null || typeof def !== "object") return false;
+   return buildReadsCurrentTime(persistSource);
+}
+
+/**
+ * Where the BUILD of a persist source reads the current time, in the
+ * author's words, for a message: each `where:` term (`where: ts ~ f'last 7
+ * days'`) and each field (`` the field `recent` ``) of the persisted relation
+ * that reads it, at most `limit`, first found first. Empty when none is
+ * named (the clock is read somewhere the compiler records no text).
+ */
+export function currentTimeReadsOf(
+   persistSource: PersistSource,
+   limit = 3,
+): string[] {
+   let relation: unknown;
+   try {
+      const def = sourceDefOf(persistSource) as unknown;
+      if (def === null || typeof def !== "object") return [];
+      const query = (def as { query?: unknown }).query;
+      if (query !== null && typeof query === "object") {
+         relation = query;
+      } else {
+         const {
+            filterList: _readTimeFilters,
+            fields: _readTimeFields,
+            ...rest
+         } = def as Record<string, unknown>;
+         relation = rest;
+      }
+   } catch {
+      return [];
+   }
+   const out: string[] = [];
+   const seen = new WeakSet<object>();
+   const walk = (node: unknown, depth: number): void => {
+      if (out.length >= limit || depth > MAX_WALK_DEPTH) return;
+      if (node === null || typeof node !== "object") return;
+      if (seen.has(node)) return;
+      seen.add(node);
+      if (Array.isArray(node)) {
+         for (const item of node) walk(item, depth + 1);
+         return;
+      }
+      const record = node as Record<string, unknown>;
+      const e = record.e;
+      if (e !== undefined && readsCurrentTime(e)) {
+         const code = record.code;
+         const name = record.as ?? record.name;
+         // malloy-text: the author's own text, quoted in a warning's message,
+         // not generated Malloy
+         const said =
+            record.node === "filterCondition" && typeof code === "string"
+               ? `\`where: ${code}\``
+               : typeof name === "string" && record.join === undefined
+                 ? `the field \`${name}\``
+                 : undefined;
+         if (said !== undefined) {
+            if (!out.includes(said)) out.push(said);
+            return;
+         }
+      }
+      for (const [key, value] of Object.entries(record)) {
+         if (
+            key === "at" ||
+            key === "location" ||
+            key === "annotations" ||
+            key === "stableFilter"
+         ) {
+            continue;
+         }
+         walk(value, depth + 1);
+      }
+   };
+   walk(relation, 0);
+   return out;
 }
 
 /**
@@ -775,7 +876,7 @@ function localFieldNames(entry: unknown): string[] {
 /**
  * The source's own read-time dynamic terms, INDEPENDENT of whether
  * {@link admitGivenPositions} admits it. That classification returns no terms
- * on a refusal, and the colocated gate does not refuse the positional cases, so
+ * on a refusal, and the database gate does not refuse the positional cases, so
  * reading terms off it would yield an empty ("no scoping needed") scope for a
  * caller-scoped source. Callers that must not fail open (the incremental merge
  * scope) read this instead.
@@ -914,7 +1015,7 @@ type WhereTermDependency =
    /** Neither a given nor the current time: built once, never re-applied. */
    | { kind: "fixed" }
    /**
-    * A given (P2): {@link DynamicTerm} as {@link dynamicTerm} reads it, with
+    * A given: {@link DynamicTerm} as {@link dynamicTerm} reads it, with
     * where it reads each field and given (see {@link termLocations}).
     */
    | {
@@ -1003,7 +1104,14 @@ export function classifyWhereTerms(def: {
    return out;
 }
 
-/** Whether a slice of compiled IR reads the current time (`now`). */
+/**
+ * Whether a slice of compiled IR reads the current time: `now`, or a filter
+ * expression over a date or timestamp whose window is anchored to the clock
+ * (`ts ~ f'last 7 days'`, `f'today'`, `f'this month'`, `f'7 days ago to
+ * now'`). Such a filter compiles to no `now` node, but its SQL reads the
+ * clock all the same. An absolute filter (`f'2024'`, a range between two
+ * literal days) does not.
+ */
 export function readsCurrentTime(node: unknown, depth = 0): boolean {
    if (depth > MAX_WALK_DEPTH) return true; // fail closed
    if (node === null || typeof node !== "object") return false;
@@ -1012,12 +1120,111 @@ export function readsCurrentTime(node: unknown, depth = 0): boolean {
    }
    const record = node as Record<string, unknown>;
    if (record.node === "now") return true;
+   if (record.node === "filterMatch") {
+      return filterMatchReadsCurrentTime(record, depth);
+   }
+   // A filter string outside a `~` match (Malloy's `ts ? f'…' | f'…'`
+   // alternation): its type is not recorded beside it, so it reads the clock
+   // when it parses as a relative time filter.
+   if (record.node === "filterLiteral") {
+      return relativeTemporalFilter(record.filterSrc, false);
+   }
    for (const [key, value] of Object.entries(record)) {
-      // Locations and annotations carry no expression.
-      if (key === "at" || key === "location" || key === "annotations") continue;
+      // Locations and annotations carry no expression. `stableFilter` repeats
+      // a filter condition's own expression in another form.
+      if (
+         key === "at" ||
+         key === "location" ||
+         key === "annotations" ||
+         key === "stableFilter"
+      ) {
+         continue;
+      }
       if (readsCurrentTime(value, depth + 1)) return true;
    }
    return false;
+}
+
+const TEMPORAL_FILTER_TYPES: ReadonlySet<string> = new Set([
+   "date",
+   "timestamp",
+   "timestamptz",
+]);
+
+/**
+ * A `~` match (`filterMatch`): it reads the current time when the value it
+ * tests does, or when it tests a date or timestamp against a filter string
+ * anchored to the clock. A filter string over any other type never reads it
+ * (`s ~ f'today'` matches the text). A filter that is not a literal (a
+ * given) is the caller's value, applied wherever the given is.
+ */
+function filterMatchReadsCurrentTime(
+   record: Record<string, unknown>,
+   depth: number,
+): boolean {
+   const kids = (record.kids ?? {}) as { expr?: unknown; filterExpr?: unknown };
+   if (readsCurrentTime(kids.expr, depth + 1)) return true;
+   const filter = kids.filterExpr as
+      | { node?: unknown; filterSrc?: unknown }
+      | undefined;
+   if (filter?.node !== "filterLiteral") {
+      return readsCurrentTime(filter, depth + 1);
+   }
+   if (
+      typeof record.dataType !== "string" ||
+      !TEMPORAL_FILTER_TYPES.has(record.dataType)
+   ) {
+      return false;
+   }
+   return relativeTemporalFilter(filter.filterSrc, true);
+}
+
+/** Temporal filter operators whose window ends at the current time. */
+const RELATIVE_TEMPORAL_OPERATORS: ReadonlySet<string> = new Set([
+   "last",
+   "next",
+   "in_last",
+]);
+
+/**
+ * Whether a temporal filter string is anchored to the clock: it uses a
+ * relative operator (`last 7 days`, `next 2 weeks`) or names any moment but
+ * a literal one (`now`, `today`, `this month`, `3 days ago`, `monday`).
+ * `unparseable` is the answer for text that does not parse as a temporal
+ * filter: fail closed where it is known to be one.
+ */
+function relativeTemporalFilter(src: unknown, unparseable: boolean): boolean {
+   if (typeof src !== "string") return unparseable;
+   if (src.trim() === "") return false;
+   let parsed: unknown;
+   try {
+      parsed = TemporalFilterExpression.parse(src).parsed;
+   } catch {
+      return unparseable;
+   }
+   if (parsed === null || parsed === undefined) return unparseable;
+   return temporalFilterIsRelative(parsed, 0);
+}
+
+function temporalFilterIsRelative(node: unknown, depth: number): boolean {
+   if (depth > MAX_WALK_DEPTH) return true; // fail closed
+   if (node === null || typeof node !== "object") return false;
+   if (Array.isArray(node)) {
+      return node.some((item) => temporalFilterIsRelative(item, depth + 1));
+   }
+   const record = node as Record<string, unknown>;
+   if (
+      typeof record.operator === "string" &&
+      RELATIVE_TEMPORAL_OPERATORS.has(record.operator)
+   ) {
+      return true;
+   }
+   if (typeof record.moment === "string" && record.moment !== "literal") {
+      return true;
+   }
+   return Object.values(record).some((value) =>
+      temporalFilterIsRelative(value, depth + 1),
+   );
 }
 
 const COMPARISONS: ReadonlySet<string> = new Set([">=", ">", "<", "<="]);
@@ -1191,9 +1398,9 @@ export function currentTimeFields(fields: unknown): Set<string> {
  * Every field of a source whose value reads a given, as a dotted path, by the
  * same rule as {@link currentTimeFields}: it reads one itself (the IR walk
  * {@link readsAGiven}, which also reads Malloy's `givenUsage` summary), or
- * reads a field or join that does. P9's IR signal, beside the probe
- * compiler's: such a dimension is never stored, since its value differs per
- * caller. Fails closed: a field the walk cannot finish is listed.
+ * reads a field or join that does. The caller-dependence IR signal, beside the
+ * probe compiler's: such a dimension is never stored, since its value differs
+ * per caller. Fails closed: a field the walk cannot finish is listed.
  */
 export function givenReadingFields(fields: unknown): Set<string> {
    const reads = (node: unknown): boolean => {

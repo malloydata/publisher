@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * The join_one uniqueness check (P8): before a
+ * The join_one uniqueness check: before a
  * `#(materialize)` source that inlines a join_one is built, its joined source
  * is grouped on the join's key, and any key held twice fails the build. A
  * duplicate would store the parent row once per match, so every count over
@@ -20,10 +20,11 @@
  * is checked on every build, because its rows change under a stable address.
  */
 
+import { contractKeyName } from "../domain/column_contract";
+import { placedLeafKey } from "../domain/physical_table";
 import { createHash } from "node:crypto";
-import { tableIdentity } from "../../versions/materialization_scope";
 import { recordKeyCheck } from "../../../materialization_metrics";
-import { isActiveRun } from "./materialization_run_support";
+import { isActiveRun } from "./run_status";
 import type { Connection as MalloyConnection } from "@malloydata/malloy";
 import type { KeyUniqueness, ManifestEntry } from "../domain/types";
 import type {
@@ -33,7 +34,7 @@ import type {
 
 /**
  * A `#(materialize)` source inlines a join_one (`inline=["j"]`) whose joined
- * source holds one key more than once (P8), so its build would store a parent
+ * source holds one key more than once, so its build would store a parent
  * row once per match and every count over the table would come up high. The
  * build fails before writing anything; the message names the join.
  */
@@ -126,8 +127,8 @@ interface UniquenessCheckOutcome {
 }
 
 /**
- * What a run's rollup key check found (known limitation 29): whether the
- * rows a `#(preaggregate)` rollup grouped held its one grain dimension (a
+ * What a run's rollup key check found: whether the
+ * rows a `#(rollup)` rollup grouped held its one grain dimension (a
  * join_one's key) once per value. Keyed in the run metadata by the rollup's
  * content address; it describes the table the run that checked wrote, so it
  * is carried to a later run only while that table is not written again and
@@ -383,7 +384,7 @@ export function uniquenessPassesIn(
 }
 
 /**
- * The rollup key records a run's metadata holds (known limitation 29), or
+ * The rollup key records a run's metadata holds, or
  * undefined when it holds none or the value is not the shape this Publisher
  * writes. A record that does not read whole is left out.
  */
@@ -542,7 +543,7 @@ export async function assertInlinedJoinsUnique(
  */
 export function pairLeafKeyChecksOf(
    plan: MaterializePlan | undefined,
-): { sourceID: string; keyColumn: string; sql: string }[] {
+): { sourceID: string; keyColumn: string; sql: string; contractKey: string }[] {
    return (plan?.uniquenessChecks ?? []).flatMap((check) =>
       check.recordOnly && check.sql
          ? [
@@ -550,6 +551,7 @@ export function pairLeafKeyChecksOf(
                  sourceID: check.joinedSourceID,
                  keyColumn: check.keyColumn,
                  sql: check.sql,
+                 contractKey: pairLeafContractKey(check.join, check.keyColumn),
               },
            ]
          : [],
@@ -557,10 +559,19 @@ export function pairLeafKeyChecksOf(
 }
 
 /**
- * Run a rollup's key check (known limitation 29) on `connection` and say what
+ * The key a pair table's leaf check is recorded under in its contract
+ * (`ColumnContract.keys`): the path of joins down to the leaf and the
+ * leaf's key column (`leaf:items.options.option_id`, `contractKeyName`).
+ */
+function pairLeafContractKey(join: string, keyColumn: string): string {
+   return contractKeyName("leaf", join, keyColumn);
+}
+
+/**
+ * Run a rollup's key check on `connection` and say what
  * it found: unique when no non-NULL key value repeats. Undefined when the
  * check could not run, which the join-to-rollup branch reads as unknown and
- * declines as it did before the check existed; the build itself never fails
+ * declines; the build itself never fails
  * for it.
  */
 export async function runRollupKeyCheck(
@@ -624,16 +635,19 @@ export function uncontestedAutoRun<
 
 /**
  * The identity a uniqueness record names a table by: where it lives and its
- * name as {@link tableIdentity} reads it. Two names a warehouse may read as
- * one table get one identity, so a write to either loses the record: the
- * safe direction.
+ * name as `leafKey` (domain/physical_table.ts) reads it. Two names a
+ * warehouse may read as one table get one identity, so a write to either
+ * loses the record: the safe direction.
  */
 export function tableIdentityKey(
    kind: "connection" | "destination",
    where: string,
    physicalTableName: string,
 ): string {
-   return JSON.stringify([kind, where, tableIdentity(physicalTableName)]);
+   return placedLeafKey({
+      place: { kind, name: where },
+      name: physicalTableName,
+   });
 }
 
 /**
@@ -664,7 +678,7 @@ function entryTableIdentity(
 }
 
 /**
- * What a rollup key record says of the table `entry` names, colocated or in a
+ * What a rollup key record says of the table `entry` names, database or in a
  * destination, or undefined when it names another table (a record never
  * describes a table it was not taken over).
  */
@@ -705,6 +719,7 @@ export function keyUniquenessAt(
    if (!records || table === undefined) return undefined;
    const own = keyUniquenessOf(records[address], entry);
    const parentKeys: Record<string, boolean> = {};
+   const parentKeyColumns: Record<string, string> = {};
    for (const [key, record] of Object.entries(records)) {
       if (
          record.sourceID !== undefined &&
@@ -712,11 +727,15 @@ export function keyUniquenessAt(
          record.table === table
       ) {
          parentKeys[record.sourceID] = record.unique;
+         parentKeyColumns[record.sourceID] = record.keyColumn;
       }
    }
    const anyParent = Object.keys(parentKeys).length > 0;
    if (!own && !anyParent) return undefined;
-   return { ...(own ?? {}), ...(anyParent ? { parentKeys } : {}) };
+   return {
+      ...(own ?? {}),
+      ...(anyParent ? { parentKeys, parentKeyColumns } : {}),
+   };
 }
 
 /**

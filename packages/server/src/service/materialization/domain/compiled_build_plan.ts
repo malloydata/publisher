@@ -19,29 +19,15 @@ import type {
 } from "@malloydata/malloy";
 import type { KeyCheckCompiler } from "./key_check";
 import type { Omission } from "./omitted_sources";
+import type {
+   ModelGateLines,
+   PersistedViewName,
+   SourceBuild,
+} from "./package_plan";
 import type { MaterializePlan, TablePlan } from "./table_plans";
+import type { UpstreamSchemaReadings } from "./upstream_schemas";
 
-/**
- * One connection's persist sources in the order they build, from Malloy's
- * `Runtime.getBuildTargets`: every source on every table, the tables a source
- * reads before it. Sources whose SQL does not compile on their own come last;
- * they have no table, and are refused per source like any other.
- *
- * Holds sourceIDs, resolved against a plan's `sources` when walked, so a
- * pre-aggregation companion that reaches an author's persisted source walks
- * the author's own `PersistSource` for it.
- */
-export interface SourceBuild {
-   connectionName: string;
-   /** sourceIDs, dependencies first; the sources of one table are adjacent */
-   order: string[];
-   /**
-    * sourceID -> the sourceIDs on the tables it reads. Sources on one table
-    * read none of each other: an extension is its base's table, not a reader
-    * of it. An unbuildable source lists none.
-    */
-   dependsOn: Record<string, string[]>;
-}
+export type { SourceBuild } from "./package_plan";
 
 /**
  * Result of compiling a package's persist sources. The wire `BuildPlan` is a
@@ -62,6 +48,14 @@ export interface CompiledBuildPlan<Finding = unknown> {
    tables: Record<string, TablePlan>;
    connectionDigests: Record<string, string>;
    /**
+    * Each table the plan's sources read, with its columns' native types as
+    * the load read them from the warehouse's catalog, by `upstreamTableKey`
+    * (`domain/upstream_schemas.ts`). Every address folds the readings of the
+    * tables its source reads. Pass it to every address computation of a plan
+    * source, with `tableFolds`. Absent: none read (a spec's plan).
+    */
+   upstreamSchemas?: UpstreamSchemaReadings;
+   /**
     * Each connection's configured type, by name (`postgres`, `duckdb`,
     * `ducklake`, ...), resolved through the package, so the package's DuckDB
     * sandbox reads `duckdb`. Data, like the digests, so the plan derives the
@@ -69,6 +63,12 @@ export interface CompiledBuildPlan<Finding = unknown> {
     * (materialization_eligibility.ts). Absent: none recorded.
     */
    connectionTypes?: Record<string, string>;
+   /**
+    * The connections configured `managed` (a catalog an orchestrator
+    * provisions, whose tables are built inside the catalog by SQL Malloy
+    * generates), by name, sorted. Data, as `connectionTypes` is. Absent: none.
+    */
+   managedConnections?: string[];
    connections: Map<string, MalloyConnection>;
    /**
     * The package is a published version of a `scope: "version"` package:
@@ -99,11 +99,12 @@ export interface CompiledBuildPlan<Finding = unknown> {
    /** Findings on the authored `#@` annotations (see annotation_reader). */
    annotationFindings?: Finding[];
    /**
-    * Each model's invalid `#@ preaggregate` declarations and misspelled
-    * materialization routes, as load-failure lines (`load_gate_text.ts` in
-    * `plan/`), so a run over the files reads them as the load does.
+    * Each model's own load-failure lines (`load_gate_text.ts` in `plan/`), so
+    * a run over the files reads them as the load does.
     */
-   modelGateLines?: { preaggregate: string[]; nearMiss: string[] };
+   modelGateLines?: ModelGateLines;
+   /** Each persisted view's build source, named as its author wrote it. */
+   persistedViews?: Record<string, PersistedViewName>;
    /**
     * Each `#(materialize)` uniqueness check's compiler over a run's compiler
     * manifest, by `keyCheckCompilerKey`; set only on a plan compiled on the thread
@@ -115,7 +116,20 @@ export interface CompiledBuildPlan<Finding = unknown> {
     * compile), for the wire plan's `omittedSources`. Absent: none.
     */
    omittedSources?: Omission[];
+   /**
+    * Every sourceID an access decision of the package reads: a dependency,
+    * at any depth, of a definition that carries a gate or reads a given
+    * (`collectAccessReads` in `plan/`). A relation that reads the current
+    * time is refused when it is one. `"*"` when a walk could not finish.
+    */
+   accessReads?: readonly string[];
 }
+
+/**
+ * The name `accessReads` holds when a walk could not finish: every stored
+ * relation counts as one an access decision reads (fail closed).
+ */
+export const EVERY_SOURCE = "*";
 
 /** The planned sources of `build` in build order, skipping any not in `tables`. */
 export function* sourcesInBuildOrder(
@@ -126,6 +140,49 @@ export function* sourcesInBuildOrder(
       const source = tables[sourceID]?.source;
       if (source) yield source;
    }
+}
+
+/**
+ * Every planned source of `builds`, each with the connection whose build
+ * names it, in an order where each comes after every source it depends on
+ * that the builds name, across builds: a downstream's edges may name a
+ * source another build (another model's, or Malloy's own build of the
+ * author's model) orders. Otherwise in the builds' own order, which is
+ * Malloy's within a build. A source named by several builds is kept at each
+ * place, as the builds name it. A cycle, which no plan has, is broken in the
+ * builds' order rather than dropping a source.
+ */
+export function sourcesInDependencyOrder(
+   builds: readonly SourceBuild[],
+): { sourceID: string; connectionName: string }[] {
+   const items = builds.flatMap((build) =>
+      build.order.map((sourceID) => ({
+         sourceID,
+         connectionName: build.connectionName,
+      })),
+   );
+   const named = new Set(items.map((i) => i.sourceID));
+   const upstreams = new Map<string, Set<string>>();
+   for (const build of builds) {
+      for (const [sourceID, reads] of Object.entries(build.dependsOn)) {
+         const set = upstreams.get(sourceID) ?? new Set<string>();
+         for (const r of reads) if (r !== sourceID && named.has(r)) set.add(r);
+         upstreams.set(sourceID, set);
+      }
+   }
+   const out: typeof items = [];
+   const placed = new Set<string>();
+   const pending = [...items];
+   while (pending.length > 0) {
+      let at = pending.findIndex((item) =>
+         [...(upstreams.get(item.sourceID) ?? [])].every((u) => placed.has(u)),
+      );
+      if (at < 0) at = 0;
+      const [item] = pending.splice(at, 1);
+      out.push(item);
+      placed.add(item.sourceID);
+   }
+   return out;
 }
 
 /** The `#(materialize)` plans of `tables`, by the author's sourceID. */

@@ -8,9 +8,9 @@
  * column is read through a faithful cast, or left out so that only a query
  * reading it answers live: every answer equals live's.
  *
- * The drift is made after the build with a real `ALTER TABLE`. A colocated
+ * The drift is made after the build with a real `ALTER TABLE`. A database
  * table's types are then read from its warehouse as a package's bind reads
- * them (`observeDatabaseColumns`), for each colocated mechanism:
+ * them (`observeDatabaseColumns`), for each database mechanism:
  * `#(materialize)`, `#@ persist` and a rollup. A `storage=` table's binding
  * carries its schema from the run that bound it, so its schema is altered
  * with it, as a run that bound the altered table would.
@@ -24,8 +24,8 @@
  * | flag   | BOOLEAN   | INTEGER     | cast to BOOLEAN          |
  * | d2     | DATE      | TIMESTAMP   | cast to DATE             |
  *
- * The `storage=` table and the colocated ones are held to the same answers.
- * A colocated rollup whose column drifted is read through a typed source, as
+ * The `storage=` table and the database ones are held to the same answers.
+ * A database rollup whose column drifted is read through a typed source, as
  * a `storage=` rollup is, so only a query reading that column answers live
  * (database_table_drift_substituted.component.spec.ts holds every drift kind
  * on a rollup, a persisted view and a persisted query). The
@@ -74,18 +74,18 @@ source: ${name} is ev extend {
   measure: total is ${measure}
 }
 `,
-      colocated: undefined,
+      database: undefined,
       servedFrom: "storage",
    },
    {
-      label: "#(materialize) colocated",
+      label: "#(materialize) database",
       model: (name: string, measure: string, table: string) =>
          `#(materialize) name="${table}"
 source: ${name} is ev extend {
   measure: total is ${measure}
 }
 `,
-      colocated: undefined,
+      database: undefined,
       servedFrom: "database",
    },
    {
@@ -96,7 +96,7 @@ source: ${name} is ev -> { select: * } extend {
   measure: total is ${measure}
 }
 `,
-      colocated: ["drift", "drift_m"],
+      database: ["drift", "drift_m"],
       servedFrom: "database",
    },
 ] as const;
@@ -198,8 +198,8 @@ ${tier.model("drift", "n.sum()", "drift_t")}
 ${tier.model("drift_m", "amt.sum()", "drift_m_t")}`,
             },
             seedSql: SEED,
-            ...(tier.colocated
-               ? { colocated: [...tier.colocated] }
+            ...(tier.database
+               ? { database: [...tier.database] }
                : { materialize: true }),
          });
          // Alter each stored table after its build.
@@ -222,16 +222,17 @@ ${tier.model("drift_m", "amt.sum()", "drift_m_t")}`,
                );
             }
          } else {
-            // A colocated table's types, read from its warehouse at bind.
+            // A database table's types, read from its warehouse at bind.
+            // Each table no longer matches the contract its build recorded:
+            // left out, never cast (the two sources may share one table).
             const observed = await fixture.observeDatabaseColumns();
             expect(observed.unread).toEqual([]);
-            // One drift per table (the two sources may share one).
-            expect(observed.drifted.length).toBeGreaterThan(0);
-            for (const d of observed.drifted) {
-               expect(d.columns.map((c) => c.column).sort()).toEqual(
-                  // `n`, INTEGER altered to BIGINT, is the same Malloy type
-                  // with another native type: retyped, read alike.
-                  ["amt", "d", "d2", "flag", "n"].sort(),
+            expect(observed.drifted).toEqual([]);
+            expect(observed.incompatible.length).toBeGreaterThan(0);
+            for (const d of observed.incompatible) {
+               expect(d.code).toBe("column_retyped");
+               expect([...d.columns].sort()).toEqual(
+                  ["amt", "d", "d2", "flag", "n", "ts"].sort(),
                );
             }
          }
@@ -250,12 +251,19 @@ ${tier.model("drift_m", "amt.sum()", "drift_m_t")}`,
       });
 
       for (const q of SERVED) {
-         it(`served from the table, equal to live: ${q.name}`, async () => {
+         // A database table that no longer matches its contract answers
+         // live; a storage= binding carrying the altered schema reads it.
+         const stored = tier.servedFrom === "storage";
+         it(`${stored ? "served from the table" : "answered live, its table incompatible"}, equal to live: ${q.name}`, async () => {
             const run = await fixture.run(q);
             expect(run.live.length).toBeGreaterThan(0);
             expect(rowDifference(run.live, run.served)).toBeUndefined();
-            expect(run.servedVia).toBe("served_copy");
-            expect(run.servedFrom).toBe(tier.servedFrom);
+            if (stored) {
+               expect(run.servedVia).toBe("served_copy");
+               expect(run.servedFrom).toBe(tier.servedFrom);
+            } else {
+               expect(run.servedFrom).not.toBe(tier.servedFrom);
+            }
          });
       }
 
@@ -270,9 +278,21 @@ ${tier.model("drift_m", "amt.sum()", "drift_m_t")}`,
 
       it("a source whose own measure reads a left-out column is not re-rooted", async () => {
          const problems = await fixture.servedCopyProblems();
-         expect(problems).toEqual([
-            { sourceName: "drift_m", reason: "column_types" },
-         ]);
+         if (tier.servedFrom === "storage") {
+            // Named, with its declared and stored types (F-07).
+            expect(problems).toEqual([
+               {
+                  sourceName: "drift_m",
+                  reason: "column_types",
+                  detail:
+                     "column `amt` (declared `number`, stored as VARCHAR) has no declaration that reads it back as live answers it",
+               },
+            ]);
+         } else {
+            // A database table that no longer matches its contract is not
+            // bound at all, so the served copy re-roots nothing over it.
+            expect(problems).toEqual([]);
+         }
       });
 
       for (const malloy of [
@@ -372,9 +392,9 @@ describe("R4 (rollup database): a rollup table whose column types drifted", () =
          files: {
             "m.malloy": `##! experimental { persistence }
 source: ev is duckdb.table('ev') extend {
-  #(preaggregate) grain=["flag"]
+  #(rollup) grain=["flag"]
   measure: hi is amt.max()
-  #(preaggregate) grain=["id"]
+  #(rollup) grain=["id"]
   measure: c is count()
 }
 `,
@@ -404,14 +424,12 @@ source: ev is duckdb.table('ev') extend {
       expect(altered.length).toBe(1);
       const observed = await fixture.observeDatabaseColumns();
       expect(observed.unread).toEqual([]);
-      expect(observed.drifted).toEqual([
+      // The altered rollup's table no longer matches its contract.
+      expect(observed.drifted).toEqual([]);
+      expect(observed.incompatible).toEqual([
          expect.objectContaining({
-            columns: [
-               expect.objectContaining({
-                  column: altered[0],
-                  observedType: "VARCHAR",
-               }),
-            ],
+            code: "column_retyped",
+            columns: [altered[0]],
          }),
       ]);
    }, 120_000);
@@ -491,12 +509,12 @@ source: drift is ev extend {
          );
          const observed = await fixture.observeDatabaseColumns();
          expect(observed.unread).toEqual([]);
-         expect(observed.drifted).toEqual([
+         // The table no longer matches its contract: left out, never cast.
+         expect(observed.drifted).toEqual([]);
+         expect(observed.incompatible).toEqual([
             expect.objectContaining({
-               columns: [
-                  expect.objectContaining({ column: "amt" }),
-                  expect.objectContaining({ column: "flag" }),
-               ],
+               code: "column_retyped",
+               columns: ["amt", "flag"],
             }),
          ]);
       }, 120_000);
@@ -516,7 +534,7 @@ source: drift is ev extend {
          expect(run.servedFrom).not.toBe("database");
       });
 
-      it("a boolean now stored as an integer: read through a cast, served, equal to live", async () => {
+      it("a boolean now stored as an integer: answered live, equal to live", async () => {
          const run = await fixture.run({
             name: "flag",
             malloy:
@@ -524,16 +542,16 @@ source: drift is ev extend {
          });
          expect(run.live.length).toBeGreaterThan(0);
          expect(rowDifference(run.live, run.served)).toBeUndefined();
-         expect(run.servedFrom).toBe("database");
+         expect(run.servedFrom).not.toBe("database");
       });
 
-      it("a column left as built: served, equal to live", async () => {
+      it("a column left as built: answered live with its table, equal to live", async () => {
          const run = await fixture.run({
             name: "total",
             malloy: "run: drift -> { aggregate: total }",
          });
          expect(rowDifference(run.live, run.served)).toBeUndefined();
-         expect(run.servedFrom).toBe("database");
+         expect(run.servedFrom).not.toBe("database");
       });
    },
 );

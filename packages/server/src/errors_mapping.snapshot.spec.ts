@@ -13,7 +13,8 @@ import {
    BuildPlanRefreshingError,
    BuildPlanUnavailableError,
    ChainedShapeNotCarriedError,
-   WarehouseRecomputeRefusedError,
+   ContractCaptureFailedError,
+   SchemaIncompatibleError,
    ChainedUpstreamMissingError,
    CompileRefusedError,
    ConflictError,
@@ -23,6 +24,8 @@ import {
    ConnectionNotFoundError,
    ConnectionPoolExhaustedError,
    ConnectionSaveError,
+   ResultShapeError,
+   ResultTruncatedError,
    DashboardNotFoundError,
    DestinationNotFoundError,
    DryRunCapacityError,
@@ -35,6 +38,9 @@ import {
    InvalidStateTransitionError,
    MaterializationConflictError,
    MaterializationEligibilityError,
+   MaterializedTableDropRefusedError,
+   TableOwnershipError,
+   BuildInstructionsInvalidError,
    MaterializationNotFoundError,
    ModelCompilationError,
    ModelNotFoundError,
@@ -291,6 +297,8 @@ const CASES: Array<[string, () => unknown]> = [
       "ConnectionPoolExhaustedError",
       () => new ConnectionPoolExhaustedError("The connection pool is full."),
    ],
+   ["ResultTruncatedError", () => new ResultTruncatedError(50000, 99000)],
+   ["ResultShapeError", () => new ResultShapeError()],
    [
       "DestinationNotFoundError",
       () => new DestinationNotFoundError("No destination named warehouse"),
@@ -352,12 +360,18 @@ const CASES: Array<[string, () => unknown]> = [
       () => new ChainedShapeNotCarriedError("shape not carried"),
    ],
    [
-      "WarehouseRecomputeRefusedError",
+      "ContractCaptureFailedError",
       () =>
-         new WarehouseRecomputeRefusedError(
-            "rollup",
-            "lake",
-            "'rollup' reads the source warehouse (regions) through 'via'",
+         new ContractCaptureFailedError(
+            "lake.orders_t",
+            "its collations did not read",
+         ),
+   ],
+   [
+      "SchemaIncompatibleError",
+      () =>
+         new SchemaIncompatibleError(
+            "'v' was not built over its upstream 'a''s table a_t in 'lake'",
          ),
    ],
    [
@@ -374,6 +388,33 @@ const CASES: Array<[string, () => unknown]> = [
    ],
    ["FrozenConfigError", () => new FrozenConfigError()],
    ["AccessDeniedError", () => new AccessDeniedError("access refused")],
+   [
+      "AccessDeniedError row filter",
+      () => AccessDeniedError.forSource("orders", "row_filter"),
+   ],
+   [
+      "BuildInstructionsInvalidError",
+      () =>
+         new BuildInstructionsInvalidError(
+            "Instruction references unknown sourceEntityId 'e9'",
+         ),
+   ],
+   [
+      "TableOwnershipError owned elsewhere",
+      () =>
+         new TableOwnershipError(
+            "table-owned-elsewhere",
+            "another package holds analytics.orders",
+         ),
+   ],
+   [
+      "TableOwnershipError unverified",
+      () =>
+         new TableOwnershipError(
+            "table-ownership-unverified",
+            "who holds analytics.orders could not be read",
+         ),
+   ],
    [
       "AccessDeniedError authorize denial",
       () =>
@@ -418,6 +459,30 @@ const CASES: Array<[string, () => unknown]> = [
    [
       "MaterializationConflictError",
       () => new MaterializationConflictError("a build is running"),
+   ],
+   [
+      "MaterializedTableDropRefusedError in use",
+      () =>
+         new MaterializedTableDropRefusedError(
+            "TABLE_IN_USE",
+            "a committed run names analytics.orders",
+         ),
+   ],
+   [
+      "MaterializedTableDropRefusedError owned elsewhere",
+      () =>
+         new MaterializedTableDropRefusedError(
+            "TABLE_OWNED_ELSEWHERE",
+            "another package marked analytics.orders",
+         ),
+   ],
+   [
+      "MaterializedTableDropRefusedError unverified",
+      () =>
+         new MaterializedTableDropRefusedError(
+            "TABLE_OWNERSHIP_UNVERIFIED",
+            "nothing proves analytics.orders is this package's",
+         ),
    ],
    ["WriteConflictError", () => new WriteConflictError("file changed")],
    [

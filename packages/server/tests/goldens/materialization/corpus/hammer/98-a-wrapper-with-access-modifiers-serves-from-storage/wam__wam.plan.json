@@ -75,6 +75,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.wam_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "cc710004d299e3cb91b211b5a8888419505331d88ca56fc90b113f755f97daa3",
         "sourceID": "daily@<hammer>/wam/wam.malloy",

@@ -6,6 +6,7 @@ import { ConnectionNotFoundError, FrozenConfigError } from "../errors";
 import { logger } from "../logger";
 import { buildEnvironmentMalloyConfig } from "./connection";
 import { mergeConnectionUpdate } from "./connection_public_view";
+import { connectionDialectOf } from "./dialects";
 import type { ConnectionAdmin } from "./environment_ports";
 import { parseEnvironmentName } from "./identity";
 
@@ -50,18 +51,10 @@ function buildDeletedConnectionCleanup(
    deletedConnection: ApiConnection,
    connectionName: string,
 ): ReleaseCallback | undefined {
-   if (
-      deletedConnection.type === "duckdb" &&
-      typeof environment.deleteDuckDBConnection === "function"
-   ) {
-      return () => environment.deleteDuckDBConnection!(connectionName);
-   }
-
-   if (
-      deletedConnection.type === "ducklake" &&
-      typeof environment.deleteDuckLakeConnection === "function"
-   ) {
-      return () => environment.deleteDuckLakeConnection!(connectionName);
+   // The type's own release of its local file, when the environment has it.
+   const cleanup = connectionDialectOf(deletedConnection.type)?.fileCleanup;
+   if (cleanup !== undefined && typeof environment[cleanup] === "function") {
+      return () => environment[cleanup]!(connectionName);
    }
 
    return undefined;

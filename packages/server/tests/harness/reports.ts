@@ -40,6 +40,7 @@ export interface Warning {
    message?: string;
    severity?: string | null;
    code?: string;
+   reason?: string;
 }
 
 /** The warnings that carry `code`, in the order the package reported them. */

@@ -71,6 +71,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.rtf_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "e80f56f9a7669807c26cc75604e1677b39291c396675d4f439ee242c4dff00e2",
         "sourceID": "daily@<hammer>/rtf/rtf.malloy",

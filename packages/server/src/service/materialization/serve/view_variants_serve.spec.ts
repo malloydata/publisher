@@ -11,12 +11,15 @@ import {
    pinnedOf,
    storedViewBinding,
 } from "../../../test_helpers/persisted_result_fixture";
+import { gateSwitches } from "../../../config";
 import { LegDecline } from "../domain/leg_decline";
+import { makeLegs } from "./leg";
+import { collationProbe, ReadAdmission } from "./read_admission";
 import { PersistedViewServe } from "./view_variants";
 
 /**
  * The persisted view leg against a real compile: which query texts call a
- * persisted view, which table it would read (colocated or `storage=`, built,
+ * persisted view, which table it would read (database or `storage=`, built,
  * stale or fresh), and each way an attempt declines or answers from the
  * stored result. No query runs; an answer is checked by the SQL it compiles.
  */
@@ -63,7 +66,7 @@ async function declineOf(promise: Promise<unknown>): Promise<LegDecline> {
    return err as LegDecline;
 }
 
-describe("PersistedViewServe (colocated)", () => {
+describe("PersistedViewServe (database)", () => {
    let f: PersistedResultFixture;
    let tableId: string;
    let built: Record<string, { tableName: string }>;
@@ -109,7 +112,7 @@ describe("PersistedViewServe (colocated)", () => {
       const call = "run: orders -> by_region";
       expect(f.views.reportedTable(call, pinnedOf())).toEqual({
          tableId,
-         tier: "colocated",
+         tier: "database",
          built: false,
          stale: false,
       });
@@ -128,14 +131,14 @@ describe("PersistedViewServe (colocated)", () => {
          ),
       ).toEqual({
          tableId,
-         tier: "colocated",
+         tier: "database",
          built: true,
          stale: true,
          dataAsOf: old,
       });
       expect(f.views.reportedTable(call, pinnedOf([], built))).toEqual({
          tableId,
-         tier: "colocated",
+         tier: "database",
          built: true,
          stale: false,
       });
@@ -148,7 +151,7 @@ describe("PersistedViewServe (colocated)", () => {
       const answer = await attemptOf(f, "run: orders -> by_region", built);
       expect(answer.table).toEqual({
          tableId,
-         tier: "colocated",
+         tier: "database",
          built: true,
          stale: false,
       });
@@ -175,7 +178,8 @@ describe("PersistedViewServe (colocated)", () => {
       const decline = await declineOf(
          attemptOf(f, "run: orders -> by_region + { limit: 1 }", built),
       );
-      expect(decline.code).toBe("view_missing_field");
+      expect(decline.code).toBe("view_shape_mismatch");
+      expect(decline.reason).toBe("SHAPE_MISMATCH");
       expect(decline.callerDetail).toContain("refines `by_region`");
    });
 
@@ -183,7 +187,7 @@ describe("PersistedViewServe (colocated)", () => {
       const decline = await declineOf(
          attemptOf(f, "run: orders_ext -> by_region", built),
       );
-      expect(decline.code).toBe("view_missing_field");
+      expect(decline.code).toBe("view_shape_mismatch");
       expect(decline.callerDetail).toBeUndefined();
    });
 
@@ -215,6 +219,8 @@ describe("PersistedViewServe (colocated)", () => {
          }),
       );
       expect(decline.code).toBe("view_missing_field");
+      // A column the stored result cannot give, not a query of another shape.
+      expect(decline.reason).toBe("MISSING_FIELD");
       expect(decline.callerDetail).toBe(
          "the stored result cannot answer `grand` with live's columns: it groups by no dimension, so an empty result would come back as one row",
       );
@@ -244,13 +250,58 @@ describe("PersistedViewServe (colocated)", () => {
          );
          const [message, meta] = warn.firstCall.args as unknown as [
             string,
-            { error?: string },
+            Record<string, unknown>,
          ];
          expect(message).toBe("A persisted-view variant did not compile");
-         expect(meta.error).toBe("no context");
+         // The compile's text never reaches the log.
+         expect(meta).not.toHaveProperty("error");
       } finally {
          warn.restore();
       }
+   });
+
+   it("marks a table stored as of its build, so read admission declines an access decision over it", async () => {
+      // The other checks keep access decisions off this leg today; this
+      // backstop must decline one on its own, so it has to see the flag. A
+      // database view's table has no binding: its manifest entry carries it.
+      const pinned = pinnedOf([], {
+         [tableId]: { tableName: STORED, asOfBuild: true },
+      });
+      const query = {
+         queryString: "run: orders -> by_region",
+         givens: undefined,
+         authorRunnable: f.materializer.loadQuery("run: orders -> by_region"),
+      };
+      const [leg] = makeLegs(pinned, { persistedViews: f.views });
+      const answer = await leg.attempt(query, pinned);
+      expect(answer.resultTableRead).toMatchObject({
+         tier: "database",
+         tablePath: STORED,
+         asOfBuild: true,
+      });
+      // The path report does not carry it.
+      expect(answer.viewTable).not.toHaveProperty("asOfBuild");
+      const admission = new ReadAdmission(
+         query,
+         gateSwitches(),
+         collationProbe,
+      );
+      // Past an entry-point gate: an access decision, declined.
+      expect((await admission.decide("view", answer, true)).verdict).toEqual({
+         admit: false,
+         reason: "as_of_build_access",
+         detail: expect.any(String),
+      });
+      // The query reads no given and passes no gate: it reads the table (one
+      // its catalog does not list is not judged for the result: its read
+      // fails, and its fallback decides).
+      expect((await admission.decide("view", answer, false)).verdict).toEqual({
+         admit: true,
+         pastEntryPointGate: false,
+      });
+      // Without the flag the same answer is not an as-of-build read.
+      const plain = await leg.attempt(query, pinnedOf([], built));
+      expect(plain.resultTableRead).not.toHaveProperty("asOfBuild");
    });
 
    it("names the compiler key of a planned table, and none for an unplanned one", () => {
@@ -300,7 +351,7 @@ describe("PersistedViewServe (storage=)", () => {
          mine,
          storedViewBinding("other@file:///x.malloy"),
          { ...mine, kind: "persist" },
-         { ...mine, tier: "colocated" },
+         { ...mine, tier: "database" },
       ]);
       expect(f.views.viewBindings(pinned, "bound")).toEqual([mine]);
       expect(f.views.viewBindings(pinned, "fresh")).toEqual([mine]);
@@ -346,7 +397,7 @@ describe("PersistedViewServe (storage=)", () => {
       expect(answer.binding).toBe(binding);
    });
 
-   it("reports a binding stale past its window, and any binding stale with no destination to read it", () => {
+   it("reports a binding stale past its window, and any binding not served with no destination to read it", () => {
       const old = storedViewBinding(buildSourceID, {
          schema,
          freshAsOf: new Date(Date.now() - 3_600_000).toISOString(),
@@ -366,7 +417,12 @@ describe("PersistedViewServe (storage=)", () => {
             pinnedOf([storedViewBinding(buildSourceID, { schema })]),
             undefined,
          ),
-      ).toEqual({ tier: "storage", built: true, stale: true });
+      ).toEqual({
+         tier: "storage",
+         built: true,
+         stale: false,
+         storageNotServed: true,
+      });
       expect(
          f.views.tableOf(
             { buildSourceID, storage: "lake" },
@@ -429,7 +485,7 @@ describe("PersistedViewServe (storage=)", () => {
  * storage destination (a database origin whose destination the control plane
  * chose), and the run's manifest binds it as a storage table. The binding
  * decides the tier, not the annotation: the view is read from it exactly as a
- * `storage=` view's is, rather than looked for in the colocated manifest.
+ * `storage=` view's is, rather than looked for in the database manifest.
  */
 describe("PersistedViewServe (a host-chosen destination, no storage=)", () => {
    let f: PersistedResultFixture;
@@ -479,9 +535,9 @@ describe("PersistedViewServe (a host-chosen destination, no storage=)", () => {
       expect(sql).toContain('"main"."stored_view_t"');
    });
 
-   it("still reads the colocated manifest when no storage binding stores it", () => {
+   it("still reads the database manifest when no storage binding stores it", () => {
       expect(
          f.views.tableOf({ buildSourceID }, pinnedOf(), undefined).tier,
-      ).toBe("colocated");
+      ).toBe("database");
    });
 });

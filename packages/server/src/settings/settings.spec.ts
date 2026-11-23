@@ -25,7 +25,7 @@ import {
 const KEY = { EMBEDDING_API_KEY: "sk-test" };
 
 /**
- * The variable the configuration design (docs/configuration-design.md, "The
+ * The variable the configuration design (docs/publisher-v1.md, Appendix C, "The
  * mapping") gives each setting, read from step 2. A row the design marks
  * "unchanged" keeps today's name, which the derivation must reproduce.
  */
@@ -60,6 +60,7 @@ const DESIGN_VARIABLES: Partial<Record<SettingKey, string>> = {
    "mcp.trace": "PUBLISHER_MCP_TRACE",
    "admin.port": "PUBLISHER_ADMIN_PORT",
    "admin.host": "PUBLISHER_ADMIN_HOST",
+   "admin.requestTimeoutMs": "PUBLISHER_ADMIN_REQUEST_TIMEOUT_MS",
    "admin.catalogDatabase": "PUBLISHER_ADMIN_CATALOG_DATABASE",
    "admin.storage.provider": "PUBLISHER_ADMIN_STORAGE_PROVIDER",
    "admin.storage.keyId": "PUBLISHER_ADMIN_STORAGE_KEY_ID",
@@ -92,6 +93,7 @@ const DESIGN_VARIABLES: Partial<Record<SettingKey, string>> = {
       "PUBLISHER_PERSIST_ADDRESS_INCLUDES_DESTINATION",
    "persist.collisionEnforcementEnabled":
       "PUBLISHER_PERSIST_COLLISION_ENFORCEMENT_ENABLED",
+   "materialize.admissionMode": "PUBLISHER_MATERIALIZE_ADMISSION_MODE",
    "materialize.enabled": "PUBLISHER_MATERIALIZE_ENABLED",
    "materialize.gatedSources": "PUBLISHER_MATERIALIZE_GATED_SOURCES",
    "materialization.schedulerEnabled":
@@ -159,6 +161,7 @@ const DESIGN_FLAGS: Partial<Record<SettingKey, string>> = {
    "mcp.configFileEnabled": "--mcp-config-file-enabled",
    "mcp.includeHiddenFilesAndSources": "--mcp-include-hidden-files-and-sources",
    "admin.port": "--admin-port",
+   "admin.requestTimeoutMs": "--admin-request-timeout-ms",
    "admin.storage.keyId": "--admin-storage-key-id",
    "query.maxRows": "--query-max-rows",
    versionPromotion: "--version-promotion",

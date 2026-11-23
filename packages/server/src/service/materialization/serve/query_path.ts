@@ -2,19 +2,19 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * The path report (D1): what answered a query and why.
+ * The path report: what answered a query and why.
  *
  * Built after the query runs, from three things Publisher already has:
  *
  * - the router's decision ({@link routeQuery}'s `considered`), which says how
  *   each candidate (the view, query, rollup and served legs) fared;
  * - the build-manifest entries the run that answered actually read, which say
- *   which colocated table answered: a colocated `#@ persist` table (or rollup)
+ *   which database table answered: a database `#@ persist` table (or rollup)
  *   Malloy substituted through the manifest, a tier that never reaches the
  *   router. Read from Malloy's own lookup, never from the SQL text;
  * - the package's catalog of materialized tables (its build plan, bound
  *   manifest and `storage=` bindings), read against the queried source's
- *   chain, with the serve verdict (D2) of every table no query can be answered
+ *   chain, with the serve verdict of every table no query can be answered
  *   from, so a skip says why the table will not serve rather than only that it
  *   did not.
  *
@@ -33,6 +33,7 @@ import { recordedTimezoneOf } from "../../governance/ir/compiled_model";
 import type { components } from "../../../api";
 import type { ConsideredVariant } from "../../query_router";
 import type { FreshnessManifest } from "../domain/types";
+import type { TableOrigin } from "../domain/table_plans";
 import { forEachFieldPath } from "../../governance/ir/array_query";
 import { declineOfCode } from "../domain/leg_decline";
 
@@ -54,11 +55,11 @@ export interface PlannedTable {
    name: string;
    /** The content address: the table's `tableId` in the path report. */
    sourceEntityId: string;
-   origin: "persist" | "preaggregate";
+   origin: TableOrigin;
    /**
     * The key Malloy files the table under in a build manifest, where it is
     * not `sourceEntityId` (an address foldDistinctTableNames moved): a
-    * colocated persisted view or query is substituted under it.
+    * database persisted view or query is substituted under it.
     */
    compilerKey?: string;
    /**
@@ -94,12 +95,12 @@ export interface LiveTableVerdict {
 export interface MaterializedTableCatalog {
    /** Every planned source, keyed by `sourceID`. */
    planned: ReadonlyMap<string, PlannedTable>;
-   /** The colocated tables bound now, keyed by `sourceEntityId`. */
+   /** The database tables bound now, keyed by `sourceEntityId`. */
    bound: Readonly<FreshnessManifest>;
    /**
     * The tables whose serve verdict says no query is answered from them,
     * keyed by {@link liveVerdictKey} (tier and `sourceEntityId`: a `storage=`
-    * table and its colocated twin share the id but not the verdict). Absent
+    * table and its database twin share the id but not the verdict). Absent
     * when the verdicts are not known.
     */
    liveVerdicts?: ReadonlyMap<string, LiveTableVerdict>;
@@ -115,7 +116,7 @@ export interface MaterializedTableCatalog {
 
 /** The key of {@link MaterializedTableCatalog.liveVerdicts}. */
 export function liveVerdictKey(
-   tier: "storage" | "colocated",
+   tier: "storage" | "database",
    sourceEntityId: string,
 ): string {
    return `${tier}:${sourceEntityId}`;
@@ -126,15 +127,15 @@ export interface StorageTable {
    /** The source it materializes, or a rollup's synthesized name. */
    sourceName: string;
    sourceIDs?: readonly string[];
-   origin?: "persist" | "preaggregate";
+   origin?: TableOrigin;
    tablePath: string;
    freshAsOf?: string;
    /**
-    * A colocated `#(materialize)` table, which only the served copy reads, on
-    * the source's own connection: reported on the colocated tier, decided by
+    * A database `#(materialize)` table, which only the served copy reads, on
+    * the source's own connection: reported on the database tier, decided by
     * the served copy as a `storage=` table is.
     */
-   colocated?: true;
+   database?: true;
 }
 
 /** A rollup this model's pre-aggregation plans. */
@@ -143,7 +144,7 @@ interface ModelRollup {
    baseSourceName: string;
    baseSourceID?: string;
    /**
-    * A `#(preaggregate)` rollup, which the router's rollup leg answers on
+    * A `#(rollup)` rollup, which the router's rollup leg answers on
     * either tier (its `storage=` table too).
     */
    variant?: boolean;
@@ -160,7 +161,9 @@ interface TableState {
     */
    tableId?: string;
    kind: "materialized" | "rollup" | "view" | "query";
-   tier: "storage" | "colocated";
+   /** The mechanism that declared it, when known. */
+   origin?: TableOrigin;
+   tier: "storage" | "database";
    /** Built and bound, but withheld by its freshness window. */
    stale: boolean;
    /** Not bound to the package at all. */
@@ -171,17 +174,17 @@ interface TableState {
     */
    warned?: boolean;
    dataAsOf?: string;
-   /** For a colocated table: the name the SQL substitutes. */
+   /** For a database table: the name the SQL substitutes. */
    tableName?: string;
    /**
     * For a table a stored variant reads through a binding (a `storage=`
-    * table, or a colocated `#(materialize)` table the served copy reads):
+    * table, or a database `#(materialize)` table the served copy reads):
     * the binding.
     */
    binding?: StorageTable;
    /** For a rollup: its synthesized source name. */
    rollupName?: string;
-   /** A `#(preaggregate)` rollup: the rollup leg decides it on either tier. */
+   /** A `#(rollup)` rollup: the rollup leg decides it on either tier. */
    variant?: boolean;
 }
 
@@ -194,22 +197,22 @@ export interface QueryPathInput {
    chain: readonly string[];
    catalog: MaterializedTableCatalog | undefined;
    /**
-    * The colocated tables inside their freshness window now (the per-query
+    * The database tables inside their freshness window now (the per-query
     * build manifest's keys). Undefined treats every bound table as fresh.
     */
-   freshColocated?: ReadonlySet<string>;
+   freshDatabase?: ReadonlySet<string>;
    /** This model's `storage=` bindings, and the fresh subset of them. */
    storage: { all: readonly StorageTable[]; fresh: readonly StorageTable[] };
    /**
     * The storage tier is not routed (`PERSIST_STORAGE_MODE` off or write-only),
     * and the package warns about every `storage=` source for it. Its tables are
-    * then reported `WARNED`.
+    * then reported `NOT_SERVED`.
     */
    storageWarned?: boolean;
    rollups: readonly ModelRollup[];
    /**
     * The bases of the rollups the query could read through one of its
-    * source's joins (A7, join-to-rollup): named as the query's own rollups.
+    * source's joins (join-to-rollup): named as the query's own rollups.
     */
    joinedRollupBases?: ReadonlySet<string>;
    /** The router's decision; empty when no candidate existed. */
@@ -224,6 +227,12 @@ export interface QueryPathInput {
    rollupTablesRead?: readonly StorageTable[];
    /** The tables only the served copy reads (`#(materialize)`): its decision is theirs. */
    servedCopyTables?: ReadonlySet<string>;
+   /**
+    * For a table only the served copy reads that it leaves as written for
+    * its columns (`column_types`): the columns, named, by table path. The
+    * table's `detail` when the served copy declined with none of its own.
+    */
+   servedCopyDetails?: ReadonlyMap<string, string>;
    /** For a storage answer: `served_copy` when the served copy on `virtual` answered. */
    via?: "served_copy";
    /**
@@ -233,25 +242,29 @@ export interface QueryPathInput {
    runFailed?: boolean;
    /**
     * The manifest keys (`sourceEntityId`s) the run that answered read, from
-    * Malloy's manifest lookup: the colocated tables it substituted.
+    * Malloy's manifest lookup: the database tables it substituted.
     */
-   colocatedRead?: ReadonlySet<string>;
+   databaseRead?: ReadonlySet<string>;
    /**
     * For a query the rollup leg answered: the rollup it answered from (its
     * synthesized source name).
     */
    rollupMember?: string;
    /**
-    * The table of the persisted view the query calls (`#@ persist` on a view,
-    * P14), or of the persisted named query it calls (`kind: "query"`), when
-    * it calls one: tried before every other table (R1).
+    * The table of the persisted view the query calls (`#@ persist` on a view),
+    * or of the persisted named query it calls (`kind: "query"`), when
+    * it calls one: tried before every other table.
     */
    view?: {
       kind?: "query";
       tableId?: string;
-      tier: "storage" | "colocated";
+      tier: "storage" | "database";
       built: boolean;
       stale: boolean;
+      /** A storage table the storage mode does not read (`storage_mode`). */
+      storageNotServed?: true;
+      /** A database table read in place of a storage one the mode does not read. */
+      storageTwinNotServed?: true;
       dataAsOf?: string;
    };
    /** The `sourceID` chain of every source in the model, for `notConsidered`. */
@@ -266,14 +279,14 @@ export interface QueryPathInput {
 
 /**
  * Assemble the path report. `considered` lists `storage=` tables, then
- * colocated rollups, then colocated tables nearest first: not the order the
+ * database rollups, then database tables nearest first: not the order the
  * router tries the legs (`makeLegs`: persisted results, then rollups, then
  * the served copy).
  */
 export function buildQueryPath(input: QueryPathInput): ApiQueryPath {
    const onChain = new Set(input.chain);
    // One decision per kind; where two candidates share a kind (the v1 and
-   // `#(preaggregate)` rollup legs), the one that answered.
+   // `#(rollup)` rollup legs), the one that answered.
    const decided = new Map<ConsideredVariant["kind"], ConsideredVariant>();
    for (const c of input.considered) {
       if (!decided.has(c.kind) || c.outcome === "used") decided.set(c.kind, c);
@@ -299,7 +312,7 @@ export function buildQueryPath(input: QueryPathInput): ApiQueryPath {
       freshStorage,
    );
 
-   const rollupAnswered = colocatedRollupDecisions(
+   const rollupAnswered = databaseRollupDecisions(
       input,
       tally,
       tables,
@@ -324,19 +337,24 @@ export function buildQueryPath(input: QueryPathInput): ApiQueryPath {
             considered.push({
                tableId: t.tableId,
                kind: t.kind,
+               ...originField(t),
                outcome: "used",
             });
          }
       }
    }
 
-   // Colocated `#@ persist`: Malloy substitutes the bound table into whatever
+   // Database `#@ persist`: Malloy substitutes the bound table into whatever
    // runnable answered, unless a stored variant replaced the source.
    if (!storageAnswered && !rollupAnswered) {
       let answered = false;
+      // The served copy reads the queried source's own database table, the
+      // nearest on its chain: a gate it could not keep there is why that
+      // table did not answer, and is named rather than dropped.
+      let gateNamed = false;
       for (const t of tables) {
          if (
-            t.tier !== "colocated" ||
+            t.tier !== "database" ||
             t.kind !== "materialized" ||
             t.unbuilt ||
             t.binding
@@ -347,6 +365,28 @@ export function buildQueryPath(input: QueryPathInput): ApiQueryPath {
          } else if (!answered && readByRun(input, t)) {
             markUsed(t);
             answered = true;
+         } else if (
+            !gateNamed &&
+            storageDecision?.reason === "row_level_gate" &&
+            storageDecision.outcome !== "used"
+         ) {
+            skip(t, "ROW_LEVEL_GATE");
+            gateNamed = true;
+         } else if (
+            (storageDecision?.code === "served_copy_column_left_out" ||
+               storageDecision?.code === "served_copy_not_served") &&
+            storageDecision.outcome !== "used" &&
+            t.tableId !== undefined &&
+            storageDecision.tableIds?.includes(t.tableId)
+         ) {
+            // The served copy read this table and declined the query for it
+            // (a stored column its type leaves out, or a scope the table does
+            // not compare as its source does): that is why it was not read.
+            skip(
+               t,
+               skipReasonOf(storageDecision),
+               storageDecision.callerDetail,
+            );
          }
       }
    }
@@ -386,6 +426,13 @@ interface PathTally {
    ): void;
 }
 
+/** A table's `origin` on the wire, when its mechanism is known. */
+function originField(t: Pick<TableState, "origin">): {
+   origin?: TableOrigin;
+} {
+   return t.origin ? { origin: t.origin } : {};
+}
+
 /** An empty tally: nothing considered, the query answered live. */
 function pathTally(): PathTally {
    const considered: ApiCandidate[] = [];
@@ -395,13 +442,19 @@ function pathTally(): PathTally {
    let servedBy: ApiServer = { kind: "live" };
    const markUsed = (t: TableState) => {
       if (t.tableId) {
-         considered.push({ tableId: t.tableId, kind: t.kind, outcome: "used" });
+         considered.push({
+            tableId: t.tableId,
+            kind: t.kind,
+            ...originField(t),
+            outcome: "used",
+         });
       }
       servedBy = {
          kind: t.kind,
+         ...originField(t),
          ...(t.tableId ? { tableId: t.tableId } : {}),
-         // The wire names the colocated tier by where it lives.
-         tier: t.tier === "colocated" ? "database" : "storage",
+         // The wire names the database tier by where it lives.
+         tier: t.tier === "database" ? "database" : "storage",
          ...(t.dataAsOf ? { dataAsOf: t.dataAsOf } : {}),
       };
    };
@@ -415,6 +468,7 @@ function pathTally(): PathTally {
       const candidate: ApiCandidate = {
          tableId: t.tableId,
          kind: t.kind,
+         ...originField(t),
          outcome: "skipped",
          reason,
          ...(code ? { code } : {}),
@@ -435,7 +489,7 @@ function pathTally(): PathTally {
 }
 
 /**
- * A persisted view's table, first (R1). When it answered, nothing after
+ * A persisted view's table, first. When it answered, nothing after
  * it was tried, so nothing after it is named: the report is returned.
  */
 function viewTableDecision(
@@ -453,14 +507,25 @@ function viewTableDecision(
          key: `persisted-view/${input.view.tableId ?? ""}`,
          ...(input.view.tableId ? { tableId: input.view.tableId } : {}),
          kind: input.view.kind ?? "view",
+         origin: input.view.kind ?? "view",
          tier: input.view.tier,
          stale: input.view.stale,
          unbuilt: !input.view.built,
          ...(input.view.dataAsOf ? { dataAsOf: input.view.dataAsOf } : {}),
       };
+      if (input.view.storageTwinNotServed) {
+         // Its storage twin, which the storage mode does not read: named as
+         // a rollup's is, before the database table that answered.
+         skip(
+            { ...t, key: `${t.key}/storage`, tier: "storage", stale: false },
+            "NOT_SERVED",
+            undefined,
+            "storage_mode",
+         );
+      }
       if (viewDecision?.outcome === "used") {
          if (input.runFailed) {
-            skip(t, "RUN_FAILED");
+            skip(t, "READ_FAILED");
          } else {
             markUsed(t);
             return {
@@ -477,10 +542,13 @@ function viewTableDecision(
          }
       } else if (!input.view.built) {
          skip(t, "NOT_BUILT");
+      } else if (input.view.storageNotServed) {
+         // The storage mode reads no destination; the serve verdict names it.
+         skip(t, "NOT_SERVED", undefined, "storage_mode");
       } else if (input.view.stale) {
          skip(t, "STALE");
       } else if (viewDecision?.reason === "row_level_gate") {
-         skip(t, "CONTRACT");
+         skip(t, "ROW_LEVEL_GATE");
       } else if (viewDecision && viewDecision.reason !== "not_applicable") {
          skip(t, skipReasonOf(viewDecision), viewDecision.callerDetail);
       }
@@ -491,7 +559,7 @@ function viewTableDecision(
 /**
  * `storage=`: tried only when the tier was a candidate at all (mode on,
  * bindings and a destination present).
- * A colocated `#(materialize)` table is the served copy's, decided here
+ * A database `#(materialize)` table is the served copy's, decided here
  * with the storage tier's tables. Returns whether a stored table answered.
  */
 function storageTableDecisions(
@@ -513,11 +581,11 @@ function storageTableDecisions(
          if (t.stale) {
             skip(t, "STALE");
          } else if (storageDecision.reason === "row_level_gate") {
-            skip(t, "CONTRACT");
+            skip(t, "ROW_LEVEL_GATE");
          } else if (storageDecision.outcome === "used") {
             if (!t.binding || !read.has(t.binding.tablePath)) continue;
             if (input.runFailed) {
-               skip(t, "RUN_FAILED");
+               skip(t, "READ_FAILED");
             } else {
                markUsed(t);
                storageAnswered = true;
@@ -526,15 +594,18 @@ function storageTableDecisions(
             // A table only the served copy reads skipped for the served
             // copy's reason, whichever candidate the tier reported.
             const served = decided.get("served");
-            const decision =
-               served && input.servedCopyTables?.has(t.binding?.tablePath ?? "")
-                  ? served
-                  : storageDecision;
+            const servedOnly = input.servedCopyTables?.has(
+               t.binding?.tablePath ?? "",
+            );
+            const decision = served && servedOnly ? served : storageDecision;
             skip(
                t,
                skipReasonOf(decision),
-               decision.callerDetail,
-               declineOfCode(decision.code)?.warnedCode,
+               decision.callerDetail ??
+                  (servedOnly && decision.code === "served_copy_not_served"
+                     ? input.servedCopyDetails?.get(t.binding?.tablePath ?? "")
+                     : undefined),
+               declineOfCode(decision.code)?.code,
             );
          }
       }
@@ -552,12 +623,12 @@ function storageTableDecisions(
       const placed =
          storageAnswered ||
          considered.some(
-            (c) => c.outcome === "used" || c.reason === "RUN_FAILED",
+            (c) => c.outcome === "used" || c.reason === "READ_FAILED",
          );
       if (storageDecision.outcome === "used" && first && !placed) {
          const t = stateOfBinding(input, first, freshStorage);
          if (input.runFailed) {
-            skip(t, "RUN_FAILED");
+            skip(t, "READ_FAILED");
          } else {
             markUsed(t);
             storageAnswered = true;
@@ -566,14 +637,17 @@ function storageTableDecisions(
    } else {
       // Not routed at all (the tier is off or write-only): every storage table
       // carries the package's warning, and the query reads its own warehouse.
-      for (const t of storageTables) if (t.warned) skip(t, "WARNED");
+      // The storage mode is the reason, whichever tier the verdict judged.
+      for (const t of storageTables) {
+         if (t.warned) skip(t, "NOT_SERVED", undefined, "storage_mode");
+      }
    }
    return storageAnswered;
 }
 
 /**
  * Each rollup's own decline, by synthesized source name, from every rollup
- * leg that tried it (the v1 and `#(preaggregate)` legs share the kind).
+ * leg that tried it (the v1 and `#(rollup)` legs share the kind).
  */
 function rollupMemberDeclines(
    considered: readonly ConsideredVariant[],
@@ -589,11 +663,11 @@ function rollupMemberDeclines(
 }
 
 /**
- * Rollups the rollup leg decides: colocated ones, and `#(preaggregate)` ones
+ * Rollups the rollup leg decides: database ones, and `#(rollup)` ones
  * on either tier. A rollup the leg tried carries its own reason; one it never
  * tried, the leg's. Returns whether a rollup answered.
  */
-function colocatedRollupDecisions(
+function databaseRollupDecisions(
    input: QueryPathInput,
    tally: PathTally,
    tables: readonly TableState[],
@@ -602,9 +676,9 @@ function colocatedRollupDecisions(
    storageAnswered: boolean,
 ): boolean {
    const { markUsed, skip } = tally;
-   const colocatedRollups = tables.filter(
+   const databaseRollups = tables.filter(
       (t) =>
-         (t.tier === "colocated" || t.variant) &&
+         (t.tier === "database" || t.variant) &&
          t.kind === "rollup" &&
          !t.unbuilt,
    );
@@ -612,21 +686,26 @@ function colocatedRollupDecisions(
    if (rollupDecision && !storageAnswered) {
       const used =
          rollupDecision.outcome === "used"
-            ? colocatedRollups.find(
+            ? databaseRollups.find(
                  (t) => !t.stale && t.rollupName === input.rollupMember,
               )
             : undefined;
-      for (const t of colocatedRollups) {
+      for (const t of databaseRollups) {
          if (t.stale) {
             skip(t, "STALE");
          } else if (rollupDecision.reason === "row_level_gate") {
-            skip(t, "CONTRACT");
+            skip(t, "ROW_LEVEL_GATE");
          } else if (rollupDecision.reason === "not_applicable") {
             continue;
          } else if (rollupDecision.outcome === "used") {
             if (t === used) {
-               markUsed(t);
-               rollupAnswered = true;
+               // Its read failed and the query was retried live.
+               if (input.runFailed) {
+                  skip(t, "READ_FAILED");
+               } else {
+                  markUsed(t);
+                  rollupAnswered = true;
+               }
             } else if (!used && input.rollupMember !== undefined) {
                // The rollup leg answered from another rollup.
                skip(t, "GRAIN_TOO_COARSE");
@@ -653,28 +732,28 @@ function colocatedRollupDecisions(
 
 /**
  * Whether a serve verdict explains a skip better than the query did. Only
- * skips where the router never tried the table: `NOT_BUILT` and `WARNED`
- * (nothing to try), and `CONTRACT` when the verdict is the same gate or a
+ * skips where the router never tried the table: `NOT_BUILT` and `NOT_SERVED`
+ * (nothing to try), and `ROW_LEVEL_GATE` when the verdict is the same gate or a
  * refusal (a gated extension the eligibility gate refused at build). A skip
  * the router reached by trying the table (`MISSING_FIELD`, `GRAIN_TOO_COARSE`,
  * `COUNT_SEMANTICS`, …) is this query's own reason, and a caller who can reach
  * a table no published entry point reaches is seeing exactly that; `STALE` and
- * `RUN_FAILED` are facts only the query knows.
+ * `READ_FAILED` are facts only the query knows.
  */
 function verdictExplains(reason: SkipReason | undefined, verdict: string) {
-   if (reason === "NOT_BUILT" || reason === "WARNED") return true;
+   if (reason === "NOT_BUILT" || reason === "NOT_SERVED") return true;
    return (
-      reason === "CONTRACT" &&
+      reason === "ROW_LEVEL_GATE" &&
       (verdict === "row_level_gate" || verdict === "refused")
    );
 }
 
 /**
  * Re-read each skipped table against its serve verdict: a table no query can
- * be answered from is reported `WARNED`, with the verdict's reason as `code`,
+ * be answered from is reported `NOT_SERVED`, with the verdict's reason as `code`,
  * in place of what this query alone showed when the verdict explains it
  * ({@link verdictExplains}): `NOT_BUILT` for a source the bind refuses,
- * `CONTRACT` for a rollup every entry point gates or a gated source the build
+ * `ROW_LEVEL_GATE` for a rollup every entry point gates or a gated source the build
  * refused. A table that answered stays
  * `used`. Returns one warning per such table whose source the caller may see.
  */
@@ -687,7 +766,7 @@ function applyServeVerdicts(
    const warnings: ApiWarning[] = [];
    const own = ownSourceVerdict(input);
    if (verdicts.size === 0 && !own) return warnings;
-   // A table that answered (its colocated copy, beside a storage copy that is
+   // A table that answered (its database copy, beside a storage copy that is
    // not routed) is no table that "answers no query": its skipped twin keeps
    // the code, and no warning says otherwise.
    const used = new Set(
@@ -705,7 +784,7 @@ function applyServeVerdicts(
          // The table serves another source; the queried source's own verdict
          // may still explain why this query could not use it.
          if (own && ownVerdictExplains(candidate, own)) {
-            candidate.reason = "WARNED";
+            candidate.reason = "NOT_SERVED";
             candidate.code = own.verdict.reason;
             delete candidate.detail;
             // As below: a table whose other-tier copy answered gets no warning.
@@ -725,7 +804,7 @@ function applyServeVerdicts(
          }
          continue;
       }
-      candidate.reason = "WARNED";
+      candidate.reason = "NOT_SERVED";
       candidate.code = verdict.reason;
       delete candidate.detail;
       if (used.has(candidate.tableId) || warned.has(candidate.tableId)) {
@@ -762,7 +841,7 @@ function ownSourceVerdict(
 }
 
 /**
- * Whether the queried source's own verdict explains a skip: `CONTRACT` on any
+ * Whether the queried source's own verdict explains a skip: `ROW_LEVEL_GATE` on any
  * table (the gate that refused the source kept the query off it), and
  * `NOT_BUILT` only on the source's own table, which the refusal left unbuilt.
  * A skip the router reached by trying the table keeps its own reason.
@@ -771,7 +850,7 @@ function ownVerdictExplains(
    candidate: ApiCandidate,
    own: { ownTableId?: string },
 ): boolean {
-   if (candidate.reason === "CONTRACT") return true;
+   if (candidate.reason === "ROW_LEVEL_GATE") return true;
    return (
       candidate.reason === "NOT_BUILT" &&
       own.ownTableId !== undefined &&
@@ -798,6 +877,16 @@ function verdictWarningMessage(reason: string): string {
          return "Its storage table is bound to a different source of the same name, so its queries are answered live.";
       case "served_copy":
          return "Only the served copy reads this table, and it does not answer from it here, so its queries are answered live.";
+      case "materialization_off":
+         return "Only the served copy reads this table, and the served copy is off on this server, so its queries are answered live.";
+      case "stale":
+         return "This table is past its freshness window, so its queries are answered live until a build refreshes it.";
+      case "destination_missing":
+         return "This table's storage destination is not configured on this server, so its queries are answered live.";
+      case "connection_cannot_hold_table":
+         return "This table's connection cannot hold a table, so its queries are answered live.";
+      case "types_unrecorded":
+         return "This table's build recorded no column types, so a change since the build cannot be ruled out; its queries are answered live until it is rebuilt.";
       default:
          return "This table carries a publish warning and serves live; the package's warnings say why.";
    }
@@ -812,9 +901,9 @@ function skipReasonOf(decision: Pick<ConsideredVariant, "code">): SkipReason {
    return declineOfCode(decision.code)?.reason ?? "MISSING_FIELD";
 }
 
-/** Whether the run that answered read this colocated table from the manifest. */
+/** Whether the run that answered read this database table from the manifest. */
 function readByRun(input: QueryPathInput, t: TableState): boolean {
-   return !!t.tableId && !!input.colocatedRead?.has(t.tableId);
+   return !!t.tableId && !!input.databaseRead?.has(t.tableId);
 }
 
 /**
@@ -837,8 +926,8 @@ function tablesFor(
    };
    const planned = input.catalog?.planned;
    // A storage table, then (unless the storage tier answers for it) the
-   // source's own colocated table, which Malloy substitutes when the tier is
-   // not routed. An unbuilt colocated twin of a storage table is not reported:
+   // source's own database table, which Malloy substitutes when the tier is
+   // not routed. An unbuilt database twin of a storage table is not reported:
    // the source was never meant to build there.
    const addSource = (
       binding: StorageTable | undefined,
@@ -851,8 +940,24 @@ function tablesFor(
          ...(rollupName ? { rollupName } : {}),
          ...(variant ? { variant } : {}),
       };
-      // A `#(preaggregate)` table is the rollup leg's on either tier.
+      // A `#(rollup)` table is the rollup leg's on either tier.
       if (variant && binding) {
+         const database =
+            plan && input.storageWarned && !binding.database
+               ? { ...databaseState(plan, kind, input), ...named }
+               : undefined;
+         if (database && !database.unbuilt) {
+            // The storage mode reads no destination, so the leg reads the
+            // database table bound beside it: the storage one is the tier's,
+            // never the leg's, and is reported as not served.
+            add({
+               ...storageState(binding, plan, kind, fresh),
+               ...(rollupName ? { rollupName } : {}),
+               warned: true,
+            });
+            add(database);
+            return;
+         }
          add({ ...storageState(binding, plan, kind, fresh), ...named });
          return;
       }
@@ -861,9 +966,9 @@ function tablesFor(
             add({ ...storageState(binding, plan, kind, fresh), ...named });
             return;
          }
-         // A colocated `#(materialize)` table the served copy was not tried
-         // for: reported as its colocated twin below, never warned.
-         if (input.storageWarned && !binding.colocated) {
+         // A database `#(materialize)` table the served copy was not tried
+         // for: reported as its database twin below, never warned.
+         if (input.storageWarned && !binding.database) {
             add({
                ...storageState(binding, plan, kind, fresh),
                ...named,
@@ -872,19 +977,19 @@ function tablesFor(
          }
       }
       if (!plan) return;
-      const colocated = { ...colocatedState(plan, kind, input), ...named };
-      if (!binding || !colocated.unbuilt) add(colocated);
+      const database = { ...databaseState(plan, kind, input), ...named };
+      if (!binding || !database.unbuilt) add(database);
    };
 
    // Persist tables, in chain order.
    for (const sourceID of input.chain) {
       const plan = planned?.get(sourceID);
       const binding = input.storage.all.find(
-         (b) => b.origin !== "preaggregate" && b.sourceIDs?.includes(sourceID),
+         (b) => b.origin !== "rollup" && b.sourceIDs?.includes(sourceID),
       );
       addSource(
          binding,
-         plan?.origin === "persist" ? plan : undefined,
+         plan?.origin !== "rollup" ? plan : undefined,
          "materialized",
       );
    }
@@ -899,8 +1004,7 @@ function tablesFor(
       if (!baseOnChain) continue;
       const binding = input.storage.all.find(
          (b) =>
-            b.origin === "preaggregate" &&
-            b.sourceName === rollup.rollupSourceName,
+            b.origin === "rollup" && b.sourceName === rollup.rollupSourceName,
       );
       addSource(
          binding,
@@ -910,10 +1014,10 @@ function tablesFor(
          rollup.variant,
       );
    }
-   // Storage first, then colocated; chain order within each.
+   // Storage first, then database; chain order within each.
    return [
       ...out.filter((t) => t.tier === "storage"),
-      ...out.filter((t) => t.tier === "colocated"),
+      ...out.filter((t) => t.tier === "database"),
    ];
 }
 
@@ -932,7 +1036,7 @@ function planForRollup(
    rollupSourceName: string,
 ): PlannedTable | undefined {
    const named = [...(input.catalog?.planned.values() ?? [])].filter(
-      (p) => p.origin === "preaggregate" && p.name === rollupSourceName,
+      (p) => p.origin === "rollup" && p.name === rollupSourceName,
    );
    if (named.length <= 1) return named[0];
    const own = named.filter((p) => p.modelPath === input.modelPath);
@@ -947,7 +1051,7 @@ function stateOfBinding(
    binding: StorageTable,
    fresh: ReadonlySet<string>,
 ): TableState {
-   const rollup = binding.origin === "preaggregate";
+   const rollup = binding.origin === "rollup";
    const plan = rollup
       ? planForRollup(input, binding.sourceName)
       : binding.sourceIDs
@@ -968,10 +1072,11 @@ function storageState(
    fresh: ReadonlySet<string>,
 ): TableState {
    return {
-      key: `${binding.colocated ? "colocated" : "storage"}:${binding.tablePath}`,
+      key: `${binding.database ? "database" : "storage"}:${binding.tablePath}`,
       ...(plan ? { tableId: plan.sourceEntityId } : {}),
       kind,
-      tier: binding.colocated ? "colocated" : "storage",
+      ...originField({ origin: plan?.origin ?? binding.origin }),
+      tier: binding.database ? "database" : "storage",
       stale: !fresh.has(binding.tablePath),
       unbuilt: false,
       ...(binding.freshAsOf ? { dataAsOf: binding.freshAsOf } : {}),
@@ -979,22 +1084,23 @@ function storageState(
    };
 }
 
-function colocatedState(
+function databaseState(
    plan: PlannedTable,
    kind: TableState["kind"],
-   input: Pick<QueryPathInput, "catalog" | "freshColocated">,
+   input: Pick<QueryPathInput, "catalog" | "freshDatabase">,
 ): TableState {
    const bound = input.catalog?.bound[plan.sourceEntityId];
    return {
-      key: `colocated:${plan.sourceEntityId}`,
+      key: `database:${plan.sourceEntityId}`,
       tableId: plan.sourceEntityId,
       kind,
-      tier: "colocated",
+      origin: plan.origin,
+      tier: "database",
       // Bound, but left out of this query's build manifest by its window.
       stale:
          !!bound &&
-         !!input.freshColocated &&
-         !input.freshColocated.has(plan.sourceEntityId),
+         !!input.freshDatabase &&
+         !input.freshDatabase.has(plan.sourceEntityId),
       unbuilt: !bound,
       ...(bound?.dataAsOf ? { dataAsOf: bound.dataAsOf } : {}),
       ...(bound ? { tableName: bound.tableName } : {}),
@@ -1017,9 +1123,7 @@ function nearbyTables(
    if (!queried || !input.catalog) return [];
    const builtStorage = new Set(
       input.storage.all.flatMap((b) =>
-         b.origin === "preaggregate"
-            ? [b.sourceName]
-            : [...(b.sourceIDs ?? [])],
+         b.origin === "rollup" ? [b.sourceName] : [...(b.sourceIDs ?? [])],
       ),
    );
    const found: (ApiNearby & { distance: number })[] = [];
@@ -1055,18 +1159,19 @@ function nearbyTables(
       found.push({
          tableId: table.sourceEntityId,
          kind,
+         origin: table.origin,
          sourceName,
          relationship,
          built:
             !!input.catalog?.bound[table.sourceEntityId] ||
             builtStorage.has(
-               table.origin === "preaggregate" ? table.name : table.sourceID,
+               table.origin === "rollup" ? table.name : table.sourceID,
             ),
          distance,
       });
    };
    for (const p of input.catalog.planned.values()) {
-      if (p.origin === "persist") {
+      if (p.origin !== "rollup") {
          consider(p.sourceID, p, "materialized", p.name);
       }
    }

@@ -22,6 +22,7 @@ import {
    isCastConversionError,
    keepsWarehouseType,
    rebuildWouldRecast,
+   sameStoredTypeClass,
    serveTypePlan,
    storedColumnsOfOutput,
    storedColumnTypeMismatches,
@@ -35,6 +36,37 @@ import {
 } from "@malloydata/malloy";
 import { plannedSources } from "./plan/build_plan";
 import { openTempDuckDB } from "../../test_helpers/temp_storage";
+
+describe("sameStoredTypeClass", () => {
+   it("matches a number stood in as BIGINT or DOUBLE to any stored numeric type", () => {
+      for (const standIn of ["BIGINT", "DOUBLE"]) {
+         for (const stored of [
+            "BIGINT",
+            "HUGEINT",
+            "INTEGER",
+            "UBIGINT",
+            "DOUBLE",
+            "FLOAT",
+            "REAL",
+            "DECIMAL(38,0)",
+            "numeric(10, 2)",
+         ]) {
+            expect(sameStoredTypeClass(stored, standIn)).toBe(true);
+         }
+      }
+   });
+
+   it("never matches a number to another class, nor two other classes", () => {
+      expect(sameStoredTypeClass("VARCHAR", "DOUBLE")).toBe(false);
+      expect(sameStoredTypeClass("BIGINT", "VARCHAR")).toBe(false);
+      expect(sameStoredTypeClass("BOOLEAN", "BIGINT")).toBe(false);
+      expect(sameStoredTypeClass("DATE", "TIMESTAMP")).toBe(false);
+      expect(sameStoredTypeClass("TIMESTAMP", "TIMESTAMP WITH TIME ZONE")).toBe(
+         false,
+      );
+      expect(sameStoredTypeClass("varchar(20)", "VARCHAR")).toBe(true);
+   });
+});
 
 describe("storedTypeServesAs", () => {
    const cases: [string, string, boolean | undefined][] = [
@@ -605,9 +637,7 @@ describe("bigIntegerReads (known limitation 12)", () => {
          );
          expect(plan.leftOut.map((m) => m.column)).toEqual(["h", "i"]);
          expect(plan.refusals).toEqual([]);
-         expect(plan.casts.map((c) => c.column)).toEqual(
-            dialect === "duckdb" ? ["b"] : [],
-         );
+         expect(plan.casts.map((c) => c.column)).toEqual(["b"]);
       }
    });
 
@@ -659,23 +689,40 @@ describe("bigIntegerReads (known limitation 12)", () => {
       ).toEqual([{ column: "ID", castTo: "HUGEINT" }]);
    });
 
-   it("keeps a storage= table of a source whose live answer rounds as it is: served equals live", () => {
+   it("reads a storage= table of a source whose live answer rounds as HUGEINT too, for live's bigint subtype (the answer is rounded after it runs)", () => {
       expect(liveKeepsBigIntegers("postgres")).toBe(false);
       expect(
          bigIntegerReads(schema("BIGINT"), fields, { dialect: "postgres" }),
-      ).toEqual([]);
+      ).toEqual([{ column: "id", castTo: "HUGEINT" }]);
    });
 
-   const colocated = (dialect: string, nativeType: string | undefined) =>
+   it("leaves a float-stored big integer out wherever it is: its digits are lost", () => {
+      for (const dialect of ["postgres", "duckdb"]) {
+         expect(bigIntegerReads(schema("DOUBLE"), fields, { dialect })).toEqual(
+            [{ column: "id" }],
+         );
+      }
+   });
+
+   it("keeps a storage= table of a source whose rounding is unmeasured as it is", () => {
+      for (const dialect of ["trino", "presto", "databricks", "sqlserver"]) {
+         expect(liveKeepsBigIntegers(dialect)).toBe(false);
+         expect(bigIntegerReads(schema("BIGINT"), fields, { dialect })).toEqual(
+            [],
+         );
+      }
+   });
+
+   const database = (dialect: string, nativeType: string | undefined) =>
       bigIntegerReads(schema("DOUBLE"), fields, {
          dialect,
-         colocated: true,
+         database: true,
          nativeTypeOf: nativeTypeLookup(
             nativeType === undefined ? [] : [{ name: "id", type: nativeType }],
          ),
       });
 
-   it("reads a colocated column through a cast to exactly the warehouse type its build captured", () => {
+   it("reads a database column through a cast to exactly the warehouse type its build captured", () => {
       for (const [dialect, nativeType] of [
          ["postgres", "bigint"],
          ["duckdb", "BIGINT"],
@@ -688,42 +735,38 @@ describe("bigIntegerReads (known limitation 12)", () => {
          ["sqlserver", "decimal(38,0)"],
          ["mysql", "decimal(38,0)"],
       ] as const) {
-         expect(colocated(dialect, nativeType)).toEqual([
+         expect(database(dialect, nativeType)).toEqual([
             { column: "id", castTo: nativeType },
          ]);
       }
    });
 
-   it("leaves a colocated column out when no cast is exact in live's representation", () => {
+   it("leaves a database column out when no cast is exact in live's representation", () => {
       // Postgres stores a sum of BIGINTs as `numeric`, which can hold values
       // past 2^63 (a cast back to BIGINT failed) and which Malloy reads as a
       // float (a cast to it changes the representation): answered live.
-      expect(colocated("postgres", "numeric")).toEqual([{ column: "id" }]);
-      expect(colocated("duckdb", "DECIMAL(38,0)")).toEqual([{ column: "id" }]);
-      expect(colocated("standardsql", "BIGNUMERIC")).toEqual([
-         { column: "id" },
-      ]);
+      expect(database("postgres", "numeric")).toEqual([{ column: "id" }]);
+      expect(database("duckdb", "DECIMAL(38,0)")).toEqual([{ column: "id" }]);
+      expect(database("standardsql", "BIGNUMERIC")).toEqual([{ column: "id" }]);
       // MySQL's CAST takes no integer type by name (only SIGNED or
       // UNSIGNED, which Malloy does not read as a number): a cast to the
       // captured `bigint` is a syntax error, so the column answers live.
-      expect(colocated("mysql", "bigint")).toEqual([{ column: "id" }]);
-      expect(colocated("mysql", "bigint unsigned")).toEqual([{ column: "id" }]);
+      expect(database("mysql", "bigint")).toEqual([{ column: "id" }]);
+      expect(database("mysql", "bigint unsigned")).toEqual([{ column: "id" }]);
       // No type captured (a table built before the capture, a host manifest
       // without it): nothing is known to be exact.
-      expect(colocated("postgres", undefined)).toEqual([{ column: "id" }]);
-      expect(colocated("duckdb", undefined)).toEqual([{ column: "id" }]);
-      expect(colocated("snowflake", undefined)).toEqual([{ column: "id" }]);
-      expect(colocated("sqlserver", undefined)).toEqual([{ column: "id" }]);
+      expect(database("postgres", undefined)).toEqual([{ column: "id" }]);
+      expect(database("duckdb", undefined)).toEqual([{ column: "id" }]);
+      expect(database("snowflake", undefined)).toEqual([{ column: "id" }]);
+      expect(database("sqlserver", undefined)).toEqual([{ column: "id" }]);
    });
 
-   it("reads an uncaptured colocated BigQuery column through INT64, its only integer type", () => {
-      expect(colocated("standardsql", undefined)).toEqual([
+   it("reads an uncaptured database BigQuery column through INT64, its only integer type", () => {
+      expect(database("standardsql", undefined)).toEqual([
          { column: "id", castTo: "INT64" },
       ]);
       // A captured type still decides, even on BigQuery.
-      expect(colocated("standardsql", "BIGNUMERIC")).toEqual([
-         { column: "id" },
-      ]);
+      expect(database("standardsql", "BIGNUMERIC")).toEqual([{ column: "id" }]);
    });
 
    it("matches a captured type to its column by a unique case fold", () => {
@@ -747,7 +790,7 @@ describe("bigIntegerReads (known limitation 12)", () => {
 describe("storedColumnsOfOutput: a bigint read back from a table", () => {
    it("is a BIGINT when asked (a schema read off a table), and a DOUBLE as before otherwise", () => {
       // Malloy reads a 64-bit integer column back as numberType `bigint`
-      // (a captured colocated schema, the v1 cutover); a compiled output's
+      // (a captured database schema, the v1 cutover); a compiled output's
       // integer says `integer`. A #(materialize) plan's compiled output keeps
       // its mapping (`bigint` as DOUBLE).
       const fields = [

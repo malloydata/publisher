@@ -35,7 +35,7 @@ describe("runQueryOptions", () => {
       const { options, executeQueryModel } = call(true);
       await options.queryFn({});
       expect(executeQueryModel.mock.calls[0][4]).toBe(true);
-      expect(executeQueryModel.mock.calls[0][5]).toEqual({ signal: undefined });
+      expect(executeQueryModel.mock.calls[0][6]).toEqual({ signal: undefined });
       expect(options.queryKey.at(-1)).toBe("off-surface");
    });
 
@@ -43,7 +43,7 @@ describe("runQueryOptions", () => {
       const { options, executeQueryModel } = call(undefined);
       await options.queryFn({});
       expect(executeQueryModel.mock.calls[0][4]).toBeUndefined();
-      expect(executeQueryModel.mock.calls[0][5]).toEqual({ signal: undefined });
+      expect(executeQueryModel.mock.calls[0][6]).toEqual({ signal: undefined });
       expect(options.queryKey).not.toContain("off-surface");
       expect(options.queryKey).toEqual(call(false).options.queryKey);
    });

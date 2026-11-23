@@ -337,6 +337,10 @@ export async function buildApp(settings: AppSettings): Promise<BuiltApp> {
          );
       },
    );
+   // Deleting or unloading a package aborts its running builds first.
+   environmentStore.setPackageRetiringHook((environmentName, packageName) =>
+      materializationService.abortPackageRuns(environmentName, packageName),
+   );
    // Deleting a version stops its builds and reclaims those tables, in the
    // background, once its row is gone.
    environmentStore.setVersionDeletedHook(
@@ -568,7 +572,7 @@ export async function buildApp(settings: AppSettings): Promise<BuiltApp> {
             "error",
             fatalListenError("Admin", ADMIN_PORT!, "--admin_port", mainServer),
          );
-         longTimeouts(adminServer);
+         longTimeouts(adminServer, settings.get("admin.requestTimeoutMs"));
       }
 
       const otherServers = adminServer ? [adminServer] : [];
