@@ -111,7 +111,9 @@ describe("coordinateWithParent", () => {
          },
       });
       expect(bounds?.reseed?.reasonCode).toBe("upstream_generation_skipped");
-      expect(bounds?.reseed?.reason).toContain("is not the one");
+      expect(bounds?.reseed?.reason).toContain(
+         "is not one the parent's table was reached from",
+      );
    });
 
    it("reseeds, saying so, when no record names the build it last read", () => {
@@ -208,6 +210,159 @@ describe("coordinateWithParent", () => {
             step: { mode: "delta" },
          }),
       ).toEqual({});
+   });
+});
+
+describe("an extension refreshed after its parent's own calls", () => {
+   const ts = (value: string) => ({ malloyType: "timestamp", value });
+   const adv = (from: string, advancedBy: string, start: string) => ({
+      from,
+      advancedBy,
+      start,
+      startType: "timestamp",
+   });
+   /** The parent as carried after deltas r2 and r3 since its seed r1. */
+   const carried = (ledger: Record<string, unknown>): ExtensionParent =>
+      parentOf({
+         entry: {
+            ...PARENT_ENTRY,
+            builtAt: "2024-06-03T00:00:10.000Z",
+            ledger: {
+               ...PARENT_ENTRY.ledger!,
+               coveredThrough: "2024-06-03 00:00:00",
+               ...ledger,
+            },
+         } as ManifestEntry,
+      });
+   const CHAIN = {
+      advancedBy: "r3",
+      seededBy: "r1",
+      advances: [
+         adv("r1", "r2", "2024-05-25 00:00:00"),
+         adv("r2", "r3", "2024-05-20 00:00:00"),
+      ],
+   };
+   /** The extension read the parent's r1 build. */
+   const READ_R1 = {
+      sourceEntityId: "parent-addr",
+      advancedBy: "r1",
+      seededBy: "r1",
+      builtAt: PARENT_ENTRY.builtAt,
+      coveredThrough: "2024-06-01 00:00:00",
+      coveredThroughType: "timestamp",
+   };
+   const coordinate = (
+      parent: ExtensionParent,
+      read: typeof READ_R1 | undefined,
+      step?: Parameters<typeof coordinateWithParent>[0]["step"],
+   ) =>
+      coordinateWithParent({
+         lineage: lineageOf(parent),
+         recorded: RECORDED,
+         read,
+         step,
+      });
+
+   it("deltas from the lowest start of the parent's deltas since the build it read", () => {
+      expect(coordinate(carried(CHAIN), READ_R1)).toEqual({
+         endAtMost: ts("2024-06-03 00:00:00"),
+         startAtMost: ts("2024-05-20 00:00:00"),
+      });
+      // Read r2: only r3's delta is after it.
+      expect(
+         coordinate(carried(CHAIN), { ...READ_R1, advancedBy: "r2" })
+            ?.startAtMost,
+      ).toEqual(ts("2024-05-20 00:00:00"));
+   });
+
+   it("in a run that refreshes the parent again, adds that delta's start", () => {
+      const parent = parentOf({ builtThisRun: true });
+      const bounds = coordinate(parent, READ_R1, {
+         mode: "delta",
+         priorAdvancedBy: "r3",
+         prior: ts("2024-06-03 00:00:00"),
+         start: ts("2024-05-27 00:00:00"),
+         priorChain: { seededBy: "r1", advances: CHAIN.advances },
+      });
+      expect(bounds).toEqual({ startAtMost: ts("2024-05-20 00:00:00") });
+   });
+
+   it("accepts the build it read by builtAt on the step path", () => {
+      const parent = parentOf({ builtThisRun: true });
+      const read = {
+         sourceEntityId: "parent-addr",
+         builtAt: "2024-06-01T00:00:10.000Z",
+      } as typeof READ_R1;
+      expect(
+         coordinate(parent, read, {
+            mode: "delta",
+            priorAdvancedBy: "r1",
+            prior: ts("2024-06-01 00:00:00"),
+            start: ts("2024-05-30 00:00:00"),
+            priorBuiltAt: "2024-06-01T00:00:10.000Z",
+         }),
+      ).toEqual({ startAtMost: ts("2024-05-30 00:00:00") });
+   });
+
+   it("reseeds when the parent was rebuilt in full since", () => {
+      const reseeded = carried({
+         advancedBy: "r4",
+         seededBy: "r4",
+         advances: [],
+      });
+      expect(coordinate(reseeded, READ_R1)?.reseed?.reasonCode).toBe(
+         "upstream_generation_skipped",
+      );
+   });
+
+   it("reseeds, naming the cap, when more deltas followed than the ledger lists", () => {
+      const advances = Array.from({ length: 8 }, (_, i) =>
+         adv(`r${i + 2}`, `r${i + 3}`, "2024-05-20 00:00:00"),
+      );
+      const bounds = coordinate(
+         carried({ advancedBy: "r10", seededBy: "r1", advances }),
+         READ_R1,
+      );
+      expect(bounds?.reseed?.reasonCode).toBe("upstream_generation_skipped");
+      expect(bounds?.reseed?.reason).toContain("more than 8 times");
+   });
+
+   it("reseeds when any record is missing, broken or of another type", () => {
+      const cases: [Record<string, unknown>, typeof READ_R1][] = [
+         // An entry from before these keys.
+         [{ advancedBy: "r3" }, READ_R1],
+         // A read from before them.
+         [CHAIN, { ...READ_R1, seededBy: undefined } as never],
+         // A gap in the list.
+         [
+            {
+               ...CHAIN,
+               advances: [CHAIN.advances[0], adv("rX", "r3", "2024-05-20")],
+            },
+            READ_R1,
+         ],
+         // The list does not end at the build the parent holds.
+         [{ ...CHAIN, advancedBy: "r9" }, READ_R1],
+         // A start in another watermark type.
+         [
+            {
+               ...CHAIN,
+               advances: [
+                  CHAIN.advances[0],
+                  { ...CHAIN.advances[1], startType: "date" },
+               ],
+            },
+            READ_R1,
+         ],
+         // A malformed list.
+         [{ ...CHAIN, advances: [{ from: "r1" }] }, READ_R1],
+      ];
+      for (const [ledger, read] of cases) {
+         expect([
+            ledger,
+            coordinate(carried(ledger), read)?.reseed?.reasonCode,
+         ]).toEqual([ledger, "upstream_generation_skipped"]);
+      }
    });
 });
 

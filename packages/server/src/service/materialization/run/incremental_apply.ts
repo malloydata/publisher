@@ -1264,7 +1264,16 @@ async function ownDeltaStart(
 export interface UpstreamBounds {
    startAtMost?: WatermarkBound;
    endAtMost?: WatermarkBound;
-   reseed?: { reasonCode: IncrementalStepReasonCode; reason: string };
+   reseed?: {
+      reasonCode: IncrementalStepReasonCode;
+      reason: string;
+      /**
+       * Unproven only because the parent was refreshed more often than its
+       * ledger lists (`advances`), so an extension refreshed far less often
+       * than its parent is told apart.
+       */
+      overflow?: true;
+   };
 }
 
 /** A time watermark's range end, capped at `atMost` when it is earlier. */
@@ -1427,7 +1436,8 @@ function seedBeforeAnyProbe(
    // An extension that cannot build on the parent's table it last read
    // (extension chains): decided by the run, before any probe.
    if (inputs.upstream?.reseed) {
-      return { mode: "seed", ...inputs.upstream.reseed };
+      const { reasonCode, reason } = inputs.upstream.reseed;
+      return { mode: "seed", reasonCode, reason };
    }
 
    return undefined;

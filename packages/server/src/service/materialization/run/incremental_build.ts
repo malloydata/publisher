@@ -90,8 +90,11 @@ import {
 } from "./incremental_upstream";
 import {
    INCREMENTAL_LATE_ROWS_CODE,
+   LEDGER_ADVANCES_CAP,
+   type LedgerAdvanceChain,
    MATERIALIZE_EXTENSION_GENERATION_UNPROVEN_CODE,
    type IncrementalDeclaration,
+   readAdvanceChain,
 } from "../domain/incremental";
 
 /**
@@ -179,6 +182,19 @@ export interface IncrementalRunContext {
     * changed its table, from its recorded boundary, by content address.
     */
    skippedAdvancedBy?: Map<string, string>;
+   /**
+    * The package's bound manifest entries' `builtAt` and `ledger`, by content
+    * address, as bound when the run started: the build an incremental
+    * source's step starts from, as its entry names it, and (standalone, where
+    * the local ledger store keeps no extension keys) its recorded history
+    * (`seededBy`, `advances`). Each is read only while the entry's
+    * `ledger.advancedBy` is the recorded boundary's, so a bound manifest
+    * that lags the ledger proves nothing.
+    */
+   boundEntries?: ReadonlyMap<
+      string,
+      Pick<ManifestEntry, "builtAt" | "ledger">
+   >;
 }
 
 /** The `LedgerEntry` keys this release reads; any other key is an extension. */
@@ -455,6 +471,20 @@ export async function planSourceRefresh(params: {
          ? context.parentSteps?.get(lineage.parent.address)
          : undefined,
    });
+   if (upstream?.reseed?.overflow && lineage.parent) {
+      logger.warn(
+         "Rebuilding an incremental extension in full: its parent was " +
+            "refreshed more often since it last read the parent's table " +
+            "than the parent's ledger lists",
+         {
+            packageName: context.packageName,
+            physicalTableName: lineage.physicalTableName,
+            parentName: lineage.parent.name,
+            listed: LEDGER_ADVANCES_CAP,
+            code: MATERIALIZE_EXTENSION_GENERATION_UNPROVEN_CODE,
+         },
+      );
+   }
    let step: IncrementalStep;
    try {
       step = await planIncrementalStep({
@@ -541,6 +571,7 @@ function recordedParent(
    return {
       sourceEntityId: p.sourceEntityId,
       ...text("advancedBy"),
+      ...text("seededBy"),
       ...text("builtAt"),
       ...text("coveredThrough"),
       ...text("coveredThroughType"),
@@ -586,6 +617,19 @@ function noteStep(
    sourceName: string | undefined,
 ): void {
    const priorAdvancedBy = recordedAdvancedBy(recorded);
+   const bound = context.boundEntries?.get(lineage.sourceEntityId);
+   const boundIsPrior =
+      priorAdvancedBy !== undefined &&
+      bound?.ledger?.advancedBy === priorAdvancedBy;
+   // The caller's echoed entry carries its history; the local store keeps
+   // none, so a standalone run reads it off the bound entry.
+   const priorChain = recorded
+      ? context.callerLedger
+         ? readAdvanceChain(recorded.extensions)
+         : boundIsPrior
+           ? readAdvanceChain(bound?.ledger as Record<string, unknown>)
+           : undefined
+      : undefined;
    context.parentSteps?.set(lineage.sourceEntityId, {
       mode: step.mode,
       ...(recorded
@@ -598,6 +642,10 @@ function noteStep(
          : {}),
       ...(priorAdvancedBy ? { priorAdvancedBy } : {}),
       ...(step.mode === "delta" ? { start: step.start } : {}),
+      ...(priorChain ? { priorChain } : {}),
+      ...(boundIsPrior && bound?.builtAt
+         ? { priorBuiltAt: bound.builtAt }
+         : {}),
    });
    if (step.mode === "skip" && priorAdvancedBy) {
       (context.skippedAdvancedBy ??= new Map()).set(
@@ -1071,19 +1119,67 @@ export function ledgerExtensionKeys(
       | undefined,
    reseed: boolean | undefined,
    advancedBy: string | undefined,
+   did: "delta" | "full" | "none" | undefined,
 ): Record<string, unknown> | undefined {
    const {
       advancedBy: _carriedAdvancedBy,
       parent: _carriedParent,
+      seededBy: _carriedSeededBy,
+      advances: _carriedAdvances,
       ...carried
    } = carriedLedgerExtensions(refresh, reseed) ?? {};
    const parent = ledgerParentOf(refresh?.lineage);
+   const chain = refresh ? nextAdvanceChain(refresh, did) : undefined;
    const keys: Record<string, unknown> = {
       ...carried,
       ...(advancedBy ? { advancedBy } : {}),
       ...(parent ? { parent } : {}),
+      ...(chain ? { seededBy: chain.seededBy, advances: chain.advances } : {}),
    };
    return Object.keys(keys).length > 0 ? keys : undefined;
+}
+
+/**
+ * A table's history since its last full rebuild after this run's refresh
+ * (the ledger's `seededBy` and `advances`, domain/incremental.ts): a full
+ * rebuild starts it over; a refresh that applied nothing keeps it; a delta
+ * appends itself, keeping the newest {@link LEDGER_ADVANCES_CAP}. A delta
+ * over a recorded history that does not end at the build it started from
+ * (or none, an entry from before these keys) starts one anchored at that
+ * build, so an extension that read earlier rebuilds rather than trusting it.
+ * Undefined when nothing proves it.
+ */
+function nextAdvanceChain(
+   refresh: { context: IncrementalRunContext; lineage: IncrementalLineage },
+   did: "delta" | "full" | "none" | undefined,
+): LedgerAdvanceChain | undefined {
+   const { context, lineage } = refresh;
+   if (did === "full") {
+      return { seededBy: context.materializationId, advances: [] };
+   }
+   const step = context.parentSteps?.get(lineage.sourceEntityId);
+   if (did === "none") return step?.priorChain;
+   if (did !== "delta" || !step?.priorAdvancedBy || !step.start) {
+      return undefined;
+   }
+   const prior = step.priorChain;
+   const last = prior?.advances.at(-1)?.advancedBy ?? prior?.seededBy;
+   const base: LedgerAdvanceChain =
+      prior && last === step.priorAdvancedBy
+         ? prior
+         : { seededBy: step.priorAdvancedBy, advances: [] };
+   return {
+      seededBy: base.seededBy,
+      advances: [
+         ...base.advances,
+         {
+            from: step.priorAdvancedBy,
+            advancedBy: context.materializationId,
+            start: step.start.value,
+            startType: step.start.malloyType,
+         },
+      ].slice(-LEDGER_ADVANCES_CAP),
+   };
 }
 
 /**
@@ -1268,6 +1364,7 @@ export async function refreshOneSourceIncrementally(params: {
             { context, lineage },
             instruction.reseed,
             advancedByOf(context, lineage, outcome.refresh),
+            outcome.refresh,
          ),
       ),
       ...refreshFields(outcome.refresh),

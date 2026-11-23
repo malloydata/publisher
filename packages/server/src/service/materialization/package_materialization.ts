@@ -115,6 +115,7 @@ import type { LateRows } from "./domain/types";
 import type { LedgerParent } from "./run/incremental_apply";
 import {
    boundParentReads,
+   incrementalEntriesOf,
    type UnprovenGeneration,
 } from "./run/incremental_upstream";
 import { isRollupOrigin, originOfTable } from "./domain/table_plans";
@@ -1887,6 +1888,17 @@ export class PackageMaterialization {
    /** See incremental_upstream.ts, `boundParentReads`. */
    boundParentReads(): ReadonlyMap<string, readonly LedgerParent[]> {
       return boundParentReads([
+         ...Object.entries(this.storageEntries),
+         ...Object.entries(this.databaseEntries ?? {}),
+      ]);
+   }
+
+   /** See host.ts, `boundIncrementalEntries`. */
+   boundIncrementalEntries(): ReadonlyMap<
+      string,
+      Pick<ManifestEntry, "builtAt" | "ledger">
+   > {
+      return incrementalEntriesOf([
          ...Object.entries(this.storageEntries),
          ...Object.entries(this.databaseEntries ?? {}),
       ]);

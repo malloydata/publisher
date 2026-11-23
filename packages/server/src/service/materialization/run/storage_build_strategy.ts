@@ -894,6 +894,9 @@ export class StorageBuildStrategy
                      incrementalRefresh.lineage,
                      result.refresh?.refresh ?? "full",
                   ),
+               incrementalRefresh
+                  ? (result.refresh?.refresh ?? "full")
+                  : undefined,
             ),
          ),
          ...refreshFields(

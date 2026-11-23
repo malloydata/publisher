@@ -192,6 +192,40 @@ export function newestServingEntries(
 }
 
 /**
+ * Each incremental source's newest entry among the committed runs `reader`
+ * reads, by content address, whichever run wrote it: a run of some sources
+ * commits a manifest naming only those, so an extension it did not build
+ * last recorded its boundary, and which build of its parent's table that
+ * boundary was reached over, in an older run (incremental_upstream.ts).
+ * `excludeId` skips one run, the one asking.
+ */
+export function newestIncrementalEntries(
+   runs: Materialization[],
+   reader: ServingReader,
+   excludeId?: string,
+): Record<string, ManifestEntry> {
+   const committed = runs
+      .filter(
+         (m) =>
+            m.id !== excludeId &&
+            readsRun(m, reader) &&
+            m.status === "MANIFEST_FILE_READY" &&
+            m.manifest?.entries,
+      )
+      .sort((a, b) => committedAt(b) - committedAt(a));
+   const out: Record<string, ManifestEntry> = {};
+   for (const m of committed) {
+      for (const [address, entry] of Object.entries(m.manifest!.entries!)) {
+         if (out[address] || !entry.ledger || isLegacyFailedEntry(entry)) {
+            continue;
+         }
+         out[address] = entry;
+      }
+   }
+   return out;
+}
+
+/**
  * What a physical table name names, for telling whether two runs write the
  * same table: its last segment, unquoted, without letter case. Two names a
  * warehouse may read as one table (`summary` and `SUMMARY` in DuckDB, or

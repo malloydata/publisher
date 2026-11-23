@@ -147,8 +147,88 @@ export const INCREMENTAL_LATE_ROWS_CODE = "persist-incremental-late-rows";
 export const MATERIALIZE_EXTENSION_GENERATION_UNPROVEN_CODE =
    "materialize-extension-generation-unproven";
 
-/** Which build of its parent's table an extension's boundary was reached over. */
-export type LedgerParent = NonNullable<LedgerEntry["parent"]>;
+/**
+ * Which build of its parent's table an extension's boundary was reached over.
+ * `seededBy` is the parent's own ledger `seededBy` when it was read: an
+ * opaque key the publisher writes and a host echoes, not in the wire schema.
+ */
+export type LedgerParent = NonNullable<LedgerEntry["parent"]> & {
+   seededBy?: string;
+};
+
+/**
+ * One delta of an incremental table since its last full rebuild, as its
+ * ledger's opaque `advances` key lists it: the run whose build it started
+ * from (`from`), the run that applied it (`advancedBy`), and the lowest
+ * watermark it restated (`start`, of type `startType`). An extension that
+ * last read build `from` re-reads the parent from no later than the lowest
+ * `start` of the deltas after it ({@link LedgerAdvanceChain}).
+ */
+interface LedgerAdvance {
+   from: string;
+   advancedBy: string;
+   start: string;
+   startType: string;
+}
+
+/**
+ * An incremental table's history since its last full rebuild, as its
+ * ledger's opaque `seededBy` and `advances` keys hold it: the run whose build
+ * every listed delta follows (the last full rebuild, or the first build the
+ * list was recorded over on a table rebuilt before these keys existed), and
+ * the deltas since, oldest first, at most {@link LEDGER_ADVANCES_CAP}.
+ *
+ * Publisher-owned: written by a run, echoed verbatim by a host. A host is not
+ * trusted, and a forged list can make an extension skip a reseed it needs,
+ * as a forged `coveredThrough` already can; nothing defends against it
+ * beyond that trust model.
+ */
+export interface LedgerAdvanceChain {
+   seededBy: string;
+   advances: LedgerAdvance[];
+}
+
+/**
+ * The most deltas a ledger lists since its last full rebuild. An extension
+ * that last read its parent before the oldest one listed rebuilds in full.
+ */
+export const LEDGER_ADVANCES_CAP = 8;
+
+/**
+ * The `seededBy` and `advances` keys of a ledger entry (or its extension
+ * keys), when both are present and well formed; anything else reads as
+ * absent, which proves nothing.
+ */
+export function readAdvanceChain(
+   raw: Readonly<Record<string, unknown>> | undefined,
+): LedgerAdvanceChain | undefined {
+   const seededBy = raw?.seededBy;
+   const advances = raw?.advances;
+   if (typeof seededBy !== "string" || seededBy === "") return undefined;
+   if (!Array.isArray(advances) || advances.length > LEDGER_ADVANCES_CAP) {
+      return undefined;
+   }
+   const out: LedgerAdvance[] = [];
+   for (const a of advances) {
+      if (typeof a !== "object" || a === null) return undefined;
+      const { from, advancedBy, start, startType } = a as Record<
+         string,
+         unknown
+      >;
+      if (
+         typeof from !== "string" ||
+         typeof advancedBy !== "string" ||
+         typeof start !== "string" ||
+         typeof startType !== "string" ||
+         from === "" ||
+         advancedBy === ""
+      ) {
+         return undefined;
+      }
+      out.push({ from, advancedBy, start, startType });
+   }
+   return { seededBy, advances: out };
+}
 
 /** One extension whose last-read parent build no record names. */
 export interface UnprovenGeneration {

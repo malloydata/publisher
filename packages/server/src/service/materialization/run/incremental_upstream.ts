@@ -14,12 +14,19 @@
  *  - its delta starts no later than the parent's own delta in the run, and a
  *    time watermark's range ends no later than the parent's coverage;
  *  - it deltas only over the build of the parent's table it last read, or
- *    one refreshed in this run from exactly that build; otherwise it
- *    rebuilds in full over the parent's table (`upstream_generation_skipped`).
+ *    one reached from exactly that build by deltas alone, in this run or in
+ *    earlier ones the parent's ledger lists (`advances`), starting no later
+ *    than the lowest of their starts; otherwise it rebuilds in full over the
+ *    parent's table (`upstream_generation_skipped`).
  *
  * Pure.
  */
 
+import {
+   LEDGER_ADVANCES_CAP,
+   type LedgerAdvanceChain,
+   readAdvanceChain,
+} from "../domain/incremental";
 import type { ManifestEntry } from "../domain/types";
 import {
    canonicalBoundValue,
@@ -45,6 +52,17 @@ export interface ParentStep {
    priorAdvancedBy?: string;
    /** A delta's range start. */
    start?: WatermarkBound;
+   /**
+    * The table's history since its last full rebuild as recorded before this
+    * run's step (the ledger's `seededBy` and `advances`), when it was.
+    */
+   priorChain?: LedgerAdvanceChain;
+   /**
+    * The `builtAt` of the table's entry in the bound manifest, when that
+    * entry describes the build this step started from (its ledger's
+    * `advancedBy` is `priorAdvancedBy`).
+    */
+   priorBuiltAt?: string;
 }
 
 export type { UnprovenGeneration } from "../domain/incremental";
@@ -75,7 +93,7 @@ export function coordinateWithParent(args: {
    if (!parent.parentIncremental) return bounds;
    // No boundary: the extension seeds anyway, with its own reason.
    if (!recorded) return bounds;
-   const judged = judgeGeneration(parent, read, step);
+   const judged = judgeGeneration(parent, read, step, lineage.watermarkType);
    if (parent.coordinate === "reseed_on_parent_change") {
       if (!judged.proven || judged.changed) {
          return {
@@ -95,53 +113,146 @@ export function coordinateWithParent(args: {
       return {
          reseed: {
             reasonCode: "upstream_generation_skipped",
-            reason: read
-               ? `the build of its parent '${parent.name}''s table it last ` +
-                 `read is not the one the parent was refreshed from in this ` +
-                 `run (or holds now), so a delta could miss rows a refresh ` +
-                 `it never read restated`
-               : `no record says which build of its parent '${parent.name}''s ` +
+            reason: !read
+               ? `no record says which build of its parent '${parent.name}''s ` +
                  `table it last read (neither the run's ledger entry nor the ` +
-                 `bound manifest), so a delta is not proven`,
+                 `bound manifest), so a delta is not proven`
+               : judged.overflow
+                 ? `its parent '${parent.name}' was refreshed more than ` +
+                   `${LEDGER_ADVANCES_CAP} times since it last read the ` +
+                   `parent's table, more than the parent's ledger lists, so ` +
+                   `a delta is not proven`
+                 : `the build of its parent '${parent.name}''s table it last ` +
+                   `read is not one the parent's table was reached from by ` +
+                   `deltas alone (the parent was rebuilt in full since, or ` +
+                   `no record lists its refreshes), so a delta could miss ` +
+                   `rows a refresh it never read restated`,
+            ...(read && judged.overflow ? { overflow: true as const } : {}),
          },
       };
    }
-   return step?.mode === "delta" && step.start
-      ? { ...bounds, startAtMost: step.start }
-      : bounds;
+   const startAtMost = earliest(
+      step?.mode === "delta" ? step.start : undefined,
+      judged.since,
+   );
+   return startAtMost ? { ...bounds, startAtMost } : bounds;
+}
+
+/** The earlier of two bounds, either absent. */
+function earliest(
+   a: WatermarkBound | undefined,
+   b: WatermarkBound | undefined,
+): WatermarkBound | undefined {
+   if (!a) return b;
+   if (!b) return a;
+   return compareBounds(a, b) <= 0 ? a : b;
 }
 
 /**
- * Whether `read` is the build of the parent's table this run's parent step
- * started from (or the parent holds now, when it was not refreshed), and
- * whether the parent's table changed in the run.
+ * Whether the extension may delta over the parent's table: `read` is the
+ * build this run's parent step started from (or the parent holds now, when
+ * it was not refreshed), or one that build was reached from by deltas alone
+ * in earlier runs, whose lowest start is `since`. `changed`: the parent's
+ * table changed since `read`. `overflow`: unproven because the parent was
+ * refreshed more often than its ledger lists.
  */
 function judgeGeneration(
    parent: ExtensionParent,
    read: LedgerParent | undefined,
    step: ParentStep | undefined,
-): { proven: boolean; changed: boolean } {
+   watermarkType: string,
+): {
+   proven: boolean;
+   changed: boolean;
+   since?: WatermarkBound;
+   overflow?: boolean;
+} {
    if (step) {
       // A parent seeded this run is a fresh build from raw: the extension
       // deltas over it as over a full parent.
       if (step.mode === "seed") return { proven: true, changed: true };
-      return {
-         proven:
-            read !== undefined &&
-            sameBuild(read, step.priorAdvancedBy, step.prior),
-         changed: step.mode === "delta",
-      };
+      if (
+         read !== undefined &&
+         (sameBuild(read, step.priorAdvancedBy, step.prior) ||
+            (read.builtAt !== undefined && read.builtAt === step.priorBuiltAt))
+      ) {
+         return { proven: true, changed: step.mode === "delta" };
+      }
+      const chained = deltasSince(
+         read,
+         step.priorChain,
+         step.priorAdvancedBy,
+         watermarkType,
+      );
+      return chained.proven
+         ? { proven: true, changed: true, since: chained.since }
+         : { proven: false, changed: true, overflow: chained.overflow };
    }
    // Built in full this run though declared incremental (a fallback rebuild
    // the step map did not see): a fresh build from raw, as a seed.
    if (parent.builtThisRun) return { proven: true, changed: true };
    const entry = parent.entry;
-   const proven =
+   if (
       read !== undefined &&
       entry !== undefined &&
       ((read.builtAt !== undefined && read.builtAt === entry.builtAt) ||
-         sameBuild(read, entry.ledger?.advancedBy, ledgerBound(entry)));
-   return { proven, changed: !proven };
+         sameBuild(read, entry.ledger?.advancedBy, ledgerBound(entry)))
+   ) {
+      return { proven: true, changed: false };
+   }
+   // Refreshed by deltas in earlier runs, which its ledger lists.
+   const chained = deltasSince(
+      read,
+      readAdvanceChain(entry?.ledger as Record<string, unknown> | undefined),
+      entry?.ledger?.advancedBy,
+      watermarkType,
+   );
+   return chained.proven
+      ? { proven: true, changed: true, since: chained.since }
+      : { proven: false, changed: true, overflow: chained.overflow };
+}
+
+/**
+ * Whether the parent's build `current` (the run that last changed its table)
+ * was reached from the build `read` names by deltas alone, as `chain` lists
+ * them, and the lowest watermark those deltas restated. Unproven when any
+ * record is missing, the parent was rebuilt in full since (`seededBy`
+ * differs), the read build is older than the oldest listed delta (`overflow`
+ * when the list is full), or a start is not in the extension's watermark
+ * type.
+ */
+function deltasSince(
+   read: LedgerParent | undefined,
+   chain: LedgerAdvanceChain | undefined,
+   current: string | undefined,
+   watermarkType: string,
+): { proven: boolean; since?: WatermarkBound; overflow?: boolean } {
+   const no = { proven: false };
+   if (!read?.advancedBy || !read.seededBy || !chain || !current) return no;
+   if (read.seededBy !== chain.seededBy) return no;
+   if (read.advancedBy === current) return no; // sameBuild judged that
+   const first = chain.advances.findIndex((a) => a.from === read.advancedBy);
+   if (first < 0) {
+      return {
+         proven: false,
+         overflow: chain.advances.length >= LEDGER_ADVANCES_CAP,
+      };
+   }
+   const later = chain.advances.slice(first);
+   for (let i = 1; i < later.length; i++) {
+      if (later[i].from !== later[i - 1].advancedBy) return no;
+   }
+   if (later[later.length - 1].advancedBy !== current) return no;
+   let since: WatermarkBound | undefined;
+   for (const a of later) {
+      if (a.startType !== watermarkType) return no;
+      try {
+         since = earliest(since, { malloyType: a.startType, value: a.start });
+      } catch {
+         return no;
+      }
+   }
+   return { proven: true, since };
 }
 
 /**
@@ -246,11 +357,15 @@ export function ledgerParentOf(
    const parent = lineage?.parent;
    if (!parent?.entry) return undefined;
    const bound = ledgerBound(parent.entry);
+   const seededBy = readAdvanceChain(
+      parent.entry.ledger as Record<string, unknown> | undefined,
+   )?.seededBy;
    return {
       sourceEntityId: parent.address,
       ...(parent.entry.ledger?.advancedBy
          ? { advancedBy: parent.entry.ledger.advancedBy }
          : {}),
+      ...(seededBy ? { seededBy } : {}),
       ...(parent.entry.builtAt ? { builtAt: parent.entry.builtAt } : {}),
       ...(bound
          ? {
@@ -259,6 +374,25 @@ export function ledgerParentOf(
            }
          : {}),
    };
+}
+
+/**
+ * Each incremental entry's `builtAt` and `ledger`, by its address: which
+ * build of its table the entry describes (incremental_build.ts,
+ * `boundEntries`).
+ */
+export function incrementalEntriesOf(
+   entries: Iterable<[string, Pick<ManifestEntry, "ledger" | "builtAt">]>,
+): Map<string, Pick<ManifestEntry, "builtAt" | "ledger">> {
+   const out = new Map<string, Pick<ManifestEntry, "builtAt" | "ledger">>();
+   for (const [address, entry] of entries) {
+      if (!entry.ledger) continue;
+      out.set(address, {
+         ledger: entry.ledger,
+         ...(entry.builtAt ? { builtAt: entry.builtAt } : {}),
+      });
+   }
+   return out;
 }
 
 /**

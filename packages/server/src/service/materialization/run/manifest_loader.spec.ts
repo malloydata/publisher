@@ -338,3 +338,36 @@ describe("splitManifestEntries: table names it cannot read safely", () => {
       });
    }
 });
+
+describe("splitManifestEntries: an incremental entry's ledger", () => {
+   it("keeps every bound entry's ledger, not only an extension's", () => {
+      // A carried incremental parent that is no extension itself: an
+      // extension over it records which build of its table it read from
+      // this ledger (incremental_upstream.ts), so dropping it costs a reseed.
+      const ledger = {
+         connectionName: "wh",
+         physicalTableName: "ev_t",
+         coveredThrough: "2024-06-01 00:00:00",
+         coveredThroughType: "timestamp",
+         watermark: "ts",
+         strategy: "merge",
+         sourceEntityId: "ev",
+         advancedBy: "run-1",
+         seededBy: "run-1",
+         advances: [],
+      };
+      const split = splitManifestEntries(
+         {
+            ev: {
+               sourceEntityId: "ev",
+               physicalTableName: "ev_t",
+               connectionName: "wh",
+               builtAt: "2024-06-01T00:00:10.000Z",
+               ledger,
+            } as unknown as ManifestEntry,
+         },
+         "test",
+      );
+      expect(split.tableNameManifest.ev?.ledger).toEqual(ledger as never);
+   });
+});

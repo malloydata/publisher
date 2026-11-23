@@ -61,6 +61,7 @@ const FACADE_SURFACE = [
    "incompatibleTables",
    "bindingState",
    "boundDatabaseEntries",
+   "boundIncrementalEntries",
    "boundLateRows",
    "boundParentReads",
    "boundStorageColumns",

@@ -1734,6 +1734,14 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       return this.mz.boundParentReads();
    }
 
+   /** The host port's `boundIncrementalEntries` (PackageMaterialization.boundIncrementalEntries). */
+   public boundIncrementalEntries(): ReadonlyMap<
+      string,
+      Pick<ManifestEntry, "builtAt" | "ledger">
+   > {
+      return this.mz.boundIncrementalEntries();
+   }
+
    /** The host port's `setUnprovenGenerations`. */
    public setUnprovenGenerations(list: readonly UnprovenGeneration[]): void {
       this.mz.setUnprovenGenerations(list);

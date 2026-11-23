@@ -271,6 +271,7 @@ export class DatabaseTier
                incrementalRefresh,
                instruction.reseed,
                incrementalRefresh?.context.materializationId,
+               incrementalRefresh ? "full" : undefined,
             ),
          ),
          // Reported for any incremental source that rebuilt, so a full rebuild

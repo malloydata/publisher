@@ -241,6 +241,7 @@ const DUCKLAKE = (root: () => string, others: string[] = []): Tier => ({
 /** One package over one warehouse, and the service that builds it. */
 class Fixture {
    root = "";
+   envPath = "";
    env!: Environment;
    pkg!: Package;
    repo!: ResourceRepository;
@@ -265,19 +266,12 @@ class Fixture {
       await freshLoadPool();
       const storage = await openTempStorage("xc-", { id: "env-1", name: ENV });
       this.root = storage.root;
+      this.envPath = storage.envPath;
       this.db = storage.db;
       this.repo = storage.repo;
       writePackageFiles(
          path.join(storage.envPath, PKG),
-         {
-            "m.malloy": model
-               .replace("__RAW__", this.tier.raw)
-               .replace(/__P__/g, this.tier.storage ? "" : this.tier.prefix)
-               .replace(
-                  /__S__/g,
-                  this.tier.storage ? ` storage="${this.tier.storage}"` : "",
-               ),
-         },
+         { "m.malloy": this.modelText(model) },
          { manifest: { name: PKG, description: "fixture" } },
       );
       const w = await this.tier.warehouse();
@@ -315,6 +309,25 @@ class Fixture {
       this.unwrap = () => {
          (logger as { warn: unknown }).warn = warn;
       };
+   }
+
+   private modelText(model: string): string {
+      return model
+         .replace("__RAW__", this.tier.raw)
+         .replace(/__P__/g, this.tier.storage ? "" : this.tier.prefix)
+         .replace(
+            /__S__/g,
+            this.tier.storage ? ` storage="${this.tier.storage}"` : "",
+         );
+   }
+
+   /** Replace the model and reload the package. */
+   async rewrite(model: string): Promise<void> {
+      fs.writeFileSync(
+         path.join(this.envPath, PKG, "m.malloy"),
+         this.modelText(model),
+      );
+      this.pkg = await this.env.getPackage(parsePackageName(PKG), true);
    }
 
    async close(): Promise<void> {
@@ -499,6 +512,7 @@ for (const tier of databaseTiers) {
          expect(entryNamed(first, "ext_rr")![1].ledger?.parent).toEqual({
             sourceEntityId: parentAddress,
             advancedBy: first.id,
+            seededBy: first.id,
             builtAt: parent.builtAt,
             coveredThrough: parent.ledger?.coveredThrough as string,
             coveredThroughType: "timestamp",
@@ -604,6 +618,209 @@ for (const tier of databaseTiers) {
       });
    });
 
+   describe(`an incremental extension refreshed in its own runs (${tier.label})`, () => {
+      const f = new Fixture(tier);
+      const late = { id: 6, ts: at(2 * DAY), amt: 19 };
+      const runs: Record<string, Materialization> = {};
+      const seedsIn: Record<string, typeof f.seeds> = {};
+      const build = async (label: string, opts: object) => {
+         const before = f.seeds.length;
+         runs[label] = await f.build(opts);
+         seedsIn[label] = f.seeds.slice(before);
+      };
+
+      beforeAll(async () => {
+         await f.open(MODEL);
+         await build("first", {});
+         // The extensions alone (their parent refreshed with them, nothing
+         // new): then everything, whose parent delta they follow.
+         await build("extOnly", { sourceNames: ["ext_rr", "ext_mg"] });
+         await f.insert(SECOND);
+         await build("all", {});
+         // The parent alone on its schedule, re-reading a late row...
+         await f.insert([late]);
+         await build("parentOnly", { sourceNames: ["ev"] });
+         // ...then the extensions alone, which follow it by delta.
+         await build("extAfter", { sourceNames: ["ext_rr", "ext_mg"] });
+      }, 600_000);
+      afterAll(() => f.close());
+
+      const rows = () => [...FIRST, ...SECOND, late];
+
+      it("follows the parent after an extension-only run, with no reseed", () => {
+         for (const run of Object.values(runs)) {
+            expect([run.status, (run as { error?: unknown }).error]).toEqual([
+               "MANIFEST_FILE_READY",
+               null,
+            ]);
+         }
+         const parentLedger = entryNamed(runs.extOnly, "ev")![1].ledger!;
+         expect(
+            entryNamed(runs.extOnly, "ext_rr")![1].ledger?.parent,
+         ).toMatchObject({
+            advancedBy: parentLedger.advancedBy,
+            coveredThrough: parentLedger.coveredThrough,
+         });
+         expect(entryNamed(runs.all, "ev")![1].refresh).toBe("delta");
+         for (const name of ["ext_rr", "ext_mg"]) {
+            expect([name, entryNamed(runs.all, name)![1].refresh]).toEqual([
+               name,
+               "delta",
+            ]);
+         }
+         expect(
+            seedsIn.all.filter(
+               (s) => s.reasonCode === "upstream_generation_skipped",
+            ),
+         ).toEqual([]);
+      });
+
+      it("deltas an extension over a parent refreshed by an earlier run, equal to live", async () => {
+         expect(entryNamed(runs.parentOnly, "ev")![1].refresh).toBe("delta");
+         expect(seedsIn.extAfter).toEqual([]);
+         for (const name of ["ext_rr", "ext_mg"]) {
+            const ext = entryNamed(runs.extAfter, name)![1];
+            expect([name, ext.refresh]).toEqual([name, "delta"]);
+            // The late row, below the extension's own lower bound, is read
+            // once; nothing is missed or counted twice.
+            expect([name, await f.stored(ext)]).toEqual([
+               name,
+               { n: 6, total: sumOf(rows()), ids: [1, 2, 3, 4, 5, 6] },
+            ]);
+            const served = await f.totals(name);
+            expect([name, served.n, served.total]).toEqual([
+               name,
+               6,
+               sumOf(rows()),
+            ]);
+         }
+      });
+
+      it("records the parent's history since its seed on its ledger", () => {
+         const ledger = entryNamed(runs.parentOnly, "ev")![1].ledger!;
+         expect(ledger.seededBy).toBe(runs.first.id);
+         expect(
+            (ledger.advances as { from: string; advancedBy: string }[]).map(
+               (a) => [a.from, a.advancedBy],
+            ),
+         ).toEqual([
+            [runs.first.id, runs.extOnly.id],
+            [runs.extOnly.id, runs.all.id],
+            [runs.all.id, runs.parentOnly.id],
+         ]);
+      });
+   });
+
+   describe(`an incremental extension whose parent was rebuilt, refreshed often, or edited between its runs (${tier.label})`, () => {
+      const f = new Fixture(tier);
+      let n = 100;
+      const fresh = () => {
+         n += 1;
+         return { id: n, ts: at(DAY - n * 1000), amt: 1 };
+      };
+      const added: Row[] = [];
+      const seedsIn: Record<string, typeof f.seeds> = {};
+      const runs: Record<string, Materialization> = {};
+      const build = async (label: string, opts: object) => {
+         const before = f.seeds.length;
+         runs[label] = await f.build(opts);
+         seedsIn[label] = f.seeds.slice(before);
+      };
+      const addRow = async () => {
+         const row = fresh();
+         added.push(row);
+         await f.insert([row]);
+      };
+      const extSeeds = (label: string) =>
+         seedsIn[label].filter(
+            (s) =>
+               s.physicalTableName ===
+               entryNamed(runs[label], "ext_rr")?.[1].physicalTableName,
+         );
+      const overflowed: string[] = [];
+
+      beforeAll(async () => {
+         await f.open(MODEL);
+         await build("first", {});
+         // The parent rebuilt in full on its own, then the extension.
+         await addRow();
+         await build("parentReseed", { sourceNames: ["ev"], reseed: true });
+         await build("afterReseed", { sourceNames: ["ext_rr"] });
+         // Nine parent deltas, one more than its ledger lists.
+         for (let i = 0; i < 9; i++) {
+            await addRow();
+            await build(`delta${i}`, { sourceNames: ["ev"] });
+         }
+         const warn = logger.warn;
+         (logger as { warn: unknown }).warn = (
+            message: string,
+            meta?: Record<string, unknown>,
+         ) => {
+            if (message.includes("refreshed more often")) {
+               overflowed.push(meta?.physicalTableName as string);
+            }
+            return warn(message, meta as never);
+         };
+         await build("afterNine", { sourceNames: ["ext_rr"] });
+         (logger as { warn: unknown }).warn = warn;
+         // The parent's lookback edited, then a late row it re-reads alone.
+         await f.rewrite(
+            MODEL.replace('lookback="7 days"', 'lookback="3 days"'),
+         );
+         const late = { id: 999, ts: at(2 * DAY), amt: 5 };
+         added.push(late);
+         await f.insert([late]);
+         await build("afterEdit", { sourceNames: ["ev"] });
+         await build("extAfterEdit", { sourceNames: ["ext_rr"] });
+      }, 900_000);
+      afterAll(() => f.close());
+
+      const live = () => [...FIRST, ...added];
+
+      it("rebuilds the extension when its parent was rebuilt in full since it read it", () => {
+         expect(entryNamed(runs.parentReseed, "ev")![1].refresh).toBe("full");
+         expect(entryNamed(runs.afterReseed, "ext_rr")![1].refresh).toBe(
+            "full",
+         );
+         expect(extSeeds("afterReseed").map((s) => s.reasonCode)).toEqual([
+            "upstream_generation_skipped",
+         ]);
+      });
+
+      it("rebuilds it, naming the cap, after more parent deltas than the ledger lists", async () => {
+         for (let i = 0; i < 9; i++) {
+            expect([
+               i,
+               entryNamed(runs[`delta${i}`], "ev")![1].refresh,
+            ]).toEqual([i, "delta"]);
+         }
+         const ext = entryNamed(runs.afterNine, "ext_rr")![1];
+         expect(ext.refresh).toBe("full");
+         expect(extSeeds("afterNine").map((s) => s.reasonCode)).toEqual([
+            "upstream_generation_skipped",
+         ]);
+         expect(overflowed).toEqual([ext.physicalTableName]);
+      });
+
+      it("stays equal to live across a parent lookback edit", async () => {
+         for (const label of ["afterEdit", "extAfterEdit"]) {
+            const run = runs[label];
+            expect([
+               label,
+               run.status,
+               (run as { error?: unknown }).error,
+            ]).toEqual([label, "MANIFEST_FILE_READY", null]);
+         }
+         const ext = entryNamed(runs.extAfterEdit, "ext_rr")![1];
+         const want = live();
+         expect(await f.stored(ext)).toEqual({
+            n: want.length,
+            total: sumOf(want),
+            ids: want.map((r) => r.id).sort((a, b) => a - b),
+         });
+      });
+   });
+
    describe(`an incremental extension built with its parent's raw rows gone (${tier.label})`, () => {
       const f = new Fixture(tier);
       let parentRun: Materialization;
@@ -655,22 +872,48 @@ source: ext_rr is ev extend { dimension: big is amt > 5 }
       const seedsAt: (typeof f.seeds)[] = [];
       let boundBeforeSecond: unknown;
       let heldAfterSecond: number[] = [];
+      let heldAfterFourth: Awaited<ReturnType<Fixture["stored"]>>;
       let warnedWhenUnproven: { subject?: string; code?: string }[] = [];
 
       const instruct = (
          names: string[],
          ledger: unknown[],
+         reseed = false,
       ): Record<string, unknown> => {
          const sources = Object.values(f.pkg.getBuildPlan()!.sources).filter(
             (s) => names.includes(s.name),
          );
+         // Every other source's table, as the newest run that built it
+         // reported it: what a host references and does not rebuild.
+         const referenceManifest = Object.values(f.pkg.getBuildPlan()!.sources)
+            .filter((s) => !names.includes(s.name))
+            .flatMap((s) => {
+               const newest = [...runs]
+                  .reverse()
+                  .map((r) => entriesOf(r)[s.sourceEntityId])
+                  .find((e) => e !== undefined);
+               return newest
+                  ? [
+                       {
+                          sourceEntityId: s.sourceEntityId,
+                          physicalTableName: newest.physicalTableName,
+                          connectionName: "warehouse",
+                          ...(newest.builtAt
+                             ? { builtAt: newest.builtAt }
+                             : {}),
+                       },
+                    ]
+                  : [];
+            });
          return {
+            ...(referenceManifest.length ? { referenceManifest } : {}),
             buildInstructions: sources.map((s) => ({
                sourceEntityId: s.sourceEntityId,
                sourceID: s.sourceID,
                materializedTableId: `mt-${s.name}`,
                physicalTableName: `${tier.prefix}host_${s.name}`,
                realization: "COPY",
+               ...(reseed ? { reseed: true } : {}),
             })),
             ledger,
          };
@@ -689,7 +932,11 @@ source: ext_rr is ev extend { dimension: big is amt > 5 }
             return rest;
          });
       };
-      const step = async (names: string[], ledger: unknown[]) => {
+      const step = async (
+         names: string[],
+         ledger: unknown[],
+         reseed = false,
+      ) => {
          const before = f.seeds.length;
          // A host echoes only the entries of the tables it instructs.
          const tables = new Set(names.map((n) => `${tier.prefix}host_${n}`));
@@ -702,6 +949,7 @@ source: ext_rr is ev extend { dimension: big is amt > 5 }
                         (l as { physicalTableName: string }).physicalTableName,
                      ),
                   ),
+                  reseed,
                ),
             ),
          );
@@ -727,8 +975,19 @@ source: ext_rr is ev extend { dimension: big is amt > 5 }
          // The parent refreshed without the extension...
          await step(["ev"], echoed());
          await f.insert([{ id: 8, ts: at(600_000), amt: 29 }]);
-         // ...which then missed a generation.
+         // ...which then follows it by delta, from the parent history the
+         // echoed parent entry lists.
          await step(["ev", "ext_rr"], echoed());
+         heldAfterFourth = await f.stored(entryNamed(runs[4], "ext_rr")![1]);
+         // The parent alone, then the extension alone over the parent's
+         // table as referenced: its build and history come from that
+         // table's newest entry.
+         await f.insert([{ id: 9, ts: at(2 * DAY), amt: 31 }]);
+         await step(["ev"], echoed());
+         await step(["ext_rr"], echoed());
+         // The parent rebuilt in full alone: the extension alone rebuilds.
+         await step(["ev"], echoed(), true);
+         await step(["ext_rr"], echoed());
       }, 600_000);
       afterAll(() => f.close());
 
@@ -740,6 +999,7 @@ source: ext_rr is ev extend { dimension: big is amt > 5 }
          { id: 7, ts: "", amt: 23 },
          { id: 8, ts: "", amt: 29 },
       ];
+      const allWithLate = () => [...all(), { id: 9, ts: "", amt: 31 }];
 
       it("deltas on a worker with no bound manifest, from the echoed ledger's parent", async () => {
          for (const run of runs) {
@@ -767,15 +1027,39 @@ source: ext_rr is ev extend { dimension: big is amt > 5 }
          expect(ext(2).ledger?.parent).toBeDefined();
       });
 
-      it("rebuilds an extension that missed a parent refresh", async () => {
-         expect(entryNamed(runs[3], "ext_rr")).toBeUndefined();
-         expect(ext(4).refresh).toBe("full");
-         expect(seedsAt[4].map((s) => s.reasonCode)).toEqual([
-            "upstream_generation_skipped",
-         ]);
-         const held = await f.stored(ext(4));
+      it("deltas an extension over a parent refreshed in an earlier call", async () => {
+         // Referenced, not rebuilt.
+         expect(entryNamed(runs[3], "ext_rr")?.[1].builtAt).toBe(
+            ext(2).builtAt,
+         );
+         expect(ext(4).refresh).toBe("delta");
+         expect(seedsAt[4]).toEqual([]);
+         const held = heldAfterFourth;
          expect(held.ids).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
          expect(held.total).toBe(sumOf(all()));
+      });
+
+      it("deltas an extension refreshed alone over a parent refreshed alone, equal to live", async () => {
+         expect(entryNamed(runs[5], "ev")![1].refresh).toBe("delta");
+         expect(entryNamed(runs[6], "ev")?.[1].builtAt).toBe(
+            entryNamed(runs[5], "ev")![1].builtAt,
+         );
+         expect(ext(6).refresh).toBe("delta");
+         expect(seedsAt[6]).toEqual([]);
+         // The late row (two days old, below the extension's own lower
+         // bound) once, nothing twice.
+         const held = await f.stored(ext(6));
+         expect(held.ids).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+         expect(held.total).toBe(sumOf(allWithLate()));
+      });
+
+      it("rebuilds an extension refreshed alone after its parent was rebuilt in full", async () => {
+         expect(entryNamed(runs[7], "ev")![1].refresh).toBe("full");
+         expect(ext(8).refresh).toBe("full");
+         expect(seedsAt[8].map((s) => s.reasonCode)).toEqual([
+            "upstream_generation_skipped",
+         ]);
+         expect((await f.stored(ext(8))).total).toBe(sumOf(allWithLate()));
       });
 
       it("warns, naming the extension, until a run proves it again", () => {
@@ -803,22 +1087,37 @@ source: ext_rr is ev extend { dimension: big is amt > 5 }
 `;
       const host = (name: string) => `${tier.prefix}host_${name}`;
       /** A host's request body: each source's instruction, and the ledger. */
-      const body = (ledger: unknown[]) => ({
+      const body = (ledger: unknown[], names?: string[]) => ({
          buildInstructions: {
-            sources: Object.values(f.pkg.getBuildPlan()!.sources).map((s) => ({
-               sourceEntityId: s.sourceEntityId,
-               sourceID: s.sourceID,
-               materializedTableId: `mt-${s.name}`,
-               physicalTableName: host(s.name),
-               realization: "COPY",
-            })),
-            ledger,
+            sources: Object.values(f.pkg.getBuildPlan()!.sources)
+               .filter((s) => !names || names.includes(s.name))
+               .map((s) => ({
+                  sourceEntityId: s.sourceEntityId,
+                  sourceID: s.sourceID,
+                  materializedTableId: `mt-${s.name}`,
+                  physicalTableName: host(s.name),
+                  realization: "COPY",
+               })),
+            // A host echoes only the entries of the tables it instructs.
+            ledger: ledger.filter(
+               (l) =>
+                  !names ||
+                  names.some(
+                     (n) =>
+                        (l as { physicalTableName: string })
+                           .physicalTableName === host(n),
+                  ),
+            ),
          },
       });
       let first: Materialization;
       let second: Materialization;
       let echoed: Entry["ledger"][] = [];
       let seedsInSecond: typeof f.seeds = [];
+      let heldAfterSecond: Awaited<ReturnType<Fixture["stored"]>>;
+      let third: Materialization;
+      let fourth: Materialization;
+      let seedsInFourth: typeof f.seeds = [];
 
       beforeAll(async () => {
          await f.open(ORCH);
@@ -832,6 +1131,23 @@ source: ext_rr is ev extend { dimension: big is amt > 5 }
          const before = f.seeds.length;
          second = await f.buildOverHttp(body(echoed));
          seedsInSecond = f.seeds.slice(before);
+         heldAfterSecond = await f.stored(entryNamed(second, "ext_rr")![1]);
+         // The parent alone, then both: each entry as the newest run that
+         // reported it returned it, the only carrier of the parent's history.
+         const newest = (runs: Materialization[]) => {
+            const byTable = new Map<string, Entry["ledger"]>();
+            for (const run of runs) {
+               for (const e of Object.values(entriesOf(run))) {
+                  if (e.ledger) byTable.set(e.physicalTableName, e.ledger);
+               }
+            }
+            return [...byTable.values()];
+         };
+         await f.insert([{ id: 6, ts: at(2 * DAY), amt: 19 }]);
+         third = await f.buildOverHttp(body(newest([first, second]), ["ev"]));
+         const beforeFourth = f.seeds.length;
+         fourth = await f.buildOverHttp(body(newest([first, second, third])));
+         seedsInFourth = f.seeds.slice(beforeFourth);
       }, 400_000);
       afterAll(() => f.close());
 
@@ -849,6 +1165,7 @@ source: ext_rr is ev extend { dimension: big is amt > 5 }
          expect(ext?.parent).toEqual({
             sourceEntityId: parentAddress,
             advancedBy: first.id,
+            seededBy: first.id,
             builtAt: parent.builtAt,
             coveredThrough: parent.ledger?.coveredThrough as string,
             coveredThroughType: "timestamp",
@@ -868,10 +1185,30 @@ source: ext_rr is ev extend { dimension: big is amt > 5 }
          expect(ext.ledger?.parent?.advancedBy).toBe(
             entryNamed(second, "ev")![1].ledger?.advancedBy as string,
          );
-         expect(await f.stored(ext)).toEqual({
+         expect(heldAfterSecond).toEqual({
             n: 5,
             total: sumOf([...FIRST, ...SECOND]),
             ids: [1, 2, 3, 4, 5],
+         });
+      });
+
+      it("deltas the extension after a parent-only call, from the echoed entries alone", async () => {
+         for (const run of [third, fourth]) {
+            expect([run.status, (run as { error?: unknown }).error]).toEqual([
+               "MANIFEST_FILE_READY",
+               null,
+            ]);
+         }
+         expect(entryNamed(third, "ext_rr")).toBeUndefined();
+         expect(entryNamed(third, "ev")![1].ledger?.advances).toHaveLength(2);
+         const ext = entryNamed(fourth, "ext_rr")![1];
+         expect(ext.refresh).toBe("delta");
+         expect(seedsInFourth).toEqual([]);
+         const want = [...FIRST, ...SECOND, { id: 6, ts: "", amt: 19 }];
+         expect(await f.stored(ext)).toEqual({
+            n: 6,
+            total: sumOf(want),
+            ids: [1, 2, 3, 4, 5, 6],
          });
       });
    });
@@ -920,6 +1257,57 @@ if (POSTGRES_URL) {
                name,
                5,
                sumOf([...FIRST, ...SECOND]),
+            ]);
+         }
+      });
+   });
+
+   describe("an incremental storage= extension stacked on its parent, refreshed after a parent-only run", () => {
+      let root = "";
+      const f = new Fixture(DUCKLAKE(() => root));
+      const late = { id: 6, ts: at(2 * DAY), amt: 19 };
+      let parentOnly: Materialization;
+      let extAfter: Materialization;
+      const seedsInExt: typeof f.seeds = [];
+
+      beforeAll(async () => {
+         root = fs.realpathSync(
+            fs.mkdtempSync(path.join(fs.realpathSync("/tmp"), "xcl-")),
+         );
+         await f.open(MODEL.replace(/name="__P__[a-z_]+" /g, ""));
+         await f.build({});
+         await f.insert([...SECOND, late]);
+         parentOnly = await f.build({ sourceNames: ["ev"] });
+         const before = f.seeds.length;
+         extAfter = await f.build({ sourceNames: ["ext_rr", "ext_mg"] });
+         seedsInExt.push(...f.seeds.slice(before));
+      }, 400_000);
+      afterAll(async () => {
+         await f.close();
+         fs.rmSync(root, { recursive: true, force: true });
+      });
+
+      it("deltas in the destination from the parent's recorded history, equal to live", async () => {
+         for (const run of [parentOnly, extAfter]) {
+            expect([run.status, (run as { error?: unknown }).error]).toEqual([
+               "MANIFEST_FILE_READY",
+               null,
+            ]);
+         }
+         expect(entryNamed(parentOnly, "ev")![1].refresh).toBe("delta");
+         expect(seedsInExt).toEqual([]);
+         for (const name of ["ext_rr", "ext_mg"]) {
+            const ext = entryNamed(extAfter, name)![1];
+            expect([name, ext.storageDestinationName, ext.refresh]).toEqual([
+               name,
+               "lake",
+               "delta",
+            ]);
+            const served = await f.totals(name);
+            expect([name, served.n, served.total]).toEqual([
+               name,
+               6,
+               sumOf([...FIRST, ...SECOND, late]),
             ]);
          }
       });
@@ -995,6 +1383,7 @@ if (POSTGRES_URL) {
             expect(entryNamed(first, "ext_rr")![1].ledger?.parent).toEqual({
                sourceEntityId: parentAddress,
                advancedBy: first.id,
+               seededBy: first.id,
                builtAt: parent.builtAt,
                coveredThrough: parent.ledger?.coveredThrough as string,
                coveredThroughType: "timestamp",

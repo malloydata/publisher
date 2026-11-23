@@ -93,6 +93,15 @@ interface MaterializationPackage extends BuildPlanPackage {
     */
    boundParentReads?(): ReadonlyMap<string, readonly LedgerParent[]>;
    /**
+    * Each bound manifest entry's `builtAt` and `ledger`, by content address:
+    * the build an incremental source's step starts from, as the bound entry
+    * names it (incremental_build.ts, `boundEntries`).
+    */
+   boundIncrementalEntries?(): ReadonlyMap<
+      string,
+      Pick<ManifestEntry, "builtAt" | "ledger">
+   >;
+   /**
     * The incremental extensions the newest run rebuilt because no record
     * said which build of their parent's table they last read, which the
     * package warns about.

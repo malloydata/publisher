@@ -26,6 +26,7 @@ import { errMessage } from "../../../utils";
 import { parseEnvironmentName } from "../../identity";
 import { resolveEnvironmentId } from "../../resolve_environment";
 import {
+   newestIncrementalEntries,
    ServingReader,
    storageBindingResolverFor,
    storedServingEntries,
@@ -392,6 +393,22 @@ export class ManifestCommitter {
       return storedServingEntries(list, reader, excludeId);
    }
 
+   /** See materialization_scope.ts, `newestIncrementalEntries`. */
+   async newestIncrementalEntries(
+      environmentId: string,
+      packageName: string,
+      excludeId: string,
+      reader: ServingReader = {},
+   ): Promise<Record<string, ManifestEntry>> {
+      const list =
+         (await this.repository.listMaterializations(
+            environmentId,
+            packageName,
+            reader.owned !== undefined ? { version: reader.owned } : undefined,
+         )) ?? [];
+      return newestIncrementalEntries(list, reader, excludeId);
+   }
+
    /**
     * The entries a rebind binds, read as a package load reads them
     * (`storageBindingResolverFor`): each with the key checks the newest run
@@ -457,7 +474,10 @@ export class ManifestCommitter {
             freshnessFallback: _fallback,
             ...unstamped
          } = local;
-         const merged: ManifestEntry = { ...unstamped };
+         const merged: ManifestEntry = withoutForeignLedger(
+            { ...unstamped },
+            ref,
+         );
          for (const [key, value] of Object.entries(ref)) {
             if (value !== undefined) {
                (merged as Record<string, unknown>)[key] = value;
@@ -505,6 +525,10 @@ export class ManifestCommitter {
                sourceEntityId: eid,
                physicalTableName: e.tableName,
                connectionName: e.connectionName,
+               // Which build of an incremental table it is, for an extension
+               // over it (incremental_upstream.ts).
+               ...(e.builtAt ? { builtAt: e.builtAt } : {}),
+               ...(e.ledger ? { ledger: e.ledger } : {}),
             };
          }
       }
@@ -517,7 +541,10 @@ export class ManifestCommitter {
             continue;
          }
          // Explicit reference wins; the bound entry fills the gaps it left.
-         const merged: ManifestEntry = { ...entry };
+         const merged: ManifestEntry = withoutForeignLedger(
+            { ...entry },
+            existing,
+         );
          for (const [key, value] of Object.entries(existing)) {
             if (value !== undefined) {
                (merged as Record<string, unknown>)[key] = value;
@@ -693,6 +720,27 @@ export function referenceManifestToEntries(
       };
    }
    return entries;
+}
+
+/**
+ * `base` without its `ledger` when `ref` names another build of the table
+ * (another `builtAt`): the merged entry would otherwise carry one build's
+ * boundary beside another's `builtAt`, and an extension over it would read
+ * that boundary as the build it is (incremental_upstream.ts).
+ */
+function withoutForeignLedger(
+   base: ManifestEntry,
+   ref: ManifestEntry,
+): ManifestEntry {
+   if (
+      !base.ledger ||
+      ref.builtAt === undefined ||
+      ref.builtAt === base.builtAt
+   ) {
+      return base;
+   }
+   const { ledger: _foreign, ...rest } = base;
+   return rest as ManifestEntry;
 }
 
 /** An entry's freshness facts, each only when set (manifest_loader.ts reads the same). */
