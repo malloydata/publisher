@@ -33,6 +33,7 @@ import {
    parseContract,
 } from "../../../src/service/materialization/domain/column_contract";
 import { refreshStringCapabilities } from "../../../src/service/materialization/serve/source_capability";
+import { recordScopeFacts } from "../../../src/service/materialization/serve/scope_facts";
 import { storedKeyCheckSql } from "../../../src/service/materialization/text/key_check_text";
 import { expect, it } from "bun:test";
 import { tryCompileMaterializeCompanion } from "../../../src/service/materialization/plan/materialize_compile";
@@ -1390,15 +1391,17 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
    }
    model.setServeBindings([], contracts);
    model.setStringCapabilityReader(refreshStringCapabilities);
+   model.setScopeFactsRecorder(recordScopeFacts);
    await model.refreshStringCapabilities();
-   // And, as the bind commit that serves these tables does, the served
-   // copy's compile and what each source's gates and row scope read over
-   // them (a run sets the bindings beside the package, with no commit).
+   // And, as the bind commit that serves these tables does, what each
+   // source's gates and row scope read over them (a run sets the bindings
+   // beside the package, with no commit). The served copy is not compiled
+   // here, so a scenario that alters a table first still compiles over it:
+   // its lane is recorded after the first served run compiles it.
    model.setServeBindings(bindings);
-   manifestOn = true;
-   await model.prepareServedCopy();
+   model.recordScopeFactsOver();
    model.setServeBindings([]);
-   manifestOn = false;
+   let laneRecorded = false;
 
    // The ordering the author's query asks for, from compiling it against the
    // author's model: the served answer is held to it, not to its own.
@@ -1605,6 +1608,11 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
                throw err;
             },
          );
+         if (!laneRecorded) {
+            // The first served run compiled the served copy: record its lane.
+            laneRecorded = true;
+            model.recordScopeFactsOver();
+         }
          const truth = query.truthSql
             ? ((await duckdb.runSQL(query.truthSql, { rowLimit: 10_000 }))
                  .rows as Row[])

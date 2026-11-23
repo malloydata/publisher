@@ -8,7 +8,7 @@
  * walks nothing; under `shadow` a list that disagrees with the walk is drift.
  */
 
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import {
    clearParityDrifts,
    clearQueryWalks,
@@ -47,6 +47,11 @@ function candidatesFor(serve: Record<string, unknown>, id: string): unknown {
 }
 
 describe("the rollup leg's candidate list", () => {
+   // Other specs in the run may have walked or drifted already.
+   beforeEach(() => {
+      clearParityDrifts();
+      clearQueryWalks();
+   });
    afterEach(() => {
       clearParityDrifts();
       clearQueryWalks();

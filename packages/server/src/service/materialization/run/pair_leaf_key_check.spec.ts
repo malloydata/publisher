@@ -271,6 +271,7 @@ describe("a pair table's leaf key check, on a build", () => {
       const model = {
          setServedCopyContext: () => {},
          setStringCapabilityReader: () => {},
+         setScopeFactsRecorder: () => {},
          prepareServedCopy: async () => {},
          persistedViewBuilds: () => [],
          servedCopyProblems: () => [],

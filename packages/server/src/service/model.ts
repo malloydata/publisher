@@ -179,7 +179,6 @@ import {
 } from "./materialization/serve/storage_bindings";
 import type { MaterializePlan } from "./materialization/domain/table_plans";
 import { RollupVariantServe } from "./materialization/serve/rollup_variants";
-import { recordScopeFacts } from "./materialization/serve/scope_facts";
 import {
    planSourceRollups,
    rollupGateEnforcedAtRead,
@@ -383,6 +382,29 @@ export class Model {
       reader: NonNullable<Model["stringCapabilityReader"]>,
    ): void {
       this.stringCapabilityReader = reader;
+   }
+
+   /**
+    * What records this model's scope facts for read admission
+    * (`serve/scope_facts.ts`), set by the package beside the string
+    * capability reader; absent, {@link recordScopeFactsOver} records none.
+    */
+   private scopeFactsRecorder:
+      | ((
+           runtime: object,
+           args: {
+              modelDef: ModelDef;
+              snapshot: Snapshot;
+              lane?: ReturnType<ServedCopyServe["scopeLane"]>;
+           },
+        ) => void)
+      | undefined;
+
+   /** Set what {@link recordScopeFactsOver} records through. */
+   public setScopeFactsRecorder(
+      recorder: NonNullable<Model["scopeFactsRecorder"]>,
+   ): void {
+      this.scopeFactsRecorder = recorder;
    }
 
    /** The contracts of the tables set directly ({@link setServeBindings}). */
@@ -3123,7 +3145,9 @@ export class Model {
     */
    public async prepareServedCopy(): Promise<void> {
       await this.refreshStringCapabilities();
-      await this.prepareServedCopyOver(this.servingSnapshot());
+      const snapshot = this.servingSnapshot();
+      await this.prepareServedCopyOver(snapshot);
+      this.recordScopeFactsOver(snapshot);
    }
 
    /**
@@ -3178,7 +3202,9 @@ export class Model {
     * query pinned to `snapshot` walks none of it. The served copy's lane is
     * the one compiled last, over the same bindings when its compile ran.
     */
-   public recordScopeFactsOver(snapshot: Snapshot): void {
+   public recordScopeFactsOver(
+      snapshot: Snapshot = this.servingSnapshot(),
+   ): void {
       const lane = this.servedCopyEnabled()
          ? this.servedCopy.scopeLane()
          : undefined;
@@ -3186,9 +3212,12 @@ export class Model {
          this.modelMaterializer as unknown as { runtime?: object } | undefined
       )?.runtime;
       const modelDef = this.modelDef;
-      if (!runtime || !modelDef || this.modelType !== "model") return;
+      const record = this.scopeFactsRecorder;
+      if (!record || !runtime || !modelDef || this.modelType !== "model") {
+         return;
+      }
       try {
-         recordScopeFacts(runtime, {
+         record(runtime, {
             modelDef,
             snapshot,
             ...(lane ? { lane } : {}),
@@ -3209,12 +3238,8 @@ export class Model {
    public async prepareServedCopyOver(snapshot: Snapshot): Promise<void> {
       const pinned = pin(snapshot, new Date());
       this.storageTables(pinned.snapshot);
-      if (!this.servedCopyEnabled()) {
-         this.recordScopeFactsOver(snapshot);
-         return;
-      }
+      if (!this.servedCopyEnabled()) return;
       await this.servedCopy.prepare(pinned);
-      this.recordScopeFactsOver(snapshot);
       // Once per source per model per snapshot it compiles (a load or a
       // rebind): each source the copy does not serve whole, `declined`
       // beating `partial`, and `partial` only while it is still re-rooted.
