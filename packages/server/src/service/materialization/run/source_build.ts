@@ -922,7 +922,32 @@ export async function buildSource(
       builtEntries,
       contentSourceEntityId ?? instruction.sourceEntityId,
    );
-   return builtFrom ? { ...built, builtFrom } : built;
+   return withExtensionReuse(
+      builtFrom ? { ...built, builtFrom } : built,
+      planFacts,
+      persistSource.sourceID,
+   );
+}
+
+/**
+ * `entry` labelled `upstreamReuse: "reused"` when it is a `#(materialize)`
+ * extension table whose build read its parent's table (its `builtFrom`
+ * names the parent's address) and nothing else labelled it. The author's
+ * text names the parent, not its generated build source, so the manifest
+ * walk that labels other builds does not see it.
+ */
+export function withExtensionReuse(
+   entry: ManifestEntry,
+   planFacts: ChainedPlanFacts,
+   sourceID: string,
+): ManifestEntry {
+   if (entry.upstreamReuse !== undefined) return entry;
+   const parent = planFacts.materializePlans?.[sourceID]?.buildsOver;
+   const address = parent && planFacts.addressBySourceId[parent.sourceID];
+   if (address === undefined) return entry;
+   return (entry.builtFrom ?? []).some((b) => b.sourceEntityId === address)
+      ? { ...entry, upstreamReuse: "reused" }
+      : entry;
 }
 
 /**

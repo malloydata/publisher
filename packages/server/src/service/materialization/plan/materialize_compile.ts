@@ -59,9 +59,11 @@ import {
 import {
    chainVerdict,
    extensionRefusal,
+   chainReachesPersisted,
    chainThroughFile,
    chainWithinFile,
    crossFileEntries,
+   type ModelContext,
    planModelMaterialize,
    type MaterializeRefusal,
 } from "./materialize_plan";
@@ -183,6 +185,8 @@ export async function tryCompileMaterializeCompanion(args: {
     * companion in {@link crossFileCompanions}.
     */
    sourceRegistry?: unknown;
+   /** The author model's imports, which the cross-file walk reads too. */
+   imports?: unknown;
 }): Promise<{
    generated?: GeneratedMaterialize;
    refused: MaterializeRefusal[];
@@ -205,18 +209,41 @@ export async function tryCompileMaterializeCompanion(args: {
          args,
          modelFile,
       ).catch((error: unknown): CrossFileParents => {
-         // Never a cost to the model's builds: its extensions build over
-         // the raw chain, as they did before.
+         // Each extension whose chain reaches a persisted source in another
+         // file is refused, never built over the raw chain.
          logger.warn(
-            "A model's extension tables could not be chained on parents in other files; they build over the raw chain",
+            "A model's extension tables could not be chained on parents in other files; they are refused",
             {
                modelPath: args.modelPath,
                code: errorCodeOf(error),
             },
          );
-         // TODO(extension chains, case 5: cross-file): refuse each
-         // extension whose chain reaches a persisted parent.
-         return { plans: planned.plans, parents: new Map(), refused: [] };
+         const unchained = crossFileEntries(
+            planned.plans,
+            args.contents,
+            modelContextOf(args),
+         )
+            .filter(({ entry }) =>
+               chainReachesPersisted(
+                  args.contents,
+                  entry.sourceID,
+                  modelContextOf(args),
+               ),
+            )
+            .map(({ plan }) =>
+               extensionRefusal(
+                  plan,
+                  undefined,
+                  `whose parent in another file could not be planned here ` +
+                     `(${errorCodeOf(error) ?? "error"})`,
+               ),
+            );
+         const ids = new Set(unchained.map((r) => r.sourceID));
+         return {
+            plans: planned.plans.filter((p) => !ids.has(p.sourceID)),
+            parents: new Map(),
+            refused: unchained,
+         };
       });
       refused.push(...foreign.refused);
       const compile = companionCompiler(args, modelFile, refused, foreign);
@@ -261,9 +288,12 @@ export async function tryCompileMaterializeCompanion(args: {
                   modelDef: {
                      contents: args.contents,
                      sourceRegistry: args.sourceRegistry,
+                     imports: args.imports,
                   } as unknown as ReturnType<typeof modelDefOf>,
                }))
-               .catch(() => undefined),
+               .catch(() => ({
+                  unplanned: "its model text could not be read",
+               })),
          );
       }
       return round.generated
@@ -1821,6 +1851,8 @@ interface CrossFileParent {
  */
 interface CrossFileCompanion {
    generated?: GeneratedMaterialize;
+   /** Set when that file's companion failed, so which sources it plans is unknown. */
+   failed?: true;
    text: string;
    modelFile: string;
    modelDef: ReturnType<typeof modelDefOf>;
@@ -1833,12 +1865,25 @@ interface CrossFileCompanion {
  */
 export type CrossFileCompanions = Map<
    string,
-   Promise<CrossFileCompanion | undefined>
+   Promise<CrossFileCompanion | CrossFileCompanionFailure>
 >;
+
+/** Why a model file could not be planned as a cross-file parent's file. */
+interface CrossFileCompanionFailure {
+   unplanned: string;
+}
 
 /** An empty {@link CrossFileCompanions}, for one package plan. */
 export function newCrossFileCompanions(): CrossFileCompanions {
    return new Map();
+}
+
+/** The compiled model's registry and imports a chain walk reads. */
+function modelContextOf(args: {
+   sourceRegistry?: unknown;
+   imports?: unknown;
+}): ModelContext {
+   return { sourceRegistry: args.sourceRegistry, imports: args.imports };
 }
 
 /** The plans, each cross-file extension with its parent set, and the parents. */
@@ -1868,15 +1913,21 @@ const NO_CROSS_FILE_PARENTS: CrossFileParents = {
  * compiles it (the same text at the same URLs, so its build source is the
  * same build), and never twice up one stack of files.
  *
- * Any failure leaves the extension building over the raw chain, from the
- * warehouse, which gives the same rows.
+ * Every failure to reach the parent refuses the extension
+ * (`upstream_table_unusable`, naming the file and why), never building it
+ * over the raw chain; an extension whose chain reaches no persisted source
+ * has no parent.
  */
 async function crossFileParents(
    plans: MaterializePlan[],
    args: CompanionArgs,
    modelFile: string,
 ): Promise<CrossFileParents> {
-   const candidates = crossFileEntries(plans, args.contents);
+   const candidates = crossFileEntries(
+      plans,
+      args.contents,
+      modelContextOf(args),
+   );
    if (candidates.length === 0)
       return { plans, parents: new Map(), refused: [] };
    const stack = new Set([...(args.crossFileStack ?? []), modelFile]);
@@ -1885,15 +1936,22 @@ async function crossFileParents(
    const companionOf = (file: string) => {
       let found = companions.get(file);
       if (!found) {
-         found = (async () => {
+         found = (async (): Promise<
+            CrossFileCompanion | CrossFileCompanionFailure
+         > => {
             const relative = path.relative(args.packagePath, file);
+            if (stack.has(file)) {
+               return {
+                  unplanned:
+                     "the chain re-enters a file already on it (an import cycle)",
+               };
+            }
             if (
-               stack.has(file) ||
                relative === "" ||
                relative.startsWith("..") ||
                path.isAbsolute(relative)
             ) {
-               return undefined;
+               return { unplanned: "the file is outside the package" };
             }
             const url = pathToFileURL(file);
             const { model, materializer } = await files.compile(url);
@@ -1905,6 +1963,9 @@ async function crossFileParents(
                   modelPath,
                   contents: (def.contents ?? {}) as Record<string, unknown>,
                   givens: (def.givens ?? {}) as Record<string, unknown>,
+                  sourceRegistry: (def as { sourceRegistry?: unknown })
+                     .sourceRegistry,
+                  imports: (def as { imports?: unknown }).imports,
                   getRuntime: args.getRuntime,
                   ...(args.probe ? { probe: materializer } : {}),
                   crossFileStack: stack,
@@ -1916,20 +1977,23 @@ async function crossFileParents(
             // through it to a parent in a file beyond.
             return {
                ...(generated ? { generated } : {}),
+               ...(failure ? { failed: true as const } : {}),
                text: await files.read(url),
                modelFile: file,
                modelDef: def,
             };
          })().catch((error: unknown) => {
             logger.warn(
-               "An extension table's parent in another file could not be planned here; it builds over the raw chain",
+               "An extension table's parent in another file could not be planned here; the extension is refused",
                {
                   modelPath: args.modelPath,
                   parentFile: path.relative(args.packagePath, file),
                   code: errorCodeOf(error),
                },
             );
-            return undefined;
+            return {
+               unplanned: `its model did not compile here (${errorCodeOf(error) ?? "error"})`,
+            };
          });
          companions.set(file, found);
       }
@@ -1946,14 +2010,37 @@ async function crossFileParents(
       // it and declares no `#(materialize)` there is passed through: the
       // walk goes on into the file it is built on, each companion compiled
       // once for the package plan (`companions`), so a deep chain costs one
-      // compile per file.
+      // compile per file. Every way the walk can stop short of a parent is
+      // a refusal naming the file, unless no persisted source lies past it
+      // (the extension then has no parent, and reads the warehouse as any
+      // root does).
       let file = localPath(entry.url);
       let entryID = entry.sourceID;
       let pathBelow = below;
       const via: CrossFileParent["via"] = [];
-      for (let hops = 0; file !== undefined && hops < 64; hops++) {
+      const refuse = (at: string | undefined, why: string) => {
+         refused.push(
+            extensionRefusal(
+               plan,
+               undefined,
+               `through ${at ? `'${path.relative(args.packagePath, at) || at}'` : "another file"}, where ${why}`,
+            ),
+         );
+      };
+      const stopAt = (at: string | undefined, fromID: string, why: string) => {
+         if (
+            chainReachesPersisted(args.contents, fromID, modelContextOf(args))
+         ) {
+            refuse(at, why);
+         }
+      };
+      let hops = 0;
+      for (; file !== undefined && hops < 64; hops++) {
          const companion = await companionOf(file);
-         if (!companion) break;
+         if ("unplanned" in companion) {
+            stopAt(file, entryID, companion.unplanned);
+            break;
+         }
          const found = chainOver(plan, companion, entryID, pathBelow, via);
          if (found && "refuse" in found) {
             refused.push(found.refuse);
@@ -1981,12 +2068,28 @@ async function crossFileParents(
             },
             entryID,
          );
-         // A file between that declares `#(materialize)` on the chain, planned
-         // or refused, is no pass-through: the extension builds from the
-         // warehouse.
-         if (through.declares || !through.next) break;
+         // A source the walk passes that declares `#(materialize)` in this
+         // file and that this file's companion did not plan (it refused it
+         // there) has no table: the walk passes through it, as through any
+         // other declaration, to a parent beyond, as a refused source in the
+         // extension's own file is passed. Only a file whose companion did
+         // not compile cannot say which of its sources it plans.
+         if (through.declares && companion.failed) {
+            refuse(file, "its build companion did not compile");
+            break;
+         }
+         // The chain ends in this file, at a table or a query-shaped hop,
+         // with no persisted source on it: no parent.
+         if (!through.next) break;
          const next = localPath(through.next.url);
-         if (next === undefined || next === file) break;
+         if (next === undefined || next === file) {
+            stopAt(
+               file,
+               through.next.sourceID,
+               "the next file on the chain cannot be found",
+            );
+            break;
+         }
          via.push({
             modelFile: file,
             text: companion.text,
@@ -1998,6 +2101,7 @@ async function crossFileParents(
          entryID = through.next.sourceID;
          file = next;
       }
+      if (hops >= 64) refuse(file, "the chain is too deep to walk");
    }
    const refusedIDs = new Set(refused.map((r) => r.sourceID));
    return {
@@ -2166,7 +2270,7 @@ function carriesAlike(
  * A cross-file extension's build copy ({@link crossFileCopyTexts}): its own
  * file with its own edits and its `import`s of the parent's file pointed at
  * the parent's file re-rooted on the parent's build source; undefined when
- * it cannot be written, and the extension builds over the raw chain.
+ * it cannot be written, and the extension is refused.
  */
 function crossFileCopy(
    plan: MaterializePlan,
@@ -2231,7 +2335,7 @@ function crossFileCopy(
    });
    if ("reason" in made) {
       logger.warn(
-         "An extension table's build copy could not read its parent in another file re-rooted; it builds over the raw chain",
+         "An extension table's build copy could not read its parent in another file re-rooted; it is refused",
          { sourceName: plan.sourceName, reason: made.reason },
       );
       return undefined;

@@ -897,6 +897,7 @@ async function collectGeneratedMaterialize(
          givens: authorDef.givens ?? {},
          sourceRegistry: (authorDef as { sourceRegistry?: unknown })
             .sourceRegistry,
+         imports: (authorDef as { imports?: unknown }).imports,
          // The caller-dependence probes compile against the author's model,
          // never run.
          probe: args.materializer,

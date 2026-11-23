@@ -32,6 +32,8 @@ Two consequences worth knowing. A section merged to `main` ships in the **next**
 
 **What to do:** declare the extension on its parent's tier and destination, or drop `#(materialize)` from it to answer it live.
 
+**An extension whose parent is declared in another file is built over that parent's table, or refused naming the file and why; never over the raw chain.** Each way the plan's walk across files could stop short used to leave the extension building from the warehouse: a file outside the package, an import cycle, a file whose model or build companion does not compile, and a file between that declares `#(materialize)` on the chain. Each is now refused as `upstream_table_unusable`, unless no persisted source lies past it (the extension then has no parent). A `#(materialize)` source that its own file refuses has no table, so the walk now passes through it to the parent beyond, as it passes a refused source in the extension's own file. **Fixed:** an extension of a table-backed parent in an imported file (`source: p is conn.table(…)`) was not linked at all, because Malloy records no `extends` for one and the walk read the importing model without its imports, so it built over the raw chain; it is now built over the parent's table. A `#(materialize)` extension's entry now reports `upstreamReuse: "reused"` when its build read its parent's table.
+
 ## [Unreleased] — a plain DuckDB destination's file is named from its configured name
 
 **Changed: a plain DuckDB `storage=` destination's database file is named from the destination's configured name, not the session's attach alias,** through one guarded path that refuses a name with a separator or `..` and keeps the file under the destinations root.

@@ -2226,12 +2226,18 @@ export function extensionRefusal(
 export function crossFileEntries(
    plans: readonly MaterializePlan[],
    contents: Record<string, unknown>,
+   /**
+    * The rest of the model's compile: an imported base of a table-backed
+    * source is resolved through its source registry and imports (Malloy
+    * records no `extends` for one, see `inferredExtendedSource`).
+    */
+   model: ModelContext = {},
 ): {
    plan: MaterializePlan;
    entry: { sourceID: string; url: string };
    path: TermUse[];
 }[] {
-   const map = SourceMap.of({ contents });
+   const map = SourceMap.of({ ...model, contents });
    const declarationOfID = (sourceID: string) => {
       const def = map.node(sourceID)?.def as SourceDefLike | undefined;
       return def ? declarationOf(def) : undefined;
@@ -2269,6 +2275,43 @@ export function crossFileEntries(
       }
    }
    return out;
+}
+
+/** A compiled model's source registry and imports, beside its contents. */
+export interface ModelContext {
+   sourceRegistry?: unknown;
+   imports?: unknown;
+}
+
+/**
+ * Whether the chain from `fromSourceID` (itself included), through `extend`
+ * and renames in any file, reaches a source that declares `#(materialize)`
+ * or its own `#@ persist`: a persisted upstream an extension of it would
+ * otherwise recompute. Read in the importing model's compile (`contents`),
+ * which holds every source on the chain.
+ */
+export function chainReachesPersisted(
+   contents: Record<string, unknown>,
+   fromSourceID: string,
+   model: ModelContext = {},
+): boolean {
+   const map = SourceMap.of({ ...model, contents });
+   let sourceID: string | undefined = fromSourceID;
+   for (let hops = 0; sourceID !== undefined && hops < 64; hops++) {
+      const def = map.node(sourceID)?.def as PlannedDef | undefined;
+      if (!def) return false;
+      if (
+         declaresMaterialize(map, contents, sourceID) ||
+         declaresOwnPersist(def, contents)
+      ) {
+         return true;
+      }
+      const base: { hop: string; sourceID: string | undefined } | undefined =
+         map.node(sourceID)?.base;
+      if (!base || base.hop === "query") return false;
+      sourceID = base.sourceID;
+   }
+   return true;
 }
 
 /**
