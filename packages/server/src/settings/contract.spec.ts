@@ -1655,7 +1655,7 @@ export const CONTRACT: Record<string, Case[]> = {
       },
    ],
    "materialize.admissionMode": [
-      { name: "unset", expect: value("probe") },
+      { name: "unset", expect: value("lookup") },
       {
          name: "PUBLISHER_ADMISSION_MODE",
          env: { PUBLISHER_ADMISSION_MODE: "shadow" },

@@ -271,6 +271,7 @@ describe("a pair table's leaf key check, on a build", () => {
    it("is forgotten on the models' database bindings when a run is about to write the table", () => {
       const model = {
          setServedCopyContext: () => {},
+         setStringCapabilityReader: () => {},
          prepareServedCopy: async () => {},
          persistedViewBuilds: () => [],
          servedCopyProblems: () => [],

@@ -925,8 +925,8 @@ export const getMaterializeGatedSources = (): boolean =>
 
 /**
  * How read admission judges a stored answer's string comparisons
- * (`PUBLISHER_ADMISSION_MODE`): `probe` reads the warehouse per query,
- * `lookup` reads what load, bind and build recorded, and `shadow` runs both
+ * (`PUBLISHER_ADMISSION_MODE`, temporary): `lookup` (the default) reads
+ * what load, bind and build recorded, `probe` reads the warehouse per query, and `shadow` runs both
  * and decides by the probe (`serve/admission_parity.ts`). Read per query.
  */
 export const getAdmissionMode = (): "probe" | "lookup" | "shadow" =>

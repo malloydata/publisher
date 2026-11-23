@@ -154,10 +154,10 @@ export const storage = [
    setting({
       key: "materialize.admissionMode",
       type: oneOf(["probe", "lookup", "shadow"]),
-      default: "probe",
+      default: "lookup",
       description:
          "TEMPORARY, removed with the per-query probes: how read admission judges a stored answer's strings (probe, lookup or shadow).",
-      notes: "**Temporary**: a transitional test and canary setting, removed together with the per-query probes it switches between; do not depend on it. It picks how read admission judges its collation facts. `probe` (the default): each query reads the source's and the stored table's collations from the warehouse, as Publisher always has. `lookup`: each query looks them up in what the load, the bind and the build recorded (the source's string columns at each bind, and each table's column contract), with no catalog read and no extra compile. `shadow`: both run, the probe decides, and every disagreement is logged at warn as `admission parity drift` and counted in `publisher_admission_parity_drift_total`. Read on every query.",
+      notes: "**Temporary**: a transitional test and canary setting, removed together with the per-query probes it switches between; do not depend on it. It picks how read admission judges its collation facts. `probe`: each query reads the source's and the stored table's collations from the warehouse, as Publisher always has. `lookup` (the default): each query looks them up in what the load, the bind and the build recorded (the source's string columns at each bind, and each table's column contract), with no catalog read and no extra compile. `shadow`: both run, the probe decides, and every disagreement is logged at warn as `admission parity drift` and counted in `publisher_admission_parity_drift_total`. Read on every query.",
       aliases: { env: ["PUBLISHER_ADMISSION_MODE"] },
    }),
    setting({

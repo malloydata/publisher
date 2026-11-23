@@ -377,7 +377,11 @@ async function routed(args: {
          : "used";
    }
    return `skipped ${c.reason}${c.code ? ` (${c.code})` : ""}${
-      args.withDetail && c.detail ? `: ${c.detail}` : ""
+      args.withDetail && c.detail
+         ? // The lookups name why a stored side is unknown; the probes do
+           // not. Compared without it, so the table holds in every mode.
+           `: ${c.detail.replace(/ collation \([^()]*\)$/, " collation")}`
+         : ""
    }`;
 }
 

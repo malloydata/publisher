@@ -44,12 +44,12 @@
  * locale, never by name), whatever the operator. A column altered after the
  * build to another collation answers live.
  *
- * When it is read: the source side once per compiled model (a reload or a
- * rebind compiles a new one, which reads it again), and for a DuckDB
- * instance once per query SQL, so a source altered in place is read again
- * only after a reload; the stored side on every answer, since a stored
- * table is the one place altered after Publisher built it, once per answer
- * however many comparisons (the gates, the filters, the result) ask.
+ * These are the probes: they read the warehouse while a query is answered,
+ * and run only under `materialize.admissionMode` `probe` or `shadow`. By
+ * default read admission answers the same port from what load, bind and
+ * build recorded (`admission_lookup.ts`, `source_capability.ts`), which
+ * these rules are the reference for; the probes go once the lookups have
+ * replaced them everywhere (PR D).
  */
 
 import {
@@ -68,10 +68,10 @@ import {
 import { identifier, quotedIdentifier, quotedPath } from "../../malloy_text";
 import { queryTableReads } from "../../governance/ir/source_reads";
 import {
-   type QueryAdmissionReadSite,
-   recordQueryCatalogRead,
-   recordQueryProbeCompile,
-} from "../../../materialization_metrics";
+   type AdmissionReadSite as QueryAdmissionReadSite,
+   reportCatalogRead as recordQueryCatalogRead,
+   reportProbeCompile as recordQueryProbeCompile,
+} from "./admission_parity";
 
 import type { CollationProbe, GateReads } from "./gate_reads_types";
 import {
@@ -344,18 +344,10 @@ export async function chainBuildCollationRefusal(args: {
  * The BigQuery catalog reads, by the loaded model's runtime, then the bind
  * (the serving snapshot the query was pinned to), then what each reads.
  * Each query compiles a model of its own, so a compiled model would read the
- * catalog per query. A read is repeated:
- *
- * - under another runtime (the package reloaded its models) or another bind
- *   (a build, a rebind, or any other change to what is served);
- * - five minutes after a read that answered, so a source changed in place
- *   (a `CREATE OR REPLACE` with a collation) is seen within that window with
- *   no rebind;
- * - a minute after a read that failed or was denied, which answers live
- *   until then without being issued again.
- *
- * The scope is held here; the timers that drop an entry are the BigQuery
- * reader's (`collation/bigquery.ts`).
+ * catalog per query. A read is repeated only under another runtime (the
+ * package reloaded its models) or another bind (a build, a rebind, or any
+ * other change to what is served); a failed or denied one answers live until
+ * then. Nothing expires on a clock.
  */
 const bigqueryProbes = new WeakMap<
    object,
@@ -386,7 +378,7 @@ function bigqueryReadsOf(
 /**
  * What a BigQuery query's strings compare under. `known: false` (answer
  * live): its SQL names a `COLLATE`; a read failed or was denied (and is
- * then not issued again for a minute (`BIGQUERY_FAILURE_TTL_MS`)); a table it
+ * then not issued again until the next bind); a table it
  * reads is not one a read saw; a view (or a materialized view, an external
  * table) it reads is in a project holding a collated column; it holds
  * author SQL (an `.sql()` source, a raw SQL expression) and a project it

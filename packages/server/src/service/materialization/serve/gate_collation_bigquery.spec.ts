@@ -372,31 +372,37 @@ describe("a BigQuery catalog read's caching", () => {
       jest.useRealTimers();
    });
 
-   it("reads once per loaded model, holds a failure for a minute, then reads again", async () => {
+   it("reads once per bind, and holds a failure until the next bind, whatever the clock", async () => {
       jest.useFakeTimers();
       const catalog: Catalog = { location: "US", projects: { proj: "fail" } };
       const { connection, sent } = stubBigQuery(catalog);
       const model = new SingleConnectionRuntime({ connection }).loadModel(
          MODEL,
       );
-      const ask = (q: string) =>
+      const ask = (q: string, bind: object) =>
          stringGateCollationRefusal({
             authorRunnable: model.loadQuery(q),
             reads: STRING_READS,
+            bind,
          });
-      expect(await ask("run: plain -> { group_by: region }")).toBe(LIVE);
+      const first = {};
+      expect(await ask("run: plain -> { group_by: region }", first)).toBe(LIVE);
       expect(sent).toHaveLength(1);
       catalog.projects = {};
-      // Within the minute: still live, and nothing is issued again.
-      jest.advanceTimersByTime(30_000);
-      expect(await ask("run: plain -> { group_by: region }")).toBe(LIVE);
+      // No clock expires it: still live, and nothing is issued again.
+      jest.advanceTimersByTime(60 * 60_000);
+      expect(await ask("run: plain -> { group_by: region }", first)).toBe(LIVE);
       expect(sent).toHaveLength(1);
-      // After it: read again, and served.
-      jest.advanceTimersByTime(31_000);
-      expect(await ask("run: plain -> { group_by: region }")).toBeUndefined();
+      // The next bind reads again, and serves.
+      const next = {};
+      expect(
+         await ask("run: plain -> { group_by: region }", next),
+      ).toBeUndefined();
       expect(sent).toHaveLength(3);
       // The project's read is kept; another table set is confirmed anew.
-      expect(await ask("run: ci -> { group_by: region }")).toBeUndefined();
+      expect(
+         await ask("run: ci -> { group_by: region }", next),
+      ).toBeUndefined();
       expect(sent).toHaveLength(4);
    });
 
@@ -422,15 +428,14 @@ describe("a BigQuery catalog read's caching", () => {
       expect(sent).toHaveLength(4);
    });
 
-   it("repeats a read that answered after five minutes, not within them", async () => {
+   it("sees a source changed in place only at the next bind, never on a clock", async () => {
       jest.useFakeTimers();
       const catalog: Catalog = { location: "US" };
       const { connection, sent } = stubBigQuery(catalog);
       const model = new SingleConnectionRuntime({ connection }).loadModel(
          MODEL,
       );
-      const bind = {};
-      const ask = () =>
+      const ask = (bind: object) =>
          stringGateCollationRefusal({
             authorRunnable: model.loadQuery(
                "run: plain -> { group_by: region }",
@@ -438,17 +443,17 @@ describe("a BigQuery catalog read's caching", () => {
             reads: STRING_READS,
             bind,
          });
-      expect(await ask()).toBeUndefined();
+      const bind = {};
+      expect(await ask(bind)).toBeUndefined();
       expect(sent).toHaveLength(2);
       // The source is replaced in place with a collation, with no rebind.
       catalog.projects = { proj: ["ds"] };
       catalog.datasets = { "proj.ds": { plain_t: { region: "und:ci" } } };
-      jest.advanceTimersByTime(4 * 60_000);
-      expect(await ask()).toBeUndefined();
+      jest.advanceTimersByTime(60 * 60_000);
+      expect(await ask(bind)).toBeUndefined();
       expect(sent).toHaveLength(2);
-      jest.advanceTimersByTime(61_000);
-      expect(await ask()).toBe(LIVE);
-      expect(sent.length).toBeGreaterThan(2);
+      // The next bind reads it, and answers live.
+      expect(await ask({})).toBe(LIVE);
    });
 
    it("reads again under a new runtime, as after a build or a reload", async () => {

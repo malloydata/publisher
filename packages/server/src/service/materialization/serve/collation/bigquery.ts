@@ -9,27 +9,19 @@
  * from the catalog, never from a query, so BigQuery is read query-wide.
  *
  * The reads are kept in a map the caller holds per loaded model's runtime
- * and bind (`gate_collation.ts`), and each is dropped after
- * {@link BIGQUERY_SUCCESS_TTL_MS} once it answers, or
- * {@link BIGQUERY_FAILURE_TTL_MS} once it fails. This module keeps none.
+ * and bind (`gate_collation.ts`, `source_capability.ts`), for as long as
+ * that bind serves; nothing expires on a clock. This module keeps none.
  */
 
 import { quoteIdentifier } from "../../../quoting";
 import type { ProbeIO } from "./probe_io";
 
-/** How long a catalog read that answered is kept before it is repeated. */
-const BIGQUERY_SUCCESS_TTL_MS = 5 * 60_000;
-
-/** How long a failed or denied catalog read answers live before it is retried. */
-const BIGQUERY_FAILURE_TTL_MS = 60_000;
-
 /**
  * `run`'s answer, read once per `parts` in `byKey` (the reads of one runtime
- * and bind, which the caller keeps), and dropped by an unref'd timer
- * {@link BIGQUERY_SUCCESS_TTL_MS} after it answers, or
- * {@link BIGQUERY_FAILURE_TTL_MS} after it fails, only if nothing has
- * replaced it since. No clock is read (the layer rules forbid it in
- * `serve/`).
+ * and bind, which the caller keeps); a failed read is kept too, and answers
+ * live until the next bind. Nothing expires on a clock: a catalog changed in
+ * place is read again at the next bind (`source_capability.ts` reads it at
+ * every bind for the lookups).
  */
 function bigqueryProbeOnce<T>(
    byKey: Map<string, Promise<unknown>>,
@@ -39,22 +31,11 @@ function bigqueryProbeOnce<T>(
    const key = JSON.stringify(parts);
    let p = byKey.get(key) as Promise<T> | undefined;
    if (!p) {
-      // Bounded: at most this many entries, and so timers, per bind.
+      // Bounded: at most this many entries per bind.
       if (byKey.size >= 1000) byKey.clear();
-      const held = byKey;
-      const mine = run();
-      p = mine;
-      const expire = (ms: number) => {
-         const timer = setTimeout(() => {
-            if (held.get(key) === mine) held.delete(key);
-         }, ms);
-         (timer as { unref?: () => void }).unref?.();
-      };
-      mine.then(
-         () => expire(BIGQUERY_SUCCESS_TTL_MS),
-         () => expire(BIGQUERY_FAILURE_TTL_MS),
-      );
-      byKey.set(key, mine);
+      p = run();
+      p.catch(() => undefined);
+      byKey.set(key, p);
    }
    return p;
 }

@@ -76,7 +76,7 @@
   "materialize": {
     "enabled": true,
     "gatedSources": false,
-    "admissionMode": "probe"
+    "admissionMode": "lookup"
   },
   "materialization": {
     "schedulerEnabled": false,

@@ -213,12 +213,12 @@ observeAdmission({
  */
 function admissionProbe(): CollationProbe {
    switch (getAdmissionMode()) {
-      case "lookup":
-         return lookupProbe;
+      case "probe":
+         return collationProbe;
       case "shadow":
          return SHADOW_PROBE;
       default:
-         return collationProbe;
+         return lookupProbe;
    }
 }
 
