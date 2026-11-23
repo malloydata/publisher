@@ -294,6 +294,6 @@ source: by_both is aj -> { group_by: name, bn is b.name; aggregate: n is count()
       });
       expect(
          stringReadsRefusal(reads, new Map([[a, named("name", "exact")]])),
-      ).toContain("could not be followed");
+      ).toContain("from a table no stored upstream holds");
    });
 });

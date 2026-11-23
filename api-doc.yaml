@@ -12315,8 +12315,15 @@ components:
             is non-terminal, never a refusal: the package reads its tables and
             derives its plan again at once, and the next build either builds
             the source over the upstream's table as it is or the plan refuses
-            it (`upstream_table_unusable`); the source is `retryable`. An open
-            set; absent for a failure that has none.
+            it (`upstream_table_unusable`); the source is `retryable`.
+            `instruction_unresolved` (an instruction no source in the run's
+            build plan resolves to, so nothing was built for it; not
+            `retryable` until the caller reads the plan again). Every
+            instructed source ends in `entries` or `failures`: one the run's
+            plan refused since the caller read it is a refusal carrying the
+            plan's reason, and any other unmatched instruction fails with this
+            code; none is dropped. An open set; absent for a failure that has
+            none.
         refused:
           type: boolean
           description: >-

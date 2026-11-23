@@ -159,8 +159,13 @@ import type {
    PlanChainBuildText,
    PlanChainStringReads,
 } from "../domain/chain_build";
-import { type StringReads, stringReadsRefusal } from "../domain/string_reads";
-import { SourceMap } from "../text/source_map";
+import {
+   type StringReads,
+   stringReadsRefusal,
+   unstoredReadRefusal,
+} from "../domain/string_reads";
+import { reachPersisted, SourceMap } from "../text/source_map";
+import { authorModelReachContext } from "../text/author_model";
 import { quotedIdentifier } from "../../malloy_text";
 import type {
    PersistedViewPlan,
@@ -1185,6 +1190,10 @@ async function planStringReads(
    } catch {
       return { refused: "the strings it compares could not be read" };
    }
+   // A string read from no stored upstream's table refuses whatever is
+   // bound: the build would read the warehouse, which no contract changes.
+   const unstored = unstoredReadRefusal(reads);
+   if (unstored !== undefined) return { refused: unstored, unstored: true };
    if ("refused" in reads || !ports.boundContract) return reads;
    const contracts = new Map(
       request.stored.map((id) => [id, ports.boundContract!(id, destination)]),
@@ -1397,12 +1406,32 @@ async function chainedStringReads(
       )
       .map((u) => u.sourceID);
    if (stored.length === 0) return undefined;
-   return planStringReads(
+   const reads = await planStringReads(
       ports,
       materializer,
       { downstream: source.name, stored },
       destination,
    );
+   if (!("refused" in reads) || !reads.unstored) return reads;
+   // Name what it reads instead, as a run would: the warehouse table and the
+   // source that reaches it (`regions` through `daily_regional`).
+   const persisted = new Set(
+      reachedUpstreams(def, modelDef, map).map((u) => u.sourceID),
+   );
+   const reached = reachPersisted(
+      authorModelReachContext(modelDef),
+      source.name,
+      (_name, sourceID) => persisted.has(sourceID),
+   );
+   return reached.raw
+      ? {
+           refused:
+              `it reads the source warehouse (${reached.rawLeaves.join(", ")}) ` +
+              `through ${reached.rawVia.map((n) => `'${n}'`).join(", ")}, ` +
+              `which no stored table can stand in for`,
+           unstored: true,
+        }
+      : reads;
 }
 
 /**
@@ -2689,9 +2718,11 @@ function refuseUncomparableStrings<
       const why =
          table.unusableUpstream ??
          (stacks && reads !== undefined && "refused" in reads
-            ? `it is built over its upstreams' tables in its storage= ` +
-              `destination, which compares strings byte-exact, and ` +
-              reads.refused
+            ? reads.unstored
+               ? reads.refused
+               : `it is built over its upstreams' tables in its storage= ` +
+                 `destination, which compares strings byte-exact, and ` +
+                 reads.refused
             : undefined);
       if (why === undefined) continue;
       dropped.add(sourceID);
