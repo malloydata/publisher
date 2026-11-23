@@ -66,9 +66,13 @@ import { errMessage } from "../../../utils";
 import {
    applyDeltaScript,
    countLateRows,
+   isMergeKeyGuardFailure,
    isPairGuardFailure,
+   mergeGuardedInStatement,
    isRenderableWatermarkType,
    planIncrementalStep,
+   probeRepeatedKey,
+   probeRepeatedKeyInRange,
    probeServerVersion,
    seedCoveredThrough,
    type DeltaTarget,
@@ -90,6 +94,8 @@ import {
 } from "./incremental_upstream";
 import {
    INCREMENTAL_LATE_ROWS_CODE,
+   INCREMENTAL_MERGE_KEY_NOT_UNIQUE_CODE,
+   type IncrementalCheckFinding,
    LEDGER_ADVANCES_CAP,
    type LedgerAdvanceChain,
    MATERIALIZE_EXTENSION_GENERATION_UNPROVEN_CODE,
@@ -158,6 +164,17 @@ export interface IncrementalRunContext {
     * host instructs carries what the host bound, with no field of its own.
     */
    priorLateRows?: ReadonlyMap<string, LateRows>;
+   /**
+    * Told what a refresh found of a source's checks, by content address: a
+    * `merge_key=` repeated in the source (its delta rolled back, or its
+    * rebuilt table repeating a key), a check that failed (the source is
+    * rebuilt in full every refresh until it runs), or a check passed. The
+    * package warns of the first two until the check passes.
+    */
+   noteIncrementalCheck?: (
+      sourceEntityId: string,
+      finding: IncrementalCheckFinding,
+   ) => void;
    /**
     * Each incremental source's step in this run, by content address, filled
     * as it is planned: what an extension over it reads to follow it
@@ -748,9 +765,142 @@ export async function resetLedger(
 }
 
 /**
+ * Whether a merge source's freshly rebuilt table holds each identity once
+ * ({@link probeRepeatedKey}); always true for a range replace or a pair
+ * table, whose delta does not match rows one to one. A repeat, or a check
+ * that fails, is false: the caller records no boundary, so the source is
+ * rebuilt in full again next run rather than merged into a table where one
+ * delta row would rewrite every stored copy of its key.
+ */
+async function seededKeyIsUnique(params: {
+   context: IncrementalRunContext;
+   lineage: IncrementalLineage;
+   quotedTablePath: string;
+   runner: SqlRunner;
+   dialect: string;
+   storedColumn?: (field: string) => string;
+}): Promise<boolean> {
+   const { context, lineage } = params;
+   if (lineage.strategy !== "merge" || lineage.pair) return true;
+   const stored = (field: string) => params.storedColumn?.(field) ?? field;
+   const matchNames = [
+      ...new Set([...lineage.mergeKeys, ...(lineage.scopeColumns ?? [])]),
+   ].map(stored);
+   const found = await probeRepeatedKey(
+      params.runner,
+      params.dialect,
+      params.quotedTablePath,
+      matchNames,
+   );
+   const at = {
+      packageName: context.packageName,
+      physicalTableName: lineage.physicalTableName,
+   };
+   if (found.error !== undefined) {
+      logger.warn(
+         "Could not check a merge key's uniqueness after a full rebuild; " +
+            "the next refresh will rebuild again",
+         { ...at, errorCode: found.errorCode },
+      );
+      context.noteIncrementalCheck?.(lineage.sourceEntityId, {
+         check: "merge_key",
+         outcome: "failed",
+         errorCode: found.errorCode ?? "unknown",
+      });
+      return false;
+   }
+   if (found.repeated) {
+      logger.warn(
+         "An incremental source's merge_key= is not unique in its rows, so " +
+            "no boundary is recorded and it is rebuilt in full until it is",
+         {
+            ...at,
+            code: INCREMENTAL_MERGE_KEY_NOT_UNIQUE_CODE,
+            mergeKeys: lineage.mergeKeys,
+         },
+      );
+   }
+   context.noteIncrementalCheck?.(lineage.sourceEntityId, {
+      check: "merge_key",
+      outcome: found.repeated ? "not_unique" : "passed",
+   });
+   return !found.repeated;
+}
+
+/**
+ * Whether a committed merge left each identity it touched on one row, for a
+ * dialect whose merge statement carries no key guard (Snowflake; see
+ * mergeGuardedInStatement). Always true elsewhere, and for a range replace or
+ * a pair table. A repeat, or a probe that fails, is false and noted on the
+ * package, as after a full rebuild ({@link seededKeyIsUnique}).
+ */
+async function mergedKeyIsUnique(params: {
+   context: IncrementalRunContext;
+   lineage: IncrementalLineage;
+   step: Extract<IncrementalStep, { mode: "delta" }>;
+   target: DeltaTarget;
+   sourceName: string;
+}): Promise<boolean> {
+   const { context, lineage, step, target } = params;
+   if (
+      lineage.strategy !== "merge" ||
+      lineage.pair ||
+      mergeGuardedInStatement(target.dialect)
+   ) {
+      return true;
+   }
+   const stored = (field: string) => target.storedColumn?.(field) ?? field;
+   const found = await probeRepeatedKeyInRange({
+      runner: target.runner,
+      dialect: target.dialect,
+      quotedTablePath: target.quotedTablePath,
+      matchNames: [
+         ...new Set([...lineage.mergeKeys, ...(lineage.scopeColumns ?? [])]),
+      ].map(stored),
+      watermark: stored(lineage.watermarkName),
+      start: step.start,
+      end: step.end,
+   });
+   const at = {
+      packageName: context.packageName,
+      sourceName: params.sourceName,
+      physicalTableName: lineage.physicalTableName,
+   };
+   if (found.error !== undefined) {
+      logger.warn(
+         "Could not check a merge key's uniqueness after a delta; the next " +
+            "refresh will rebuild in full",
+         { ...at, errorCode: found.errorCode },
+      );
+      context.noteIncrementalCheck?.(lineage.sourceEntityId, {
+         check: "merge_key",
+         outcome: "failed",
+         errorCode: found.errorCode ?? "unknown",
+      });
+      return false;
+   }
+   if (!found.repeated) return true;
+   logger.warn(
+      "An incremental source's merge_key= is not unique in its rows, so no " +
+         "boundary is recorded and it is rebuilt in full until it is",
+      {
+         ...at,
+         code: INCREMENTAL_MERGE_KEY_NOT_UNIQUE_CODE,
+         mergeKeys: lineage.mergeKeys,
+      },
+   );
+   context.noteIncrementalCheck?.(lineage.sourceEntityId, {
+      check: "merge_key",
+      outcome: "not_unique",
+   });
+   return false;
+}
+
+/**
  * Record the boundary a completed SEED reached by probing the table it wrote
  * (see {@link seedCoveredThrough}); a source with no rows records nothing, so the
- * next run seeds again.
+ * next run seeds again, and so does a merge source whose table repeats a key
+ * ({@link seededKeyIsUnique}).
  *
  * Returns the boundary (undefined when none) for the manifest entry. With a
  * caller-supplied ledger the store write is skipped and the return value is the
@@ -765,6 +915,7 @@ export async function advanceLedgerAfterSeed(params: {
    /** The column the table holds the watermark under, when renamed. */
    storedColumn?: (field: string) => string;
 }): Promise<WatermarkBound | undefined> {
+   if (!(await seededKeyIsUnique(params))) return undefined;
    const boundary = await seedCoveredThrough(
       params.runner,
       params.dialect,
@@ -834,7 +985,15 @@ export async function applyIncrementalStep(params: {
          physicalTableName: lineage.physicalTableName,
       });
    }
-   if (step.mode === "seed") return { applied: false };
+   if (step.mode === "seed") {
+      if (step.failedCheck) {
+         context.noteIncrementalCheck?.(lineage.sourceEntityId, {
+            ...step.failedCheck,
+            outcome: "failed",
+         });
+      }
+      return { applied: false };
+   }
    if (step.mode === "skip") {
       // No duration (reported as null, not 0, which would skew the
       // build-duration series).
@@ -859,37 +1018,56 @@ export async function applyIncrementalStep(params: {
          target.abortSignal,
       );
    } catch (err) {
-      // A pair delta whose parent-row check failed was rolled back: rebuild
-      // in full, which writes the flag over the whole table (fail safe).
-      // A delta value its DECIMAL column cannot hold exactly was refused, not
-      // rounded: rebuild in full, which widens the column to hold it.
-      const decimal = isDecimalDeltaGuardFailure(err);
-      if (!decimal && (!lineage.pair || !isPairGuardFailure(err))) throw err;
+      const rolledBack = guardedSeed(err, lineage);
+      if (!rolledBack) throw err;
       reportIncrementalStep({
-         step: decimal
-            ? {
-                 mode: "seed",
-                 // The stored column's shape cannot hold the delta: no metric
-                 // label of its own, the reason names the decimal cause.
-                 reasonCode: "shape_mismatch",
-                 reason:
-                    "a delta value needs more digits than its stored DECIMAL " +
-                    "column holds, so it was rolled back rather than rounded " +
-                    "and the table rebuilds at the wider scale",
-              }
-            : {
-                 mode: "seed",
-                 reasonCode: "pair_parent_row",
-                 reason:
-                    "the delta would leave a parent without exactly one " +
-                    "parent-row flag, so it was rolled back",
-              },
+         step: rolledBack,
          sourceName: params.sourceName,
          packageName: context.packageName,
          physicalTableName: lineage.physicalTableName,
       });
+      if (rolledBack.reasonCode === "merge_key_not_unique") {
+         logger.warn(
+            "An incremental source's merge_key= is not unique in its rows, " +
+               "so its delta was rolled back and it is rebuilt in full",
+            {
+               packageName: context.packageName,
+               sourceName: params.sourceName,
+               physicalTableName: lineage.physicalTableName,
+               code: INCREMENTAL_MERGE_KEY_NOT_UNIQUE_CODE,
+               mergeKeys: lineage.mergeKeys,
+            },
+         );
+         context.noteIncrementalCheck?.(lineage.sourceEntityId, {
+            check: "merge_key",
+            outcome: "not_unique",
+         });
+      }
       return { applied: false };
    }
+   // A merge no statement guard checks (Snowflake) is checked after it
+   // commits: a table left repeating a key records no boundary, so the next
+   // run rebuilds it in full.
+   if (!(await mergedKeyIsUnique({ ...params, step }))) {
+      await resetLedger(context, lineage);
+      return {
+         applied: true,
+         durationMs: Math.round(performance.now() - startTime),
+         refresh: "delta",
+         ...(carried ? { lateRows: carried } : {}),
+      };
+   }
+   // A committed delta passed every check its plan ran.
+   if (lineage.strategy === "merge" && !lineage.pair) {
+      context.noteIncrementalCheck?.(lineage.sourceEntityId, {
+         check: "merge_key",
+         outcome: "passed",
+      });
+   }
+   context.noteIncrementalCheck?.(lineage.sourceEntityId, {
+      check: "delta_types",
+      outcome: "passed",
+   });
    await advanceLedger({
       context,
       lineage,
@@ -921,6 +1099,57 @@ export async function applyIncrementalStep(params: {
       refresh: "delta",
       ...(lateRows ? { lateRows } : {}),
    };
+}
+
+/**
+ * The full rebuild a delta that a guard in its own statements rolled back
+ * calls for, or undefined when `err` is not such a guard's (and the run
+ * fails as for any error):
+ *
+ *  - a pair delta whose parent-row check failed: the rebuild writes the flag
+ *    over the whole table (fail safe);
+ *  - a delta value its DECIMAL column cannot hold exactly, refused rather
+ *    than rounded: the rebuild widens the column to hold it;
+ *  - a merge whose delta repeats an identity (mergeKeyGuard): `merge_key=`
+ *    is not unique in the source, so only a rebuild, which copies live's
+ *    rows as they are, leaves the table equal to live.
+ */
+function guardedSeed(
+   err: unknown,
+   lineage: IncrementalLineage,
+): Extract<IncrementalStep, { mode: "seed" }> | undefined {
+   if (isDecimalDeltaGuardFailure(err)) {
+      return {
+         mode: "seed",
+         // The stored column's shape cannot hold the delta: no metric
+         // label of its own, the reason names the decimal cause.
+         reasonCode: "shape_mismatch",
+         reason:
+            "a delta value needs more digits than its stored DECIMAL " +
+            "column holds, so it was rolled back rather than rounded " +
+            "and the table rebuilds at the wider scale",
+      };
+   }
+   if (lineage.pair && isPairGuardFailure(err)) {
+      return {
+         mode: "seed",
+         reasonCode: "pair_parent_row",
+         reason:
+            "the delta would leave a parent without exactly one " +
+            "parent-row flag, so it was rolled back",
+      };
+   }
+   if (lineage.strategy === "merge" && isMergeKeyGuardFailure(err)) {
+      return {
+         mode: "seed",
+         reasonCode: "merge_key_not_unique",
+         reason:
+            "the delta holds a merge_key= value more than once, so the key " +
+            "is not unique in the source and no merge can leave the table " +
+            "equal to it; the delta was rolled back",
+      };
+   }
+   return undefined;
 }
 
 /**

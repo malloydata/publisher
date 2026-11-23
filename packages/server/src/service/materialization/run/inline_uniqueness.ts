@@ -20,6 +20,7 @@
  * is checked on every build, because its rows change under a stable address.
  */
 
+import { contractKeyName } from "../domain/column_contract";
 import { placedLeafKey } from "../domain/physical_table";
 import { createHash } from "node:crypto";
 import { recordKeyCheck } from "../../../materialization_metrics";
@@ -560,10 +561,10 @@ export function pairLeafKeyChecksOf(
 /**
  * The key a pair table's leaf check is recorded under in its contract
  * (`ColumnContract.keys`): the path of joins down to the leaf and the
- * leaf's key column, dot-separated (`items.options.option_id`).
+ * leaf's key column (`leaf:items.options.option_id`, `contractKeyName`).
  */
 function pairLeafContractKey(join: string, keyColumn: string): string {
-   return join ? `${join}.${keyColumn}` : keyColumn;
+   return contractKeyName("leaf", join, keyColumn);
 }
 
 /**
@@ -718,6 +719,7 @@ export function keyUniquenessAt(
    if (!records || table === undefined) return undefined;
    const own = keyUniquenessOf(records[address], entry);
    const parentKeys: Record<string, boolean> = {};
+   const parentKeyColumns: Record<string, string> = {};
    for (const [key, record] of Object.entries(records)) {
       if (
          record.sourceID !== undefined &&
@@ -725,11 +727,15 @@ export function keyUniquenessAt(
          record.table === table
       ) {
          parentKeys[record.sourceID] = record.unique;
+         parentKeyColumns[record.sourceID] = record.keyColumn;
       }
    }
    const anyParent = Object.keys(parentKeys).length > 0;
    if (!own && !anyParent) return undefined;
-   return { ...(own ?? {}), ...(anyParent ? { parentKeys } : {}) };
+   return {
+      ...(own ?? {}),
+      ...(anyParent ? { parentKeys, parentKeyColumns } : {}),
+   };
 }
 
 /**

@@ -963,6 +963,8 @@ describe("the rollup key record, bound for serving", () => {
          keyColumn: "k",
          unique: true,
          parentKeys: { s: true, t: false },
+         // The key column each check read, so a moved key reads unchecked.
+         parentKeyColumns: { s: "k", t: "k" },
       });
       // A source's record is never read as the rollup's own.
       expect(
@@ -998,7 +1000,10 @@ describe("the rollup key record, bound for serving", () => {
             "h",
             stored,
          ),
-      ).toEqual({ parentKeys: { flights: true } });
+      ).toEqual({
+         parentKeys: { flights: true },
+         parentKeyColumns: { flights: "id" },
+      });
       for (const other of [at("other"), at("lake", "x")]) {
          expect(
             keyUniquenessAt(
@@ -1054,7 +1059,10 @@ describe("the rollup key record, bound for serving", () => {
       });
       expect(
          withRollupKeyRecords({ h: stored }, [run]).h.keyUniqueness,
-      ).toEqual({ parentKeys: { flights: false } });
+      ).toEqual({
+         parentKeys: { flights: false },
+         parentKeyColumns: { flights: "k" },
+      });
    });
 
    it("reaches a storage binding from the store, and never from a host's manifest", () => {
@@ -1065,7 +1073,10 @@ describe("the rollup key record, bound for serving", () => {
          connectionName: "duckdb",
          storageDestinationName: "lake",
          schema: [{ name: "id", type: "INTEGER" }],
-         keyUniqueness: { parentKeys: { flights: true } },
+         keyUniqueness: {
+            parentKeys: { flights: true },
+            parentKeyColumns: { flights: "id" },
+         },
       } as unknown as ManifestEntry;
       const fromStore = splitManifestEntries(
          { h: stored },
@@ -1078,7 +1089,10 @@ describe("the rollup key record, bound for serving", () => {
       ).storageEntries;
       expect(
          (fromStore.h as { keyUniqueness?: unknown }).keyUniqueness,
-      ).toEqual({ parentKeys: { flights: true } });
+      ).toEqual({
+         parentKeys: { flights: true },
+         parentKeyColumns: { flights: "id" },
+      });
       expect(
          (fromHost.h as { keyUniqueness?: unknown }).keyUniqueness,
       ).toBeUndefined();
@@ -1326,7 +1340,10 @@ describe("the rollup key record, bound for serving", () => {
       );
       expect(
          (storage?.h as { keyUniqueness?: unknown } | undefined)?.keyUniqueness,
-      ).toEqual({ parentKeys: { flights: true } });
+      ).toEqual({
+         parentKeys: { flights: true },
+         parentKeyColumns: { flights: "k" },
+      });
    });
 
    it("forgets a bound record when a run is about to write its table", () => {

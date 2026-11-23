@@ -79,6 +79,23 @@ export interface ServedCopyProblem {
    declarerNotStored?: true;
 }
 
+/** A decline the served copy records per source at its compile. */
+export interface SourceDecline {
+   readonly reason: string;
+   readonly code: ServedCopyDeclineCode;
+}
+
+/**
+ * A source's declines that depend only on it and the copy's compile: a gate
+ * the copy cannot graft, an opted-out or unsafe source on its chain, a zone
+ * it computes in that differs from the author's.
+ */
+export interface SourceDeclines {
+   readonly graft?: SourceDecline;
+   readonly optOut?: SourceDecline;
+   readonly zone?: SourceDecline;
+}
+
 export interface Compiled {
    key: string;
    /** The invalidation generation it was compiled under. */
@@ -208,6 +225,12 @@ export interface Compiled {
     * (decision 6). Dropped with the compile: a rebind or reload starts empty.
     */
    declined?: Map<string, LegDecline>;
+   /**
+    * The declines that depend only on the source a query runs on, by the
+    * source's name in {@link modelDef}: recorded at this compile
+    * (`ServedCopyServe.sourceDeclinesOf`), read per query.
+    */
+   sourceDeclines?: ReadonlyMap<string, SourceDeclines>;
    /**
     * The pair tables (inlined join_many) the copy reads flat: a query that
     * reads one is checked against it (governance/ir/pair_flat_query.ts).

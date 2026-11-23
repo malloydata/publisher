@@ -18,6 +18,8 @@ import {
    DROP_OCCASIONS,
    KEY_CHECK_KINDS,
    KEY_CHECK_OUTCOMES,
+   recordAdmissionParityDrift,
+   recordQueryWalk,
    recordAnnotationFindings,
    recordAttributionSkipped,
    recordAutoLoadOutcome,
@@ -32,6 +34,8 @@ import {
    recordIncompatibleDetected,
    recordKeyCheck,
    recordManifestBindDegraded,
+   recordQueryCatalogRead,
+   recordQueryProbeCompile,
    recordQueryRoute,
    recordQueryRouteDuration,
    recordScheduledFire,
@@ -240,7 +244,7 @@ describe("materialization_metrics", () => {
          "failed",
          "cancelled",
       ]);
-      expect(INCREMENTAL_STEP_REASONS).toHaveLength(17);
+      expect(INCREMENTAL_STEP_REASONS).toHaveLength(18);
 
       // build_total: failure_class is none for the four other outcomes, and
       // one of the four failure classes when failed: 6 x 2 x (4 + 4) = 96.
@@ -411,6 +415,13 @@ describe("materialization_metrics", () => {
  * instrument names, so an instrument added without a case here fails.
  */
 const EMISSIONS: Record<string, () => void> = {
+   publisher_query_catalog_reads_total: () =>
+      recordQueryCatalogRead("source_probe"),
+   publisher_query_probe_compiles_total: () =>
+      recordQueryProbeCompile("stored_probe"),
+   publisher_admission_parity_drift_total: () =>
+      recordAdmissionParityDrift("source", "lookup_refuses"),
+   publisher_query_walks_total: () => recordQueryWalk("scope"),
    publisher_materialization_runs_total: () =>
       recordMaterializationRun("auto", "success", 1),
    publisher_materialization_run_duration_ms: () =>

@@ -12226,10 +12226,21 @@ components:
         keys:
           type: object
           description: >-
-            For a pair table (an `inline=` join_many), the key checks its build
-            ran, by stored key column: whether the key held one row per value
-            and no NULL. A view built over a pair table needs its leaf key's
-            check recorded as passed.
+            The key checks the table's build ran, each named
+            `<level>:<subject>.<keyColumn>` (or `<level>:<keyColumn>` when it
+            has no subject), with whether the key held one row per value and
+            no NULL. `leaf`: a pair table's (an `inline=` join_many's) leaf
+            key, its subject the join path (`leaf:items.options.option_id`);
+            a view built over a pair table needs it recorded as passed.
+            `rollup`: a rollup's own key, its one grain dimension, with no
+            subject (`rollup:category`). `parent`: the primary key of a query
+            source that reads the rollup through a join_many, and `stored`: a
+            stored source's own primary key, each with the source as its
+            subject, named by its sourceID with the file relative to the
+            package (`parent:orders@models/orders.malloy.id`). A rollup or
+            source check serves a join only under the key the model declares
+            now. Readers look up the names they need and never parse one;
+            an unknown name or level is ignored.
           additionalProperties:
             type: object
             required: [unique]
@@ -12238,7 +12249,9 @@ components:
                 type: boolean
               level:
                 type: string
-                description: "`parent`, `middle` or `leaf`. An open set."
+                description: >-
+                  `leaf`, `rollup`, `parent` or `stored`, as the name's
+                  prefix. An open set.
 
     ContractColumn:
       type: object

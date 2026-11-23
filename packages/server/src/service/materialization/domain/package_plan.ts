@@ -47,11 +47,12 @@ export interface SourceBuild {
 /**
  * A planned table as plain data: its {@link TablePlan} less the compiled
  * source, its build target and the rollup's over-stored-base compile, which
- * hold the compiler that planned them.
+ * hold the compiler that planned them, and its column origins, which only a
+ * build on the planning thread reads.
  */
 export type TablePlanData = DistributiveOmit<
    TablePlan,
-   "source" | "target" | "overStoredBase"
+   "source" | "target" | "overStoredBase" | "columnOrigins"
 > & {
    /** The planned source's name: the author's, for a `#(materialize)` table. */
    name: string;

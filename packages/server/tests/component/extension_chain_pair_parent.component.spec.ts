@@ -109,7 +109,7 @@ source: orders is warehouse.table('__T__xp_orders') extend {
   measure: total is amount.sum()
 }
 ${EXT}`,
-      leaf: "items.item_id",
+      leaf: "leaf:items.item_id",
    },
    {
       label: "through a path of two joins",
@@ -129,7 +129,7 @@ source: orders is warehouse.table('__T__xp_orders') extend {
   measure: total is amount.sum()
 }
 ${EXT}`,
-      leaf: "items.options.option_id",
+      leaf: "leaf:items.options.option_id",
    },
    {
       label: "of two inlined paths (blocks)",
@@ -146,7 +146,7 @@ source: orders is warehouse.table('__T__xp_orders') extend {
   measure: total is amount.sum()
 }
 ${EXT}`,
-      leaf: "notes.note_id",
+      leaf: "leaf:notes.note_id",
    },
 ];
 
@@ -498,7 +498,7 @@ for (const tier of tiers) {
          const parent = Object.values(entriesOf(first)).find(
             (e) => e.sourceName === "orders",
          );
-         expect(parent?.contract?.keys?.["items.item_id"]).toEqual({
+         expect(parent?.contract?.keys?.["leaf:items.item_id"]).toEqual({
             unique: false,
             level: "leaf",
          });

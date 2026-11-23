@@ -90,6 +90,12 @@ export interface Setting<K extends string = string, T = unknown> {
     * `(set)`, as it does a secret. An access key id, say.
     */
    readonly masked?: true;
+   /**
+    * Transitional, removed with what it switches between: documented, but
+    * left out of the example file, so no configuration copied from it comes
+    * to depend on it.
+    */
+   readonly temporary?: true;
    readonly aliases: Aliases;
    /** Carries the value type for `settings.get`; never set. */
    readonly valueType?: { value: T };
@@ -106,6 +112,7 @@ interface Entry<K extends string, T> {
    secret?: boolean;
    noFlag?: true;
    masked?: true;
+   temporary?: true;
    aliases?: Aliases;
 }
 
@@ -135,6 +142,7 @@ export function setting<K extends string, T>(
       secret: entry.secret ?? false,
       ...(entry.noFlag ? { noFlag: true as const } : {}),
       ...(entry.masked ? { masked: true as const } : {}),
+      ...(entry.temporary ? { temporary: true as const } : {}),
       aliases: entry.aliases ?? {},
    };
 }

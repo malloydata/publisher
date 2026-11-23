@@ -493,8 +493,8 @@ for (const [tier, mechanism] of tiers.flatMap((t) =>
          );
          expect(pair).toHaveLength(1);
          const leaf = mechanism.columns.includes("option_count")
-            ? "items.options.option_id"
-            : "items.item_id";
+            ? "leaf:items.options.option_id"
+            : "leaf:items.item_id";
          expect(pair[0].contract?.keys?.[leaf]).toEqual({
             unique: true,
             level: "leaf",
@@ -594,7 +594,7 @@ for (const tier of tiers) {
          const pair = Object.values(entriesOf(run)).find(
             (e) => e.sourceName?.startsWith("orders") ?? false,
          );
-         expect(pair?.contract?.keys?.["items.item_id"]).toEqual({
+         expect(pair?.contract?.keys?.["leaf:items.item_id"]).toEqual({
             unique: false,
             level: "leaf",
          });

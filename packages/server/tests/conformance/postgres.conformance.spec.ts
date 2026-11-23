@@ -291,8 +291,14 @@ describe.skipIf(!url)("Postgres conformance", () => {
          quoted: { ...quoted, columns: [...quoted.columns].sort() },
          bare,
       }).toEqual({
-         quoted: { columns: ["B", "a"] },
-         bare: { columns: ["v"] },
+         quoted: {
+            columns: ["B", "a"],
+            types: new Map([
+               ["a", "integer"],
+               ["B", "integer"],
+            ]),
+         },
+         bare: { columns: ["v"], types: new Map([["v", "integer"]]) },
       });
       expect(found).toBe(CAN.decodedTablePath);
    });

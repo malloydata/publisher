@@ -244,6 +244,8 @@ export interface StorageBuildRequest {
     * (column_contract_capture.ts). Absent: unknown (`compare` `none`).
     */
    liveCollations?: (columns: string[]) => Promise<Map<string, Collation>>;
+   /** See SourceBuildOptions.upstreamTypes. */
+   upstreamTypes?: ReadonlyMap<string, { dialect: string; nativeType: string }>;
    /** See SourceBuildOptions.rollup. */
    rollup?: boolean;
 }
@@ -839,6 +841,9 @@ export class StorageBuildStrategy
       const contract = await storageContract({
          table: physicalTableName,
          declared: declaredColumns,
+         ...(params.upstreamTypes
+            ? { upstreamTypes: params.upstreamTypes }
+            : {}),
          schema: result.schema,
          collations: result.collations,
          ...(stackedOnBase && params.storedBase

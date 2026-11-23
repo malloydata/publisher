@@ -691,8 +691,8 @@ describe.skipIf(process.platform === "win32")(
             gateExact: true,
             declaredType: "string",
          });
-         // A double: no gate over it is exact, since the build does not
-         // name each column's source.
+         // A double the build computed (a sum): it copies no warehouse
+         // double, so no gate over it is exact.
          expect(column(base, "total")).toMatchObject({
             compare: "exact",
             gateExact: false,

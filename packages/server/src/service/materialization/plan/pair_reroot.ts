@@ -42,6 +42,7 @@
  * Pure: plan in, Malloy text out.
  */
 
+import { contractKeyName } from "../domain/column_contract";
 import { identifier } from "../../malloy_text";
 import type {
    MaterializeColumn,
@@ -69,14 +70,14 @@ export function pairRerootJoins(plan: MaterializePlan): string[] {
 /**
  * The contract keys (`ColumnContract.keys`) of the leaf checks a build over
  * the pair table needs passed (unique and never null): one per path, as
- * `run/inline_uniqueness.ts` records them (`items.options.option_id`).
+ * `run/inline_uniqueness.ts` records them (`leaf:items.options.option_id`).
  */
 export function pairLeafContractKeys(plan: MaterializePlan): string[] {
    return pairsOf(plan).map((p) => {
       const names = [p.join, ...(p.hops ?? []).map((h) => h.join)];
       const hops = p.hops ?? [];
       const key = hops.length > 0 ? hops[hops.length - 1].key : p.childKey;
-      return `${names.join(".")}.${key}`;
+      return contractKeyName("leaf", names.join("."), key);
    });
 }
 

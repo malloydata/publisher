@@ -146,7 +146,10 @@ async function buildAndBindDatabase(
    if (!source) {
       throw new Error(`persist source '${sourceName}' not in build plan`);
    }
-   pkg.materialization().bind({
+   // As every server bind commits: the served copy compiled over the new
+   // table, and what read admission looks up (each source's string
+   // capability) read with it.
+   await pkg.materialization().bindCompiled({
       database: {
          [source.sourceEntityId]: {
             tableName: physicalTableName,

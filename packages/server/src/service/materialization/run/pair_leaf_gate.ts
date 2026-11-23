@@ -36,10 +36,13 @@ export function pairLeafRefusal(
    const failed = leafKeys.filter((k) => keys[k]?.unique === false);
    const unrecorded = leafKeys.filter((k) => keys[k] === undefined);
    if (failed.length === 0 && unrecorded.length === 0) return undefined;
+   // Named as the model names the path (`items.item_id`), not as recorded.
+   const named = (ks: string[]) =>
+      ks.map((k) => `'${k.replace(/^leaf:/, "")}'`).join(", ");
    const what =
       failed.length > 0
-         ? `found the key ${failed.map((k) => `'${k}'`).join(", ")} held more than once or NULL`
-         : `recorded no result for the key ${unrecorded.map((k) => `'${k}'`).join(", ")}`;
+         ? `found the key ${named(failed)} held more than once or NULL`
+         : `recorded no result for the key ${named(unrecorded)}`;
    return (
       `'${downstream}' was not built over its upstream '${upstream}''s pair ` +
       `table: the leaf key check of its inlined join_many, which a build over ` +

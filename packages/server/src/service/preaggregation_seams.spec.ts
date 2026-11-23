@@ -466,7 +466,7 @@ export { orders }
          expect(rollupIds).toHaveLength(1);
          // Bound to a table that does not exist, so a routed query's read
          // fails and is retried live, and a live one never touches it.
-         pkg.materialization().bind({
+         await pkg.materialization().bindCompiled({
             database: Object.fromEntries(
                rollupIds.map((id) => [
                   id,
@@ -514,7 +514,7 @@ export { notes }
             ...pkg.materialization().getPreaggregateEntityIds(),
          ];
          expect(rollupIds).toHaveLength(1);
-         pkg.materialization().bind({
+         await pkg.materialization().bindCompiled({
             database: Object.fromEntries(
                rollupIds.map((id) => [
                   id,
@@ -620,7 +620,7 @@ source: regions is duckdb.sql("""
          // Deliberately a table that does not exist: if the entry ever reaches
          // the author's model this test fails loudly rather than passing on a
          // substitution that happened to work.
-         pkg.materialization().bind({
+         await pkg.materialization().bindCompiled({
             database: Object.fromEntries(
                rollupIds.map((id) => [
                   id,
@@ -730,7 +730,7 @@ source: orders is duckdb.sql("""
          // fail its read and say `live_fallback`, so `servedFrom` null proves
          // it never touched the rollup.
          const pkg = await loadPackage(ROWS_MODEL);
-         bindMissingRollupTables(pkg);
+         await bindMissingRollupTables(pkg);
          expect(
             await rows(pkg, "run: orders -> { aggregate: n is count() }"),
          ).toEqual([{ n: 3 }]);
@@ -750,7 +750,7 @@ source: orders is duckdb.sql("""
          // The other side of the same binding: the check must not refuse what
          // a rollup answers, or the fix is a silent loss of acceleration.
          const pkg = await loadPackage(ROWS_MODEL);
-         bindMissingRollupTables(pkg);
+         await bindMissingRollupTables(pkg);
          expect(
             await routedToMissingRollup(
                pkg.getModel("model.malloy")!,
@@ -763,10 +763,10 @@ source: orders is duckdb.sql("""
 });
 
 /** Bind every rollup to a table that does not exist, so routing is observable ({@link routedToMissingRollup}). */
-function bindMissingRollupTables(pkg: Package) {
+async function bindMissingRollupTables(pkg: Package) {
    const rollupIds = [...pkg.materialization().getPreaggregateEntityIds()];
    expect(rollupIds.length).toBeGreaterThan(0);
-   pkg.materialization().bind({
+   await pkg.materialization().bindCompiled({
       database: Object.fromEntries(
          rollupIds.map((id) => [
             id,

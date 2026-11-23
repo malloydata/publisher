@@ -162,6 +162,8 @@ export async function captureTableContract(args: {
    tableName: string;
    tier: Tier;
    live?: (columns: string[]) => Promise<Map<string, Collation>>;
+   /** See {@link storageContract}'s `upstreamTypes`. */
+   upstreamTypes?: ReadonlyMap<string, UpstreamType>;
 }): Promise<ColumnContract> {
    const read = await storedFacts(
       args.connection,
@@ -174,13 +176,16 @@ export async function captureTableContract(args: {
    if (args.tier === "database") {
       return deriveContract({ tier: "database", stored: read.stored });
    }
-   const live = await args.live?.(
-      read.stored.columns.filter((c) => c.isString).map((c) => c.name),
-   );
-   return deriveContract({
-      tier: "storage",
-      stored: read.stored,
-      ...(live ? { live } : {}),
+   // As a storage build records it, its session's default collation with it.
+   return storageContract({
+      table: args.tableName,
+      schema: read.stored.columns.map((c) => ({
+         name: c.name,
+         type: c.nativeType,
+      })),
+      collations: read.stored.collations,
+      ...(args.live ? { live: args.live } : {}),
+      ...(args.upstreamTypes ? { upstreamTypes: args.upstreamTypes } : {}),
    });
 }
 
@@ -200,6 +205,11 @@ export async function storageContract(args: {
    live?: (columns: string[]) => Promise<Map<string, Collation>>;
    /** The Malloy type the build source declares for each column. */
    declared?: readonly { name: string; type: string }[];
+   /**
+    * The warehouse type of each column that is a plain copy of one
+    * warehouse column, by stored name, which its `gateExact` is judged by.
+    */
+   upstreamTypes?: ReadonlyMap<string, UpstreamType>;
 }): Promise<ColumnContract> {
    const columns = args.schema.flatMap((c) =>
       c.name && c.type
@@ -233,14 +243,15 @@ export async function storageContract(args: {
          : {}),
    };
    if (args.stackedOn) {
+      const contracts = args.stackedOn.map((e) => parseContract(e?.contract));
+      const upstreamTypes = gateExactThrough(args.upstreamTypes, contracts);
       return deriveContract({
          tier: "storage",
          stored,
-         stackedOn: weakestStringCompare(
-            args.stackedOn.map((e) => parseContract(e?.contract)),
-         ),
+         stackedOn: weakestStringCompare(contracts),
          producer: SERVER_VERSION,
          ...(args.declared ? { declared: args.declared } : {}),
+         ...(upstreamTypes ? { upstreamTypes } : {}),
       });
    }
    const live = await args.live?.(
@@ -252,7 +263,37 @@ export async function storageContract(args: {
       ...(live ? { live } : {}),
       producer: SERVER_VERSION,
       ...(args.declared ? { declared: args.declared } : {}),
+      ...(args.upstreamTypes ? { upstreamTypes: args.upstreamTypes } : {}),
    });
+}
+
+/** A warehouse column's type, with the dialect it is named in. */
+type UpstreamType = { dialect: string; nativeType: string };
+
+/**
+ * `types` kept only for the columns the stored tables a build read in place
+ * of its source copied exactly: each column some table's contract lists
+ * under its name, and every contract that lists it records gate-exact. A
+ * table with no contract, or one that does not list a column, leaves that
+ * column with no type, so its own gate reads as not exact.
+ */
+function gateExactThrough(
+   types: ReadonlyMap<string, UpstreamType> | undefined,
+   contracts: readonly (ColumnContract | undefined)[],
+): ReadonlyMap<string, UpstreamType> | undefined {
+   if (!types || contracts.some((c) => c === undefined)) return undefined;
+   const kept = new Map<string, UpstreamType>();
+   for (const [name, type] of types) {
+      const listed = contracts.flatMap((c) =>
+         (c?.columns ?? []).filter(
+            (col) => col.name.toLowerCase() === name.toLowerCase(),
+         ),
+      );
+      if (listed.length > 0 && listed.every((col) => col.gateExact)) {
+         kept.set(name, type);
+      }
+   }
+   return kept.size > 0 ? kept : undefined;
 }
 
 /**

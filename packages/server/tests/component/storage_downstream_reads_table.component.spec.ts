@@ -386,3 +386,45 @@ source: s is base extend {
       });
    },
 );
+
+// R-10 at build: a `storage=` table records a column's gate exact when it is
+// a plain copy of a warehouse binary64 (Postgres `double precision`, read
+// from the plan's upstream readings), and not when its build computed it.
+describe.skipIf(!url)(
+   "a storage= build records gateExact from each column's warehouse type",
+   () => {
+      const f =
+         lakeFixture(`${HEAD}#(materialize) storage="lake" name="sdr_copy"
+source: copy is raw
+#(materialize) storage="lake" name="sdr_calc"
+source: calc is raw -> { select: cat, amt2 is amt * 2 }
+`);
+      let m: Materialization;
+      beforeAll(async () => {
+         await f.setUp();
+         m = await f.build({});
+      }, 300_000);
+      afterAll(() => f.tearDown());
+
+      const gateExactOf = (sourceName: string, column: string) =>
+         (
+            entriesOf(m).find((e) => e.sourceName === sourceName) as
+               | (Entry & {
+                    contract?: {
+                       columns: { name: string; gateExact: boolean }[];
+                    };
+                 })
+               | undefined
+         )?.contract?.columns.find((c) => c.name === column)?.gateExact;
+
+      it("builds both tables", () => {
+         expect([m.status, m.error]).toEqual(["MANIFEST_FILE_READY", null]);
+      });
+
+      it("records a copied double precision gate-exact, and a computed double not", () => {
+         expect(gateExactOf("copy", "amt")).toBe(true);
+         expect(gateExactOf("copy", "price")).toBe(true);
+         expect(gateExactOf("calc", "amt2")).toBe(false);
+      });
+   },
+);
