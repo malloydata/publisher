@@ -895,6 +895,7 @@ source: child is parent extend {
          sourceID: parent.sourceID,
          sourceName: "parent",
          declaration: parentDecl,
+         mode: { tier: "same" },
          path: [],
          crossFile: {
             modelFile: "/p/a.malloy",

@@ -74,6 +74,7 @@ import {
    type ChainMode,
 } from "../domain/table_plans";
 import { UPSTREAM_TABLE_UNUSABLE_REASON } from "./downstream_upstreams";
+import { pairLeafContractKeys } from "./pair_reroot";
 import {
    currentTimeFields,
    givenReadingFields,
@@ -83,6 +84,7 @@ import {
 import { callerIndependent, type FieldDependence } from "../../probe_compiler";
 import {
    declarationOf,
+   givenWhereNotOwnReason,
    readTimeTermsOf,
    withDeclaration,
 } from "./materialize_read_time";
@@ -1765,7 +1767,9 @@ function readTermsOf(
          { refused: "current_time" },
       );
    }
-   const readTime = readTimeTermsOf(def, classified, columns, givens);
+   const readTime = readTimeTermsOf(def, classified, columns, givens, {
+      deferInherited: true,
+   });
    if (!readTime.ok) {
       return new Declined(readTime.reason, { refused: readTime.refusal });
    }
@@ -2090,6 +2094,29 @@ function chainExtensionTables(
          path: path as TermUse[],
       };
    }
+   // A given-reading term inherited by a source with no materialized parent
+   // is refused, as it always was: nothing re-applies it at read.
+   for (const plan of plans) {
+      if (
+         plan.buildsOver ||
+         refused.some((r) => r.sourceID === plan.sourceID)
+      ) {
+         continue;
+      }
+      const stray = givenReadTerms(plan).find((t) => t.inherited);
+      if (!stray) continue;
+      refused.push({
+         sourceName: plan.sourceName,
+         sourceID: plan.sourceID,
+         reason: givenWhereNotOwnReason(`\`where: ${stray.code}\``),
+         outcome: {
+            refused: {
+               reason: "inherited_where_with_given",
+               tier: tierOf(plan.persist.storage),
+            },
+         },
+      });
+   }
    const ids = new Set(refused.map((r) => r.sourceID));
    return { plans: plans.filter((p) => !ids.has(p.sourceID)), refused };
 }
@@ -2106,10 +2133,13 @@ type ChainVerdict = { link: ChainMode } | { refuse: string };
  * {@link ChainVerdict} for one extension and its parent. Linked today: a
  * pair on one tier (both database, whose build reads the parent's build
  * source in its own warehouse, or one storage destination, whose build reads
- * the parent's table there, see `overStored`), neither incremental, neither a
- * table of several inlined paths, the parent no pair table, and the parent
- * with no given-reading `where:` and no current-time `where:` its build
- * leaves out. Every other pair is refused, each with why.
+ * the parent's table there, see `overStored`), neither incremental, and the
+ * parent with no given-reading `where:` and no current-time `where:` its
+ * build leaves out. A pair-table parent (an inlined join_many, a path, or
+ * blocks) links with `pair`: the build reads it back one row per parent
+ * (plan/pair_reroot.ts), relying on its leaf key checks; it stays refused
+ * with an incremental side, as does a `storage=` extension of several
+ * inlined paths. Every other pair is refused, each with why.
  */
 export function chainVerdict(
    plan: MaterializePlan,
@@ -2119,6 +2149,17 @@ export function chainVerdict(
    if ("refuse" in tiers) return tiers;
    const incremental = (p: MaterializePlan) =>
       Object.keys(p.persist).some((k) => INCREMENTAL_KEYS.includes(k));
+   const pairParent =
+      parent.pair !== undefined || parent.pairBlocks !== undefined;
+   // A pair delta replaces whole parents and is open above, and a watermark
+   // delta through the re-root's self-join is unproven.
+   if (pairParent && (incremental(plan) || incremental(parent))) {
+      return {
+         refuse:
+            "whose pair table an incremental refresh cannot be coordinated " +
+            "over, so neither may be incremental",
+      };
+   }
    // TODO(extension chains, case 2: incremental): coordinate the refresh.
    if (incremental(plan) || incremental(parent)) {
       return {
@@ -2127,39 +2168,66 @@ export function chainVerdict(
             "parent, has no coordinated refresh over the parent's table yet",
       };
    }
-   // TODO(extension chains, case 3: pair parent): re-root on the join.
-   if (plan.pairBlocks || parent.pairBlocks) {
+   // A table of several inlined paths unions its blocks with a `conn.sql`
+   // on the source connection, which a build in a destination over the
+   // parent's stored table cannot run.
+   if (plan.pairBlocks && plan.persist.storage !== undefined) {
       return {
          refuse:
-            "and a table of several inlined paths is not yet built over, or as " +
-            "an extension of, another table",
+            "and a storage= table of several inlined paths is not built over " +
+            "another table in its destination",
       };
    }
-   if (parent.pair) {
+   const terms = parentTermsLeftOut(plan, parent);
+   if ("refuse" in terms) return terms;
+   return {
+      link: {
+         ...tiers.link,
+         ...(terms.leftOut.length > 0
+            ? { leftOutParentTerms: terms.leftOut }
+            : {}),
+         // The build re-roots a pair parent on its join put back, which
+         // counts each level by its key: it relies on the leaf checks.
+         ...(pairParent
+            ? { pair: { leafKeys: pairLeafContractKeys(parent) } }
+            : {}),
+      },
+   };
+}
+
+/**
+ * The terms the parent's build leaves out, which the extension's re-root of
+ * the parent leaves out too (`ChainMode.leftOutParentTerms`), or why the
+ * extension is refused: the parent's current-time terms holding an upper
+ * bound, wherever its build finds them (the re-root edits those inside the
+ * parent's declaration; one a base of the parent writes is not in the
+ * re-root at all), each applied again at read from its parts.
+ *
+ * A parent whose `where:` reads a given refuses the extension. The
+ * extension's own rows depend on the caller's given: built over the parent's
+ * unfiltered table with the term applied again at read, it would be right
+ * only where its table keeps every column the term reads, and one that
+ * aggregates such a column away would give every caller the all-values
+ * answer. One shared table cannot serve every caller, so it answers live.
+ */
+function parentTermsLeftOut(
+   plan: MaterializePlan,
+   parent: MaterializePlan,
+): { leftOut: { code: string; at: TermUse[] }[] } | { refuse: string } {
+   // The parent's own term, or one the extension inherits from a source
+   // between them: either way its rows depend on the caller's given.
+   const given =
+      givenReadTerms(parent)[0] ??
+      givenReadTerms(plan).find((t) => t.inherited);
+   if (given) {
       return {
          refuse:
-            "whose pair table holds a row per child of its inlined join_many, " +
-            "which an extension's build does not yet read back as one row per " +
-            "parent",
+            `whose \`where: ${given.code}\` reads a given, so the extension's ` +
+            `own rows depend on the caller's given and one shared table cannot ` +
+            `serve every caller; it answers live`,
       };
    }
-   // TODO(extension chains, case 4: given and window terms): leave the
-   // parent's left-out terms out of the re-root.
-   if (givenReadTerms(parent).length > 0) {
-      return {
-         refuse:
-            "whose given-reading `where:` its re-root would apply to the " +
-            "extension's build, scoping its table to one caller",
-      };
-   }
-   if (leftOutWindowTerms(parent.readTimeTerms).length > 0) {
-      return {
-         refuse:
-            "whose current-time `where:` its build leaves out, which its " +
-            "re-root would apply to the extension's build",
-      };
-   }
-   return { link: tiers.link };
+   return { leftOut: leftOutWindowTerms(parent.readTimeTerms) };
 }
 
 /**

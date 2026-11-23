@@ -538,6 +538,27 @@ export class PackageMaterialization {
    }
 
    /**
+    * The column contract bound for the table of `sourceID`: in destination
+    * `storage` when given ({@link boundStorageContract}), else the database
+    * table the plan the bind is served under addresses it at; undefined when
+    * none is bound. What a plan judges an extension's build over a pair-table
+    * parent by (plan/build_plan.ts).
+    */
+   boundTableContract(
+      sourceID: string,
+      storage: string | undefined,
+   ): ColumnContract | undefined {
+      if (storage !== undefined) {
+         return this.boundStorageContract(sourceID, storage);
+      }
+      const address = (this.plan.servingPlan() ?? this.plan.buildPlan)
+         ?.sources?.[sourceID]?.sourceEntityId;
+      const entry =
+         address === undefined ? undefined : this.databaseEntries?.[address];
+      return entry ? parseContract(entry.contract) : undefined;
+   }
+
+   /**
     * A build's report that an upstream's table is not what the plan it was
     * planned from recorded (SchemaIncompatibleError): the drift handler.
     */

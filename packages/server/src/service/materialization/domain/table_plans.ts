@@ -431,6 +431,26 @@ export interface ChainMode {
     * table is in, which the build attaches read-only beside its own.
     */
    parentDestination?: string;
+   /**
+    * Set when the parent is a pair table (an inlined join_many, or several
+    * inlined paths): the build re-roots the parent on its join put back
+    * (plan/pair_reroot.ts), so the extension reads one row per parent. The
+    * re-root counts each level by its key, so the build relies on the leaf
+    * checks `leafKeys` names (`ColumnContract.keys`, as
+    * `pairLeafContractKeys` writes them) having passed on the parent's
+    * table: judged at plan from the parent's bound contract when there is
+    * one, else at build (run/pair_leaf_gate.ts, `schema_incompatible`).
+    */
+   pair?: { leafKeys: string[] };
+   /**
+    * Set when the parent's build leaves terms out (a current-time `where:`
+    * holding an upper bound): its re-root in the extension's build leaves
+    * those in its declaration out too, each found by its verbatim text and
+    * where the compiler says it reads, so the extension's table holds every
+    * window's rows, as the parent's does. The served copy applies each
+    * again at read, from its parts.
+    */
+   leftOutParentTerms?: { code: string; at: TermUse[] }[];
 }
 
 /** The parent an extension table builds over. */

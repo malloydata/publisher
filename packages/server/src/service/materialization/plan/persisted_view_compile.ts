@@ -57,12 +57,16 @@ import {
    canonicalAuthorizeRoute,
 } from "../../authorize_routes";
 import { collectEntryPointGates } from "../../gate_classification";
-import { readPreparedQuery } from "../../governance/ir/prepared_query";
+import {
+   queryGivenUsageIds,
+   readPreparedQuery,
+} from "../../governance/ir/prepared_query";
 import { identifier } from "../../malloy_text";
 import { pipelineReadsCurrentTime } from "./persist_dynamic_terms";
 import {
    planModelPersistedQueries,
    planModelPersistedViews,
+   READS_A_GIVEN,
    type PersistedQueryRefusal,
    type PersistedViewRefusal,
 } from "./persisted_view";
@@ -432,10 +436,13 @@ async function persistedQueryRefusalReason(
 ): Promise<{ reason: string; refusal: RefusedReason } | undefined> {
    let stages: StageLike[];
    let structRef: unknown;
+   let givens: string[] | undefined;
    try {
-      const prepared = await readPreparedQuery(
-         materializer.loadQuery(`run: ${identifier(plan.queryName)}`),
+      const runnable = materializer.loadQuery(
+         `run: ${identifier(plan.queryName)}`,
       );
+      const prepared = await readPreparedQuery(runnable);
+      givens = queryGivenUsageIds(await runnable.getPreparedQuery());
       stages = Array.isArray(prepared.pipeline)
          ? (prepared.pipeline as StageLike[])
          : [];
@@ -445,6 +452,21 @@ async function persistedQueryRefusalReason(
          reason: `the query does not compile on its own (${error instanceof Error ? error.message.split("\n")[0] : String(error)})`,
          refusal: "generated_build_failed",
       };
+   }
+   // A given the query reads with no default (its own, or a source's
+   // `where:` a `#(materialize)` build leaves out) has no value at build, so
+   // the companion that declares the query's build source would not compile,
+   // leaving out every persisted view and query of the model. Refused here,
+   // as the build target's own check refuses one read with a default.
+   const declared = (modelDef as { givens?: Record<string, unknown> } | null)
+      ?.givens;
+   const unvalued = (givens ?? []).some(
+      (id) =>
+         (declared?.[id] as { default?: unknown } | undefined)?.default ===
+         undefined,
+   );
+   if (unvalued) {
+      return { reason: READS_A_GIVEN, refusal: "reads_given" };
    }
    if (stages.length === 0)
       return {

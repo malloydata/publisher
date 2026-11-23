@@ -1141,6 +1141,8 @@ export class InstructedBuild {
          if (overStoredUpstreams) {
             assertPairLeafKeysOfUpstream(run, persistSource);
          }
+         // So does an extension table over a pair-table parent.
+         assertPairLeafKeysOfParent(run, persistSource);
 
          // An inlined join_one must match at most one row: checked on
          // the source's own connection before anything is written.
@@ -2375,6 +2377,48 @@ function assertPairLeafKeysOfUpstream(
       persistSource.name,
       upstream?.source.name ?? rerootedSourceID ?? "its upstream",
       pairLeafKeys,
+      entry,
+   );
+}
+
+/**
+ * Refuse an extension table whose parent is a pair table
+ * (`buildsOver.mode.pair`, read back with its join put back) unless the
+ * parent's current entry in the run records each leaf key check the re-root
+ * relies on as passed ({@link assertPairLeafKeysPassed}). Reached only for a
+ * parent the plan could not judge from a bound contract (one built in this
+ * run, or first built): a bound failure refuses the extension at plan.
+ */
+function assertPairLeafKeysOfParent(
+   run: InstructedRun,
+   persistSource: PersistSource,
+): void {
+   const { compiled } = run;
+   const over =
+      compiled.tables[persistSource.sourceID]?.materialize?.buildsOver;
+   if (!over?.mode.pair) return;
+   const parent = compiled.tables[over.sourceID];
+   let entry: ManifestEntry | undefined;
+   if (parent) {
+      try {
+         entry =
+            run.entries[
+               computeSourceEntityId(
+                  parent.source,
+                  compiled.connectionDigests,
+                  parent.target,
+                  compiled.tableFolds,
+                  compiled.upstreamSchemas,
+               )
+            ];
+      } catch {
+         entry = undefined;
+      }
+   }
+   assertPairLeafKeysPassed(
+      persistSource.name,
+      over.sourceName,
+      over.mode.pair.leafKeys,
       entry,
    );
 }

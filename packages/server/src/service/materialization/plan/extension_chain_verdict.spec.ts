@@ -10,6 +10,8 @@ import {
    PAIRED,
 } from "../../../test_helpers/materialize_spec_models";
 import { chainVerdict } from "./materialize_plan";
+import type { MaterializePlan } from "../domain/table_plans";
+import { buildCopyText } from "./materialize_build_copy";
 
 /**
  * An extension table of a `#(materialize)` parent is built over the parent's
@@ -19,6 +21,10 @@ import { chainVerdict } from "./materialize_plan";
  */
 
 const packages = planPackages({}, { keepIncrementalUnbuildable: true });
+
+const NOTES = `source: notes is duckdb.sql("""
+  select * from (values (7, 1, 'late'), (8, 2, 'gift')) as t(note_id, order_id, topic)
+""") extend { primary_key: note_id }`;
 
 const DATED = `source: ev is duckdb.sql("select 1 as id, 'east' as region, timestamp '2026-01-01' as ts, 2.0 as amount")
 `;
@@ -85,14 +91,91 @@ source: ext is orders extend { dimension: big is amount > 10 }
       extensions: ["ext"],
    },
    {
+      label: "pair-table parent through a path of two joins",
+      files: `${PAIRED}
+source: picks is duckdb.sql("""
+  select * from (values (10, 1), (11, 3)) as t(pick_id, line_id)
+""") extend { primary_key: pick_id }
+source: lines_picked is lines extend {
+  join_many: picks on picks.line_id = line_id
+}
+#(materialize) inline=["lp.picks"]
+source: orders is orders_raw extend {
+  primary_key: id
+  join_many: lp is lines_picked on lp.order_id = id
+}
+#(materialize)
+source: ext is orders extend { dimension: big is amount > 10 }
+`,
+      extensions: ["ext"],
+   },
+   {
+      label: "parent and extension of several inlined paths (blocks)",
+      files: `${PAIRED}
+${NOTES}
+#(materialize) inline=["lines", "notes"]
+source: orders is orders_raw extend {
+  primary_key: id
+  join_many: lines on lines.order_id = id
+  join_many: notes on notes.order_id = id
+}
+#(materialize)
+source: ext is orders extend { dimension: big is amount > 10 }
+#(materialize)
+source: plain is orders_raw extend { primary_key: id }
+#(materialize) inline=["lines", "notes"]
+source: blocks_ext is plain extend {
+  join_many: lines on lines.order_id = id
+  join_many: notes on notes.order_id = id
+}
+#(materialize) storage="lake"
+source: splain is orders_raw extend { primary_key: id }
+#(materialize) storage="lake" inline=["lines", "notes"]
+source: sblocks_ext is splain extend {
+  join_many: lines on lines.order_id = id
+  join_many: notes on notes.order_id = id
+}
+`,
+      extensions: ["ext", "blocks_ext", "sblocks_ext"],
+   },
+   {
+      label: "pair-table parent and an incremental side",
+      files: `${PAIRED}
+#(materialize) inline=["lines"] refresh="incremental" watermark="order_date"
+source: orders is orders_raw extend {
+  primary_key: id
+  join_many: lines on lines.order_id = id
+}
+#(materialize)
+source: ext is orders extend { dimension: big is amount > 10 }
+#(materialize) inline=["lines"]
+source: o2 is orders_raw extend {
+  primary_key: id
+  join_many: lines on lines.order_id = id
+}
+#(materialize) refresh="incremental" watermark="order_date"
+source: inc_ext is o2 extend { dimension: big is amount > 10 }
+`,
+      extensions: ["ext", "inc_ext"],
+   },
+   {
       label: "upper-bound window on the parent",
       files: `${DATED}
 #(materialize)
 source: older is ev extend { where: ts < now - 30 days }
 #(materialize)
 source: ext is older extend { dimension: big is amount > 1 }
+#(materialize) storage="lake"
+source: solder is ev extend { where: ts < now - 30 days }
+#(materialize) storage="lake"
+source: sext is solder extend { dimension: big is amount > 1 }
+source: windowed is ev extend { where: ts < now - 30 days }
+#(materialize)
+source: on_base is windowed extend { dimension: tag is 'x' }
+#(materialize)
+source: ext_of_base is on_base extend { dimension: big is amount > 1 }
 `,
-      extensions: ["ext"],
+      extensions: ["ext", "sext", "ext_of_base"],
    },
    {
       label: "given-reading parent",
@@ -140,6 +223,204 @@ describe("every extension table links to its parent's table or is refused", () =
    }
 });
 
+describe("an extension's build copy over a pair-table parent", () => {
+   it(
+      "re-roots the parent on its join put back, one row per parent, its join_many's own definition taken out",
+      async () => {
+         const files = `${PAIRED}
+#(materialize) inline=["lines"]
+source: orders is orders_raw extend {
+  primary_key: id
+  join_many: lines on lines.order_id = id
+  measure: total is amount.sum()
+}
+#(materialize)
+source: ext is orders extend { dimension: big is amount > 10 }
+`;
+         const { c } = await packages.plan(files);
+         const plans = generatedPlans(c);
+         const ext = plans.find((p) => p.sourceName === "ext")!;
+         const parent = plans.find((p) => p.sourceName === "orders")!;
+         const copy = buildCopyText(files, ext, {
+            parent,
+            importFrom: "lvl.malloy",
+         });
+         expect("copy" in copy && copy.copy).toContain(
+            `source: orders is orders__mat -> {
+  where: __parent_row
+  select: id, region, amount, order_date
+} extend {
+  primary_key: id
+  join_many: lines is orders__mat -> {
+    where: lines__line_id is not null
+    select: __pair_parent_key is id, line_id is lines__line_id, order_id is lines__order_id, qty is lines__qty, big_line is lines__big_line
+  } extend {
+    primary_key: line_id
+  } on lines.__pair_parent_key = id
+} extend {
+  primary_key: id
+
+  measure: total is amount.sum()
+}
+#(materialize)
+source: ext is orders extend { dimension: big is amount > 10 }`,
+         );
+      },
+      { timeout: 60000 },
+   );
+});
+
+describe("an extension's build copy over a parent whose build leaves a term out", () => {
+   it(
+      "re-roots the parent with its upper-bound window left out, and keeps the extension's own text",
+      async () => {
+         const files = `${DATED}
+#(materialize)
+source: older is ev extend { where: ts < now - 30 days }
+#(materialize)
+source: ext is older extend { dimension: big is amount > 1 }
+`;
+         const { c } = await packages.plan(files);
+         const plans = generatedPlans(c);
+         const ext = plans.find((p) => p.sourceName === "ext")!;
+         const parent = plans.find((p) => p.sourceName === "older")!;
+         expect(ext.buildsOver?.mode).toEqual({
+            tier: "same",
+            leftOutParentTerms: [
+               { code: "ts < now - 30 days", at: expect.any(Array) },
+            ],
+         });
+         const copy = buildCopyText(files, ext, {
+            parent,
+            importFrom: "lvl.malloy",
+         });
+         expect("copy" in copy && copy.copy).toContain(
+            `source: older is older__mat extend { where: true }
+#(materialize)
+source: ext is older extend { dimension: big is amount > 1 }`,
+         );
+      },
+      { timeout: 60000 },
+   );
+});
+
+describe("an extension of a given-reading parent", () => {
+   for (const [label, text] of [
+      [
+         "the parent's own term",
+         `#(materialize)
+source: orders is orders_raw extend { where: region = $REGION }
+#(materialize)
+source: ext is orders extend { dimension: big is amount > 10 }`,
+      ],
+      [
+         "a term on a source between them",
+         `#(materialize)
+source: orders is orders_raw extend { dimension: x is 1 }
+source: mid is orders extend { where: region = $REGION }
+#(materialize)
+source: ext is mid extend { dimension: big is amount > 10 }`,
+      ],
+   ] as const) {
+      it(
+         `is refused at plan as upstream_table_unusable: ${label}`,
+         async () => {
+            const { c } =
+               await packages.plan(`##! experimental { persistence givens }
+given: REGION :: string
+${BASE}
+${text}
+`);
+            expect(generatedPlans(c).map((p) => p.sourceName)).toEqual([
+               "orders",
+            ]);
+            const refusal = (c.annotationFindings ?? []).find(
+               (f) => f.code === "materialize-not-built" && f.subject === "ext",
+            );
+            expect(refusal?.refused?.reason).toBe("upstream_table_unusable");
+            expect(refusal?.message).toContain(
+               "one shared table cannot serve every caller",
+            );
+         },
+         { timeout: 60000 },
+      );
+   }
+
+   it(
+      "keeps inherited_where_with_given for a source with no materialized parent",
+      async () => {
+         const { c } =
+            await packages.plan(`##! experimental { persistence givens }
+given: REGION :: string
+${BASE}
+source: b is orders_raw extend { where: region = $REGION }
+#(materialize)
+source: ext is b extend { dimension: big is amount > 10 }
+`);
+         const refusal = (c.annotationFindings ?? []).find(
+            (f) => f.code === "materialize-not-built" && f.subject === "ext",
+         );
+         expect(refusal?.refused?.reason).toBe("inherited_where_with_given");
+      },
+      { timeout: 60000 },
+   );
+});
+
+describe("every persisted downstream of a given-reading #(materialize) parent is refused at plan", () => {
+   const head = `##! experimental { persistence givens }
+given: REGION :: string
+${BASE}
+#(materialize)
+source: orders is orders_raw extend { where: region = $REGION }
+`;
+   for (const [label, text, subject, code, reason] of [
+      [
+         "a persisted view",
+         `source: s is orders extend {
+  #@ persist name="v"
+  view: by_region is { group_by: region; aggregate: n is count() }
+}`,
+         "s -> by_region",
+         "persist-view-not-built",
+         "upstream_table_unusable",
+      ],
+      [
+         "a persisted query",
+         `#@ persist name="q"
+query: q is orders -> { group_by: region; aggregate: n is count() }`,
+         "q",
+         "persist-query-not-built",
+         "reads_given",
+      ],
+      [
+         "a rollup",
+         `source: rolled is orders extend {
+  #(rollup) grain=["region"]
+  measure: n is count()
+}`,
+         "rolled.n",
+         "rollup-not-built",
+         "inherited_where_with_given",
+      ],
+   ] as const) {
+      it(
+         `${label}, with no companion failure and the parent still planned`,
+         async () => {
+            const { c } = await packages.plan(`${head}\n${text}\n`);
+            expect(c.omittedSources).toEqual([]);
+            expect(generatedPlans(c).map((p) => p.sourceName)).toEqual([
+               "orders",
+            ]);
+            const finding = (c.annotationFindings ?? []).find(
+               (f) => f.code === code && f.subject === subject,
+            );
+            expect(finding?.refused?.reason).toBe(reason);
+         },
+         { timeout: 60000 },
+      );
+   }
+});
+
 describe("chainVerdict", () => {
    const parent = examplePlan({ sourceID: "p@file:///pkg/m.malloy" });
    const ext = examplePlan({
@@ -169,6 +450,104 @@ describe("chainVerdict", () => {
       ).toEqual({
          link: { tier: "across_destinations", parentDestination: "lake" },
       });
+   });
+
+   const pair = {
+      join: "lines",
+      childKey: "line_id",
+      parentKey: "id",
+      parentRowColumn: "__parent_row",
+   } as unknown as NonNullable<MaterializePlan["pair"]>;
+
+   it("links an extension of a pair table, naming the leaf checks its build relies on", () => {
+      expect(chainVerdict(ext, { ...parent, pair })).toEqual({
+         link: { tier: "same", pair: { leafKeys: ["lines.line_id"] } },
+      });
+   });
+
+   it("refuses an extension of a pair table when either side is incremental", () => {
+      for (const [e, p] of [
+         [
+            { ...ext, persist: { refresh: "incremental" } },
+            { ...parent, pair },
+         ],
+         [ext, { ...parent, pair, persist: { refresh: "incremental" } }],
+      ] as const) {
+         const verdict = chainVerdict(e, p);
+         expect("refuse" in verdict && verdict.refuse).toContain(
+            "neither may be incremental",
+         );
+      }
+   });
+
+   it("refuses a storage= extension of several inlined paths", () => {
+      const verdict = chainVerdict(
+         {
+            ...ext,
+            persist: { storage: "lake" },
+            pairBlocks: {} as NonNullable<MaterializePlan["pairBlocks"]>,
+         },
+         { ...parent, persist: { storage: "lake" } },
+      );
+      expect("refuse" in verdict && verdict.refuse).toContain(
+         "several inlined paths",
+      );
+   });
+
+   const window = {
+      kind: "current_time",
+      code: "ts < now - 30 days",
+      columns: ["ts"],
+      window: {
+         field: "ts",
+         op: "<",
+         offset: { sign: -1, amount: 30, unit: "day" },
+      },
+      leftOut: [
+         {
+            url: "file:///pkg/m.malloy",
+            range: {
+               start: { line: 3, character: 30 },
+               end: { line: 3, character: 32 },
+            },
+         },
+      ],
+   } as const;
+
+   it("links an extension of a parent whose build leaves a window out, naming the term its re-root leaves out", () => {
+      expect(
+         chainVerdict(ext, {
+            ...parent,
+            readTimeTerms: [
+               { ...window, window: { ...window.window } } as never,
+            ],
+         }),
+      ).toEqual({
+         link: {
+            tier: "same",
+            leftOutParentTerms: [
+               { code: window.code, at: window.leftOut as never },
+            ],
+         },
+      });
+   });
+
+   it("refuses an extension of a parent whose where: reads a given", () => {
+      const verdict = chainVerdict(ext, {
+         ...parent,
+         readTimeTerms: [
+            {
+               kind: "given",
+               code: "region = $R",
+               givens: ["R"],
+               columns: ["region"],
+               at: [],
+            },
+         ],
+      });
+      expect("refuse" in verdict && verdict.refuse).toContain(
+         "one shared table cannot serve every caller",
+      );
    });
 
    it("refuses, with why, a database extension of a storage= parent", () => {
