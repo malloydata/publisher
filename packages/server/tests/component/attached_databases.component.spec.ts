@@ -26,6 +26,26 @@ const TEST_DB_PATH = path.join(TEST_DB_DIR, "test.duckdb");
 describe("DuckDB Attached Databases", () => {
    let connection: DuckDBConnection;
 
+   /**
+    * `INSTALL '<ext>' FROM community`, as the connection layer runs it. An
+    * extension a build's bake already installed from another repository (on
+    * Credible's runners, their mirror of the community repository) fails this
+    * INSTALL with "the origin is different"; the installed copy is the one the
+    * LOAD after it uses, as `installAndLoadExtension` tolerates.
+    */
+   async function installFromCommunity(ext: string): Promise<void> {
+      try {
+         await connection.runSQL(`INSTALL '${ext}' FROM community;`);
+      } catch (error) {
+         if (
+            !(error instanceof Error) ||
+            !error.message.includes("the origin is different")
+         ) {
+            throw error;
+         }
+      }
+   }
+
    beforeAll(async () => {
       await fs.mkdir(TEST_DB_DIR, { recursive: true });
       connection = new DuckDBConnection("test", TEST_DB_PATH, TEST_DB_DIR);
@@ -63,7 +83,7 @@ describe("DuckDB Attached Databases", () => {
 
       it("should load bigquery extension from community", async () => {
          try {
-            await connection.runSQL("INSTALL 'bigquery' FROM community;");
+            await installFromCommunity("bigquery");
             await connection.runSQL("LOAD bigquery;");
             const result = await connection.runSQL(
                "SELECT * FROM duckdb_extensions() WHERE extension_name = 'bigquery';",
@@ -86,7 +106,7 @@ describe("DuckDB Attached Databases", () => {
 
       it("should load snowflake extension from community", async () => {
          try {
-            await connection.runSQL("INSTALL 'snowflake' FROM community;");
+            await installFromCommunity("snowflake");
             await connection.runSQL("LOAD snowflake;");
             const result = await connection.runSQL(
                "SELECT * FROM duckdb_extensions() WHERE extension_name = 'snowflake';",
@@ -166,7 +186,7 @@ describe("DuckDB Attached Databases", () => {
 
          for (const ext of community) {
             try {
-               await connection.runSQL(`INSTALL '${ext}' FROM community;`);
+               await installFromCommunity(ext);
                await connection.runSQL(`LOAD ${ext};`);
             } catch (error) {
                const message =
