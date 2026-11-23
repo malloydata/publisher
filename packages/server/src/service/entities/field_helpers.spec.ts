@@ -14,6 +14,7 @@ import { AccessModifierEnum, EntityTypeEnum } from "./internal_types";
 import {
    getAccessModifier,
    getDescriptionFromTags,
+   getDirectTaglines,
    getEntityFromMalloyField,
    inferType,
    isFilePath,
@@ -392,6 +393,67 @@ source: nums is duckdb.table('t') extend {
          await describeField(model, "pub_label"),
          "Line one.\nLine two.\nLine three.",
       );
+   });
+});
+
+describe("getDirectTaglines (compile-backed)", () => {
+   async function direct(model: string): Promise<Record<string, string[]>> {
+      const conn = new DuckDBConnection("duckdb");
+      try {
+         const runtime = new Runtime({
+            urlReader: new InMemoryURLReader(new Map()),
+            connection: conn,
+         });
+         const compiled = await runtime.getModel(model);
+         return Object.fromEntries(
+            compiled.explores.map((e) => [
+               e.name,
+               getDirectTaglines(e).map((t) => t.trim()),
+            ]),
+         );
+      } finally {
+         await conn.close();
+      }
+   }
+
+   test("keeps a source's own notes across a blank line or a comment", async () => {
+      const notes = await direct(`
+#(doc) Gap
+#(agent-hidden)
+
+source: gap is duckdb.sql("select 1 as a")
+
+#(doc) Commented
+// a note
+source: commented is duckdb.sql("select 1 as a")
+`);
+      assert.deepStrictEqual(notes.gap, ["#(doc) Gap", "#(agent-hidden)"]);
+      assert.deepStrictEqual(notes.commented, ["#(doc) Commented"]);
+   });
+
+   test("never takes a base's notes, declared above it or right above it", async () => {
+      const notes = await direct(`
+#(doc) Base
+#(agent-hidden)
+source: base is duckdb.sql("select 1 as a")
+
+source: below is base extend {}
+source: right_below is base extend {}
+`);
+      assert.deepStrictEqual(notes.base, ["#(doc) Base", "#(agent-hidden)"]);
+      assert.deepStrictEqual(notes.below, []);
+      assert.deepStrictEqual(notes.right_below, []);
+   });
+
+   test("gives a note on a statement to every source it defines", async () => {
+      const notes = await direct(`
+source: base is duckdb.sql("select 1 as a")
+
+#(doc) Shared
+source: a1 is base, a2 is base
+`);
+      assert.deepStrictEqual(notes.a1, ["#(doc) Shared"]);
+      assert.deepStrictEqual(notes.a2, ["#(doc) Shared"]);
    });
 });
 
