@@ -11,6 +11,13 @@
 # reads no warehouse: a throwaway Postgres in the runner's Docker is the source
 # warehouse and the DuckLake catalog.
 #
+# mixed-version: the reverse, as in a rolling deploy. main's build writes the
+# manifest, and the last released server, bound to it (`manifestLocation`),
+# must serve every stored table from it (hammer/mixed-version/run.ts). Its
+# in-process counterpart, a frozen copy of the release's manifest loader, runs
+# on every pull request
+# (packages/server/tests/component/mixed_version_manifest.component.spec.ts).
+#
 # Each job writes a job summary on every run, and uploads its report and logs
 # when it fails; a later reporting step (issue #1896) can post from either.
 
@@ -24,7 +31,7 @@ on:
   workflow_dispatch:
     inputs:
       from:
-        description: "Released server version to upgrade from; empty is npm's latest"
+        description: "Released server version to upgrade from, and to serve main's manifest; empty is npm's latest"
         required: false
         default: ""
 
@@ -92,5 +99,56 @@ jobs:
         with:
           name: upgrade-logs
           path: ${{ runner.temp }}/upgrade-logs
+          if-no-files-found: warn
+          retention-days: 14
+
+  mixed-version:
+    name: mixed version (main builds, latest release serves)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Build the server
+        run: bun run build:server-only
+        working-directory: packages/server
+      - name: Run the mixed-version test
+        env:
+          HAMMER_LOG_DIR: ${{ runner.temp }}/mixed-version-logs
+          FROM: ${{ inputs.from }}
+        run: |
+          set -o pipefail
+          mkdir -p "$HAMMER_LOG_DIR"
+          args=()
+          if [ -n "$FROM" ]; then
+            if ! [[ "$FROM" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+              echo "::error::from must be a release version (x.y.z or x.y.z-pre)"
+              exit 1
+            fi
+            args+=(--from "$FROM")
+          fi
+          bun hammer/mixed-version/run.ts "${args[@]}" 2>&1 | tee "$HAMMER_LOG_DIR/mixed-version.log"
+      - name: Job summary
+        if: always()
+        env:
+          REPORT: ${{ runner.temp }}/mixed-version-logs/mixed-version-report.json
+        run: bun hammer/upgrade/summary.ts "$REPORT" >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload the report and logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mixed-version-logs
+          path: ${{ runner.temp }}/mixed-version-logs
           if-no-files-found: warn
           retention-days: 14

@@ -22,7 +22,10 @@ import {
    attachDuckLakeReadWrite,
 } from "../../connection";
 import { escapeSQL } from "../../duckdb_session_setup";
-import { storageDestinationRoot } from "../../connection_config";
+import {
+   storageDestinationFile,
+   storageDestinationRoot,
+} from "../../connection_config";
 import { quoteIdentifier, quoteManifestTablePath } from "../../quoting";
 import { STORAGE_DIALECT } from "../domain/dialect";
 import {
@@ -151,15 +154,17 @@ export async function listStorageTables(params: {
          // Existence is checked by listing the environment's destinations
          // directory, so the request-supplied name is only compared, never used
          // to reach the filesystem before the attach.
+         const dbPath = storageDestinationFile(
+            environmentPath,
+            destinationName,
+         );
          const destinationRoot = storageDestinationRoot(environmentPath);
-         const fileName = `${destinationName}.duckdb`;
          if (
             !existsSync(destinationRoot) ||
-            !readdirSync(destinationRoot).includes(fileName)
+            !readdirSync(destinationRoot).includes(path.basename(dbPath))
          ) {
             return [];
          }
-         const dbPath = path.join(destinationRoot, fileName);
          await session.runSQL(
             `ATTACH '${escapeSQL(dbPath)}' AS ${quoteIdentifier(destinationName, STORAGE_DIALECT)} (READ_ONLY)`,
          );

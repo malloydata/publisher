@@ -204,6 +204,8 @@ export function splitManifestEntries(
          ...boundSchemaOf(entry.schema),
          ...boundNativeSchemaOf(entry.nativeSchema),
          ...(entry.lateRows ? { lateRows: entry.lateRows } : {}),
+         ...(entry.contract !== undefined ? { contract: entry.contract } : {}),
+         ...(entry.builtAt ? { builtAt: entry.builtAt } : {}),
          // Set only by a bind from the local store (withRollupKeyRecords);
          // a host's manifest never carries it.
          ...(readKeyUniqueness && keyUniquenessOnEntry(entry)

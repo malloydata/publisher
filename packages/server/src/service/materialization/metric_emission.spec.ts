@@ -55,6 +55,10 @@ import {
    MaterializationService,
    type RunBuildOptions,
 } from "./run/materialization_service";
+import { fakeContractReads } from "../../test_helpers/contract_fixture";
+
+// Builds over fake connections, which answer no catalog query.
+fakeContractReads();
 
 /**
  * Each materialization instrument below, by name, emitted from the code that

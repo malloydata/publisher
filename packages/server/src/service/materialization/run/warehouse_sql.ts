@@ -26,6 +26,18 @@
 import { sqlLiteral } from "../../introspection_sql";
 import { quoteIdentifier, quotePathParts, quoteTablePath } from "../../quoting";
 import {
+   bigqueryColumnCollation,
+   type Collation,
+   DUCKDB_COLLATE_DEFINITIONS,
+   duckdbDefaultCollation,
+   duckdbTableCollations,
+   PG_COLLATION_COLUMNS,
+   PG_COLLATION_IDENTITY,
+   postgresColumnCollation,
+   postgresJudged,
+   type TableCollations,
+} from "../domain/collation";
+import {
    capabilitiesOf,
    registeredDialect,
    type DialectName,
@@ -1513,4 +1525,246 @@ export function snowflakeSetQueryTagStatement(
    // The outer literal is parsed by DuckDB, which has no backslash escape, so
    // the passthrough's own quote-doubling is the correct level here.
    return `SELECT * FROM snowflake_query('${inner.replace(/'/g, "''")}', '${secretName.replace(/'/g, "''")}')`;
+}
+
+/**
+ * One catalog query that reads several tables' column collations
+ * ({@link collationCatalogBatches}): the tables it answers for, by key, and
+ * how to read each one's collations from its rows. A table the query found
+ * nothing for is absent from what `collationsOf` returns.
+ */
+interface CollationBatch {
+   sql: string;
+   keys: string[];
+   collationsOf(rows: Record<string, unknown>[]): Map<string, TableCollations>;
+}
+
+/**
+ * The catalog queries that read tables' column collations, where the
+ * engine's catalog says (`domain/collation.ts` for the identities): one for
+ * every Postgres table (`pg_attribute.attcollation`), one per BigQuery
+ * dataset (`INFORMATION_SCHEMA.COLUMNS.collation_name`), and DuckDB's table
+ * definition per table (`duckdb_tables().sql`, since its catalog lists no
+ * column collation). No other dialect's collations are read: a string
+ * column there records no collation, which compares `none`.
+ *
+ * The same reads at build (the column contract's capture) and at bind (the
+ * contract's check), so a table straight out of a build reads as it was
+ * recorded.
+ */
+export function collationCatalogBatches(
+   tables: readonly CatalogTable[],
+   dialect: string,
+): CollationBatch[] {
+   const lit = (v: string) => sqlString(v, dialect);
+   const tableOf = (t: CatalogTable) => t.parts[t.parts.length - 1];
+   switch (registeredDialect(dialect)) {
+      case "duckdb":
+         return tables.map((t) => {
+            // A two-part name is a catalog's table or a schema's, as DuckDB
+            // resolves it: either matches.
+            const [p0, p1] = t.parts;
+            const qualifier =
+               t.parts.length >= 3
+                  ? ` AND lower(database_name) = lower(${lit(p0)}) AND lower(schema_name) = lower(${lit(p1)})`
+                  : t.parts.length === 2
+                    ? ` AND (lower(schema_name) = lower(${lit(p0)}) OR lower(database_name) = lower(${lit(p0)}))`
+                    : "";
+            return {
+               sql:
+                  "SELECT sql, current_setting('default_collation') AS dc " +
+                  "FROM duckdb_tables() WHERE NOT internal " +
+                  `AND lower(table_name) = lower(${lit(tableOf(t))})` +
+                  qualifier,
+               keys: [t.key],
+               collationsOf: (rows) => {
+                  const defs = rows
+                     .map((r) => field(r, "sql"))
+                     .filter((d): d is string => typeof d === "string");
+                  // Not found, or found in more than one schema: unread.
+                  return defs.length === 1
+                     ? new Map([
+                          [
+                             t.key,
+                             {
+                                ...duckdbTableCollations(defs[0]),
+                                defaultCollation: duckdbDefaultCollation(
+                                   field(rows[0], "dc"),
+                                ),
+                             },
+                          ],
+                       ])
+                     : new Map();
+               },
+            };
+         });
+      case "postgres": {
+         const where =
+            "FROM pg_collation c, pg_database d WHERE c.oid = a.attcollation AND d.datname = current_database()";
+         return chunks(tables).map((batch) => ({
+            sql:
+               "SELECT row_to_json(x) AS row FROM (" +
+               "SELECT r.k AS key, a.attname AS name, " +
+               `CASE WHEN a.attcollation = 0 THEN NULL ELSE (SELECT ${PG_COLLATION_IDENTITY} ${where}) END AS id, ` +
+               `CASE WHEN a.attcollation = 0 THEN NULL ELSE (SELECT row_to_json(j) FROM (SELECT ${PG_COLLATION_COLUMNS} ${where}) j) END AS judged ` +
+               `FROM (VALUES ${batch
+                  .map(
+                     (t) =>
+                        `(${lit(t.key)}, to_regclass(${lit(quotePathParts(t.parts, dialect))}))`,
+                  )
+                  .join(", ")}) AS r(k, oid) ` +
+               "JOIN pg_attribute a ON a.attrelid = r.oid " +
+               "WHERE a.attnum > 0 AND NOT a.attisdropped) x",
+            keys: batch.map((t) => t.key),
+            collationsOf: (rows) => {
+               const byKey = new Map<string, Map<string, string | null>>();
+               for (const r of rows) {
+                  const key = String(field(r, "key"));
+                  const id = field(r, "id");
+                  const judged = field(r, "judged");
+                  const columns = byKey.get(key) ?? new Map();
+                  columns.set(
+                     String(field(r, "name")),
+                     typeof id === "string"
+                        ? postgresColumnCollation(
+                             id,
+                             postgresJudged(
+                                typeof judged === "object" && judged !== null
+                                   ? (judged as Record<string, unknown>)
+                                   : undefined,
+                             ),
+                          )
+                        : null,
+                  );
+                  byKey.set(key, columns);
+               }
+               return new Map(
+                  [...byKey].map(([key, byColumn]) => [
+                     key,
+                     { byColumn, otherwise: null },
+                  ]),
+               );
+            },
+         }));
+      }
+      case "standardsql":
+         return groupBy(
+            tables.filter((t) => t.parts.length >= 2),
+            (t) => JSON.stringify(t.parts.slice(0, -1)),
+         ).flatMap((group) =>
+            chunks(group).map((batch) => ({
+               sql:
+                  "SELECT table_name, column_name, collation_name FROM " +
+                  `${quotePathParts(batch[0].parts.slice(0, -1), dialect)}.INFORMATION_SCHEMA.COLUMNS ` +
+                  `WHERE table_name IN (${batch.map((t) => lit(tableOf(t))).join(", ")})`,
+               keys: batch.map((t) => t.key),
+               collationsOf: (rows) => {
+                  const out = new Map<string, TableCollations>();
+                  for (const t of batch) {
+                     const own = rows.filter(
+                        (r) => String(field(r, "table_name")) === tableOf(t),
+                     );
+                     if (own.length === 0) continue;
+                     out.set(t.key, {
+                        byColumn: new Map(
+                           own.map((r) => [
+                              String(field(r, "column_name")),
+                              bigqueryColumnCollation(
+                                 field(r, "collation_name"),
+                              ),
+                           ]),
+                        ),
+                        otherwise: null,
+                     });
+                  }
+                  return out;
+               },
+            })),
+         );
+      default:
+         return [];
+   }
+}
+
+/**
+ * The reads that judge how each of `columns` compares where live reads
+ * `sql` (a build's own warehouse SQL), without running it: on Postgres,
+ * `pg_collation_for` of each column under `WHERE false`, one statement; on
+ * DuckDB, the instance's `default_collation` and the definitions that name
+ * a `COLLATE`, instance-wide as the serve side reads a DuckDB source.
+ * Undefined for a dialect whose source collation is not read here: its
+ * strings compare unknown. `judge` takes each statement's rows, in order.
+ */
+export function liveCollationReads(
+   dialect: string,
+   sql: string,
+   columns: readonly string[],
+):
+   | {
+        statements: string[];
+        judge(rows: Record<string, unknown>[][]): Map<string, Collation>;
+     }
+   | undefined {
+   switch (registeredDialect(dialect)) {
+      case "postgres": {
+         const select = columns
+            .map(
+               (c, i) =>
+                  `(SELECT row_to_json(j) FROM (SELECT ${PG_COLLATION_COLUMNS} FROM pg_collation c, pg_database d ` +
+                  `WHERE c.oid = (pg_collation_for((SELECT b.${quoteIdentifier(c, dialect)} FROM (${sql}) b WHERE false)))::regcollation ` +
+                  `AND d.datname = current_database()) j) AS c${i}`,
+            )
+            .join(", ");
+         return {
+            statements: [
+               `SELECT row_to_json(x) AS row FROM (SELECT ${select}) x`,
+            ],
+            judge: ([rows]) => {
+               const row = rows?.[0];
+               return new Map(
+                  columns.map((c, i) => {
+                     const judged = row ? field(row, `c${i}`) : undefined;
+                     return [
+                        c,
+                        postgresJudged(
+                           typeof judged === "object" && judged !== null
+                              ? (judged as Record<string, unknown>)
+                              : undefined,
+                        ),
+                     ];
+                  }),
+               );
+            },
+         };
+      }
+      case "duckdb":
+         return {
+            statements: [
+               "SELECT current_setting('default_collation') AS c",
+               DUCKDB_COLLATE_DEFINITIONS,
+            ],
+            judge: ([setting, defs]) => {
+               const binary =
+                  !/\bcollate\b/i.test(sql) &&
+                  String(setting?.[0]?.c ?? "").trim() === "" &&
+                  Number(defs?.[0]?.n ?? 1) === 0;
+               const judged: Collation = binary ? "binary" : "unknown";
+               return new Map(columns.map((c) => [c, judged]));
+            },
+         };
+      default:
+         return undefined;
+   }
+}
+
+/** Whether {@link collationCatalogBatches} reads a dialect's collations at all. */
+export function readsCollations(dialect: string): boolean {
+   switch (registeredDialect(dialect)) {
+      case "duckdb":
+      case "postgres":
+      case "standardsql":
+         return true;
+      default:
+         return false;
+   }
 }

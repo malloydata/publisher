@@ -22,6 +22,7 @@ import { parsePackageName } from "./identity";
 import type { FreshnessManifest } from "./materialization/domain/types";
 import { GeneratedFiles } from "./materialization/text/generated_files";
 import type { Package } from "./package";
+import { contractFor } from "../test_helpers/contract_fixture";
 
 const MODEL = `##! experimental.persistence
 source: base is duckdb.sql("SELECT 1 AS a")
@@ -72,6 +73,7 @@ describe("a rebind of the same manifest", () => {
       manifest = (table) => ({
          [id!]: {
             tableName: table,
+            contract: contractFor(),
             connectionName: "duckdb",
             schema: [
                { name: "a", type: "INTEGER" },

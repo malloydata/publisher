@@ -29,6 +29,7 @@ import {
 } from "./materialization/package_materialization";
 import { MATERIALIZATION_UNREACHABLE_CODE } from "./materialization/serve/serve_verdict";
 import { recordConnectionsAsForTests } from "./connection_type";
+import { contractFor } from "../test_helpers/contract_fixture";
 
 // The package sandbox stands in for a warehouse in these fixtures: a
 // `storage=` build cannot read the sandbox, and the plan refuses a `storage=`
@@ -293,7 +294,10 @@ source: orders is ${ROWS} -> { select: * ; where: region = $REGION }
       expect(orders).toBeDefined();
       loaded.pkg.materialization().bind({
          database: {
-            [orders!.sourceEntityId]: { tableName: "orders_t" },
+            [orders!.sourceEntityId]: {
+               tableName: "orders_t",
+               contract: contractFor(),
+            },
          },
       });
       const verdicts = byName(loaded.pkg.materialization().serveVerdicts());

@@ -38,6 +38,7 @@ import { identifier, stringLiteral } from "../../malloy_text";
 import type { TermUse } from "../domain/read_time_terms";
 import { givenReadTerms, type SourceDefLike } from "./build_file_generator";
 import { leftOutWindowTerms } from "./rolling_window";
+import { pairRerootBase, pairRerootJoins } from "./pair_reroot";
 import {
    dropJoinDefinition,
    intoFirstExtend,
@@ -451,7 +452,9 @@ const PARENT_NOT_REROOTED =
  * `importFrom`: a query over the source in the copy reads its stored table
  * through a run's build manifest. Read by the rollup companion, so a
  * database rollup over a database `#(materialize)` base builds from the
- * base's table (rollup_compile.ts). Undefined when the declaration is not
+ * base's table (rollup_compile.ts). A pair table's source is re-rooted on
+ * its join put back ({@link pairRerootBase}), its inlined join_manys' own
+ * definitions taken out. Undefined when the declaration is not
  * where `declaration` says or does not re-root.
  */
 export function storedSourceCopyText(
@@ -463,7 +466,18 @@ export function storedSourceCopyText(
    const from = offsetOf(text, declaration.range.start);
    const to = offsetOf(text, declaration.range.end);
    if (from < 0 || to < from) return undefined;
-   const rerooted = rerootOnBuildSource(text.slice(from, to), plan);
+   const pairBase =
+      plan.pair || plan.pairBlocks ? pairRerootBase(plan) : undefined;
+   if ((plan.pair || plan.pairBlocks) && pairBase === undefined) {
+      return undefined;
+   }
+   const rerooted = rerootOnBuildSource(
+      text.slice(from, to),
+      plan,
+      pairBase === undefined
+         ? {}
+         : { base: pairBase, dropJoinManys: pairRerootJoins(plan) },
+   );
    if (rerooted === undefined) return undefined;
    const copy = applyEdits(text, [{ start: from, end: to, insert: rerooted }]);
    if (copy === undefined) return undefined;
@@ -489,7 +503,13 @@ export function storedSourceCopyText(
 function rerootOnBuildSource(
    declaration: string,
    parent: MaterializePlan,
-   options: { joinRecords?: boolean } = {},
+   options: {
+      joinRecords?: boolean;
+      /** The source expression to re-root on, in place of the build source. */
+      base?: string;
+      /** The join_manys the base declares, whose own definitions go. */
+      dropJoinManys?: readonly string[];
+   } = {},
 ): string | undefined {
    const spans = declarationSpans(declaration);
    if (!spans) return undefined;
@@ -522,6 +542,11 @@ function rerootOnBuildSource(
    );
    if (renames === undefined) return undefined;
    let text = excepted.text;
+   for (const join of options.dropJoinManys ?? []) {
+      const dropped = dropJoinDefinition(text, join, "join_many");
+      if (dropped === undefined) return undefined;
+      text = dropped;
+   }
    if (options.joinRecords) {
       const records = parentJoinRecords(parent);
       for (const j of records) {
@@ -545,7 +570,7 @@ function rerootOnBuildSource(
          text = opened;
       }
    }
-   const base = identifier(parent.buildSourceName);
+   const base = options.base ?? identifier(parent.buildSourceName);
    return `${name} is ${base}${renames}${text ? ` ${text}` : ""}`;
 }
 

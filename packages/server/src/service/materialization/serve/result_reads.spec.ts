@@ -6,7 +6,7 @@ import {
    Runtime,
 } from "@malloydata/malloy";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { postgresJudged } from "./collation/postgres";
+import { postgresJudged } from "../domain/collation";
 import { type ResultReads, resultReadsOfQuery } from "./result_reads";
 
 const MODEL = `

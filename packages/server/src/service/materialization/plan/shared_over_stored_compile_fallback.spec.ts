@@ -46,7 +46,7 @@ source: raw is duckdb.sql("""select * from (values ('a', 1.5), ('b', 2.5)) as t(
 `;
 
 describe("a shared over-stored compile that fails", () => {
-   it("retries each candidate alone, so only the failing one declines", async () => {
+   it("retries each candidate alone, so only the failing one is refused", async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const { c }: any = await packages.plan({
          "m.malloy": `${RAW}
@@ -76,7 +76,14 @@ source: s is a extend {
       expect(
          table("s__good__view")?.overStoredBase?.baseBuildSource,
       ).toBeDefined();
-      expect(table("s__bad__view")).toBeDefined();
-      expect(table("s__bad__view").overStoredBase).toBeUndefined();
+      // The failing one is refused at plan, never built from its definition.
+      expect(table("s__bad__view")).toBeUndefined();
+      expect(
+         (c.annotationFindings ?? []).some(
+            (f: { refused?: { reason?: string }; message: string }) =>
+               f.refused?.reason === "upstream_table_unusable" &&
+               /does not compile/.test(f.message),
+         ),
+      ).toBe(true);
    });
 });

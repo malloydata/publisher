@@ -1,9 +1,10 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
 import * as sinon from "sinon";
 import { BadRequestError } from "../errors";
+import { logger } from "../logger";
 import type { MaterializationService } from "../service/materialization/run/materialization_service";
 import { MaterializationController } from "./materialization.controller";
 
@@ -99,15 +100,6 @@ describe("MaterializationController.createMaterialization validation", () => {
          materializedTableId: "mt-1",
          physicalTableName,
       });
-      const ledger = (physicalTableName: string) => ({
-         connectionName: "c",
-         physicalTableName,
-         coveredThrough: "1",
-         coveredThroughType: "number",
-         watermark: "w",
-         strategy: "merge",
-         sourceEntityId: "b1",
-      });
       const bodies: [string, (name: string) => Record<string, unknown>][] = [
          [
             "Build instruction",
@@ -121,15 +113,6 @@ describe("MaterializationController.createMaterialization validation", () => {
                   referenceManifest: [
                      { sourceEntityId: "b0", physicalTableName: n },
                   ],
-               },
-            }),
-         ],
-         [
-            "Ledger entry",
-            (n) => ({
-               buildInstructions: {
-                  sources: [source("ok_v1")],
-                  ledger: [ledger(n)],
                },
             }),
          ],
@@ -162,11 +145,61 @@ describe("MaterializationController.createMaterialization validation", () => {
       }
    });
 
+   // A ledger entry is an echo of what the publisher reported, so a bad table
+   // name in one is a corrupted entry, not a wrong request: it is dropped (its
+   // source seeds) rather than refused, and never reaches SQL.
+   describe("a ledger entry's physicalTableName, held to the bind's rule", () => {
+      const ledger = (physicalTableName: string) => ({
+         connectionName: "c",
+         physicalTableName,
+         coveredThrough: "1",
+         coveredThroughType: "number",
+         watermark: "w",
+         strategy: "merge",
+         sourceEntityId: "b1",
+      });
+      const body = (n: string) => ({
+         buildInstructions: {
+            sources: [
+               {
+                  sourceEntityId: "b1",
+                  materializedTableId: "mt-1",
+                  physicalTableName: "ok_v1",
+               },
+            ],
+            ledger: [ledger(n)],
+         },
+      });
+      for (const bad of ["t\\'; DROP TABLE x --", '"s.t', "a..b", ".t"]) {
+         it(`drops ${JSON.stringify(bad)}, naming the field`, async () => {
+            const warn = spyOn(logger, "warn");
+            try {
+               expect((await parse(body(bad))).ledger).toEqual([]);
+               const dropped = warn.mock.calls.find((c) =>
+                  String(c[0]).includes("malformed buildInstructions.ledger"),
+               );
+               expect(
+                  String(
+                     ((dropped as unknown[])[1] as { defect: string }).defect,
+                  ),
+               ).toContain("Ledger entry 'physicalTableName'");
+            } finally {
+               warn.mockRestore();
+            }
+         });
+      }
+      for (const good of ["s.orders_v1", '"My Schema"."T x"']) {
+         it(`keeps ${JSON.stringify(good)}`, async () => {
+            expect((await parse(body(good))).ledger).toEqual([ledger(good)]);
+         });
+      }
+   });
+
    it("treats null buildInstructions as absent (auto-run)", async () => {
       expect(await parse({ buildInstructions: null })).toEqual({});
    });
 
-   it("parses referenceManifest and strictUpstreams alongside sources", async () => {
+   it("parses referenceManifest alongside sources, and drops the deprecated strictUpstreams", async () => {
       const parsed = await parse({
          buildInstructions: {
             sources: [
@@ -196,7 +229,6 @@ describe("MaterializationController.createMaterialization validation", () => {
          referenceManifest: [
             { sourceEntityId: "b1", physicalTableName: "upstream_table" },
          ],
-         strictUpstreams: true,
       });
    });
 
@@ -250,6 +282,67 @@ describe("MaterializationController.createMaterialization validation", () => {
          expect(err).toBeInstanceOf(BadRequestError);
          expect(String((err as Error).message)).toContain(
             "Manifest reference 'nativeSchema'",
+         );
+      }
+   });
+
+   it("carries a reference's schema, dataAsOf, builtAt and contract, and refuses a malformed schema or instant", async () => {
+      const body = (ref: Record<string, unknown>) => ({
+         buildInstructions: {
+            sources: [
+               {
+                  sourceEntityId: "b2",
+                  materializedTableId: "mt-2",
+                  physicalTableName: "downstream_v1",
+               },
+            ],
+            referenceManifest: [
+               {
+                  sourceEntityId: "b1",
+                  physicalTableName: "upstream_table",
+                  storageDestinationName: "lake",
+                  ...ref,
+               },
+            ],
+         },
+      });
+      const schema = [{ name: "cat", type: "VARCHAR" }];
+      // A host's contract, as it stored it: carried unparsed, unknown keys too.
+      const contract = { v: 1, columns: [], later: { x: 1 } };
+      const parsed = (await parse(
+         body({
+            schema,
+            dataAsOf: "2026-11-20T00:00:00.000Z",
+            builtAt: "2026-11-20T00:05:00.000Z",
+            contract,
+         }),
+      )) as { referenceManifest: unknown[] };
+      expect(parsed.referenceManifest).toEqual([
+         {
+            sourceEntityId: "b1",
+            physicalTableName: "upstream_table",
+            storageDestinationName: "lake",
+            schema,
+            dataAsOf: "2026-11-20T00:00:00.000Z",
+            builtAt: "2026-11-20T00:05:00.000Z",
+            contract,
+         },
+      ]);
+      for (const [bad, field] of [
+         [{ schema: [{ name: "cat" }] }, "schema"],
+         [{ dataAsOf: "yesterday" }, "dataAsOf"],
+         [{ builtAt: 7 }, "builtAt"],
+      ] as const) {
+         const { controller } = build();
+         let err: unknown;
+         try {
+            await controller.createMaterialization("env", "pkg", body(bad));
+         } catch (e) {
+            err = e;
+         }
+         expect(err).toBeInstanceOf(BadRequestError);
+         expect(String((err as Error).message)).toContain(
+            `Manifest reference '${field}'`,
          );
       }
    });
@@ -446,9 +539,10 @@ describe("MaterializationController.createMaterialization validation", () => {
       ).toBeUndefined();
    });
 
-   it("rejects a malformed ledger entry", async () => {
-      // Every field is an echo of what the publisher reported, so a wrong shape
-      // is a caller bug — refused here, before it can misdescribe a boundary.
+   it("drops a malformed ledger entry, keeping the rest, and warns naming the table and defect", async () => {
+      // Hosts courier entries whole, so a wrong shape is a corrupted entry: it
+      // is dropped (its source seeds) rather than wedging every build of the
+      // package with a 400.
       const valid = {
          connectionName: "wh",
          physicalTableName: "orders_v1",
@@ -458,6 +552,7 @@ describe("MaterializationController.createMaterialization validation", () => {
          strategy: "range_replace",
          sourceEntityId: "content-addr",
       };
+      const other = { ...valid, physicalTableName: "events_v1" };
       const withLedger = (ledger: unknown) => ({
          buildInstructions: {
             ledger,
@@ -471,28 +566,134 @@ describe("MaterializationController.createMaterialization validation", () => {
             ],
          },
       });
+      const cases: [unknown, string, string | undefined][] = [
+         ["2024-06-20", "not an object", undefined],
+         [null, "not an object", undefined],
+         [["a"], "not an object", undefined],
+         [{ ...valid, coveredThrough: "" }, "'coveredThrough'", "orders_v1"],
+         [
+            { ...valid, coveredThrough: 20240620 },
+            "'coveredThrough'",
+            "orders_v1",
+         ],
+         [{ ...valid, watermark: undefined }, "'watermark'", "orders_v1"],
+         [
+            { ...valid, physicalTableName: undefined },
+            "'physicalTableName'",
+            undefined,
+         ],
+         [{ ...valid, connectionName: "" }, "'connectionName'", "orders_v1"],
+         [{ ...valid, strategy: "upsert" }, "'strategy'", "orders_v1"],
+         [{ ...valid, mergeKeys: "order_id" }, "'mergeKeys'", "orders_v1"],
+         [{ ...valid, mergeKeys: [1] }, "'mergeKeys'", "orders_v1"],
+         [
+            { ...valid, storageDestinationName: "" },
+            "'storageDestinationName'",
+            "orders_v1",
+         ],
+         [
+            { ...valid, storageDestinationName: 7 },
+            "'storageDestinationName'",
+            "orders_v1",
+         ],
+      ];
+      const warn = spyOn(logger, "warn");
+      try {
+         for (const [bad, defect, table] of cases) {
+            warn.mockClear();
+            const parsed = await parse(withLedger([bad, other]));
+            expect(parsed.ledger).toEqual([other]);
+            const dropped = warn.mock.calls.filter((c) =>
+               String(c[0]).includes("malformed buildInstructions.ledger"),
+            );
+            expect(dropped).toHaveLength(1);
+            const fields = (dropped[0] as unknown[])[1] as Record<
+               string,
+               unknown
+            >;
+            expect(fields).toMatchObject({
+               environmentName: "env",
+               packageName: "pkg",
+               reasonCode: "ledger_entry_malformed",
+            });
+            expect(String(fields.defect)).toContain(defect);
+            expect(fields.table).toBe(table);
+            // A drop that names a table reaches the run, so that source seeds
+            // under ledger_entry_malformed rather than no_boundary.
+            expect(parsed.malformedLedger).toEqual(
+               table === undefined
+                  ? undefined
+                  : [
+                       {
+                          physicalTableName: table,
+                          defect: String(fields.defect),
+                       },
+                    ],
+            );
+         }
+         // Every entry malformed still leaves a caller-owned (empty) ledger, not
+         // "use the local store": the sources seed.
+         expect(
+            (await parse(withLedger([{ ...valid, strategy: "x" }]))).ledger,
+         ).toEqual([]);
+      } finally {
+         warn.mockRestore();
+      }
+      // The valid shape survives without a merge key list, which is what a
+      // keyless (range-replace) source reports.
+      expect((await parse(withLedger([valid]))).ledger).toEqual([valid]);
+   });
+
+   it("still refuses a ledger that is not an array", async () => {
       const { controller } = build();
-      for (const bad of [
-         valid, // not wrapped in an array
-         ["2024-06-20"],
-         [{ ...valid, coveredThrough: "" }],
-         [{ ...valid, coveredThrough: 20240620 }],
-         [{ ...valid, watermark: undefined }],
-         [{ ...valid, physicalTableName: undefined }],
-         [{ ...valid, connectionName: "" }],
-         [{ ...valid, strategy: "upsert" }],
-         [{ ...valid, mergeKeys: "order_id" }],
-         [{ ...valid, storageDestinationName: "" }],
-         [{ ...valid, storageDestinationName: 7 }],
-      ]) {
+      for (const ledger of [{ a: 1 }, "x", 7]) {
          await expect(
-            controller.createMaterialization("env", "pkg", withLedger(bad)),
+            controller.createMaterialization("env", "pkg", {
+               buildInstructions: {
+                  ledger,
+                  sources: [
+                     {
+                        sourceEntityId: "b1",
+                        materializedTableId: "mt-1",
+                        physicalTableName: "orders_v1",
+                     },
+                  ],
+               },
+            }),
          ).rejects.toThrow(BadRequestError);
       }
-      // And the valid shape survives without a merge key list, which is what a
-      // keyless (range-replace) source reports.
-      const parsed = await parse(withLedger([valid]));
-      expect(parsed.ledger).toEqual([valid]);
+   });
+
+   it("keeps keys it does not know on an echoed ledger entry, untouched", async () => {
+      // The ledger is opaque to hosts and the publisher may add keys to it;
+      // stripping one here would lose it to the next run.
+      const entry = {
+         connectionName: "wh",
+         physicalTableName: "orders_v1",
+         coveredThrough: "2024-06-20",
+         coveredThroughType: "date",
+         watermark: "order_date",
+         strategy: "range_replace",
+         sourceEntityId: "content-addr",
+         parentGeneration: {
+            sourceEntityId: "p1",
+            coveredThrough: "2024-06-19",
+         },
+         futureFlag: true,
+      };
+      const parsed = await parse({
+         buildInstructions: {
+            sources: [
+               {
+                  sourceEntityId: "b1",
+                  materializedTableId: "mt-1",
+                  physicalTableName: "orders_v1",
+               },
+            ],
+            ledger: [entry],
+         },
+      });
+      expect(parsed.ledger).toEqual([entry]);
    });
 
    it("preserves the optional `connectionName` on a manifest reference", async () => {
@@ -556,19 +757,37 @@ describe("MaterializationController.createMaterialization validation", () => {
          realization: "COPY",
       };
 
-      it("passes recompute and refuse through", async () => {
-         for (const warehouseReach of ["recompute", "refuse"]) {
-            const parsed = await parse({
-               buildInstructions: {
-                  sources: [SOURCE],
-                  strictUpstreams: true,
-                  warehouseReach,
-               },
-            });
-            expect(parsed).toMatchObject({
-               strictUpstreams: true,
-               warehouseReach,
-            });
+      it("accepts recompute and refuse, ignores both, and warns once per request", async () => {
+         const warn = spyOn(logger, "warn");
+         try {
+            for (const warehouseReach of ["recompute", "refuse"]) {
+               warn.mockClear();
+               const parsed = await parse({
+                  buildInstructions: {
+                     sources: [SOURCE],
+                     strictUpstreams: true,
+                     warehouseReach,
+                  },
+               });
+               expect("warehouseReach" in parsed).toBe(false);
+               expect("strictUpstreams" in parsed).toBe(false);
+               const deprecations = warn.mock.calls.filter((c) =>
+                  String(c[0]).includes("deprecated and ignored"),
+               );
+               expect(deprecations).toHaveLength(1);
+               expect((deprecations[0] as unknown[])[1]).toMatchObject({
+                  options: ["strictUpstreams", "warehouseReach"],
+               });
+            }
+            warn.mockClear();
+            await parse({ buildInstructions: { sources: [SOURCE] } });
+            expect(
+               warn.mock.calls.some((c) =>
+                  String(c[0]).includes("deprecated and ignored"),
+               ),
+            ).toBe(false);
+         } finally {
+            warn.mockRestore();
          }
       });
 

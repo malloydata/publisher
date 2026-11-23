@@ -30,7 +30,7 @@ import {
 } from "@malloydata/malloy";
 import { leaveOutDefinitionAt } from "../text/declarations_kept";
 import { inMemoryRuntime } from "../text/generated_files";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { components } from "../../../api";
@@ -41,7 +41,15 @@ import {
 import { logger } from "../../../logger";
 import { errorCodeOf } from "../../../error_code";
 import { errMessage } from "../../../utils";
-import { quoteIdentifier, quoteManifestTablePath } from "../../quoting";
+import {
+   quoteIdentifier,
+   quoteManifestTablePath,
+   tablePathParts,
+} from "../../quoting";
+import type { TableCollations } from "../domain/collation";
+import { collationCatalogBatches } from "./warehouse_sql";
+import { ContractCaptureFailedError } from "../../../errors";
+import { fakedCollations } from "./column_contract_capture";
 import { fromSubselect } from "../subselect";
 import {
    type BuildCastOptions,
@@ -68,7 +76,10 @@ import {
    type PassthroughRead,
 } from "./passthrough_build";
 import type { QueryMetadata } from "../../query_metadata";
-import { attachDuckLakeReadWrite } from "../../connection";
+import {
+   attachDuckLakeReadOnlyIfPresent,
+   attachDuckLakeReadWrite,
+} from "../../connection";
 import { managedSearchPathSql } from "../../dialects/ducklake";
 import type { PartitionKey } from "../../dialects/ducklake_catalog";
 import {
@@ -83,7 +94,10 @@ import {
 } from "../../duckdb_session_setup";
 import type { WatermarkBound } from "./incremental_apply";
 import type { LateRows } from "../domain/types";
-import { storageDestinationRoot } from "../../connection_config";
+import {
+   storageDestinationFile,
+   storageDestinationRoot,
+} from "../../connection_config";
 import {
    allowedForLockdown,
    hasUrlScheme,
@@ -380,6 +394,11 @@ export async function withDestinationSession<T>(
        * session is confined to the destination before `fn` runs.
        */
       lockdown?: "caller";
+      /**
+       * Attach the destination read-only, for a read that only looks (a
+       * bind's read of its tables). Never with `build`.
+       */
+      readOnly?: boolean;
    },
    fn: (session: DuckDBConnection) => Promise<T>,
 ): Promise<T> {
@@ -400,12 +419,21 @@ export async function withDestinationSession<T>(
    );
 
    async function onDestinationSession(session: DuckDBConnection): Promise<T> {
-      await attachDestinationReadWrite(
-         session,
-         alias,
-         destinationConnection,
-         environmentPath,
-      );
+      if (options.readOnly) {
+         await attachDestinationReadOnly(
+            session,
+            { alias, destinationName },
+            destinationConnection,
+            environmentPath,
+         );
+      } else {
+         await attachDestinationReadWrite(
+            session,
+            { alias, destinationName },
+            destinationConnection,
+            environmentPath,
+         );
+      }
       if (options.build) {
          await assertDestinationSchemaExists(
             session,
@@ -537,6 +565,19 @@ export interface StorageBuildResult {
    /** Authoritative DuckDB column schema, captured post-build via DESCRIBE. */
    schema: WireColumn[];
    /**
+    * The table's column collations, read from its definition in the same
+    * session ({@link storedCollations}), for its column contract. Undefined
+    * when the read failed.
+    */
+   collations?: TableCollations;
+   /**
+    * The addresses of the stored tables a build stacked on read in place of
+    * its source: what its entry's `builtFrom` names, and whose contracts
+    * bound how its strings compare. Absent for a build that read its
+    * source's warehouse.
+    */
+   readFrom?: string[];
+   /**
     * Rows in the table after the build, counted in the destination (cheap in
     * DuckDB and DuckLake, which keep row counts with their files), and
     * recorded as the manifest entry's `rowCount`. Null when the count could
@@ -649,6 +690,11 @@ async function refreshInPlace(
          // leave the source unservable until its next full build.
          schema: await describeTable(session, target),
          rowCount: await countStoredRows(session, target),
+         // A delta wrote in place, outside any transaction, and never
+         // changes the column set: read again, a failure fails the source
+         // after the write (its previous entry understates the table's
+         // freshness, never its rows).
+         collations: await readCollationsOrFail(session, target),
          readCost: refreshed.readCost,
          refresh: refreshed,
       };
@@ -869,6 +915,7 @@ async function buildOnFederatedSession(
    // SQL (at most reading a numeric as its text), and only the stored types
    // change.
    let schema: WireColumn[];
+   const captured: { collations?: TableCollations } = {};
    try {
       schema = await createTableWithDeclaredTypes(
          session,
@@ -876,6 +923,7 @@ async function buildOnFederatedSession(
          staged?.selectSQL ?? passthrough.selectSQL,
          { columns: params.declaredColumns ?? [], ...params.castOptions },
          {
+            captured,
             sourceType,
             ...(recast?.described ? { described: recast.described } : {}),
             ...(params.replacesView
@@ -898,6 +946,7 @@ async function buildOnFederatedSession(
       storageDestinationName: destinationName,
       schema,
       rowCount: await countStoredRows(session, target),
+      ...(captured.collations ? { collations: captured.collations } : {}),
       // BigQuery's labelled read reports its cost; Snowflake's must be asked
       // after the read, while the session still holds the credentials.
       readCost:
@@ -973,18 +1022,25 @@ async function buildSameCatalogIntoStorage(params: {
             ),
             STORAGE_DIALECT,
          );
+         const captured: { collations?: TableCollations } = {};
          const schema = await createTableWithDeclaredTypes(
             session,
             target,
             params.buildSQL,
             { columns: params.declaredColumns ?? [], ...params.castOptions },
-            params.replacesView ? { replacesView: params.replacesView } : {},
+            {
+               captured,
+               ...(params.replacesView
+                  ? { replacesView: params.replacesView }
+                  : {}),
+            },
          );
          // Reads no warehouse, as a chained build does: nothing was charged.
          return {
             storageDestinationName: destinationName,
             schema,
             rowCount: await countStoredRows(session, target),
+            ...(captured.collations ? { collations: captured.collations } : {}),
             readCost: null,
          };
       },
@@ -1363,17 +1419,22 @@ async function writeStackedTable(
    );
    // The downstream's own declared types, as for a recompute.
    const casts = storageBuildCasts(downstream);
+   const captured: { collations?: TableCollations } = {};
    const schema = await createTableWithDeclaredTypes(
       session,
       target,
       sql,
       { columns: casts.declaredColumns, ...casts.castOptions },
-      params.replacesView ? { replacesView: params.replacesView } : {},
+      {
+         captured,
+         ...(params.replacesView ? { replacesView: params.replacesView } : {}),
+      },
    );
    return {
       storageDestinationName: destinationName,
       schema,
       rowCount: await countStoredRows(session, target),
+      ...(captured.collations ? { collations: captured.collations } : {}),
       // Reads no source warehouse: here, uniquely, null means "spent nothing".
       readCost: null,
       upstreamReuse: "reused",
@@ -1417,36 +1478,61 @@ export function requireDuckLakeConfig(
    return cfg;
 }
 
-/** Where a plain DuckDB destination's database file lives. */
-function destinationDatabasePath(
+/**
+ * {@link attachDestinationReadWrite}, read-only: a DuckLake catalog through
+ * its read-only attach, a plain DuckDB destination's file `READ_ONLY`. A
+ * destination nothing has written yet attaches nothing (its tables then
+ * read as not found).
+ */
+async function attachDestinationReadOnly(
+   session: DuckDBConnection,
+   /**
+    * What it is attached as, and the configured destination whose file or
+    * catalog it is: the file's path is derived from the destination's own
+    * name (storageDestinationFile), never from the alias.
+    */
+   names: { alias: string; destinationName: string },
+   destinationConnection: ApiConnection,
    environmentPath: string,
-   destinationName: string,
-): string {
-   return path.join(
-      storageDestinationRoot(environmentPath),
-      `${destinationName}.duckdb`,
+): Promise<void> {
+   const { alias, destinationName } = names;
+   if (isCatalogDestination(destinationConnection)) {
+      const cfg = requireDuckLakeConfig(destinationName, destinationConnection);
+      await attachDuckLakeReadOnlyIfPresent(session, alias, cfg);
+      return;
+   }
+   const dbPath = storageDestinationFile(environmentPath, destinationName);
+   if (!existsSync(dbPath)) return;
+   await session.runSQL(
+      `ATTACH '${escapeSQL(dbPath)}' AS ${quoteIdentifier(alias, STORAGE_DIALECT)} (READ_ONLY)`,
    );
 }
 
 /** Attach the destination connection read-write on the build session. */
 async function attachDestinationReadWrite(
    session: DuckDBConnection,
-   destinationName: string,
+   /**
+    * What it is attached as, and the configured destination whose file or
+    * catalog it is: the file's path is derived from the destination's own
+    * name (storageDestinationFile), never from the alias.
+    */
+   names: { alias: string; destinationName: string },
    destinationConnection: ApiConnection,
    environmentPath: string,
 ): Promise<void> {
+   const { alias, destinationName } = names;
    if (isCatalogDestination(destinationConnection)) {
       const cfg = requireDuckLakeConfig(destinationName, destinationConnection);
-      await attachDuckLakeReadWrite(session, destinationName, cfg);
+      await attachDuckLakeReadWrite(session, alias, cfg);
       return;
    }
    // Plain DuckDB: the file lives under the destinations root (as connection
    // assembly derives it) so it cannot collide with a same-named connection.
    // Created here because a build may be the first thing to touch it.
    mkdirSync(storageDestinationRoot(environmentPath), { recursive: true });
-   const dbPath = destinationDatabasePath(environmentPath, destinationName);
+   const dbPath = storageDestinationFile(environmentPath, destinationName);
    await session.runSQL(
-      `ATTACH '${escapeSQL(dbPath)}' AS ${quoteIdentifier(destinationName, STORAGE_DIALECT)}`,
+      `ATTACH '${escapeSQL(dbPath)}' AS ${quoteIdentifier(alias, STORAGE_DIALECT)}`,
    );
 }
 
@@ -1723,6 +1809,13 @@ export async function createTableAndDescribe(
        * transaction ({@link canonicalRenames}).
        */
       declaredNames?: readonly string[];
+      /**
+       * Filled with the table's column collations, read in the same
+       * transaction: one that does not read rolls the build back
+       * ({@link readCollationsOrFail}), so the previous generation keeps
+       * serving.
+       */
+      captured?: { collations?: TableCollations };
    } = {},
 ): Promise<WireColumn[]> {
    // In the transaction, not create-then-drop-on-failure: a DROP after the
@@ -1735,15 +1828,23 @@ export async function createTableAndDescribe(
       await session.runSQL(
          `CREATE OR REPLACE TABLE ${quotedTablePath} AS (${selectSQL})`,
       );
-      const described = await describeTable(session, quotedTablePath);
+      let described = await describeTable(session, quotedTablePath);
       const renames = canonicalRenames(described, options.declaredNames ?? []);
-      if (renames.length === 0) return described;
       for (const { from, to } of renames) {
          await session.runSQL(
             `ALTER TABLE ${quotedTablePath} RENAME COLUMN ${quoteIdentifier(from, STORAGE_DIALECT)} TO ${quoteIdentifier(to, STORAGE_DIALECT)}`,
          );
       }
-      return await describeTable(session, quotedTablePath);
+      if (renames.length > 0) {
+         described = await describeTable(session, quotedTablePath);
+      }
+      if (options.captured) {
+         options.captured.collations = await readCollationsOrFail(
+            session,
+            quotedTablePath,
+         );
+      }
+      return described;
    });
 }
 
@@ -1903,6 +2004,41 @@ async function inTransaction<T>(
       throw buildErr;
    }
    return result;
+}
+
+/**
+ * The column collations of the table at `target` (quoted), as the bind's
+ * read finds them (`collationCatalogBatches`, from its definition), in the
+ * session that wrote it: so a stored table's contract records what a bind
+ * will read. Throws {@link ContractCaptureFailedError} when they do not read.
+ */
+async function readCollationsOrFail(
+   session: DuckDBConnection,
+   target: string,
+): Promise<TableCollations> {
+   const faked = fakedCollations();
+   if (faked) return faked;
+   const parts = tablePathParts(target, STORAGE_DIALECT);
+   const [batch] = parts
+      ? collationCatalogBatches([{ key: "t", parts }], STORAGE_DIALECT)
+      : [];
+   let read: TableCollations | undefined;
+   if (batch) {
+      try {
+         const result = await session.runSQL(batch.sql);
+         const rows = Array.isArray(result) ? result : (result.rows ?? []);
+         read = batch.collationsOf(rows as Record<string, unknown>[]).get("t");
+      } catch {
+         read = undefined;
+      }
+   }
+   if (!read) {
+      throw new ContractCaptureFailedError(
+         target,
+         "its column collations did not read",
+      );
+   }
+   return read;
 }
 
 /**

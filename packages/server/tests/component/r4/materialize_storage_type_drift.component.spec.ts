@@ -223,15 +223,16 @@ ${tier.model("drift_m", "amt.sum()", "drift_m_t")}`,
             }
          } else {
             // A database table's types, read from its warehouse at bind.
+            // Each table no longer matches the contract its build recorded:
+            // left out, never cast (the two sources may share one table).
             const observed = await fixture.observeDatabaseColumns();
             expect(observed.unread).toEqual([]);
-            // One drift per table (the two sources may share one).
-            expect(observed.drifted.length).toBeGreaterThan(0);
-            for (const d of observed.drifted) {
-               expect(d.columns.map((c) => c.column).sort()).toEqual(
-                  // `n`, INTEGER altered to BIGINT, is the same Malloy type
-                  // with another native type: retyped, read alike.
-                  ["amt", "d", "d2", "flag", "n"].sort(),
+            expect(observed.drifted).toEqual([]);
+            expect(observed.incompatible.length).toBeGreaterThan(0);
+            for (const d of observed.incompatible) {
+               expect(d.code).toBe("column_retyped");
+               expect([...d.columns].sort()).toEqual(
+                  ["amt", "d", "d2", "flag", "n", "ts"].sort(),
                );
             }
          }
@@ -250,12 +251,19 @@ ${tier.model("drift_m", "amt.sum()", "drift_m_t")}`,
       });
 
       for (const q of SERVED) {
-         it(`served from the table, equal to live: ${q.name}`, async () => {
+         // A database table that no longer matches its contract answers
+         // live; a storage= binding carrying the altered schema reads it.
+         const stored = tier.servedFrom === "storage";
+         it(`${stored ? "served from the table" : "answered live, its table incompatible"}, equal to live: ${q.name}`, async () => {
             const run = await fixture.run(q);
             expect(run.live.length).toBeGreaterThan(0);
             expect(rowDifference(run.live, run.served)).toBeUndefined();
-            expect(run.servedVia).toBe("served_copy");
-            expect(run.servedFrom).toBe(tier.servedFrom);
+            if (stored) {
+               expect(run.servedVia).toBe("served_copy");
+               expect(run.servedFrom).toBe(tier.servedFrom);
+            } else {
+               expect(run.servedFrom).not.toBe(tier.servedFrom);
+            }
          });
       }
 
@@ -270,15 +278,21 @@ ${tier.model("drift_m", "amt.sum()", "drift_m_t")}`,
 
       it("a source whose own measure reads a left-out column is not re-rooted", async () => {
          const problems = await fixture.servedCopyProblems();
-         // Named, with its declared and stored types (F-07).
-         expect(problems).toEqual([
-            {
-               sourceName: "drift_m",
-               reason: "column_types",
-               detail:
-                  "column `amt` (declared `number`, stored as VARCHAR) has no declaration that reads it back as live answers it",
-            },
-         ]);
+         if (tier.servedFrom === "storage") {
+            // Named, with its declared and stored types (F-07).
+            expect(problems).toEqual([
+               {
+                  sourceName: "drift_m",
+                  reason: "column_types",
+                  detail:
+                     "column `amt` (declared `number`, stored as VARCHAR) has no declaration that reads it back as live answers it",
+               },
+            ]);
+         } else {
+            // A database table that no longer matches its contract is not
+            // bound at all, so the served copy re-roots nothing over it.
+            expect(problems).toEqual([]);
+         }
       });
 
       for (const malloy of [
@@ -410,14 +424,12 @@ source: ev is duckdb.table('ev') extend {
       expect(altered.length).toBe(1);
       const observed = await fixture.observeDatabaseColumns();
       expect(observed.unread).toEqual([]);
-      expect(observed.drifted).toEqual([
+      // The altered rollup's table no longer matches its contract.
+      expect(observed.drifted).toEqual([]);
+      expect(observed.incompatible).toEqual([
          expect.objectContaining({
-            columns: [
-               expect.objectContaining({
-                  column: altered[0],
-                  observedType: "VARCHAR",
-               }),
-            ],
+            code: "column_retyped",
+            columns: [altered[0]],
          }),
       ]);
    }, 120_000);
@@ -497,12 +509,12 @@ source: drift is ev extend {
          );
          const observed = await fixture.observeDatabaseColumns();
          expect(observed.unread).toEqual([]);
-         expect(observed.drifted).toEqual([
+         // The table no longer matches its contract: left out, never cast.
+         expect(observed.drifted).toEqual([]);
+         expect(observed.incompatible).toEqual([
             expect.objectContaining({
-               columns: [
-                  expect.objectContaining({ column: "amt" }),
-                  expect.objectContaining({ column: "flag" }),
-               ],
+               code: "column_retyped",
+               columns: ["amt", "flag"],
             }),
          ]);
       }, 120_000);
@@ -522,7 +534,7 @@ source: drift is ev extend {
          expect(run.servedFrom).not.toBe("database");
       });
 
-      it("a boolean now stored as an integer: read through a cast, served, equal to live", async () => {
+      it("a boolean now stored as an integer: answered live, equal to live", async () => {
          const run = await fixture.run({
             name: "flag",
             malloy:
@@ -530,16 +542,16 @@ source: drift is ev extend {
          });
          expect(run.live.length).toBeGreaterThan(0);
          expect(rowDifference(run.live, run.served)).toBeUndefined();
-         expect(run.servedFrom).toBe("database");
+         expect(run.servedFrom).not.toBe("database");
       });
 
-      it("a column left as built: served, equal to live", async () => {
+      it("a column left as built: answered live with its table, equal to live", async () => {
          const run = await fixture.run({
             name: "total",
             malloy: "run: drift -> { aggregate: total }",
          });
          expect(rowDifference(run.live, run.served)).toBeUndefined();
-         expect(run.servedFrom).toBe("database");
+         expect(run.servedFrom).not.toBe("database");
       });
    },
 );

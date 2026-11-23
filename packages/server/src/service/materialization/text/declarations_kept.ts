@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * A Malloy file with only some of its top-level `source:` declarations left:
- * every other `source:`, `query:` and `run:` statement, with the annotation
+ * A Malloy file with only some of its top-level `source:` and `query:`
+ * declarations left: every other `source:`, `query:` and `run:` statement, with the annotation
  * lines above it, is blanked, so the file compiles without the connections
  * those declarations read.
  *
@@ -30,9 +30,9 @@ import {
 const BLANKABLE = new Set(["source", "query", "run"]);
 
 /**
- * `text` with every top-level `source:` statement that holds none of `keep`
- * (positions in `text`, each inside a declaration to keep), and every `query:`
- * and `run:` statement, blanked along with their annotation lines.
+ * `text` with every top-level `source:` or `query:` statement that holds none
+ * of `keep` (positions in `text`, each inside a declaration to keep), and
+ * every `run:` statement, blanked along with their annotation lines.
  */
 export function keepDeclarations(
    text: string,
@@ -69,7 +69,7 @@ export function keepDeclarations(
       floor = to;
       if (!BLANKABLE.has(head.keyword)) continue;
       const kept =
-         head.keyword === "source" &&
+         head.keyword !== "run" &&
          keepAt.some((o) => o >= head.start && o < to);
       if (kept) continue;
       for (let c = from; c < to; c++) {

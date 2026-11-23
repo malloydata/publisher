@@ -3,21 +3,20 @@
 
 /**
  * A database `#@ persist` table on BigQuery and on DuckDB whose manifest entry
- * carries no recorded warehouse types (no `nativeSchema` and no `schema`,
- * which manifests written before the control plane stored them lack). Such an
- * entry records nothing to compare the table's columns with, so a change since
- * the build cannot be ruled out: the bind leaves the table out and the source
- * answers live, with the serve verdict, the path report and the package
- * warning all naming `types_unrecorded`, on BigQuery as on any dialect (it
- * was served, reading its big integers through INT64, through 0.17.1). A table
- * whose build captured the types serves through its native casts, and gets no
- * warning.
+ * carries no column contract (manifests written before contracts were
+ * recorded lack one). Such an entry records nothing to compare the table with,
+ * so the bind leaves the table out and the source answers live, with the
+ * serve verdict, the path report and the package warning all naming
+ * `contract_missing`, on BigQuery as on any dialect. A table whose build
+ * recorded its types and contract serves through its native casts, and gets
+ * no warning.
  *
  * BigQuery is a stand-in: its schema reads come from a fixture and its SQL
  * returns no rows, since what is checked is the served copy and the SQL it
  * writes, not the warehouse.
  */
 
+import { contractFor } from "../../src/test_helpers/contract_fixture";
 import { afterEach, describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
@@ -57,35 +56,46 @@ function standInBigQuery(name: string): Connection {
       // type; every other statement returns nothing (the collation probe's
       // other reads among them: no collated column).
       runSQL: async (sql: string) =>
-         /INFORMATION_SCHEMA\.TABLES\b/.test(sql)
+         // The bind's read of the stored table's column collations, beside
+         // its columns: none collated.
+         sql.startsWith("SELECT table_name, column_name, collation_name FROM")
             ? {
-                 rows: [
-                    {
-                       table_schema: "scratch",
-                       table_name: "by_k_table",
-                       table_type: "BASE TABLE",
-                    },
-                 ],
-                 totalRows: 1,
+                 rows: ["k", "total"].map((column_name) => ({
+                    table_name: "by_k_table",
+                    column_name,
+                    collation_name: null,
+                 })),
+                 totalRows: 2,
               }
-            : sql.includes("INFORMATION_SCHEMA.COLUMNS") &&
-                !sql.includes("collation_name")
+            : /INFORMATION_SCHEMA\.TABLES\b/.test(sql)
               ? {
                    rows: [
                       {
+                         table_schema: "scratch",
                          table_name: "by_k_table",
-                         column_name: "k",
-                         data_type: "STRING",
-                      },
-                      {
-                         table_name: "by_k_table",
-                         column_name: "total",
-                         data_type: "INT64",
+                         table_type: "BASE TABLE",
                       },
                    ],
-                   totalRows: 2,
+                   totalRows: 1,
                 }
-              : { rows: [], totalRows: 0 },
+              : sql.includes("INFORMATION_SCHEMA.COLUMNS") &&
+                  !sql.includes("collation_name")
+                ? {
+                     rows: [
+                        {
+                           table_name: "by_k_table",
+                           column_name: "k",
+                           data_type: "STRING",
+                        },
+                        {
+                           table_name: "by_k_table",
+                           column_name: "total",
+                           data_type: "INT64",
+                        },
+                     ],
+                     totalRows: 2,
+                  }
+                : { rows: [], totalRows: 0 },
    });
    return connection;
 }
@@ -154,7 +164,9 @@ async function bindWithoutNativeSchema(
          freshnessWindowSeconds: 86400,
          freshnessFallback: "live",
          dataAsOf: new Date().toISOString(),
-         ...(nativeSchema ? { nativeSchema } : {}),
+         ...(nativeSchema
+            ? { nativeSchema, contract: contractFor(nativeSchema) }
+            : {}),
       },
    } as never);
    const model_ = pkg.getModel("m.malloy");
@@ -196,16 +208,16 @@ describe("a database table bound with no captured warehouse types", () => {
          () => new Map<string, Connection>(),
       ],
    ] as const) {
-      it(`answers live on ${dialect}, naming types_unrecorded everywhere`, async () => {
+      it(`answers live on ${dialect}, naming contract_missing everywhere`, async () => {
          const { codes, verdict, declines, servedBy, notices } =
             await bindWithoutNativeSchema(model, connections());
          expect(servedBy?.kind).toBe("live");
          expect(verdict).toMatchObject({
             verdict: "live",
-            reason: "types_unrecorded",
+            reason: "contract_missing",
          });
-         expect(declines).toContain("types_unrecorded");
-         expect(codes).toContain("materialization-types-unrecorded");
+         expect(declines).toContain("contract_missing");
+         expect(codes).toContain("materialization-contract-missing");
          // Left out whole: no column of it is read, so none is warned of.
          expect(notices).toEqual([]);
       });

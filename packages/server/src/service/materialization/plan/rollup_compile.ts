@@ -152,7 +152,7 @@ interface StoredBaseBuild {
  * The `storage=` rollups that may build over their base's stored table: a
  * rollup over a base stored in the same destination, read from the base
  * itself (no build copy, so no given-reading term is left out of the base's
- * rows), and with no gate. The base's own notes declare `#@ persist` there, or a
+ * rows). The base's own notes declare `#@ persist` there, or a
  * `#(materialize)` there that `materialized` planned as a plain table (not a
  * pair table, which holds a row per pair, and with no read-time term, whose
  * rows its source filters again at read). Each with the one-rollup build
@@ -169,16 +169,19 @@ function storedBaseBuildsOf(
    const out = new Map<string, StoredBaseBuild>();
    for (const plan of plans) {
       if (plan.storage === undefined || readsBuildCopy(plan)) continue;
-      // A gated base's table holds every caller's rows: a rollup grouped
-      // from it is never offered, whatever the gate policy plans.
-      if (plan.baseGated) continue;
+      // A gated base's table holds every caller's rows, as its source's do:
+      // the gates apply at read, so a rollup grouped from it holds what one
+      // grouped from the warehouse would.
       const def = map.node(plan.baseSourceID)?.def as
-         | { annotations?: AnnotationsDef }
+         | { annotations?: AnnotationsDef; type?: unknown }
          | undefined;
       const notes = ownLevelNotes(def?.annotations);
       const own = notes.filter((n) => routeOfNote(n.text) === "@");
+      // A `#@ persist` on a source that is not a query builds no table.
       const stored = notesDeclarePersist(own)
-         ? persistStoredIn(own)
+         ? def?.type === "query_source"
+            ? persistStoredIn(own)
+            : undefined
          : materializeStoredIn(notes, plan.baseSourceID, materialized);
       if (stored === undefined || stored !== plan.storage) continue;
       const text = generateRollupBuildFile([plan], modelFileName);
@@ -234,9 +237,9 @@ function materializeStoredIn(
  * compile needs: a database rollup over a base whose own notes declare a
  * database `#@ persist` (its notes kept, `keep`), or a database
  * `#(materialize)` that `materialized` planned as a plain table (its copy,
- * `stored`, by the base's declared name). A rollup in a `storage=`
- * destination, or over a base built into one, reads the author's rows as
- * planned: a destination cannot be read from the base's warehouse.
+ * `stored`, by the base's declared name), in either tier. A rollup over a
+ * base built into a `storage=` destination is not offered it: the
+ * destination cannot be read from the base's warehouse.
  */
 function overStoredBaseNotes(
    map: SourceMap,
@@ -255,8 +258,10 @@ function overStoredBaseNotes(
    const rollups = new Set<string>();
    const stored = new Map<string, StoredMaterializeBase>();
    for (const plan of plans) {
-      // A base read from its build copy is never its stored table.
-      if (plan.storage !== undefined || readsBuildCopy(plan)) continue;
+      // A base read from its build copy is never its stored table. A
+      // `storage=` rollup's build runs in the warehouse too, so it reads a
+      // database base's table as a database rollup does.
+      if (readsBuildCopy(plan)) continue;
       const node = map.node(plan.baseSourceID);
       const def = node?.def as { annotations?: AnnotationsDef } | undefined;
       const notes = ownLevelNotes(def?.annotations);
@@ -271,7 +276,7 @@ function overStoredBaseNotes(
             modelFile,
             materialized,
          );
-         if (!base || base === "unusable") continue;
+         if (!base || "unusable" in base) continue;
          stored.set(plan.baseDeclaredName, base);
          rollups.add(`${plan.rollupSourceName}@${companionHref}`);
          continue;

@@ -105,10 +105,14 @@ a throwaway Postgres in the runner's Docker and a local DuckLake, nightly and on
 `nightly.yml` holds the nightly checks of issue #1897 other than the hammer, one job each, on a
 schedule (06:41 UTC) and `workflow_dispatch`. Its `upgrade` job runs `hammer/upgrade/run.ts`: the
 latest released server builds a fixture package's materializations, then `main`'s build must serve
-them unchanged from the same server root and data. Neither it nor `hammer-nightly.yml` holds a
-secret or is a pull-request check. Each job writes its job summary from a JSON report
-(`hammer-report.json`, `upgrade-report.json`) that is uploaded with the logs (the hammer's on every
-run, the upgrade's when it fails); post a nightly result from that report, never from raw logs.
+them unchanged from the same server root and data. Its `mixed-version` job runs
+`hammer/mixed-version/run.ts`, the rolling-deploy direction: `main`'s build writes a manifest and the
+latest released server, bound to it, must serve every stored table from it (its in-process
+counterpart, a frozen copy of the release's manifest loader, runs on every pull request in
+`test:component`). Neither it nor `hammer-nightly.yml` holds a secret or is a pull-request check.
+Each job writes its job summary from a JSON report (`hammer-report.json`, `upgrade-report.json`,
+`mixed-version-report.json`) that is uploaded with the logs (the hammer's on every run, the others'
+when they fail); post a nightly result from that report, never from raw logs.
 
 `main-thread-regression.yml` is the main-thread regression check
 (`packages/server/tests/perf/main-thread/README.md`): a storm-lite A/B of two server builds on

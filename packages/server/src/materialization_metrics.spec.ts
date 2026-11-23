@@ -28,6 +28,8 @@ import {
    recordBuildReadBytes,
    recordDuplicateTargetSkipped,
    recordIncrementalStep,
+   recordContractCapture,
+   recordIncompatibleDetected,
    recordKeyCheck,
    recordManifestBindDegraded,
    recordQueryRoute,
@@ -239,7 +241,7 @@ describe("materialization_metrics", () => {
          "failed",
          "cancelled",
       ]);
-      expect(INCREMENTAL_STEP_REASONS).toHaveLength(14);
+      expect(INCREMENTAL_STEP_REASONS).toHaveLength(15);
 
       // build_total: failure_class is none for the four other outcomes, and
       // one of the four failure classes when failed: 6 x 2 x (4 + 4) = 96.
@@ -370,8 +372,6 @@ describe("materialization_metrics", () => {
    it("counts chained storage builds labeled by outcome", async () => {
       recordChainedStorageBuild("parent_reuse");
       recordChainedStorageBuild("parent_reuse");
-      recordChainedStorageBuild("inline_fallback");
-      recordChainedStorageBuild("strict_shape_fallback");
       recordChainedStorageBuild("strict_refused");
 
       expect(
@@ -379,16 +379,6 @@ describe("materialization_metrics", () => {
             outcome: "parent_reuse",
          }),
       ).toBe(2);
-      expect(
-         await harness.collectCounter("publisher_storage_chained_build_total", {
-            outcome: "inline_fallback",
-         }),
-      ).toBe(1);
-      expect(
-         await harness.collectCounter("publisher_storage_chained_build_total", {
-            outcome: "strict_shape_fallback",
-         }),
-      ).toBe(1);
       expect(
          await harness.collectCounter("publisher_storage_chained_build_total", {
             outcome: "strict_refused",
@@ -470,6 +460,10 @@ const EMISSIONS: Record<string, () => void> = {
    publisher_query_route_duration_ms: () => recordQueryRouteDuration(1, "live"),
    publisher_materialization_key_check_total: () =>
       recordKeyCheck("parent", "not_unique"),
+   publisher_materialization_incompatible_detected_total: () =>
+      recordIncompatibleDetected("bind", "column_retyped"),
+   publisher_materialization_contract_capture_total: () =>
+      recordContractCapture("storage", "unread"),
    publisher_storage_tables_retained_total: () => recordStorageTableRetained(),
    publisher_storage_build_attribution_skipped_total: () =>
       recordAttributionSkipped("tag_failed"),

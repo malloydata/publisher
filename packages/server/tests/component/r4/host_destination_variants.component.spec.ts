@@ -20,6 +20,7 @@
  * another table, or from live, is told apart.
  */
 
+import { contractFor } from "../../../src/test_helpers/contract_fixture";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import * as path from "path";
@@ -167,6 +168,7 @@ describe("F-14: a rollup, view and query over a database origin, in a host-chose
                sourceEntityId: entry.sourceEntityId,
                sourceName: entry.name,
                physicalTableName: table,
+               contract: contractFor(),
                connectionName: entry.connectionName,
                // The host's choice; no annotation names it.
                storageDestinationName: LAKE,

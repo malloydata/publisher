@@ -735,7 +735,7 @@ export function levelFileName(modelFileName: string, level: number): string {
 /**
  * Each plan's depth in its chain of extension tables, by sourceID: 0
  * for one built over the raw chain, its parent's plus one otherwise. A plan
- * whose parent is not among `plans` is depth 0 (see {@link settledChains}).
+ * whose parent is not among `plans` is depth 0 (its copy then refuses it).
  */
 export function chainLevels(
    plans: readonly MaterializePlan[],
@@ -755,23 +755,6 @@ export function chainLevels(
    };
    for (const plan of plans) levelOf(plan);
    return levels;
-}
-
-/**
- * `plans` with every `buildsOver` whose parent is no longer planned removed,
- * to a fixpoint: a parent refused after planning leaves its extension to
- * build over the raw chain. A parent in another file is planned by that
- * file's companion, so its extension keeps it.
- */
-export function settledChains(
-   plans: readonly MaterializePlan[],
-): MaterializePlan[] {
-   const ids = new Set(plans.map((p) => p.sourceID));
-   return plans.map((p) =>
-      p.buildsOver && !p.buildsOver.crossFile && !ids.has(p.buildsOver.sourceID)
-         ? withoutParent(p)
-         : p,
-   );
 }
 
 /** A plan built over the raw chain instead of its parent's build source. */

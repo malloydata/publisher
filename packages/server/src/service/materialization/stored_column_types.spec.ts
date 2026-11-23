@@ -22,6 +22,7 @@ import {
    isCastConversionError,
    keepsWarehouseType,
    rebuildWouldRecast,
+   sameStoredTypeClass,
    serveTypePlan,
    storedColumnsOfOutput,
    storedColumnTypeMismatches,
@@ -35,6 +36,37 @@ import {
 } from "@malloydata/malloy";
 import { plannedSources } from "./plan/build_plan";
 import { openTempDuckDB } from "../../test_helpers/temp_storage";
+
+describe("sameStoredTypeClass", () => {
+   it("matches a number stood in as BIGINT or DOUBLE to any stored numeric type", () => {
+      for (const standIn of ["BIGINT", "DOUBLE"]) {
+         for (const stored of [
+            "BIGINT",
+            "HUGEINT",
+            "INTEGER",
+            "UBIGINT",
+            "DOUBLE",
+            "FLOAT",
+            "REAL",
+            "DECIMAL(38,0)",
+            "numeric(10, 2)",
+         ]) {
+            expect(sameStoredTypeClass(stored, standIn)).toBe(true);
+         }
+      }
+   });
+
+   it("never matches a number to another class, nor two other classes", () => {
+      expect(sameStoredTypeClass("VARCHAR", "DOUBLE")).toBe(false);
+      expect(sameStoredTypeClass("BIGINT", "VARCHAR")).toBe(false);
+      expect(sameStoredTypeClass("BOOLEAN", "BIGINT")).toBe(false);
+      expect(sameStoredTypeClass("DATE", "TIMESTAMP")).toBe(false);
+      expect(sameStoredTypeClass("TIMESTAMP", "TIMESTAMP WITH TIME ZONE")).toBe(
+         false,
+      );
+      expect(sameStoredTypeClass("varchar(20)", "VARCHAR")).toBe(true);
+   });
+});
 
 describe("storedTypeServesAs", () => {
    const cases: [string, string, boolean | undefined][] = [

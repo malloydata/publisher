@@ -13,7 +13,8 @@ import {
    BuildPlanRefreshingError,
    BuildPlanUnavailableError,
    ChainedShapeNotCarriedError,
-   WarehouseRecomputeRefusedError,
+   ContractCaptureFailedError,
+   SchemaIncompatibleError,
    ChainedUpstreamMissingError,
    CompileRefusedError,
    ConflictError,
@@ -359,12 +360,18 @@ const CASES: Array<[string, () => unknown]> = [
       () => new ChainedShapeNotCarriedError("shape not carried"),
    ],
    [
-      "WarehouseRecomputeRefusedError",
+      "ContractCaptureFailedError",
       () =>
-         new WarehouseRecomputeRefusedError(
-            "rollup",
-            "lake",
-            "'rollup' reads the source warehouse (regions) through 'via'",
+         new ContractCaptureFailedError(
+            "lake.orders_t",
+            "its collations did not read",
+         ),
+   ],
+   [
+      "SchemaIncompatibleError",
+      () =>
+         new SchemaIncompatibleError(
+            "'v' was not built over its upstream 'a''s table a_t in 'lake'",
          ),
    ],
    [

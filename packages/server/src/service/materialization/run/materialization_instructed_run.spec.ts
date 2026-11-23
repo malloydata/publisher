@@ -26,6 +26,10 @@ import { logger } from "../../../logger";
 import { resetMaterializationTelemetryForTesting } from "../../../materialization_metrics";
 import { startMetricsHarness } from "../../../test_helpers/metrics_harness";
 import { installSettings } from "../../../test_helpers/settings_env";
+import { fakeContractReads } from "../../../test_helpers/contract_fixture";
+
+// Builds over fake connections, which answer no catalog query.
+fakeContractReads();
 
 /**
  * Instructed builds (executeInstructedBuild): resolving each instruction,
@@ -558,25 +562,6 @@ describe("executeInstructedBuild", () => {
          expect((memory as BuildRunFailedError).retryable).toBe(true);
          const odd = await runOnly("something odd happened");
          expect((odd as BuildRunFailedError).retryable).toBeUndefined();
-      });
-
-      // ms2data/service#6756: the instructions refused the only build there
-      // is, so the same instructions refuse it again.
-      it("marks a source refused under warehouseReach refuse deterministic, and its dependent too", async () => {
-         const { WarehouseRecomputeRefusedError } = await import(
-            "../../../errors"
-         );
-         const refused = new WarehouseRecomputeRefusedError(
-            "up",
-            "lake",
-            "'up' reads the source warehouse (regions) through 'via'",
-         );
-         const failures = await runChain(refused.message, refused);
-         expect(failures["bupupupupupupupu"].retryable).toBe(false);
-         expect(failures["bupupupupupupupu"].reason).toContain(
-            "warehouseReach: refuse",
-         );
-         expect(failures["bdowndowndowndow"].retryable).toBe(false);
       });
 
       it("omits the field when the failure is not recognized", async () => {

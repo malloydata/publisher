@@ -189,7 +189,12 @@ export interface PlannedPackage {
 
 export interface PlanPackages {
    /** Write `files` as a package and compile its build plan. */
-   plan(files: ModelFiles): Promise<PlannedPackage>;
+   plan(
+      files: ModelFiles,
+      overrides?: Parameters<
+         ReturnType<typeof tempBuildPlanPackages>["create"]
+      >[1],
+   ): Promise<PlannedPackage>;
    /** Write `files` as a package, uncompiled. */
    create: ReturnType<typeof tempBuildPlanPackages>["create"];
    /**
@@ -226,8 +231,8 @@ export function planPackages(
    return {
       create: packages.create,
       settings,
-      async plan(files) {
-         const pkg = await packages.create(files);
+      async plan(files, overrides) {
+         const pkg = await packages.create(files, overrides);
          return {
             pkg,
             c: await compilePackageBuildPlan(pkg, undefined, compileOptions),

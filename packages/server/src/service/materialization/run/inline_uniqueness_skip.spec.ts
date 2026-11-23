@@ -218,7 +218,6 @@ async function scenario(model: string) {
          strict: false,
          priorRefusals: [],
          hostInstructed: false,
-         warehouseReach: "recompute",
          uniqueness: ledger,
       });
       if (Object.keys(result.failures).length === 0) {
