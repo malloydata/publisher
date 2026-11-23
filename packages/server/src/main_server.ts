@@ -440,7 +440,8 @@ export async function buildApp(settings: AppSettings): Promise<BuiltApp> {
       ADMIN_PORT === null
          ? null
          : createAdminApp(ADMIN_CATALOGS, watchModeController);
-   if (adminApp) removeStaleBuildDirs();
+   // Persist builds and storage cleanup open build sessions too, so sweep whether or not the admin listener is on.
+   removeStaleBuildDirs();
 
    function listen(): RunningServers {
       const mainServer = longTimeouts(
