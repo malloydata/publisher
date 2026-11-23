@@ -26,7 +26,13 @@
  * Effects: logs, and the bind metrics.
  */
 
-import { type ColumnContract, parseContract } from "./domain/column_contract";
+import {
+   type ColumnContract,
+   type KeyedSource,
+   keyUniquenessOfContract,
+   parseContract,
+} from "./domain/column_contract";
+import { packageRelativeSourceID } from "./text/read_text";
 import { refreshStringCapabilities } from "./serve/source_capability";
 import type { Connection, MalloyConfig } from "@malloydata/malloy";
 import { components } from "../../api";
@@ -990,25 +996,83 @@ export class PackageMaterialization {
       this.afterBind(update);
    }
 
+   /**
+    * `entries`, each that carries no key check record of a local run
+    * (`keyUniqueness`) given the rollup and source key checks its contract
+    * records (`keyUniquenessOfContract`), for the sources the models declare
+    * now: so a table a host built and bound serves a join to a rollup as one
+    * this server built does. A local record, when there is one, stands.
+    */
+   private withRecordedKeyChecks<
+      E extends { contract?: unknown; keyUniqueness?: unknown },
+   >(entries: Record<string, E>): Record<string, E> {
+      let sources: KeyedSource[] | undefined;
+      let out: Record<string, E> | undefined;
+      for (const [id, entry] of Object.entries(entries)) {
+         if (
+            entry.keyUniqueness !== undefined ||
+            entry.contract === undefined
+         ) {
+            continue;
+         }
+         sources ??= this.keyedSources();
+         const keyUniqueness = keyUniquenessOfContract(entry.contract, sources);
+         if (!keyUniqueness) continue;
+         out ??= { ...entries };
+         out[id] = { ...entry, keyUniqueness };
+      }
+      return out ?? entries;
+   }
+
+   /** Every source the models declare with a primary key, as a contract's key checks name it. */
+   private keyedSources(): KeyedSource[] {
+      const packagePath = this.owner.packagePath();
+      const bySourceID = new Map<string, KeyedSource>();
+      for (const model of this.owner.models().values()) {
+         const contents =
+            (model.getModelDef() as { contents?: Record<string, unknown> })
+               .contents ?? {};
+         for (const def of Object.values(contents)) {
+            const { sourceID, primaryKey } = def as {
+               sourceID?: unknown;
+               primaryKey?: unknown;
+            };
+            if (
+               typeof sourceID !== "string" ||
+               typeof primaryKey !== "string" ||
+               bySourceID.has(sourceID)
+            ) {
+               continue;
+            }
+            bySourceID.set(sourceID, {
+               sourceID,
+               relativeID: packageRelativeSourceID(packagePath, sourceID),
+               primaryKey,
+            });
+         }
+      }
+      return [...bySourceID.values()];
+   }
+
    /** {@link bind}'s change of the bound state, before any publish. */
    private applyBind(update: Parameters<PackageMaterialization["bind"]>[0]) {
       if (update.database) {
+         const database = this.withRecordedKeyChecks(update.database);
          this.adoptDatabase(
-            update.databaseAsGiven
-               ? update.database
-               : this.admitDatabase(update.database),
+            update.databaseAsGiven ? database : this.admitDatabase(database),
          );
          this.observedColumns = update.observed;
          this.cancelUnreadRetry();
       }
       if (update.storage) {
-         this.storageEntries = update.storage;
+         const storage = this.withRecordedKeyChecks(update.storage);
+         this.storageEntries = storage;
          this.storageObserved = update.storageObserved;
          this.storageSite = update.storageSite;
          this.cancelStorageRetry();
-         this.storageBindings = this.admitStorage(update.storage);
+         this.storageBindings = this.admitStorage(storage);
          this.storageLateRows = new Map(
-            Object.entries(update.storage).flatMap(([id, entry]) =>
+            Object.entries(storage).flatMap(([id, entry]) =>
                entry.lateRows ? [[id, entry.lateRows]] : [],
             ),
          );

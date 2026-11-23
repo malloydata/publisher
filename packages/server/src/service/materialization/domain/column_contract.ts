@@ -61,11 +61,86 @@ type ContractColumn = {
    declaredType?: string;
 };
 
-/** One pair-table key check a build ran (`ColumnContract.keys`). */
-type ContractKeyCheck = {
+/** One key check a build ran over its table (`ColumnContract.keys`). */
+export type ContractKeyCheck = {
    unique: boolean;
    level?: string;
 };
+
+/**
+ * What a key check in `ColumnContract.keys` checked: a pair table's leaf
+ * key (`leaf`), a rollup's own key, its one grain dimension (`rollup`), the
+ * primary key of a query source that reads a rollup through a join_many on
+ * it (`parent`), and a stored source's own primary key (`stored`).
+ */
+type ContractKeyLevel = "leaf" | "rollup" | "parent" | "stored";
+
+/**
+ * The name a key check is recorded under in `ColumnContract.keys`:
+ * `<level>:<subject>.<keyColumn>`, or `<level>:<keyColumn>` with no subject.
+ * The subject is the join path to a pair leaf (`leaf:items.options.option_id`)
+ * and the package-relative sourceID of a checked source
+ * (`parent:orders@models/orders.malloy.id`); a rollup's own key has none
+ * (`rollup:category`). A reader builds the name it needs and looks it up,
+ * never parsing one, so a subject may hold dots.
+ */
+export function contractKeyName(
+   level: ContractKeyLevel,
+   subject: string,
+   keyColumn: string,
+): string {
+   return `${level}:${subject ? `${subject}.` : ""}${keyColumn}`;
+}
+
+/** A source a bind may find a key check recorded for, as the current model declares it. */
+export interface KeyedSource {
+   sourceID: string;
+   /** Its sourceID with its file made relative to the package. */
+   relativeID: string;
+   primaryKey: string;
+}
+
+/**
+ * The rollup and source key checks `contract` records, in the shape a bind
+ * gives a table (`KeyUniqueness`): its own key check (`rollup:`), and the
+ * checks of `sources` it holds under their current primary key (`parent:`
+ * and `stored:`, by sourceID). A check of another key, or of a source the
+ * model no longer declares, is not one. Undefined when it records none.
+ */
+export function keyUniquenessOfContract(
+   contract: unknown,
+   sources: readonly KeyedSource[],
+):
+   | {
+        keyColumn?: string;
+        unique?: boolean;
+        parentKeys?: Record<string, boolean>;
+     }
+   | undefined {
+   const keys = parseContract(contract)?.keys;
+   if (!keys) return undefined;
+   const own = Object.entries(keys).find(
+      ([name, check]) => check.level === "rollup" && name.startsWith("rollup:"),
+   );
+   const parentKeys: Record<string, boolean> = {};
+   for (const s of sources) {
+      for (const level of ["parent", "stored"] as const) {
+         const check = keys[contractKeyName(level, s.relativeID, s.primaryKey)];
+         if (check?.level !== level) continue;
+         // Both must hold: a source checked as both is unique only if both say so.
+         parentKeys[s.sourceID] =
+            (parentKeys[s.sourceID] ?? true) && check.unique;
+      }
+   }
+   const anyParent = Object.keys(parentKeys).length > 0;
+   if (!own && !anyParent) return undefined;
+   return {
+      ...(own
+         ? { keyColumn: own[0].slice("rollup:".length), unique: own[1].unique }
+         : {}),
+      ...(anyParent ? { parentKeys } : {}),
+   };
+}
 
 /** A table's contract, as {@link parseContract} reads it. */
 export type ColumnContract = {
@@ -196,12 +271,12 @@ export function contractDigest(contract: ColumnContract): string {
       .slice(0, 32);
 }
 
-/** Whether the pair table's key check on `column` is recorded as passed. */
+/** Whether the key check named `key` ({@link contractKeyName}) is recorded as passed. */
 export function keyCheckPassed(
    contract: ColumnContract | undefined,
-   column: string,
+   key: string,
 ): boolean {
-   return contract?.keys?.[column]?.unique === true;
+   return contract?.keys?.[key]?.unique === true;
 }
 
 /** The stored side of a table a build just wrote, as the bind reads it. */

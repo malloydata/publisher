@@ -75,6 +75,12 @@ interface Fixture {
    committer(): {
       rebindLoadedVersions(env: string, pkg: string): Promise<boolean>;
    };
+   /**
+    * Unversioned only: bind `entries` as a host's manifest
+    * (`manifestLocation`), as an orchestrated deployment binds what its
+    * builds reported: no local run's key check records come with it.
+    */
+   hostManifest(entries: Record<string, unknown>): Promise<void>;
    dispose(): Promise<void>;
 }
 
@@ -289,6 +295,25 @@ async function fixture(
                committer: ReturnType<Fixture["committer"]>;
             }
          ).committer,
+      hostManifest: async (entries) => {
+         const location = path.join(root, `host-${Date.now()}.json`);
+         fs.writeFileSync(
+            location,
+            JSON.stringify({ builtAt: new Date().toISOString(), entries }),
+         );
+         writePackageFiles(
+            source,
+            { "m.malloy": model },
+            {
+               manifest: {
+                  name: PKG,
+                  description: "fixture",
+                  manifestLocation: location,
+               } as never,
+            },
+         );
+         await env.getPackage(parsePackageName(PKG), true);
+      },
       dispose: async () => {
          await env.closeAllConnections().catch(() => undefined);
          await db.close();
@@ -707,6 +732,131 @@ source: flights is warehouse.table('public.flights') extend {
          const rebound = await f.query(malloy);
          expect(rebound.servedFrom).toBeUndefined();
          expect(rebound.rows).toEqual(truth);
+      });
+   },
+);
+
+describe.skipIf(!url)(
+   "an orchestrated join to a rollup serves by the key checks its builds recorded in their contracts",
+   () => {
+      // A join_one to `crew`'s rollup at its key (the rollup's own check),
+      // and a join_many to `segs`'s rollup beside the stored `flights`
+      // (the stored source's own check). Bound from a host's manifest, so no
+      // local run's record is read: only each table's contract.
+      const MODEL = `source: crew is warehouse.table('public.crew') extend {
+  primary_key: flight_id
+  #(rollup) grain=["flight_id"] storage="lake"
+  measure: crew_size is size.sum()
+}
+
+source: segs is warehouse.table('public.segs') extend {
+  primary_key: seg_id
+  #(rollup) grain=["flight_id"] storage="lake"
+  measure: seg_miles is miles.sum()
+}
+
+#(materialize) storage="lake"
+source: flights is warehouse.table('public.flights') extend {
+  primary_key: id
+  join_one: crew with id
+  join_many: segs on segs.flight_id = id
+  measure: flight_count is count()
+}
+`;
+      const CREW =
+         "run: flights -> { group_by: carrier; aggregate: flight_count, crew.crew_size; order_by: carrier }";
+      const SEG =
+         "run: flights -> { group_by: carrier; aggregate: flight_count, segs.seg_miles; order_by: carrier }";
+      let f: Fixture;
+      let entries: Record<
+         string,
+         {
+            contract?: {
+               keys?: Record<string, { unique: boolean; level?: string }>;
+            };
+         }
+      >;
+      beforeAll(async () => {
+         f = await fixture(
+            MODEL,
+            [
+               FLIGHTS,
+               SEGS,
+               `CREATE TABLE crew AS SELECT * FROM (VALUES
+                  (1, 3), (3, 2), (4, 5)) AS t(flight_id, size)`,
+            ],
+            false,
+         );
+         const built = await f.build();
+         expect(built.status).toBe("MANIFEST_FILE_READY");
+         entries = (built.manifest as { entries: typeof entries }).entries;
+      }, 120_000);
+      afterAll(async () => {
+         await f?.dispose();
+      });
+
+      /** `entries` with every recorded rollup and source key check set to `unique`, or dropped. */
+      const withChecks = (unique: boolean | "none") =>
+         Object.fromEntries(
+            Object.entries(entries).map(([id, e]) => {
+               const keys = Object.fromEntries(
+                  Object.entries(e.contract?.keys ?? {}).flatMap(([k, v]) =>
+                     v.level === "leaf"
+                        ? [[k, v]]
+                        : unique === "none"
+                          ? []
+                          : [[k, { ...v, unique }]],
+                  ),
+               );
+               return [
+                  id,
+                  e.contract ? { ...e, contract: { ...e.contract, keys } } : e,
+               ];
+            }),
+         );
+
+      it("records the rollup's key and the stored source's key in the contracts, under the package-relative scheme", () => {
+         const names = Object.values(entries).flatMap((e) =>
+            Object.entries(e.contract?.keys ?? {}).map(([k, v]) => [
+               k,
+               v.level,
+            ]),
+         );
+         expect(names).toContainEqual(["rollup:flight_id", "rollup"]);
+         expect(names).toContainEqual(["stored:flights@m.malloy.id", "stored"]);
+      });
+
+      it("serves both joins from storage when the recorded checks passed", async () => {
+         await f.hostManifest(withChecks(true));
+         const crew = await f.query(CREW);
+         expect(crew.rows).toEqual([
+            { carrier: "AA", flight_count: 2, crew_size: 5 },
+            { carrier: "UA", flight_count: 2, crew_size: 5 },
+         ]);
+         expect(crew.servedFrom).toBe("storage");
+         const seg = await f.query(SEG);
+         expect(seg.rows).toEqual([
+            { carrier: "AA", flight_count: 2, seg_miles: 150 },
+            { carrier: "UA", flight_count: 2, seg_miles: 500 },
+         ]);
+         expect(seg.servedFrom).toBe("storage");
+      });
+
+      it("answers both live when the recorded checks failed, or none was recorded", async () => {
+         for (const checks of [false, "none"] as const) {
+            await f.hostManifest(withChecks(checks));
+            for (const q of [CREW, SEG]) {
+               expect({
+                  checks,
+                  q,
+                  from: (await f.query(q)).servedFrom,
+               }).toEqual({
+                  checks,
+                  q,
+                  from: undefined,
+               });
+            }
+         }
       });
    },
 );

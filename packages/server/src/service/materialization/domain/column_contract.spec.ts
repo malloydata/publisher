@@ -11,6 +11,8 @@ import {
    keyCheckPassed,
    parseContract,
    weakestStringCompare,
+   contractKeyName,
+   keyUniquenessOfContract,
 } from "./column_contract";
 
 const one = {
@@ -418,5 +420,80 @@ describe("declaredMoves", () => {
             { name: "x", type: "number" },
          ]),
       ).toEqual(["n"]);
+   });
+});
+
+describe("the key checks a contract records", () => {
+   it("names each check by its level, subject and key column", () => {
+      expect(contractKeyName("leaf", "items.options", "option_id")).toBe(
+         "leaf:items.options.option_id",
+      );
+      expect(contractKeyName("leaf", "", "id")).toBe("leaf:id");
+      expect(contractKeyName("rollup", "", "category")).toBe("rollup:category");
+      expect(contractKeyName("parent", "orders@m/orders.malloy", "id")).toBe(
+         "parent:orders@m/orders.malloy.id",
+      );
+   });
+
+   const contract = (keys: Record<string, unknown>) => ({
+      v: 1,
+      dialect: "duckdb",
+      columns: [],
+      keys,
+   });
+   const ORDERS = {
+      sourceID: "orders@file:///pkg/m/orders.malloy",
+      relativeID: "orders@m/orders.malloy",
+      primaryKey: "id",
+   };
+   const USERS = {
+      sourceID: "users@file:///pkg/m/users.malloy",
+      relativeID: "users@m/users.malloy",
+      primaryKey: "user_id",
+   };
+
+   it("reads a rollup's own check and each source's under its current key, by sourceID", () => {
+      expect(
+         keyUniquenessOfContract(
+            contract({
+               "rollup:category": { unique: true, level: "rollup" },
+               "parent:orders@m/orders.malloy.id": {
+                  unique: true,
+                  level: "parent",
+               },
+               "stored:users@m/users.malloy.user_id": {
+                  unique: false,
+                  level: "stored",
+               },
+               "leaf:items.item_id": { unique: true, level: "leaf" },
+            }),
+            [ORDERS, USERS],
+         ),
+      ).toEqual({
+         keyColumn: "category",
+         unique: true,
+         parentKeys: { [ORDERS.sourceID]: true, [USERS.sourceID]: false },
+      });
+   });
+
+   it("reads nothing for a check of another key, a level that does not match, or none", () => {
+      expect(
+         keyUniquenessOfContract(
+            contract({
+               // The key the source declared when the table was built.
+               "parent:orders@m/orders.malloy.old_id": {
+                  unique: true,
+                  level: "parent",
+               },
+               "parent:users@m/users.malloy.user_id": {
+                  unique: true,
+                  level: "leaf",
+               },
+            }),
+            [ORDERS, USERS],
+         ),
+      ).toBeUndefined();
+      expect(keyUniquenessOfContract(contract({}), [ORDERS])).toBeUndefined();
+      expect(keyUniquenessOfContract(undefined, [ORDERS])).toBeUndefined();
    });
 });
