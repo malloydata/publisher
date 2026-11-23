@@ -19,7 +19,8 @@
  */
 
 import { doubleQuotedString, identifier } from "../../malloy_text";
-import { lexAll, isName } from "./malloy_lexer";
+import { lexAll } from "../../malloy_lexer_core";
+import { isName } from "./malloy_lexer";
 import { definitionCutAt } from "./definition_cut";
 
 /** The timeframes a stored truncation can carry, the only ones emitted. */

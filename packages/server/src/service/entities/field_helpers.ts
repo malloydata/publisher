@@ -290,8 +290,9 @@ const ownNoteSpans = (model: ModelCode, at: number): [number, number][] => {
  */
 const ownNoteTest = (
    exploreLoc: MalloyDocLocation,
+   codeOf: (url: string) => ModelCode | undefined,
 ): ((note: MalloyNote) => boolean) | undefined => {
-   const model = exploreLoc.url ? modelCode(exploreLoc.url) : undefined;
+   const model = exploreLoc.url ? codeOf(exploreLoc.url) : undefined;
    if (!model) return undefined;
    const at = modelOffset(model, exploreLoc.range?.start);
    if (at === undefined) return undefined;
@@ -351,7 +352,7 @@ export const getDirectTaglines = (explore: Explore): string[] => {
    ];
 
    const exploreLoc = (explore as { location?: MalloyDocLocation }).location;
-   const directNotes = filterDirectlyDeclaredNotes(notes, exploreLoc);
+   const directNotes = directlyDeclaredNotes(notes, exploreLoc);
 
    return directNotes
       .map((n) => n.text)
@@ -368,7 +369,7 @@ export const getDirectTaglines = (explore: Explore): string[] => {
  * joined source's OWN declaration file (not the file with the join clause),
  * and its line range is that file's — never contiguous with the join
  * field's `location` (which sits at the join clause instead). Both of the
- * `filterDirectlyDeclaredNotes` heuristics (same-file, line-contiguity) are
+ * `directlyDeclaredNotes` heuristics (same-file, line-contiguity) are
  * therefore built for the `extend`-inheritance case and wrongly drop every
  * note here — see `getDirectTaglines` for that rationale. Since there is no
  * extend/inherits ambiguity to resolve for a named join, every note present
@@ -405,15 +406,17 @@ const noteLineRange = (
 };
 
 /**
- * Keeps only the notes that are genuinely declared on the explore at
- * `exploreLoc`: read from the model's text when the run can read it, else
+ * Keeps only the notes that are genuinely declared on the source at
+ * `exploreLoc`: read from its file's text (`codeOf`) when there is one, else
  * by line contiguity. Notes copied verbatim from a base (whose location
  * points elsewhere) are dropped. See `getDirectTaglines` for the rationale.
+ * The retrieval catalog reads a source's own notes with this too.
  */
-const filterDirectlyDeclaredNotes = (
-   notes: MalloyNote[],
+export const directlyDeclaredNotes = <N extends MalloyNote>(
+   notes: N[],
    exploreLoc: MalloyDocLocation | undefined,
-): MalloyNote[] => {
+   codeOf: (url: string) => ModelCode | undefined = modelCode,
+): N[] => {
    const srcStart = exploreLoc?.range?.start?.line;
    const srcEnd = exploreLoc?.range?.end?.line ?? srcStart;
    // Without a usable source location we cannot distinguish direct from
@@ -430,7 +433,7 @@ const filterDirectlyDeclaredNotes = (
    });
 
    // With the text the model compiled from, read it as Malloy does.
-   const own = exploreLoc && ownNoteTest(exploreLoc);
+   const own = exploreLoc && ownNoteTest(exploreLoc, codeOf);
    if (own) {
       return sameFileNotes.filter((n) => !n.at?.range || own(n));
    }
@@ -439,8 +442,8 @@ const filterDirectlyDeclaredNotes = (
    // drops a note past a blank line, or on a statement's later definition).
    // Map each line to the notes that occupy it, so we can walk upward from
    // the `source:` keyword while every intervening line is an annotation.
-   const lineToNotes = new Map<number, MalloyNote[]>();
-   const direct = new Set<MalloyNote>();
+   const lineToNotes = new Map<number, N[]>();
+   const direct = new Set<N>();
    for (const note of sameFileNotes) {
       const lr = noteLineRange(note);
       if (!lr) {

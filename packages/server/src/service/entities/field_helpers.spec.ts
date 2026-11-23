@@ -522,6 +522,31 @@ source: parent is duckdb.sql("select 1 as a") extend {
       assert.deepStrictEqual(notes["parent.bare_join"], []);
    });
 
+   test("reads a statement with space before its colon, or an access label in capitals", async () => {
+      const notes = await direct(`
+#(doc) Base
+source: base is duckdb.sql("select 1 as a")
+
+#(agent-hidden)
+source : spaced is base extend {}
+
+#(doc) Broken
+source
+:
+  b1 is base
+  b2 is base extend {}
+
+source: parent is duckdb.sql("select 1 as a") extend {
+  #(authorize) false
+  PUBLIC join_cross: guarded is base extend {}
+}
+`);
+      assert.deepStrictEqual(notes.spaced, ["#(agent-hidden)"]);
+      assert.deepStrictEqual(notes.b1, ["#(doc) Broken"]);
+      assert.deepStrictEqual(notes.b2, ["#(doc) Broken"]);
+      assert.deepStrictEqual(notes["parent.guarded"], ["#(authorize) false"]);
+   });
+
    test("never takes a base's notes, declared above it or right above it", async () => {
       const notes = await direct(`
 #(doc) Base

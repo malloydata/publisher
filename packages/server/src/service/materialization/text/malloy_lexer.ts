@@ -2,27 +2,13 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * The statement lexer the materialization rewriters read the author's files
- * with: the re-root rewriter (serve/served_copy.ts), the served copy's
- * leaving out of joins it moves across connections (cross_connection_text.ts)
- * and the text readers here. The statement tokens (brackets and their depth,
- * which is all a statement-level edit needs) live in the one Malloy lexer
- * core (`service/malloy_lexer_core.ts`), which discovery reads source
- * annotations with too; this module adds the rewriters' name and position
- * helpers. It never parses Malloy; a lexer that cannot read the text returns
- * undefined.
+ * The materialization rewriters' name and position helpers over the
+ * statement tokens of the Malloy lexer core (`service/malloy_lexer_core.ts`).
  *
  * Pure.
  */
 
 import type { Token } from "../../malloy_lexer_core";
-
-export {
-   lexAll,
-   statementHead,
-   statementStarts,
-   type Token,
-} from "../../malloy_lexer_core";
 
 /** Whether `t` can name a definition: a word or a quoted identifier. */
 export function isName(t: Token | undefined): t is Token {

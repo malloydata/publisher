@@ -14,14 +14,14 @@
  * Pure.
  */
 
-import { statementAnnotationsFrom } from "../../malloy_lexer_core";
 import {
-   isName,
    lexAll,
+   statementAnnotationsFrom,
    statementHead,
    statementStarts,
    type Token,
-} from "./malloy_lexer";
+} from "../../malloy_lexer_core";
+import { isName } from "./malloy_lexer";
 
 /** The statements a definition can be left out of. */
 const DEFINITION_KEYWORDS = new Set([

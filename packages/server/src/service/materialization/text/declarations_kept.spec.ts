@@ -195,6 +195,17 @@ source: b is wh.table('b')
       expect(kept).toContain("source: b is");
    });
 
+   it("blanks a statement with space before its colon", () => {
+      const text = `#(doc) gone
+source : a is wh.table('a')
+source: b is wh.table('b')
+`;
+      const kept = keepDeclarations(text, [at(text, "b is")])!;
+      expect(kept).not.toContain("gone");
+      expect(kept).not.toContain("a is");
+      expect(kept).toContain("source: b is");
+   });
+
    it("is undefined for text that does not lex", () => {
       expect(keepDeclarations("source: a is b extend {", [])).toBeUndefined();
    });
@@ -240,6 +251,19 @@ source: rollup is daily -> { aggregate: g is total.sum() }
       expect(left).not.toContain("gone");
       expect(left).not.toContain("|#");
       expect(left).not.toContain("Left out.");
+   });
+
+   it("leaves the next definition its access label in capitals", () => {
+      const text = `source: s is wh.table('t') extend {
+  dimension: a is 1
+  INTERNAL dimension: b is 2
+}
+`;
+      const left = leaveOutDefinitionAt(text, at(text, "a is"), [
+         { start: 0, end: text.length },
+      ])!;
+      expect(left).not.toContain("a is 1");
+      expect(left).toContain("INTERNAL dimension: b is 2");
    });
 
    it("never leaves out a filter, or anything outside the range", () => {

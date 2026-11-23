@@ -734,7 +734,11 @@ function sqlBlockEnd(code: string, i: number): number {
    return -1;
 }
 
-/** Indexes in `tokens` of a word followed by `:` (not `::`) at its own depth. */
+/**
+ * Indexes in `tokens` of a word followed by `:` (not `::`) at its own depth.
+ * Malloy lets whitespace, a line break included, sit between a keyword and
+ * its colon, and uses a lone `:` nowhere else.
+ */
 export function statementStarts(tokens: readonly Token[]): number[] {
    const starts: number[] = [];
    for (let k = 0; k + 1 < tokens.length; k++) {
@@ -742,7 +746,6 @@ export function statementStarts(tokens: readonly Token[]): number[] {
       if (
          t.kind === "word" &&
          tokens[k + 1].text === ":" &&
-         tokens[k + 1].start === t.end &&
          tokens[k + 2]?.text !== ":"
       ) {
          starts.push(k);
@@ -768,7 +771,7 @@ export function statementHead(tokens: readonly Token[], k: number): Token {
    const label = tokens[k - 1];
    return label?.kind === "word" &&
       label.depth === tokens[k].depth &&
-      ACCESS_LABELS.has(label.text)
+      ACCESS_LABELS.has(label.text.toLowerCase())
       ? label
       : tokens[k];
 }

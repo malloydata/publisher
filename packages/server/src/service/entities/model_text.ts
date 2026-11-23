@@ -19,7 +19,7 @@ import { lexAll, statementStarts, type Token } from "../malloy_lexer_core";
 
 const modelLines = new AsyncLocalStorage<{
    lines: Map<string, string[]>;
-   code: Map<string, ModelCode>;
+   code: Map<string, ModelCode | undefined>;
    /** The package root a file not in `lines` must lie inside to be read. */
    packageRoot?: string;
 }>();
@@ -77,25 +77,31 @@ export function modelCode(url: string): ModelCode | undefined {
       return undefined;
    }
    const store = modelLines.getStore();
-   const cached = store?.code.get(filePath);
-   if (cached !== undefined) return cached;
-   const text = lines.join("\n");
-   const lineStarts: number[] = [];
-   let at = 0;
-   for (const line of lines) {
-      lineStarts.push(at);
-      at += line.length + 1;
+   if (store?.code.has(filePath)) return store.code.get(filePath);
+   const model = modelCodeOf(lines.join("\n"));
+   if (!model) {
+      logger.warn("Model file does not lex; reading its notes by line", {
+         filePath,
+      });
    }
+   store?.code.set(filePath, model);
+   return model;
+}
+
+/** `text` lexed as a model file; undefined when it does not lex. */
+export function modelCodeOf(text: string): ModelCode | undefined {
    const tokens = lexAll(text);
    if (!tokens) return undefined;
-   const model = {
+   const lineStarts = [0];
+   for (let at = text.indexOf("\n"); at >= 0; at = text.indexOf("\n", at + 1)) {
+      lineStarts.push(at + 1);
+   }
+   return {
       text,
       tokens,
       statementKeywords: new Set(statementStarts(tokens)),
       lineStarts,
    };
-   store?.code.set(filePath, model);
-   return model;
 }
 
 /** The offset of a Malloy position, whose `character` counts code points; undefined when off the text. */

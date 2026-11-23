@@ -18,14 +18,14 @@
  * Pure: undefined when the file does not lex, never a guess.
  */
 
-import { statementAnnotationsFrom } from "../../malloy_lexer_core";
-import { definitionCutAt } from "./definition_cut";
 import {
    lexAll,
-   offsetOf,
+   statementAnnotationsFrom,
    statementHead,
    statementStarts,
-} from "./malloy_lexer";
+} from "../../malloy_lexer_core";
+import { definitionCutAt } from "./definition_cut";
+import { offsetOf } from "./malloy_lexer";
 
 /** The top-level statements a kept file may lose. */
 const BLANKABLE = new Set(["source", "query", "run"]);
