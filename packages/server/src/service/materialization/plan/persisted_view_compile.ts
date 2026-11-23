@@ -108,6 +108,7 @@ import {
    type StorageOverStored,
 } from "./storage_over_stored";
 import type { RefusedReason } from "../domain/types";
+import { pairLeafContractKeys } from "./pair_reroot";
 import { gateRefusalReason } from "../domain/gate_refusal";
 
 interface GeneratedPersistedViews {
@@ -784,6 +785,7 @@ function overStoredUpstreamNotes(
          modelDef,
          modelFile,
          materialized,
+         { pairs: true },
       );
       if (!chainable || base === "unusable") continue;
       if (spans.length === 0 && base === undefined) continue;
@@ -975,6 +977,9 @@ async function compileOverStoredGroup(
                     baseBuildSource,
                     rerootedSourceID: base.plan.sourceID,
                     upstreamSourceIDs,
+                    ...(base.plan.pair || base.plan.pairBlocks
+                       ? { pairLeafKeys: pairLeafContractKeys(base.plan) }
+                       : {}),
                  }
                : { source, upstreamSourceIDs },
          );

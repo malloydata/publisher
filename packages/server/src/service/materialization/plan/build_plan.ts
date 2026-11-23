@@ -1223,7 +1223,10 @@ async function collectGeneratedPersistedViews(
             !overStoredProven(
                source,
                overStoredBase,
-               rerooted?.kind === "materialize" ? rerooted.source : undefined,
+               // A pair table is re-rooted with its join put back.
+               rerooted?.kind === "materialize" || rerooted?.kind === "pair"
+                  ? rerooted.source
+                  : undefined,
             )
          ) {
             const reason =

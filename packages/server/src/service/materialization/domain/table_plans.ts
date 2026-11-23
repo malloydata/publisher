@@ -848,6 +848,14 @@ export interface OverStoredBase {
     * the downstream is refused at plan (build_plan.ts).
     */
    upstreamSourceIDs?: readonly string[];
+   /**
+    * With `rerootedSourceID` a pair table (an inlined join_many, re-rooted
+    * with its join put back, pair_reroot.ts): the contract keys of the leaf
+    * key checks the build relies on (`items.item_id`). A build refuses
+    * unless the upstream's table records each as passed (unique and never
+    * null), and never builds from raw instead.
+    */
+   pairLeafKeys?: readonly string[];
 }
 
 /** A `#(materialize)` plan's kind: `pair` when it stores an inlined join_many. */

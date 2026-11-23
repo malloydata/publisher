@@ -161,7 +161,61 @@ source: z is a extend {
       expect(tableOf("z__by_cat__view")!.overStoredBase).toBeUndefined();
    });
 
-   it("declines a #(materialize) pair table (an inlined join_many): it holds a row per pair, not the source's rows", async () => {
+   it("re-roots a #(materialize) pair table (an inlined join_many) with its join put back, and records the leaf key it relies on", async () => {
+      const { c } = await packages.plan({
+         "m.malloy": `${RAW}
+source: picks is duckdb.sql("""select 'a' as cat, 1 as pick_id, 2.0 as w""") extend {
+  primary_key: pick_id
+}
+
+#(materialize) inline=["p"]
+source: a is raw extend {
+  primary_key: cat
+  join_many: p is picks on p.cat = cat
+}
+
+source: s is a extend {
+  #@ persist name="os_v"
+  view: by_cat is {
+    group_by: cat
+    aggregate: total is amt.sum(), picks is p.count(), w is p.w.sum()
+  }
+}
+`,
+      });
+      const a = Object.values(c.tables).find((t) => t.source.name === "a")!;
+      expect(a.kind).toBe("pair");
+      const view = Object.values(c.tables).find(
+         (t) => t.source.name === "s__by_cat__view",
+      ) as
+         | {
+              overStoredBase?: {
+                 source: Parameters<typeof buildSQLOf>[0];
+                 rerootedSourceID?: string;
+                 pairLeafKeys?: string[];
+              };
+           }
+         | undefined;
+      // Decided and recorded at plan time: over the pair table, never
+      // recomputed from raw.
+      const variant = view!.overStoredBase!;
+      expect(variant.rerootedSourceID).toBe(a.source.sourceID);
+      expect(variant.pairLeafKeys).toEqual(["p.pick_id"]);
+      const aAddress = computeSourceEntityId(a.source, c.connectionDigests);
+      const manifest = new Manifest();
+      manifest.update(aAddress, { tableName: "os_pair_table" });
+      manifest.update(compilerBuildId(a.source), {
+         tableName: "os_pair_table",
+      });
+      const sql = buildSQLOf(variant.source, manifest.buildManifest);
+      // The parent rows and the join both read the one stored table.
+      expect(sql.match(/os_pair_table/g)?.length).toBe(2);
+      expect(sql).toContain("__parent_row");
+      // Neither raw source is read.
+      expect(sql).not.toMatch(/values|as pick_id/i);
+   });
+
+   it("leaves a rollup over a pair table on its definition: only views and queries put the join back", async () => {
       const { c } = await packages.plan({
          "m.malloy": `${RAW}
 source: picks is duckdb.sql("""select 'a' as cat, 1 as pick_id""") extend {
@@ -174,20 +228,16 @@ source: a is raw extend {
   join_many: p is picks on p.cat = cat
 }
 
-source: s is a extend {
-  #@ persist name="os_v"
-  view: by_cat is { group_by: cat; aggregate: total is amt.sum() }
+source: rolled is a extend {
+  #(rollup) grain=["cat"]
+  measure: total is amt.sum()
 }
 `,
       });
-      const a = Object.values(c.tables).find((t) => t.source.name === "a");
-      expect(a?.kind).toBe("pair");
-      const view = Object.values(c.tables).find(
-         (t) => t.source.name === "s__by_cat__view",
+      const rollup = Object.values(c.tables).find(
+         (t) => t.kind === "rollup",
       ) as { overStoredBase?: unknown } | undefined;
-      // Built from its definition, as before, never over the pair table.
-      expect(view).toBeDefined();
-      expect(view!.overStoredBase).toBeUndefined();
+      if (rollup) expect(rollup.overStoredBase).toBeUndefined();
    });
 
    it("decides each query alone: one declined does not stop another reading the table", async () => {

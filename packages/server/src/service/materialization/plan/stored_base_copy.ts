@@ -50,11 +50,13 @@ export interface StoredMaterializeBase {
 
 /**
  * The base `baseSourceID` as a `#(materialize)` base whose stored table a
- * rollup may build from, or undefined: its own notes declare a database
+ * downstream may build from, or undefined: its own notes declare a database
  * `#(materialize)` (read by declaration.ts), and the companion planned it as
- * a plain table in its own warehouse, declared in this model. A pair table
- * holds a row per pair, not the base's rows, and a table with read-time
- * terms holds rows its source filters again at read: neither is read.
+ * a table in its own warehouse, declared in this model. A table with
+ * read-time terms holds rows its source filters again at read, and is not
+ * read. A pair table holds a row per pair, not the base's rows: it is read
+ * only with `pairs` (a persisted view or query, whose copy puts the join
+ * back, pair_reroot.ts), never by a rollup.
  */
 function storedMaterializeBase(
    notes: readonly { text: string }[],
@@ -62,6 +64,7 @@ function storedMaterializeBase(
    baseSourceID: string,
    modelFile: string,
    materialized: MaterializedBases | undefined,
+   pairs: boolean,
 ): StoredMaterializeBase | undefined {
    if (!materialized) return undefined;
    const own = notes.filter((n) => routeOfNote(n.text) === "materialize");
@@ -73,8 +76,7 @@ function storedMaterializeBase(
    const plan = materialized.plans.find((p) => p.sourceID === baseSourceID);
    if (
       !plan ||
-      plan.pair ||
-      plan.pairBlocks ||
+      (!pairs && (plan.pair || plan.pairBlocks)) ||
       plan.persist.storage !== undefined ||
       (plan.readTimeTerms ?? []).length > 0
    ) {
@@ -150,6 +152,7 @@ export function storedMaterializeUpstream(
    modelDef: unknown,
    modelFile: string,
    materialized: MaterializedBases | undefined,
+   options: { pairs?: boolean } = {},
 ): StoredMaterializeBase | "unusable" | undefined {
    // A `#(materialize)` source planned as one: an extension carries its
    // base's notes as its own, but its base's plan is the one it reads.
@@ -182,6 +185,7 @@ export function storedMaterializeUpstream(
       ids[0],
       modelFile,
       materialized,
+      options.pairs ?? false,
    );
    if (!base) return "unusable";
    const zone = zoneOf(def);
