@@ -619,6 +619,17 @@ for (const tier of databaseTiers) {
             .filter((w) => w.code === "materialize-extension-full-refresh");
          expect(warned.map((w) => w.subject)).toEqual(["ext_wm"]);
       });
+
+      it("warns at plan that a range-replace extension of a merge_key parent keeps a moved row's old copy", () => {
+         const warned = f.pkg
+            .annotationFindingWarnings()
+            .filter((w) => w.code === "materialize-extension-keeps-moved-rows");
+         // ext_mg merges by key; ext_wm follows on another watermark.
+         expect(warned.map((w) => w.subject)).toEqual(["ext_rr"]);
+         expect(warned[0].message).toMatch(
+            /"ext_rr" refreshes by range replace.*parent "ev", which merges by merge_key="id".*keeps its old copy/,
+         );
+      });
    });
 
    describe(`an incremental extension refreshed in its own runs (${tier.label})`, () => {

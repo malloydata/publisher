@@ -119,6 +119,7 @@ import {
    pairFullRefreshFinding,
    extensionRefusal,
    extensionFullRefreshFinding,
+   extensionKeepsMovedRowsFinding,
 } from "./materialize_plan";
 import { pairKeyColumns, pairLevelRowColumn } from "./build_file_generator";
 import {
@@ -926,6 +927,8 @@ async function collectGeneratedMaterialize(
       }
       const reseeds = extensionFullRefreshFinding(plan, args.modelPath);
       if (reseeds) addAnnotationFinding(parts, reseeds);
+      const keeps = extensionKeepsMovedRowsFinding(plan, args.modelPath);
+      if (keeps) addAnnotationFinding(parts, keeps);
    }
    const targets = await generated.runtime.getBuildTargets(generated.model);
    const planByName = new Map(

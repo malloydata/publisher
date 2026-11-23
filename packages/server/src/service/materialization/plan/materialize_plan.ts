@@ -145,6 +145,12 @@ const MATERIALIZE_PAIR_FULL_REFRESH_CODE = "materialize-pair-full-refresh";
  */
 const MATERIALIZE_EXTENSION_FULL_REFRESH_CODE =
    "materialize-extension-full-refresh";
+/**
+ * The code on the warning for a range-replace extension of a `merge_key=`
+ * parent ({@link extensionKeepsMovedRowsFinding}).
+ */
+const MATERIALIZE_EXTENSION_KEEPS_MOVED_ROWS_CODE =
+   "materialize-extension-keeps-moved-rows";
 
 /**
  * Every key the generator reads, which must be the route's closed set in the
@@ -2269,6 +2275,7 @@ function chainIncremental(
    if (!theirs) return { incremental: { coordinate: "delta" } };
    const parentWatermark = parent.persist.watermark;
    const ownWatermark = plan.persist.watermark;
+   const parentMergeKey = parent.persist.merge_key?.trim() || undefined;
    return {
       incremental: {
          coordinate:
@@ -2277,6 +2284,7 @@ function chainIncremental(
                ? "delta"
                : "reseed_on_parent_change",
          ...(parentWatermark !== undefined ? { parentWatermark } : {}),
+         ...(parentMergeKey !== undefined ? { parentMergeKey } : {}),
       },
    };
 }
@@ -2613,6 +2621,45 @@ export function pairFullRefreshFinding(
          `#(materialize) on source "${plan.sourceName}" declares ` +
          `refresh="incremental", but its pair table is rebuilt in full on ` +
          `every refresh: ${reason}.`,
+      subject: plan.sourceName,
+      model,
+   };
+}
+
+/**
+ * An incremental extension that refreshes by range replace (no `merge_key=`)
+ * over a parent that merges by key, following it by delta, as a package
+ * warning: a row whose watermark the parent's merge moves leaves its old copy
+ * in the extension, whose range replace deletes only the range it reads. Not
+ * refused: it is the extension's own contract over raw, which keeps a moved
+ * row's old copy the same way.
+ */
+export function extensionKeepsMovedRowsFinding(
+   plan: Pick<MaterializePlan, "sourceName" | "persist" | "buildsOver">,
+   model: string,
+): PackageAnnotationFinding | undefined {
+   const parent = plan.buildsOver;
+   const incremental = parent?.mode.incremental;
+   if (
+      incremental?.coordinate !== "delta" ||
+      incremental.parentMergeKey === undefined ||
+      plan.persist.merge_key?.trim()
+   ) {
+      return undefined;
+   }
+   return {
+      route: MATERIALIZE_ROUTE,
+      tier: "unservable",
+      code: MATERIALIZE_EXTENSION_KEEPS_MOVED_ROWS_CODE,
+      message:
+         `#(materialize) on source "${plan.sourceName}" refreshes by range ` +
+         `replace (it declares no merge_key=), over its parent ` +
+         `"${parent!.sourceName}", which merges by merge_key="` +
+         `${incremental.parentMergeKey}": a row whose watermark the parent's ` +
+         `merge moves keeps its old copy in "${plan.sourceName}", since a ` +
+         `range replace deletes only the range it reads. That is its own ` +
+         `contract over raw too; declare merge_key="` +
+         `${incremental.parentMergeKey}" on it to replace such a row instead.`,
       subject: plan.sourceName,
       model,
    };

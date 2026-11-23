@@ -465,6 +465,8 @@ export interface ChainMode {
       coordinate: "delta" | "reseed_on_parent_change";
       /** The parent's watermark, when the parent is incremental. */
       parentWatermark?: string;
+      /** The parent's `merge_key=`, when the parent declares one. */
+      parentMergeKey?: string;
    };
 }
 
