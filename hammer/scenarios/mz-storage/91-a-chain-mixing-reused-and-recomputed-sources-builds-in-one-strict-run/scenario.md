@@ -8,16 +8,16 @@ Copyright (c) Credible Data Inc.
 SPDX-License-Identifier: MIT
 -->
 
-# A package whose chain mixes reusable and warehouse-reaching intermediates builds in one strict run, each source reporting its own path
+# A chain mixing reusable and warehouse-reaching intermediates builds what it can in one run, and the rest answers live
 
 The shape a real model takes: raw tables prepared by several non-persisted
 sources, three stored levels, and the intermediates between them differing in
-what they reach. `daily_regional` joins a warehouse table, so `regional` is
-recomputed. `regional_wide` only reshapes `regional`, so `summary` is built from
-`regional`'s stored table. One orchestrated strict build of all three must
-succeed, and each entry must report its own path — not the run as a whole, since
-the two paths have different freshness semantics and a consumer reads them per
-source.
+what they reach. `daily_regional` joins a warehouse table, so `regional` has no
+build over `daily`'s stored table, and nothing recomputes from raw: it fails.
+`summary` reads only `regional`, so with `regional` failed it has no upstream
+table to read and fails too. `daily` builds. Each source reports its own
+outcome in one run, and the two that failed answer live, equal to the
+warehouse.
 
 ## Publisher
 
@@ -74,16 +74,12 @@ source: summary is regional_wide -> {
 
 ## Build (orchestrated, strict, pkg=cmx)
 
-All three in one strict instruction list, upstream first. `regional` is
-recomputed (its intermediate reaches `regions`); `summary` is built from
-`regional`'s stored table (its intermediate reaches nothing else). The run
-succeeds.
+All three in one instruction list, upstream first. `daily` builds; `regional`
+fails (its intermediate reaches `regions`); `summary` fails with it.
 
 - daily -> cmx_daily__g1 @ lake
-- regional -> cmx_regional__g1 @ lake (recomputed)
-- summary -> cmx_summary__g1 @ lake (reused)
-
-cites: daily_regional
+- regional -> cmx_regional__g1 @ lake (failed)
+- summary -> cmx_summary__g1 @ lake (failed)
 
 ## Bind cmx
 

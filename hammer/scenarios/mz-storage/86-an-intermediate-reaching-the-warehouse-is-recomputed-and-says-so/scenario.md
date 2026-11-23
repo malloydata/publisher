@@ -8,27 +8,18 @@ Copyright (c) Credible Data Inc.
 SPDX-License-Identifier: MIT
 -->
 
-# A downstream whose intermediate reaches the warehouse is recomputed, under strict too, and its entry says so
+# A downstream whose intermediate reaches the warehouse is not built, and answers live
 
 `daily_regional` joins the stored `daily` to `regions`, a warehouse table nothing
 materializes. The destination holds no such table, so no build of `rollup` over
-`daily`'s stored rows exists: the only build there is recomputes `daily` from the
-warehouse with the join beside it. The rule has three parts.
+`daily`'s stored rows exists: the only build there would be recomputes `daily`
+from the warehouse with the join beside it.
 
-The build **succeeds**, under `strictUpstreams` as well. Strict forbids
-recomputing a table the orchestrator meant to pin; it does not forbid the only
-build a source has, and failing the run would leave a buildable source
-unbuildable.
-
-The entry **says what happened**: `upstreamReuse` is `recomputed`, and the reason
-names the intermediate that could not be carried. Both paths leave a correct
-table, so without this nothing tells them apart.
-
-And the rows **mean what that says**. A recomputed `rollup` reflects the
-warehouse at its own build time while `daily` still serves its snapshot, so
-after the warehouse changes the two disagree: `rollup` sees the new 1000 and
-`daily` does not. That skew is the cost of the recompute, and the field is how a
-consumer knows to expect it.
+No build recomputes a stored upstream from raw, so `rollup` is **not built**: a
+run that is asked for it fails it, with a reason naming the intermediate the
+destination could not stand in for, and `daily` still builds. `rollup` then
+**answers live**, so it always agrees with the warehouse, where a recomputed
+table would have mixed `daily`'s snapshot with fresh rows.
 
 ## Publisher
 
@@ -76,14 +67,14 @@ source: rollup is daily_regional -> {
 
 ## Publish
 
-Both materialize. `rollup` could not be built over `daily`'s stored table, so
-it was recomputed, and its entry says so.
+`daily` materializes; `rollup` cannot be built over `daily`'s stored table, so
+it is not built.
 
 expect binding: daily -> lake
-expect binding: rollup -> lake
-expect upstreams: rollup -> recomputed
 
 ## Query rollup
+
+Answered live.
 
 ```malloy
 run: rollup -> { select: region, grand_total; order_by: region asc }
@@ -102,13 +93,12 @@ Expect:
 | ------------ | --------------- | ------------- | ---------- |
 | 99           | 2026-01-03      | 10            | 1000       |
 
-## Build (orchestrated, strict, pkg=cir)
+## Build refused (orchestrated, pkg=cir)
 
-Rebuild `rollup` alone under strict, reusing the `daily` already built. The run
-succeeds, the entry reports the recompute, and the reason names the intermediate
-the destination could not stand in for.
+Rebuild `rollup` alone, reusing the `daily` already built. The run fails
+`rollup` and names the intermediate the destination could not stand in for.
 
-- rollup -> cir_rollup__g2 @ lake (recomputed)
+- rollup -> cir_rollup__g2 @ lake
   reference: daily
 
 cites: daily_regional
@@ -117,7 +107,7 @@ cites: daily_regional
 
 ## Query rollup (again)
 
-Recomputed from the warehouse at build time, so it sees the 1000.
+Still live, so it sees the 1000.
 
 Expect:
 
@@ -128,8 +118,7 @@ Expect:
 
 ## Query daily
 
-`daily` still serves the snapshot it was built from. This is the disagreement a
-`recomputed` entry warns of.
+`daily` still serves the snapshot it was built from.
 
 ```malloy
 run: daily -> { aggregate: total is total_amount.sum() }
