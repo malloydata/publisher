@@ -833,13 +833,26 @@ describe.skipIf(process.platform === "win32")(
       }
 
       /** The child built from the warehouse, with the warehouse build's rows. */
-      async function expectWarehouseChild(m: Materialization) {
+      /**
+       * `child` is refused at plan as `upstream_table_unusable`, naming its
+       * parent, and never built from the warehouse; the parent still builds.
+       */
+      async function expectRefusedChild(m: Materialization) {
          expect([m.status, m.error]).toEqual(["MANIFEST_FILE_READY", null]);
-         const child = entryOf(m, "child");
-         expect(child.upstreamReuse).not.toBe("reused");
-         expect(createdBy(child.physicalTableName)).toContain(RAW_MARK);
-         expect(await storedRows(child.physicalTableName)).toEqual(
-            await plannedRows(child),
+         const entries = Object.values(
+            (m.manifest as { entries: Record<string, { sourceName: string }> })
+               .entries,
+         );
+         expect(entries.map((e) => e.sourceName)).not.toContain("child");
+         expect(entries.map((e) => e.sourceName)).toContain("parent");
+         const pkg = await env.getPackage(parsePackageName(PKG), false);
+         const refusal = Object.values(
+            pkg.getBuildPlan()?.refusedSources ?? {},
+         ).find((r) => r.name === "child");
+         expect(refusal?.reason).toBe("upstream_table_unusable");
+         expect(refusal?.message).toContain("it extends 'parent'");
+         expect(refusal?.message).toContain(
+            "never by recomputing its parent from the warehouse",
          );
       }
 
@@ -876,7 +889,7 @@ source: mid2 is mid extend {
          expect(served.rows).toEqual(live.rows);
       });
 
-      it("builds a storage= extension from the warehouse when a file between reads what its parent's stored table does not hold", async () => {
+      it("refuses a storage= extension at plan, never building it from the warehouse, when a file between reads what its parent's stored table does not hold", async () => {
          // `mid` reads a join of the parent's, which the destination does not
          // hold: the chain does not compile over the parent's stored table.
          await setUp({
@@ -898,13 +911,13 @@ source: mid is parent extend {
 `,
          });
          const live = await answer("b.malloy", THIRD_QUERY);
-         const m = await build();
-         await expectWarehouseChild(m);
+         await expectRefusedChild(await build());
+         // Answered live, equal to live.
          const served = await answer("b.malloy", THIRD_QUERY);
          expect(served.rows).toEqual(live.rows);
       });
 
-      it("builds a storage= extension from the warehouse when a file on the chain imports the next one selectively", async () => {
+      it("refuses a storage= extension at plan, never building it from the warehouse, when a file on the chain imports the next one selectively", async () => {
          await setUp({
             ...THROUGH_THIRD,
             "b.malloy": THROUGH_THIRD["b.malloy"].replace(
@@ -912,7 +925,7 @@ source: mid is parent extend {
                'import { mid } from "c.malloy"',
             ),
          });
-         await expectWarehouseChild(await build());
+         await expectRefusedChild(await build());
       });
 
       it("builds a storage= rollup over its #(materialize) base's stored table, reading the warehouse once for both", async () => {

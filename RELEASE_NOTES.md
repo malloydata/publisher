@@ -33,6 +33,8 @@ The name such a destination's file is named from may use only ASCII letters, dig
 
 ## [Unreleased] — breaking: no downstream is built from its definition over a persisted upstream
 
+**Breaking: an extension's own `#(materialize)` table whose build over its parent's table does not compile, or cannot be written, is refused when the package is planned, as `upstream_table_unusable` with a `message` naming the parent and why.** It answers live and is never built over the chain from the warehouse. Before, it was built over the raw chain, recomputing its parent's rows. That covers an extension reading a field or join its parent's table does not carry, a `storage=` extension whose chain reaches a source its destination does not hold, a cross-file extension reached through a selective import or whose build over the parent's table would not store the same columns, and an extension whose parent's generated build is refused. **What to do:** read what the extension needs through its parent's table (inline the join on the parent, or declare the field there), or import each file on the chain whole.
+
 **Breaking: every persisted view, named query and rollup that would have been built from its definition, recomputing a persisted upstream from raw, is now refused when the package is planned, as `upstream_table_unusable`, with a `message` naming the upstream and why.** It answers live, and is never built from raw. Newly refused:
 
 - a persisted view or named query whose compile over its upstream's table fails (for example a view over a pair table that reads the joined source's own measures). Before, it was built from its definition and reported `upstreamReuse: "recomputed"`;
