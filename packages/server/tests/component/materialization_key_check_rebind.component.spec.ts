@@ -1011,3 +1011,47 @@ source: flights is warehouse.table('public.flights') extend {
       });
    },
 );
+
+describe.skipIf(!url)(
+   "a pair table's leaf key check is read under the leaf's primary key the model declares now",
+   () => {
+      // The run checked `segs`'s key `seg_id`, unique. An edit makes
+      // `flight_id`, which flight 1's two segments share, its key: the pair
+      // table and the run's record stay bound, but the record says nothing
+      // of `flight_id`, so counts through the inlined join answer live.
+      const model = (
+         key: string,
+      ) => `source: segs is warehouse.table('public.segs') extend {
+  primary_key: ${key}
+}
+
+#(materialize) storage="lake" inline=["segs"]
+source: flights is warehouse.table('public.flights') extend {
+  primary_key: id
+  join_many: segs on segs.flight_id = id
+${pairMeasures}
+}
+`;
+      const Q = byCarrier("flights", "flight_count, seg_n, seg_ids, seg_total");
+      let f: Fixture;
+      beforeAll(async () => {
+         f = await fixture(model("seg_id"), [FLIGHTS, SEGS], false);
+         expect((await f.build()).status).toBe("MANIFEST_FILE_READY");
+      }, 120_000);
+      afterAll(async () => {
+         await f?.dispose();
+      });
+
+      it("serves counts through the inlined join while the checked key is the leaf's", async () => {
+         const served = await f.query(Q);
+         expect(served.servedFrom).toBe("storage");
+         expect(served.reasons).not.toContain("COUNT_SEMANTICS");
+      });
+
+      it("answers live once a reload moves the leaf's primary key, with no rebuild", async () => {
+         await f.editModel(model("flight_id"));
+         const answer = await f.query(Q);
+         expect(answer.servedFrom).toBeUndefined();
+      });
+   },
+);

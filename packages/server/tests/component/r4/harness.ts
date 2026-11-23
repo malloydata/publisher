@@ -914,17 +914,21 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
    // its table is built, as an auto-run runs them: by the leaf's sourceID.
    const pairLeafKeys = async (
       source: (typeof sources)[number],
-   ): Promise<Record<string, boolean> | undefined> => {
+   ): Promise<KeyUniqueness | undefined> => {
       if (scenario.pairLeafKeyChecks === false) return undefined;
       const checks = pairLeafKeyChecksOf(materializePlans[source.sourceID]);
       if (checks.length === 0) return undefined;
       const on = connections.get(source.connectionName) ?? duckdb;
-      const out: Record<string, boolean> = {};
+      const parentKeys: Record<string, boolean> = {};
+      const parentKeyColumns: Record<string, string> = {};
       for (const check of checks) {
          const record = await runRollupKeyCheck(check, on, "pair");
-         if (record) out[check.sourceID] = record.unique;
+         if (record) {
+            parentKeys[check.sourceID] = record.unique;
+            parentKeyColumns[check.sourceID] = check.keyColumn;
+         }
       }
-      return out;
+      return { parentKeys, parentKeyColumns };
    };
    const builtSQL: Record<string, string> = {};
    const checkFailures: Record<string, string> = {};
@@ -992,7 +996,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
             connectionName: source.connectionName,
             ...(schema ? { schema } : {}),
             ...(nativeSchema ? { nativeSchema } : {}),
-            ...(leafKeys ? { keyUniqueness: { parentKeys: leafKeys } } : {}),
+            ...(leafKeys ? { keyUniqueness: leafKeys } : {}),
             // Its column contract, as a build records it.
             contract: await captureTableContract({
                connection: builder,
@@ -1187,7 +1191,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
             entries[`h${i}`] as ManifestEntry & {
                keyUniqueness?: KeyUniqueness;
             }
-         ).keyUniqueness = { parentKeys: leafKeys };
+         ).keyUniqueness = leafKeys;
       }
       // A stored source's primary key, checked over its table as its build
       // checks it, when a storage rollup is read through a join on it.

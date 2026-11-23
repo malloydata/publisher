@@ -28,6 +28,7 @@ import { requireUnique, verdictOf } from "../domain/key_check";
 import {
    hiddenAccess,
    modelDefOf,
+   primaryKeyOf,
    queryStageZone,
    queryTimezoneOf,
    sameZone,
@@ -108,6 +109,7 @@ import {
 import {
    type Binding,
    bindingServesModelSource,
+   checkedKeyIs,
    deriveServeBindings,
    EMPTY_SNAPSHOT,
    isDatabase,
@@ -1489,9 +1491,16 @@ export class ServedCopyServe {
                   bigIntegerOptionsOf(def, binding),
                ),
             // The leaf's key check, as the run that wrote the table recorded
-            // it beside the table (`pairLeafKeyChecks`).
+            // it beside the table (`pairLeafKeyChecks`), read only while it
+            // checked the key the leaf declares now: the plan a reload keeps
+            // names the key at load, and nothing re-addresses the table when
+            // the leaf's primary key moves.
             (sourceID) =>
-               requireUnique(verdictOf(binding.primaryKeys?.[sourceID])),
+               checkedKeyIs(
+                  binding.primaryKeyColumns,
+                  sourceID,
+                  primaryKeyOf(map.node(sourceID)?.def),
+               ) && requireUnique(verdictOf(binding.primaryKeys?.[sourceID])),
          );
          if (!pair) {
             problems.push({

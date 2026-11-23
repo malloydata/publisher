@@ -834,17 +834,26 @@ async function buildAll(
    const leafKeys = async (
       sourceID: string,
       warehouse: DuckDBConnection,
-   ): Promise<{ keyUniqueness?: { parentKeys: Record<string, boolean> } }> => {
+   ): Promise<{
+      keyUniqueness?: {
+         parentKeys: Record<string, boolean>;
+         parentKeyColumns: Record<string, string>;
+      };
+   }> => {
       const checks = pairLeafKeyChecksOf(
          (materializePlans as Record<string, never>)[sourceID],
       );
       const parentKeys: Record<string, boolean> = {};
+      const parentKeyColumns: Record<string, string> = {};
       for (const check of checks) {
          const record = await runRollupKeyCheck(check, warehouse, "pair");
-         if (record) parentKeys[check.sourceID] = record.unique;
+         if (record) {
+            parentKeys[check.sourceID] = record.unique;
+            parentKeyColumns[check.sourceID] = check.keyColumn;
+         }
       }
       return Object.keys(parentKeys).length > 0
-         ? { keyUniqueness: { parentKeys } }
+         ? { keyUniqueness: { parentKeys, parentKeyColumns } }
          : {};
    };
    try {
