@@ -316,22 +316,40 @@ async function connectionCapability(
 }
 
 /**
- * Every string value in `node`: the author's SQL and table paths among them,
- * which a query's own check scans for a `COLLATE` and for the projects it
- * may read.
+ * Every piece of SQL text in `node`, a compiled source or query: author SQL
+ * (`selectStr` and its segments' `sql`), table paths (`tablePath`), and raw
+ * SQL expressions (`genericSQLExpr`'s `src`) and string and regex literals:
+ * what the query's compiled SQL holds apart from its identifiers, which a
+ * query's own check scans for a `COLLATE` and for the projects it may read.
+ * Field names, paths and annotations are not SQL, so a field path such as
+ * `params.tags` names no project.
  */
-export function irStrings(
-   node: unknown,
-   out: string[] = [],
-   depth = 0,
-): string[] {
+export function irSql(node: unknown, out: string[] = [], depth = 0): string[] {
    if (depth > 200) return out;
-   if (typeof node === "string") {
-      out.push(node);
-   } else if (Array.isArray(node)) {
-      for (const n of node) irStrings(n, out, depth + 1);
+   if (Array.isArray(node)) {
+      for (const n of node) irSql(n, out, depth + 1);
    } else if (node !== null && typeof node === "object") {
-      for (const v of Object.values(node)) irStrings(v, out, depth + 1);
+      const record = node as Record<string, unknown>;
+      for (const key of ["selectStr", "tablePath"]) {
+         if (typeof record[key] === "string") out.push(record[key] as string);
+      }
+      if (
+         typeof record.sql === "string" &&
+         Object.keys(record).every((k) => k === "sql")
+      ) {
+         out.push(record.sql);
+      }
+      // A literal is in the SQL a query compiles to, as the probe reads it.
+      if (
+         (record.node === "stringLiteral" || record.node === "regexpLiteral") &&
+         typeof record.literal === "string"
+      ) {
+         out.push(record.literal);
+      }
+      if (record.node === "genericSQLExpr" && Array.isArray(record.src)) {
+         for (const t of record.src) if (typeof t === "string") out.push(t);
+      }
+      for (const v of Object.values(record)) irSql(v, out, depth + 1);
    }
    return out;
 }
@@ -350,7 +368,7 @@ async function recordBigQuery(
       // One stage with no join usage recorded reads every join it reaches.
       const tables = queryTableReads(struct, [{}]);
       if (tables === undefined) {
-         for (const p of sqlProjects(irStrings(struct).join("\n"))) {
+         for (const p of sqlProjects(irSql(struct).join("\n"))) {
             projects.add(p);
          }
          continue;

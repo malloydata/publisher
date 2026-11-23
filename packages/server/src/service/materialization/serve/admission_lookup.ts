@@ -46,7 +46,7 @@ import {
    type ConnectionCapability,
    fieldKey,
    type FieldCapability,
-   irStrings,
+   irSql,
    type RecordedBigQuery,
    type StringCapabilities,
    stringCapabilitiesOf,
@@ -101,9 +101,9 @@ function needOf(reads: GateReads | undefined): readonly Collation[] {
       : ["binary"];
 }
 
-/** A string in the query's own IR (its author SQL, a caller's text) names a `COLLATE`. */
+/** The SQL in the query's own IR (its author SQL, a caller's raw SQL) names a `COLLATE`. */
 function namesCollate(entry: Entry): boolean {
-   return irStrings([entry.struct, entry.prepared.pipeline]).some((s) =>
+   return irSql([entry.struct, entry.prepared.pipeline]).some((s) =>
       /\bcollate\b/i.test(s),
    );
 }
@@ -158,7 +158,7 @@ function bigqueryLookup(entry: Entry):
       const projects = new Set([
          ...catalog.projects,
          ...sqlProjects(
-            irStrings([entry.struct, entry.prepared.pipeline]).join("\n"),
+            irSql([entry.struct, entry.prepared.pipeline]).join("\n"),
          ),
       ]);
       return clean(projects)

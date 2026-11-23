@@ -9,8 +9,10 @@ import {
    SingleConnectionRuntime,
 } from "@malloydata/malloy";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { sqlProjects } from "./collation/bigquery";
 import {
    fieldKey,
+   irSql,
    MAX_JOIN_DEPTH,
    readStringCapabilities,
    stringLeaves,
@@ -28,6 +30,43 @@ async function modelOver(connection: Connection, text: string) {
       connection: async () => connection,
    };
 }
+
+describe("the SQL a compiled query holds", () => {
+   // A field's own source text (`code`) and its name are Malloy, not SQL:
+   // read as SQL, `params.tags.each` named a project `params`, which no
+   // catalog read, and a BigQuery author-SQL source answered live.
+   const node = {
+      type: "sql_select",
+      selectStr: "SELECT * FROM my-proj.ds.t",
+      fields: [{ name: "tags", code: "params.tags.each" }],
+      pipeline: [
+         {
+            filterList: [
+               { e: { node: "stringLiteral", literal: "a COLLATE b" } },
+               { e: { node: "genericSQLExpr", src: ["UPPER(", ")"] } },
+            ],
+         },
+      ],
+      segments: [{ sql: "SELECT 1 FROM other-project.ds.u" }],
+   };
+
+   it("reads author SQL, raw SQL and literals, not a field's code or name", () => {
+      const sql = irSql(node);
+      expect(sql).toEqual(
+         expect.arrayContaining([
+            "SELECT * FROM my-proj.ds.t",
+            "a COLLATE b",
+            "UPPER(",
+            "SELECT 1 FROM other-project.ds.u",
+         ]),
+      );
+      expect(sql).not.toContain("params.tags.each");
+      expect(sqlProjects(sql.join("\n")).sort()).toEqual([
+         "my-proj",
+         "other-project",
+      ]);
+   });
+});
 
 describe("a source's string fields", () => {
    it("are read through its joins to the join bound, and a measure is not selectable", () => {
