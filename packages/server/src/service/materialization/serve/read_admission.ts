@@ -66,7 +66,6 @@ import {
 
 // The port, and its implementation for the query pipeline to hand in.
 export type { CollationProbe } from "./gate_reads_types";
-export { collationProbe } from "./gate_collation";
 export { lookupProbe } from "./admission_lookup";
 export { observeAdmission, reportQueryWalk } from "./admission_parity";
 

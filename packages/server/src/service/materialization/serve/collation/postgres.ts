@@ -135,7 +135,7 @@ async function postgresTableListed(
 }
 
 /** The Postgres dialect's reads: a column's collation, and its identity. */
-export interface PostgresCollationReader extends CollationReader {
+interface PostgresCollationReader extends CollationReader {
    readonly scope: "column";
    /** The database's default collation, judged. */
    defaultCollation(io: ProbeIO): Promise<Collation>;

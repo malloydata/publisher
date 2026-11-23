@@ -55,7 +55,7 @@ import * as gateReads from "./serve/gate_reads";
 import { type LegContext, makeLegs } from "./serve/leg";
 import {
    type CollationProbe,
-   collationProbe,
+   lookupProbe,
    ReadAdmission,
 } from "./serve/read_admission";
 
@@ -1906,11 +1906,11 @@ describe("the collation probes run at most once per answer", () => {
                         const probe: CollationProbe = {
                            sourceRefusal: (a) => {
                               count("source", a);
-                              return collationProbe.sourceRefusal(a);
+                              return lookupProbe.sourceRefusal(a);
                            },
                            storedRefusal: (a) => {
                               count("stored", a);
-                              return collationProbe.storedRefusal(a);
+                              return lookupProbe.storedRefusal(a);
                            },
                         };
                         await routed({

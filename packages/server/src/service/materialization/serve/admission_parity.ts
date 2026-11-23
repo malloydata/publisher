@@ -68,7 +68,3 @@ export function reportCatalogRead(site: AdmissionReadSite): void {
    observer?.catalogRead(site);
 }
 
-/** Report one compile a probe made on a query's path, beyond the query's own. */
-export function reportProbeCompile(site: AdmissionReadSite): void {
-   observer?.probeCompile(site);
-}

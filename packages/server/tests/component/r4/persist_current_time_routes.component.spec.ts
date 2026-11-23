@@ -20,7 +20,7 @@ import {
    type PersistedQueryServe,
 } from "../../../src/service/materialization/serve/leg";
 import {
-   collationProbe,
+   lookupProbe,
    ReadAdmission,
 } from "../../../src/service/materialization/serve/read_admission";
 import type { PersistedViewServe } from "../../../src/service/materialization/serve/view_variants";
@@ -245,7 +245,7 @@ describe("stored relations that read the current time, by route", () => {
          const admission = new ReadAdmission(
             query,
             gateSwitches(),
-            collationProbe,
+            lookupProbe,
          );
          expect({
             kind,

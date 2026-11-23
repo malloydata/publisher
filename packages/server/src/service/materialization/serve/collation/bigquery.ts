@@ -123,7 +123,7 @@ interface DatasetTable {
  * `TABLES`, `COLUMNS` and `COLUMN_FIELD_PATHS`, billed at least 10 MB for
  * each.
  */
-export async function bigqueryDatasetTables(
+async function bigqueryDatasetTables(
    io: ProbeIO,
    dataset: string,
 ): Promise<ReadonlyMap<string, DatasetTable>> {

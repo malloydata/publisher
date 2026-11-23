@@ -11,10 +11,10 @@ Whether an answer a leg produced is used is one decision, `admitRead`
 (`domain/admission.ts`): the row scope, the caller's own filters, the result's
 order and grouping, and, past an entry-point gate, the gate policy, exactness,
 zone and collation. `read_admission.ts` is its shell: it gathers the facts the
-decision asks for, each only when asked. The collation probes read the
-warehouse, so they sit behind a port (`CollationProbe`, in
-`gate_reads_types.ts`); `gate_collation.ts` implements it, and the decision
-reads only the probes' answers.
+decision asks for, each only when asked. Collation is judged through a port
+(`CollationProbe`, in `gate_reads_types.ts`) that `admission_lookup.ts`
+answers from what the bind and the build recorded; no query reads the
+warehouse for it.
 
 ## Modules
 
@@ -31,7 +31,7 @@ reads only the probes' answers.
 | `bindings.ts`                | How serving reads a bound table: its quoted path, the virtual map, whether SQL reads a table (failing closed for gates), `#@ -persist`                                                                                       | the served copy, the rollup and view legs, the bind, storage bindings   |
 | `composite_member.ts`        | Whether a served answer resolves a composite source to the member live resolves it to                                                                                                                                        | the served leg (`leg.ts`)                                               |
 | `read_admission.ts`          | The admission shell: per query, gathers the facts `admitRead` decides a stored answer by, the collation probes through a port, and maps its verdict to the router's terms                                                    | `query_serving.ts`                                                      |
-| `gate_collation.ts`          | Whether a stored copy compares a string column a gate or a re-applied `where:` reads as its source does: the source's collation, read per dialect; the collation probe port's implementation                                 | the admission shell                                                     |
+| `gate_collation.ts`          | The collation reads the records are built from: the catalog I/O over a connection, the BigQuery build read, and the string-path and entry-point helpers the lookups share                                                    | `admission_lookup.ts`, `source_capability.ts`, the build                |
 | `admission_parity.ts`        | What admission reports for the query pipeline to count: each walk of the IR for a fact a compile or bind did not record, and each catalog read or extra compile a probe made                                                 | `query_serving.ts`                                                      |
 | `source_capability.ts`       | How each source of a model compares its strings live, read at every bind and kept with the model's runtime, for read admission's lookups                                                                                     | `model.ts`, the admission lookups                                       |
 | `admission_lookup.ts`        | The collation probe port answered by lookups: the source side from what the bind read (`source_capability.ts`), the stored side from each table's column contract                                                            | `query_serving.ts` through the admission shell                          |
@@ -58,11 +58,11 @@ reads only the probes' answers.
 
 ### `collation/`
 
-The collation reads behind `gate_collation.ts`, one reader per Malloy dialect
-whose strings can be read. A reader sends SQL through a `ProbeIO` that
-`gate_collation.ts` builds over a connection, and never holds one; the
-policy (which side is read, what an equality or an ordering needs, the memo
-scopes, failing closed and the refusal text) stays in `gate_collation.ts`.
+The collation reads behind the bind's source capability and the build's
+column contract, one reader per Malloy dialect whose strings can be read. A
+reader sends SQL through a `ProbeIO` that `gate_collation.ts` builds over a
+connection, and never holds one; the policy (what an equality or an ordering
+needs, failing closed and the refusal text) is `admission_lookup.ts`'s.
 
 | Module                  | Responsibility                                                                                                                                                                                                                              |
 | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

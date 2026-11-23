@@ -14,7 +14,7 @@ import {
 import { gateSwitches } from "../../../config";
 import { LegDecline } from "../domain/leg_decline";
 import { makeLegs } from "./leg";
-import { collationProbe, ReadAdmission } from "./read_admission";
+import { lookupProbe, ReadAdmission } from "./read_admission";
 import { PersistedViewServe } from "./view_variants";
 
 /**
@@ -281,23 +281,20 @@ describe("PersistedViewServe (database)", () => {
       });
       // The path report does not carry it.
       expect(answer.viewTable).not.toHaveProperty("asOfBuild");
-      const admission = new ReadAdmission(
-         query,
-         gateSwitches(),
-         collationProbe,
-      );
+      const admission = new ReadAdmission(query, gateSwitches(), lookupProbe);
       // Past an entry-point gate: an access decision, declined.
       expect((await admission.decide("view", answer, true)).verdict).toEqual({
          admit: false,
          reason: "as_of_build_access",
          detail: expect.any(String),
       });
-      // The query reads no given and passes no gate: it reads the table (one
-      // its catalog does not list is not judged for the result: its read
-      // fails, and its fallback decides).
+      // The query reads no given and passes no gate: no access decision.
+      // Its result's ordering is judged as any other: with no bind here to
+      // record the source's capability, it fails closed.
       expect((await admission.decide("view", answer, false)).verdict).toEqual({
-         admit: true,
-         pastEntryPointGate: false,
+         admit: false,
+         reason: "result_order_comparison",
+         detail: expect.any(String),
       });
       // Without the flag the same answer is not an as-of-build read.
       const plain = await leg.attempt(query, pinnedOf([], built));

@@ -375,7 +375,7 @@ export const RATCHET_STORED_TYPE_PATTERNS = {
  * its port, a file move away from the shell) and the served copy's runtime.
  */
 export const RATCHET_SERVE_IO = {
-   "service/materialization/serve/gate_collation.ts": { count: 9, step: "2r" },
+   "service/materialization/serve/gate_collation.ts": { count: 1, step: "2r" },
    "service/materialization/serve/served_copy_config.ts": {
       count: 2,
       step: "2r",
@@ -407,7 +407,6 @@ export const RATCHET_VOCABULARY_UNIONS = {
       count: 1,
       step: "2q",
    },
-   "service/materialization/serve/gate_collation.ts": { count: 1, step: "2q" },
    "service/materialization/serve/leg.ts": { count: 1, step: "2q" },
    "service/materialization/serve/query_path.ts": { count: 3, step: "2q" },
    "service/materialization/serve/serve_verdict.ts": { count: 4, step: "2q" },
