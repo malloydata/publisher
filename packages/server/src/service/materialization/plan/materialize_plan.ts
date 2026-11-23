@@ -137,6 +137,12 @@ const PLANNED_KEYS = ["inline"] as const;
  * not honoured: the table is rebuilt in full on every refresh, and served.
  */
 const MATERIALIZE_PAIR_FULL_REFRESH_CODE = "materialize-pair-full-refresh";
+/**
+ * The code on the warning for an incremental extension that rebuilds in full
+ * whenever its parent's table changes ({@link extensionFullRefreshFinding}).
+ */
+export const MATERIALIZE_EXTENSION_FULL_REFRESH_CODE =
+   "materialize-extension-full-refresh";
 
 /**
  * Every key the generator reads, which must be the route's closed set in the
@@ -2106,8 +2112,9 @@ type ChainVerdict = { link: ChainMode } | { refuse: string };
  * {@link ChainVerdict} for one extension and its parent. Linked today: a
  * pair on one tier (both database, whose build reads the parent's build
  * source in its own warehouse, or one storage destination, whose build reads
- * the parent's table there, see `overStored`), neither incremental, neither a
- * table of several inlined paths, the parent no pair table, and the parent
+ * the parent's table there, see `overStored`), an incremental side as
+ * {@link chainIncremental} coordinates it, neither a table of several
+ * inlined paths, the parent no pair table, and the parent
  * with no given-reading `where:` and no current-time `where:` its build
  * leaves out. Every other pair is refused, each with why.
  */
@@ -2117,16 +2124,8 @@ export function chainVerdict(
 ): ChainVerdict {
    const tiers = chainTiers(plan, parent);
    if ("refuse" in tiers) return tiers;
-   const incremental = (p: MaterializePlan) =>
-      Object.keys(p.persist).some((k) => INCREMENTAL_KEYS.includes(k));
-   // TODO(extension chains, case 2: incremental): coordinate the refresh.
-   if (incremental(plan) || incremental(parent)) {
-      return {
-         refuse:
-            "and an incremental extension, or an extension of an incremental " +
-            "parent, has no coordinated refresh over the parent's table yet",
-      };
-   }
+   const incrementalMode = chainIncremental(plan, parent, tiers.link);
+   if ("refuse" in incrementalMode) return incrementalMode;
    // TODO(extension chains, case 3: pair parent): re-root on the join.
    if (plan.pairBlocks || parent.pairBlocks) {
       return {
@@ -2159,7 +2158,97 @@ export function chainVerdict(
             "re-root would apply to the extension's build",
       };
    }
-   return { link: tiers.link };
+   return {
+      link: {
+         ...tiers.link,
+         ...(incrementalMode.incremental
+            ? { incremental: incrementalMode.incremental }
+            : {}),
+      },
+   };
+}
+
+/** Whether a materialized plan declares an incremental refresh. */
+function isIncremental(p: MaterializePlan): boolean {
+   return Object.keys(p.persist).some((k) => INCREMENTAL_KEYS.includes(k));
+}
+
+/**
+ * How an incremental extension's refresh follows its parent's table, decided
+ * at plan ({@link ChainMode.incremental}), or why the pair is refused. A
+ * full extension of an incremental parent needs nothing recorded: the run
+ * rebuilds a reader whenever its parent's table moves (`rebuildReaders`).
+ *  - `delta`: the extension's watermark is its parent's, the same stored
+ *    column, or the parent is refreshed in full: its delta reads the
+ *    parent's table, starting no later than the parent's own delta this run.
+ *  - `reseed_on_parent_change`: both incremental on different watermarks,
+ *    so a range of the extension's cannot be told which rows of the parent's
+ *    moved: it is rebuilt in full over the parent's table whenever that
+ *    table changed, and the package warns.
+ */
+function chainIncremental(
+   plan: MaterializePlan,
+   parent: MaterializePlan,
+   tier: ChainMode,
+): { incremental?: ChainMode["incremental"] } | { refuse: string } {
+   const own = isIncremental(plan);
+   const theirs = isIncremental(parent);
+   if (!own && !theirs) return {};
+   // A pair delta replaces whole parents and is open above; a watermark range
+   // through a pair's re-root is unproven (extension chains, cases 3 and 4).
+   if (parent.pair || parent.pairBlocks || plan.pair || plan.pairBlocks) {
+      return {
+         refuse:
+            "and an incremental table is not coordinated with a pair table " +
+            "on either side of an extension",
+      };
+   }
+   if (tier.tier !== "same") {
+      return {
+         refuse:
+            "and an incremental extension, or an extension of an incremental " +
+            "parent, is coordinated only with a parent on its own tier and " +
+            "destination",
+      };
+   }
+   if (!own) return {};
+   if (!theirs) return { incremental: { coordinate: "delta" } };
+   const parentWatermark = parent.persist.watermark;
+   const ownWatermark = plan.persist.watermark;
+   return {
+      incremental: {
+         coordinate:
+            parentWatermark !== undefined &&
+            sameStoredColumn(plan, parent, ownWatermark, parentWatermark)
+               ? "delta"
+               : "reseed_on_parent_change",
+         ...(parentWatermark !== undefined ? { parentWatermark } : {}),
+      },
+   };
+}
+
+/**
+ * Whether the extension's field `own` is its parent's field `theirs` read
+ * through: one name, stored under it on both tables, computed on both or
+ * neither (an extension that renames the parent's field away and declares
+ * another of the name computes it). A watermark renamed on the way is not
+ * proven the same column, so it reseeds: correct, at a full rebuild's cost.
+ */
+function sameStoredColumn(
+   plan: MaterializePlan,
+   parent: MaterializePlan,
+   own: string | undefined,
+   theirs: string,
+): boolean {
+   if (own !== theirs) return false;
+   const ours = plan.columns.find((c) => c.dimension === own && !c.join);
+   const parents = parent.columns.find((c) => c.dimension === theirs && !c.join);
+   return (
+      ours !== undefined &&
+      parents !== undefined &&
+      ours.column === parents.column &&
+      ours.computed === parents.computed
+   );
 }
 
 /**
@@ -2414,6 +2503,39 @@ export function pairFullRefreshFinding(
          `#(materialize) on source "${plan.sourceName}" declares ` +
          `refresh="incremental", but its pair table is rebuilt in full on ` +
          `every refresh: ${reason}.`,
+      subject: plan.sourceName,
+      model,
+   };
+}
+
+/**
+ * An incremental extension whose watermark is not its incremental parent's,
+ * as a package warning: its refresh cannot tell which of its rows a parent's
+ * delta moved, so it is rebuilt in full over the parent's table whenever
+ * that table changed (`reseed_on_parent_change`), and served.
+ */
+export function extensionFullRefreshFinding(
+   plan: Pick<MaterializePlan, "sourceName" | "persist" | "buildsOver">,
+   model: string,
+): PackageAnnotationFinding | undefined {
+   const parent = plan.buildsOver;
+   const incremental = parent?.mode.incremental;
+   if (incremental?.coordinate !== "reseed_on_parent_change") return undefined;
+   const own = plan.persist.watermark;
+   return {
+      route: MATERIALIZE_ROUTE,
+      tier: "unservable",
+      code: MATERIALIZE_EXTENSION_FULL_REFRESH_CODE,
+      message:
+         `#(materialize) on source "${plan.sourceName}" declares ` +
+         `refresh="incremental", but it is rebuilt in full over its parent ` +
+         `"${parent!.sourceName}"'s table whenever that table changes: its ` +
+         `watermark ${own !== undefined ? `"${own}"` : "(none)"} is not the ` +
+         `same stored column as the parent's watermark ` +
+         `"${incremental.parentWatermark ?? "(none)"}", so a delta of its own ` +
+         `cannot tell which of its rows the parent's refresh moved. Declare ` +
+         `the parent's watermark on the extension, unrenamed, to refresh it ` +
+         `by delta.`,
       subject: plan.sourceName,
       model,
    };

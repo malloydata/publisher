@@ -112,7 +112,7 @@ source: orders is orders_raw extend {
    );
 
    it(
-      "refuses an extension in another destination than its parent and an incremental one, and chains one in another file over its parent's build source",
+      "refuses an extension in another destination than its parent, chains an incremental one in its parent's destination, and one in another file over its parent's build source",
       async () => {
          const c = await compiled({
             "m.malloy": `${BASE}
@@ -133,19 +133,23 @@ source: other_ext is orders extend { dimension: n is 1 }
          for (const p of generatedPlans(c)) {
             expect([p.sourceName, p.buildsOver?.sourceName]).toEqual([
                p.sourceName,
-               p.sourceName === "other_ext" ? "orders" : undefined,
+               p.sourceName === "other_ext" || p.sourceName === "inc_ext"
+                  ? "orders"
+                  : undefined,
             ]);
          }
+         // An incremental extension of a full parent deltas over its table.
+         expect(
+            generatedPlans(c).find((p) => p.sourceName === "inc_ext")
+               ?.buildsOver?.mode,
+         ).toEqual({ tier: "same", incremental: { coordinate: "delta" } });
          // Never over the raw chain: refused at plan.
          expect(
             (c.annotationFindings ?? [])
                .filter((f) => f.code === "materialize-not-built")
                .map((f) => [f.subject, f.refused?.reason])
                .sort(),
-         ).toEqual([
-            ["inc_ext", "upstream_table_unusable"],
-            ["stored_ext", "upstream_table_unusable"],
-         ]);
+         ).toEqual([["stored_ext", "upstream_table_unusable"]]);
          // Across files (P10): imported from a copy of `m.malloy` with the
          // parent re-rooted on its build source.
          const other = generatedPlans(c).find(
@@ -159,7 +163,7 @@ source: other_ext is orders extend { dimension: n is 1 }
             generatedPlans(c)
                .map((p) => p.sourceName)
                .sort(),
-         ).toEqual(["orders", "other_ext"]);
+         ).toEqual(["inc_ext", "orders", "other_ext"]);
       },
       { timeout: 30000 },
    );

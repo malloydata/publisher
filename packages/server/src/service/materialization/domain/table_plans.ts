@@ -426,6 +426,21 @@ export interface ChainMode {
     *    destination, attached read-only in the extension's build session.
     */
    tier: "same" | "storage_over_database" | "across_destinations";
+   /**
+    * For an incremental extension: how its refresh follows its parent's
+    * table (see `chainIncremental`). Absent for a full extension, which the
+    * run rebuilds whenever its parent's table moves.
+    *  - `delta`: its delta reads the parent's table, from no later than the
+    *    parent's own delta start in the run, and a time watermark's range
+    *    ends no later than the parent's coverage;
+    *  - `reseed_on_parent_change`: both incremental on different
+    *    watermarks: rebuilt in full whenever the parent's table changed.
+    */
+   incremental?: {
+      coordinate: "delta" | "reseed_on_parent_change";
+      /** The parent's watermark, when the parent is incremental. */
+      parentWatermark?: string;
+   };
 }
 
 /** The parent an extension table builds over. */
