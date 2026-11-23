@@ -611,13 +611,17 @@ export async function loadFixture(
                // Empty first, so the package derives every binding afresh.
                const mz = pkg.materialization();
                mz.bind({ database: {} });
-               // With the column read the server binds with (package.ts),
-               // so a stored column's guard runs as it does there.
+               // With the column reads the server binds with (package.ts),
+               // so a stored column's guard and each table's contract run as
+               // they do there.
                mz.bind({
                   database: database as never,
                   observed: await mz.readDatabaseColumns(database as never),
                });
-               pkg.materialization().bind({ storage: stored as never });
+               pkg.materialization().bind({
+                  storage: stored as never,
+                  storageObserved: await mz.readStorageColumns(stored as never),
+               });
                await settle();
             },
             warnings: warningsOf(),

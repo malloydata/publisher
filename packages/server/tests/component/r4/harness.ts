@@ -28,6 +28,10 @@
  */
 
 import { captureTableContract } from "../../../src/service/materialization/run/column_contract_capture";
+import {
+   type ColumnContract,
+   parseContract,
+} from "../../../src/service/materialization/domain/column_contract";
 import { storedKeyCheckSql } from "../../../src/service/materialization/text/key_check_text";
 import { expect, it } from "bun:test";
 import { tryCompileMaterializeCompanion } from "../../../src/service/materialization/plan/materialize_compile";
@@ -1143,6 +1147,13 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
          realization: "COPY",
          rowCount: null,
          ...(rollupOrigin.has(source.sourceID) ? { origin: "rollup" } : {}),
+         // Its column contract's stored side, as a build records it (the
+         // live side is the source probe's here).
+         contract: await captureTableContract({
+            connection: dest,
+            tableName: `${DESTINATION}.${table}`,
+            tier: "storage",
+         }).catch(() => undefined),
       } as ManifestEntry;
       const leafKeys = await pairLeafKeys(source);
       if (leafKeys) {
@@ -1365,6 +1376,19 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
    // The served copy (materialization v2) compiles the author's own files with
    // the package's connections; only routed when its setting is on.
    model.setServedCopyContext(dir, connections, materializePlans);
+   // What a bind records for read admission's lookups: each table's column
+   // contract, and how each source compares its strings.
+   const contracts = new Map<string, ColumnContract>();
+   for (const [id, e] of [
+      ...Object.entries(entries),
+      ...Object.entries(databaseServeEntries),
+      ...Object.entries(databaseEntries),
+   ]) {
+      const contract = parseContract((e as { contract?: unknown }).contract);
+      if (contract) contracts.set(id, contract);
+   }
+   model.setServeBindings([], contracts);
+   await model.refreshStringCapabilities();
 
    // The ordering the author's query asks for, from compiling it against the
    // author's model: the served answer is held to it, not to its own.

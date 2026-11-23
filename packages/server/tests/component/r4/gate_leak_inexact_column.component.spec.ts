@@ -319,6 +319,21 @@ describe("L2: a gate over a column stored inexactly is never read from the table
          entry.schema = (entry.schema as { name: string; type: string }[]).map(
             (c) => (c.name === "acct" ? { ...c, type: "DOUBLE" } : c),
          );
+         // And its contract, as that build recorded the column it wrote, so
+         // the bind's contract check finds the table as it was built.
+         const contract = entry.contract as
+            | { columns?: { name: string; nativeType: string }[] }
+            | undefined;
+         if (contract?.columns) {
+            entry.contract = {
+               ...contract,
+               columns: contract.columns.map((c) =>
+                  c.name === "acct"
+                     ? { ...c, nativeType: "DOUBLE", gateExact: false }
+                     : c,
+               ),
+            };
+         }
       }
       // A database table altered in its warehouse after the build.
       const warehouse = (await loader.pkg.getMalloyConnection(

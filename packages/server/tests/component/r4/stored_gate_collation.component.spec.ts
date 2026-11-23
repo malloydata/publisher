@@ -29,6 +29,13 @@ import {
    type Outcome,
 } from "../../../src/test_helpers/conformance/package_runner";
 import { rowDifference } from "./harness";
+import { holdParityAllowance } from "../../../src/test_helpers/admission_parity";
+
+/**
+ * Releases the parity allowance held while a destination's session
+ * default_collation is set after the bind (see `holdParityAllowance`).
+ */
+let releaseDefault: () => void = () => {};
 
 const rowsOf = (collate: string) => `duckdb.sql("""
   SELECT CAST(id AS BIGINT) AS id, CAST(amount AS DOUBLE) AS amount, category,
@@ -402,6 +409,8 @@ for (const gatedSources of [false, true]) {
 
       it("answers live under a destination default_collation", async () => {
          await loader.lake.runSQL("SET default_collation = 'nocase'");
+         // Until PR B checks a destination's default at bind.
+         releaseDefault = holdParityAllowance("destination_default_unrecorded");
          try {
             for (const [i, g] of callers.entries()) {
                const got = await fixture.run("m.malloy", query("dest_kept"), g);
@@ -412,6 +421,7 @@ for (const gatedSources of [false, true]) {
             }
          } finally {
             await loader.lake.runSQL("SET default_collation = ''");
+            releaseDefault();
          }
       });
    });
@@ -605,6 +615,10 @@ for (const side of ["destination", "source"] as const) {
             fixture = await loader.bind({ includeRollups: true });
             if (side === "destination") {
                await loader.lake.runSQL("SET default_collation = 'nocase'");
+               // Until PR B checks a destination's default at bind.
+               releaseDefault = holdParityAllowance(
+                  "destination_default_unrecorded",
+               );
             }
          }, 900_000);
 
@@ -613,6 +627,7 @@ for (const side of ["destination", "source"] as const) {
                await loader?.lake
                   .runSQL("SET default_collation = ''")
                   .catch(() => {});
+               releaseDefault();
             }
             await fixture?.dispose();
             await loader?.dispose().catch(() => {});
@@ -735,6 +750,10 @@ for (const side of ["destination", "source"] as const) {
             fixture = await loader.bind({ includeRollups: true });
             if (side === "destination") {
                await loader.lake.runSQL("SET default_collation = 'nocase'");
+               // Until PR B checks a destination's default at bind.
+               releaseDefault = holdParityAllowance(
+                  "destination_default_unrecorded",
+               );
             }
          }, 900_000);
 
@@ -743,6 +762,7 @@ for (const side of ["destination", "source"] as const) {
                await loader?.lake
                   .runSQL("SET default_collation = ''")
                   .catch(() => {});
+               releaseDefault();
             }
             await fixture?.dispose();
             await loader?.dispose().catch(() => {});
