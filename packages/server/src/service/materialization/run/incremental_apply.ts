@@ -25,7 +25,7 @@ import { logger } from "../../../logger";
 import { errorCodeOf } from "../../../error_code";
 import type { IncrementalStepReason } from "../../../materialization_metrics";
 import type { IncrementalLedgerEntry } from "../../../storage/DatabaseInterface";
-import type { IncrementalStrategy } from "../domain/types";
+import type { IncrementalStrategy, ManifestEntry } from "../domain/types";
 import { capabilitiesOf, dialectsWith } from "../domain/dialect";
 import { errMessage } from "../../../utils";
 import { foldedTablePathParts, quoteIdentifier } from "../../quoting";
@@ -988,7 +988,35 @@ export interface IncrementalLineage {
     * is in {@link sourceEntityId}.
     */
    pair?: PairDelta;
+   /**
+    * For an incremental extension table: the parent whose table its build
+    * reads, as this run holds it ({@link ExtensionParent}). Not compared with
+    * the ledger: the run judges it ({@link UpstreamBounds}), and the boundary
+    * records which build of the parent's table it was reached over.
+    */
+   parent?: ExtensionParent;
 }
+
+/**
+ * The parent table an incremental extension's build reads (extension chains,
+ * case 2), as the run holds it when the extension builds.
+ */
+export interface ExtensionParent {
+   /** The parent's content address (its manifest key). */
+   address: string;
+   /** The parent's source name; display only. */
+   name: string;
+   /** How the extension's refresh follows the parent, decided at plan. */
+   coordinate: "delta" | "reseed_on_parent_change";
+   /** Whether the parent is refreshed incrementally. */
+   parentIncremental: boolean;
+   /** The parent's entry as this run holds it: built in it, or carried. */
+   entry: ManifestEntry | undefined;
+   /** Whether this run built the parent's table. */
+   builtThisRun: boolean;
+}
+
+export type { LedgerParent } from "../domain/incremental";
 
 /**
  * A recorded boundary as the plan reads it: the value, plus the table and the
@@ -1012,7 +1040,7 @@ export type RecordedBoundary = Pick<
     * The keys of a caller-returned wire entry this release does not know,
     * exactly as sent. The ledger is opaque to hosts and the publisher may add
     * keys to it, so they are carried onto the entry the run reports
-    * (carriedLedgerExtensions) rather than stripped. Absent for a local ledger
+    * (ledgerExtensionKeys) rather than stripped. Absent for a local ledger
     * row, and for an entry with no such keys.
     */
    extensions?: Readonly<Record<string, unknown>>;
@@ -1160,10 +1188,12 @@ async function resolveDeltaEnd(
    target: DeltaTarget,
    lineage: IncrementalLineage,
    now: Date,
+   /** An extension's parent's coverage ({@link UpstreamBounds}). */
+   atMost?: WatermarkBound,
 ): Promise<{ bound?: WatermarkBound; error?: string }> {
    const type = lineage.watermarkType;
    if (type === "date" || type === "timestamp") {
-      return { bound: snapshotBound(type, now) };
+      return cappedEnd({ bound: snapshotBound(type, now) }, atMost);
    }
    return target.probeSourceFrontier();
 }
@@ -1177,6 +1207,22 @@ async function resolveDeltaEnd(
  * its rows, so it is where the delta starts.
  */
 async function resolveDeltaStart(
+   target: DeltaTarget,
+   lineage: IncrementalLineage,
+   recorded: WatermarkBound,
+   /**
+    * An extension's parent's delta start this run ({@link UpstreamBounds}):
+    * the range starts no later, so every row the parent restated is re-read.
+    */
+   atMost?: WatermarkBound,
+): Promise<{ bound: WatermarkBound; error?: undefined } | { error: string }> {
+   const own = await ownDeltaStart(target, lineage, recorded);
+   if (own.error !== undefined || atMost === undefined) return own;
+   return compareBounds(atMost, own.bound) < 0 ? { bound: atMost } : own;
+}
+
+/** {@link resolveDeltaStart} from the table's own boundary alone. */
+async function ownDeltaStart(
    target: DeltaTarget,
    lineage: IncrementalLineage,
    recorded: WatermarkBound,
@@ -1217,6 +1263,50 @@ async function resolveDeltaStart(
          lookbackSeconds: lineage.lookbackSeconds,
       }),
    };
+}
+
+/**
+ * What an incremental extension table's refresh may do over its parent's
+ * table in this run (extension chains, case 2), as the run decided it from
+ * the parent's step and the generation the extension last read:
+ *  - `startAtMost`: the parent's own delta start this run; the extension's
+ *    range starts no later, so every row the parent restated is read again
+ *    and written once by its range replace or merge;
+ *  - `endAtMost`: the parent's coverage, for a time watermark; the range
+ *    ends no later, so the extension never records coverage its parent's
+ *    table lacks;
+ *  - `reseed`: the extension rebuilds in full over the parent's table, with
+ *    why (`upstream_generation_skipped`, `upstream_watermark_differs`).
+ */
+export interface UpstreamBounds {
+   startAtMost?: WatermarkBound;
+   endAtMost?: WatermarkBound;
+   reseed?: {
+      reasonCode: IncrementalStepReasonCode;
+      reason: string;
+      /**
+       * Unproven only because the parent was refreshed more often than its
+       * ledger lists (`advances`), so an extension refreshed far less often
+       * than its parent is told apart.
+       */
+      overflow?: true;
+   };
+}
+
+/** A time watermark's range end, capped at `atMost` when it is earlier. */
+function cappedEnd(
+   end: { bound?: WatermarkBound; error?: string },
+   atMost: WatermarkBound | undefined,
+): { bound?: WatermarkBound; error?: string } {
+   if (
+      !end.bound ||
+      atMost === undefined ||
+      !isTimeWatermark(end.bound.malloyType) ||
+      compareBounds(atMost, end.bound) >= 0
+   ) {
+      return end;
+   }
+   return { bound: atMost };
 }
 
 /**
@@ -1331,6 +1421,46 @@ export function warehouseDeltaTarget(params: {
 }
 
 /**
+ * The seed {@link planIncrementalStep} decides before reading the table: a
+ * forced rebuild, no boundary, a boundary measured under another lineage, or
+ * an extension's parent the run says it cannot build on. Undefined when none.
+ */
+function seedBeforeAnyProbe(
+   inputs: Pick<
+      Parameters<typeof planIncrementalStep>[0],
+      "forceRefresh" | "ledgerEntry" | "lineage" | "upstream"
+   >,
+): Extract<IncrementalStep, { mode: "seed" }> | undefined {
+   const { lineage, ledgerEntry } = inputs;
+   if (inputs.forceRefresh) {
+      return {
+         mode: "seed",
+         reasonCode: "forced",
+         reason: "a full refresh was requested",
+      };
+   }
+   if (!ledgerEntry) {
+      return {
+         mode: "seed",
+         reasonCode: "no_boundary",
+         reason: "no covered_through boundary is recorded for this source yet",
+      };
+   }
+   const mismatch = ledgerLineageMismatch(ledgerEntry, lineage);
+   if (mismatch) {
+      return { mode: "seed", ...mismatch };
+   }
+   // An extension that cannot build on the parent's table it last read
+   // (extension chains): decided by the run, before any probe.
+   if (inputs.upstream?.reseed) {
+      const { reasonCode, reason } = inputs.upstream.reseed;
+      return { mode: "seed", reasonCode, reason };
+   }
+
+   return undefined;
+}
+
+/**
  * Decide what this source's refresh does, and build the delta's SQL when it is a
  * delta. Checks run in order of increasing cost: free ones first, then warehouse
  * probes.
@@ -1351,28 +1481,19 @@ export async function planIncrementalStep(inputs: {
    columns: string[];
    /** Postgres only: the server version, for the MERGE floor. */
    postgresVersionNum?: number;
+   /**
+    * For an incremental extension table, what its parent's table this run
+    * allows ({@link UpstreamBounds}). Absent for any other source.
+    */
+   upstream?: UpstreamBounds;
 }): Promise<IncrementalStep> {
-   const { target, lineage, ledgerEntry } = inputs;
+   const { target, lineage } = inputs;
    const { runner, dialect } = target;
 
-   if (inputs.forceRefresh) {
-      return {
-         mode: "seed",
-         reasonCode: "forced",
-         reason: "a full refresh was requested",
-      };
-   }
-   if (!ledgerEntry) {
-      return {
-         mode: "seed",
-         reasonCode: "no_boundary",
-         reason: "no covered_through boundary is recorded for this source yet",
-      };
-   }
-   const mismatch = ledgerLineageMismatch(ledgerEntry, lineage);
-   if (mismatch) {
-      return { mode: "seed", ...mismatch };
-   }
+   const free = seedBeforeAnyProbe(inputs);
+   if (free) return free;
+   // Present: a missing boundary seeded above.
+   const ledgerEntry = inputs.ledgerEntry!;
 
    if (
       lineage.strategy === "merge" &&
@@ -1432,7 +1553,12 @@ export async function planIncrementalStep(inputs: {
       malloyType: ledgerEntry.coveredThroughType,
       value: ledgerEntry.coveredThroughValue,
    };
-   const lower = await resolveDeltaStart(target, lineage, recorded);
+   const lower = await resolveDeltaStart(
+      target,
+      lineage,
+      recorded,
+      inputs.upstream?.startAtMost,
+   );
    if (lower.error !== undefined) {
       // Unproven where the table reaches: a delta from the recorded boundary
       // could skip rows, so rebuild.
@@ -1443,7 +1569,12 @@ export async function planIncrementalStep(inputs: {
       };
    }
    const start = lower.bound;
-   const end = await resolveDeltaEnd(target, lineage, inputs.now);
+   const end = await resolveDeltaEnd(
+      target,
+      lineage,
+      inputs.now,
+      inputs.upstream?.endAtMost,
+   );
    if (!end.bound) {
       return {
          mode: "skip",

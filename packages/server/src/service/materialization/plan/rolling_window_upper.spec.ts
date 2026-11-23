@@ -274,7 +274,7 @@ source: older is ev extend {
    );
 
    it(
-      "does not chain an extension over a parent whose build leaves an upper bound out",
+      "builds an extension over a parent whose build leaves an upper bound out over the parent's table, its re-root leaving the bound out too",
       async () => {
          const text = `source: ev is duckdb.table('rwu_ev')
 #(materialize) storage="lake"
@@ -282,14 +282,28 @@ source: older is ev extend { where: ts < now - 30 days }
 #(materialize) storage="lake"
 source: older_big is older extend { where: amount > 100 }
 `;
-         const { duckdb, c } = await compiled(text);
-         const plan = planNamed(c, "older_big");
-         expect(plan.buildsOver).toBeUndefined();
-         const sql = buildSQL(c, "older_big");
-         expect(sql.match(NOW)).toBeNull();
-         expect(await count(duckdb, sql)).toBe(
-            await count(duckdb, "SELECT * FROM rwu_ev WHERE amount > 100"),
+         const { c } = await compiled(text);
+         const plans = Object.values(materializePlansIn(c) ?? {});
+         expect(plans.map((p) => p.sourceName).sort()).toEqual([
+            "older",
+            "older_big",
+         ]);
+         const ext = plans.find((p) => p.sourceName === "older_big")!;
+         expect(
+            ext.buildsOver?.mode.leftOutParentTerms?.map((t) => t.code),
+         ).toEqual(["ts < now - 30 days"]);
+         // The parent re-rooted on its table in the destination, its bound
+         // left out, so the extension's table holds every row; the
+         // extension's plan keeps the inherited bound for its read.
+         expect(ext.buildsOver?.overStored?.declarations).toContain(
+            "source: older is older__mat extend { where: true }",
          );
+         expect(leftOutWindowTerms(ext.readTimeTerms)).toHaveLength(1);
+         expect(
+            (c.annotationFindings ?? []).filter(
+               (f) => f.code === "materialize-not-built",
+            ),
+         ).toEqual([]);
       },
       { timeout: 30000 },
    );

@@ -19,6 +19,7 @@ import { projectToStoredColumns, storedColumnOf } from "./run_plan";
 import {
    canonicalBoundValue,
    deltaSelect,
+   probeMaxWatermark,
    type DeltaTarget,
    type IncrementalLineage,
    type SqlRunner,
@@ -382,5 +383,65 @@ export function storageDeltaTarget(params: {
             }
          },
       },
+   };
+}
+
+/**
+ * The delta target of a `storage=` extension table stacked on its parent's
+ * table in one destination (extension chains, case 2): the rows come from
+ * the extension's build SQL compiled over the parent's stored table
+ * (`storedSQL`, already projected to the stored columns, the CTAS's own),
+ * run on the same destination session that writes them, so nothing reads
+ * the warehouse. Filtered on the stored watermark column, as the seed's
+ * projection names it.
+ */
+export function stackedDeltaTarget(params: {
+   session: DuckDBConnection;
+   destinationName: string;
+   destinationSchema?: string;
+   physicalTableName: string;
+   quotedTablePath: string;
+   lineage: IncrementalLineage;
+   persistSource: PersistSource;
+   storedSQL: string;
+}): DeltaTarget {
+   const { session, lineage, storedSQL } = params;
+   const storedColumn = storedColumnOf(params.persistSource);
+   const watermarkColumn = storedColumn(lineage.watermarkName);
+   const runner = sessionRunner(session);
+   const range = (
+      start: Parameters<DeltaTarget["deltaRows"]>[0],
+      end: Parameters<DeltaTarget["deltaRows"]>[1],
+   ) =>
+      deltaSelect({
+         dialect: STORAGE_DIALECT,
+         sourceSQL: storedSQL,
+         watermarkName: watermarkColumn,
+         start,
+         end,
+      });
+   return {
+      dialect: STORAGE_DIALECT,
+      storedColumn,
+      runner,
+      quotedTablePath: params.quotedTablePath,
+      logicalTablePath: storageTablePath(
+         params.destinationName,
+         params.physicalTableName,
+         params.destinationSchema,
+      ),
+      deltaRows: async (start, end) => range(start, end),
+      windowRows: async (start, end, columns) =>
+         `SELECT ${columns
+            .map((c) => quoteIdentifier(c, STORAGE_DIALECT))
+            .join(", ")} FROM (${range(start, end)}) AS __c`,
+      probeSourceFrontier: () =>
+         probeMaxWatermark(
+            runner,
+            STORAGE_DIALECT,
+            storedSQL,
+            watermarkColumn,
+            lineage.watermarkType,
+         ),
    };
 }
