@@ -347,8 +347,8 @@ const ownNoteTest = (
  * and its statement's keyword (the statement's, too, for a later definition
  * of a multi-definition statement); a copied note has its base's declaration
  * in between, wherever that base was imported from. Without that text (a
- * model compiled from a string) we fall back to line contiguity: a note whose
- * lines run straight into the declaration.
+ * file the run can't read, or a model compiled from a string) we fall back to
+ * line contiguity: a note whose lines run straight into the declaration.
  */
 export const getDirectTaglines = (explore: Explore): string[] => {
    const annotation = (
@@ -420,10 +420,9 @@ const noteLineRange = (
 
 /**
  * Keeps only the notes that are genuinely declared on the explore at
- * `exploreLoc` — i.e. notes located inside the source declaration or in the
- * contiguous block of annotation lines immediately above it. Notes that were
- * copied verbatim from an extended base (whose location points elsewhere)
- * are dropped. See `getDirectTaglines` for the full rationale.
+ * `exploreLoc`: read from the model's text when the run can read it, else
+ * by line contiguity. Notes copied verbatim from a base (whose location
+ * points elsewhere) are dropped. See `getDirectTaglines` for the rationale.
  */
 const filterDirectlyDeclaredNotes = (
    notes: MalloyNote[],
