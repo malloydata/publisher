@@ -500,9 +500,11 @@ export function storageDestinationFile(
    if (refused !== undefined) {
       throw new BadRequestError(`Storage destination: ${refused}`);
    }
-   const root = storageDestinationRoot(environmentPath);
-   const file = path.join(root, `${destinationName}.duckdb`);
-   if (path.dirname(file) !== root) {
+   const root = path.resolve(storageDestinationRoot(environmentPath));
+   // Resolve, then require the result to sit directly under the root: the
+   // containment check a path-traversal analysis recognises as a sanitizer.
+   const file = path.resolve(root, `${destinationName}.duckdb`);
+   if (!file.startsWith(root + path.sep) || path.dirname(file) !== root) {
       throw new BadRequestError(
          `Storage destination name '${destinationName}' leaves its root.`,
       );
