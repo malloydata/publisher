@@ -111,7 +111,9 @@ The name such a destination's file is named from may use only ASCII letters, dig
 
 ## [Unreleased] — fixed: a query-shaped source's filtered measure over a stored table compares as live
 
-**Fixed: an unpersisted query-shaped source whose stage filters a measure on a string (`count() { where: name = 'x' }`) over a stored upstream was answered from the upstream's table, comparing that string byte-exact, even where the origin compares it under a case-insensitive or other non-binary collation.** The filtered measure's `where:` is now judged as a stage's `where:` already was, so such a query is answered live, equal to live.
+**Fixed (wrong answer): an unpersisted query-shaped source whose stage filters a measure on a string (`count() { where: name = 'x' }`) over a `storage=` stored upstream was answered from the upstream's table, comparing that string byte-exact, even where the origin compares it under a case-insensitive or other non-binary collation.** The filtered measure's `where:` is now judged as a stage's `where:` already was, so such a query is answered live, equal to live.
+
+**Who is affected:** an unpersisted query-shaped source (`source: x is a -> { … }`) over a `storage=` source, whose stage filters a measure (`count() { where: … }`) or uses `having:` on a string the origin compares under a non-binary collation: a case-insensitive or other nondeterministic collation, or an ordering comparison under a locale collation such as Postgres's `en_US` default. Releases up to 0.17.2 answered such queries from the stored table with byte-exact comparisons, a different count from live. A plain stage `where:` was already judged correctly, and database-tier tables keep the warehouse's collation. **What to do:** upgrade; nothing to change in the model.
 
 ## [Unreleased] — breaking: a chained `storage=` build is built over its stored upstreams or not at all
 
