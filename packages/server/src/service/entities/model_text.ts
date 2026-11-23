@@ -15,7 +15,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { fileURLToPath, pathToFileURL } from "url";
 import { logger } from "../../logger";
 import { readPackageURLSync } from "../../utils";
-import { stripMalloyCommentsAndLiterals } from "../malloy_lexer_core";
+import { lexAll, statementStarts, type Token } from "../malloy_lexer_core";
 
 const modelLines = new AsyncLocalStorage<{
    lines: Map<string, string[]>;
@@ -24,10 +24,12 @@ const modelLines = new AsyncLocalStorage<{
    packageRoot?: string;
 }>();
 
-/** A model file's text, and the same with comments, annotations and literals blanked in place. */
+/** A model file's text, its statement tokens and which of them start a statement. */
 export interface ModelCode {
    text: string;
-   code: string;
+   tokens: Token[];
+   /** Indexes in `tokens` of each statement's keyword. */
+   statementKeywords: ReadonlySet<number>;
    lineStarts: number[];
 }
 
@@ -62,8 +64,8 @@ function readModelLines(filePath: string): string[] {
 }
 
 /**
- * The model file at `url` as the run compiled it, stripped once per run;
- * undefined when that file cannot be read.
+ * The model file at `url` as the run compiled it, lexed once per run;
+ * undefined when that file cannot be read or lexed.
  */
 export function modelCode(url: string): ModelCode | undefined {
    let filePath: string;
@@ -84,9 +86,12 @@ export function modelCode(url: string): ModelCode | undefined {
       lineStarts.push(at);
       at += line.length + 1;
    }
+   const tokens = lexAll(text);
+   if (!tokens) return undefined;
    const model = {
       text,
-      code: stripMalloyCommentsAndLiterals(text),
+      tokens,
+      statementKeywords: new Set(statementStarts(tokens)),
       lineStarts,
    };
    store?.code.set(filePath, model);

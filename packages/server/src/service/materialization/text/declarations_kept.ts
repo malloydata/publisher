@@ -9,7 +9,7 @@
  *
  * Read by the chained `storage=` build's text (the served copy's
  * `chainBuildFiles`), which compiles a downstream over its stored upstreams
- * in their destination alone. Blanking replaces each character with a space
+ * in their destination alone. Blanking replaces each code point with a space
  * and keeps every line break, so a position the compiler reported in the
  * author's file (a declaration's range, which the re-root rewriter edits by)
  * holds in the result. Imports, `##!` flags, `type:` and `given:` statements
@@ -73,9 +73,7 @@ export function keepDeclarations(
          tokens[index - 1]?.end ?? 0,
          start,
       );
-      for (let c = from; c < to; c++) {
-         if (chars[c] !== "\n") chars[c] = " ";
-      }
+      blank(chars, from, to);
    }
    return chars.join("");
 }
@@ -107,8 +105,23 @@ export function leaveOutDefinitionAt(
       return undefined;
    }
    const chars = text.split("");
-   for (let c = cut.start; c < cut.end; c++) {
-      if (chars[c] !== "\n") chars[c] = " ";
-   }
+   blank(chars, cut.start, cut.end);
    return chars.join("");
+}
+
+/**
+ * Blanks `chars[from..to)` in place, one space per code point (Malloy counts
+ * columns in code points, so a `#|` opener later on the line stays where its
+ * closer expects it), keeping every line break.
+ */
+function blank(chars: string[], from: number, to: number): void {
+   for (let c = from; c < to; c++) {
+      if (chars[c] === "\n") continue;
+      const high = chars[c]!.charCodeAt(0);
+      const low = c + 1 < to ? chars[c + 1]!.charCodeAt(0) : 0;
+      const pair =
+         high >= 0xd800 && high <= 0xdbff && low >= 0xdc00 && low <= 0xdfff;
+      chars[c] = " ";
+      if (pair) chars[++c] = "";
+   }
 }

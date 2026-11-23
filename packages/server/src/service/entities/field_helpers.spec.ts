@@ -466,6 +466,46 @@ SOURCE: shouted is duckdb.sql("select 1 as a")
       assert.deepStrictEqual(notes.shouted, ["#(doc) smile 😀😀"]);
    });
 
+   test("keeps a note whose reported end is skewed by emoji earlier in the file", async () => {
+      const notes = await direct(`
+#(doc) ${"🚀".repeat(20)}
+source: earlier is duckdb.sql("select 1 as a")
+
+#(agent-hidden)
+source: later is duckdb.sql("select 1 as a")
+
+source: p is duckdb.sql("select 1 as a") extend {
+  #(doc) J
+  join_cross: j is earlier extend {}
+}
+
+source:
+  #(agent-hidden)
+  per_def is duckdb.sql("select 1 as a")
+`);
+      assert.deepStrictEqual(notes.later, ["#(agent-hidden)"]);
+      assert.deepStrictEqual(notes["p.j"], ["#(doc) J"]);
+      assert.deepStrictEqual(notes.per_def, ["#(agent-hidden)"]);
+   });
+
+   test("gives a note on a statement to definitions written without commas", async () => {
+      const notes = await direct(`
+source: base is duckdb.sql("select 1 as a")
+
+#(agent-hidden)
+source: c1 is base c2 is base extend {}
+
+#(doc) Lines
+source:
+  l1 is base
+  l2 is base extend {}
+`);
+      assert.deepStrictEqual(notes.c1, ["#(agent-hidden)"]);
+      assert.deepStrictEqual(notes.c2, ["#(agent-hidden)"]);
+      assert.deepStrictEqual(notes.l1, ["#(doc) Lines"]);
+      assert.deepStrictEqual(notes.l2, ["#(doc) Lines"]);
+   });
+
    test("keeps a join's own notes across a blank line, never its base's", async () => {
       const notes = await direct(`
 #(authorize) false
@@ -557,8 +597,8 @@ source:
       assert.deepStrictEqual(notes.m3, ["#(doc) Shared"]);
    });
 
-   test("strips each file once, not once per note", async () => {
-      const strip = spyOn(lexerCore, "stripMalloyCommentsAndLiterals");
+   test("lexes each file once, not once per source or note", async () => {
+      const lex = spyOn(lexerCore, "lexAll");
       try {
          const children = Array.from(
             { length: 200 },
@@ -572,9 +612,9 @@ source: base is duckdb.sql("select 1 as a")
 ${children}
 `);
          assert.deepStrictEqual(notes.s199, []);
-         assert.strictEqual(strip.mock.calls.length, 1);
+         assert.strictEqual(lex.mock.calls.length, 1);
       } finally {
-         strip.mockRestore();
+         lex.mockRestore();
       }
    });
 });

@@ -185,6 +185,16 @@ source: b is wh.table('b')
       expect(kept).toContain("##! experimental.persistence\nsource: b");
    });
 
+   it("keeps a kept block's opener at its column when an emoji before it on its line is blanked", () => {
+      const opener = "source: a is wh.table('😀') #|(doc)";
+      const column = [...opener].indexOf("#");
+      const text = `${opener}\nb's doc\n${" ".repeat(column)}|#\nsource: b is wh.table('b')\n`;
+      const kept = keepDeclarations(text, [at(text, "b is")])!;
+      const line = kept.split("\n")[0]!;
+      expect([...line].indexOf("#")).toBe(column);
+      expect(kept).toContain("source: b is");
+   });
+
    it("is undefined for text that does not lex", () => {
       expect(keepDeclarations("source: a is b extend {", [])).toBeUndefined();
    });

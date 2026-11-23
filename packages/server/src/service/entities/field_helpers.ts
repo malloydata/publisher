@@ -11,6 +11,7 @@ import {
    type ModelCode,
 } from "./model_text";
 import { motlyTag } from "../motly";
+import { statementHead } from "../malloy_lexer_core";
 import type {
    AtomicField,
    Explore,
@@ -242,64 +243,50 @@ const DEFINING_KEYWORDS = new Set([
    "join_many",
    "join_cross",
 ]);
-const ACCESS_LABELS = new Set(["public", "private", "internal"]);
 
 /**
- * Where a note Malloy attached to the definition at `at` must lie to be its
- * own, as half-open offset spans of `model`: the run of trivia (spaces,
- * comments, annotations) and its statement's keyword just above it, and for a
- * later definition of a statement (after a `,`), the trivia above that
- * statement's keyword too. A note copied from a base lies above the base's
- * declaration, outside them.
+ * Where a note Malloy attached to the definition at offset `at` must start to
+ * be its own, as half-open offset spans of `model`: the trivia (spaces,
+ * comments, annotations) between the token before it and `at`, which for a
+ * statement's first definition runs back past its `[label] keyword:`; and for
+ * a later definition (after a `,` or not), the trivia above that statement's
+ * head too. A note copied from a base starts above the base's declaration,
+ * outside them.
  */
 const ownNoteSpans = (model: ModelCode, at: number): [number, number][] => {
-   const { text, code } = model;
-   const trivia = (i: number) => /\s/.test(code[i]!) || code[i] !== text[i];
-   const skipTrivia = (i: number) => {
-      while (i > 0 && trivia(i - 1)) i--;
-      return i;
-   };
-   const wordBefore = (i: number) => {
-      let s = i;
-      while (s > 0 && /\w/.test(code[s - 1]!)) s--;
-      return { start: s, word: code.slice(s, i).toLowerCase() };
-   };
-   // The statement head whose `keyword:` ends just before `colonEnd`, with its label.
-   const headAt = (colonEnd: number): number | undefined => {
-      const colon = colonEnd - 1;
-      if (code[colon] !== ":" || code[colon - 1] === ":") return undefined;
-      const keyword = wordBefore(skipTrivia(colon));
-      if (!DEFINING_KEYWORDS.has(keyword.word)) return undefined;
-      const label = wordBefore(skipTrivia(keyword.start));
-      return ACCESS_LABELS.has(label.word) ? label.start : keyword.start;
-   };
-   const before = skipTrivia(at);
-   const head = headAt(before);
-   if (head !== undefined) return [[skipTrivia(head), at]];
-   if (code[before - 1] !== ",") return [[before, at]];
-   // A later definition: its own notes after the comma, and the statement's.
-   let depth = 0;
-   for (let i = before - 1; i > 0; i--) {
-      const c = code[i]!;
-      if (c === ")" || c === "]" || c === "}") depth++;
-      else if (c === "(" || c === "[" || c === "{") depth--;
-      if (depth < 0) break;
-      if (depth === 0 && c === ":" && code[i + 1] !== ":") {
-         const statement = headAt(i + 1);
-         if (statement !== undefined) {
-            return [
-               [before, at],
-               [skipTrivia(statement), statement],
-            ];
-         }
-      }
+   const { tokens, statementKeywords } = model;
+   // The first token at or after `at`.
+   let k = 0;
+   for (let hi = tokens.length; k < hi; ) {
+      const mid = (k + hi) >> 1;
+      if (tokens[mid]!.start < at) k = mid + 1;
+      else hi = mid;
    }
-   return [[before, at]];
+   const endBefore = (i: number) => tokens[i - 1]?.end ?? 0;
+   const own: [number, number] = [endBefore(k), at];
+   // The nearest statement keyword before it at its depth, inside its block.
+   const depth = tokens[k]?.depth ?? 0;
+   let j = k - 1;
+   while (j >= 0 && !(statementKeywords.has(j) && tokens[j]!.depth === depth)) {
+      if (tokens[j]!.depth < depth) return [own];
+      j--;
+   }
+   if (j < 0 || !DEFINING_KEYWORDS.has(tokens[j]!.text.toLowerCase())) {
+      return [own];
+   }
+   const head = statementHead(tokens, j);
+   const headIndex = head === tokens[j] ? j : j - 1;
+   const statement: [number, number] = [endBefore(headIndex), head.start];
+   // Its first definition: the statement's trivia, keyword and its own notes.
+   if (k === j + 2) return [[statement[0], at]];
+   return [own, statement];
 };
 
 /**
  * Whether each same-file note is the explore's own, read from the text the
- * model compiled from; undefined when that text can't be read.
+ * model compiled from; undefined when that text can't be read. Read by where
+ * a note starts: Malloy's reported end skews with astral characters earlier
+ * in the file.
  */
 const ownNoteTest = (
    exploreLoc: MalloyDocLocation,
@@ -307,14 +294,13 @@ const ownNoteTest = (
    const model = exploreLoc.url ? modelCode(exploreLoc.url) : undefined;
    if (!model) return undefined;
    const at = modelOffset(model, exploreLoc.range?.start);
-   const end = modelOffset(model, exploreLoc.range?.end);
-   if (at === undefined || end === undefined) return undefined;
-   const spans = [...ownNoteSpans(model, at), [at, end] as [number, number]];
+   if (at === undefined) return undefined;
+   const spans = ownNoteSpans(model, at);
    return (note) => {
       const from = modelOffset(model, note.at?.range?.start);
-      const to = modelOffset(model, note.at?.range?.end);
-      if (from === undefined || to === undefined) return false;
-      return spans.some(([s, e]) => from >= s && to <= e);
+      if (from === undefined) return false;
+      // Inside its own declaration, or in the trivia that tags it.
+      return from >= at || spans.some(([s, e]) => from >= s && from < e);
    };
 };
 
@@ -449,6 +435,8 @@ const filterDirectlyDeclaredNotes = (
       return sameFileNotes.filter((n) => !n.at?.range || own(n));
    }
 
+   // Fallback for a file the run can't read: coarser than the text rule (it
+   // drops a note past a blank line, or on a statement's later definition).
    // Map each line to the notes that occupy it, so we can walk upward from
    // the `source:` keyword while every intervening line is an annotation.
    const lineToNotes = new Map<number, MalloyNote[]>();
