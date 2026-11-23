@@ -13,6 +13,12 @@
  * table came last): each compares the name under every collation a table
  * read holds it under, and fails closed when they differ. Postgres under
  * `C` and an ICU collation; DuckDB under binary and `NOCASE`.
+ *
+ * Under lookup admission the same tables, and a gated source beside them,
+ * are judged with no catalog read, no extra compile and no walk of the IR
+ * per query: what each source compares under was read at the bind, and
+ * what each stored table holds was recorded by its build. Under probe
+ * admission the same queries read the warehouse.
  */
 
 import { PostgresConnection } from "@malloydata/db-postgres";
@@ -38,6 +44,11 @@ import {
    expectNoDrift,
 } from "../../src/test_helpers/admission_parity";
 import { freshLoadPool } from "../../src/test_helpers/conformance/package_runner";
+import {
+   type MetricsHarness,
+   startMetricsHarness,
+} from "../../src/test_helpers/metrics_harness";
+import { resetMaterializationTelemetryForTesting } from "../../src/materialization_metrics";
 import { serviceOverEnvironment } from "../../src/test_helpers/materialization_service_harness";
 import { installSettings } from "../../src/test_helpers/settings_env";
 import { writePackageFiles } from "../../src/test_helpers/temp_package";
@@ -151,12 +162,13 @@ async function build(f: Fixture): Promise<Materialization> {
 async function ask(
    f: Fixture,
    query: string,
+   givens?: Record<string, unknown>,
 ): Promise<{ rows: unknown; kind?: string }> {
    const result = await f.pkg
       .getModel("m.malloy")!
       .runQuery(
          unrecordedAudit(),
-         { query } as never,
+         { query, ...(givens ? { givens } : {}) } as never,
          QueryPrivileges.of({ includeHiddenFilesAndSources: true }),
       );
    return {
@@ -279,4 +291,105 @@ for (const tier of tiers) {
          expect(served["the entry alone"].kind).toBe("materialized");
       });
    });
+}
+
+/** {@link model}, with a gated source over a stored table beside it. */
+const gatedModel = (collateA: string, collateB: string) =>
+   model(collateA, collateB).replace(
+      "##! experimental { persistence }",
+      "##! experimental { givens persistence access_modifiers }\ngiven: NAME :: string",
+   ) +
+   `
+#(access_filter) name = $NAME
+#(materialize) name="sn_g"
+source: g_tab is warehouse.sql("""
+  SELECT id, CAST(name AS VARCHAR) ${collateA} AS name FROM (VALUES
+    (1, 'b'), (2, 'B'), (3, 'a'), (4, 'b')
+  ) AS t(id, name)
+""") extend { primary_key: id }
+`;
+
+const GATED: [string, Record<string, unknown> | undefined][] = [
+   ...Object.values(QUERIES).map((q) => [q, undefined] as [string, undefined]),
+   [
+      "run: g_tab -> { group_by: name; aggregate: c is count(); order_by: name }",
+      { NAME: "b" },
+   ],
+   ["run: g_tab -> { where: id > 1; select: id; order_by: id }", { NAME: "B" }],
+];
+
+for (const tier of tiers) {
+   for (const mode of ["lookup", "probe"] as const) {
+      describe(`${mode} admission over stored database tables (${tier.label})`, () => {
+         let restore: () => void;
+         let f: Fixture;
+         let drop: (() => Promise<void>) | undefined;
+         let metrics: MetricsHarness;
+         const live: unknown[] = [];
+         const served: { rows: unknown; kind?: string }[] = [];
+         beforeAll(async () => {
+            restore = installSettings({
+               env: {
+                  PUBLISHER_MATERIALIZE: "true",
+                  PUBLISHER_MATERIALIZE_GATED_SOURCES: "true",
+                  PERSIST_STORAGE_MODE: "off",
+                  PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: "true",
+                  PUBLISHER_ADMISSION_MODE: mode,
+               },
+            }).restore;
+            await freshLoadPool();
+            const w = await tier.warehouse();
+            drop = w.drop;
+            f = await fixture(
+               w.config,
+               gatedModel(tier.collateA, tier.collateB),
+            );
+            for (const [q, g] of GATED) live.push((await ask(f, q, g)).rows);
+            const run = await build(f);
+            expect(run.status).toBe("MANIFEST_FILE_READY");
+            metrics = await startMetricsHarness();
+            resetMaterializationTelemetryForTesting();
+            for (const [q, g] of GATED) served.push(await ask(f, q, g));
+         }, 300_000);
+         afterAll(async () => {
+            await metrics?.shutdown();
+            resetMaterializationTelemetryForTesting();
+            await f?.cleanup();
+            await drop?.();
+            restore();
+            await freshLoadPool();
+         });
+
+         it("answers every query as live does, the gated source from its table", () => {
+            expect(served.map((s) => s.rows)).toEqual(live);
+            expect(served.at(-1)?.kind).toBe("materialized");
+         });
+
+         it(
+            mode === "lookup"
+               ? "reads no catalog, compiles nothing extra and walks nothing to judge them"
+               : "reads the warehouse to judge them",
+            async () => {
+               const reads = await metrics.collectCounter(
+                  "publisher_query_catalog_reads_total",
+               );
+               const compiles = await metrics.collectCounter(
+                  "publisher_query_probe_compiles_total",
+               );
+               const walks = await metrics.collectCounter(
+                  "publisher_query_walks_total",
+               );
+               if (mode === "lookup") {
+                  expect({ reads, compiles, walks }).toEqual({
+                     reads: 0,
+                     compiles: 0,
+                     walks: 0,
+                  });
+               } else {
+                  expect(reads + compiles).toBeGreaterThan(0);
+               }
+            },
+         );
+      });
+   }
 }

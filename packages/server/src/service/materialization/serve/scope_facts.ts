@@ -9,7 +9,9 @@
  * - what the source's entry-point gates and row scope read
  *   (`gateReadsOfSource`), for each set of stored sources an answer can
  *   read: the served copy's lane (the sources it re-roots), each bound table
- *   alone, and none;
+ *   alone, and none; each bound table alone also under the lane's re-rooted
+ *   sources, as a served copy answer that reads only that table is looked
+ *   up;
  * - whether the source carries an `#(authorize)` or `#(access_filter)` gate
  *   anywhere beneath it (the source's half of `queryReadsAccess`);
  * - whether its entry point reads a row filter declared on a composite.
@@ -119,9 +121,14 @@ export function recordScopeFacts(
       }
       reads.set(readsKey(name, empty, empty), none);
       for (const set of storedSets) {
-         const key = readsKey(name, set, empty);
-         if (!reads.has(key)) {
-            reads.set(key, gateReadsOfSource(struct, modelDef, set, empty));
+         for (const rerooted of lane ? [empty, lane.rerooted] : [empty]) {
+            const key = readsKey(name, set, rerooted);
+            if (!reads.has(key)) {
+               reads.set(
+                  key,
+                  gateReadsOfSource(struct, modelDef, set, rerooted),
+               );
+            }
          }
       }
       if (lane) {
