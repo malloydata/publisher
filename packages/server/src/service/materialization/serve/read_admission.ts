@@ -209,16 +209,17 @@ export class ReadAdmission {
    /**
     * What the gates and row scope read, given the tables an answer read and
     * the sources its compile re-rooted on their tables (see
-    * `gateReadsOfQuery`).
+    * `gateReadsOfQuery`). Looked up under the answer's own two sets, never
+    * the served copy's lane's: an answer that re-roots what the lane does
+    * may still read other stored tables, and a stored source's build
+    * decides what of its scope is left to judge.
     */
    private gateReadsFor(
       tables: readonly TableRead[],
       onTables: ReadonlySet<string> = new Set(),
-      /** The served copy's answer: its lane's recorded reads apply. */
-      lane = false,
    ): Promise<GateReads | undefined> {
       const stored = storedSourceIDs(tables);
-      const key = [[...stored].sort(), [...onTables].sort(), lane].join("\n\n");
+      const key = [[...stored].sort(), [...onTables].sort()].join("\n\n");
       let r = this.reads.get(key);
       if (r === undefined) {
          r = this.fact(
@@ -229,16 +230,7 @@ export class ReadAdmission {
                if (facts === undefined || name === undefined) {
                   return "unrecorded";
                }
-               return lane &&
-                  facts.lane !== undefined &&
-                  sameSet(onTables, facts.lane.rerooted)
-                  ? recordedReads(
-                       facts,
-                       name,
-                       facts.lane.stored,
-                       facts.lane.rerooted,
-                    )
-                  : recordedReads(facts, name, stored, onTables);
+               return recordedReads(facts, name, stored, onTables);
             },
             () => gateReadsOfQuery(this.query.authorRunnable, stored, onTables),
             showReads,
@@ -384,8 +376,7 @@ export class ReadAdmission {
       // The served copy reads each source it re-rooted from its table, so a
       // join to one never re-applies that source's own query.
       const rerooted = leg === "served" ? answer.rerootedSourceIDs : undefined;
-      const scopeReads = () =>
-         this.gateReadsFor(read, rerooted, leg === "served");
+      const scopeReads = () => this.gateReadsFor(read, rerooted);
       // Only the served copy and a rollup re-apply a row scope, and only
       // past a gate is the scope's reads needed otherwise; both read through
       // the one memo.
@@ -620,11 +611,6 @@ export class ReadAdmission {
 interface EntryRef {
    readonly name: string | undefined;
    readonly sqlTarget: string | undefined;
-}
-
-/** Whether two sets hold the same members. */
-function sameSet(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
-   return a.size === b.size && [...a].every((x) => b.has(x));
 }
 
 /** The leg's own decline for an answer admission declined. */
