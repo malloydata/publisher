@@ -26,7 +26,7 @@
  * Effects: logs, and the bind metrics.
  */
 
-import { parseContract } from "./domain/column_contract";
+import { type ColumnContract, parseContract } from "./domain/column_contract";
 import type { Connection, MalloyConfig } from "@malloydata/malloy";
 import { components } from "../../api";
 import type {
@@ -730,9 +730,40 @@ export class PackageMaterialization {
               ),
          plan.withdrawn,
          plan.compilerKeys,
+         this.servedContracts(bindings, entries),
       );
       this.snapshotMemo = { key, snapshot, signature };
       return snapshot;
+   }
+
+   /**
+    * Each served table's column contract, by content address: a `storage=`
+    * binding's from its entry, a database table's from its entry. Every one
+    * served has one (a table without is never bound).
+    */
+   private servedContracts(
+      bindings: readonly Binding[],
+      entries: Readonly<FreshnessManifest>,
+   ): Map<string, ColumnContract> {
+      const out = new Map<string, ColumnContract>();
+      const keep = (id: string, raw: unknown) => {
+         if (out.has(id)) return;
+         const contract = parseContract(raw);
+         if (contract) out.set(id, contract);
+      };
+      for (const b of bindings) {
+         keep(
+            b.virtualHandle,
+            (b.tier === "storage"
+               ? this.storageEntries[b.virtualHandle]
+               : (entries[b.virtualHandle] ??
+                 this.databaseEntries?.[b.virtualHandle])
+            )?.contract,
+         );
+      }
+      for (const [id, entry] of Object.entries(entries))
+         keep(id, entry.contract);
+      return out;
    }
 
    /**

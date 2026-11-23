@@ -36,6 +36,7 @@ import type {
    ManifestEntry,
 } from "./types";
 import type { UpstreamTableSchema } from "./upstream_schemas";
+import type { ColumnContract } from "./column_contract";
 
 /** What a stored table holds, from the plan: never read off a name. */
 export type BindingKind = Exclude<TableKind, "pair">;
@@ -218,6 +219,12 @@ export interface Snapshot {
     * files a manifest handed to Malloy under.
     */
    readonly compilerKeys?: Readonly<Record<string, string>>;
+   /**
+    * Each served table's column contract, as its build recorded it and the
+    * bind held its table to, by content address: what read admission looks
+    * a stored column's collation up in (`serve/admission_lookup.ts`).
+    */
+   readonly contracts?: ReadonlyMap<string, ColumnContract>;
 }
 
 /**
@@ -229,6 +236,7 @@ export function makeSnapshot(
    entries: Readonly<FreshnessManifest> = {},
    withdrawn?: ReadonlySet<string>,
    compilerKeys?: Readonly<Record<string, string>>,
+   contracts?: ReadonlyMap<string, ColumnContract>,
 ): Snapshot {
    return Object.freeze({
       bindings,
@@ -237,6 +245,7 @@ export function makeSnapshot(
       ...(compilerKeys && Object.keys(compilerKeys).length > 0
          ? { compilerKeys }
          : {}),
+      ...(contracts && contracts.size > 0 ? { contracts } : {}),
    });
 }
 
