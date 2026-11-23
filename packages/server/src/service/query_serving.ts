@@ -20,11 +20,17 @@
  */
 
 import type { ModelDef, QueryMaterializer } from "@malloydata/malloy";
-import { gateSwitches, getPersistStorageMode } from "../config";
+import {
+   gateSwitches,
+   getAdmissionMode,
+   getPersistStorageMode,
+} from "../config";
 import {
    type CollationProbe,
    collationProbe,
+   lookupProbe,
    ReadAdmission,
+   shadowProbe,
 } from "./materialization/serve/read_admission";
 import { logger } from "../logger";
 import { SourceMap, sourceChain } from "./materialization/text/source_map";
@@ -135,7 +141,7 @@ export function variantsOf(
    const admission = new ReadAdmission(
       facts,
       gateSwitches(),
-      args.probe ?? collationProbe,
+      args.probe ?? admissionProbe(),
       pinned.snapshot,
    );
    return legs.map((leg) => ({
@@ -175,6 +181,23 @@ export function variantsOf(
       onSkip: (err) => logSkip(leg.kind, args.modelPath, err),
    }));
 }
+
+/**
+ * The collation port `materialize.admissionMode` picks, read once per query:
+ * the probes, the lookups, or both in shadow, the probes deciding.
+ */
+function admissionProbe(): CollationProbe {
+   switch (getAdmissionMode()) {
+      case "lookup":
+         return lookupProbe;
+      case "shadow":
+         return SHADOW_PROBE;
+      default:
+         return collationProbe;
+   }
+}
+
+const SHADOW_PROBE = shadowProbe(collationProbe, lookupProbe);
 
 /** The answer the router's decision describes, before anything runs. */
 export function answerOf(route: RouteDecision<LegAnswer>): Answer {

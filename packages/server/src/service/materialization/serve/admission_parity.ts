@@ -30,12 +30,18 @@ import type { CollationProbe, ProbedTable } from "./gate_reads_types";
  *   inputs cannot prove (no `upstreamSchemas`, as a host's manifest carries
  *   none) and the build's contract does;
  * - `bigquery_ttl`: a BigQuery catalog the probe re-read and the load did
- *   not.
+ *   not;
+ * - `destination_default_unrecorded`: TEMPORARY, until PR B records a
+ *   destination's `default_collation` in the contract and checks it at bind
+ *   (`compatible()` then reports `collation_changed`). A destination whose
+ *   session default is set after the build is refused by the probe and
+ *   admitted by the lookup. Remove it once that lands.
  */
 export type ParityAllowance =
    | "bind_detects_alter"
    | "r10_binary64_orchestrated"
-   | "bigquery_ttl";
+   | "bigquery_ttl"
+   | "destination_default_unrecorded";
 
 /** One disagreement shadow admission found. */
 export interface ParityDrift {
@@ -81,6 +87,20 @@ export async function withParityAllowance<T>(
    } finally {
       allowances.splice(allowances.lastIndexOf(allowance), 1);
    }
+}
+
+/**
+ * Mark every disagreement from now until the returned release as
+ * `allowance`: a spec's `beforeAll` and `afterAll` around a block of cases.
+ */
+export function holdParityAllowance(allowance: ParityAllowance): () => void {
+   allowances.push(allowance);
+   let held = true;
+   return () => {
+      if (!held) return;
+      held = false;
+      allowances.splice(allowances.lastIndexOf(allowance), 1);
+   };
 }
 
 function record(drift: Omit<ParityDrift, "allowed">): void {

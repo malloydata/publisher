@@ -265,6 +265,8 @@ interface RollupAnswer {
     * definition (its collation) reads that table.
     */
    databaseTablePath?: string;
+   /** For a database rollup: its table's content address (its contract's key). */
+   databaseTableId?: string;
    /**
     * For a database rollup whose address is not Malloy's key for it: the run
     * that answers reads its entry under that key too.
@@ -1100,6 +1102,9 @@ export class RollupVariantServe {
          rollupSourceName: plan.rollupSourceName,
          rollupBaseSourceID: plan.baseSourceID,
          databaseTablePath: databaseTable,
+         ...(table.sourceEntityId !== undefined
+            ? { databaseTableId: table.sourceEntityId }
+            : {}),
          ...(table.keyedTable ? { keyedTable: table.keyedTable } : {}),
          ...(await this.joinGraft(q, runnable, variant)),
       };
@@ -1507,7 +1512,10 @@ export class RollupVariantServe {
          ...(table.virtualMap ? { virtualMap: table.virtualMap } : {}),
          ...(table.binding ? { binding: table.binding } : {}),
          ...(!table.virtualMap && databaseTable
-            ? { databaseTablePath: databaseTable }
+            ? {
+                 databaseTablePath: databaseTable,
+                 databaseTableId: table.sourceEntityId,
+              }
             : {}),
          ...(!table.virtualMap && table.keyedTable
             ? { keyedTable: table.keyedTable }

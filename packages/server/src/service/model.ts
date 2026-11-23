@@ -8,6 +8,7 @@ import {
    MalloyConfig,
    MalloyError,
    Annotations,
+   type Connection,
    ModelDef,
    ModelMaterializer,
    QueryMaterializer,
@@ -216,6 +217,14 @@ import {
 } from "./model_policy";
 import { QueryPrivileges, type QueryRequest } from "./model_query_request";
 import { annotationNearMisses, authoredNotes } from "./annotation_near_miss";
+import {
+   readStringCapabilities,
+   recordStringCapabilities,
+} from "./materialization";
+import {
+   type ColumnContract,
+   parseContract,
+} from "./materialization/domain/column_contract";
 import { type AnnotationFinding } from "./annotation_reader";
 export { QueryPrivileges } from "./model_query_request";
 export type { QueryRequest } from "./model_query_request";
@@ -355,6 +364,8 @@ export class Model {
    private bindingsOverride:
       | { bindings: readonly Binding[]; over?: Snapshot; snapshot?: Snapshot }
       | undefined;
+   /** The contracts of the tables set directly ({@link setServeBindings}). */
+   private contractsOverride: ReadonlyMap<string, ColumnContract> | undefined;
    /** {@link storageTables}, for the snapshot bindings it was read from. */
    private storageTablesMemo:
       | {
@@ -2921,7 +2932,23 @@ export class Model {
       if (!override) return pkg;
       if (override.over !== pkg || !override.snapshot) {
          override.over = pkg;
-         override.snapshot = makeSnapshot(override.bindings, pkg.entries);
+         // Each table's contract: the package's, the database entries',
+         // and those set beside the bindings.
+         const contracts = new Map(pkg.contracts ?? []);
+         for (const [id, entry] of Object.entries(pkg.entries)) {
+            const contract = parseContract(entry.contract);
+            if (contract && !contracts.has(id)) contracts.set(id, contract);
+         }
+         for (const [id, c] of this.contractsOverride ?? []) {
+            contracts.set(id, c);
+         }
+         override.snapshot = makeSnapshot(
+            override.bindings,
+            pkg.entries,
+            undefined,
+            undefined,
+            contracts,
+         );
       }
       return override.snapshot;
    }
@@ -3074,7 +3101,51 @@ export class Model {
     * compile.
     */
    public async prepareServedCopy(): Promise<void> {
+      await this.refreshStringCapabilities();
       await this.prepareServedCopyOver(this.servingSnapshot());
+   }
+
+   /**
+    * Read how each of this model's sources compares its strings live, and
+    * keep it with the model's runtime, for read admission's lookups
+    * (`serve/source_capability.ts`). Every bind commit calls it, so a
+    * collation altered in the warehouse is seen at the next bind. Never
+    * throws; a model with no compile reads nothing.
+    */
+   public async refreshStringCapabilities(): Promise<void> {
+      const load = this.authorQueryLoader();
+      const modelDef = this.modelDef;
+      const runtime = (
+         this.modelMaterializer as unknown as
+            | {
+                 runtime?: {
+                    connections: {
+                       lookupConnection(name?: string): Promise<Connection>;
+                    };
+                 };
+              }
+            | undefined
+      )?.runtime;
+      if (!load || !modelDef || !runtime) return;
+      try {
+         recordStringCapabilities(
+            runtime,
+            await readStringCapabilities({
+               modelDef,
+               load,
+               connection: (name) => runtime.connections.lookupConnection(name),
+               givens: placeholderGivens(this.givens),
+            }),
+         );
+      } catch (err) {
+         logger.warn(
+            "Could not read how this model's sources compare strings",
+            {
+               modelPath: this.modelPath,
+               error: err instanceof Error ? err.message : String(err),
+            },
+         );
+      }
    }
 
    /**
@@ -3189,8 +3260,13 @@ export class Model {
     * package, as a test or a tool drives one. A copy is taken, so a caller
     * that edits a binding and sets it again compiles over the edit.
     */
-   public setServeBindings(bindings: readonly Binding[]): void {
+   public setServeBindings(
+      bindings: readonly Binding[],
+      /** Their tables' column contracts, by content address; kept when absent. */
+      contracts?: ReadonlyMap<string, ColumnContract>,
+   ): void {
       this.bindingsOverride = { bindings: Object.freeze([...bindings]) };
+      if (contracts) this.contractsOverride = contracts;
    }
 
    /**

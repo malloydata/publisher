@@ -16,6 +16,7 @@ import {
 
 export {
    clearParityDrifts,
+   holdParityAllowance,
    withParityAllowance,
 } from "../service/materialization/serve/admission_parity";
 

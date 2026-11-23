@@ -28,6 +28,11 @@ import {
 } from "./gate_collation";
 import type { GateReads } from "./gate_reads_types";
 import { resultReadsOfQuery } from "./result_reads";
+import { lookupSourceRefusal } from "./admission_lookup";
+import {
+   readStringCapabilities,
+   recordStringCapabilities,
+} from "./source_capability";
 
 /** What the stub's catalog answers. */
 interface Catalog {
@@ -224,6 +229,26 @@ async function refusal(
    const why = await stringGateCollationRefusal({
       authorRunnable: runnable(connection, query),
       reads: STRING_READS,
+   });
+   // The lookup, over what a bind records of the same catalog, agrees.
+   const recorded = stubBigQuery(catalog).connection;
+   const runtime = new SingleConnectionRuntime({ connection: recorded });
+   const materializer = runtime.loadModel(MODEL);
+   recordStringCapabilities(
+      runtime,
+      await readStringCapabilities({
+         modelDef: (await materializer.getModel())._modelDef,
+         load: (q) => materializer.loadQuery(q),
+         connection: async () => recorded,
+      }),
+   );
+   const looked = await lookupSourceRefusal({
+      authorRunnable: materializer.loadQuery(query),
+      reads: STRING_READS,
+   });
+   expect({ query, lookupRefuses: looked !== undefined }).toEqual({
+      query,
+      lookupRefuses: why !== undefined,
    });
    return { why, sent, regions };
 }

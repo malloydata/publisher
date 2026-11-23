@@ -33,7 +33,17 @@ import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
 import { installSettings } from "../../test_helpers/settings_env";
 import { routeQuery } from "../query_router";
 import { variantsOf } from "../query_serving";
-import { type Binding, EMPTY_SNAPSHOT, pin } from "./domain/binding";
+import {
+   type Binding,
+   EMPTY_SNAPSHOT,
+   makeSnapshot,
+   pin,
+} from "./domain/binding";
+import type { ColumnContract } from "./domain/column_contract";
+import {
+   readStringCapabilities,
+   recordStringCapabilities,
+} from "./serve/source_capability";
 import {
    admitRead,
    keepsGatesWhenReadExact,
@@ -127,6 +137,17 @@ beforeAll(async () => {
          await connection.runSQL("SET default_collation = 'nocase'");
       }
       authors[collation] = new SingleConnectionRuntime({ connection });
+      // What a bind reads for the model, for the lookups (shadow and lookup
+      // admission).
+      const materializer = authors[collation].loadModel(MODEL);
+      recordStringCapabilities(
+         authors[collation],
+         await readStringCapabilities({
+            modelDef: (await materializer.getModel())._modelDef,
+            load: (q) => materializer.loadQuery(q),
+            connection: async () => connection,
+         }),
+      );
    }
 });
 afterAll(async () => {
@@ -187,6 +208,33 @@ function storedRuntime(collation: "binary" | "nocase"): unknown {
       }),
    };
    return { connections: { lookupConnection: async () => connection } };
+}
+
+/** The tables' contracts, their strings stored as `storedCollation`. */
+function contractsOf(args: {
+   tables: Binding[];
+   storedCollation?: "binary" | "nocase";
+}): Map<string, ColumnContract> {
+   const collation =
+      (args.storedCollation ?? "binary") === "binary"
+         ? "binary"
+         : "duckdb:nocase";
+   return new Map(
+      args.tables.map((t) => [
+         t.virtualHandle,
+         {
+            v: 1,
+            dialect: "duckdb",
+            columns: SCHEMA.map((c) => ({
+               name: c.name,
+               nativeType: c.type,
+               collation: c.type === "VARCHAR" ? collation : null,
+               compare: "exact" as const,
+               gateExact: true,
+            })),
+         },
+      ]),
+   );
 }
 
 // ---------------------------------------------------------------------------
@@ -266,7 +314,12 @@ async function routed(args: {
    /** The collation probe port; the real one when absent. */
    probe?: CollationProbe;
 }): Promise<string> {
-   const pinned = pin(EMPTY_SNAPSHOT, new Date(0));
+   // Each stored table's contract, as its build would record its strings:
+   // byte-wise, or under the stored side's collation.
+   const pinned = pin(
+      makeSnapshot([], {}, undefined, undefined, contractsOf(args)),
+      new Date(0),
+   );
    const authorRunnable = authorOf(
       SHAPES[args.shape],
       args.authorCollation,

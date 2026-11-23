@@ -964,6 +964,15 @@ export class PackageMaterialization {
       try {
          change();
          const next = this.snapshot();
+         // How each model's sources compare strings, read again on every
+         // commit that serves a table: read admission looks it up per query.
+         if (next.bindings.length > 0 || Object.keys(next.entries).length > 0) {
+            await Promise.all(
+               [...this.owner.models().values()].map((model) =>
+                  model.refreshStringCapabilities(),
+               ),
+            );
+         }
          if (next.bindings !== this.publishedBindings || models) {
             this.publishedBindings = next.bindings;
             await Promise.all(

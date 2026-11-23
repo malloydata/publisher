@@ -27,6 +27,8 @@ Two consequences worth knowing. A section merged to `main` ships in the **next**
 
 **Changed: every bind that serves a table reads how each source of each model compares its strings,** once per bind rather than per query: on Postgres, one compile per source and one catalog statement per hundred string fields (through joins, four deep); on DuckDB, the instance's `default_collation` and its `COLLATE` definitions; on BigQuery, the catalog of every table a source reads. Lookup and shadow admission read it.
 
+**Added: lookup admission.** Under `lookup` (and the lookup half of `shadow`), a query judges the source side from what the bind read, and the stored side from each table's column contract, which its build recorded and every bind holds the table to. It makes no catalog read and no extra compile. A collation altered on a stored table after the bind is seen at the next bind, not on the next answer.
+
 **Fixed: the served copy no longer remembers, for every caller of a query, a decline that one caller's givens caused.** It remembers a query's declines by its text, without the givens. When the author's compile of a query failed with one caller's givens (one required and missing, say), its result-shape check declined and the decline was remembered, so later callers whose givens compile were answered live too. That decline now applies to that caller alone. Every other remembered decline compares what no given's value changes.
 
 **Added: counters `publisher_query_catalog_reads_total{site}` and `publisher_query_probe_compiles_total{site}`,** the catalog reads and extra compiles read admission makes while answering a query, and `publisher_admission_parity_drift_total{side,direction}`, shadow admission's disagreements.

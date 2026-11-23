@@ -663,7 +663,7 @@ function probeOnce(
  * lists them), and a field of a query-shaped source, whose stage output may
  * be computed from fields no path names, fails closed unless it is a string.
  */
-function stringPaths(
+export function stringPaths(
    struct: unknown,
    paths: readonly (readonly string[])[],
 ): string[][] | undefined {

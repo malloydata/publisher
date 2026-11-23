@@ -12,6 +12,13 @@ import {
 } from "./gate_collation";
 import { equalityOnlyExpr, gateReadsOfQuery } from "./gate_reads";
 import { probeIO } from "./gate_collation";
+import { lookupSourceRefusal, lookupStoredRefusal } from "./admission_lookup";
+import {
+   readStringCapabilities,
+   recordStringCapabilities,
+} from "./source_capability";
+import { captureDatabaseContract } from "../run/column_contract_capture";
+import { makeSnapshot } from "../domain/binding";
 import { DUCKDB_COLLATION } from "./collation/duckdb";
 import {
    POSTGRES_COLLATION,
@@ -445,15 +452,35 @@ source: c_nested is comp extend {
          table: string,
          source: string,
       ) => {
-         const q = new SingleConnectionRuntime({ connection: pg })
-            .loadModel(MODEL(table))
-            .loadQuery(`run: ${source} -> { group_by: id; order_by: id }`);
+         const runtime = new SingleConnectionRuntime({ connection: pg });
+         const materializer = runtime.loadModel(MODEL(table));
+         const q = materializer.loadQuery(
+            `run: ${source} -> { group_by: id; order_by: id }`,
+         );
          const reads = await gateReadsOfQuery(q as never);
-         return stringGateCollationRefusal({
+         const probed = await stringGateCollationRefusal({
             authorRunnable: q as never,
             reads,
             givens: { FLAG: true },
          });
+         // The lookup, over what a bind records of the model, agrees.
+         recordStringCapabilities(
+            runtime,
+            await readStringCapabilities({
+               modelDef: (await materializer.getModel())._modelDef,
+               load: (text) => materializer.loadQuery(text),
+               connection: async () => pg,
+               givens: { FLAG: true },
+            }),
+         );
+         const looked = await lookupSourceRefusal({
+            authorRunnable: q as never,
+            reads,
+         });
+         expect({ source, table, lookupRefuses: looked !== undefined }).toEqual(
+            { source, table, lookupRefuses: probed !== undefined },
+         );
+         return probed;
       };
 
       it("refuses an equality through a dimension over a nondeterministic column", async () => {
@@ -592,10 +619,13 @@ source: s_join is pg.table('public.dsc_base') extend {
          destinationName?: string,
          kind?: string,
       ) => {
-         const author = new SingleConnectionRuntime({ connection: pg })
-            .loadModel(MODEL)
-            .loadQuery(`run: ${source} -> { group_by: id }`);
-         return storedTableCollationRefusal({
+         const runtime = new SingleConnectionRuntime({ connection: pg });
+         const materializer = runtime.loadModel(MODEL);
+         const author = materializer.loadQuery(
+            `run: ${source} -> { group_by: id }`,
+         );
+         const reads = await gateReadsOfQuery(author as never);
+         const probed = await storedTableCollationRefusal({
             tables: [
                {
                   tier: "database",
@@ -614,8 +644,53 @@ source: s_join is pg.table('public.dsc_base') extend {
             } as never,
             virtualMap: undefined,
             authorRunnable: author as never,
-            reads: await gateReadsOfQuery(author as never),
+            reads,
          });
+         // The lookup, over the contract a build captures of the table and
+         // what a bind records of the source, agrees.
+         recordStringCapabilities(
+            runtime,
+            await readStringCapabilities({
+               modelDef: (await materializer.getModel())._modelDef,
+               load: (q) => materializer.loadQuery(q),
+               connection: async (name) => (name === "other" ? other : pg),
+            }),
+         );
+         const contract = await captureDatabaseContract({
+            connection: destinationName === "other" ? other : pg,
+            tableName: tablePath,
+            physicalTableName: tablePath,
+         }).catch(() => undefined);
+         const looked = await lookupStoredRefusal({
+            tables: [
+               {
+                  tier: "database",
+                  tablePath,
+                  virtualHandle: "t",
+                  ...(destinationName ? { destinationName } : {}),
+                  ...(kind ? { kind } : {}),
+               },
+            ],
+            authorRunnable: author as never,
+            reads,
+            bind: makeSnapshot(
+               [],
+               {},
+               undefined,
+               undefined,
+               contract ? new Map([["t", contract]]) : undefined,
+            ),
+         });
+         expect({
+            source,
+            tablePath,
+            lookupRefuses: looked !== undefined,
+         }).toEqual({
+            source,
+            tablePath,
+            lookupRefuses: probed !== undefined,
+         });
+         return probed;
       };
 
       it("keeps an ordering and an equality over a column built under the source's own collation", async () => {
