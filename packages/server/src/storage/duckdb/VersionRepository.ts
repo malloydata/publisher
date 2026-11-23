@@ -1,7 +1,11 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { PackageVersionError, refuseVersionDelete } from "../../errors";
+import {
+   PackageNotFoundError,
+   PackageVersionError,
+   refuseVersionDelete,
+} from "../../errors";
 import {
    NewVersion,
    PromoteRule,
@@ -349,11 +353,10 @@ export class VersionRepository {
     * ledger is forgotten by the package tag on each boundary, which names
     * whoever last advanced it, so a table shared across versions keeps its
     * boundary if another version wrote it last (at most one seed). One
-    * transaction, so a publish
-    * of a further version, which does not take the package lock a package
-    * delete holds, commits either before it (and its version goes too) or
-    * after it (and is refused: the package has no row). A crash leaves all
-    * of it or none.
+    * transaction, so a publish of a further version, which does not take the
+    * package lock a package delete holds, commits either before it (and its
+    * version goes too) or after it (and is refused with a 404: the package has
+    * no row). A crash leaves all of it or none.
     */
    async deletePackage(id: string): Promise<void> {
       await this.db.transaction(async (tx) => {
@@ -417,8 +420,11 @@ export class VersionRepository {
 
 /**
  * The package's `latest`, read inside a transaction. A version is recorded
- * against an existing package row, so a missing one is a caller bug: throwing
- * rolls the transaction back rather than leaving a version no package owns.
+ * against an existing package row, so a missing one means the package was
+ * deleted while this write waited (a further version's publish does not hold
+ * the package lock a delete takes). Throwing rolls the transaction back rather
+ * than leaving a version no package owns, and answers 404 as the package is
+ * gone, not a 500.
  */
 async function readLatest(
    tx: TransactionQueries,
@@ -430,8 +436,8 @@ async function readLatest(
       [environmentId, packageName],
    );
    if (!pkg) {
-      throw new Error(
-         `Package ${packageName} has no registry row; record the package before its versions.`,
+      throw new PackageNotFoundError(
+         `Package ${packageName} has no registry row: it was deleted while this version was being written. Publish it again.`,
       );
    }
    return pkg.latest_version ?? null;

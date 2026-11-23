@@ -515,6 +515,31 @@ describe("Environment loading: races, listings and bookkeeping", () => {
       expect(await repo.listPackages(ENV_ID)).toEqual([]);
    });
 
+   it("a package an earlier release left with a row and no version is cleared by publishing it again", async () => {
+      // What an earlier release left after a crash during a first publish.
+      await repo.createPackage({
+         environmentId: ENV_ID,
+         name: PKG,
+         description: "",
+         manifestPath: "",
+      });
+      const restarted = await newEnvironment();
+      for (const row of await repo.listPackages(ENV_ID)) {
+         restarted.registerConfiguredPackage(row.name);
+      }
+      await restarted.listPackages();
+
+      await publish(restarted, source("1.0.0", 7));
+      expect(
+         await answerOf(await restarted.getPackage(parsePackageName(PKG))),
+      ).toBe(7);
+      expect(restarted.getFailedPackages().has(PKG)).toBe(false);
+      expect(await repo.getPackageByName(ENV_ID, PKG)).toMatchObject({
+         latestVersion: "1.0.0",
+      });
+      expect((await repo.listPackages(ENV_ID)).length).toBe(1);
+   });
+
    it("writes a new package's row with its first version", async () => {
       const env = await newEnvironment();
       await publish(env, source("1.0.0", 1));

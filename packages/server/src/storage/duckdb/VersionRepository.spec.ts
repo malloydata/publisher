@@ -3,6 +3,7 @@
 
 import { afterEach, describe, expect, it } from "bun:test";
 import {
+   PackageNotFoundError,
    PackageVersionError,
    type PackageVersionErrorReason,
 } from "../../errors";
@@ -241,7 +242,7 @@ describe("VersionRepository", () => {
             { ...newVersion("1.0.0"), packageName: "ghost" },
             always,
          ),
-      ).rejects.toThrow(/no registry row/);
+      ).rejects.toBeInstanceOf(PackageNotFoundError);
       expect(await repo.listVersions(ENV_ID, "ghost")).toEqual([]);
    });
 
@@ -693,12 +694,12 @@ describe("VersionRepository", () => {
       };
       await repo.deletePackage(packageId);
       expect(racing).toBeDefined();
-      // Refused: its package went, entirely, before it could commit.
+      // Refused as not found (a 404, not a 500): its package went, entirely,
+      // before it could commit.
       const refused = await racing;
       expect(await repo.listVersions(ENV_ID, PKG)).toEqual([]);
       expect(await repo.getPackageByName(ENV_ID, PKG)).toBeNull();
-      expect(refused).toBeInstanceOf(Error);
-      expect((refused as Error).message).toMatch(/no registry row/);
+      expect(refused).toBeInstanceOf(PackageNotFoundError);
    });
 
    it("says whether a package has any version", async () => {

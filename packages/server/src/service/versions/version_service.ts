@@ -688,6 +688,10 @@ export class VersionService<P = unknown> {
             // leaves no package without a version. Only under the package
             // lock, which a delete of the package takes: a further version
             // whose package was deleted meanwhile is refused, not recreated.
+            // Keyed on the lock rather than on `first`: under it, a row a
+            // concurrent first publish committed stays as it is (the insert
+            // is a no-op), and a package deleted before the lock was taken is
+            // a first version of an empty name again.
             // The request's description is applied once it is committed.
             committed = await this.registry.commitPublish(
                {

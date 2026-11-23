@@ -27,7 +27,7 @@ Two consequences worth knowing. A section merged to `main` ships in the **next**
 
 ## [Unreleased] — deleting a package is one transaction
 
-**Fixed: with package versions on, deleting a package while a further version of it published could leave that version's row with no package.** The delete removed the package's runs, ledger, versions and row as four separate statements, and a publish committing between the last two left a version no package owned: the package read as versioned but answered 404, a second `DELETE` could not remove it, and an unversioned publish of the name answered 409 `PACKAGE_IS_VERSIONED`. A crash during the delete left the same state. The delete is now one transaction: a publish that commits first is deleted with the package, and one that commits after is refused.
+**Fixed: with package versions on, deleting a package while a further version of it published could leave that version's row with no package.** The delete removed the package's runs, ledger, versions and row as four separate statements, and a publish committing between the last two left a version no package owned: the package read as versioned but answered 404, a second `DELETE` could not remove it, and an unversioned publish of the name answered 409 `PACKAGE_IS_VERSIONED`. A crash during the delete left the same state. The delete is now one transaction: a publish that commits first is deleted with the package, and one that commits after is refused with 404 (the package is gone), so the client publishes it again.
 
 ## [Unreleased] — a crash during a new package's first versioned publish leaves no broken package
 
