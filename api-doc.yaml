@@ -12322,9 +12322,10 @@ components:
             eligibility refusal (always, beside `refused`), a Malloy or SQL
             compile defect (a syntax or parser error), a rejected credential or
             missing grant (a message that says permission or access denied), a
-            warehouse's own data or syntax error, and a source refused under
-            `strictUpstreams` because a persisted upstream it reads failed
-            deterministically earlier in the same run. That last source
+            warehouse's own data or syntax error, and a source that fails
+            because a persisted upstream it reads failed deterministically
+            earlier in the same run (every build is strict, so it is never
+            recomputed from raw instead). That last source
             inherits its upstream's classification (`true` when any such
             upstream's failure is transient) and its `reason` names the
             upstream's own failure.

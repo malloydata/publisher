@@ -67,6 +67,10 @@ The name such a destination's file is named from may use only ASCII letters, dig
 
 **Fixed: the check now covers the destination's own collation**, which the contract's stored side records; #1996's probe read only the source's.
 
+**Fixed (wrong answer): each string is judged against the contract of the upstream whose table holds its column, never another upstream's.** Before, two upstreams stored in one destination that each held a column of the same name were judged by whichever contract was listed first, so a build grouping a case-insensitive `b.name` through a join could pass on `a.name`'s byte-exact contract and split groups that live merges (or, in the other order, be refused falsely). A string the check cannot follow to one of the upstreams it reads is refused, and one read through a query computed when the tables are read is now judged too.
+
+**Fixed: a destination's `default_collation` changing no longer flags a table with no string column** as `collation_changed`: only a string column that declares no collation of its own compares under it.
+
 ## [Unreleased] — breaking: every build is strict, and a run of named sources builds the upstreams it cannot carry
 
 **Changed: every build is strict, standalone or a host's, whatever `strictUpstreams` says.** A downstream whose persisted upstream has no table in the run fails rather than recomputing the upstream from raw. `strictUpstreams` and `warehouseReach` are deprecated: both are accepted and ignored (`warehouseReach` values are still validated), since nothing recomputes a stored upstream any more.

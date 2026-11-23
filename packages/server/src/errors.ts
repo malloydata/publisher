@@ -1128,8 +1128,7 @@ export class MaterializationEligibilityError extends Error {
  * A chained `storage=` build depends on a persisted upstream it has no table
  * for (not built this run, not supplied, or in another destination).
  * Recomputing it from raw would rebuild a stored table nobody asked for, so
- * under `strictUpstreams` this is refused outright, while a shape failure
- * ({@link MaterializationEligibilityError}) falls back.
+ * the build fails: every build is strict, and none falls back.
  */
 export class ChainedUpstreamMissingError extends Error {
    get kind(): "chained_upstream_missing" {
@@ -1159,8 +1158,8 @@ export class ChainedUpstreamMissingError extends Error {
 /**
  * A chained `storage=` build had every stored upstream, but the model assembled
  * over them did not compile: a limit of what the build can carry, not of the
- * source. Recomputing from raw would rebuild the handed-in tables, so under
- * `strictUpstreams` it is refused like a missing upstream.
+ * source. Recomputing from raw would rebuild the handed-in tables, so it
+ * fails like a missing upstream: every build is strict.
  */
 export class ChainedShapeNotCarriedError extends Error {
    get kind(): "chained_shape_not_carried" {
