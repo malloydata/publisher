@@ -1431,6 +1431,9 @@ source: events is warehouse.sql("""
          advancedBy: unknown = expect.any(String),
       ) => ({
          advancedBy,
+         // The table's history since its last full rebuild.
+         seededBy: expect.any(String),
+         advances: expect.any(Array),
          connectionName: "warehouse",
          physicalTableName: TABLE,
          storageDestinationName: LAKE,
@@ -1474,6 +1477,10 @@ source: events is warehouse.sql("""
          });
          // The seed's boundary is its table's greatest watermark.
          expect(entry.ledger).toEqual(ledgerOf("30", address, seed.id));
+         expect(entry.ledger).toMatchObject({
+            seededBy: seed.id,
+            advances: [],
+         });
          expect(await ledgerRow()).toMatchObject({
             coveredThroughValue: "30",
             coveredThroughType: "number",
