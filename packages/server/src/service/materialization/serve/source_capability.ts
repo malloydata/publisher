@@ -440,12 +440,34 @@ async function postgresFields(
          if (c?.[0]) reads.push({ leaf: leaves[j], ...c[0] });
       });
    }
+   // One statement per batch; a batch that fails (one column of a type
+   // Postgres collates nothing of, a `bytea` or an `interval` Malloy reads
+   // as a string, fails the whole statement) is read column by column, so
+   // only the column that fails is unknown.
+   const read = async (
+      batch: typeof reads,
+   ): Promise<(Record<string, unknown> | undefined)[]> => {
+      const rows = await io
+         .rows(collationStatement(batch))
+         .catch(() => undefined);
+      if (rows !== undefined) {
+         const row = rows[0];
+         return batch.map((_, j) =>
+            row
+               ? (fieldOf(row, `c${j}`) as Record<string, unknown>)
+               : undefined,
+         );
+      }
+      if (batch.length === 1) return [undefined];
+      const each: (Record<string, unknown> | undefined)[] = [];
+      for (const r of batch) each.push(...(await read([r])));
+      return each;
+   };
    for (let i = 0; i < reads.length; i += COLUMNS_PER_STATEMENT) {
       const batch = reads.slice(i, i + COLUMNS_PER_STATEMENT);
-      const rows = await io.rows(collationStatement(batch)).catch(() => []);
-      const row = rows[0];
+      const judged = await read(batch);
       batch.forEach((r, j) => {
-         const raw = row ? fieldOf(row, `c${j}`) : undefined;
+         const raw = judged[j];
          const judgedRow =
             typeof raw === "string"
                ? (JSON.parse(raw) as Record<string, unknown>)

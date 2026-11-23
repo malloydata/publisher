@@ -176,6 +176,30 @@ describe.skipIf(!url)("a Postgres source's capability", () => {
       expect(conn?.defaultIdentity).toBe(of("c_def")?.identity);
    });
 
+   // Malloy reads a `bytea` and an `interval` as strings, but Postgres
+   // collates neither, and `pg_collation_for` of one fails the statement it
+   // is in: read alone, every other field of the source is still judged.
+   it("judges every other field when one string field's type takes no collation", async () => {
+      await pg.runSQL("DROP TABLE IF EXISTS cap_nc");
+      await pg.runSQL(
+         `CREATE TABLE cap_nc (id int, g text COLLATE "C", bin bytea, iv interval)`,
+      );
+      try {
+         const caps = await readStringCapabilities(
+            await modelOver(
+               pg as unknown as Connection,
+               "source: nc is pg.table('public.cap_nc') extend { primary_key: id }",
+            ),
+         );
+         const fields = caps.sources.get("nc")!.fields;
+         expect(fields.get(fieldKey(["g"]))?.collation).toBe("binary");
+         expect(fields.get(fieldKey(["bin"]))?.collation).toBe("unknown");
+         expect(fields.get(fieldKey(["iv"]))?.collation).toBe("unknown");
+      } finally {
+         await pg.runSQL("DROP TABLE IF EXISTS cap_nc").catch(() => {});
+      }
+   });
+
    it("reads the catalog again on every read, so an ALTER is seen at the next bind", async () => {
       const m = await modelOver(pg as unknown as Connection, MODEL);
       expect(
