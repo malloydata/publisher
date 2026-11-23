@@ -1481,18 +1481,17 @@ export function canonicalStoredSchema<C extends { name: string }>(
  * stand-in declared it as. A `storage=` build casts a string, boolean or
  * date to its declared type and keeps a number's warehouse type
  * ({@link castToDeclaredTypes}), so a number stood in as BIGINT or DOUBLE may be
- * stored as any integer, float or decimal type: compared by class, an exact
- * DECIMAL matching either, never by spelling.
+ * stored as any integer, float or decimal type: every numeric type matches
+ * every other (a Malloy `bigint` stood in as a DOUBLE and stored as the
+ * warehouse's BIGINT among them), compared by class, never by spelling.
  */
 export function sameStoredTypeClass(stored: string, standIn: string): boolean {
    const a = storedClass(stored);
    const b = storedClass(standIn);
-   if (a === b) return true;
-   const numeric = new Set(["integer", "float", "decimal"]);
-   return (
-      numeric.has(a) && numeric.has(b) && (a === "decimal" || b === "decimal")
-   );
+   return a === b || (NUMERIC_CLASSES.has(a) && NUMERIC_CLASSES.has(b));
 }
+
+const NUMERIC_CLASSES = new Set(["integer", "float", "decimal"]);
 
 /** A native type's class, case, spacing and parameters aside. */
 function storedClass(nativeType: string): string {
