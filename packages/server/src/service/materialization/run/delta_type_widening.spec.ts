@@ -26,6 +26,8 @@ describe("whether a stored column holds a delta's type", () => {
       ["DECIMAL(10,2)", "DECIMAL(12,2)"],
       ["DECIMAL(10,2)", "DECIMAL(10,4)"],
       ["DECIMAL(9,0)", "INTEGER"],
+      ["DECIMAL(18,0)", "BIGINT"],
+      ["DECIMAL(19,0)", "UBIGINT"],
       ["numeric(10,2)", "numeric"],
       // A float holds an integer only within its significand.
       ["FLOAT", "INTEGER"],
@@ -45,6 +47,9 @@ describe("whether a stored column holds a delta's type", () => {
       ["numeric", "numeric"],
       ["DECIMAL(38,3)", "DECIMAL(10,2)"],
       ["DECIMAL(38,0)", "BIGINT"],
+      // A signed BIGINT is at most 19 digits; an unsigned one needs 20.
+      ["DECIMAL(19,0)", "BIGINT"],
+      ["DECIMAL(20,0)", "UBIGINT"],
       // Not numbers, or not judged: left to the delta.
       ["character varying", "text"],
       ["TIMESTAMP", "TIMESTAMP WITH TIME ZONE"],

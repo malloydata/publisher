@@ -56,14 +56,25 @@ const FLOATS: Record<string, 32 | 64> = {
    float8: 64,
 };
 
-/** Decimal digits an integer of `bits` may need, its sign aside. */
-const INTEGER_DIGITS: Record<number, number> = {
-   8: 3,
-   16: 5,
-   32: 10,
-   64: 20,
-   128: 39,
-};
+/**
+ * Decimal digits an integer of `bits` may need, its sign aside: a signed
+ * BIGINT's 9223372036854775807 is 19, an unsigned one's
+ * 18446744073709551615 is 20.
+ */
+function integerDigits(bits: number, signed: boolean): number {
+   switch (bits) {
+      case 8:
+         return 3;
+      case 16:
+         return 5;
+      case 32:
+         return 10;
+      case 64:
+         return signed ? 19 : 20;
+      default:
+         return 39;
+   }
+}
 
 /** `type` as a number type, or undefined when it is not one judged here. */
 function numericType(type: string): NumericType | undefined {
@@ -83,6 +94,11 @@ function numericType(type: string): NumericType | undefined {
 }
 
 /** Whether every value of `delta` is a value of `stored`, unchanged. */
+/** The digits an integer type may need ({@link integerDigits}). */
+function digitsOf(t: { bits: number; signed: boolean }): number {
+   return integerDigits(t.bits, t.signed);
+}
+
 function holds(stored: NumericType, delta: NumericType): boolean {
    switch (stored.kind) {
       case "int":
@@ -104,7 +120,7 @@ function holds(stored: NumericType, delta: NumericType): boolean {
          if (stored.precision === undefined) return delta.kind !== "float";
          const integerDigits = stored.precision - (stored.scale ?? 0);
          if (delta.kind === "int") {
-            return integerDigits >= INTEGER_DIGITS[delta.bits];
+            return integerDigits >= digitsOf(delta);
          }
          if (delta.kind !== "decimal" || delta.precision === undefined) {
             return false;
