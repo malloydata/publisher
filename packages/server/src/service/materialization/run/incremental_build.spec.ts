@@ -11,6 +11,7 @@ import { makeDigest } from "@malloydata/malloy";
 import {
    incrementalLineage,
    indexCallerLedger,
+   ledgerFields,
    planSourceRefresh,
    type IncrementalRunContext,
 } from "./incremental_build";
@@ -297,5 +298,70 @@ describe("planSourceRefresh: a boundary measured under a partition= address", ()
             reseed: true,
          }),
       ).toMatchObject({ mode: "seed", reasonCode: "forced" });
+   });
+});
+
+describe("indexCallerLedger and ledgerFields: the entry is opaque to hosts", () => {
+   const ENTRY = {
+      connectionName: "wh",
+      physicalTableName: "orders_v1",
+      coveredThrough: "2024-06-20",
+      coveredThroughType: "date",
+      watermark: "order_date",
+      strategy: "range_replace" as const,
+      sourceEntityId: "addr",
+   };
+
+   it("reads a missing mergeKeys as empty, the same as an empty list", () => {
+      const [absent] = [...indexCallerLedger([ENTRY]).values()];
+      const [empty] = [
+         ...indexCallerLedger([{ ...ENTRY, mergeKeys: [] }]).values(),
+      ];
+      expect(absent?.mergeKeyDimensions).toEqual([]);
+      expect(empty).toEqual(absent);
+      expect(absent?.extensions).toBeUndefined();
+   });
+
+   it("carries keys it does not know as extensions, untouched", () => {
+      const parent = { sourceEntityId: "p1", coveredThrough: "2024-06-19" };
+      const [boundary] = [
+         ...indexCallerLedger([
+            { ...ENTRY, mergeKeys: ["id"], parentGeneration: parent, n: 1 },
+         ]).values(),
+      ];
+      expect(boundary?.extensions).toEqual({ parentGeneration: parent, n: 1 });
+      // Known fields are read as before.
+      expect(boundary?.mergeKeyDimensions).toEqual(["id"]);
+      expect(boundary?.coveredThroughValue).toBe("2024-06-20");
+   });
+
+   it("reports extensions on the next entry, a known key always winning", () => {
+      const lineage = {
+         connectionName: "wh",
+         physicalTableName: "orders_v1",
+         sourceEntityId: "addr",
+         watermarkName: "order_date",
+         watermarkType: "date",
+         mergeKeys: [] as string[],
+         scopeColumns: [] as string[],
+         strategy: "range_replace" as const,
+      };
+      const bound = { value: "2024-07-01", malloyType: "date" };
+      expect(
+         ledgerFields(lineage as never, bound as never, {
+            parentGeneration: { g: 2 },
+            coveredThrough: "spoofed",
+         }),
+      ).toEqual({
+         ledger: {
+            ...ENTRY,
+            coveredThrough: "2024-07-01",
+            parentGeneration: { g: 2 },
+         },
+      });
+      // Without extensions, the entry is exactly the known fields.
+      expect(ledgerFields(lineage as never, bound as never)).toEqual({
+         ledger: { ...ENTRY, coveredThrough: "2024-07-01" },
+      });
    });
 });

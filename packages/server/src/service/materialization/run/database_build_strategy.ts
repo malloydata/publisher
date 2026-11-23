@@ -34,6 +34,7 @@ import { runRollupKeyCheck } from "./inline_uniqueness";
 import { buildDatabaseDelta } from "./incremental_delta_strategy";
 import {
    advanceLedgerAfterSeed,
+   ledgerExtensionKeys,
    ledgerFields,
    refreshFields,
    resetLedger,
@@ -266,7 +267,10 @@ export class DatabaseTier
          ...ledgerFields(
             incrementalRefresh?.lineage,
             seededThrough,
-            incrementalRefresh?.context.materializationId,
+            ledgerExtensionKeys(
+               incrementalRefresh?.lineage,
+               incrementalRefresh?.context.materializationId,
+            ),
          ),
          // Reported for any incremental source that rebuilt, so a full rebuild
          // is distinguishable from a delta.

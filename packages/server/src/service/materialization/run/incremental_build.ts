@@ -173,16 +173,41 @@ export interface IncrementalRunContext {
    skippedAdvancedBy?: Map<string, string>;
 }
 
+/** The `LedgerEntry` keys this release reads; any other key is an extension. */
+const KNOWN_LEDGER_KEYS: ReadonlySet<string> = new Set([
+   "connectionName",
+   "physicalTableName",
+   "storageDestinationName",
+   "coveredThrough",
+   "coveredThroughType",
+   "watermark",
+   "mergeKeys",
+   "strategy",
+   "sourceEntityId",
+]);
+
+/** The keys of a wire ledger entry this release does not know, or undefined. */
+function ledgerExtensions(
+   entry: LedgerEntry,
+): Record<string, unknown> | undefined {
+   const extra = Object.entries(entry).filter(
+      ([key]) => !KNOWN_LEDGER_KEYS.has(key),
+   );
+   return extra.length > 0 ? Object.fromEntries(extra) : undefined;
+}
+
 /**
  * Index a caller-supplied ledger by table (the same key the local store uses),
  * converting each wire entry into the boundary shape the planner reads. Every
- * field is one the publisher reported on a manifest entry, echoed back.
+ * field is one the publisher reported on a manifest entry, echoed back; keys
+ * this release does not know ride along as `extensions`, untouched.
  */
 export function indexCallerLedger(
    entries: LedgerEntry[],
 ): Map<string, RecordedBoundary> {
    const index = new Map<string, RecordedBoundary>();
    for (const entry of entries) {
+      const extensions = ledgerExtensions(entry);
       index.set(
          recordedTableKey({
             connectionName: entry.connectionName,
@@ -199,8 +224,7 @@ export function indexCallerLedger(
             physicalTableName: entry.physicalTableName,
             connectionName: entry.connectionName,
             storageDestinationName: entry.storageDestinationName,
-            ...(entry.advancedBy ? { advancedBy: entry.advancedBy } : {}),
-            ...(entry.parent ? { parent: entry.parent } : {}),
+            ...(extensions ? { extensions } : {}),
          },
       );
    }
@@ -465,13 +489,43 @@ function lastReadParent(
 ): LedgerParent | undefined {
    const parent = lineage.parent;
    if (!parent) return undefined;
-   if (recorded?.parent?.sourceEntityId === parent.address) {
-      return recorded.parent;
-   }
+   const echoed = recordedParent(recorded);
+   if (echoed?.sourceEntityId === parent.address) return echoed;
    if (context.callerLedger) return undefined;
    return context.boundParentReads
       ?.get(lineage.sourceEntityId)
       ?.find((read) => read.sourceEntityId === parent.address);
+}
+
+/** A string extension key of an echoed ledger entry, when it is one. */
+function stringKey(
+   extensions: Readonly<Record<string, unknown>> | undefined,
+   key: string,
+): string | undefined {
+   const value = extensions?.[key];
+   return typeof value === "string" && value !== "" ? value : undefined;
+}
+
+/**
+ * The `parent` extension key of an echoed ledger entry, when it has the
+ * shape the publisher writes; anything else reads as absent (no record).
+ */
+function recordedParent(
+   recorded: RecordedBoundary | null,
+): LedgerParent | undefined {
+   const raw = recorded?.extensions?.parent;
+   if (typeof raw !== "object" || raw === null) return undefined;
+   const p = raw as Record<string, unknown>;
+   if (typeof p.sourceEntityId !== "string") return undefined;
+   const text = (k: string) =>
+      typeof p[k] === "string" ? { [k]: p[k] as string } : {};
+   return {
+      sourceEntityId: p.sourceEntityId,
+      ...text("advancedBy"),
+      ...text("builtAt"),
+      ...text("coveredThrough"),
+      ...text("coveredThroughType"),
+   };
 }
 
 /** The run that last changed a recorded boundary's table, when known. */
@@ -480,7 +534,7 @@ function recordedAdvancedBy(
 ): string | undefined {
    if (!recorded) return undefined;
    return (
-      recorded.advancedBy ??
+      stringKey(recorded.extensions, "advancedBy") ??
       (recorded as { advancedByMaterializationId?: string })
          .advancedByMaterializationId
    );
@@ -944,16 +998,20 @@ export function refreshFields(
  *
  * Empty when there is no boundary (a non-incremental or empty source), so the
  * spread adds no key rather than an explicit undefined.
+ *
+ * `extensions` are publisher-owned keys beyond the ones listed here; the entry
+ * is opaque to hosts, which return it whole. A known key always wins over an
+ * extension of the same name.
  */
 export function ledgerFields(
    lineage: IncrementalLineage | undefined,
    bound: WatermarkBound | undefined,
-   /** The run that last changed the table ({@link advancedByOf}). */
-   advancedBy?: string,
+   extensions?: Readonly<Record<string, unknown>>,
 ): { ledger: LedgerEntry } | Record<never, never> {
    if (!lineage || !bound) return {};
    return {
       ledger: {
+         ...extensions,
          connectionName: lineage.connectionName,
          physicalTableName: lineage.physicalTableName,
          // Absent (not undefined) for a database table: absence MEANS database
@@ -969,16 +1027,27 @@ export function ledgerFields(
             : {}),
          strategy: lineage.strategy,
          sourceEntityId: lineage.sourceEntityId,
-         ...(advancedBy ? { advancedBy } : {}),
-         ...parentField(ledgerParentOf(lineage)),
       },
    };
 }
 
-function parentField(
-   parent: LedgerParent | undefined,
-): { parent: LedgerParent } | Record<never, never> {
-   return parent ? { parent } : {};
+/**
+ * The publisher's own extension keys on a ledger entry (see
+ * {@link ledgerFields}'s `extensions`): `advancedBy`, the run that last
+ * changed the table, and on an incremental extension table `parent`, the
+ * build of its parent's table the boundary was reached over. A host stores
+ * and returns them with the rest of the entry.
+ */
+export function ledgerExtensionKeys(
+   lineage: IncrementalLineage | undefined,
+   advancedBy: string | undefined,
+): Record<string, unknown> | undefined {
+   const parent = ledgerParentOf(lineage);
+   if (!advancedBy && !parent) return undefined;
+   return {
+      ...(advancedBy ? { advancedBy } : {}),
+      ...(parent ? { parent } : {}),
+   };
 }
 
 /**
@@ -1130,7 +1199,10 @@ export async function refreshOneSourceIncrementally(params: {
       ...ledgerFields(
          lineage,
          outcome.coveredThrough,
-         advancedByOf(context, lineage, outcome.refresh),
+         ledgerExtensionKeys(
+            lineage,
+            advancedByOf(context, lineage, outcome.refresh),
+         ),
       ),
       ...refreshFields(outcome.refresh),
       ...lateRowsFields(outcome.lateRows),

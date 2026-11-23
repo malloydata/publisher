@@ -100,15 +100,6 @@ describe("MaterializationController.createMaterialization validation", () => {
          materializedTableId: "mt-1",
          physicalTableName,
       });
-      const ledger = (physicalTableName: string) => ({
-         connectionName: "c",
-         physicalTableName,
-         coveredThrough: "1",
-         coveredThroughType: "number",
-         watermark: "w",
-         strategy: "merge",
-         sourceEntityId: "b1",
-      });
       const bodies: [string, (name: string) => Record<string, unknown>][] = [
          [
             "Build instruction",
@@ -122,15 +113,6 @@ describe("MaterializationController.createMaterialization validation", () => {
                   referenceManifest: [
                      { sourceEntityId: "b0", physicalTableName: n },
                   ],
-               },
-            }),
-         ],
-         [
-            "Ledger entry",
-            (n) => ({
-               buildInstructions: {
-                  sources: [source("ok_v1")],
-                  ledger: [ledger(n)],
                },
             }),
          ],
@@ -160,6 +142,56 @@ describe("MaterializationController.createMaterialization validation", () => {
                await controller.createMaterialization("env", "pkg", body(good));
             });
          }
+      }
+   });
+
+   // A ledger entry is an echo of what the publisher reported, so a bad table
+   // name in one is a corrupted entry, not a wrong request: it is dropped (its
+   // source seeds) rather than refused, and never reaches SQL.
+   describe("a ledger entry's physicalTableName, held to the bind's rule", () => {
+      const ledger = (physicalTableName: string) => ({
+         connectionName: "c",
+         physicalTableName,
+         coveredThrough: "1",
+         coveredThroughType: "number",
+         watermark: "w",
+         strategy: "merge",
+         sourceEntityId: "b1",
+      });
+      const body = (n: string) => ({
+         buildInstructions: {
+            sources: [
+               {
+                  sourceEntityId: "b1",
+                  materializedTableId: "mt-1",
+                  physicalTableName: "ok_v1",
+               },
+            ],
+            ledger: [ledger(n)],
+         },
+      });
+      for (const bad of ["t\\'; DROP TABLE x --", '"s.t', "a..b", ".t"]) {
+         it(`drops ${JSON.stringify(bad)}, naming the field`, async () => {
+            const warn = spyOn(logger, "warn");
+            try {
+               expect((await parse(body(bad))).ledger).toEqual([]);
+               const dropped = warn.mock.calls.find((c) =>
+                  String(c[0]).includes("malformed buildInstructions.ledger"),
+               );
+               expect(
+                  String(
+                     ((dropped as unknown[])[1] as { defect: string }).defect,
+                  ),
+               ).toContain("Ledger entry 'physicalTableName'");
+            } finally {
+               warn.mockRestore();
+            }
+         });
+      }
+      for (const good of ["s.orders_v1", '"My Schema"."T x"']) {
+         it(`keeps ${JSON.stringify(good)}`, async () => {
+            expect((await parse(body(good))).ledger).toEqual([ledger(good)]);
+         });
       }
    });
 
@@ -507,9 +539,10 @@ describe("MaterializationController.createMaterialization validation", () => {
       ).toBeUndefined();
    });
 
-   it("rejects a malformed ledger entry", async () => {
-      // Every field is an echo of what the publisher reported, so a wrong shape
-      // is a caller bug — refused here, before it can misdescribe a boundary.
+   it("drops a malformed ledger entry, keeping the rest, and warns naming the table and defect", async () => {
+      // Hosts courier entries whole, so a wrong shape is a corrupted entry: it
+      // is dropped (its source seeds) rather than wedging every build of the
+      // package with a 400.
       const valid = {
          connectionName: "wh",
          physicalTableName: "orders_v1",
@@ -519,6 +552,7 @@ describe("MaterializationController.createMaterialization validation", () => {
          strategy: "range_replace",
          sourceEntityId: "content-addr",
       };
+      const other = { ...valid, physicalTableName: "events_v1" };
       const withLedger = (ledger: unknown) => ({
          buildInstructions: {
             ledger,
@@ -532,28 +566,121 @@ describe("MaterializationController.createMaterialization validation", () => {
             ],
          },
       });
+      const cases: [unknown, string, string | undefined][] = [
+         ["2024-06-20", "not an object", undefined],
+         [null, "not an object", undefined],
+         [["a"], "not an object", undefined],
+         [{ ...valid, coveredThrough: "" }, "'coveredThrough'", "orders_v1"],
+         [
+            { ...valid, coveredThrough: 20240620 },
+            "'coveredThrough'",
+            "orders_v1",
+         ],
+         [{ ...valid, watermark: undefined }, "'watermark'", "orders_v1"],
+         [
+            { ...valid, physicalTableName: undefined },
+            "'physicalTableName'",
+            undefined,
+         ],
+         [{ ...valid, connectionName: "" }, "'connectionName'", "orders_v1"],
+         [{ ...valid, strategy: "upsert" }, "'strategy'", "orders_v1"],
+         [{ ...valid, mergeKeys: "order_id" }, "'mergeKeys'", "orders_v1"],
+         [{ ...valid, mergeKeys: [1] }, "'mergeKeys'", "orders_v1"],
+         [
+            { ...valid, storageDestinationName: "" },
+            "'storageDestinationName'",
+            "orders_v1",
+         ],
+         [
+            { ...valid, storageDestinationName: 7 },
+            "'storageDestinationName'",
+            "orders_v1",
+         ],
+      ];
+      const warn = spyOn(logger, "warn");
+      try {
+         for (const [bad, defect, table] of cases) {
+            warn.mockClear();
+            const parsed = await parse(withLedger([bad, other]));
+            expect(parsed.ledger).toEqual([other]);
+            const dropped = warn.mock.calls.filter((c) =>
+               String(c[0]).includes("malformed buildInstructions.ledger"),
+            );
+            expect(dropped).toHaveLength(1);
+            const fields = (dropped[0] as unknown[])[1] as Record<
+               string,
+               unknown
+            >;
+            expect(fields).toMatchObject({
+               environmentName: "env",
+               packageName: "pkg",
+            });
+            expect(String(fields.defect)).toContain(defect);
+            expect(fields.table).toBe(table);
+         }
+         // Every entry malformed still leaves a caller-owned (empty) ledger, not
+         // "use the local store": the sources seed.
+         expect(
+            (await parse(withLedger([{ ...valid, strategy: "x" }]))).ledger,
+         ).toEqual([]);
+      } finally {
+         warn.mockRestore();
+      }
+      // The valid shape survives without a merge key list, which is what a
+      // keyless (range-replace) source reports.
+      expect((await parse(withLedger([valid]))).ledger).toEqual([valid]);
+   });
+
+   it("still refuses a ledger that is not an array", async () => {
       const { controller } = build();
-      for (const bad of [
-         valid, // not wrapped in an array
-         ["2024-06-20"],
-         [{ ...valid, coveredThrough: "" }],
-         [{ ...valid, coveredThrough: 20240620 }],
-         [{ ...valid, watermark: undefined }],
-         [{ ...valid, physicalTableName: undefined }],
-         [{ ...valid, connectionName: "" }],
-         [{ ...valid, strategy: "upsert" }],
-         [{ ...valid, mergeKeys: "order_id" }],
-         [{ ...valid, storageDestinationName: "" }],
-         [{ ...valid, storageDestinationName: 7 }],
-      ]) {
+      for (const ledger of [{ a: 1 }, "x", 7]) {
          await expect(
-            controller.createMaterialization("env", "pkg", withLedger(bad)),
+            controller.createMaterialization("env", "pkg", {
+               buildInstructions: {
+                  ledger,
+                  sources: [
+                     {
+                        sourceEntityId: "b1",
+                        materializedTableId: "mt-1",
+                        physicalTableName: "orders_v1",
+                     },
+                  ],
+               },
+            }),
          ).rejects.toThrow(BadRequestError);
       }
-      // And the valid shape survives without a merge key list, which is what a
-      // keyless (range-replace) source reports.
-      const parsed = await parse(withLedger([valid]));
-      expect(parsed.ledger).toEqual([valid]);
+   });
+
+   it("keeps keys it does not know on an echoed ledger entry, untouched", async () => {
+      // The ledger is opaque to hosts and the publisher may add keys to it;
+      // stripping one here would lose it to the next run.
+      const entry = {
+         connectionName: "wh",
+         physicalTableName: "orders_v1",
+         coveredThrough: "2024-06-20",
+         coveredThroughType: "date",
+         watermark: "order_date",
+         strategy: "range_replace",
+         sourceEntityId: "content-addr",
+         parentGeneration: {
+            sourceEntityId: "p1",
+            coveredThrough: "2024-06-19",
+         },
+         futureFlag: true,
+      };
+      const parsed = await parse({
+         buildInstructions: {
+            sources: [
+               {
+                  sourceEntityId: "b1",
+                  materializedTableId: "mt-1",
+                  physicalTableName: "orders_v1",
+               },
+            ],
+            ledger: [entry],
+         },
+      });
+      expect(parsed.ledger).toEqual([entry]);
    });
 
    it("preserves the optional `connectionName` on a manifest reference", async () => {

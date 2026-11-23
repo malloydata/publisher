@@ -1000,7 +1000,6 @@ export interface ExtensionParent {
 }
 
 export type { LedgerParent } from "../domain/incremental";
-import type { LedgerParent } from "../domain/incremental";
 
 /**
  * A recorded boundary as the plan reads it: the value, plus the table and the
@@ -1021,14 +1020,12 @@ export type RecordedBoundary = Pick<
    | "storageDestinationName"
 > & {
    /**
-    * For an extension table, which build of its parent's table the boundary
-    * was reached over; carried on a caller's ledger entry only (the local
-    * store does not hold it, so a standalone run reads it from the bound
-    * manifest).
+    * The keys of a caller-returned wire entry this release does not know,
+    * exactly as sent. The ledger is opaque to hosts and the publisher may add
+    * keys to it, so they are carried to the build rather than stripped. Absent
+    * for a local ledger row, and for an entry with no such keys.
     */
-   parent?: LedgerParent;
-   /** The run that last changed the table (a caller's entry's `advancedBy`). */
-   advancedBy?: string;
+   extensions?: Readonly<Record<string, unknown>>;
 };
 
 /**

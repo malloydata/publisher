@@ -61,8 +61,8 @@ describe("a malformed create body", () => {
          },
       ],
       [
-         "a ledger entry that is not an object",
-         { buildInstructions: { sources: [INSTRUCTION], ledger: ["x"] } },
+         "a ledger that is not an array",
+         { buildInstructions: { sources: [INSTRUCTION], ledger: { a: 1 } } },
       ],
    ];
    for (const [label, body] of cases) {

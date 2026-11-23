@@ -89,6 +89,7 @@ import {
    resetLedger,
    sourceIncrementalRefresh,
    advancedByOf,
+   ledgerExtensionKeys,
    stackedRefreshFor,
    storageRefreshFor,
    type IncrementalRunContext,
@@ -885,10 +886,13 @@ export class StorageBuildStrategy
             incrementalRefresh?.lineage,
             result.refresh?.coveredThrough ?? result.seededThrough,
             incrementalRefresh &&
-               advancedByOf(
-                  incrementalRefresh.context,
+               ledgerExtensionKeys(
                   incrementalRefresh.lineage,
-                  result.refresh?.refresh ?? "full",
+                  advancedByOf(
+                     incrementalRefresh.context,
+                     incrementalRefresh.lineage,
+                     result.refresh?.refresh ?? "full",
+                  ),
                ),
          ),
          ...refreshFields(

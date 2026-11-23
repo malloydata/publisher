@@ -101,7 +101,10 @@ export class MaterializationController {
          body.buildInstructions !== undefined &&
          body.buildInstructions !== null
       ) {
-         const parsed = this.validateBuildInstructions(body.buildInstructions);
+         const parsed = this.validateBuildInstructions(
+            body.buildInstructions,
+            context,
+         );
          result.buildInstructions = parsed.sources;
          if (parsed.referenceManifest !== undefined) {
             result.referenceManifest = parsed.referenceManifest;
@@ -201,7 +204,10 @@ export class MaterializationController {
     * into the parts the service consumes: the flattened instruction list, the
     * optional upstream reference manifest, and the strict flag.
     */
-   private validateBuildInstructions(raw: unknown): {
+   private validateBuildInstructions(
+      raw: unknown,
+      context: { environmentName: string; packageName: string },
+   ): {
       sources: BuildInstruction[];
       referenceManifest?: ManifestReference[];
       /** The deprecated options the payload sent, which are ignored. */
@@ -274,9 +280,23 @@ export class MaterializationController {
                "buildInstructions.ledger must be an array",
             );
          }
-         result.ledger = obj.ledger.map((entry) =>
-            this.validateLedgerEntry(entry),
-         );
+         // A malformed entry is dropped, so its source seeds: hosts courier
+         // entries whole, and one corrupted entry must not wedge every build
+         // of the package. Errors about the REQUEST (duplicates, a table not
+         // instructed, a moved definition) stay 400s in validateInstructions.
+         const ledger: LedgerEntry[] = [];
+         for (const entry of obj.ledger) {
+            const checked = this.validateLedgerEntry(entry);
+            if ("defect" in checked) {
+               logger.warn(
+                  "Dropped a malformed buildInstructions.ledger entry; its source seeds",
+                  { ...context, table: checked.table, defect: checked.defect },
+               );
+               continue;
+            }
+            ledger.push(checked.entry);
+         }
+         result.ledger = ledger;
       }
       return result;
    }
@@ -410,17 +430,30 @@ export class MaterializationController {
    }
 
    /**
-    * Validate one `buildInstructions.ledger` entry's SHAPE only. Each echoes a
+    * Check one `buildInstructions.ledger` entry's SHAPE only. Each echoes a
     * `ManifestEntry.ledger` the publisher reported; what it claims is checked
     * against the build plan by the service at create time.
+    *
+    * The entry is opaque to hosts and the publisher may add keys to it, so it
+    * is returned whole: keys this release does not know pass through untouched.
+    * A malformed entry is returned as its defect (and the table, when it names
+    * one) for the caller to drop, not thrown.
     */
-   private validateLedgerEntry(raw: unknown): LedgerEntry {
-      if (typeof raw !== "object" || raw === null) {
-         throw new BuildInstructionsInvalidError(
-            "Each buildInstructions.ledger entry must be an object",
-         );
+   private validateLedgerEntry(
+      raw: unknown,
+   ): { entry: LedgerEntry } | { defect: string; table?: string } {
+      if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+         return { defect: "the entry is not an object" };
       }
       const entry = raw as Record<string, unknown>;
+      const table =
+         typeof entry.physicalTableName === "string"
+            ? entry.physicalTableName
+            : undefined;
+      const malformed = (defect: string) => ({
+         defect,
+         ...(table !== undefined ? { table } : {}),
+      });
       for (const field of [
          "connectionName",
          "physicalTableName",
@@ -430,54 +463,40 @@ export class MaterializationController {
          "sourceEntityId",
       ] as const) {
          if (typeof entry[field] !== "string" || entry[field] === "") {
-            throw new BuildInstructionsInvalidError(
-               `Ledger entry '${field}' must be a non-empty string`,
-            );
+            return malformed(`'${field}' must be a non-empty string`);
          }
       }
-      assertUsableTableName(entry.physicalTableName as string, "Ledger entry");
-      if (entry.strategy !== "merge" && entry.strategy !== "range_replace") {
-         throw new BuildInstructionsInvalidError(
-            "Ledger entry 'strategy' must be 'merge' or 'range_replace'",
+      try {
+         assertUsableTableName(
+            entry.physicalTableName as string,
+            "Ledger entry",
          );
+      } catch (err) {
+         return malformed(err instanceof Error ? err.message : String(err));
+      }
+      if (entry.strategy !== "merge" && entry.strategy !== "range_replace") {
+         return malformed("'strategy' must be 'merge' or 'range_replace'");
       }
       if (
          entry.mergeKeys !== undefined &&
          (!Array.isArray(entry.mergeKeys) ||
             entry.mergeKeys.some((k) => typeof k !== "string"))
       ) {
-         throw new BuildInstructionsInvalidError(
-            "Ledger entry 'mergeKeys' must be an array of strings",
-         );
+         return malformed("'mergeKeys' must be an array of strings");
       }
       if (
          entry.storageDestinationName !== undefined &&
          (typeof entry.storageDestinationName !== "string" ||
             entry.storageDestinationName === "")
       ) {
-         throw new BuildInstructionsInvalidError(
-            "Ledger entry 'storageDestinationName' must be a non-empty string when present",
+         return malformed(
+            "'storageDestinationName' must be a non-empty string when present",
          );
       }
-      return {
-         connectionName: entry.connectionName as string,
-         physicalTableName: entry.physicalTableName as string,
-         coveredThrough: entry.coveredThrough as string,
-         coveredThroughType: entry.coveredThroughType as string,
-         watermark: entry.watermark as string,
-         strategy: entry.strategy,
-         sourceEntityId: entry.sourceEntityId as string,
-         // Absent and empty both mean a keyless (range-replace) source.
-         ...(Array.isArray(entry.mergeKeys)
-            ? { mergeKeys: entry.mergeKeys as string[] }
-            : {}),
-         // Absent means database. Part of the table identity: an entry indexed
-         // without its destination is never found by its source, which then
-         // rebuilds in full on every refresh instead of advancing.
-         ...(typeof entry.storageDestinationName === "string"
-            ? { storageDestinationName: entry.storageDestinationName }
-            : {}),
-      };
+      // Absent and empty `mergeKeys` both mean a keyless (range-replace)
+      // source; absent `storageDestinationName` means database. Both stay as
+      // sent, like every other key.
+      return { entry: { ...entry } as LedgerEntry };
    }
 
    async stopMaterialization(
