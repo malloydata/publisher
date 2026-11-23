@@ -15,6 +15,7 @@ import {
    validateConnectionSqlFields,
    validateDuckdbApiSurface,
    storageDestinationFile,
+   destinationFileNameRefusal,
    storageDestinationRoot,
    validateStorageDestinations,
 } from "./connection_config";
@@ -1964,5 +1965,39 @@ describe("storageDestinationFile", () => {
             BadRequestError,
          );
       }
+   });
+
+   it("names the allowed pattern for a name it refuses, as a config load reports it", () => {
+      for (const name of ["my lake", "lakè", "../escape", "a/b", ""]) {
+         expect(destinationFileNameRefusal(name)).toContain(
+            "only ASCII letters, digits, '_', '-' and '.'",
+         );
+      }
+      for (const name of ["lake", "Lake_2", "lake-prod.v1"]) {
+         expect(destinationFileNameRefusal(name)).toBeUndefined();
+      }
+   });
+
+   it("leaves a DuckLake destination's name alone: no file is named from it", () => {
+      const { accepted, rejected } = validateStorageDestinations([
+         {
+            name: "my lake",
+            type: "ducklake",
+            ducklakeConnection: {
+               catalog: {
+                  postgresConnection: {
+                     host: "h",
+                     port: 5432,
+                     userName: "u",
+                     password: "p",
+                     databaseName: "d",
+                  },
+               },
+               storage: { bucketUrl: "/tmp/lake" },
+            },
+         } as unknown as ApiConnection,
+      ]);
+      expect(rejected).toEqual([]);
+      expect(accepted.map((d) => d.name)).toEqual(["my lake"]);
    });
 });

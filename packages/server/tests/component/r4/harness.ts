@@ -363,6 +363,12 @@ export interface R4Fixture {
    rollupRefusals: { reason: string; sourceName: string }[];
    /** For a `#(materialize)` scenario: each source's plan, by its name. */
    materializePlans: Record<string, MaterializePlan>;
+   /** For a `#(materialize)` scenario: each source the plan refused, and why. */
+   materializeRefusals: {
+      sourceName: string;
+      reason: string;
+      message: string;
+   }[];
    /**
     * Read every database table's columns from the scenario's database, as a
     * package's bind reads them, and hold the bindings and the build manifest
@@ -576,6 +582,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
    const plan: Record<string, { name: string; sourceEntityId: string }> = {};
    // eslint-disable-next-line @typescript-eslint/no-explicit-any
    const authorDef = (compiled as any)._modelDef;
+   const materializeRefusals: R4Fixture["materializeRefusals"] = [];
    const companion = scenario.materialize
       ? await tryCompileMaterializeCompanion({
            packagePath: dir,
@@ -598,7 +605,19 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
            }),
            // P9's probes, against the author's model, as the build plan runs them.
            probe: materializer,
-        }).then((c) => c.generated)
+        }).then((c) => {
+           for (const r of c.refused) {
+              materializeRefusals.push({
+                 sourceName: r.sourceName,
+                 reason:
+                    "refused" in r.outcome
+                       ? r.outcome.refused.reason
+                       : r.outcome.malformed,
+                 message: r.reason,
+              });
+           }
+           return c.generated;
+        })
       : undefined;
    if (scenario.materialize && !companion) {
       throw new Error("the #(materialize) companion did not compile");
@@ -1468,6 +1487,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
       materializePlans: Object.fromEntries(
          Object.values(materializePlans).map((p) => [p.sourceName, p]),
       ),
+      materializeRefusals,
       setClock(at) {
          if (!pinned) throw new Error("the scenario's clock is not pinned");
          pinned.clock = at;

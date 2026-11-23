@@ -45,6 +45,26 @@ export interface GateReads {
     */
    readonly columnOrigins?: readonly (ColumnOrigin | undefined)[];
    /**
+    * For each of {@link columns}, by position, the sourceID of the stored
+    * upstream whose table holds it (`stored_upstream.ts`), or undefined when
+    * it reaches none of the sources the walk was told are stored. A reader
+    * that judges a column by its upstream's contract refuses an undefined
+    * one. Absent: not resolved.
+    */
+   readonly columnUpstreams?: readonly (string | undefined)[];
+   /**
+    * The string columns read that are not paths from the entry point (an
+    * inner query's base, computed when the stored table is read), each with
+    * the names it goes by and its stored upstream as for
+    * {@link columnUpstreams}. Set only for a query's result reads
+    * (`result_reads.ts`), whose {@link columns} list entry paths alone; a
+    * chained build judges these too. Absent: none.
+    */
+   readonly elsewhereColumns?: readonly {
+      readonly names: readonly string[];
+      readonly upstream: string | undefined;
+   }[];
+   /**
     * A name the gates read that could not be followed to a column: a reader
     * that judges the columns must fail closed.
     */

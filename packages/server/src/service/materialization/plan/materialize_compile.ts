@@ -49,7 +49,6 @@ import {
    givenReadTerms,
    levelFileName,
    MATERIALIZE_COMPANION_SUFFIX,
-   settledChains,
    withoutParent,
 } from "./build_file_generator";
 import {
@@ -66,6 +65,7 @@ import {
    type MaterializeRefusal,
 } from "./materialize_plan";
 import { splitSourceID, type MaterializePlan } from "../domain/table_plans";
+import { UPSTREAM_TABLE_UNUSABLE_REASON } from "./downstream_upstreams";
 import type { TermUse } from "../domain/read_time_terms";
 import { SourceMap } from "../text/source_map";
 import { wholeImportsOf } from "../text/declaration_text";
@@ -227,10 +227,17 @@ export async function tryCompileMaterializeCompanion(args: {
          round,
          compile,
          args,
+         refused,
          foreign,
       );
       round = await withoutLeakedBuilds(round, compile, modelFile, refused);
-      round = await withCrossFileColumnsKept(round, compile, args, foreign);
+      round = await withCrossFileColumnsKept(
+         round,
+         compile,
+         args,
+         refused,
+         foreign,
+      );
       // Shared with every later model that imports this one: its companion
       // is not compiled again as a cross-file parent's.
       if (
@@ -375,31 +382,78 @@ function companionCompiler(
 
 /**
  * A `storage=` extension table builds in its destination from its chain
- * alone, over its parent's stored table. One whose chain does not
- * compile there, with nothing else to read, builds over the raw chain, from
- * the warehouse: the companion is compiled again.
+ * alone, over its parent's stored table. One whose chain does not compile
+ * there is refused (`upstream_table_unusable`), never built over the raw
+ * chain from the warehouse: the companion is compiled again without it.
  */
 async function unchainStoredChainsNotCompiling(
    round: CompanionRound,
    compile: CompanionCompile,
    args: CompanionArgs,
+   refused: MaterializeRefusal[],
    foreign: CrossFileParents = NO_CROSS_FILE_PARENTS,
 ): Promise<CompanionRound> {
    const unstored = round.generated
       ? await storedChainsNotCompiling(round.generated, foreign.parents)
       : new Map<string, string>();
    if (unstored.size === 0) return round;
-   for (const sourceID of unstored.keys()) {
+   for (const [sourceID, why] of unstored) {
+      const plan = planOf(round.plans, sourceID);
+      if (!plan) continue;
       logger.warn(
-         "A storage= extension table does not compile over its parent's stored table alone; it builds over the raw chain",
-         {
-            modelPath: args.modelPath,
-            sourceName: planOf(round.plans, sourceID)?.sourceName,
-         },
+         "A storage= extension table does not compile over its parent's stored table alone; it is refused",
+         { modelPath: args.modelPath, sourceName: plan.sourceName },
+      );
+      refuseUnchained(
+         refused,
+         plan,
+         `whose stored table its build does not compile over in its ` +
+            `destination (${why})`,
       );
    }
-   return compile(
-      round.plans.map((p) => (unstored.has(p.sourceID) ? withoutParent(p) : p)),
+   return compile(round.plans.filter((p) => !unstored.has(p.sourceID)));
+}
+
+/**
+ * Refuse `plan`, an extension table that cannot be built over its parent's
+ * table, as `upstream_table_unusable` naming the parent and `why`: it is
+ * never built over the raw chain from the warehouse instead, and answers
+ * live. Once per source.
+ */
+function refuseUnchained(
+   refused: MaterializeRefusal[],
+   plan: MaterializePlan,
+   why: string,
+): void {
+   if (refused.some((r) => r.sourceID === plan.sourceID)) return;
+   refused.push(unchainedRefusal(plan, why));
+}
+
+/** The refusal {@link refuseUnchained} records. */
+function unchainedRefusal(
+   plan: MaterializePlan,
+   why: string,
+): MaterializeRefusal {
+   return {
+      sourceName: plan.sourceName,
+      sourceID: plan.sourceID,
+      reason: unchainedReason(plan, why),
+      outcome: {
+         refused: {
+            reason: UPSTREAM_TABLE_UNUSABLE_REASON,
+            tier: tierOf(plan.persist.storage),
+         },
+      },
+   };
+}
+
+/** Why an extension table is refused rather than built over the raw chain. */
+function unchainedReason(plan: MaterializePlan, why: string): string {
+   const parent = plan.buildsOver?.sourceName;
+   return (
+      `it extends ${parent ? `'${parent}'` : "a #(materialize) parent"}, ${why}; ` +
+      `an extension table is built over its parent's table or not at all, ` +
+      `never by recomputing its parent from the warehouse`
    );
 }
 
@@ -407,7 +461,7 @@ async function unchainStoredChainsNotCompiling(
  * A build copy re-declares its whole file, so a `#@ persist` source the
  * copied source reads (its base, a join) would enter the plan a second time
  * under the copy's URL: a build node that no planned source names. A chained
- * source builds over the raw chain instead; a source whose given term needs
+ * source is refused (`upstream_table_unusable`); a source whose given term needs
  * the copy is refused into `refused`, and the companion compiled again
  * without it.
  */
@@ -421,9 +475,21 @@ async function withoutLeakedBuilds(
    let leaked = generated
       ? await copyDeclaredBuilds(generated, modelFile, copies)
       : new Map<string, string[]>();
-   if ([...leaked.keys()].some((id) => planOf(plans, id)?.buildsOver)) {
+   const chainedLeaks = plans.filter(
+      (p) => p.buildsOver && leaked.has(p.sourceID),
+   );
+   if (chainedLeaks.length > 0) {
+      for (const plan of chainedLeaks) {
+         refuseUnchained(
+            refused,
+            plan,
+            `whose build copy declares a persisted source the plan does not ` +
+               `name (${(leaked.get(plan.sourceID) ?? []).join(", ")})`,
+         );
+      }
+      const ids = new Set(chainedLeaks.map((p) => p.sourceID));
       ({ plans, copies, generated } = await compile(
-         plans.map((p) => (leaked.has(p.sourceID) ? withoutParent(p) : p)),
+         plans.filter((p) => !ids.has(p.sourceID)),
       ));
       leaked = generated
          ? await copyDeclaredBuilds(generated, modelFile, copies)
@@ -999,7 +1065,9 @@ async function withBuildCopies(
    copies: Map<string, BuildCopy>;
    refused: MaterializeRefusal[];
 }> {
-   const plans = settledChains(input);
+   // An extension whose parent is no longer planned (refused after planning)
+   // is refused in turn when its copy is made, never built over the raw chain.
+   const plans = input;
    const copies = new Map<string, BuildCopy>();
    const refused: MaterializeRefusal[] = [];
    if (
@@ -1151,14 +1219,30 @@ async function copiedPlan(
       : plan.buildsOver
         ? kept.get(plan.buildsOver.sourceID)
         : undefined;
+   const unchained = (why: string) => ({
+      plan,
+      reason: unchainedReason(plan, why),
+      refusal: UPSTREAM_TABLE_UNUSABLE_REASON,
+   });
+   if (plan.buildsOver && !parent) {
+      return unchained(
+         "which is not planned, so it has no table to build over",
+      );
+   }
+   if (plan.buildsOver && text === undefined) {
+      return unchained(
+         `and its model text could not be read to write its build over that ` +
+            `table${ctx.unreadable ? ` (${ctx.unreadable})` : ""}`,
+      );
+   }
    if (
       plan.buildsOver &&
-      (!parent ||
-         text === undefined ||
-         localPath(plan.buildsOver.declaration.url) !==
-            (foreign ? foreign.modelFile : modelFile))
+      localPath(plan.buildsOver.declaration.url) !==
+         (foreign ? foreign.modelFile : modelFile)
    ) {
-      plan = withoutParent(plan);
+      return unchained(
+         "declared in a file its build copy cannot re-root it in",
+      );
    }
    // A `storage=` pair also carries what its build compiles in the
    // destination over the parent's stored table, lifted as its build copy
@@ -1181,9 +1265,12 @@ async function copiedPlan(
                       }
                     : {}),
               });
-      plan = overStored
-         ? { ...plan, buildsOver: { ...plan.buildsOver, overStored } }
-         : withoutParent(plan);
+      if (!overStored) {
+         return unchained(
+            "whose stored table its build cannot be written over in its destination",
+         );
+      }
+      plan = { ...plan, buildsOver: { ...plan.buildsOver, overStored } };
    }
    if (plan.buildsOver?.crossFile && foreign) {
       const made = crossFileCopy(plan, foreign, ctx, liftAccess);
@@ -1194,7 +1281,9 @@ async function copiedPlan(
             level: 0,
          };
       }
-      plan = withoutParent(plan);
+      return unchained(
+         "declared in another file, whose chain its build copy cannot carry",
+      );
    }
    if (!leftOut && !plan.buildsOver && !liftAccess) return { plan, level: 0 };
    const parentLevel = parent ? (levels.get(parent.sourceID) ?? 0) : 0;
@@ -1207,13 +1296,13 @@ async function copiedPlan(
          : undefined;
    // One copy per source: its terms taken out, its parent re-rooted, and
    // its access modifiers lifted, as it needs.
-   let copy = buildCopyText(text as string, plan, chainOf(plan), {
+   const copy = buildCopyText(text as string, plan, chainOf(plan), {
       liftAccess,
    });
    if ("reason" in copy && plan.buildsOver) {
-      plan = withoutParent(plan);
-      if (!leftOut && !liftAccess) return { plan, level: 0 };
-      copy = buildCopyText(text as string, plan, undefined, { liftAccess });
+      return unchained(
+         `whose table its build copy cannot re-root: ${copy.reason}`,
+      );
    }
    if ("reason" in copy) {
       return { plan, reason: copy.reason, refusal: "generated_build_failed" };
@@ -1649,10 +1738,16 @@ function nextRound(
    }
    if (plan?.buildsOver) {
       logger.warn(
-         "An extension table of a #(materialize) model did not compile over its parent's build source; it builds over the raw chain",
+         "An extension table of a #(materialize) model did not compile over its parent's build source; it is refused",
          { modelPath, sourceName: plan.sourceName, code: errorCodeOf(error) },
       );
-      return plans.map((p) => (p === plan ? withoutParent(p) : p));
+      ctx.refuse(
+         unchainedRefusal(
+            plan,
+            `whose table its build does not compile over: ${firstProblem(error)}`,
+         ),
+      );
+      return plans.filter((p) => p !== plan);
    }
    if (plan) {
       logger.error(
@@ -1675,13 +1770,22 @@ function nextRound(
       return plans.filter((p) => p !== plan);
    }
    if (plans.some((p) => p.buildsOver)) {
-      // No source to blame: every extension builds over the raw chain, which
-      // gives the same rows.
+      // No source to blame: every extension over its parent's table is
+      // refused, never built over the raw chain.
       logger.warn(
-         "Extension tables of a #(materialize) model did not compile over their parents' build sources; they build over the raw chain",
+         "Extension tables of a #(materialize) model did not compile over their parents' build sources; they are refused",
          { modelPath, code: errorCodeOf(error) },
       );
-      return plans.map(withoutParent);
+      for (const p of plans.filter((q) => q.buildsOver)) {
+         ctx.refuse(
+            unchainedRefusal(
+               p,
+               `and the model's builds over their parents' tables do not ` +
+                  `compile: ${firstProblem(error)}`,
+            ),
+         );
+      }
+      return plans.filter((p) => !p.buildsOver);
    }
    throw error.error;
 }
@@ -2130,7 +2234,7 @@ function crossFileCopy(
 /**
  * The round with every cross-file extension whose build over its parent's
  * build source does not keep the columns, and each column's type, its build
- * over the raw chain has, built over the raw chain instead: compared field by
+ * over the raw chain has, refused (`upstream_table_unusable`): compared field by
  * field with the author's compiled source, or, for a column of an inlined
  * join, with the companion compiled once more without those parents. A re-rooted
  * parent changes where the rows are read from, never which columns the
@@ -2140,6 +2244,7 @@ async function withCrossFileColumnsKept(
    round: CompanionRound,
    compile: CompanionCompile,
    args: CompanionArgs,
+   refused: MaterializeRefusal[],
    foreign: CrossFileParents,
 ): Promise<CompanionRound> {
    const chained = round.plans.filter((p) => p.buildsOver?.crossFile);
@@ -2210,14 +2315,18 @@ async function withCrossFileColumnsKept(
    if (differ.length === 0) return round;
    for (const plan of differ) {
       logger.warn(
-         "An extension table over its parent in another file does not keep its columns over the parent's build source; it builds over the raw chain",
+         "An extension table over its parent in another file does not keep its columns over the parent's build source; it is refused",
          { modelPath: args.modelPath, sourceName: plan.sourceName },
+      );
+      refuseUnchained(
+         refused,
+         plan,
+         `declared in another file, whose table its build would not store ` +
+            `the same columns, with the same types, over`,
       );
    }
    const ids = new Set(differ.map((p) => p.sourceID));
-   return compile(
-      round.plans.map((p) => (ids.has(p.sourceID) ? withoutParent(p) : p)),
-   );
+   return compile(round.plans.filter((p) => !ids.has(p.sourceID)));
 }
 
 /** How a companion failure is logged, by its kind. */

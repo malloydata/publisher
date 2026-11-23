@@ -19,6 +19,9 @@
  *   128-bit type (as an older build did), and every answer reading it is
  *   answered live, the path report saying why.
  * - Controls: a `BIGINT` and a `DECIMAL(38,0)` column serve as before.
+ * - A persisted view over a stored upstream's BIGINT that the plan stood in
+ *   as a DOUBLE (Malloy types the max a `bigint`, not an `integer`) builds
+ *   on the first run, and is never failed `schema_incompatible` after.
  */
 
 import { DuckDBConnection as MalloyDuckDBConnection } from "@malloydata/db-duckdb";
@@ -100,6 +103,15 @@ source: p_sum is raw -> { group_by: k; aggregate: total is v.sum(), n is count()
 
 #@ persist storage="lake"
 source: p_ctl is raw -> { group_by: k; aggregate: top is v.max(), lo is v.min() }
+
+// A persisted view over p_ctl's table in the same destination. Malloy types
+// \`top\` a number that is not \`integer\` (a \`bigint\`), so the plan stands it
+// in as a DOUBLE, while p_ctl's build stores the warehouse's BIGINT: the
+// same numeric class, which must not read as the upstream having moved.
+source: p_ctl_v is p_ctl extend {
+  #@ persist storage="lake"
+  view: by_k_top2 is { group_by: k; aggregate: top2 is top.max() }
+}
 
 #(materialize) storage="lake"
 source: m_sum is sums extend { primary_key: k }
@@ -235,6 +247,12 @@ const CASES: {
       name: "P4-01 control: a rollup of a BIGINT max still serves",
       malloy: "run: raw_top -> { group_by: k; aggregate: v_top; order_by: k }",
       exact: { column: "v_top", value: `${BIG}` },
+      served: true,
+   },
+   {
+      name: "a persisted view over a stored BIGINT the plan stood in as a DOUBLE serves equal to live",
+      malloy: "run: p_ctl_v -> by_k_top2",
+      exact: { column: "top2", value: `${BIG}` },
       served: true,
    },
    {
@@ -557,6 +575,17 @@ describe.skipIf(process.platform === "win32")(
          expect((entry("c_mixed") as { error?: string }).error ?? "").toContain(
             "a downstream is never built by recomputing its upstreams from raw",
          );
+         // Stood in as a DOUBLE, stored as the warehouse's BIGINT: one
+         // numeric class, so the view over it builds on the first run.
+         const overCtl = entry("p_ctl_v__by_k_top2__view") as {
+            error?: string;
+            schema?: { name: string; type: string }[];
+         };
+         expect(overCtl.error).toBeUndefined();
+         expect(overCtl.schema).toContainEqual({
+            name: "top2",
+            type: "BIGINT",
+         });
          expect(entry("p_wide").schema).toContainEqual({
             name: "hs",
             type: "HUGEINT",
@@ -621,5 +650,15 @@ describe.skipIf(process.platform === "win32")(
             }
          });
       }
+
+      it("never fails the view over the stored BIGINT on the next run either: no schema_incompatible", async () => {
+         const run = await build();
+         const failures = Object.values(
+            (run.manifest as { failures?: Record<string, unknown> }).failures ??
+               {},
+         ) as { sourceName: string; reason?: string }[];
+         // Only the refused chained downstream fails; the view is kept.
+         expect(failures.map((f) => f.sourceName)).toEqual(["c_mixed"]);
+      });
    },
 );

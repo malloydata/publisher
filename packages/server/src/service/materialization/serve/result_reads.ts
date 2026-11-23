@@ -47,6 +47,7 @@ import {
 } from "../../governance/ir/prepared_query";
 import { capabilitiesOf, type Capabilities } from "../domain/dialect";
 import type { GateReads } from "./gate_reads_types";
+import { storedUpstreamResolver } from "./stored_upstream";
 
 /** How a value is used by the result. */
 type Use = "order" | "group" | "value";
@@ -238,6 +239,11 @@ interface Col {
     * table ({@link ResultReadWalk.knownLive}).
     */
    readonly live: boolean;
+   /**
+    * The stored upstream, by sourceID, whose table holds the column, or
+    * undefined when it reaches none ({@link storedUpstreamResolver}).
+    */
+   readonly upstream: string | undefined;
 }
 
 /**
@@ -271,13 +277,18 @@ function combine(srcs: readonly Src[]): Src {
 }
 
 /** The column `path` (read from the entry point or not), as a {@link Src}. */
-function column(path: readonly string[], entry: boolean, live: boolean): Src {
+function column(
+   path: readonly string[],
+   entry: boolean,
+   live: boolean,
+   upstream: string | undefined,
+): Src {
    return {
       kind: "columns",
       cols: new Map([
          [
             `${entry ? "e" : "x"}\u0000${path.join("\u0000")}`,
-            { path, entry, names: [path[path.length - 1]], live },
+            { path, entry, names: [path[path.length - 1]], live, upstream },
          ],
       ]),
    };
@@ -322,8 +333,21 @@ class Reads {
    readonly names = new Map<string, Set<string>>();
    /** The keys of entry paths every read of which is of a known-live source. */
    readonly live = new Map<string, boolean>();
+   /**
+    * Each entry path's stored upstream, by its key: undefined when any read
+    * of it reaches none, or two reads reach different ones.
+    */
+   readonly upstreams = new Map<string, string | undefined>();
    /** A read that is not a path from the entry point (an inner query's base). */
    elsewhere = false;
+   /**
+    * Those reads' columns, by key: the names each goes by and its stored
+    * upstream, as for an entry path's.
+    */
+   readonly elsewhereColumns = new Map<
+      string,
+      { names: Set<string>; upstream: string | undefined }
+   >();
    /** A string under the database's default collation was compared. */
    literal = false;
    /** The columns one value combines, which must hold one collation. */
@@ -336,9 +360,20 @@ class Reads {
       }
       if (src.kind !== "columns") return;
       const group: (readonly string[])[] = [];
-      for (const c of src.cols.values()) {
-         if (!c.entry) this.elsewhere = true;
-         else {
+      for (const [k, c] of src.cols) {
+         if (!c.entry) {
+            this.elsewhere = true;
+            const seen = this.elsewhereColumns.get(k);
+            if (seen === undefined) {
+               this.elsewhereColumns.set(k, {
+                  names: new Set(c.names),
+                  upstream: c.upstream,
+               });
+            } else {
+               for (const n of c.names) seen.names.add(n);
+               if (seen.upstream !== c.upstream) seen.upstream = undefined;
+            }
+         } else {
             const key = c.path.join("\u0000");
             this.paths.set(key, c.path);
             let names = this.names.get(key);
@@ -348,6 +383,13 @@ class Reads {
             }
             for (const n of c.names) names.add(n);
             this.live.set(key, (this.live.get(key) ?? true) && c.live);
+            const seen = this.upstreams.has(key);
+            this.upstreams.set(
+               key,
+               !seen || this.upstreams.get(key) === c.upstream
+                  ? c.upstream
+                  : undefined,
+            );
             group.push(c.path);
          }
       }
@@ -367,12 +409,16 @@ class ResultReadWalk {
    private steps = 0;
    /** Each join's `on` and each inner query, walked once. */
    private readonly walked = new Set<unknown>();
+   /** The stored upstream a column's owner is read from. */
+   private readonly upstreamOf: (owner: unknown) => string | undefined;
 
    constructor(
       private readonly modelDef: unknown,
       private readonly stored: ReadonlySet<string>,
       private readonly storedSources: ReadonlySet<string>,
-   ) {}
+   ) {
+      this.upstreamOf = storedUpstreamResolver(modelDef, stored);
+   }
 
    private tooDeep(): boolean {
       return ++this.steps > 8192;
@@ -675,7 +721,12 @@ class ResultReadWalk {
       return nonStringType(f.type)
          ? NONE
          : alias(
-              column([...prefix, last], scope.entry, this.knownLive(owner)),
+              column(
+                 [...prefix, last],
+                 scope.entry,
+                 this.knownLive(owner),
+                 this.upstreamOf(owner),
+              ),
               f.name,
            );
    }
@@ -999,6 +1050,14 @@ function readsOf(
    return {
       names: new Set(entryPaths.flat()),
       columns: keys.map((k) => [...(reads.names.get(k) ?? [])]),
+      columnUpstreams: keys.map((k) => reads.upstreams.get(k)),
+      ...(reads.elsewhereColumns.size > 0
+         ? {
+              elsewhereColumns: [...reads.elsewhereColumns.values()].map(
+                 (c) => ({ names: [...c.names], upstream: c.upstream }),
+              ),
+           }
+         : {}),
       ...(livePaths.length > 0 ? { livePaths } : {}),
       unresolved,
       scoped: false,

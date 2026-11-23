@@ -463,6 +463,31 @@ export function storageDestinationRoot(environmentPath: string): string {
 const DESTINATION_FILE_NAME = /^(?!.*\.\.)[A-Za-z0-9_.-]+$/;
 
 /**
+ * Why `destinationName` cannot name a plain DuckDB destination's file
+ * ({@link DESTINATION_FILE_NAME}), or undefined when it can: checked where
+ * the destination list is validated, so a bad name is a config error when
+ * the list loads, and again on every path to the file.
+ */
+export function destinationFileNameRefusal(
+   destinationName: string,
+): string | undefined {
+   return DESTINATION_FILE_NAME.test(destinationName)
+      ? undefined
+      : `the name "${destinationName}" names the destination's database ` +
+           `file, so it may use only ASCII letters, digits, '_', '-' and '.', ` +
+           `never '..'.`;
+}
+
+/**
+ * A destination type whose database file is named from its name: one that is
+ * no catalog (its registry entry declares no destination dialect), as a plain
+ * DuckDB file is.
+ */
+function namesItsFile(type: string): boolean {
+   return connectionDialectOf(type)?.destination === undefined;
+}
+
+/**
  * Where a plain DuckDB destination's database file lives, under
  * {@link storageDestinationRoot}. Every path to that file goes through here:
  * a name that could reach outside the root (a separator, `..`) is refused.
@@ -471,15 +496,15 @@ export function storageDestinationFile(
    environmentPath: string,
    destinationName: string,
 ): string {
-   if (!DESTINATION_FILE_NAME.test(destinationName)) {
-      throw new BadRequestError(
-         `Storage destination name '${destinationName}' is not a valid file ` +
-            `name: use letters, digits, '_', '-' and '.', never '..'.`,
-      );
+   const refused = destinationFileNameRefusal(destinationName);
+   if (refused !== undefined) {
+      throw new BadRequestError(`Storage destination: ${refused}`);
    }
-   const root = storageDestinationRoot(environmentPath);
-   const file = path.join(root, `${destinationName}.duckdb`);
-   if (path.dirname(file) !== root) {
+   const root = path.resolve(storageDestinationRoot(environmentPath));
+   // Resolve, then require the result to sit directly under the root: the
+   // containment check a path-traversal analysis recognises as a sanitizer.
+   const file = path.resolve(root, `${destinationName}.duckdb`);
+   if (!file.startsWith(root + path.sep) || path.dirname(file) !== root) {
       throw new BadRequestError(
          `Storage destination name '${destinationName}' leaves its root.`,
       );
@@ -570,6 +595,13 @@ export function validateStorageDestinations(
             name,
             reason: "an earlier entry already uses this name.",
          });
+         continue;
+      }
+      const fileName = namesItsFile(type)
+         ? destinationFileNameRefusal(name)
+         : undefined;
+      if (fileName !== undefined) {
+         rejected.push({ name, reason: fileName });
          continue;
       }
 

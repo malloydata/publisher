@@ -39,11 +39,15 @@ Two consequences worth knowing. A section merged to `main` ships in the **next**
 
 **Changed: a plain DuckDB `storage=` destination's database file is named from the destination's configured name, not the session's attach alias,** through one guarded path that refuses a name with a separator or `..` and keeps the file under the destinations root.
 
+The name such a destination's file is named from may use only ASCII letters, digits, `_`, `-` and `.` (`^[A-Za-z0-9_.-]+$`), never `..`. A destination list holding a plain DuckDB entry with any other name rejects that entry when the list loads, naming the pattern, rather than failing its first build or table listing with a 400. A DuckLake destination, whose files are not named from its name, keeps any name.
+
 ## [Unreleased] — a storage destination's `default_collation` is held to the column contract
 
 **Changed: a `storage=` table's contract records its destination session's `default_collation` (`contract.defaultCollation`), read in the build's session, and every bind reads the destination's current value beside the table's column collations.** A bind that finds another value reports the table `incompatible` with `incompatibility.code` `collation_changed`, naming its string columns that declare no collation of their own, and it answers live until it is rebuilt. A read that fails leaves the table unread, as before. A table built under a non-default setting passes its own contract, and records its strings as compared unlike live (`compare: none`), so nothing stacks on them or serves them past a gate.
 
 ## [Unreleased] — breaking: no downstream is built from its definition over a persisted upstream
+
+**Breaking: an extension's own `#(materialize)` table whose build over its parent's table does not compile, or cannot be written, is refused when the package is planned, as `upstream_table_unusable` with a `message` naming the parent and why.** It answers live and is never built over the chain from the warehouse. Before, it was built over the raw chain, recomputing its parent's rows. That covers an extension reading a field or join its parent's table does not carry, a `storage=` extension whose chain reaches a source its destination does not hold, a cross-file extension reached through a selective import or whose build over the parent's table would not store the same columns, and an extension whose parent's generated build is refused. **What to do:** read what the extension needs through its parent's table (inline the join on the parent, or declare the field there), or import each file on the chain whole.
 
 **Breaking: every persisted view, named query and rollup that would have been built from its definition, recomputing a persisted upstream from raw, is now refused when the package is planned, as `upstream_table_unusable`, with a `message` naming the upstream and why.** It answers live, and is never built from raw. Newly refused:
 
@@ -78,6 +82,10 @@ Two consequences worth knowing. A section merged to `main` ships in the **next**
 **Changed: a `storage=` build reading BigQuery records how its strings compare live, from the catalog reads an answer's collation check makes** (complete reads only). Before, every BigQuery string column was recorded `compare: none`, so no build could stack on it. A read that fails or is incomplete still records `none`, which fails closed.
 
 **Fixed: the check now covers the destination's own collation**, which the contract's stored side records; #1996's probe read only the source's.
+
+**Fixed (wrong answer): each string is judged against the contract of the upstream whose table holds its column, never another upstream's.** Before, two upstreams stored in one destination that each held a column of the same name were judged by whichever contract was listed first, so a build grouping a case-insensitive `b.name` through a join could pass on `a.name`'s byte-exact contract and split groups that live merges (or, in the other order, be refused falsely). A string the check cannot follow to one of the upstreams it reads is refused, and one read through a query computed when the tables are read is now judged too.
+
+**Fixed: a destination's `default_collation` changing no longer flags a table with no string column** as `collation_changed`: only a string column that declares no collation of its own compares under it.
 
 ## [Unreleased] — breaking: every build is strict, and a run of named sources builds the upstreams it cannot carry
 
@@ -117,7 +125,9 @@ Two consequences worth knowing. A section merged to `main` ships in the **next**
 
 ## [Unreleased] — fixed: a query-shaped source's filtered measure over a stored table compares as live
 
-**Fixed: an unpersisted query-shaped source whose stage filters a measure on a string (`count() { where: name = 'x' }`) over a stored upstream was answered from the upstream's table, comparing that string byte-exact, even where the origin compares it under a case-insensitive or other non-binary collation.** The filtered measure's `where:` is now judged as a stage's `where:` already was, so such a query is answered live, equal to live.
+**Fixed (wrong answer): an unpersisted query-shaped source whose stage filters a measure on a string (`count() { where: name = 'x' }`) over a `storage=` stored upstream was answered from the upstream's table, comparing that string byte-exact, even where the origin compares it under a case-insensitive or other non-binary collation.** The filtered measure's `where:` is now judged as a stage's `where:` already was, so such a query is answered live, equal to live.
+
+**Who is affected:** an unpersisted query-shaped source (`source: x is a -> { … }`) over a `storage=` source, whose stage filters a measure (`count() { where: … }`) or uses `having:` on a string the origin compares under a non-binary collation: a case-insensitive or other nondeterministic collation, or an ordering comparison under a locale collation such as Postgres's `en_US` default. Releases up to 0.17.2 answered such queries from the stored table with byte-exact comparisons, a different count from live. A plain stage `where:` was already judged correctly, and database-tier tables keep the warehouse's collation. **What to do:** upgrade; nothing to change in the model.
 
 ## [Unreleased] — breaking: a chained `storage=` build is built over its stored upstreams or not at all
 

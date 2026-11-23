@@ -35,6 +35,7 @@ import { malloyIdentifiers } from "../../query_text";
 
 import { fieldPathsIn } from "./gate_paths";
 import type { ColumnOrigin, GateReads } from "./gate_reads_types";
+import { storedUpstreamResolver } from "./stored_upstream";
 import type { UpstreamTableSchema } from "../domain/upstream_schemas";
 
 /** The names a gate's text reads: each identifier it names, fields or not. */
@@ -343,6 +344,8 @@ class GateReadWalk {
    readonly columns: string[][] = [];
    /** Each of {@link columns}'s origin, by position (GateReads.columnOrigins). */
    readonly columnOrigins: (ColumnOrigin | undefined)[] = [];
+   /** Each of {@link columns}'s stored upstream, by position (GateReads.columnUpstreams). */
+   readonly columnUpstreams: (string | undefined)[] = [];
    unresolved = false;
    scoped = false;
    equalityOnly = true;
@@ -364,7 +367,12 @@ class GateReadWalk {
        * by `sourceID`, read or not ({@link scopeJoins}).
        */
       private readonly rerooted: ReadonlySet<string> = new Set(),
-   ) {}
+   ) {
+      this.upstreamOf = storedUpstreamResolver(modelDef, stored);
+   }
+
+   /** The stored upstream a column's owner is read from. */
+   private readonly upstreamOf: (owner: unknown) => string | undefined;
 
    /** A string comparison not known to compare only columns. */
    private noColumnsOnly(): void {
@@ -819,6 +827,7 @@ class GateReadWalk {
          joins.length === 0 ? [] : along.map((n) => [...joins, n].join("__"));
       this.columns.push([...new Set([...along, ...flattened])]);
       this.columnOrigins.push(tableColumnOf(source, stored));
+      this.columnUpstreams.push(this.upstreamOf(source));
    }
 
    /** The fields one stage outputs, by the name each goes by. */
@@ -1707,6 +1716,7 @@ export function gateReads(
       names: walk.names,
       columns: walk.columns,
       columnOrigins: walk.columnOrigins,
+      columnUpstreams: walk.columnUpstreams,
       unresolved: walk.unresolved,
       scoped: walk.scoped,
       gated: exprs.length > 0,
@@ -1974,6 +1984,7 @@ export async function queryFilterReadsOfQuery(
          names: walk.names,
          columns: walk.columns,
          columnOrigins: walk.columnOrigins,
+         columnUpstreams: walk.columnUpstreams,
          unresolved: walk.unresolved,
          scoped: walk.scoped,
          gated: false,

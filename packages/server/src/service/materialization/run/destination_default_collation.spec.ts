@@ -65,7 +65,9 @@ async function observed() {
 
 describe("a destination's default_collation, held to the contract", () => {
    it("reads the session's setting beside the table's collations", async () => {
-      await connection.runSQL("CREATE OR REPLACE TABLE t (id INTEGER, name VARCHAR)");
+      await connection.runSQL(
+         "CREATE OR REPLACE TABLE t (id INTEGER, name VARCHAR)",
+      );
       expect((await readCollations())?.defaultCollation).toBe("binary");
       await connection.runSQL("SET default_collation = 'nocase'");
       try {
@@ -105,5 +107,28 @@ describe("a destination's default_collation, held to the contract", () => {
       } finally {
          await connection.runSQL("SET default_collation = ''");
       }
+   });
+
+   it("passes a table with no string column whatever the setting becomes", async () => {
+      const contract = deriveContract({
+         tier: "storage",
+         stored: {
+            dialect: "duckdb",
+            columns: [{ name: "id", nativeType: "INTEGER", isString: false }],
+            collations: { byColumn: new Map(), otherwise: null },
+            defaultCollation: "binary",
+         },
+      });
+      expect(contract.defaultCollation).toBe("binary");
+      expect(
+         compatible(contract, {
+            columns: [{ name: "id", nativeType: "INTEGER" }],
+            collations: {
+               byColumn: new Map(),
+               otherwise: null,
+               defaultCollation: "duckdb:nocase",
+            },
+         }),
+      ).toEqual({ ok: true });
    });
 });

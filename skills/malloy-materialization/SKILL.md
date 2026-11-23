@@ -18,7 +18,7 @@ This file is the core. The details live beside it, one topic per file, and each 
 - `reference/annotation.md` - the `#@ persist` tag: what can carry it, the name rules, identity and reuse, readers of a persisted source, and every option with where it is explained.
 - `reference/policy.md` - the `publisher.json` block: `scope`, `queryMetadata`, and where the rules are enforced.
 - `reference/storage.md` - building into a **storage destination** (`storage=`), where a given may sit, which sources that tier refuses, and how a stored table is served.
-- `reference/chaining.md` - one stored source built **over another stored source**: what makes it reuse the parent's table or recompute from the warehouse, and how to read which happened.
+- `reference/chaining.md` - one stored source built **over another stored source**: what makes it build over the parent's table, why one that cannot is refused rather than recomputed from the warehouse, and how to read what happened.
 - `reference/refresh.md` - keeping a table current: `freshness`, `schedule`, and `refresh="incremental"`.
 - `reference/access-filter.md` - persisting a `#(access_filter)`-gated source, and the bound on a stale access decision.
 - `reference/tuning.md` - reading the materialization history to decide what to persist, stop persisting, or reschedule (recommendations only).
