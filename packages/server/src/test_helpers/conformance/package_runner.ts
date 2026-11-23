@@ -610,14 +610,18 @@ export async function loadFixture(
             async rebind(_options: { observe?: boolean } = {}) {
                // Empty first, so the package derives every binding afresh.
                const mz = pkg.materialization();
-               mz.bind({ database: {} });
-               // With the column read the server binds with (package.ts),
-               // so a stored column's guard runs as it does there.
-               mz.bind({
+               await mz.bindCompiled({ database: {} });
+               // As the server rebinds (environment.ts): with the column
+               // reads it binds with, each table held to its contract, and
+               // the served copy compiled in the bind's commit.
+               await mz.bindCompiled({
                   database: database as never,
                   observed: await mz.readDatabaseColumns(database as never),
                });
-               pkg.materialization().bind({ storage: stored as never });
+               await mz.bindCompiled({
+                  storage: stored as never,
+                  storageObserved: await mz.readStorageColumns(stored as never),
+               });
                await settle();
             },
             warnings: warningsOf(),

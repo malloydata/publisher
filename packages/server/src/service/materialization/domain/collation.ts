@@ -75,6 +75,24 @@ export const PG_COLLATION_IDENTITY = `CASE WHEN c.collname = 'default' AND c.col
 export interface TableCollations {
    byColumn: ReadonlyMap<string, string | null>;
    otherwise: string | null;
+   /**
+    * DuckDB: the reading session's `default_collation`, as an identity
+    * ({@link duckdbDefaultCollation}), which every column declared with no
+    * `COLLATE` compares under. Absent where it is not read.
+    */
+   defaultCollation?: string;
+}
+
+/**
+ * A DuckDB session's `default_collation` setting as an identity: unset or
+ * empty compares bytes (`binary`), any other reads `duckdb:<name>`
+ * (lower-cased).
+ */
+export function duckdbDefaultCollation(setting: unknown): string {
+   const name = typeof setting === "string" ? setting.trim().toLowerCase() : "";
+   return name === "" || name === "binary"
+      ? BINARY_COLLATION
+      : `duckdb:${name}`;
 }
 
 /** The collation identity of `column` in `t`, matched exactly then case-blind. */
@@ -94,8 +112,8 @@ export function collationOf(t: TableCollations, column: string): string | null {
  * and every other column `binary`. A definition naming a `COLLATE` this
  * read cannot attribute to one column reads every column as
  * `duckdb:unplaced`, which matches no other. The instance's
- * `default_collation` is the reading session's, not the table's, and is
- * not read here.
+ * `default_collation` is the reading session's, not the table's: the
+ * catalog read records it beside these (`TableCollations.defaultCollation`).
  */
 export function duckdbTableCollations(definition: string): TableCollations {
    const byColumn = new Map<string, string | null>();

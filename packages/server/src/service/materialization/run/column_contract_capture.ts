@@ -224,7 +224,14 @@ export async function storageContract(args: {
             : "its column collations did not read",
       );
    }
-   const stored = { dialect: STORAGE_DIALECT, columns, collations };
+   const stored = {
+      dialect: STORAGE_DIALECT,
+      columns,
+      collations,
+      ...(collations.defaultCollation
+         ? { defaultCollation: collations.defaultCollation }
+         : {}),
+   };
    if (args.stackedOn) {
       return deriveContract({
          tier: "storage",
