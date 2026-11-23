@@ -9,6 +9,7 @@ import {
 import type {
    BoundStorageColumns,
    BoundStorageContract,
+   BoundTableContract,
    PlanChainBuildText,
    PlanChainStringReads,
 } from "./materialization/domain/chain_build";
@@ -2982,6 +2983,12 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       sourceID,
       destination,
    ) => this.mz.boundStorageContract(sourceID, destination);
+
+   /** See {@link BuildPlanPackage.boundTableContract}. */
+   public readonly boundTableContract: BoundTableContract = (
+      sourceID,
+      storage,
+   ) => this.mz.boundTableContract(sourceID, storage);
 
    /** See {@link BuildPlanPackage.planChainStringReads}. */
    public readonly planChainStringReads: PlanChainStringReads =

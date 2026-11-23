@@ -211,6 +211,9 @@ async function collectPackageParts(
          ...(pkg.boundStorageColumns
             ? { boundStorageColumns: pkg.boundStorageColumns }
             : {}),
+         ...(pkg.boundTableContract
+            ? { boundTableContract: pkg.boundTableContract }
+            : {}),
          ...(pkg.planChainStringReads
             ? {
                  stringReads: {

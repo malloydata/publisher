@@ -64,6 +64,7 @@ const FACADE_SURFACE = [
    "boundLateRows",
    "boundStorageColumns",
    "boundStorageContract",
+   "boundTableContract",
    "chainBuildText",
    "dataInliningWarnings",
    "databaseTableUnreadWarnings",

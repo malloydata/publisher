@@ -426,6 +426,17 @@ export interface ChainMode {
     *    destination, attached read-only in the extension's build session.
     */
    tier: "same" | "storage_over_database" | "across_destinations";
+   /**
+    * Set when the parent is a pair table (an inlined join_many, or several
+    * inlined paths): the build re-roots the parent on its join put back
+    * (plan/pair_reroot.ts), so the extension reads one row per parent. The
+    * re-root counts each level by its key, so the build relies on the leaf
+    * checks `leafKeys` names (`ColumnContract.keys`, as
+    * `pairLeafContractKeys` writes them) having passed on the parent's
+    * table: judged at plan from the parent's bound contract when there is
+    * one, else at build (run/pair_leaf_gate.ts, `schema_incompatible`).
+    */
+   pair?: { leafKeys: string[] };
 }
 
 /** The parent an extension table builds over. */

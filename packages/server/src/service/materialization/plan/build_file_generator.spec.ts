@@ -654,7 +654,7 @@ source: orders is orders_raw extend {
       ["storage", 'storage="lake" '],
    ]) {
       it(
-         `never builds an extension over a pair table, which holds each parent once per child (${tier})`,
+         `builds an extension over a pair table with its join put back, relying on its leaf check (${tier})`,
          async () => {
             const ext = route.trim();
             const pkg = await packages.create(`${PAIRED}
@@ -679,15 +679,17 @@ source: orders_ext is orders extend {
                generatedPlans(c).find((p) => p.sourceName === "orders")?.pair
                   ?.join,
             ).toBe("lines");
-            // Refused, never built over the raw chain.
+            // Linked over the pair table, read back one row per parent,
+            // never built over the raw chain.
             expect(
-               generatedPlans(c).find((p) => p.sourceName === "orders_ext"),
-            ).toBeUndefined();
+               generatedPlans(c).find((p) => p.sourceName === "orders_ext")
+                  ?.buildsOver?.mode,
+            ).toEqual({ tier: "same", pair: { leafKeys: ["lines.line_id"] } });
             expect(
-               (c.annotationFindings ?? [])
-                  .filter((f) => f.code === "materialize-not-built")
-                  .map((f) => [f.subject, f.refused?.reason]),
-            ).toEqual([["orders_ext", "upstream_table_unusable"]]);
+               (c.annotationFindings ?? []).filter(
+                  (f) => f.code === "materialize-not-built",
+               ),
+            ).toEqual([]);
          },
          { timeout: 30000 },
       );

@@ -74,6 +74,7 @@ import {
    type ChainMode,
 } from "../domain/table_plans";
 import { UPSTREAM_TABLE_UNUSABLE_REASON } from "./downstream_upstreams";
+import { pairLeafContractKeys } from "./pair_reroot";
 import {
    currentTimeFields,
    givenReadingFields,
@@ -2106,10 +2107,13 @@ type ChainVerdict = { link: ChainMode } | { refuse: string };
  * {@link ChainVerdict} for one extension and its parent. Linked today: a
  * pair on one tier (both database, whose build reads the parent's build
  * source in its own warehouse, or one storage destination, whose build reads
- * the parent's table there, see `overStored`), neither incremental, neither a
- * table of several inlined paths, the parent no pair table, and the parent
- * with no given-reading `where:` and no current-time `where:` its build
- * leaves out. Every other pair is refused, each with why.
+ * the parent's table there, see `overStored`), neither incremental, and the
+ * parent with no given-reading `where:` and no current-time `where:` its
+ * build leaves out. A pair-table parent (an inlined join_many, a path, or
+ * blocks) links with `pair`: the build reads it back one row per parent
+ * (plan/pair_reroot.ts), relying on its leaf key checks; it stays refused
+ * with an incremental side, as does a `storage=` extension of several
+ * inlined paths. Every other pair is refused, each with why.
  */
 export function chainVerdict(
    plan: MaterializePlan,
@@ -2119,6 +2123,17 @@ export function chainVerdict(
    if ("refuse" in tiers) return tiers;
    const incremental = (p: MaterializePlan) =>
       Object.keys(p.persist).some((k) => INCREMENTAL_KEYS.includes(k));
+   const pairParent =
+      parent.pair !== undefined || parent.pairBlocks !== undefined;
+   // A pair delta replaces whole parents and is open above, and a watermark
+   // delta through the re-root's self-join is unproven.
+   if (pairParent && (incremental(plan) || incremental(parent))) {
+      return {
+         refuse:
+            "whose pair table an incremental refresh cannot be coordinated " +
+            "over, so neither may be incremental",
+      };
+   }
    // TODO(extension chains, case 2: incremental): coordinate the refresh.
    if (incremental(plan) || incremental(parent)) {
       return {
@@ -2127,20 +2142,14 @@ export function chainVerdict(
             "parent, has no coordinated refresh over the parent's table yet",
       };
    }
-   // TODO(extension chains, case 3: pair parent): re-root on the join.
-   if (plan.pairBlocks || parent.pairBlocks) {
+   // A table of several inlined paths unions its blocks with a `conn.sql`
+   // on the source connection, which a build in a destination over the
+   // parent's stored table cannot run.
+   if (plan.pairBlocks && plan.persist.storage !== undefined) {
       return {
          refuse:
-            "and a table of several inlined paths is not yet built over, or as " +
-            "an extension of, another table",
-      };
-   }
-   if (parent.pair) {
-      return {
-         refuse:
-            "whose pair table holds a row per child of its inlined join_many, " +
-            "which an extension's build does not yet read back as one row per " +
-            "parent",
+            "and a storage= table of several inlined paths is not built over " +
+            "another table in its destination",
       };
    }
    // TODO(extension chains, case 4: given and window terms): leave the
@@ -2159,7 +2168,16 @@ export function chainVerdict(
             "re-root would apply to the extension's build",
       };
    }
-   return { link: tiers.link };
+   return {
+      link: {
+         ...tiers.link,
+         // The build re-roots a pair parent on its join put back, which
+         // counts each level by its key: it relies on the leaf checks.
+         ...(pairParent
+            ? { pair: { leafKeys: pairLeafContractKeys(parent) } }
+            : {}),
+      },
+   };
 }
 
 /**

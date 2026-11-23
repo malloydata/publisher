@@ -332,9 +332,19 @@ export function parentRerootEdit(
    const range = plan.buildsOver?.declaration.range;
    const from = range ? offsetOf(text, range.start) : -1;
    const to = range ? offsetOf(text, range.end) : -1;
+   // A pair parent is re-rooted on its join put back, so the extension
+   // reads one row per parent (case 3), as a view over it does.
+   const pair = parent.pair !== undefined || parent.pairBlocks !== undefined;
+   const pairBase = pair ? pairRerootBase(parent) : undefined;
+   if (pair && pairBase === undefined) return undefined;
    const rerooted =
       from >= 0 && to >= from
-         ? rerootOnBuildSource(text.slice(from, to), parent, { joinRecords })
+         ? rerootOnBuildSource(text.slice(from, to), parent, {
+              joinRecords,
+              ...(pairBase === undefined
+                 ? {}
+                 : { base: pairBase, dropJoinManys: pairRerootJoins(parent) }),
+           })
          : undefined;
    return rerooted === undefined
       ? undefined
@@ -577,13 +587,15 @@ function rerootOnBuildSource(
 /**
  * The join_ones a parent's table stores inline (`inline=`), each with its
  * stored columns and the join's modifier, as {@link inlinedJoinStatements}
- * writes their records. A pair table's join_many is not one: its table is
- * a row per pair, never chained on as the parent's rows.
+ * writes their records. A pair table's join_manys are not: its re-root puts
+ * each back as a join over the table's own rows (plan/pair_reroot.ts).
  */
 function parentJoinRecords(parent: MaterializePlan): InlinedJoinText[] {
    const out: InlinedJoinText[] = [];
+   // A pair table's join_manys are put back by its re-root, not recorded.
+   const pairJoins = new Set(pairRerootJoins(parent));
    for (const join of parent.inline ?? []) {
-      if (join === parent.pair?.join) continue;
+      if (pairJoins.has(join.split(".")[0])) continue;
       const columns = parent.columns.filter((c) => c.join === join);
       if (columns.length === 0) continue;
       const access = columns[0].access;

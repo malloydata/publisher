@@ -155,11 +155,13 @@ import {
 import type {
    BoundStorageColumns,
    BoundStorageContract,
+   BoundTableContract,
    ChainStringReadsRequest,
    PlanChainBuildText,
    PlanChainStringReads,
 } from "../domain/chain_build";
 import { type StringReads, stringReadsRefusal } from "../domain/string_reads";
+import { keyCheckPassed } from "../domain/column_contract";
 import { SourceMap } from "../text/source_map";
 import { quotedIdentifier } from "../../malloy_text";
 import type {
@@ -887,6 +889,7 @@ async function collectGeneratedMaterialize(
       materializer: ModelMaterializer;
       keyCheckCompilers?: Map<string, KeyCheckCompiler>;
       crossFileCompanions?: CrossFileCompanions;
+      boundTableContract?: BoundTableContract;
    },
 ): Promise<MaterializedBases | undefined> {
    const authorDef: ModelDef = modelDefOf(args.malloyModel);
@@ -966,10 +969,15 @@ async function collectGeneratedMaterialize(
          sourceID: plan.sourceID,
       });
       const sourceID = plan.sourceID;
+      const unusableUpstream = pairParentUnusable(
+         plan,
+         args.boundTableContract,
+      );
       parts.tables[sourceID] = {
          kind: materializeKindOf(plan),
          ...plannedFacts(source, args.modelPath),
          materialize: plan,
+         ...(unusableUpstream ? { unusableUpstream } : {}),
          gate: await authorSourceGate(sourceID, authorDef, {
             materializer: args.materializer,
             deps,
@@ -978,6 +986,47 @@ async function collectGeneratedMaterialize(
       };
    }
    return { plans: generated.plans, files: generated.files };
+}
+
+/**
+ * Why an extension table over a pair-table parent (`ChainMode.pair`) is
+ * refused at plan: the parent's bound contract records a leaf key check its
+ * re-root relies on as failed, or records none. Judged here when the
+ * package has bound a contract for the parent's table, so a failure the
+ * bind already holds is never found again by a build (`schema_incompatible`
+ * for the same table twice); undefined otherwise, when a parent built in
+ * the same run, or never bound, is judged at build (run/pair_leaf_gate.ts).
+ */
+function pairParentUnusable(
+   plan: MaterializePlan,
+   boundContract: BoundTableContract | undefined,
+): string | undefined {
+   const over = plan.buildsOver;
+   const leafKeys = over?.mode.pair?.leafKeys;
+   if (!over || !leafKeys?.length || !boundContract) return undefined;
+   // Where the parent's table is: on the extension's own tier, or the
+   // warehouse a `storage=` extension's build reads it in. One in another
+   // destination is judged at build.
+   const tier = over.mode.tier;
+   if (tier === "across_destinations") return undefined;
+   const contract = boundContract(
+      over.sourceID,
+      tier === "same" ? plan.persist.storage : undefined,
+   );
+   if (!contract) return undefined;
+   const unpassed = leafKeys.filter((k) => !keyCheckPassed(contract, k));
+   if (unpassed.length === 0) return undefined;
+   const failed = unpassed.filter((k) => contract.keys?.[k] !== undefined);
+   const what =
+      failed.length > 0
+         ? `found the key ${failed.map((k) => `'${k}'`).join(", ")} held more than once or NULL`
+         : `recorded no result for the key ${unpassed.map((k) => `'${k}'`).join(", ")}`;
+   return (
+      `it extends '${over.sourceName}', whose pair table it is built over ` +
+      `with its join put back, and the leaf key check of its inlined ` +
+      `join_many, which that build relies on, ${what} when the table was ` +
+      `built; it builds once the parent's table records the check passed`
+   );
 }
 
 /**
@@ -1825,6 +1874,11 @@ export async function collectModelBuildPlan(
       boundStorageColumns?: BoundStorageColumns;
       /** See {@link StringReadsPorts}. */
       stringReads?: StringReadsPorts;
+      /**
+       * The contract bound for a table, which judges an extension's build
+       * over a pair-table parent at plan; absent, it is judged at build.
+       */
+      boundTableContract?: BoundTableContract;
    },
 ): Promise<void> {
    addAccessReads(parts, args.malloyModel);
@@ -1930,6 +1984,9 @@ async function collectGeneratedTables(
          materializer,
          keyCheckCompilers,
          crossFileCompanions,
+         ...(args.boundTableContract
+            ? { boundTableContract: args.boundTableContract }
+            : {}),
       });
       // `#@ persist` on a view, under the same switch.
       await collectGeneratedPersistedViews(parts, {
