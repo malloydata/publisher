@@ -37,7 +37,15 @@ import {
    ownLevelNotes,
    type AnnotationNote,
    type AnnotationsDef,
+   type NotePosition,
 } from "../../annotations";
+import {
+   notesDeclarePersist,
+   placementOf,
+   readNotesIfAny,
+} from "./declaration";
+import { noteSpanKey } from "../text/persist_blanking";
+import { plannedSources } from "./addressing";
 import { routeOfNote } from "../../annotation_reader";
 import {
    buildRowLevelProbe,
@@ -64,6 +72,7 @@ import {
 } from "../text/read_text";
 import {
    splitSourceID,
+   type OverStoredBase,
    type PersistedQueryPlan,
    type PersistedViewPlan,
 } from "../domain/table_plans";
@@ -76,8 +85,30 @@ import {
    type SynthesizedRuntimeFactory,
 } from "../text/generated_files";
 import { SourceMap } from "../text/source_map";
+import {
+   storedBaseCopies,
+   storedMaterializeUpstream,
+   type MaterializedBases,
+   type StoredMaterializeBase,
+} from "./stored_base_copy";
+import { overlayKey } from "../../overlay_key";
+import {
+   reachedSourceIDsOf,
+   reachedUpstreams,
+   storedElsewhereReason,
+   UPSTREAM_TABLE_UNUSABLE_REASON,
+} from "./downstream_upstreams";
 import type { Omission } from "../domain/omitted_sources";
+import type {
+   BoundStorageColumns,
+   PlanChainBuildText,
+} from "../domain/chain_build";
+import {
+   compileStorageOverStored,
+   type StorageOverStored,
+} from "./storage_over_stored";
 import type { RefusedReason } from "../domain/types";
+import { pairLeafContractKeys } from "./pair_reroot";
 import { gateRefusalReason } from "../domain/gate_refusal";
 
 interface GeneratedPersistedViews {
@@ -89,6 +120,35 @@ interface GeneratedPersistedViews {
    materializer: ModelMaterializer;
    runtime: Runtime;
    text: string;
+   /**
+    * The database views and queries that may be built over their upstreams'
+    * stored tables, by build sourceID, each as the companion compiled over
+    * the author's files with those upstreams' own `#@ persist` lines kept
+    * ({@link overStoredUpstreamNotes}), so Malloy's planner reads each
+    * upstream's table through a run's build manifest. Compiled at plan
+    * time, each candidate alone, so the plan records the decision
+    * (build_plan.ts proves each against its planned table). A candidate
+    * missing here did not compile, and builds from its definition.
+    */
+   overStoredSources: ReadonlyMap<string, OverStoredBase>;
+   /** The build sourceIDs offered the compile: the candidates. */
+   overStoredCandidates: ReadonlySet<string>;
+   /** By candidate: the persisted upstreams whose tables it would read. */
+   overStoredUpstreams: ReadonlyMap<string, readonly string[]>;
+   /**
+    * The views and queries over a `#(materialize)` upstream whose table they
+    * cannot be built from (several such upstreams, one in another file, a
+    * pair table it cannot re-root over, another zone), by build sourceID,
+    * with why: refused at plan (build_plan.ts).
+    */
+   overStoredUnusable: ReadonlyMap<string, string>;
+   /**
+    * The `storage=` views and queries over upstreams stored in their own
+    * destination, by build sourceID: each compiled over its upstreams'
+    * stand-ins, or why not (storage_over_stored.ts). build_plan.ts proves
+    * each against its planned table, or refuses it.
+    */
+   storageOverStored: ReadonlyMap<string, StorageOverStored>;
 }
 
 interface StageLike {
@@ -445,6 +505,25 @@ async function persistedQueryRefusalReason(
    return undefined;
 }
 
+/**
+ * The plan-time refusal of a database view or query (`storage` absent) an
+ * upstream of which is stored in a `storage=` destination: its build in
+ * the warehouse cannot read that table, and a downstream is never built by
+ * recomputing the upstream from raw. Undefined otherwise.
+ */
+function storedUpstreamRefusal(
+   storage: string | undefined,
+   root: unknown,
+   modelDef: unknown,
+   map: SourceMap,
+): { reason: string; refusal: RefusedReason } | undefined {
+   if (storage !== undefined || root === undefined) return undefined;
+   const reason = storedElsewhereReason(reachedUpstreams(root, modelDef, map));
+   return reason === undefined
+      ? undefined
+      : { reason, refusal: UPSTREAM_TABLE_UNUSABLE_REASON };
+}
+
 /** A planned query's refusal record. */
 function queryRefusalOf(
    plan: PersistedQueryPlan,
@@ -475,6 +554,11 @@ export async function tryCompilePersistedViewCompanion(args: {
    modelDef: unknown;
    materializer: ModelMaterializer;
    getRuntime: SynthesizedRuntimeFactory;
+   /** The model's `#(materialize)` companion, when it compiled one. */
+   materialized?: MaterializedBases;
+   /** The served copy's chain text (storage_over_stored.ts). */
+   chainBuildText?: PlanChainBuildText;
+   boundStorageColumns?: BoundStorageColumns;
 }): Promise<{
    generated?: GeneratedPersistedViews;
    refused: PersistedViewRefusal[];
@@ -497,12 +581,20 @@ export async function tryCompilePersistedViewCompanion(args: {
       const planned = planModelPersistedViews(args.modelDef, declaredHere);
       refused.push(...planned.refused);
       const plans: PersistedViewPlan[] = [];
+      const map = SourceMap.of(args.modelDef);
       for (const plan of planned.plans) {
-         const reason = await persistedViewRefusalReason(
-            plan,
-            args.modelDef,
-            args.materializer,
-         );
+         const reason =
+            storedUpstreamRefusal(
+               plan.storage,
+               map.node(plan.sourceID)?.def,
+               args.modelDef,
+               map,
+            ) ??
+            (await persistedViewRefusalReason(
+               plan,
+               args.modelDef,
+               args.materializer,
+            ));
          if (reason === undefined) plans.push(plan);
          else {
             refused.push({
@@ -525,11 +617,21 @@ export async function tryCompilePersistedViewCompanion(args: {
                  reason: `its generated build source \`${plan.buildSourceName}\` collides with a persisted view's; rename one of them`,
                  refusal: "build_name_collision" as const,
               }
-            : await persistedQueryRefusalReason(
+            : (storedUpstreamRefusal(
+                 plan.storage,
+                 (
+                    args.modelDef as {
+                       contents?: Record<string, unknown>;
+                    }
+                 ).contents?.[plan.queryName],
+                 args.modelDef,
+                 map,
+              ) ??
+              (await persistedQueryRefusalReason(
                  plan,
                  args.modelDef,
                  args.materializer,
-              );
+              )));
          if (refusal === undefined) queries.push(plan);
          else refusedQueries.push(queryRefusalOf(plan, refusal));
       }
@@ -564,8 +666,57 @@ export async function tryCompilePersistedViewCompanion(args: {
          url,
          overlay,
       );
+      const overStored = overStoredUpstreamNotes(
+         args.modelDef,
+         plans,
+         queries,
+         modelFile,
+         args.materialized,
+      );
+      const overStoredSources = await compileOverStoredUpstreams({
+         files,
+         modelDef: args.modelDef,
+         modelFile,
+         url,
+         plans,
+         queries,
+         overStored,
+         materialized: args.materialized,
+      });
+      const storageOverStored = await compileStorageOverStored({
+         modelDef: args.modelDef,
+         modelPath: args.modelPath,
+         modelFile,
+         plans,
+         queries,
+         ...(args.chainBuildText
+            ? { chainBuildText: args.chainBuildText }
+            : {}),
+         ...(args.boundStorageColumns
+            ? { boundStorageColumns: args.boundStorageColumns }
+            : {}),
+         ...(args.materialized
+            ? {
+                 materializePlans: Object.fromEntries(
+                    args.materialized.plans.map((p) => [p.sourceID, p]),
+                 ),
+              }
+            : {}),
+      });
       return {
-         generated: { plans, queries, model, materializer, runtime, text },
+         generated: {
+            plans,
+            queries,
+            model,
+            materializer,
+            runtime,
+            text,
+            overStoredSources,
+            overStoredCandidates: overStored.candidates,
+            overStoredUpstreams: overStored.upstreams,
+            overStoredUnusable: overStored.unusable,
+            storageOverStored,
+         },
          refused,
          refusedQueries,
       };
@@ -579,5 +730,280 @@ export async function tryCompilePersistedViewCompanion(args: {
             names: plannedNames,
          }),
       };
+   }
+}
+
+/**
+ * The persisted views and queries that may be built over their upstreams'
+ * stored tables, and what their second compile needs: a view or query,
+ * database or `storage=` (whose build runs in the warehouse too, and copies
+ * its result into its destination), whose definition reaches a source whose own notes
+ * declare a database `#@ persist` (each such note kept, `keep`), or one
+ * database `#(materialize)` source planned as a plain table in this model
+ * ({@link storedMaterializeUpstream}: its copy re-rooted on its build
+ * source, `stored`, by the build sourceID), and no source stored where the
+ * view cannot read it in place (a `storage=` destination, a second
+ * `#(materialize)`, another zone). Those over a `#(materialize)` upstream
+ * whose table they cannot read are `unusable`, and refused at plan.
+ */
+function overStoredUpstreamNotes(
+   modelDef: unknown,
+   views: readonly PersistedViewPlan[],
+   queries: readonly PersistedQueryPlan[],
+   modelFile: string,
+   materialized: MaterializedBases | undefined,
+): {
+   keep: Map<string, Set<string>>;
+   candidates: Set<string>;
+   stored: Map<string, StoredMaterializeBase>;
+   /** By build sourceID: the persisted upstreams it reads the tables of. */
+   upstreams: Map<string, string[]>;
+   /** By build sourceID: why its `#(materialize)` upstream's table is unusable. */
+   unusable: Map<string, string>;
+} {
+   const map = SourceMap.of(modelDef);
+   const contents =
+      (modelDef as { contents?: Record<string, unknown> }).contents ?? {};
+   // By build sourceID: each candidate's own upstreams' notes.
+   const keep = new Map<string, Set<string>>();
+   const upstreams = new Map<string, string[]>();
+   const candidates = new Set<string>();
+   const stored = new Map<string, StoredMaterializeBase>();
+   const unusable = new Map<string, string>();
+   const plans: {
+      buildSourceID: string;
+      storage?: string;
+      root: unknown;
+   }[] = [
+      ...views.map((p) => ({ ...p, root: map.node(p.sourceID)?.def })),
+      ...queries.map((p) => ({ ...p, root: contents[p.queryName] })),
+   ];
+   for (const plan of plans) {
+      if (plan.root === undefined) continue;
+      const spans: string[] = [];
+      const upstreamIDs: string[] = [];
+      let chainable = true;
+      for (const sourceID of reachedSourceIDsOf(plan.root, modelDef, map)) {
+         const upstream = upstreamTableOf(map, sourceID);
+         if (upstream === undefined) continue;
+         if (upstream === "unreadable") {
+            chainable = false;
+            break;
+         }
+         spans.push(...upstream);
+         upstreamIDs.push(sourceID);
+      }
+      const base = storedMaterializeUpstream(
+         map,
+         plan.root,
+         modelDef,
+         modelFile,
+         materialized,
+         { pairs: true },
+      );
+      if (!chainable) continue;
+      if (base && "unusable" in base) {
+         unusable.set(plan.buildSourceID, base.unusable);
+         continue;
+      }
+      if (spans.length === 0 && base === undefined) continue;
+      keep.set(plan.buildSourceID, new Set(spans));
+      upstreams.set(plan.buildSourceID, [
+         ...upstreamIDs,
+         ...(base ? [base.plan.sourceID] : []),
+      ]);
+      if (base) stored.set(plan.buildSourceID, base);
+      candidates.add(plan.buildSourceID);
+   }
+   return { keep, candidates, stored, upstreams, unusable };
+}
+
+/**
+ * What the source `sourceID` is as an upstream a view or query may read the
+ * table of: the spans of its own database `#@ persist` notes; `unreadable`
+ * when it is stored where the view cannot read it in place (`storage=`) or
+ * its notes cannot be placed; undefined when its own notes do not declare
+ * `#@ persist`.
+ */
+function upstreamTableOf(
+   map: SourceMap,
+   sourceID: string,
+): string[] | "unreadable" | undefined {
+   const def = map.node(sourceID)?.def as
+      | { annotations?: AnnotationsDef }
+      | undefined;
+   // A `#(materialize)` upstream is read through its build source
+   // (storedMaterializeUpstream), never its author's notes.
+   const own = ownLevelNotes(def?.annotations).filter(
+      (n) => routeOfNote(n.text) === "@",
+   );
+   if (!notesDeclarePersist(own)) return undefined;
+   const tag = readNotesIfAny(own, "@");
+   const placed = tag ? placementOf(tag, "persist") : undefined;
+   if (!placed || !("placement" in placed)) return "unreadable";
+   if (placed.placement.tier !== "database") return "unreadable";
+   const spans = own.flatMap((n) => {
+      const at = (n as { at?: NotePosition }).at;
+      return at ? [noteSpanKey(at.url, at.range)] : [];
+   });
+   return spans.length === own.length ? spans : "unreadable";
+}
+
+/**
+ * Each candidate compiled a second time over the author's files with its own
+ * upstreams' notes kept and, over a `#(materialize)` upstream, its source
+ * imported from a copy of the model that re-roots that upstream
+ * ({@link overStoredUpstreamNotes}): its build source by its sourceID.
+ *
+ * Candidates that keep the same notes and re-root the same upstream read
+ * their sources from the same files, so they share one blanking, one copy
+ * and one companion compile: a model with N views over one upstream
+ * compiles once. When that compile fails, each of its candidates is
+ * compiled alone, so one candidate's failure never decides another's. A
+ * candidate whose own compile fails, or whose copy or upstream build source
+ * cannot be made, is left out, and builds from its definition, as planned.
+ */
+async function compileOverStoredUpstreams(args: {
+   files: GeneratedFiles;
+   modelDef: unknown;
+   modelFile: string;
+   url: URL;
+   plans: readonly PersistedViewPlan[];
+   queries: readonly PersistedQueryPlan[];
+   overStored: ReturnType<typeof overStoredUpstreamNotes>;
+   materialized: MaterializedBases | undefined;
+}): Promise<ReadonlyMap<string, OverStoredBase>> {
+   const { overStored } = args;
+   const groups = new Map<string, string[]>();
+   for (const id of overStored.candidates) {
+      const key = JSON.stringify([
+         [...(overStored.keep.get(id) ?? [])].sort(),
+         overStored.stored.get(id)?.plan.sourceID ?? null,
+      ]);
+      groups.set(key, [...(groups.get(key) ?? []), id]);
+   }
+   const out = new Map<string, OverStoredBase>();
+   for (const ids of groups.values()) {
+      const inputs = await overStoredInputs(args, ids[0] as string);
+      if (!inputs) continue;
+      let found = await compileOverStoredGroup(args, inputs, ids);
+      if (!found && ids.length > 1) {
+         // Together they failed: each alone, over the same inputs.
+         found = new Map();
+         for (const id of ids) {
+            const one = await compileOverStoredGroup(args, inputs, [id]);
+            for (const [k, v] of one ?? []) found.set(k, v);
+         }
+      }
+      for (const [k, v] of found ?? []) out.set(k, v);
+   }
+   return out;
+}
+
+/**
+ * What a group of candidates compiles over, made once for the group: the
+ * author's files with its upstreams' notes kept, and, over a
+ * `#(materialize)` upstream, the re-rooted copy of the model. Undefined
+ * when either cannot be made.
+ */
+async function overStoredInputs(
+   args: Parameters<typeof compileOverStoredUpstreams>[0],
+   buildSourceID: string,
+): Promise<
+   | {
+        kept: Map<string, string>;
+        base?: StoredMaterializeBase;
+        copy?: { url: string; text: string };
+     }
+   | undefined
+> {
+   const { overStored, files, modelFile } = args;
+   try {
+      const kept = await files.blanked(
+         args.modelDef,
+         overStored.keep.get(buildSourceID) ?? new Set(),
+      );
+      if (!kept) return undefined;
+      const base = overStored.stored.get(buildSourceID);
+      if (!base) return { kept };
+      const modelURL = pathToFileURL(modelFile);
+      const copy = storedBaseCopies(
+         new Map([[base.plan.sourceName, base]]),
+         kept.get(overlayKey(modelURL)) ?? (await files.readIfAny(modelURL)),
+         modelFile,
+      ).get(base.plan.sourceName);
+      return copy ? { kept, base, copy } : undefined;
+   } catch {
+      return undefined;
+   }
+}
+
+/**
+ * One companion compile of the candidates `ids` over `inputs`: each one's
+ * build source by its sourceID, or undefined when the compile fails.
+ */
+async function compileOverStoredGroup(
+   args: Parameters<typeof compileOverStoredUpstreams>[0],
+   inputs: NonNullable<Awaited<ReturnType<typeof overStoredInputs>>>,
+   ids: readonly string[],
+): Promise<Map<string, OverStoredBase> | undefined> {
+   const { overStored, files, modelFile } = args;
+   const { kept, base, copy } = inputs;
+   const wanted = new Set(ids);
+   try {
+      const from = copy ? path.basename(new URL(copy.url).pathname) : undefined;
+      const text = generatePersistedResultFile(
+         args.plans.filter((p) => wanted.has(p.buildSourceID)),
+         args.queries.filter((p) => wanted.has(p.buildSourceID)),
+         path.basename(modelFile),
+         () => from,
+      );
+      if (text === undefined) return undefined;
+      const overlay = new Map(kept);
+      for (const [file, fileText] of args.materialized?.files ?? []) {
+         overlay.set(file, fileText);
+      }
+      if (copy) overlay.set(copy.url, copy.text);
+      overlay.set(args.url.href, text);
+      const compiled = await files.compile(args.url, overlay);
+      const sources = plannedSources(
+         await compiled.runtime.getBuildTargets(compiled.model),
+      );
+      const baseBuildSource = base
+         ? sources.find(
+              (s) =>
+                 s.name === base.plan.buildSourceName &&
+                 overlayKey(splitSourceID(s.sourceID)?.url ?? "") ===
+                    overlayKey(
+                       pathToFileURL(
+                          path.join(path.dirname(modelFile), base.importFrom),
+                       ).href,
+                    ),
+           )
+         : undefined;
+      if (base && !baseBuildSource) return new Map();
+      const out = new Map<string, OverStoredBase>();
+      for (const source of sources) {
+         if (!wanted.has(source.sourceID)) continue;
+         const upstreamSourceIDs =
+            overStored.upstreams.get(source.sourceID) ?? [];
+         out.set(
+            source.sourceID,
+            base
+               ? {
+                    source,
+                    baseBuildSource,
+                    rerootedSourceID: base.plan.sourceID,
+                    upstreamSourceIDs,
+                    ...(base.plan.pair || base.plan.pairBlocks
+                       ? { pairLeafKeys: pairLeafContractKeys(base.plan) }
+                       : {}),
+                 }
+               : { source, upstreamSourceIDs },
+         );
+      }
+      return out;
+   } catch {
+      return undefined;
    }
 }

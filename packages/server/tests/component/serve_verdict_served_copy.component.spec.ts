@@ -28,6 +28,7 @@
  * answer equals live's, compared as text.
  */
 
+import { contractFor } from "../../src/test_helpers/contract_fixture";
 import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
 import { installSettings } from "../../src/test_helpers/settings_env";
 import {
@@ -485,6 +486,7 @@ describe("a package that serves every table, then one gone stale", () => {
             [entry.sourceEntityId]: {
                tableName,
                connectionName: "duckdb",
+               contract: contractFor(),
                dataAsOf: "2020-01-01T00:00:00Z",
                freshnessWindowSeconds: 60,
                freshnessFallback: "live",
@@ -626,6 +628,20 @@ describe("verdicts read between a bind and the served copy's compile at bind", (
       expect(model.servedCopySourceIDs()).not.toBe("pending");
       expect(shapes()).toEqual(SERVING);
       expect(pendingMarked()).toEqual([]);
+      await expectServedEqualLive();
+   });
+
+   it("a bind's commit compiles the served copy before the swap: never pending once it returns, correct at once", async () => {
+      const { mz, database, stored, model } = bound();
+      await unbindAll();
+      // The server's binds commit this way (bindCompiled): the models read
+      // the tables from before the bind until every copy compiled over the
+      // new ones, so nothing is pending when it returns.
+      await mz.bindCompiled({ database: database as never });
+      await mz.bindCompiled({ storage: stored as never });
+      expect(model.servedCopySourceIDs()).not.toBe("pending");
+      expect(pendingMarked()).toEqual([]);
+      expect(shapes()).toEqual(SERVING);
       await expectServedEqualLive();
    });
 

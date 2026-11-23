@@ -161,6 +161,8 @@ describe.skipIf(process.platform === "win32")(
       const spies: { mockRestore(): void }[] = [];
       /** Every catalog attach the run layer asked for, in order. */
       const attaches: { fn: string; dbName: string }[] = [];
+      /** The bind's read-only reads of its stored tables (their contracts). */
+      const bindReads: { fn: string; dbName: string }[] = [];
 
       const catalogFile = () => path.join(lakeDir, "catalog.ducklake");
 
@@ -307,7 +309,9 @@ describe.skipIf(process.platform === "win32")(
                connection,
                "attachDuckLakeReadOnlyIfPresent",
             ).mockImplementation(async (session, dbName) => {
-               attaches.push({ fn: "readOnlyIfPresent", dbName });
+               // A bind's read-only read of its stored tables, kept apart
+               // from the builds' attaches.
+               bindReads.push({ fn: "readOnlyIfPresent", dbName });
                if (!fs.existsSync(catalogFile())) return false;
                await attachFileLake(session as never, dbName, true);
                return true;
@@ -528,6 +532,12 @@ describe.skipIf(process.platform === "win32")(
          expect(attaches).toEqual(
             NAMES.map(() => ({ fn: "readWrite", dbName: LAKE })),
          );
+         // And the bind's read-only reads of the tables it binds, for their
+         // contracts: never a read-write attach.
+         expect(bindReads.length).toBeGreaterThan(0);
+         for (const read of bindReads) {
+            expect(read).toEqual({ fn: "readOnlyIfPresent", dbName: LAKE });
+         }
 
          const tables = [daily, orders, sales]
             .map((e) => e.physicalTableName)
@@ -728,6 +738,8 @@ class LakeFixture {
    service!: MaterializationService;
    /** Every catalog attach the run layer asked for, in order. */
    readonly attaches: { fn: string; dbName: string }[] = [];
+   /** The bind's read-only reads of its stored tables (their contracts). */
+   readonly bindReads: { fn: string; dbName: string }[] = [];
    /** Every statement a build session ran after its source was federated. */
    readonly statements: string[] = [];
    /** Called before each recorded statement runs; throwing fails it. */
@@ -920,7 +932,9 @@ class LakeFixture {
             connection,
             "attachDuckLakeReadOnlyIfPresent",
          ).mockImplementation(async (session, dbName) => {
-            this.attaches.push({ fn: "readOnlyIfPresent", dbName });
+            // A bind's read-only read of its stored tables, kept apart from
+            // the builds' attaches.
+            this.bindReads.push({ fn: "readOnlyIfPresent", dbName });
             if (!fs.existsSync(this.catalogFile())) return false;
             await this.attachFileLake(session as never, dbName, true);
             return true;
@@ -1233,12 +1247,16 @@ describe.skipIf(process.platform === "win32")(
             "BEGIN TRANSACTION",
             'CREATE OR REPLACE TABLE "lake"."orders_g1"',
             'DESCRIBE "lake"."orders_g1"',
+            // The column contract's read of its collations, before COMMIT.
+            "SELECT sql, current_setting('default_collation') AS dc FROM duckdb_tables() WHERE NOT internal AND lower(table_name) = lower('orders_g1') AND (lower(schema_name) = lower('lake') OR lower(database_name) = lower('lake'))",
             "COMMIT",
             'SELECT count(*) AS n FROM "lake"."orders_g1"',
             "DESCRIBE (passthrough)",
             "BEGIN TRANSACTION",
             'CREATE OR REPLACE TABLE "lake"."daily_g1"',
             'DESCRIBE "lake"."daily_g1"',
+            // The column contract's read of its collations, before COMMIT.
+            "SELECT sql, current_setting('default_collation') AS dc FROM duckdb_tables() WHERE NOT internal AND lower(table_name) = lower('daily_g1') AND (lower(schema_name) = lower('lake') OR lower(database_name) = lower('lake'))",
             "COMMIT",
             'SELECT count(*) AS n FROM "lake"."daily_g1"',
          ]);
@@ -1523,6 +1541,8 @@ source: events is warehouse.sql("""
             'SELECT (SELECT COUNT(*) FROM (SELECT * FROM postgres_query(\'warehouse\', \'SELECT "wm" FROM (SELECT "id", "cat", "amt", "wm" FROM (SELECT * FROM (SELECT ',
             `DESCRIBE "lake"."${TABLE}"`,
             `SELECT count(*) AS n FROM "lake"."${TABLE}"`,
+            // The column contract's read of its collations.
+            `SELECT sql, current_setting('default_collation') AS dc FROM duckdb_tables() WHERE NOT internal AND lower(table_name) = lower('${TABLE}') AND (lower(schema_name) = lower('lake') OR lower(database_name) = lower('lake'))`,
          ]);
          const script = lake.statements.find((s) => s.startsWith("BEGIN;"))!;
          expect(script.split("\n")[1]).toBe(
@@ -1608,6 +1628,62 @@ source: events is warehouse.sql("""
          expect(asRows((await lake.ask(ROWS)).rows)).toEqual(
             await warehouseRowsBelow(60),
          );
+      });
+
+      it("fails a delta whose column contract does not read back after its write: contract_capture_failed, retryable, and a retry records it", async () => {
+         const previous = await lake.run();
+         const previousEntry = lake.entriesByName(previous).events as Entry & {
+            contract?: unknown;
+         };
+         expect(previousEntry.contract).toMatchObject({ v: 1 });
+         fs.appendFileSync(csv(lake.root), "7,c,64.0,70\n");
+         lake.onStatement = (sql) => {
+            if (
+               sql.startsWith(
+                  "SELECT sql, current_setting('default_collation') AS dc FROM duckdb_tables()",
+               ) &&
+               sql.includes(`lower('${TABLE}')`)
+            ) {
+               throw new Error("injected: catalog read failed");
+            }
+         };
+         let failed: Materialization;
+         const rowsBefore = await lake.storedRows(TABLE, "id");
+         lake.statements.length = 0;
+         try {
+            failed = await lake.run();
+         } finally {
+            lake.onStatement = undefined;
+         }
+         const failure = (
+            failed.manifest as {
+               failures: Record<string, Record<string, unknown>>;
+            }
+         ).failures[address];
+         expect(failure).toMatchObject({
+            sourceName: "events",
+            code: "contract_capture_failed",
+            retryable: true,
+         });
+         // A delta writes in place, outside any transaction: its rows stand,
+         // and the previous entry, which understates their freshness, still
+         // names the table with its contract.
+         const delta = lake.statements.findIndex((x) => x.startsWith("BEGIN;"));
+         const read = lake.statements.findIndex((x) =>
+            x.startsWith(
+               "SELECT sql, current_setting('default_collation') AS dc FROM duckdb_tables()",
+            ),
+         );
+         expect(delta).toBeGreaterThanOrEqual(0);
+         expect(read).toBeGreaterThan(delta);
+         expect(await lake.storedRows(TABLE, "id")).not.toEqual(rowsBefore);
+         expect(previousEntry.physicalTableName).toBe(TABLE);
+         // A retry reads the contract again, and records it.
+         const retried = await lake.run();
+         expect(
+            (lake.entriesByName(retried).events as { contract?: unknown })
+               .contract,
+         ).toMatchObject({ v: 1 });
       });
    },
 );
@@ -1753,7 +1829,15 @@ source: plain is raw extend { measure: total is amt.sum() }
             // The mark names the table at its site: the destination's.
             shared_t: `${OWN_MARK} table=${LAKE}.main.shared_t`,
          });
-         const answer = await lake.ask(OWNED);
+         // The bind's read of the new table through the destination may
+         // meet the catalog mid-change ("No snapshot found"): unread, it
+         // answers live and is read again until it reads.
+         let answer = await lake.ask(OWNED);
+         const deadline = Date.now() + 20_000;
+         while (answer.servedFrom !== "storage" && Date.now() < deadline) {
+            await new Promise((r) => setTimeout(r, 250));
+            answer = await lake.ask(OWNED);
+         }
          expect(answer.servedFrom).toBe("storage");
          expect(answer.servedBy.tableId).toBe(
             lake.entriesByName(builtRun).owned.sourceEntityId,
@@ -1974,6 +2058,8 @@ describe.skipIf(process.platform === "win32")(
             "BEGIN TRANSACTION",
             `CREATE OR REPLACE TABLE "lake"."${DAILY}"`,
             `DESCRIBE "lake"."${DAILY}"`,
+            // The column contract's read of its collations, before COMMIT.
+            `SELECT sql, current_setting('default_collation') AS dc FROM duckdb_tables() WHERE NOT internal AND lower(table_name) = lower('${DAILY}') AND (lower(schema_name) = lower('lake') OR lower(database_name) = lower('lake'))`,
             "COMMIT",
             `SELECT count(*) AS n FROM "lake"."${DAILY}"`,
          ]);
@@ -2072,6 +2158,73 @@ describe.skipIf(process.platform === "win32")(
          expect(await lake.catalogTables()).toEqual([DAILY]);
          expect((await lake.ask(TWO_QUERIES.orders)).servedFrom).toBeNull();
          expect((await lake.ask(TWO_QUERIES.daily)).servedFrom).toBe("storage");
+      });
+
+      it("fails a rebuild whose column contract does not read back, rolling it back so the previous table stands: contract_capture_failed, retryable", async () => {
+         const before = await lake.run({ forceRefresh: true });
+         expect(before.status).toBe("MANIFEST_FILE_READY");
+         const ordersId = lake.entriesByName(before).orders.sourceEntityId;
+         const filesBeforeCapture = await lake.dataFiles();
+         lake.statements.length = 0;
+         const failedCapture = await failing(
+            (sql) => {
+               if (
+                  sql.startsWith(
+                     "SELECT sql, current_setting('default_collation') AS dc FROM duckdb_tables()",
+                  ) &&
+                  sql.includes(`lower('${ORDERS}')`)
+               ) {
+                  throw new Error("injected: catalog read failed");
+               }
+            },
+            () => lake.run({ forceRefresh: true }),
+         );
+         expect([failedCapture.status, failedCapture.error]).toEqual([
+            "MANIFEST_FILE_READY",
+            null,
+         ]);
+         const failure = (
+            failedCapture.manifest as {
+               failures: Record<string, Record<string, unknown>>;
+            }
+         ).failures[ordersId];
+         expect(failure).toMatchObject({
+            sourceName: "orders",
+            code: "contract_capture_failed",
+            retryable: true,
+            reason: expect.stringContaining(
+               `The column contract of the table "lake"."${ORDERS}" could not be read back (its column collations did not read)`,
+            ),
+         });
+         // Read inside the CTAS's transaction, so the failure rolled it back.
+         expect(lake.statements.map(statementShape).slice(0, 6)).toEqual([
+            "DESCRIBE (passthrough)",
+            "BEGIN TRANSACTION",
+            `CREATE OR REPLACE TABLE "lake"."${ORDERS}"`,
+            `DESCRIBE "lake"."${ORDERS}"`,
+            `SELECT sql, current_setting('default_collation') AS dc FROM duckdb_tables() WHERE NOT internal AND lower(table_name) = lower('${ORDERS}') AND (lower(schema_name) = lower('lake') OR lower(database_name) = lower('lake'))`,
+            "ROLLBACK",
+         ]);
+         // The previous generation's table stands: its files and rows.
+         expect((await lake.dataFiles())[ORDERS]).toEqual(
+            filesBeforeCapture[ORDERS],
+         );
+         expect(await lake.storedRows(ORDERS, "cat, amt")).toEqual([
+            ["a", 1],
+            ["a", 2],
+            ["b", 4],
+         ]);
+         // The previous run's entry, with its contract, still names it.
+         expect(
+            (lake.entriesByName(before).orders as { contract?: unknown })
+               .contract,
+         ).toMatchObject({ v: 1 });
+         // A retry, once the read works, records it.
+         const retried = await lake.run({ forceRefresh: true });
+         expect(
+            (lake.entriesByName(retried).orders as { contract?: unknown })
+               .contract,
+         ).toMatchObject({ v: 1 });
       });
    },
 );
@@ -2563,10 +2716,13 @@ source: crm_current is crm_raw -> { group_by: category, region; aggregate: amt i
       afterAll(() => lake.tearDown());
 
       const QUERIES: [model: string, query: string, served: boolean][] = [
+         // `deals11` joins the stored `crm_current` to the warehouse's rows:
+         // no engine reads both, and it is never built by recomputing
+         // `crm_current` from raw, so it is refused and answered live.
          [
             "m.malloy",
             "run: deals11 -> { group_by: category, region; aggregate: a is amt.sum() }",
-            true,
+            false,
          ],
          [
             "m.malloy",

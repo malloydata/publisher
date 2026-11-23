@@ -16,6 +16,7 @@ import {
 } from "../../test_helpers/materialization_test_fixtures";
 import type { FreshnessManifest } from "./domain/types";
 import { PackageMaterialization } from "./package_materialization";
+import { contractFor } from "../../test_helpers/contract_fixture";
 
 const ADDRESS = "build-orders";
 
@@ -46,7 +47,12 @@ describe("asOfBuild on a database manifest entry", () => {
       );
       // The bound database table, as a bind leaves it.
       (m as unknown as { databaseEntries: FreshnessManifest }).databaseEntries =
-         { [ADDRESS]: { tableName: "public.orders_t" } };
+         {
+            [ADDRESS]: {
+               tableName: "public.orders_t",
+               contract: contractFor(),
+            },
+         };
       expect(m.snapshot().entries[ADDRESS]?.asOfBuild).toBe(true);
 
       m.markBuildPlanStale(["duckdb"]);

@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { contractFor } from "../../../test_helpers/contract_fixture";
 import { describe, expect, it } from "bun:test";
 import {
    compiledWith,
@@ -284,6 +285,7 @@ describe("a standalone run's carry-forward", () => {
    const prior = (address: string, name: string, dataAsOf?: string) => ({
       sourceEntityId: address,
       physicalTableName: name,
+      contract: contractFor(),
       connectionName: "duckdb",
       ...(dataAsOf ? { dataAsOf } : {}),
    });

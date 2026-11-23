@@ -17,8 +17,10 @@
 
 import { declaredDestination, storageWritable } from "../domain/placement";
 import { underCompilerKeys } from "../domain/binding";
+import { readsTable } from "../domain/table_name";
 import {
    buildSQLOf,
+   compiledSourceIDOf,
    compilerBuildId,
    computeSourceEntityId,
    declaredStorage,
@@ -26,12 +28,8 @@ import {
    type TableFolds,
 } from "./run_plan";
 import { type MaterializePlan } from "../domain/table_plans";
-import type {
-   ChainBuildRequest,
-   ChainBuildText,
-   ChainCollationRequest,
-} from "../domain/chain_build";
-import type { PersistSource } from "@malloydata/malloy";
+import type { ChainBuildRequest, ChainBuildText } from "../domain/chain_build";
+import type { Connection, PersistSource } from "@malloydata/malloy";
 import { Manifest } from "@malloydata/malloy";
 import { ChainedShapeNotCarriedError } from "../../../errors";
 import { logger } from "../../../logger";
@@ -105,23 +103,12 @@ export interface ChainedPlanFacts {
     */
    hostInstructed?: boolean;
    /**
-    * What a strict build does with a source whose only build recomputes a
-    * stored upstream from the warehouse: `recompute` builds it and reports
-    * `upstreamReuse: recomputed`; `refuse` fails it
-    * ({@link WarehouseRecomputeRefusedError}). Only a host sets it; absent
-    * means `recompute`, and a non-strict build ignores it.
-    */
-   warehouseReach?: WarehouseReach;
-   /**
     * The plan's `#(materialize)` plans by sourceID. A `storage=` extension
     * table among them (one with `buildsOver.overStored`) builds over its
     * parent's stored table from its own chain, not by lifting author text.
     */
    materializePlans?: Readonly<Record<string, MaterializePlan>>;
 }
-
-/** See {@link ChainedPlanFacts.warehouseReach}. */
-export type WarehouseReach = "recompute" | "refuse";
 
 /** A build with no plan to consult: nothing is known to be stored. */
 export const NO_PLAN_FACTS: ChainedPlanFacts = {
@@ -473,6 +460,16 @@ export function chainedPlanFacts(
       planSources.push({ name: source.name, sourceEntityId });
       planSourcesById[sourceID] = { name: source.name, sourceEntityId };
       addressBySourceId[sourceID] = sourceEntityId;
+      // A `#(materialize)` table under the sourceID its build source was
+      // compiled under too, which a downstream compiled over the table reads
+      // it by (a view or rollup re-rooting it), so its chained build finds
+      // the upstream's address and key as for any other.
+      const compiledID = compiledSourceIDOf(source);
+      if (compiledID !== undefined && !(compiledID in tables)) {
+         planSourcesById[compiledID] = { name: source.name, sourceEntityId };
+         addressBySourceId[compiledID] = sourceEntityId;
+         compilerKeyBySourceId[compiledID] = compilerKeyBySourceId[sourceID];
+      }
       if (sourceEntityId !== undefined) {
          let tier: string | null = null;
          if (storageOn) {
@@ -494,7 +491,8 @@ export function chainedPlanFacts(
       }
    }
    return {
-      persistSourceIds: new Set(Object.keys(tables)),
+      // With each `#(materialize)` table's compiled sourceID, as above.
+      persistSourceIds: new Set(Object.keys(planSourcesById)),
       aliasesBySourceName: groupAliasesByName(planSources),
       addressBySourceId,
       compilerKeyBySourceId,
@@ -695,35 +693,41 @@ export interface BuildEnvironment {
     */
    chainBuildText?(request: ChainBuildRequest): ChainBuildText;
    /**
-    * Why a chained `storage=` build must not stack on its stored upstreams
-    * (the host port's `chainCollationRefusal`), or undefined when it may.
-    * Absent, it never stacks: it recomputes, or under strict upstreams
-    * refuses.
+    * Whether a `storage=` build's BigQuery SQL reads only strings compared
+    * byte-exact, read from the catalog as an answer's check reads it (the
+    * host port's; serve/gate_collation.ts), for its column contract. Absent,
+    * its strings are recorded compared `none`.
     */
-   chainCollationRefusal?(
-      request: ChainCollationRequest,
-   ): Promise<string | undefined>;
+   bigqueryBuildCompareBinary?(args: {
+      connection: Connection;
+      source: PersistSource;
+      sql: string;
+   }): Promise<boolean>;
    /**
     * The root of the package being built, which the build's reads of author
     * files stay inside. Absent in test doubles: those reads are then confined
     * to the files the model compiled from alone.
     */
    getPackagePath?(): string;
+   /**
+    * The drift handler, for a build that found an upstream's table not as
+    * its plan recorded it (SchemaIncompatibleError): the package reads its
+    * tables and derives its plan again. Absent in test doubles.
+    */
+   reportIncompatible?(handles: readonly string[]): void;
 }
 
 /**
- * `environment` with the package's `chainBuildText` and
- * `chainCollationRefusal`, for one run of that package. The environment
+ * `environment` with the package's `chainBuildText`, for one run of that package. The environment
  * itself is left as it is.
  */
 export function withChainBuildText<E extends BuildEnvironment>(
    environment: E,
    pkg: {
       chainBuildText(request: ChainBuildRequest): ChainBuildText;
-      chainCollationRefusal(
-         request: ChainCollationRequest,
-      ): Promise<string | undefined>;
+      bigqueryBuildCompareBinary?: BuildEnvironment["bigqueryBuildCompareBinary"];
       getPackagePath(): string;
+      reportIncompatible?(handles: readonly string[]): void;
    },
    /**
     * Whether the package serves a model older than its files (a reload that
@@ -745,8 +749,12 @@ export function withChainBuildText<E extends BuildEnvironment>(
               code: "package_stale",
            }
          : pkg.chainBuildText(request);
-   scoped.chainCollationRefusal = (request) =>
-      pkg.chainCollationRefusal(request);
+   if (pkg.bigqueryBuildCompareBinary) {
+      scoped.bigqueryBuildCompareBinary = pkg.bigqueryBuildCompareBinary;
+   }
+   if (pkg.reportIncompatible) {
+      scoped.reportIncompatible = (handles) => pkg.reportIncompatible!(handles);
+   }
    return scoped;
 }
 
@@ -861,4 +869,64 @@ export function packageRelativeRun(
          typeof r.message === "string" ? { ...r, message: rel(r.message) } : r,
       ),
    };
+}
+
+/**
+ * The stored upstream tables a database build's SQL reads, as
+ * `ManifestEntry.builtFrom` records them: each entry of the run's manifest,
+ * other than the table being built (`rootAddress`), whose table the SQL reads
+ * by its whole name ({@link readsTable}), with its entry's `builtAt`. Sorted
+ * by address. Undefined when it reads none.
+ */
+export function builtFromOf(
+   buildSQL: string,
+   /** Absent for a build given no manifest (a direct call): it read none. */
+   manifest: Manifest["buildManifest"] | undefined,
+   builtEntries: Readonly<Record<string, ManifestEntry>>,
+   rootAddress: string | undefined,
+): ManifestEntry["builtFrom"] {
+   return builtFromAddresses(
+      Object.entries(manifest?.entries ?? {}).flatMap(
+         ([address, { tableName }]) =>
+            address !== rootAddress &&
+            tableName &&
+            readsTable(buildSQL, tableName)
+               ? [address]
+               : [],
+      ),
+      builtEntries,
+   );
+}
+
+/**
+ * `ManifestEntry.builtFrom` for the stored tables at `addresses` a build
+ * read (a `storage=` build that read its upstreams' tables in its
+ * destination names them itself), each with its entry's `builtAt`. Sorted by
+ * address. Undefined when none has a table.
+ */
+export function builtFromAddresses(
+   addresses: readonly string[],
+   builtEntries: Readonly<Record<string, ManifestEntry>>,
+): ManifestEntry["builtFrom"] {
+   const out: NonNullable<ManifestEntry["builtFrom"]> = [];
+   for (const address of new Set(addresses)) {
+      const entry = builtEntries[address];
+      if (!entry?.physicalTableName) continue;
+      out.push({
+         sourceEntityId: address,
+         physicalTableName: entry.physicalTableName,
+         ...(entry.storageDestinationName
+            ? { storageDestinationName: entry.storageDestinationName }
+            : {}),
+         ...(entry.builtAt ? { builtAt: entry.builtAt } : {}),
+      });
+   }
+   out.sort((a, b) =>
+      a.sourceEntityId < b.sourceEntityId
+         ? -1
+         : a.sourceEntityId > b.sourceEntityId
+           ? 1
+           : 0,
+   );
+   return out.length > 0 ? out : undefined;
 }

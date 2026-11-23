@@ -29,8 +29,6 @@ export const MATERIALIZATION_IMPORT_ALLOWLIST = {
    "service/materialization/serve/served_copy_serve.ts -> service/materialization/plan/persist_dynamic_terms":
       "2m",
    // R10: outside the module, only index.ts and domain/.
-   "controller/materialization.controller.ts -> service/materialization/run/build_upstreams":
-      "2n",
    "controller/materialization.controller.ts -> service/materialization/run/materialization_service":
       "2n",
    "controller/storage_destination.controller.ts -> service/materialization/run/storage_admin":
@@ -40,6 +38,10 @@ export const MATERIALIZATION_IMPORT_ALLOWLIST = {
    "main_server.ts -> service/materialization/run/materialization_service":
       "2n",
    "package_load/package_load_worker.ts -> service/materialization/plan/build_plan":
+      "2n",
+   // The barrel would load package_materialization, and with it db-duckdb,
+   // which a worker thread must never open (duckdb_instance_sharing.spec.ts).
+   "package_load/package_load_worker.ts -> service/materialization/serve/served_copy_serve":
       "2n",
    "service/catalog_admin.ts -> service/materialization/run/materialization_build_session":
       "2n",
@@ -360,7 +362,7 @@ export const RATCHET_TABLE_IDENTITY = {
 export const RATCHET_STORED_TYPE_PATTERNS = {
    "service/materialization/domain/admission.ts": { count: 1, step: "2r" },
    "service/materialization/domain/gate_policy.ts": { count: 1, step: "2r" },
-   "service/materialization/serve/bind.ts": { count: 4, step: "2r" },
+   "service/materialization/serve/bind.ts": { count: 1, step: "2r" },
    "service/materialization/serve/leg.ts": { count: 1, step: "2r" },
    "service/materialization/serve/rollup_variants.ts": { count: 1, step: "2r" },
    "service/materialization/serve/served_copy_serve.ts": {

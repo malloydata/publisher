@@ -17,11 +17,7 @@ import type { EnvironmentName, PackageName, VersionRef } from "../identity";
 import type { ApiConnection } from "../model";
 import type { ServingReader } from "../versions/materialization_scope";
 import type { BuildPlanPackage } from "./domain/plan_input";
-import type {
-   ChainBuildRequest,
-   ChainBuildText,
-   ChainCollationRequest,
-} from "./domain/chain_build";
+import type { ChainBuildRequest, ChainBuildText } from "./domain/chain_build";
 import type { KeptTable, LateRows } from "./domain/types";
 import type {
    BuildPlan,
@@ -61,6 +57,13 @@ interface MaterializationPackage extends BuildPlanPackage {
     */
    forgetKeyUniqueness(sourceEntityIds: Iterable<string>): void;
    /**
+    * The bound tables a bind found incompatible with their contracts, by
+    * address, which a standalone run rebuilds in full rather than carry.
+    */
+   incompatibleTables?(
+      prior?: Readonly<Record<string, ManifestEntry>>,
+   ): ReadonlySet<string>;
+   /**
     * The text a chained `storage=` build compiles on its destination alone:
     * the request's downstream, with each stored upstream the request carries
     * re-rooted as the served copy re-roots it, from those entries alone and
@@ -68,14 +71,10 @@ interface MaterializationPackage extends BuildPlanPackage {
     */
    chainBuildText(request: ChainBuildRequest): ChainBuildText;
    /**
-    * Why a chained `storage=` build must not be computed over its stored
-    * upstreams in its destination, which compares strings byte-exact, or
-    * undefined when it may: what it groups, compares or orders of a string
-    * compares there as its source compares it live.
+    * The drift handler, for a build that found an upstream's table not as
+    * its plan recorded it: read the tables and derive the plan again.
     */
-   chainCollationRefusal(
-      request: ChainCollationRequest,
-   ): Promise<string | undefined>;
+   reportIncompatible?(handles: readonly string[]): void;
    /**
     * The tables the newest auto-run of this package lists as kept after a
     * rename, which its warnings name (`table-kept`).

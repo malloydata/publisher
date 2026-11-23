@@ -6,6 +6,7 @@
 // source an `index.malloy` re-exports, an inherited `#@ preaggregate`, serving
 // after a connection edit, and the verdicts, path report, preview and package
 // warnings agreeing about one package.
+import { contractFor } from "../../src/test_helpers/contract_fixture";
 import {
    castToDeclaredTypes,
    wideIntegerColumns,
@@ -114,7 +115,11 @@ async function buildRollups(pkg: Package): Promise<string> {
    );
    pkg.materialization().bind({
       database: {
-         [ids[0]]: { tableName: "built_rollup", connectionName: "duckdb" },
+         [ids[0]]: {
+            tableName: "built_rollup",
+            connectionName: "duckdb",
+            contract: contractFor(),
+         },
       } as never,
    });
    return ids[0];
@@ -231,7 +236,11 @@ async function buildDaily(pkg: Package, table: string): Promise<string> {
    await connection.runSQL(`CREATE OR REPLACE TABLE ${table} AS ${entry.sql}`);
    pkg.materialization().bind({
       database: {
-         [entry.sourceEntityId]: { tableName: table, connectionName: "duck" },
+         [entry.sourceEntityId]: {
+            tableName: table,
+            connectionName: "duck",
+            contract: contractFor(),
+         },
       } as never,
    });
    return entry.sourceEntityId;
@@ -394,6 +403,7 @@ async function buildAll(pkg: Package, lake: DuckDBConnection): Promise<void> {
             sourceEntityId: entry.sourceEntityId,
             sourceName: entry.name,
             physicalTableName: table,
+            contract: contractFor(),
             storageDestinationName: storage,
             ...(entry.origin === "rollup" ? { origin: "rollup" } : {}),
             schema: (
@@ -406,6 +416,7 @@ async function buildAll(pkg: Package, lake: DuckDBConnection): Promise<void> {
          );
          database[entry.sourceEntityId] = {
             tableName: table,
+            contract: contractFor(),
             connectionName: "duckdb",
          };
       }
@@ -559,6 +570,7 @@ describe("a database-origin source a host placed in a storage destination", () =
                sourceEntityId: entry.sourceEntityId,
                sourceName: entry.name,
                physicalTableName: "host_daily_h",
+               contract: contractFor(),
                storageDestinationName: "lake",
                schema: (
                   described.rows as {
@@ -616,6 +628,7 @@ async function storeInLake(
       sourceEntityId: entry.sourceEntityId,
       sourceName: entry.name,
       physicalTableName: table,
+      contract: contractFor(),
       storageDestinationName: "lake",
       ...(entry.origin === "rollup" ? { origin: "rollup" } : {}),
       schema: (
@@ -732,6 +745,7 @@ describe("a host-placed source whose storage table is stale and database table f
          database: {
             [entry.sourceEntityId]: {
                tableName: "db_daily_h",
+               contract: contractFor(),
                connectionName: "duckdb",
             },
          } as never,

@@ -13,6 +13,10 @@
  * `new Worker(...)` does not load the whole server module graph.
  */
 import {
+   chainBuildStringReads,
+   planChainBuildText,
+} from "../service/materialization/serve/served_copy_serve";
+import {
    type CacheManager,
    contextOverlay,
    type BuildManifestEntry,
@@ -1352,6 +1356,8 @@ async function prepareForMainThread(
             getRuntime: companionRuntime,
             crossFileCompanions: (load.crossFileCompanions ??=
                newCrossFileCompanions()),
+            chainBuildText: planChainBuildText(job.packagePath, malloyConfig),
+            stringReads: { read: chainBuildStringReads },
          });
          load.planParts?.set(modelPath, parts);
       } catch (error) {

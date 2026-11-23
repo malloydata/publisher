@@ -629,8 +629,6 @@ describe("runBuild (branch behavior)", () => {
                     connectionName?: string;
                  }[]
                | undefined;
-            strictUpstreams?: boolean | undefined;
-            warehouseReach?: "recompute" | "refuse";
             trigger?: "on_demand" | "scheduler";
          },
          signal: AbortSignal,
@@ -713,7 +711,7 @@ describe("runBuild (branch behavior)", () => {
       expect(svc.autoLoadManifest.called).toBe(false);
    });
 
-   it("orchestrated: seeds the build from referenceManifest and honors strictUpstreams", async () => {
+   it("orchestrated: seeds the build from referenceManifest, always strict", async () => {
       const svc = stubEngine();
       const instructions = [makeInstruction()];
 
@@ -732,7 +730,6 @@ describe("runBuild (branch behavior)", () => {
                   connectionName: "sf",
                },
             ],
-            strictUpstreams: true,
          },
          new AbortController().signal,
       );
@@ -749,7 +746,7 @@ describe("runBuild (branch behavior)", () => {
             connectionName: "sf",
          },
       });
-      // strictUpstreams flows through as the strict flag (6th arg).
+      // Every build is strict.
       expect(svc.executeInstructedBuild.firstCall.args[0].strict).toBe(true);
       // Reused upstreams are counted as carried, not built.
       expect(svc.commitManifest.firstCall.args[3]).toMatchObject({
@@ -762,28 +759,6 @@ describe("runBuild (branch behavior)", () => {
    });
 
    // ms2data/service#6756: the host's warehouseReach reaches the run, last.
-   it("orchestrated: passes warehouseReach through to the instructed build", async () => {
-      const svc = stubEngine();
-      await svc.runBuild(
-         "mat-1",
-         "my-env",
-         "pkg",
-         {
-            sourceNames: undefined,
-            forceRefresh: false,
-            buildInstructions: [makeInstruction()],
-            strictUpstreams: true,
-            warehouseReach: "refuse",
-         },
-         new AbortController().signal,
-      );
-      const [options] = svc.executeInstructedBuild.firstCall.args;
-      expect(options.strict).toBe(true);
-      expect(options.warehouseReach).toBe("refuse");
-      // A host's build relies on no earlier uniqueness check.
-      expect(options.uniqueness).toBeUndefined();
-   });
-
    it("auto-run: derives instructions and auto-loads the manifest", async () => {
       const svc = stubEngine();
 

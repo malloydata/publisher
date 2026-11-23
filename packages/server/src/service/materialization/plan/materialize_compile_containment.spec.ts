@@ -293,16 +293,25 @@ source: c is a extend {
 }
 `;
 
-   it("sends the failing one alone to the raw chain; the other keeps its parent's table", async () => {
+   it("refuses the failing one alone, never building it over the raw chain; the other keeps its parent's table", async () => {
       const { generated, refused } = await companionOf(model);
-      expect(refused).toEqual([]);
+      expect(refused.map((r) => [r.sourceName, r.outcome])).toEqual([
+         [
+            "b",
+            { refused: { reason: "upstream_table_unusable", tier: "storage" } },
+         ],
+      ]);
+      expect(refused[0].reason).toContain("it extends 'a'");
+      expect(refused[0].reason).toContain(
+         "never by recomputing its parent from the warehouse",
+      );
       const over = Object.fromEntries(
          (generated?.plans ?? []).map((p) => [
             p.sourceName,
             p.buildsOver?.sourceName ?? null,
          ]),
       );
-      expect(over).toEqual({ a: null, b: null, c: "a" });
+      expect(over).toEqual({ a: null, c: "a" });
       // `c` still carries the text it builds from over `a`'s stored table.
       const c = generated?.plans.find((p) => p.sourceName === "c");
       expect(c?.buildsOver?.overStored?.parentBuildSourceName).toBe("a__mat");
@@ -351,9 +360,9 @@ source: c is a extend {
    });
 
    // Each sibling reads the one before, so each left out fails the next: past
-   // the round limit, `c` builds over the raw chain (the same rows) rather than
-   // costing the model its builds.
-   it("settles on the raw chain when leaving them out does not converge", async () => {
+   // the round limit, `c` is refused alone (never built over the raw chain),
+   // rather than costing the model its builds.
+   it("refuses the extension alone when leaving them out does not converge", async () => {
       const siblings = Array.from({ length: 8 }, (_, i) =>
          i === 0
             ? `source: y0 is a extend {\n  dimension: m0 is r.label\n}\n`
@@ -362,15 +371,17 @@ source: c is a extend {
       const { generated, refused } = await companionOf(
          `${head}\n${siblings}${tail}`,
       );
-      expect(refused).toEqual([]);
+      expect(refused.map((r) => [r.sourceName, r.outcome])).toEqual([
+         [
+            "c",
+            { refused: { reason: "upstream_table_unusable", tier: "storage" } },
+         ],
+      ]);
       expect(
          generated?.plans.map((p) => [
             p.sourceName,
             p.buildsOver?.sourceName ?? null,
          ]),
-      ).toEqual([
-         ["a", null],
-         ["c", null],
-      ]);
+      ).toEqual([["a", null]]);
    });
 });

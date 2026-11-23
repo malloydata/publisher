@@ -1,6 +1,17 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import {
+   bigqueryBuildCompareBinary,
+   chainBuildStringReads,
+   planChainBuildText,
+} from "./materialization";
+import type {
+   BoundStorageColumns,
+   BoundStorageContract,
+   PlanChainBuildText,
+   PlanChainStringReads,
+} from "./materialization/domain/chain_build";
 import { quotedIdentifier, quotedPath, stringLiteral } from "./malloy_text";
 import { INCREMENTAL_NO_MERGE_KEY_CODE } from "./materialization/plan/incremental_policy";
 import {
@@ -110,11 +121,11 @@ import {
    BuildManifest,
    BuildPlan,
    FreshnessManifest,
+   ManifestEntry,
 } from "./materialization/domain/types";
 import type {
    ChainBuildRequest,
    ChainBuildText,
-   ChainCollationRequest,
 } from "./materialization/domain/chain_build";
 import type { KeptTable, LateRows } from "./materialization/domain/types";
 import { underCompilerKeys } from "./materialization/domain/binding";
@@ -1743,17 +1754,25 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       this.mz.setKeptTables(tables);
    }
 
+   /** The host port's `incompatibleTables` (see PackageMaterialization.incompatibleTables). */
+   public incompatibleTables(
+      prior?: Readonly<Record<string, ManifestEntry>>,
+   ): ReadonlySet<string> {
+      return this.mz.incompatibleTables(prior);
+   }
+
    /** The host port's `chainBuildText` (see PackageMaterialization.chainBuildText). */
+   /** See {@link BuildEnvironment.reportIncompatible}. */
+   public reportIncompatible(handles: readonly string[]): void {
+      this.mz.reportIncompatible(handles);
+   }
+
    public chainBuildText(request: ChainBuildRequest): ChainBuildText {
       return this.mz.chainBuildText(request);
    }
 
-   /** The host port's `chainCollationRefusal` (see PackageMaterialization.chainCollationRefusal). */
-   public chainCollationRefusal(
-      request: ChainCollationRequest,
-   ): Promise<string | undefined> {
-      return this.mz.chainCollationRefusal(request);
-   }
+   /** See {@link BuildEnvironment.bigqueryBuildCompareBinary}. */
+   public readonly bigqueryBuildCompareBinary = bigqueryBuildCompareBinary;
 
    /** The persist build plan, or null when the package declares no persist source. */
    public getBuildPlan(): BuildPlan | null {
@@ -2956,6 +2975,29 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       return this.malloyConfig;
    }
 
+   /** See {@link BuildPlanPackage.boundStorageColumns}. */
+   public readonly boundStorageColumns: BoundStorageColumns = (
+      sourceID,
+      destination,
+   ) => this.mz.boundStorageColumns(sourceID, destination);
+
+   /** See {@link BuildPlanPackage.boundStorageContract}. */
+   public readonly boundStorageContract: BoundStorageContract = (
+      sourceID,
+      destination,
+   ) => this.mz.boundStorageContract(sourceID, destination);
+
+   /** See {@link BuildPlanPackage.planChainStringReads}. */
+   public readonly planChainStringReads: PlanChainStringReads =
+      chainBuildStringReads;
+
+   /** See {@link BuildPlanPackage.planChainBuildText}. */
+   public readonly planChainBuildText: PlanChainBuildText = (request, model) =>
+      planChainBuildText(this.getPackagePath(), this.getMalloyConfig())(
+         request,
+         model,
+      );
+
    public getPackagePath(): string {
       return this.packagePath;
    }
@@ -3002,7 +3044,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             last.quotedFrom === requested
                ? last.quoted
                : await this.quoteBoundTableNames(entries);
-         this.mz.bind({
+         await this.mz.bindCompiled({
             database: quoted,
             databaseAsGiven: true,
             // Each table's columns as its warehouse holds them now.
@@ -3099,7 +3141,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       // publish starts is not invalidated and started again.
       this.mz.wireServingResolvers();
       this.mz.pushServeDestinationConfigToModels();
-      this.mz.bind({
+      await this.mz.bindCompiled({
          database: entries,
          databaseAsGiven: true,
          observed,

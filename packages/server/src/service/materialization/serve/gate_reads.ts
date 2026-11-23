@@ -35,6 +35,7 @@ import { malloyIdentifiers } from "../../query_text";
 
 import { fieldPathsIn } from "./gate_paths";
 import type { ColumnOrigin, GateReads } from "./gate_reads_types";
+import { storedUpstreamResolver } from "./stored_upstream";
 import type { UpstreamTableSchema } from "../domain/upstream_schemas";
 
 /** The names a gate's text reads: each identifier it names, fields or not. */
@@ -343,6 +344,8 @@ class GateReadWalk {
    readonly columns: string[][] = [];
    /** Each of {@link columns}'s origin, by position (GateReads.columnOrigins). */
    readonly columnOrigins: (ColumnOrigin | undefined)[] = [];
+   /** Each of {@link columns}'s stored upstream, by position (GateReads.columnUpstreams). */
+   readonly columnUpstreams: (string | undefined)[] = [];
    unresolved = false;
    scoped = false;
    equalityOnly = true;
@@ -364,7 +367,12 @@ class GateReadWalk {
        * by `sourceID`, read or not ({@link scopeJoins}).
        */
       private readonly rerooted: ReadonlySet<string> = new Set(),
-   ) {}
+   ) {
+      this.upstreamOf = storedUpstreamResolver(modelDef, stored);
+   }
+
+   /** The stored upstream a column's owner is read from. */
+   private readonly upstreamOf: (owner: unknown) => string | undefined;
 
    /** A string comparison not known to compare only columns. */
    private noColumnsOnly(): void {
@@ -819,6 +827,7 @@ class GateReadWalk {
          joins.length === 0 ? [] : along.map((n) => [...joins, n].join("__"));
       this.columns.push([...new Set([...along, ...flattened])]);
       this.columnOrigins.push(tableColumnOf(source, stored));
+      this.columnUpstreams.push(this.upstreamOf(source));
    }
 
    /** The fields one stage outputs, by the name each goes by. */
@@ -1107,8 +1116,9 @@ class GateReadWalk {
    }
 
    /**
-    * A query-shaped source's base's terms and each stage's own, a later
-    * stage's read back through the earlier ones.
+    * A query-shaped source's base's terms and each stage's own (its `where:`,
+    * `having:` and each filtered measure's `{ where: … }`), a later stage's
+    * read back through the earlier ones.
     */
    private scopeQuery(source: unknown, query: QueryLike, depth: number): void {
       const base = this.baseOf(query);
@@ -1120,16 +1130,23 @@ class GateReadWalk {
       else this.scope(base, depth + 1, atBase, true);
       const stages = Array.isArray(query.pipeline) ? query.pipeline : [];
       stages.forEach((stage, i) => {
-         const where = (stage as { filterList?: unknown }).filterList;
-         for (const f of Array.isArray(where) ? where : []) {
+         const { filterList, queryFields } = stage as {
+            filterList?: unknown;
+            queryFields?: unknown;
+         };
+         const terms = [
+            ...asArray(filterList).map((f) => (f as { e?: unknown }).e),
+            ...asArray(queryFields).flatMap((qf) =>
+               filteredTerms((qf as { e?: unknown }).e),
+            ),
+         ];
+         for (const e of terms) {
             this.scoped = true;
-            if (!equalityOnlyExpr((f as { e?: unknown }).e)) {
-               this.equalityOnly = false;
-            }
+            if (!equalityOnlyExpr(e)) this.equalityOnly = false;
             this.entryPathsComplete = false;
             // A stage's term reads the stage's fields, not typed here.
             this.noColumnsOnly();
-            for (const p of fieldPathsIn((f as { e?: unknown }).e)) {
+            for (const p of fieldPathsIn(e)) {
                if (i === 0) atBase(p);
                else if (p.length === 1) {
                   this.throughStages(source, p[0], [], [], i - 1);
@@ -1699,6 +1716,7 @@ export function gateReads(
       names: walk.names,
       columns: walk.columns,
       columnOrigins: walk.columnOrigins,
+      columnUpstreams: walk.columnUpstreams,
       unresolved: walk.unresolved,
       scoped: walk.scoped,
       gated: exprs.length > 0,
@@ -1937,7 +1955,7 @@ export async function queryFilterReadsOfQuery(
       namedMeasures: boolean;
       /**
        * The stages to read in place of the query's own, on its entry point:
-       * a chained build's downstream query (`chainBuildCollationRefusal`).
+       * a chained build's downstream query (`chain_string_reads.ts`).
        */
       pipeline?: readonly unknown[];
    },
@@ -1966,6 +1984,7 @@ export async function queryFilterReadsOfQuery(
          names: walk.names,
          columns: walk.columns,
          columnOrigins: walk.columnOrigins,
+         columnUpstreams: walk.columnUpstreams,
          unresolved: walk.unresolved,
          scoped: walk.scoped,
          gated: false,

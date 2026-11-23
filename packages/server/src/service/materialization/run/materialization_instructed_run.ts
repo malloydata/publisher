@@ -21,6 +21,8 @@ import {
    BadRequestError,
    MaterializationEligibilityError,
    TableOwnershipError,
+   ContractCaptureFailedError,
+   SchemaIncompatibleError,
 } from "../../../errors";
 import { logger } from "../../../logger";
 import type {
@@ -61,7 +63,6 @@ import { redactConnectionSecrets } from "./connection_redaction";
 import {
    type BuildEnvironment,
    type ChainedPlanFacts,
-   type WarehouseReach,
 } from "./build_upstreams";
 import { type BuildQueryMetadata } from "./build_query_tag";
 import type { IncrementalRunContext } from "./incremental_build";
@@ -114,8 +115,6 @@ export interface InstructedBuildOptions {
     * ChainedPlanFacts.hostInstructed).
     */
    hostInstructed?: boolean;
-   /** What a strict build does with the warehouse recompute. */
-   warehouseReach?: WarehouseReach;
    /**
     * Auto-run only: the inline uniqueness checks' passes, read from the run
     * before and recorded for the run after (inline_uniqueness.ts). Undefined
@@ -232,12 +231,6 @@ export interface InstructedRun
     * anchor (freshness_stamp.ts).
     */
    readFrom?: Map<string, string[]>;
-   /**
-    * Database rollups that could not build over their base's table because
-    * it moved since its build, could not be read, or recorded no column
-    * types, by address: the reason their entry reports.
-    */
-   baseRecomputed?: Map<string, string>;
 }
 
 /** One source the database gate refuses, as databaseRefusalOn reports it. */
@@ -667,7 +660,9 @@ export function recordInstructedBuildFailure(
          ? { storageDestinationName: instruction.destination }
          : {}),
       // A bounded code beside the prose, for a refusal a client branches on.
-      ...(buildErr instanceof TableOwnershipError
+      ...(buildErr instanceof TableOwnershipError ||
+      buildErr instanceof ContractCaptureFailedError ||
+      buildErr instanceof SchemaIncompatibleError
          ? { code: buildErr.code }
          : {}),
    };

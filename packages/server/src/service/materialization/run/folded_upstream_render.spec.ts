@@ -168,7 +168,6 @@ async function scenario(model: string) {
          strict: opts.strict,
          priorRefusals: [],
          hostInstructed: opts.hostInstructed,
-         warehouseReach: "recompute",
       });
    };
    return {
@@ -283,16 +282,18 @@ describe("a database build over an upstream whose address folds in its name=", (
    }
 
    it(
-      "never reads col_a's table for a database source over the twin",
+      "never reads col_a's table for a database source over the twin, which is refused at plan",
       async () => {
          const s = await scenario(DB_OVER_TWIN);
          const result = await s.run({ strict: false, hostInstructed: false });
          expect(result.failures).toEqual({});
+         // A warehouse build cannot read the twin's `storage=` table, and
+         // never recomputes it from raw: refused at plan, so never built.
          expect(s.read("db_c", "fa")).toBe(false);
-         expect(s.read("db_c", "ev_src")).toBe(true);
-         expect(result.entries[s.address("db_c")].upstreamReuse).toBe(
-            "recomputed",
-         );
+         expect(s.read("db_c", "ev_src")).toBe(false);
+         expect(
+            Object.values(result.entries).map((e) => e.sourceName),
+         ).not.toContain("db_c");
       },
       { timeout: 60000 },
    );

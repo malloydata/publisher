@@ -9,6 +9,9 @@
  * text, which differs by dialect, is warehouse_sql.ts's.
  */
 
+import type { ColumnContract } from "../domain/column_contract";
+import { captureDatabaseContract } from "./column_contract_capture";
+import { persistSourceDeclaredColumns } from "../stored_column_types";
 import { BuildCancelledError } from "../domain/build_cancelled";
 import type { Connection as MalloyConnection } from "@malloydata/malloy";
 import { logger } from "../../../logger";
@@ -31,6 +34,7 @@ import { runRollupKeyCheck } from "./inline_uniqueness";
 import { buildDatabaseDelta } from "./incremental_delta_strategy";
 import {
    advanceLedgerAfterSeed,
+   carriedLedgerExtensions,
    ledgerFields,
    refreshFields,
    resetLedger,
@@ -178,6 +182,30 @@ export class DatabaseTier
          });
          throw err;
       }
+      // The column contract, read over the staging table before the swap:
+      // a capture that fails drops it and leaves the previous table serving.
+      let contract: ColumnContract;
+      try {
+         contract = await captureDatabaseContract({
+            connection: {
+               dialectName: dialect,
+               runSQL: (sql, options) =>
+                  connection.runSQL(sql, { ...runOptions, ...options }),
+            },
+            tableName: stagingTableName,
+            physicalTableName,
+            declared: persistSourceDeclaredColumns(persistSource),
+         });
+      } catch (err) {
+         await dropStagingAfterFailure({
+            connection,
+            runOptions,
+            dialect,
+            stagingTableName,
+            connectionName: persistSource.connectionName,
+         });
+         throw err;
+      }
       await swapIntoPlace({
          connection,
          runOptions,
@@ -236,7 +264,11 @@ export class DatabaseTier
          physicalTableName,
          connectionName: persistSource.connectionName,
          realization: "COPY",
-         ...ledgerFields(incrementalRefresh?.lineage, seededThrough),
+         ...ledgerFields(
+            incrementalRefresh?.lineage,
+            seededThrough,
+            carriedLedgerExtensions(incrementalRefresh, instruction.reseed),
+         ),
          // Reported for any incremental source that rebuilt, so a full rebuild
          // is distinguishable from a delta.
          ...refreshFields(incrementalRefresh ? "full" : undefined),
@@ -247,6 +279,7 @@ export class DatabaseTier
          ...(schema?.length ? { schema } : {}),
          ...(nativeSchema?.length ? { nativeSchema } : {}),
          ...request.upstreamReuse,
+         contract,
       };
    }
 }

@@ -10,7 +10,8 @@
  * drift: no `storage-column-type-mismatch` warning, no
  * `publisher_storage_column_type_mismatch_total` count, and every answer is
  * live's, in UTC and under a caller `timezone:`. A truncation column altered
- * after its build is still drift, and still warns.
+ * after its build no longer matches the table's contract: the table answers
+ * live, `incompatible`.
  *
  * A timestamp truncation a query-shaped source's query computed in a zone
  * (`raw extend { timezone: … } -> { … }`) is served to a query that reads it
@@ -422,7 +423,7 @@ for (const tier of tiers) {
          }
       });
 
-      it("still warns, and counts, once a truncation column changes after its build", async () => {
+      it("finds a truncation column changed after its build incompatible with its contract, and answers live", async () => {
          const warehouse = await f.env.getMalloyConnection("warehouse");
          const entries = Object.values(
             (
@@ -438,10 +439,21 @@ for (const tier of tiers) {
          await f.pkg.reloadAllModels(
             f.pkg.materialization().boundDatabaseEntries() ?? {},
          );
-         const warned = mismatches(f);
-         expect(warned.map((w) => w.subject).sort()).toEqual(["mat", "v1"]);
-         for (const w of warned) expect(w.message).toContain("`d_month`");
-         expect(await harness.collectCounter(METRIC)).toBe(2);
+         const incompatible = f.pkg
+            .materialization()
+            .serveVerdicts()
+            .filter((v) => v.reason === "incompatible");
+         expect(incompatible.map((v) => v.sourceName).sort()).toEqual([
+            "mat",
+            "v1",
+         ]);
+         for (const v of incompatible) {
+            // DuckDB retypes in place; DuckLake drops and adds the column.
+            expect(["column_retyped", "column_gone"]).toContain(
+               v.incompatibility?.code ?? "",
+            );
+            expect(v.incompatibility?.columns).toEqual(["d_month"]);
+         }
          // And the changed column answers live's value, never the text.
          const live = await ask(f, "live");
          for (const source of ["mat", "v1"]) {

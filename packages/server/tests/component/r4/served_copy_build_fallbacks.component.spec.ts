@@ -12,8 +12,9 @@
  *   live for each caller; every other source in the model is built and
  *   served.
  * - An extension table whose chained build does not compile over its
- *   parent's build source builds over the raw chain (the same rows), and
- *   that one alone: its sibling still builds over the parent's stored table.
+ *   parent's build source is refused at plan (`upstream_table_unusable`),
+ *   never built over the raw chain, and that one alone: its sibling still
+ *   builds over the parent's stored table.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -126,10 +127,11 @@ source: by_region is plain extend {
       });
    });
 
-describe("R4: one extension's chained build falls back to the raw chain alone", () => {
+describe("R4: one extension whose chained build does not compile is refused alone", () => {
    // `b` reads `r`, declared on `base` above `a`, which `a`'s stored table
-   // does not carry: over `a`'s build source it does not compile, so it builds
-   // over the raw chain. `c` builds over `a`'s stored table.
+   // does not carry: over `a`'s build source it does not compile, so it is
+   // refused, never built over the raw chain. `c` builds over `a`'s stored
+   // table.
    const model = `source: regions is duckdb.table('rg') extend { primary_key: id }
 
 source: base is duckdb.table('ev') extend {
@@ -166,14 +168,20 @@ source: c is a extend {
       await disposeScenarios();
    });
 
-   it("builds the failing extension over the raw chain and its sibling over the parent's table", () => {
-      expect(fixture.buildReads).toEqual({ a: [], b: [], c: ["a"] });
+   it("refuses the failing extension at plan and builds its sibling over the parent's table", () => {
+      expect(fixture.buildReads).toEqual({ a: [], c: ["a"] });
       // Only `c` ran in the destination over `a`'s stored table.
       expect(Object.keys(fixture.storedBuildSQL)).toEqual(["c"]);
       expect(fixture.storedBuildSQL.c).toContain(fixture.physicalTables.a);
       expect(fixture.storedBuildSQL.c).not.toMatch(/\bev\b/);
-      // `b` read the warehouse: the raw chain.
-      expect(fixture.builtSQL.b).toMatch(/\bev\b/);
+      // `b` is never built, from the warehouse or otherwise.
+      expect(fixture.builtSQL.b).toBeUndefined();
+      expect(
+         fixture.materializeRefusals.map((r) => [r.sourceName, r.reason]),
+      ).toEqual([["b", "upstream_table_unusable"]]);
+      expect(fixture.materializeRefusals[0].message).toContain(
+         "it extends 'a'",
+      );
    });
 
    it("serves the chained sibling from its own table, equal to live", async () => {
@@ -191,7 +199,7 @@ source: c is a extend {
    // carry (`fields_not_carried`, unchanged here), so they answer live.
    for (const [name, malloy] of [
       [
-         "the fallen-back extension",
+         "the refused extension",
          "run: b -> { group_by: big, region; aggregate: total }",
       ],
       ["the parent", "run: a -> { group_by: region; aggregate: total }"],
@@ -203,8 +211,8 @@ source: c is a extend {
       });
    }
 
-   it("stored the raw chain's rows for the fallen-back extension, and the parent's rows under its sibling", async () => {
-      for (const name of ["b", "c"]) {
+   it("stored the parent's rows under its sibling", async () => {
+      for (const name of ["c"]) {
          const live = await fixture.run({
             name: `${name} rows`,
             malloy: `run: ${name} -> { group_by: id, amt; order_by: id }`,

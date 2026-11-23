@@ -12,8 +12,10 @@
  * source's collation and each answer is served, equal to live. Once a
  * stored `category` column is altered to compare case-insensitively (which
  * changes no type), a filter `category = 'books'` would admit `Books` from
- * the table while live admits only `books`: each such answer is then live.
- * A filter that compares no string (`id > 2`) is still served. A filter
+ * the table while live admits only `books`. The table then no longer matches
+ * the contract its build recorded (`collation_changed` at the next bind), so
+ * every answer over it is live, a filter that compares no string (`id > 2`)
+ * included. A filter
  * whose string comparison is made in a stage (an output of a query-shaped
  * source the answer recomputes, a dimension or a join over one, a count
  * grouped by a string, or the query's own earlier stage) is read through
@@ -502,15 +504,13 @@ for (const tier of tiers) {
             );
          });
 
-         it(
-            c.strings
-               ? `${c.name}: answers live, equal to live, once its column compares case-insensitively`
-               : `${c.name}: is still served, equal to live, once a column it does not compare is altered`,
-            () => {
-               expect(after[c.name].rows).toEqual(live[c.name] as never);
-               expect(after[c.name].kind).toBe(c.strings ? "live" : c.leg);
-            },
-         );
+         // Once a stored column's collation is altered, its table no longer
+         // matches the contract its build recorded: every query on it
+         // answers live, whatever it compares.
+         it(`${c.name}: answers live, equal to live, once its table's column compares case-insensitively`, () => {
+            expect(after[c.name].rows).toEqual(live[c.name] as never);
+            expect(after[c.name].kind).toBe("live");
+         });
       }
    });
 }

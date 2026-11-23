@@ -12,9 +12,10 @@
  * built, every stored column keeps its source's collation and each answer is
  * served, equal to live. Once a stored `category` column is altered to
  * compare case-insensitively (which changes no type), `books` and `Books`
- * group together and order otherwise from the table than live: each such
- * answer is then live. A result that orders and groups no string is still
- * served. Postgres under a `C` and an `en_US` default; DuckDB by its
+ * group together and order otherwise from the table than live. The table
+ * then no longer matches the contract its build recorded (`collation_changed`
+ * at the next bind), so every answer over it is live, a result that orders
+ * and groups no string included. Postgres under a `C` and an `en_US` default; DuckDB by its
  * tables' definitions.
  */
 
@@ -390,21 +391,15 @@ for (const tier of tiers) {
             expect(served[c.name].kind).toBe(c.leg);
          });
 
-         it(
-            c.strings
-               ? `${c.name}: answers live, equal to live, once its column compares case-insensitively`
-               : `${c.name}: is still served, equal to live, once a column it does not read is altered`,
-            () => {
-               expect(JSON.stringify(after[c.name].rows)).toBe(
-                  JSON.stringify(live[c.name]),
-               );
-               expect(after[c.name].kind).toBe(
-                  c.strings || (c.liveOnDuckDB && tier.label === "DuckDB")
-                     ? "live"
-                     : c.leg,
-               );
-            },
-         );
+         // Once a stored column's collation is altered, its table no longer
+         // matches the contract its build recorded: every query on it
+         // answers live, whatever it orders or groups.
+         it(`${c.name}: answers live, equal to live, once its table's column compares case-insensitively`, () => {
+            expect(JSON.stringify(after[c.name].rows)).toBe(
+               JSON.stringify(live[c.name]),
+            );
+            expect(after[c.name].kind).toBe("live");
+         });
       }
    });
 }

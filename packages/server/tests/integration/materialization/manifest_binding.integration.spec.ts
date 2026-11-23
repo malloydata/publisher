@@ -3,6 +3,7 @@
 
 /// <reference types="bun-types" />
 
+import { contractFor } from "../../../src/test_helpers/contract_fixture";
 import {
    type RecordedColumn,
    runNativeSchema,
@@ -224,6 +225,7 @@ describe("Manifest binding via Package.manifestLocation (E2E)", () => {
                   physicalTableName,
                   connectionName: "duckdb",
                   nativeSchema: builtTypes,
+                  contract: contractFor(builtTypes),
                },
             },
          }),
@@ -255,6 +257,7 @@ describe("Manifest binding via Package.manifestLocation (E2E)", () => {
                   connectionName: "duckdb",
                   storageDestinationName: "lake",
                   schema: [{ name: "c", type: "BIGINT" }],
+                  contract: contractFor([{ name: "c", type: "BIGINT" }]),
                },
             },
          }),
@@ -277,6 +280,7 @@ describe("Manifest binding via Package.manifestLocation (E2E)", () => {
                   physicalTableName: "main.order_summary_mz",
                   connectionName: "duckdb",
                   nativeSchema: builtTypes,
+                  contract: contractFor(builtTypes),
                },
             },
          }),

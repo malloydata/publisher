@@ -12,6 +12,7 @@
  */
 
 import { capturedNativeSchema } from "../service/materialization/run/database_native_types";
+import { contractFor } from "./contract_fixture";
 
 /** One column's warehouse type, as a build records it. */
 export interface RecordedColumn {
@@ -24,7 +25,13 @@ export function withNativeSchema<T extends object>(
    entry: T,
    nativeSchema: readonly RecordedColumn[],
 ): T & { nativeSchema: RecordedColumn[] } {
-   return { ...entry, nativeSchema: nativeSchema.map((c) => ({ ...c })) };
+   // A build that records types records its contract too, over the same
+   // types: a host's entry carries both.
+   return {
+      ...entry,
+      nativeSchema: nativeSchema.map((c) => ({ ...c })),
+      contract: contractFor(nativeSchema),
+   };
 }
 
 /**

@@ -3,6 +3,7 @@
 
 /// <reference types="bun-types" />
 
+import { contractFor } from "../../../src/test_helpers/contract_fixture";
 import {
    type RecordedColumn,
    runNativeSchema,
@@ -199,6 +200,7 @@ describe("Per-query freshness gate (E2E)", () => {
                   physicalTableName: "order_summary",
                   connectionName: "duckdb",
                   nativeSchema: builtTypes,
+                  contract: contractFor(builtTypes),
                   dataAsOf: opts.dataAsOf,
                   freshnessWindowSeconds: opts.freshnessWindowSeconds,
                   freshnessFallback: opts.freshnessFallback,

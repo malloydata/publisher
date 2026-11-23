@@ -3,8 +3,7 @@
 
 /**
  * Whether a column may move from one type to another without changing any value
- * it holds: the one rule the bind (a table altered outside a build) and a keyed
- * load (objects against a table) judge a type move by. No I/O.
+ * it holds: the rule a keyed load judges an object's type against its table's by. No I/O.
  */
 
 /** A stored type, parsed as far as {@link losslessWidening} compares one. */

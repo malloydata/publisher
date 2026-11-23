@@ -15,8 +15,12 @@
       {
         "connectionName": "orders_pg",
         "dependsOn": {
-          "orders__rollup__category__389984bb@<hammer>/pa/pa.malloy.preaggregate.malloy": [],
-          "orders__rollup__region__85a0fa84@<hammer>/pa/pa.malloy.preaggregate.malloy": []
+          "orders__rollup__category__389984bb@<hammer>/pa/pa.malloy.preaggregate.malloy": [
+            "orders@<hammer>/pa/pa.malloy"
+          ],
+          "orders__rollup__region__85a0fa84@<hammer>/pa/pa.malloy.preaggregate.malloy": [
+            "orders@<hammer>/pa/pa.malloy"
+          ]
         },
         "order": [
           "orders__rollup__category__389984bb@<hammer>/pa/pa.malloy.preaggregate.malloy",
@@ -186,11 +190,15 @@
         "nodes": [
           [
             {
-              "dependsOn": [],
+              "dependsOn": [
+                "orders@<hammer>/pa/pa.malloy"
+              ],
               "sourceID": "orders__rollup__category__389984bb@<hammer>/pa/pa.malloy.preaggregate.malloy"
             },
             {
-              "dependsOn": [],
+              "dependsOn": [
+                "orders@<hammer>/pa/pa.malloy"
+              ],
               "sourceID": "orders__rollup__region__85a0fa84@<hammer>/pa/pa.malloy.preaggregate.malloy"
             }
           ]

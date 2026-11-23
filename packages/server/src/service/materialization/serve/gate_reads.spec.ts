@@ -105,6 +105,45 @@ describe("gateReads: the row scope", () => {
       expect(reads.columns).toEqual([["amount"]]);
    });
 
+   it("judges a stage's filtered measure's where: as its where: is", () => {
+      // `source: q is accounts -> { aggregate: n is count() { where: amount > 0 } }`,
+      // unstored: the filter compares the base's rows wherever they are read.
+      const filtered = {
+         type: "query_result",
+         sourceID: "filtered@m",
+         query: {
+            structRef: ACCOUNTS,
+            pipeline: [
+               {
+                  type: "reduce",
+                  queryFields: [
+                     {
+                        name: "n",
+                        type: "number",
+                        expressionType: "aggregate",
+                        e: {
+                           node: "filteredExpr",
+                           kids: {
+                              e: { node: "aggregate", function: "count" },
+                              filterList: [termOn("amount")],
+                           },
+                        },
+                     },
+                  ],
+               },
+            ],
+         },
+         fields: [{ name: "n", type: "number" }],
+      };
+      const reads = gateReads(filtered, []);
+      expect(reads.scoped).toBe(true);
+      expect(reads.columns).toEqual([["amount"]]);
+      // Stored: its build applied the filter.
+      expect(
+         gateReads(filtered, [], undefined, new Set(["filtered@m"])).columns,
+      ).toEqual([]);
+   });
+
    it("leaves out the query a stored source's build applied", () => {
       const reads = gateReads(stored, [], undefined, STORED);
       expect(reads.scoped).toBe(false);

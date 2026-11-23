@@ -17,8 +17,9 @@
  * - H2: the gate column altered to text, which no read gives as live's
  *   number: the gated rollup declines (`MISSING_FIELD`) and the query answers
  *   live, never a denial.
- * - M1: a rollup read through its typed source after a lossless widening
- *   reports `servedFrom: "database"`, the tier its path report names.
+ * - M1: a widening (lossless or not) is a table that no longer matches the
+ *   contract its build recorded: it is left out, `incompatible`, and its
+ *   queries answer live, never cast or read as they are.
  */
 
 import { PostgresConnection } from "@malloydata/db-postgres";
@@ -436,7 +437,7 @@ function scenario(tier: Tier, bigTo: "double" | "text") {
 }
 
 for (const tier of tiers) {
-   describe(`C1, H1, M1: a value-losing move inside one type is left out, a widening read as it is (${tier.label})`, () => {
+   describe(`C1, H1, M1: a move inside one type, value-losing or widening, answers live (${tier.label})`, () => {
       const s = scenario(tier, "double");
 
       it("served every query from a table, equal to live, before the alter", () => {
@@ -474,16 +475,14 @@ for (const tier of tiers) {
          });
       }
 
-      it("M1: a widened partial is still served, read through its typed source, from the database tier", async () => {
+      it("M1: a widened partial's table no longer matches its contract, so the query answers live, equal to live", async () => {
          const after = await s.ask("rollup_count");
          expect(after.rows).toEqual(s.live.rollup_count.rows);
-         expect(after.kind).toBe("rollup");
-         expect(after.tier).toBe("database");
-         expect(after.servedFrom).toBe("database");
+         expect(after.kind).toBe("live");
       });
    });
 
-   describe(`the served copy of a #(materialize) table: a narrowing is left out, a widening read as it is (${tier.label})`, () => {
+   describe(`the served copy of a #(materialize) table: a narrowing or a widening answers live (${tier.label})`, () => {
       const s = scenario(tier, "double");
 
       it("served each from its table, equal to live, before the alter", () => {
@@ -512,10 +511,10 @@ for (const tier of tiers) {
          expect(after.rows?.map((r) => r.cat)).toEqual(["a"]);
       });
 
-      it("a column widened from INTEGER to BIGINT: still served, equal to live", async () => {
+      it("a column widened from INTEGER to BIGINT: incompatible with its contract, answered live, equal to live", async () => {
          const after = await s.ask("mat_widen");
          expect(after.rows).toEqual(s.live.mat_widen.rows);
-         expect(after.kind).not.toBe("live");
+         expect(after.kind).toBe("live");
       });
    });
 

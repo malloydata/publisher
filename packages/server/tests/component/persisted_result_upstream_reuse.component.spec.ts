@@ -2,13 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * A persisted view or named query over a persisted source builds in a
- * companion that blanks every source-level `#@` line, so it never reads its
- * source's table: it reads the rows its live query reads. Its entry says so
- * (`upstreamReuse: "recomputed"`, never `"reused"`) and counts it, and,
- * as a database rollup over a stored base, it is exempt from strict
- * upstreams: it builds there too. Its stored rows answer as live does, as
- * text.
+ * A database persisted view or named query over a database `#@ persist`
+ * source builds from that source's table, as any chained build does: its
+ * entry says `upstreamReuse: "reused"`, it builds under strict upstreams,
+ * and no upstream recompute is counted. Its stored rows answer as live does,
+ * as text. (The drop-raw proof is downstream_reads_upstream_table.)
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -72,7 +70,7 @@ interface Entry {
    upstreamRecomputeReason?: string;
 }
 
-describe("a persisted view or query over a persisted source says it recomputes it", () => {
+describe("a persisted view or query over a persisted source reads its table", () => {
    let restore: () => void;
    let root: string;
    let env: Environment;
@@ -192,27 +190,25 @@ describe("a persisted view or query over a persisted source says it recomputes i
       await freshLoadPool();
    });
 
-   it("builds each under strict upstreams too, labelled and counted as recomputed", () => {
+   it("builds each under strict upstreams, reusing the source's table, and counts no recompute", () => {
       expect([strict.status, (strict as { error?: unknown }).error]).toEqual([
          "MANIFEST_FILE_READY",
          null,
       ]);
       const entries = results(strict);
       expect(entries).toHaveLength(2);
-      for (const e of entries) expect(e.upstreamReuse).toBe("recomputed");
-      expect(recomputes).toBe(2);
+      for (const e of entries) {
+         expect(e.upstreamReuse).toBe("reused");
+         expect(e.upstreamRecomputeReason).toBeUndefined();
+      }
+      expect(recomputes).toBe(0);
    });
 
-   it("records each as recomputed, never reused", () => {
+   it("records each as reused on a relaxed rebuild too", () => {
       expect(relaxed.status).toBe("MANIFEST_FILE_READY");
       const entries = results(relaxed);
       expect(entries).toHaveLength(2);
-      for (const e of entries) {
-         expect(e.upstreamReuse).toBe("recomputed");
-         expect(e.upstreamRecomputeReason).toMatch(
-            /^persisted upstream '\w+' is not read from its table: a persisted view or query builds from its source's definition, as its live query does; recomputed from its definition in the warehouse$/,
-         );
-      }
+      for (const e of entries) expect(e.upstreamReuse).toBe("reused");
    });
 
    it("serves the view from its table, equal to live as text", async () => {

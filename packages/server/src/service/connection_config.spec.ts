@@ -14,8 +14,12 @@ import {
    assembleEnvironmentConnections,
    validateConnectionSqlFields,
    validateDuckdbApiSurface,
+   storageDestinationFile,
+   destinationFileNameRefusal,
+   storageDestinationRoot,
    validateStorageDestinations,
 } from "./connection_config";
+import { BadRequestError } from "../errors";
 import { normalizeSnowflakePrivateKey } from "./dialects/snowflake";
 import { normalizeReadableSchemas } from "./connection_type";
 import { installSettings } from "../test_helpers/settings_env";
@@ -2104,5 +2108,55 @@ describe("ducklakeConnection.storage.s3Connection.region is held to a region's s
       expect(() =>
          validateConnectionSqlFields(withRegion(region)),
       ).not.toThrow();
+   });
+});
+
+describe("storageDestinationFile", () => {
+   it("puts a destination's file under the destinations root", () => {
+      expect(storageDestinationFile("/env", "lake")).toBe(
+         path.join(storageDestinationRoot("/env"), "lake.duckdb"),
+      );
+   });
+
+   it("refuses a traversal-shaped or separator-bearing name", () => {
+      for (const name of ["../escape", "..", "a/b", "a\\b", "x/../../y", ""]) {
+         expect(() => storageDestinationFile("/env", name)).toThrow(
+            BadRequestError,
+         );
+      }
+   });
+
+   it("names the allowed pattern for a name it refuses, as a config load reports it", () => {
+      for (const name of ["my lake", "lakè", "../escape", "a/b", ""]) {
+         expect(destinationFileNameRefusal(name)).toContain(
+            "only ASCII letters, digits, '_', '-' and '.'",
+         );
+      }
+      for (const name of ["lake", "Lake_2", "lake-prod.v1"]) {
+         expect(destinationFileNameRefusal(name)).toBeUndefined();
+      }
+   });
+
+   it("leaves a DuckLake destination's name alone: no file is named from it", () => {
+      const { accepted, rejected } = validateStorageDestinations([
+         {
+            name: "my lake",
+            type: "ducklake",
+            ducklakeConnection: {
+               catalog: {
+                  postgresConnection: {
+                     host: "h",
+                     port: 5432,
+                     userName: "u",
+                     password: "p",
+                     databaseName: "d",
+                  },
+               },
+               storage: { bucketUrl: "/tmp/lake" },
+            },
+         } as unknown as ApiConnection,
+      ]);
+      expect(rejected).toEqual([]);
+      expect(accepted.map((d) => d.name)).toEqual(["my lake"]);
    });
 });

@@ -59,6 +59,20 @@ export const MATERIALIZATION_TYPES_UNRECORDED_CODE =
    "materialization-types-unrecorded";
 
 /**
+ * The warning code of a bound table whose entry carries no column contract:
+ * it answers live until a build rebuilds it in full.
+ */
+const MATERIALIZATION_CONTRACT_MISSING_CODE =
+   "materialization-contract-missing";
+
+/**
+ * The warning code of a bound table that no longer matches its column
+ * contract: it answers live until a build rebuilds it.
+ */
+const MATERIALIZATION_TABLE_INCOMPATIBLE_CODE =
+   "materialization-table-incompatible";
+
+/**
  * The live verdict reasons that carry a publish warning of their own, with its
  * code. The other live reasons are warned where their cause is found (storage
  * mode, refusals).
@@ -71,6 +85,8 @@ export const VERDICT_WARNING_CODES: Readonly<
    connection_cannot_hold_table:
       MATERIALIZATION_CONNECTION_CANNOT_HOLD_TABLE_CODE,
    types_unrecorded: MATERIALIZATION_TYPES_UNRECORDED_CODE,
+   contract_missing: MATERIALIZATION_CONTRACT_MISSING_CODE,
+   incompatible: MATERIALIZATION_TABLE_INCOMPATIBLE_CODE,
 };
 
 /** Why a materialized source's table answers no query. Open: see the module doc. */
@@ -104,6 +120,20 @@ type ServeVerdictReason =
     * rebuilt with its types recorded.
     */
    | "types_unrecorded"
+   /**
+    * A table whose manifest entry carries no column contract (built before
+    * contracts were recorded, or by a worker that predates them): never
+    * served from. Non-terminal: a rebuild fixes it, and its source counts as
+    * stale until then, so the next build rebuilds it in full.
+    */
+   | "contract_missing"
+   /**
+    * A table that no longer matches the column contract its build recorded
+    * (a column gone, retyped, or recollated since, or, for a source a build
+    * substitutes, its source now declaring another type): never served from
+    * until a rebuild. Non-terminal: a rebuild fixes it.
+    */
+   | "incompatible"
    /**
     * A source the served copy reads (a `#(materialize)` one, or a `#@ persist`
     * one), bound, but no model's compiled served copy reads its table;
@@ -199,12 +229,29 @@ export interface ServeVerdict {
     * yet: re-read it. Absent once every such model's copy is current.
     */
    servedCopyPending?: true;
+   /**
+    * With `contract_missing` or `incompatible`: the table generation the
+    * verdict judged, so a consumer drops a verdict about a table it has
+    * since replaced: its `physicalTableName`, and the `builtAt` its entry
+    * carried (absent when the entry carried none).
+    */
+   table?: { physicalTableName: string; builtAt?: string };
+   /** With `incompatible`: what changed, and the columns it changed. */
+   incompatibility?: { code: string; columns: string[] };
    /** What the verdict means for this source, in a sentence. */
    message: string;
    /** For a `live` verdict, the changes that would let it serve. */
    fixes?: string[];
    /** Per named view, for a stored source on a preview. */
    views?: ViewServeVerdict[];
+}
+
+/** One bound table the bind held to its contract and left out. */
+export interface ContractVerdict {
+   reason: "contract_missing" | "incompatible";
+   physicalTableName: string;
+   builtAt?: string;
+   incompatibility?: { code: string; columns: string[] };
 }
 
 /** What {@link computeServeVerdicts} reads. Every predicate is per source. */
@@ -258,6 +305,13 @@ export interface ServeVerdictFacts {
     * build recorded no column types (`types_unrecorded`). Absent: none.
     */
    typesUnrecordedEntityIds?: ReadonlySet<string>;
+   /**
+    * Both tiers: the bound tables the bind left out because their entry
+    * carries no contract (`contract_missing`) or because they no longer
+    * match it (`incompatible`), by sourceEntityId, with the generation
+    * judged. Absent: none.
+    */
+   contractVerdicts?: ReadonlyMap<string, ContractVerdict>;
    /** Storage: the source names the package holds a serve binding for. */
    boundStorageNames: ReadonlySet<string>;
    /**
@@ -737,6 +791,42 @@ function boundVerdict(
          ],
       );
 
+   const contractVerdict = (): ServeVerdict | undefined => {
+      const judged = facts.contractVerdicts?.get(source.sourceEntityId ?? "");
+      if (!judged) return undefined;
+      const table = {
+         physicalTableName: judged.physicalTableName,
+         ...(judged.builtAt ? { builtAt: judged.builtAt } : {}),
+      };
+      return judged.reason === "contract_missing"
+         ? {
+              ...live(
+                 "contract_missing",
+                 `${subject}'s table carries no column contract (it was built ` +
+                    `before contracts were recorded), so no query is answered ` +
+                    `from it until a build rebuilds it in full.`,
+                 [
+                    "Run a build: the table is rebuilt in full, with its contract.",
+                 ],
+              ),
+              table,
+           }
+         : {
+              ...live(
+                 "incompatible",
+                 `${subject}'s table no longer matches the column contract its ` +
+                    `build recorded (${judged.incompatibility?.code ?? "changed"}: ` +
+                    `${(judged.incompatibility?.columns ?? []).join(", ")}), so no ` +
+                    `query is answered from it until a build rebuilds it.`,
+                 ["Run a build: the table is rebuilt from its source."],
+              ),
+              table,
+              ...(judged.incompatibility
+                 ? { incompatibility: judged.incompatibility }
+                 : {}),
+           };
+   };
+
    if (tier === "storage") {
       const views = facts.views?.get(sourceID);
       const withViews = views && views.length > 0 ? { views } : {};
@@ -748,6 +838,8 @@ function boundVerdict(
             message: `${subject} will serve from storage once a build binds its table.`,
          };
       }
+      const held = contractVerdict();
+      if (held) return held;
       if (
          materialized === undefined &&
          origin !== "rollup" &&
@@ -787,6 +879,8 @@ function boundVerdict(
          message: `${subject} will serve from its table once a build binds it.`,
       };
    }
+   const held = contractVerdict();
+   if (held) return held;
    if (facts.typesUnrecordedEntityIds?.has(source.sourceEntityId)) {
       return live(
          "types_unrecorded",

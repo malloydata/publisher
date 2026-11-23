@@ -64,8 +64,10 @@ source: d2 is draw extend { join_one: g is g6 on g.doc_id = id }
 source: d11 is vis5 -> { select: * }
 source: d7 is g6 extend { where: user_id = $USER }
 
+// Reads the current time as g6 does, from the raw rows: a downstream over
+// g6, which is refused, would recompute it from raw, so it is refused too.
 #@ persist name="down6"
-source: down6 is g6 -> { select: doc_id }
+source: down6 is graw -> { where: expires_at > now; select: doc_id }
 
 #@ persist name="plainp"
 source: plainp is draw -> { select: id }

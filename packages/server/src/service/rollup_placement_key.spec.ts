@@ -239,7 +239,7 @@ source: orders is ${ROWS} -> { select: * } extend {
       });
    }
 
-   it("takes nothing from a storage= base's name=", async () => {
+   it("refuses a database rollup over a storage= base, which takes nothing from its name=", async () => {
       const { compiled, packagePath } = await compile(
          `#(materialize) name="analytics.orders_t" storage="lake"
 source: orders is ${ROWS} extend {
@@ -251,9 +251,12 @@ source: orders is ${ROWS} extend {
       const rollups = tablesOf(compiled, packagePath)
          .map((t) => t.table)
          .filter((t) => t.includes("_by_"));
-      expect(rollups).toEqual([
-         expect.stringMatching(readable("", "orders_by_category")),
-      ]);
+      // Refused at plan: its base's table lives in a storage destination a
+      // build in the warehouse cannot read.
+      expect(rollups).toEqual([]);
+      expect(
+         (compiled.annotationFindings ?? []).map((f) => f.refused?.reason),
+      ).toContain("upstream_table_unusable");
    });
 });
 

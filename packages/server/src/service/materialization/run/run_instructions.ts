@@ -12,6 +12,7 @@
  * refuses. A source the eligibility gate refuses is returned as refused and serves live.
  */
 
+import { contractDigest, parseContract } from "../domain/column_contract";
 import { PACKAGE_SANDBOX_CONNECTION } from "../../connection_config";
 import { storageWritable } from "../domain/placement";
 import { freshnessOf } from "../domain/freshness";
@@ -144,6 +145,8 @@ interface ClearedSource {
 function gateSources(
    compiled: RunPlan,
    include: Set<string> | null,
+   /** Upstreams of `include` pulled in (upstreamClosure): never thrown for. */
+   pulledIn: ReadonlySet<string> = new Set(),
 ): {
    sources: ClearedSource[];
    refused: Record<string, RefusedSource>;
@@ -169,7 +172,10 @@ function gateSources(
    });
    for (const build of compiled.builds) {
       for (const persistSource of sourcesInBuildOrder(build, compiled.tables)) {
-         if (include && !include.has(persistSource.name)) continue;
+         const pulled = pulledIn.has(persistSource.sourceID);
+         if (!pulled) {
+            if (include && !include.has(persistSource.name)) continue;
+         }
 
          // A source that DECLARES `storage=` must never silently downgrade
          // to a database CTAS into its own warehouse when
@@ -216,7 +222,7 @@ function gateSources(
             }
          } catch (err) {
             if (!(err instanceof MaterializationEligibilityError)) throw err;
-            if (include) throw err;
+            if (include && !pulled) throw err;
             if (!refused[persistSource.sourceID]) {
                refused[persistSource.sourceID] = refusalRecord(
                   persistSource,
@@ -794,6 +800,50 @@ interface SelfInstructions {
 }
 
 /**
+ * Whether a prior table must be rebuilt in full: one with no contract
+ * (built before contracts were recorded), or one a bind found incompatible
+ * with its contract, is never served from, so it is never carried, and an
+ * incremental one is reseeded rather than advanced by a delta.
+ */
+function rebuiltInFull(
+   prior: ManifestEntry | undefined,
+   sourceEntityId: string,
+   options: { incompatible?: ReadonlySet<string> },
+): boolean {
+   return (
+      prior !== undefined &&
+      (parseContract(prior.contract) === undefined ||
+         options.incompatible?.has(sourceEntityId) === true)
+   );
+}
+
+/**
+ * How {@link deriveSelfInstructions} decides what to carry.
+ *
+ * Rebuild every source (a scheduled fire, `forceRefresh`): nothing is
+ * carried. `priorEntries` still decide each table's name. `pastWindow`
+ * names a prior table past its declared freshness window, which is
+ * rebuilt rather than carried (freshness_stamp.ts); absent, none is.
+ */
+interface SelfInstructionOptions {
+   forceRefresh?: boolean;
+   pastWindow?: (sourceEntityId: string, prior: ManifestEntry) => boolean;
+   /**
+    * What a rebuilt table with a declared window reads: a carried table
+    * it reads (through the plan's edges, transitively) whose age is
+    * unknown or past that window is rebuilt too (see
+    * {@link rebuildStaleUpstreams}).
+    */
+   upstreams?: StaleUpstreamRule;
+   /**
+    * The tables a bind left out as incompatible with their contracts, by
+    * address: never carried, rebuilt in full (an incremental one
+    * reseeds).
+    */
+   incompatible?: ReadonlySet<string>;
+}
+
+/**
  * Derive auto-run's own build instructions. Each persist source (respecting
  * `sourceNames`) gets a self-assigned physical name and COPY realization,
  * unless its sourceEntityId is unchanged since `priorEntries`, in which case
@@ -824,25 +874,10 @@ export function deriveSelfInstructions(
    priorEntries: Record<string, ManifestEntry>,
    incremental?: IncrementalRunContext,
    naming?: SelfTableNaming,
-   /**
-    * Rebuild every source (a scheduled fire, `forceRefresh`): nothing is
-    * carried. `priorEntries` still decide each table's name. `pastWindow`
-    * names a prior table past its declared freshness window, which is
-    * rebuilt rather than carried (freshness_stamp.ts); absent, none is.
-    */
-   options: {
-      forceRefresh?: boolean;
-      pastWindow?: (sourceEntityId: string, prior: ManifestEntry) => boolean;
-      /**
-       * What a rebuilt table with a declared window reads: a carried table
-       * it reads (through the plan's edges, transitively) whose age is
-       * unknown or past that window is rebuilt too (see
-       * {@link rebuildStaleUpstreams}).
-       */
-      upstreams?: StaleUpstreamRule;
-   } = {},
+   options: SelfInstructionOptions = {},
 ): SelfInstructions {
    const include = sourceNames ? new Set(sourceNames) : null;
+   const pulledIn = upstreamClosure(compiled, include);
    const instructions: BuildInstruction[] = [];
    const carried: Record<string, ManifestEntry> = {};
    const recheck: Record<string, BuildInstruction> = {};
@@ -851,6 +886,7 @@ export function deriveSelfInstructions(
    const { sources, refused, refusals, cleared } = gateSources(
       compiled,
       include,
+      pulledIn,
    );
    const namers = namingSources(compiled, sources, naming?.packagePath);
    const { freshNames, takenByAnother } = freshTableNames(
@@ -923,6 +959,7 @@ export function deriveSelfInstructions(
             ? previous!
             : tableName;
 
+      const mustRebuild = rebuiltInFull(prior, sourceEntityId, options);
       const instruction: BuildInstruction = {
          sourceEntityId,
          materializedTableId: `local-${sourceEntityId.substring(
@@ -932,27 +969,26 @@ export function deriveSelfInstructions(
          physicalTableName: logicalName,
          realization: "COPY",
          ...(destination ? { destination } : {}),
+         ...(mustRebuild && deltaEligible ? { reseed: true } : {}),
       };
-      // Carry forward only within the SAME destination, and only a table
-      // at the name this run would write: sourceEntityId encodes neither.
-      // A source that changes `storage=`, or whose table name changes (a
-      // `name=` removed or changed, a v1 source moved to `#(materialize)`,
-      // a table named before readable names, or the unsuffixed table a run
-      // before package-owned names built, which another package on the same
-      // schema may have written since) is rebuilt under its name now, and
-      // the old table is offered to the reclaim once this run commits
-      // (supersededTable), which drops it only when Publisher can prove it
-      // is its own.
+      // A source whose `storage=` or name changed is rebuilt, the old table
+      // reclaimed once the run commits (supersededTable).
       if (
-         !deltaEligible &&
-         !rebuildsEveryRun(compiled, options, persistSource.sourceID) &&
-         sameDestination &&
-         !options.pastWindow?.(sourceEntityId, prior!) &&
-         samePath(
-            prior!.physicalTableName,
+         carries({
+            compiled,
+            persistSource,
+            prior,
             logicalName,
-            tableNamesFoldCase(persistSource.dialectName, !!destination),
-         )
+            destination,
+            sourceEntityId,
+            sameDestination,
+            mustRebuild,
+            deltaEligible,
+            // A pulled-in upstream: only what was named is forced.
+            options: pulledIn.has(persistSource.sourceID)
+               ? { ...options, forceRefresh: false }
+               : options,
+         })
       ) {
          carried[sourceEntityId] = prior!;
          carriedInstructions.set(sourceEntityId, instruction);
@@ -996,6 +1032,8 @@ export function deriveSelfInstructions(
       );
    }
 
+   rebuildReaders(instructions, carried, carriedInstructions, recheck);
+
    if (
       refusals.length > 0 &&
       instructions.length === 0 &&
@@ -1013,6 +1051,42 @@ export function deriveSelfInstructions(
       confirmExists,
       renamed: notWrittenThisRun(renamed, instructions, carried, sources),
    };
+}
+
+/**
+ * The sourceIDs of every persisted upstream a named source reads, through
+ * the plan's edges, transitively, that is not itself named: a run of named
+ * sources carries each of them it can and rebuilds the rest (a table missing,
+ * at another tier or destination, past its window, with no contract, or one
+ * a bind found incompatible), since a downstream is built over its
+ * upstreams' tables or not at all. Empty for a run of every source.
+ */
+function upstreamClosure(
+   compiled: RunPlan,
+   include: ReadonlySet<string> | null,
+): Set<string> {
+   const out = new Set<string>();
+   if (!include) return out;
+   const reads = new Map<string, readonly string[]>();
+   for (const build of compiled.builds) {
+      for (const [id, deps] of Object.entries(build.dependsOn)) {
+         reads.set(id, [...(reads.get(id) ?? []), ...deps]);
+      }
+   }
+   const queue = Object.entries(compiled.tables)
+      .filter(([, t]) => include.has(t.source.name))
+      .map(([id]) => id);
+   while (queue.length > 0) {
+      for (const upstream of reads.get(queue.pop()!) ?? []) {
+         const name = compiled.tables[upstream]?.source.name;
+         if (name === undefined || include.has(name) || out.has(upstream)) {
+            continue;
+         }
+         out.add(upstream);
+         queue.push(upstream);
+      }
+   }
+   return out;
 }
 
 /** What {@link rebuildStaleUpstreams} reads. */
@@ -1072,6 +1146,48 @@ function rebuildStaleUpstreams(
             instructions.push(instruction);
          }
          visit(upstream, window);
+      }
+   }
+}
+
+/**
+ * Rebuild, rather than carry, each carried table built from an upstream
+ * table that is not the one it would read now (its `builtFrom`): one this
+ * run rebuilds, or a carried one of another build (`builtAt`) or another
+ * column contract (`contractDigest`, when both record one). Transitive: a
+ * reader moved to `instructions` makes its own readers rebuild. Moves each
+ * such table from `carried` (and `recheck`) to `instructions`.
+ */
+function rebuildReaders(
+   instructions: BuildInstruction[],
+   carried: Record<string, ManifestEntry>,
+   carriedInstructions: ReadonlyMap<string, BuildInstruction>,
+   recheck: Record<string, BuildInstruction>,
+): void {
+   const rebuilt = new Set(instructions.map((i) => i.sourceEntityId));
+   const digestOf = (entry: ManifestEntry): string | undefined => {
+      const contract = parseContract(entry.contract);
+      return contract && contractDigest(contract);
+   };
+   const readsOther = (entry: ManifestEntry): boolean =>
+      (entry.builtFrom ?? []).some((read) => {
+         if (rebuilt.has(read.sourceEntityId)) return true;
+         const now = carried[read.sourceEntityId];
+         if (now === undefined) return false;
+         if (now.builtAt !== read.builtAt) return true;
+         const digest = read.contractDigest && digestOf(now);
+         return digest !== undefined && digest !== read.contractDigest;
+      });
+   for (let moved = true; moved; ) {
+      moved = false;
+      for (const [address, entry] of Object.entries(carried)) {
+         const instruction = carriedInstructions.get(address);
+         if (instruction === undefined || !readsOther(entry)) continue;
+         delete carried[address];
+         delete recheck[address];
+         instructions.push(instruction);
+         rebuilt.add(address);
+         moved = true;
       }
    }
 }
@@ -1263,4 +1379,38 @@ function samePath(a: string, b: string, foldCase: boolean): boolean {
          .map((s) => (foldCase ? s.toLowerCase() : s))
          .join(".");
    return canon(a) === canon(b);
+}
+
+/**
+ * Whether a prior table is carried rather than rebuilt: only within the SAME
+ * destination, and only a table at the name this run would write
+ * (sourceEntityId encodes neither); never one that must be rebuilt in full,
+ * an incremental one (its ledger decides), one rebuilt every run, or one
+ * past its window.
+ */
+function carries(a: {
+   compiled: RunPlan;
+   persistSource: PersistSource;
+   prior: ManifestEntry | undefined;
+   logicalName: string;
+   destination: string | undefined;
+   sourceEntityId: string;
+   sameDestination: boolean;
+   mustRebuild: boolean;
+   deltaEligible: boolean;
+   options: SelfInstructionOptions;
+}): boolean {
+   return (
+      a.prior !== undefined &&
+      !a.mustRebuild &&
+      !a.deltaEligible &&
+      !rebuildsEveryRun(a.compiled, a.options, a.persistSource.sourceID) &&
+      a.sameDestination &&
+      !a.options.pastWindow?.(a.sourceEntityId, a.prior) &&
+      samePath(
+         a.prior.physicalTableName,
+         a.logicalName,
+         tableNamesFoldCase(a.persistSource.dialectName, !!a.destination),
+      )
+   );
 }
