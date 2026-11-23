@@ -1423,6 +1423,8 @@ These checks cover a key repeated within one delta, and a table holding a repeat
 
 **A check that cannot run is warned of.** When the repeated-key check after a rebuild, or the read of a delta's column types (below), fails, the source is rebuilt in full on every refresh until it runs, so it is never merged on an unproven table. That shows as a package warning, code `persist-incremental-check-failed`, naming the source, the check and its error's code (a SQLSTATE such as `42883` for a `json` merge key on Postgres, which has no equality), not only as `refresh: full` on each run. It clears when the check passes.
 
+Both warnings, `persist-incremental-merge-key-not-unique` and `persist-incremental-check-failed`, are held in the server's memory, not in the manifest. After a restart they are absent until the next run finds the same thing again, which it does on its first refresh of that source: a source with no recorded boundary rebuilds and re-runs the check.
+
 **On a caller-scoped source, the merge matches on more than you declared.** A source whose
 term is stripped and re-applied per caller is stored once holding every caller's rows, so a
 key you chose against the source as you wrote it — `order_id`, unique within one org — is
