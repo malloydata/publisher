@@ -394,9 +394,13 @@ export class MaterializationController {
 
    /**
     * A reference's `ledger`, checked as an echoed ledger entry is
-    * ({@link validateLedgerEntry}) and held to the reference's own table. A
-    * malformed or mismatched one is dropped with a warning, never a 400: the
-    * extensions over that upstream then rebuild in full, as with no entry.
+    * ({@link validateLedgerEntry}) and held to the reference's own table and
+    * source: the same `sourceEntityId`, so a host whose physical names are
+    * stable across versions cannot carry the ledger of the parent's previous
+    * definition. A malformed or mismatched one is dropped with a warning,
+    * never a 400, as if absent: the extensions over that upstream read the
+    * bound manifest's or this worker's entry instead, and reseed only when
+    * neither proves which build they read over (incremental_upstream.ts).
     * Returned whole, keys this release does not know included.
     */
    private validateReferenceLedger(
@@ -417,11 +421,15 @@ export class MaterializationController {
          defect =
             "it names another table than the reference (connectionName, " +
             "physicalTableName, storageDestinationName)";
+      } else if (checked.entry.sourceEntityId !== ref.sourceEntityId) {
+         defect =
+            "it names another source than the reference (sourceEntityId): " +
+            "an entry from another definition of the upstream";
       } else {
          return { ledger: checked.entry };
       }
       logger.warn(
-         "Dropped a referenceManifest entry's ledger; extensions over it rebuild in full",
+         "Dropped a referenceManifest entry's ledger; extensions over it fall back to the bound or local ledger",
          {
             ...context,
             table: ref.physicalTableName,

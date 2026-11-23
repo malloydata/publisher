@@ -539,7 +539,7 @@ describe("MaterializationController.createMaterialization validation", () => {
       ).toBeUndefined();
    });
 
-   it("carries a reference's ledger whole, and drops a malformed or mismatched one with a warning", async () => {
+   it("carries a reference's ledger whole, and drops a malformed one or one naming another table or source with a warning", async () => {
       // The upstream's entry as the publisher reported it, unknown keys too.
       const ledger = {
          connectionName: "wh",
@@ -591,6 +591,10 @@ describe("MaterializationController.createMaterialization validation", () => {
             [{ ...ledger, storageDestinationName: "lake" }, {}],
             [ledger, { storageDestinationName: "lake" }],
             [ledger, { connectionName: undefined }],
+            // The same table, but another source's entry: a host whose names
+            // are stable across versions carrying the previous definition's.
+            [{ ...ledger, sourceEntityId: "b1-previous" }, {}],
+            [ledger, { sourceEntityId: "b1-next" }],
          ] as const) {
             warn.mockClear();
             const parsed = await refOf(body(bad, ref));
