@@ -711,6 +711,44 @@ describe("buildOneSource: incremental refresh", () => {
          expect(entry.refresh).toBe("delta");
       });
 
+      // The entry is opaque to hosts, so a key this release does not know
+      // reaches the NEXT entry unchanged, whichever path built the table. A
+      // known field is the publisher's own and always wins.
+      const EXTENDED = {
+         ...ENTRY,
+         parent: { sourceEntityId: "p1", coveredThrough: "x" },
+         coveredThrough: "2024-06-20",
+      } as LedgerEntry;
+      const carried: [string, boolean, string][] = [
+         ["a delta", true, "delta"],
+         // An emptied table seeds through the database build's CTAS.
+         ["a seed", false, "full"],
+      ];
+      for (const [what, nonEmpty, refresh] of carried) {
+         it(`reports a carried key on the next entry after ${what}`, async () => {
+            const entry = await callBuildOneSource({
+               runSQL: probeAwareRunSQL(nonEmpty),
+               context: incrementalContext({ ledger: [EXTENDED] }).context,
+            });
+            expect(entry.refresh).toBe(refresh);
+            expect(entry.ledger).toMatchObject({
+               parent: { sourceEntityId: "p1", coveredThrough: "x" },
+               coveredThrough: "2024-07-01",
+            });
+         });
+      }
+
+      it("does not carry the keys of an entry a reseed ignores", async () => {
+         const entry = await callBuildOneSource({
+            runSQL: probeAwareRunSQL(),
+            context: incrementalContext({ ledger: [EXTENDED] }).context,
+            reseed: true,
+         });
+         expect(entry.refresh).toBe("full");
+         expect(entry.ledger).toBeDefined();
+         expect(entry.ledger).not.toHaveProperty("parent");
+      });
+
       // The controller drops a malformed entry rather than refusing the
       // request: the source it described seeds, and every other entry in the
       // same ledger still applies.

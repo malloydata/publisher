@@ -810,9 +810,10 @@ export function refreshFields(
  * Empty when there is no boundary (a non-incremental or empty source), so the
  * spread adds no key rather than an explicit undefined.
  *
- * `extensions` are publisher-owned keys beyond the ones listed here; the entry
- * is opaque to hosts, which return it whole. A known key always wins over an
- * extension of the same name.
+ * `extensions` are publisher-owned keys beyond the ones listed here, normally
+ * {@link carriedLedgerExtensions}, which a caller may amend with values it
+ * computed this run. The entry is opaque to hosts, which return it whole. A
+ * known key always wins over an extension of the same name.
  */
 export function ledgerFields(
    lineage: IncrementalLineage | undefined,
@@ -840,6 +841,26 @@ export function ledgerFields(
          sourceEntityId: lineage.sourceEntityId,
       },
    };
+}
+
+/**
+ * The keys this release does not know on the caller's echoed entry for this
+ * source's table, to carry onto the entry the run reports: a fresh object, so
+ * a caller may set a key it computed this run over a carried one. Undefined
+ * when the run reads the local store, the caller sent no entry for the table
+ * or one with no such keys, or the source is reseeded, whose entry is ignored.
+ */
+export function carriedLedgerExtensions(
+   refresh:
+      | { context: IncrementalRunContext; lineage: IncrementalLineage }
+      | undefined,
+   reseed: boolean | undefined,
+): Record<string, unknown> | undefined {
+   if (!refresh || reseed || refresh.context.forceRefresh) return undefined;
+   const carried = refresh.context.callerLedger?.get(
+      recordedTableKey(refresh.lineage),
+   )?.extensions;
+   return carried ? { ...carried } : undefined;
 }
 
 /**
@@ -986,7 +1007,11 @@ export async function refreshOneSourceIncrementally(params: {
       // applyDeltaScript returns no cost figure, even on backends that have one.
       queryCostBytes: null,
       // A delta reports where it advanced to; a skip, the boundary in force.
-      ...ledgerFields(lineage, outcome.coveredThrough),
+      ...ledgerFields(
+         lineage,
+         outcome.coveredThrough,
+         carriedLedgerExtensions({ context, lineage }, instruction.reseed),
+      ),
       ...refreshFields(outcome.refresh),
       ...lateRowsFields(outcome.lateRows),
       ...(nativeSchema?.length ? { nativeSchema } : {}),
