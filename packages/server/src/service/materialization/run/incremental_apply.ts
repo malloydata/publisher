@@ -1454,6 +1454,15 @@ export interface DeltaTarget {
     * row. Absent where it cannot be read: the delta's types are then not
     * judged (see delta_type_widening.ts).
     */
+   /**
+    * The types a full build stores a column of `deltaType` as, where the
+    * build's own casts change it: a `storage=` build stores a 128-bit integer
+    * as `DECIMAL(38,0)`, or, when that cast fails, as computed (see
+    * storedTypesAsBuilt). Absent: a build stores the delta's type as it is.
+    * Read by the widening check, so a column a rebuild would write the same
+    * way is not a widening.
+    */
+   storedAsBuilt?(deltaType: string): readonly string[];
    deltaColumnTypes?(
       deltaSQL: string,
       columns: readonly string[],
@@ -1819,7 +1828,11 @@ async function storedColumnsNarrower(
       };
    }
    if (!delta.types) return undefined;
-   const widened = widenedColumns(storedTypes, delta.types);
+   const widened = widenedColumns(
+      storedTypes,
+      delta.types,
+      target.storedAsBuilt,
+   );
    if (widened.length === 0) return undefined;
    return {
       reason:

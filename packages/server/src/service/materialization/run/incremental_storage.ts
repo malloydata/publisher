@@ -36,6 +36,7 @@ import { quoteIdentifier } from "../../quoting";
 import { errMessage } from "../../../utils";
 import { errorCodeOf } from "../../../error_code";
 import { storageTablePath } from "../domain/storage_table_path";
+import { storedTypesAsBuilt } from "../stored_column_types";
 import { capabilitiesOf, STORAGE_DIALECT } from "../domain/dialect";
 import {
    decimalTypeOf,
@@ -370,7 +371,10 @@ export function storageDeltaTarget(params: {
          },
 
          ...(capabilitiesOf(sourceType).passthroughNumericAsDouble
-            ? { deltaColumnTypes: describedTypes(session) }
+            ? {
+                 deltaColumnTypes: describedTypes(session),
+                 storedAsBuilt: storedTypesAsBuilt,
+              }
             : {}),
 
          ...storageWindowRows({
@@ -469,6 +473,8 @@ export function stackedDeltaTarget(params: {
       // The parent's table is in the destination, so DESCRIBE reads no
       // row: a parent rebuilt at a wider type is seen before the delta.
       deltaColumnTypes: describedTypes(session),
+      // What the stacked build's casts store each computed type as.
+      storedAsBuilt: storedTypesAsBuilt,
       probeSourceFrontier: () =>
          probeMaxWatermark(
             runner,
