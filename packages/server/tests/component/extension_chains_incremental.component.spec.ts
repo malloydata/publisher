@@ -17,8 +17,12 @@
  *    generation the echoed ledger carries; with it stripped, the extension
  *    rebuilds and the package warns; one that missed a parent refresh
  *    rebuilds (`upstream_generation_skipped`);
+ *  - the same orchestrated round trip through the HTTP controller: the
+ *    ledger entry's `parent` key leaves on the wire and comes back in the
+ *    next request's `buildInstructions.ledger`, and the extension deltas;
  *  - a `storage=` extension stacked on its parent in one DuckLake
- *    destination deltas there.
+ *    destination deltas there, and one in another tier or destination
+ *    than its parent follows it there.
  * On Postgres, when `PUBLISHER_TEST_POSTGRES_URL` names one: incremental
  * refresh reads its range out of Postgres, Snowflake or BigQuery only.
  */
@@ -27,6 +31,7 @@ import { PostgresConnection } from "@malloydata/db-postgres";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import * as path from "path";
+import { MaterializationController } from "../../src/controller/materialization.controller";
 import { unrecordedAudit } from "../../src/service/access_record";
 import { Environment } from "../../src/service/environment";
 import { parsePackageName } from "../../src/service/identity";
@@ -335,8 +340,31 @@ class Fixture {
       );
    }
 
+   /**
+    * One run through the HTTP controller: the body as JSON bytes, validated
+    * as a request's is, and the settled run read back as the wire shape.
+    */
+   async buildOverHttp(body: object): Promise<Materialization> {
+      const controller = new MaterializationController(this.service);
+      const wire = <T>(v: T): T => JSON.parse(JSON.stringify(v)) as T;
+      const created = await controller.createMaterialization(
+         ENV,
+         PKG,
+         wire(body) as Record<string, unknown>,
+      );
+      await this.settle(created.id);
+      return wire(
+         await controller.getMaterialization(ENV, PKG, created.id),
+      ) as Materialization;
+   }
+
    async build(opts: object): Promise<Materialization> {
       const created = await this.service.createMaterialization(ENV, PKG, opts);
+      return this.settle(created.id);
+   }
+
+   private async settle(id: string): Promise<Materialization> {
+      const created = { id };
       const running = (
          this.service as unknown as {
             runningAbortControllers: Map<string, unknown>;
@@ -759,6 +787,92 @@ source: ext_rr is ev extend { dimension: big is amt > 5 }
          expect(f.pkg.materialization().unprovenGenerationWarnings()).toEqual(
             [],
          );
+      });
+   });
+
+   describe(`an orchestrated incremental extension through the HTTP controller (${tier.label})`, () => {
+      const f = new Fixture(tier);
+      const ORCH = `##! experimental { persistence }
+source: raw is warehouse.table('__RAW__')
+
+#(materialize) refresh="incremental" watermark="ts" merge_key="id" lookback="7 days"
+source: ev is raw
+
+#(materialize) refresh="incremental" watermark="ts"
+source: ext_rr is ev extend { dimension: big is amt > 5 }
+`;
+      const host = (name: string) => `${tier.prefix}host_${name}`;
+      /** A host's request body: each source's instruction, and the ledger. */
+      const body = (ledger: unknown[]) => ({
+         buildInstructions: {
+            sources: Object.values(f.pkg.getBuildPlan()!.sources).map((s) => ({
+               sourceEntityId: s.sourceEntityId,
+               sourceID: s.sourceID,
+               materializedTableId: `mt-${s.name}`,
+               physicalTableName: host(s.name),
+               realization: "COPY",
+            })),
+            ledger,
+         },
+      });
+      let first: Materialization;
+      let second: Materialization;
+      let echoed: Entry["ledger"][] = [];
+      let seedsInSecond: typeof f.seeds = [];
+
+      beforeAll(async () => {
+         await f.open(ORCH);
+         first = await f.buildOverHttp(body([]));
+         await f.insert(SECOND);
+         // The host stores each entry whole, as the wire returned it, and
+         // echoes it back unchanged.
+         echoed = Object.values(entriesOf(first))
+            .map((e) => e.ledger)
+            .filter((l) => l !== undefined);
+         const before = f.seeds.length;
+         second = await f.buildOverHttp(body(echoed));
+         seedsInSecond = f.seeds.slice(before);
+      }, 400_000);
+      afterAll(() => f.close());
+
+      it("returns the extension's ledger entry with its parent key on the wire", () => {
+         for (const run of [first, second]) {
+            expect([run.status, (run as { error?: unknown }).error]).toEqual([
+               "MANIFEST_FILE_READY",
+               null,
+            ]);
+         }
+         const [parentAddress, parent] = entryNamed(first, "ev")!;
+         const ext = echoed.find(
+            (l) => l?.physicalTableName === host("ext_rr"),
+         );
+         expect(ext?.parent).toEqual({
+            sourceEntityId: parentAddress,
+            advancedBy: first.id,
+            builtAt: parent.builtAt,
+            coveredThrough: parent.ledger?.coveredThrough as string,
+            coveredThroughType: "timestamp",
+         });
+      });
+
+      it("deltas the extension on the echoed parent key, with no reseed", async () => {
+         // No manifest is bound on this worker: only the echoed key proves
+         // which parent build the extension last read.
+         expect(
+            Object.keys(f.pkg.materialization().boundDatabaseEntries() ?? {}),
+         ).toEqual([]);
+         expect(entryNamed(second, "ev")![1].refresh).toBe("delta");
+         const ext = entryNamed(second, "ext_rr")![1];
+         expect(ext.refresh).toBe("delta");
+         expect(seedsInSecond).toEqual([]);
+         expect(ext.ledger?.parent?.advancedBy).toBe(
+            entryNamed(second, "ev")![1].ledger?.advancedBy as string,
+         );
+         expect(await f.stored(ext)).toEqual({
+            n: 5,
+            total: sumOf([...FIRST, ...SECOND]),
+            ids: [1, 2, 3, 4, 5],
+         });
       });
    });
 }
