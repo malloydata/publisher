@@ -975,6 +975,17 @@ export class ServedCopyServe {
          const live = await this.host
             .authorResultShape?.(queryString, givens)
             .catch(() => undefined);
+         // The author's compile failed: with these givens (one required and
+         // missing, one of the wrong type), not with every caller's. The
+         // decline is this caller's alone, so it is not remembered for the
+         // query's text, which the memo is keyed by; every other decline
+         // here compares result shapes, which no given's value changes.
+         if (live === undefined) {
+            throw new LegDecline("served_copy_not_served", undefined, {
+               message:
+                  "the author's compile of the query, which the served copy's result shape is checked against, failed",
+            });
+         }
          const served = resultShapeOf(
             await compiling(() =>
                runnable.getPreparedResult({
@@ -983,7 +994,7 @@ export class ServedCopyServe {
                }),
             ),
          );
-         if (live === undefined || live !== served) {
+         if (live !== served) {
             // Only a zoned truncation left out of each table read: that is
             // the column the result lacks.
             const zonedOnly = tablesRead.every((b) => {
@@ -1002,8 +1013,7 @@ export class ServedCopyServe {
             const leaving = tablesRead.filter((b) =>
                compiled.leftOutTables?.has(b.tablePath),
             );
-            const lacking =
-               live === undefined ? [] : namesLacking(live, served);
+            const lacking = namesLacking(live, served);
             const why = [
                ...new Set(
                   leaving.flatMap((b) =>

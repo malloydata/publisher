@@ -25,6 +25,10 @@ Two consequences worth knowing. A section merged to `main` ships in the **next**
 
 **Added: setting `materialize.admissionMode` (`PUBLISHER_ADMISSION_MODE`), a test and canary setting: `probe` (the default), `lookup` or `shadow`.** It picks how read admission judges whether a stored answer compares strings as live does. `probe` reads the source's and the stored table's collations from the warehouse on each query, as before. `shadow` runs both ways, decides by the probe, and logs each disagreement at warn as `admission parity drift`.
 
+**Changed: every bind that serves a table reads how each source of each model compares its strings,** once per bind rather than per query: on Postgres, one compile per source and one catalog statement per hundred string fields (through joins, four deep); on DuckDB, the instance's `default_collation` and its `COLLATE` definitions; on BigQuery, the catalog of every table a source reads. Lookup and shadow admission read it.
+
+**Fixed: the served copy no longer remembers, for every caller of a query, a decline that one caller's givens caused.** It remembers a query's declines by its text, without the givens. When the author's compile of a query failed with one caller's givens (one required and missing, say), its result-shape check declined and the decline was remembered, so later callers whose givens compile were answered live too. That decline now applies to that caller alone. Every other remembered decline compares what no given's value changes.
+
 **Added: counters `publisher_query_catalog_reads_total{site}` and `publisher_query_probe_compiles_total{site}`,** the catalog reads and extra compiles read admission makes while answering a query, and `publisher_admission_parity_drift_total{side,direction}`, shadow admission's disagreements.
 
 ## [Unreleased] — breaking: every build is strict, and a run of named sources builds the upstreams it cannot carry
