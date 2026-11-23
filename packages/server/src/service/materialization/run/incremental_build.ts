@@ -65,9 +65,11 @@ import {
    countLateRows,
    isMergeKeyGuardFailure,
    isPairGuardFailure,
+   mergeGuardedInStatement,
    isRenderableWatermarkType,
    planIncrementalStep,
    probeRepeatedKey,
+   probeRepeatedKeyInRange,
    probeServerVersion,
    seedCoveredThrough,
    type DeltaTarget,
@@ -589,6 +591,75 @@ async function seededKeyIsUnique(params: {
 }
 
 /**
+ * Whether a committed merge left each identity it touched on one row, for a
+ * dialect whose merge statement carries no key guard (Snowflake; see
+ * mergeGuardedInStatement). Always true elsewhere, and for a range replace or
+ * a pair table. A repeat, or a probe that fails, is false and noted on the
+ * package, as after a full rebuild ({@link seededKeyIsUnique}).
+ */
+async function mergedKeyIsUnique(params: {
+   context: IncrementalRunContext;
+   lineage: IncrementalLineage;
+   step: Extract<IncrementalStep, { mode: "delta" }>;
+   target: DeltaTarget;
+   sourceName: string;
+}): Promise<boolean> {
+   const { context, lineage, step, target } = params;
+   if (
+      lineage.strategy !== "merge" ||
+      lineage.pair ||
+      mergeGuardedInStatement(target.dialect)
+   ) {
+      return true;
+   }
+   const stored = (field: string) => target.storedColumn?.(field) ?? field;
+   const found = await probeRepeatedKeyInRange({
+      runner: target.runner,
+      dialect: target.dialect,
+      quotedTablePath: target.quotedTablePath,
+      matchNames: [
+         ...new Set([...lineage.mergeKeys, ...(lineage.scopeColumns ?? [])]),
+      ].map(stored),
+      watermark: stored(lineage.watermarkName),
+      start: step.start,
+      end: step.end,
+   });
+   const at = {
+      packageName: context.packageName,
+      sourceName: params.sourceName,
+      physicalTableName: lineage.physicalTableName,
+   };
+   if (found.error !== undefined) {
+      logger.warn(
+         "Could not check a merge key's uniqueness after a delta; the next " +
+            "refresh will rebuild in full",
+         { ...at, errorCode: found.errorCode },
+      );
+      context.noteIncrementalCheck?.(lineage.sourceEntityId, {
+         check: "merge_key",
+         outcome: "failed",
+         errorCode: found.errorCode ?? "unknown",
+      });
+      return false;
+   }
+   if (!found.repeated) return true;
+   logger.warn(
+      "An incremental source's merge_key= is not unique in its rows, so no " +
+         "boundary is recorded and it is rebuilt in full until it is",
+      {
+         ...at,
+         code: INCREMENTAL_MERGE_KEY_NOT_UNIQUE_CODE,
+         mergeKeys: lineage.mergeKeys,
+      },
+   );
+   context.noteIncrementalCheck?.(lineage.sourceEntityId, {
+      check: "merge_key",
+      outcome: "not_unique",
+   });
+   return false;
+}
+
+/**
  * Record the boundary a completed SEED reached by probing the table it wrote
  * (see {@link seedCoveredThrough}); a source with no rows records nothing, so the
  * next run seeds again, and so does a merge source whose table repeats a key
@@ -736,6 +807,18 @@ export async function applyIncrementalStep(params: {
          });
       }
       return { applied: false };
+   }
+   // A merge no statement guard checks (Snowflake) is checked after it
+   // commits: a table left repeating a key records no boundary, so the next
+   // run rebuilds it in full.
+   if (!(await mergedKeyIsUnique({ ...params, step }))) {
+      await resetLedger(context, lineage);
+      return {
+         applied: true,
+         durationMs: Math.round(performance.now() - startTime),
+         refresh: "delta",
+         ...(carried ? { lateRows: carried } : {}),
+      };
    }
    // A committed delta passed every check its plan ran.
    if (lineage.strategy === "merge" && !lineage.pair) {

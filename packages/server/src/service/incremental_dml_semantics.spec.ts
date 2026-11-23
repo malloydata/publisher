@@ -31,6 +31,7 @@ import {
    deltaStatements,
    isMergeKeyGuardFailure,
    planIncrementalStep,
+   probeRepeatedKeyInRange,
    warehouseDeltaTarget,
 } from "./materialization/run/incremental_apply";
 
@@ -417,3 +418,83 @@ describe("a DuckDB table whose source column was widened after the build", () =>
       expect((await plan("DOUBLE", "DOUBLE")).mode).toBe("delta");
    });
 });
+
+describe.each(["snowflake", "duckdb"])(
+   "the after-merge repeated-key probe, %s spelling",
+   (dialect) => {
+      // What Snowflake's unguarded merge can leave: a new key the delta read
+      // twice, inserted twice. The probe reads only keys the delta's range
+      // wrote, off the table.
+      const probe = (name: string) =>
+         probeRepeatedKeyInRange({
+            runner,
+            dialect,
+            quotedTablePath: `"${name}"`,
+            matchNames: ["order_id"],
+            watermark: "order_date",
+            start: { malloyType: "date", value: "2024-06-01" },
+            end: { malloyType: "date", value: "2024-07-01" },
+         });
+
+      it.each([
+         [
+            "a new key inserted twice in the range",
+            [
+               [1, "2024-05-01", 1],
+               [2, "2024-06-02", 2],
+               [2, "2024-06-03", 3],
+            ],
+            true,
+         ],
+         [
+            "a NULL key twice in the range",
+            [
+               [null, "2024-06-02", 2],
+               [null, "2024-06-03", 3],
+            ],
+            true,
+         ],
+         [
+            "a key once in the range and once below it",
+            [
+               [1, "2024-05-01", 1],
+               [1, "2024-06-02", 2],
+            ],
+            true,
+         ],
+         [
+            "a repeat only below the range, which no delta touched",
+            [
+               [1, "2024-05-01", 1],
+               [1, "2024-05-02", 2],
+               [2, "2024-06-02", 3],
+            ],
+            false,
+         ],
+         [
+            "each key once",
+            [
+               [1, "2024-05-01", 1],
+               [2, "2024-06-02", 2],
+            ],
+            false,
+         ],
+      ] as [string, [number | null, string, number][], boolean][])(
+         "finds %s: %p",
+         async (_label, rows, repeated) => {
+            const name = `probe_${table++}`;
+            await duckdb.runSQL(
+               `CREATE TABLE "${name}" AS ` +
+                  rows
+                     .map(
+                        ([id, date, revenue]) =>
+                           `SELECT CAST(${id ?? "NULL"} AS INTEGER) AS "order_id", ` +
+                           `DATE '${date}' AS "order_date", ${revenue} AS "revenue"`,
+                     )
+                     .join(" UNION ALL "),
+            );
+            expect(await probe(name)).toEqual({ repeated });
+         },
+      );
+   },
+);

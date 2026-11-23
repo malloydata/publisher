@@ -707,12 +707,17 @@ export function isMergeKeyGuardFailure(err: unknown): boolean {
  * `PARTITION BY` groups NULLs as equal: the relation of the merge's
  * {@link nullSafeKeyMatch}.
  *
- * Postgres and DuckDB only, where the guard's failure is executed in tests
- * ({@link passesUnless}). On BigQuery and Snowflake the delta is merged
- * unguarded, and only a repeated key that matches a stored row is caught, by
- * the engine's own error (see isMergeKeyGuardFailure); a new key repeated in
- * one delta is inserted twice, as live holds it.
+ * Postgres, DuckDB and BigQuery ({@link passesUnless}). On Snowflake the
+ * delta is merged unguarded: a repeated key that matches a stored row is
+ * refused by the engine itself (see isMergeKeyGuardFailure), and a new key
+ * inserted twice is found after the commit by
+ * {@link probeRepeatedKeyInRange}.
  */
+/** Whether `dialect`'s merge fails in its own statement on a repeated key. */
+export function mergeGuardedInStatement(dialect: string): boolean {
+   return passesUnless(dialect, "false", MERGE_KEY_GUARD_MESSAGE) !== undefined;
+}
+
 function mergeKeyGuard(
    dialect: string,
    deltaSQL: string,
@@ -1758,6 +1763,53 @@ export async function probeRepeatedKey(
    );
    try {
       return { repeated: probeRows((await runner(sql)).rows).length > 0 };
+   } catch (err) {
+      return {
+         repeated: false,
+         error: errMessage(err),
+         errorCode: errorCodeOf(err),
+      };
+   }
+}
+
+/**
+ * Whether a table a merge just wrote, unguarded in its statement
+ * ({@link mergeGuardedInStatement}: Snowflake), holds an identity the delta
+ * touched on more than one row: a new key the delta read twice was inserted
+ * twice, which no engine refuses. Restricted to the keys of the rows whose
+ * watermark is in the delta's range (every row the merge wrote is), read off
+ * the table itself, so the source is not read again. NULLs match as the
+ * merge matches them.
+ */
+export async function probeRepeatedKeyInRange(params: {
+   runner: SqlRunner;
+   dialect: string;
+   quotedTablePath: string;
+   matchNames: readonly string[];
+   watermark: string;
+   start: WatermarkBound;
+   end: WatermarkBound;
+}): Promise<{ repeated: boolean; error?: string; errorCode?: string }> {
+   const { dialect } = params;
+   const q = (name: string) => quoteIdentifier(name, dialect);
+   const keys = params.matchNames.map(q);
+   const w = q(params.watermark);
+   const touched =
+      `SELECT DISTINCT ${keys.join(", ")} FROM ${params.quotedTablePath} ` +
+      `WHERE ${w} >= ${renderSqlBound(params.start, dialect)} AND ` +
+      `${w} < ${renderSqlBound(params.end, dialect)}`;
+   const sql = probeSelect(
+      dialect,
+      `SELECT 1 AS ${probeAlias("repeated", dialect)} FROM ` +
+         `${params.quotedTablePath} AS __t JOIN (${touched}) AS __s ON ` +
+         `${keys.map((k) => nullSafeKeyMatch("__t", "__s", k)).join(" AND ")} ` +
+         `GROUP BY ${keys.map((k) => `__t.${k}`).join(", ")} ` +
+         `HAVING COUNT(*) > 1 LIMIT 1`,
+   );
+   try {
+      return {
+         repeated: probeRows((await params.runner(sql)).rows).length > 0,
+      };
    } catch (err) {
       return {
          repeated: false,

@@ -495,6 +495,76 @@ describe("incremental refresh fallback reasons", () => {
       ]);
    });
 
+   it.each([
+      ["finds a repeated key", [{ repeated: 1 }], undefined, "not_unique"],
+      ["cannot run", "fails", undefined, "failed"],
+      ["finds each key once", [], "2024-07-01", "passed"],
+   ] as const)(
+      "on Snowflake, whose merge has no key guard, records the boundary after a delta only when the probe %s",
+      async (_label, answer, covered, outcome) => {
+         const merge = {
+            ...LINEAGE,
+            mergeKeys: ["id"],
+            strategy: "merge",
+         } as unknown as typeof LINEAGE;
+         const noted: [string, string][] = [];
+         const upserted: unknown[] = [];
+         const deleted: unknown[] = [];
+         const probes: string[] = [];
+         const snowflake = warehouseDeltaTarget({
+            dialect: "snowflake",
+            runner: async (sql) => {
+               probes.push(sql);
+               if (sql.includes("HAVING COUNT(*) > 1")) {
+                  if (answer === "fails")
+                     throw new Error("warehouse suspended");
+                  return { rows: [...answer] };
+               }
+               return { rows: [] };
+            },
+            quotedTablePath: `"ANALYTICS"."DAILY"`,
+            lineage: merge,
+            sourceSQL: "SELECT * FROM base",
+         });
+         const applied = await applyIncrementalStep({
+            context: {
+               ...context({
+                  upsertIncrementalLedgerEntry: async (e: unknown) => {
+                     upserted.push(e);
+                     return e as never;
+                  },
+                  deleteIncrementalLedgerEntry: async (...a: unknown[]) => {
+                     deleted.push(a);
+                  },
+               }),
+               noteIncrementalCheck: (
+                  id: string,
+                  f: { check: string; outcome: string },
+               ) => noted.push([id, `${f.check}:${f.outcome}`]),
+            },
+            lineage: merge,
+            step: {
+               mode: "delta",
+               start: { malloyType: "date", value: "2024-06-01" },
+               end: { malloyType: "date", value: "2024-07-01" },
+               coveredThrough: { malloyType: "date", value: "2024-07-01" },
+               statements: ["MERGE INTO t USING s ON true"],
+            },
+            target: { ...snowflake, windowRows: undefined },
+            sourceName: "daily",
+         });
+         // The probe reads only the keys the delta's range wrote.
+         expect(probes.find((q) => q.includes("HAVING"))).toContain(
+            `WHERE "order_date" >= DATE '2024-06-01' AND "order_date" < DATE '2024-07-01'`,
+         );
+         expect(applied).toMatchObject({ applied: true, refresh: "delta" });
+         expect(applied.coveredThrough?.value).toBe(covered);
+         expect(upserted.length).toBe(covered ? 1 : 0);
+         expect(deleted.length).toBe(covered ? 0 : 1);
+         expect(noted[0]).toEqual(["sid", `merge_key:${outcome}`]);
+      },
+   );
+
    it("fails, rather than rebuilding, when a pair delta fails for any other reason", async () => {
       const pair = {
          ...LINEAGE,

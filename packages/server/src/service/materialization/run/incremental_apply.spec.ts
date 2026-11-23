@@ -22,6 +22,7 @@ import {
    deltaStatements,
    isMergeKeyGuardFailure,
    isPairGuardFailure,
+   mergeGuardedInStatement,
    ledgerLineageMismatch,
    PAIR_GUARD_MESSAGE,
    pairStagingTable,
@@ -1332,9 +1333,20 @@ describe("a merge whose source repeats a key", () => {
       }
    });
 
-   it("is merged unguarded on BigQuery and Snowflake, whose planning of the guard is unverified", () => {
-      for (const dialect of ["standardsql", "snowflake"]) {
-         expect(merge(dialect)).toContain("USING (SELECT * FROM src) AS __s");
+   it("is guarded on BigQuery with ERROR() in the CASE branch, its runtime error", () => {
+      expect(merge("standardsql")).toContain(
+         "USING (SELECT * FROM (SELECT __g.*, COUNT(*) OVER (PARTITION BY `id`) " +
+            "AS __merge_key_rows FROM (SELECT * FROM src) AS __g) AS __k " +
+            "WHERE (CASE WHEN __merge_key_rows > 1 THEN " +
+            "ERROR('incremental-merge-key-not-unique') END) IS NULL) AS __s",
+      );
+   });
+
+   it("is merged unguarded on Snowflake, which has no runtime error function, and probed after", () => {
+      expect(merge("snowflake")).toContain("USING (SELECT * FROM src) AS __s");
+      expect(mergeGuardedInStatement("snowflake")).toBe(false);
+      for (const dialect of ["postgres", "duckdb", "standardsql"]) {
+         expect(mergeGuardedInStatement(dialect)).toBe(true);
       }
    });
 
@@ -1348,6 +1360,10 @@ describe("a merge whose source repeats a key", () => {
       [
          "Snowflake (ERROR_ON_NONDETERMINISTIC_MERGE)",
          "100090 (42P18): Duplicate row detected during DML action\nRow Values: [1, 10]",
+      ],
+      [
+         "BigQuery's ERROR() in the guard",
+         "Error: incremental-merge-key-not-unique; reason: invalidQuery, message: incremental-merge-key-not-unique",
       ],
       [
          "Postgres, past the guard",
