@@ -141,6 +141,7 @@ source: ext is stored extend {
          buildsOver: {
             sourceID: parent.sourceID,
             sourceName: "stored",
+            mode: { tier: "same" },
             declaration: at("stored", 7),
             path: [at("ext", 11)],
          },
@@ -653,7 +654,7 @@ source: orders is orders_raw extend {
       ["storage", 'storage="lake" '],
    ]) {
       it(
-         `never builds an extension over a pair table, which holds each parent once per child (${tier})`,
+         `builds an extension over a pair table with its join put back, relying on its leaf check (${tier})`,
          async () => {
             const ext = route.trim();
             const pkg = await packages.create(`${PAIRED}
@@ -674,25 +675,21 @@ source: orders_ext is orders extend {
                undefined,
                KEEP_INCREMENTAL,
             );
-            const plan = (name: string) =>
-               generatedPlans(c).find((p) => p.sourceName === name)!;
-            expect(plan("orders").pair?.join).toBe("lines");
-            // Over the raw chain, one row per order, never the parent's
-            // build source, whose rows are the pairs.
-            expect(plan("orders_ext").buildsOver).toBeUndefined();
-            const [sourceID, source] = Object.entries(sourcesIn(c)).find(
-               ([, s]) => s.name === "orders_ext",
-            )!;
-            const sql = buildSQLOf(
-               source,
-               { entries: {} },
-               targetsIn(c)?.[sourceID],
-            );
-            const duckdb = await pkg.getMalloyConnection("duckdb");
-            const rows = (
-               await duckdb.runSQL(`SELECT id FROM (${sql}) t ORDER BY id`)
-            ).rows.map((r) => Number(r.id));
-            expect(rows).toEqual([1, 2, 3]);
+            expect(
+               generatedPlans(c).find((p) => p.sourceName === "orders")?.pair
+                  ?.join,
+            ).toBe("lines");
+            // Linked over the pair table, read back one row per parent,
+            // never built over the raw chain.
+            expect(
+               generatedPlans(c).find((p) => p.sourceName === "orders_ext")
+                  ?.buildsOver?.mode,
+            ).toEqual({ tier: "same", pair: { leafKeys: ["lines.line_id"] } });
+            expect(
+               (c.annotationFindings ?? []).filter(
+                  (f) => f.code === "materialize-not-built",
+               ),
+            ).toEqual([]);
          },
          { timeout: 30000 },
       );

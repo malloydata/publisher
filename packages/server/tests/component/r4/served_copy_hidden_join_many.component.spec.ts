@@ -713,11 +713,10 @@ describe("R4: row-level gates over a hidden join_many, gated serving on", () => 
    });
 });
 
-// Database (no `storage=`): an extension's build can read its parent's
-// build source in the same warehouse, which for a pair table holds each
-// parent once per child. Built over the raw chain instead, the extension's
-// table holds one row per parent and answers with live's rows, a public or a
-// hidden join_many alike.
+// Database (no `storage=`): an extension's build reads its parent's pair
+// table, which holds each parent once per child, read back with its join put
+// back (plan/pair_reroot.ts), so the extension's table holds one row per
+// parent and answers with live's rows, a public or a hidden join_many alike.
 const databaseModel = `##! experimental { access_modifiers }
 ${children}
 #(materialize) name="r4h_pub" inline=["segments"]
@@ -775,12 +774,17 @@ describe("R4: a database extension of a pair table, hidden join_many or not", ()
       await disposeScenarios();
    });
 
-   it("stores each extension once per parent, over the raw chain", async () => {
+   it("stores each extension once per parent, over its parent's pair table", async () => {
       expect(await fixture.servedCopyProblems()).toEqual([]);
-      for (const ext of ["pub_ext", "hidden_ext", "private_ext"]) {
-         expect(`${ext}:${fixture.buildReads[ext]?.join(",") ?? ""}`).toBe(
-            `${ext}:`,
-         );
+      for (const [ext, parent] of [
+         ["pub_ext", "pub_many"],
+         ["hidden_ext", "hidden_many"],
+         ["private_ext", "private_many"],
+      ]) {
+         expect([ext, fixture.buildReads[ext] ?? []]).toEqual([
+            ext,
+            expect.arrayContaining([parent]),
+         ]);
          const rows = await fixture.duckdb.runSQL(
             `SELECT count(*) AS n FROM ${fixture.physicalTables[ext]}`,
          );

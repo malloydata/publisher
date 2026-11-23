@@ -15,6 +15,7 @@
 import type {
    BoundStorageColumns,
    BoundStorageContract,
+   BoundTableContract,
    PlanChainBuildText,
    PlanChainStringReads,
 } from "./chain_build";
@@ -90,4 +91,10 @@ export interface BuildPlanPackage {
     * against. Absent (the load worker, a spec's package): judged at build.
     */
    boundStorageContract?: BoundStorageContract;
+   /**
+    * The contract bound for a table at its tier, which a plan judges an
+    * extension's build over a pair-table parent by. Absent (the load worker,
+    * a spec's package): judged at build.
+    */
+   boundTableContract?: BoundTableContract;
 }

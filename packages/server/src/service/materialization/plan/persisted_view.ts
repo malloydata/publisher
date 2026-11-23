@@ -375,7 +375,7 @@ export function persistedViewRefusalFinding(
 }
 
 /** Why a persisted view or query whose result reads a given is not built. */
-const READS_A_GIVEN =
+export const READS_A_GIVEN =
    "its result reads a given, so it differs per caller and a table holds one caller's result";
 
 /** The refusal of a planned persisted view whose result reads a given. */

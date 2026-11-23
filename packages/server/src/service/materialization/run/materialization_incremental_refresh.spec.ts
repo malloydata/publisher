@@ -257,6 +257,8 @@ describe("buildOneSource: incremental refresh", () => {
          watermark: "order_date",
          strategy: "range_replace",
          sourceEntityId: "abcdef1234567890",
+         // The run that changed the table.
+         advancedBy: "run-1",
       });
    });
 
@@ -569,6 +571,7 @@ describe("buildOneSource: incremental refresh", () => {
          expect(entry.ledger).toEqual({
             ...ENTRY,
             coveredThrough: "2024-07-01",
+            advancedBy: "run-1",
          });
       });
 
@@ -733,7 +736,7 @@ describe("buildOneSource: incremental refresh", () => {
       // known field is the publisher's own and always wins.
       const EXTENDED = {
          ...ENTRY,
-         parent: { sourceEntityId: "p1", coveredThrough: "x" },
+         futureKey: { sourceEntityId: "p1", coveredThrough: "x" },
          coveredThrough: "2024-06-20",
       } as LedgerEntry;
       const carried: [string, boolean, string][] = [
@@ -749,7 +752,7 @@ describe("buildOneSource: incremental refresh", () => {
             });
             expect(entry.refresh).toBe(refresh);
             expect(entry.ledger).toMatchObject({
-               parent: { sourceEntityId: "p1", coveredThrough: "x" },
+               futureKey: { sourceEntityId: "p1", coveredThrough: "x" },
                coveredThrough: "2024-07-01",
             });
          });
@@ -763,7 +766,7 @@ describe("buildOneSource: incremental refresh", () => {
          });
          expect(entry.refresh).toBe("full");
          expect(entry.ledger).toBeDefined();
-         expect(entry.ledger).not.toHaveProperty("parent");
+         expect(entry.ledger).not.toHaveProperty("futureKey");
       });
 
       // The controller drops a malformed entry rather than refusing the

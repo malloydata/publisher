@@ -117,6 +117,9 @@ import {
 import {
    materializeRefusalFinding,
    pairFullRefreshFinding,
+   extensionRefusal,
+   extensionFullRefreshFinding,
+   extensionKeepsMovedRowsFinding,
 } from "./materialize_plan";
 import { pairKeyColumns, pairLevelRowColumn } from "./build_file_generator";
 import {
@@ -155,6 +158,7 @@ import {
 import type {
    BoundStorageColumns,
    BoundStorageContract,
+   BoundTableContract,
    ChainStringReadsRequest,
    PlanChainBuildText,
    PlanChainStringReads,
@@ -164,6 +168,7 @@ import {
    stringReadsRefusal,
    unstoredReadRefusal,
 } from "../domain/string_reads";
+import { keyCheckPassed } from "../domain/column_contract";
 import { reachPersisted, SourceMap } from "../text/source_map";
 import { authorModelReachContext } from "../text/author_model";
 import { quotedIdentifier } from "../../malloy_text";
@@ -892,6 +897,7 @@ async function collectGeneratedMaterialize(
       materializer: ModelMaterializer;
       keyCheckCompilers?: Map<string, KeyCheckCompiler>;
       crossFileCompanions?: CrossFileCompanions;
+      boundTableContract?: BoundTableContract;
    },
 ): Promise<MaterializedBases | undefined> {
    const authorDef: ModelDef = modelDefOf(args.malloyModel);
@@ -902,6 +908,7 @@ async function collectGeneratedMaterialize(
          givens: authorDef.givens ?? {},
          sourceRegistry: (authorDef as { sourceRegistry?: unknown })
             .sourceRegistry,
+         imports: (authorDef as { imports?: unknown }).imports,
          // The caller-dependence probes compile against the author's model,
          // never run.
          probe: args.materializer,
@@ -923,6 +930,10 @@ async function collectGeneratedMaterialize(
             pairFullRefreshFinding(plan, plan.pairFullRefresh, args.modelPath),
          );
       }
+      const reseeds = extensionFullRefreshFinding(plan, args.modelPath);
+      if (reseeds) addAnnotationFinding(parts, reseeds);
+      const keeps = extensionKeepsMovedRowsFinding(plan, args.modelPath);
+      if (keeps) addAnnotationFinding(parts, keeps);
    }
    const targets = await generated.runtime.getBuildTargets(generated.model);
    const planByName = new Map(
@@ -970,10 +981,17 @@ async function collectGeneratedMaterialize(
          sourceID: plan.sourceID,
       });
       const sourceID = plan.sourceID;
+      const unusableUpstream = pairParentUnusable(
+         plan,
+         args.boundTableContract,
+      );
       parts.tables[sourceID] = {
          kind: materializeKindOf(plan),
          ...plannedFacts(source, args.modelPath),
          materialize: plan,
+         ...(unusableUpstream
+            ? { unusableUpstream, unusableUnlessParentRebuilt: true as const }
+            : {}),
          gate: await authorSourceGate(sourceID, authorDef, {
             materializer: args.materializer,
             deps,
@@ -982,6 +1000,51 @@ async function collectGeneratedMaterialize(
       };
    }
    return { plans: generated.plans, files: generated.files };
+}
+
+/**
+ * Why an extension table over a pair-table parent (`ChainMode.pair`) cannot
+ * build over the parent's bound table: its contract records a leaf key check its
+ * re-root relies on as failed, or records none. Judged here when the
+ * package has bound a contract for the parent's table, so a failure the
+ * bind already holds is never found again by a build (`schema_incompatible`
+ * for the same table twice); undefined otherwise, when a parent built in
+ * the same run, or never bound, is judged at build (run/pair_leaf_gate.ts).
+ * Recorded on the table rather than refused here: a run that rebuilds the
+ * parent before the extension judges the parent's fresh table at build
+ * instead, and any other run refuses the extension with this reason before
+ * building anything (instructed_build.ts, `assertPairLeafKeysOfParent`).
+ */
+function pairParentUnusable(
+   plan: MaterializePlan,
+   boundContract: BoundTableContract | undefined,
+): string | undefined {
+   const over = plan.buildsOver;
+   const leafKeys = over?.mode.pair?.leafKeys;
+   if (!over || !leafKeys?.length || !boundContract) return undefined;
+   // Where the parent's table is: on the extension's own tier, or the
+   // warehouse a `storage=` extension's build reads it in. One in another
+   // destination is judged at build.
+   const tier = over.mode.tier;
+   if (tier === "across_destinations") return undefined;
+   const contract = boundContract(
+      over.sourceID,
+      tier === "same" ? plan.persist.storage : undefined,
+   );
+   if (!contract) return undefined;
+   const unpassed = leafKeys.filter((k) => !keyCheckPassed(contract, k));
+   if (unpassed.length === 0) return undefined;
+   const failed = unpassed.filter((k) => contract.keys?.[k] !== undefined);
+   const what =
+      failed.length > 0
+         ? `found the key ${failed.map((k) => `'${k}'`).join(", ")} held more than once or NULL`
+         : `recorded no result for the key ${unpassed.map((k) => `'${k}'`).join(", ")}`;
+   return (
+      `it extends '${over.sourceName}', whose pair table it is built over ` +
+      `with its join put back, and the leaf key check of its inlined ` +
+      `join_many, which that build relies on, ${what} when the table was ` +
+      `built; it builds once the parent's table records the check passed`
+   );
 }
 
 /**
@@ -1853,6 +1916,11 @@ export async function collectModelBuildPlan(
       boundStorageColumns?: BoundStorageColumns;
       /** See {@link StringReadsPorts}. */
       stringReads?: StringReadsPorts;
+      /**
+       * The contract bound for a table, which judges an extension's build
+       * over a pair-table parent at plan; absent, it is judged at build.
+       */
+      boundTableContract?: BoundTableContract;
    },
 ): Promise<void> {
    addAccessReads(parts, args.malloyModel);
@@ -1958,6 +2026,9 @@ async function collectGeneratedTables(
          materializer,
          keyCheckCompilers,
          crossFileCompanions,
+         ...(args.boundTableContract
+            ? { boundTableContract: args.boundTableContract }
+            : {}),
       });
       // `#@ persist` on a view, under the same switch.
       await collectGeneratedPersistedViews(parts, {
@@ -2647,6 +2718,15 @@ function refuseAcrossPlacements<
          for (const upstreamID of reads) {
             const upstream = compiled.tables[upstreamID];
             if (!upstream) continue;
+            // An extension table reads its parent in another destination
+            // with that destination attached read-only (its plan's mode).
+            const over = table.materialize?.buildsOver;
+            if (
+               over?.mode.tier === "across_destinations" &&
+               over.sourceID === upstreamID
+            ) {
+               continue;
+            }
             const why = placementReason(placed, {
                name: upstream.source.name,
                storage: declaredStorage(upstream.source)?.trim() || undefined,
@@ -2717,8 +2797,13 @@ function refuseUncomparableStrings<
                buildReadsTable(compiled, table, id)
             );
          });
+      // Judged from a pair-table parent's bound contract: applied by the
+      // run, which refuses it unless it rebuilds the parent first
+      // (instructed_build.ts, `assertPairLeafKeysOfParent`).
       const why =
-         table.unusableUpstream ??
+         (table.unusableUnlessParentRebuilt
+            ? undefined
+            : table.unusableUpstream) ??
          (stacks && reads !== undefined && "refused" in reads
             ? reads.unstored
                ? reads.refused
@@ -3148,6 +3233,36 @@ function refuseIncrementalUnbuildable<
       findings.push(
          notBuiltFinding(compiled, sourceID, "incremental_unsupported", reason),
       );
+   }
+   // An extension table of a dropped parent has no parent's table to build
+   // over, and is never built over the raw chain: refused with it.
+   for (let more = dropped.size > 0; more; ) {
+      more = false;
+      for (const [sourceID, table] of Object.entries(compiled.tables)) {
+         const parent = table.materialize?.buildsOver;
+         if (
+            !parent ||
+            dropped.has(sourceID) ||
+            !dropped.has(parent.sourceID)
+         ) {
+            continue;
+         }
+         dropped.add(sourceID);
+         findings.push(
+            notBuiltFinding(
+               compiled,
+               sourceID,
+               UPSTREAM_TABLE_UNUSABLE_REASON,
+               extensionRefusal(
+                  table.materialize!,
+                  parent.sourceName,
+                  `which is not built (its incremental refresh is not ` +
+                     `supported here)`,
+               ).reason,
+            ),
+         );
+         more = true;
+      }
    }
    return withoutSources(compiled, findings, dropped);
 }
