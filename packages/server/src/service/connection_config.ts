@@ -478,9 +478,13 @@ export function destinationFileNameRefusal(
            `never '..'.`;
 }
 
-/** A destination type whose database file is named from its name. */
+/**
+ * A destination type whose database file is named from its name: one that is
+ * no catalog (its registry entry declares no destination dialect), as a plain
+ * DuckDB file is.
+ */
 function namesItsFile(type: string): boolean {
-   return type === "duckdb";
+   return connectionDialectOf(type)?.destination === undefined;
 }
 
 /**
