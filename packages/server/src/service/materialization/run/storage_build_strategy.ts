@@ -795,9 +795,9 @@ export class StorageBuildStrategy
       } else if (dependsOnStorageUpstream) {
          ({ result, upstreamRecomputeReason } = await this.stackOnParents(ctx));
       } else if (params.storedBase) {
-         ({ result, stacked: stackedOnBase } =
-            await this.stackRollupOnStoredBase(ctx, params.storedBase));
-         if (stackedOnBase) params.storedBase.onStacked?.();
+         result = await this.stackRollupOnStoredBase(ctx, params.storedBase);
+         stackedOnBase = true;
+         params.storedBase.onStacked?.();
       }
 
       // Recompute from raw: run `buildSQL` (storage upstreams inlined) in the
@@ -1056,29 +1056,28 @@ export class StorageBuildStrategy
     * rollup's own build file over it, compiled and run on the destination
     * alone, so nothing reads the warehouse. Only a table with the columns,
     * and the column types, the planned (warehouse) build writes is kept.
-    * Not `stacked` when the rollup cannot be built that way: it is then
-    * built from the warehouse, as planned, with the same rows. A failure of the
-    * destination itself is thrown, as the recompute would meet it too.
+    * A rollup that cannot be built that way is refused
+    * (ChainedShapeNotCarriedError), never built from the warehouse: the plan
+    * built it over its base's table.
     */
    async stackRollupOnStoredBase(
       ctx: StorageBuildContext,
       base: StoredRollupBase,
-   ): Promise<{ result?: StorageBuildResult; stacked: boolean }> {
+   ): Promise<StorageBuildResult> {
       const { params, destinationName, destinationConnection } = ctx;
       const { persistSource, environment, physicalTableName } = {
          ...params,
          physicalTableName: ctx.physicalTableName,
       };
-      // Logged by a code: a decline's text can name a host's table.
-      const declined = (code: string) => {
-         logger.warn(
-            "A storage= rollup did not build over its base's stored table; it builds from the warehouse",
-            { sourceName: persistSource.name, destinationName, code },
+      const refused = (why: string) =>
+         new ChainedShapeNotCarriedError(
+            `'${persistSource.name}' was not built over its base ` +
+               `'${base.baseName}''s table in '${destinationName}': ${why}, ` +
+               `and a downstream is never built by recomputing its upstreams ` +
+               `from raw`,
          );
-         return { stacked: false };
-      };
       if (!environment.chainBuildText) {
-         return declined("no_served_copy");
+         throw refused("this host compiles no served copy to build it over");
       }
       if (
          await stackCollationRefusal(environment, {
@@ -1095,7 +1094,9 @@ export class StorageBuildStrategy
             stored: [base.baseSourceID],
          })
       ) {
-         return declined("string_collation");
+         throw refused(
+            "it compares a string by a collation the destination cannot reproduce",
+         );
       }
       const text = environment.chainBuildText({
          downstream: {
@@ -1114,7 +1115,9 @@ export class StorageBuildStrategy
          ],
          rollup: { baseSourceID: base.baseSourceID, companion: base.companion },
       });
-      if ("declined" in text) return declined("chain_text_declined");
+      if ("declined" in text) {
+         throw refused("its base cannot be re-rooted on that table");
+      }
       try {
          const result = await withStatementUsage(
             {
@@ -1147,10 +1150,10 @@ export class StorageBuildStrategy
                }),
          );
          recordChainedStorageBuild("parent_reuse");
-         return { result, stacked: true };
+         return result;
       } catch (err) {
          if (!(err instanceof MaterializationEligibilityError)) throw err;
-         return declined(errorCodeOf(err));
+         throw refused(err.message);
       }
    }
 

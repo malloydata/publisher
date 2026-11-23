@@ -7,8 +7,9 @@
  *
  *  - a `storage=` rollup over a base stored in the same destination groups
  *    the base's table in the destination, storing the rows its planned
- *    (warehouse) build stores, and answers as live; with no base table in
- *    the run it builds from the warehouse, as planned;
+ *    (warehouse) build stores, and answers as live; a run of the rollup
+ *    alone builds its base first; a base table it cannot read refuses it,
+ *    never builds it from the warehouse;
  *  - a `#(materialize) storage=` extension whose parent is declared in
  *    another file builds over the parent's table, as a chain in one file
  *    does.
@@ -691,7 +692,7 @@ describe.skipIf(process.platform === "win32")(
          ).toBe(true);
       });
 
-      it("builds a storage= rollup from the warehouse when the run holds no table of its base", async () => {
+      it("builds a storage= rollup's base first when a run names only the rollup, and groups its table", async () => {
          await setUp({ "m.malloy": ROLLUP_MODEL });
          const pkg = await env.getPackage(parsePackageName(PKG), false);
          const rollupName = Object.values(pkg.getBuildPlan()!.sources).find(
@@ -700,9 +701,12 @@ describe.skipIf(process.platform === "win32")(
          const m = await build({ sourceNames: [rollupName] });
          expect([m.status, m.error]).toEqual(["MANIFEST_FILE_READY", null]);
          const rollup = entryOf(m, /^daily__rollup__/);
-         // It read the warehouse, and says nothing of a stored upstream.
-         expect(rollup.upstreamReuse).toBeUndefined();
-         expect(createdBy(rollup.physicalTableName)).toContain(RAW_MARK);
+         const base = entryOf(m, "daily");
+         expect(rollup.upstreamReuse).toBe("reused");
+         expect(createdBy(rollup.physicalTableName)).not.toContain(RAW_MARK);
+         expect(createdBy(rollup.physicalTableName)).toContain(
+            base.physicalTableName,
+         );
          expect(await storedRows(rollup.physicalTableName)).toEqual(
             await plannedRows(rollup),
          );
@@ -756,7 +760,7 @@ describe.skipIf(process.platform === "win32")(
          );
       });
 
-      it("builds a storage= rollup from the warehouse, saying so, when its base's build fails in the same run", async () => {
+      it("refuses a storage= rollup as a missing upstream when its base's build fails in the same run", async () => {
          await setUp({ "m.malloy": ROLLUP_MODEL });
          const build_ = StorageBuildStrategy.prototype.build;
          spies.push(
@@ -770,12 +774,26 @@ describe.skipIf(process.platform === "win32")(
             ),
          );
          const m = await build();
-         const rollup = entryOf(m, /^daily__rollup__/);
-         expect(rollup.upstreamReuse).toBeUndefined();
-         expect(createdBy(rollup.physicalTableName)).toContain(RAW_MARK);
-         expect(await storedRows(rollup.physicalTableName)).toEqual(
-            await plannedRows(rollup),
+         expect(m.status).toBe("FAILED");
+         const failures = Object.values(
+            (
+               m.manifest as {
+                  failures?: Record<
+                     string,
+                     { sourceName?: string; reason: string }
+                  >;
+               } | null
+            )?.failures ?? {},
          );
+         const rollup = failures.find((f) =>
+            /^daily__rollup__/.test(f.sourceName ?? ""),
+         );
+         expect(rollup?.reason).toContain(
+            "a rollup is built over its base's table or not at all",
+         );
+         expect(
+            statements.some((q) => q.includes(RAW_MARK) && /rollup/.test(q)),
+         ).toBe(false);
       });
 
       it("builds a storage= extension over its parent's stored table in another file", async () => {
@@ -951,26 +969,63 @@ source: mid is parent extend {
          return build();
       }
 
-      async function expectWarehouseRollup(m: Materialization) {
-         expect([m.status, m.error]).toEqual(["MANIFEST_FILE_READY", null]);
-         const rollup = entryOf(m, /^orders__rollup__/);
-         expect(rollup.upstreamReuse).toBeUndefined();
-         expect(createdBy(rollup.physicalTableName)).toContain(RAW_MARK);
+      /**
+       * The rollup refused over its base's carried table, as
+       * `schema_incompatible`, and the next run rebuilding that table and
+       * grouping it: never built from the warehouse.
+       */
+      async function expectRefusedThenRebuilt(m: Materialization) {
+         expect(m.status).toBe("FAILED");
+         const failures = Object.values(
+            (
+               m.manifest as {
+                  failures?: Record<string, { code?: string }>;
+               } | null
+            )?.failures ?? {},
+         );
+         expect(failures.map((f) => f.code)).toEqual(["schema_incompatible"]);
+         const next = await build();
+         expect([next.status, next.error]).toEqual([
+            "MANIFEST_FILE_READY",
+            null,
+         ]);
+         const base = entryOf(next, "orders");
+         const rollup = entryOf(next, /^orders__rollup__/);
+         expect(rollup.upstreamReuse).toBe("reused");
+         expect(createdBy(rollup.physicalTableName)).toContain(
+            base.physicalTableName,
+         );
          expect(await storedRows(rollup.physicalTableName)).toEqual(
             await plannedRows(rollup),
          );
       }
 
-      it("builds a storage= rollup from the warehouse when its #(materialize) base's carried table holds another type", async () => {
+      it("refuses a storage= rollup over its #(materialize) base's carried table holding another type, and rebuilds that table next", async () => {
          // Text, where the planned build writes a number.
-         await expectWarehouseRollup(
+         await expectRefusedThenRebuilt(
             await carriedBaseHolding("amt", "VARCHAR"),
          );
       });
 
-      it("never stacks a storage= rollup on a #(materialize) base's table holding a 128-bit integer", async () => {
+      it("refuses a storage= rollup over a #(materialize) base's table holding a 128-bit integer", async () => {
          // DuckLake holds a HUGEINT as a DOUBLE: its digits are rounded.
-         await expectWarehouseRollup(await carriedBaseHolding("id", "HUGEINT"));
+         // Its stored digits are not what the planned build writes, so it is
+         // refused (chained_shape_not_carried), never built from the
+         // warehouse in its place.
+         const m = await carriedBaseHolding("id", "HUGEINT");
+         expect(m.status).toBe("FAILED");
+         const failures = Object.values(
+            (
+               m.manifest as {
+                  failures?: Record<string, { reason: string }>;
+               } | null
+            )?.failures ?? {},
+         );
+         expect(failures).toHaveLength(1);
+         expect(failures[0].reason).toContain("was not built over its base");
+         expect(failures[0].reason).toContain(
+            "a downstream is never built by recomputing its upstreams from raw",
+         );
       });
 
       it("never stacks a storage= rollup on a gated #(materialize) base's table", async () => {

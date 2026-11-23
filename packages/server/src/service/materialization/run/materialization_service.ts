@@ -1457,7 +1457,8 @@ export class MaterializationService {
                   upstreamsOf: (address) => freshness.upstreamsOf(address),
                   at: new Date(run.startedAt),
                },
-               incompatible: pkg.incompatibleTables?.() ?? new Set(),
+               incompatible:
+                  pkg.incompatibleTables?.(priorEntries) ?? new Set(),
             },
          ));
          // A carried table at the author's `name=` is reused only while
@@ -1604,7 +1605,9 @@ export class MaterializationService {
          instructions,
          seedEntries: carried,
          signal,
-         strict: opts.strictUpstreams ?? false,
+         // Always strict: a downstream is built over its upstreams' tables
+         // or not at all (`strictUpstreams` is accepted and ignored).
+         strict: true,
          // Orchestrated-only; see reclaimStorageTablesFromFailedRun.
          owner: orchestrated ? { environmentId, packageName } : undefined,
          buildMetadata: {

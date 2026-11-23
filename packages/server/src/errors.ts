@@ -1240,7 +1240,11 @@ export class SchemaIncompatibleError extends Error {
    /** The SourceFailure `code`. */
    readonly code = "schema_incompatible";
 
-   constructor(message: string) {
+   constructor(
+      message: string,
+      /** The tables found otherwise, by content address, for the drift handler. */
+      readonly handles: readonly string[] = [],
+   ) {
       super(message);
       this.name = "SchemaIncompatibleError";
    }

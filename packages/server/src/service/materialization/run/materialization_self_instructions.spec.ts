@@ -683,3 +683,148 @@ describe("a prior table its bind cannot serve is rebuilt in full", () => {
       expect(Object.keys(carried)).toEqual(["b1aaaaaaaaaaaaaa"]);
    });
 });
+
+describe("a run of named sources pulls in their upstreams", () => {
+   // `s2` reads `s1`'s table (the plan's edge).
+   const compiled = () => {
+      const c = compiledWith(
+         {
+            s1: fakeSource({ name: "s1", sourceEntityId: "b1aaaaaaaaaaaaaa" }),
+            s2: fakeSource({ name: "s2", sourceEntityId: "b2bbbbbbbbbbbbbb" }),
+         },
+         [["s1"], ["s2"]],
+      );
+      c.builds[0].dependsOn = { s1: [], s2: ["s1"] };
+      return c;
+   };
+   const upstream = {
+      b1aaaaaaaaaaaaaa: {
+         sourceEntityId: "b1aaaaaaaaaaaaaa",
+         physicalTableName: "s1",
+         connectionName: "duckdb",
+         contract: contractFor(),
+      },
+   };
+
+   it("builds an upstream with no table beside the named source", () => {
+      const { instructions } = deriveSelfInstructions(compiled(), ["s2"], {});
+      expect(instructions.map((i) => i.sourceEntityId).sort()).toEqual([
+         "b1aaaaaaaaaaaaaa",
+         "b2bbbbbbbbbbbbbb",
+      ]);
+   });
+
+   it("carries an upstream whose table it can serve, even on a forced run", () => {
+      for (const forceRefresh of [false, true]) {
+         const { instructions, carried } = deriveSelfInstructions(
+            compiled(),
+            ["s2"],
+            upstream as never,
+            undefined,
+            undefined,
+            { forceRefresh },
+         );
+         expect(instructions.map((i) => i.sourceEntityId)).toEqual([
+            "b2bbbbbbbbbbbbbb",
+         ]);
+         expect(Object.keys(carried)).toEqual(["b1aaaaaaaaaaaaaa"]);
+      }
+   });
+
+   it("rebuilds an upstream a bind found incompatible", () => {
+      const { instructions, carried } = deriveSelfInstructions(
+         compiled(),
+         ["s2"],
+         upstream as never,
+         undefined,
+         undefined,
+         { incompatible: new Set(["b1aaaaaaaaaaaaaa"]) },
+      );
+      expect(instructions.map((i) => i.sourceEntityId).sort()).toEqual([
+         "b1aaaaaaaaaaaaaa",
+         "b2bbbbbbbbbbbbbb",
+      ]);
+      expect(carried).toEqual({});
+   });
+});
+
+describe("a carried reader of a table not the one it was built from is rebuilt", () => {
+   // `s2` reads `s1`'s table (the plan's edge), and was built from it.
+   const compiled = () => {
+      const c = compiledWith(
+         {
+            s1: fakeSource({ name: "s1", sourceEntityId: "c1aaaaaaaaaaaaaa" }),
+            s2: fakeSource({ name: "s2", sourceEntityId: "c2bbbbbbbbbbbbbb" }),
+         },
+         [["s1"], ["s2"]],
+      );
+      c.builds[0].dependsOn = { s1: [], s2: ["s1"] };
+      return c;
+   };
+   const prior = (s1BuiltAt: string, readBuiltAt: string) => ({
+      c1aaaaaaaaaaaaaa: {
+         sourceEntityId: "c1aaaaaaaaaaaaaa",
+         physicalTableName: "s1",
+         connectionName: "duckdb",
+         builtAt: s1BuiltAt,
+         contract: contractFor(),
+      },
+      c2bbbbbbbbbbbbbb: {
+         sourceEntityId: "c2bbbbbbbbbbbbbb",
+         physicalTableName: "s2",
+         connectionName: "duckdb",
+         builtAt: "2026-11-02T00:00:00.000Z",
+         contract: contractFor(),
+         builtFrom: [
+            {
+               sourceEntityId: "c1aaaaaaaaaaaaaa",
+               physicalTableName: "s1",
+               builtAt: readBuiltAt,
+            },
+         ],
+      },
+   });
+   const T1 = "2026-11-01T00:00:00.000Z";
+   const T2 = "2026-11-03T00:00:00.000Z";
+
+   it("carries a reader built from the upstream table it would read now", () => {
+      const { instructions, carried } = deriveSelfInstructions(
+         compiled(),
+         undefined,
+         prior(T1, T1) as never,
+      );
+      expect(instructions).toEqual([]);
+      expect(Object.keys(carried).sort()).toEqual([
+         "c1aaaaaaaaaaaaaa",
+         "c2bbbbbbbbbbbbbb",
+      ]);
+   });
+
+   it("rebuilds a reader whose upstream this run rebuilds", () => {
+      const { instructions, carried } = deriveSelfInstructions(
+         compiled(),
+         undefined,
+         prior(T1, T1) as never,
+         undefined,
+         undefined,
+         { incompatible: new Set(["c1aaaaaaaaaaaaaa"]) },
+      );
+      expect(instructions.map((i) => i.sourceEntityId).sort()).toEqual([
+         "c1aaaaaaaaaaaaaa",
+         "c2bbbbbbbbbbbbbb",
+      ]);
+      expect(carried).toEqual({});
+   });
+
+   it("rebuilds a reader of an older build of a carried upstream", () => {
+      const { instructions, carried } = deriveSelfInstructions(
+         compiled(),
+         undefined,
+         prior(T2, T1) as never,
+      );
+      expect(instructions.map((i) => i.sourceEntityId)).toEqual([
+         "c2bbbbbbbbbbbbbb",
+      ]);
+      expect(Object.keys(carried)).toEqual(["c1aaaaaaaaaaaaaa"]);
+   });
+});

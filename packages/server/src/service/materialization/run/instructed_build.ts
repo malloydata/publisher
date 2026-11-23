@@ -62,7 +62,9 @@ import {
 import { Manifest } from "@malloydata/malloy";
 import {
    BadRequestError,
+   ChainedUpstreamMissingError,
    MaterializationEligibilityError,
+   SchemaIncompatibleError,
 } from "../../../errors";
 import { logger } from "../../../logger";
 import {
@@ -70,7 +72,6 @@ import {
    recordDuplicateTargetSkipped,
    recordKeyCheck,
    recordManifestBindDegraded,
-   recordUpstreamRecompute,
 } from "../../../materialization_metrics";
 import { getPersistStorageMode } from "../../../config";
 import { withSpan } from "../../../telemetry";
@@ -120,9 +121,11 @@ import {
 import {
    BuildEnvironment,
    chainedPlanFacts,
+   HostSuppliedWrongTierError,
    manifestExcludingStorage,
    manifestForCompiler,
    upstreamEntryIsCurrent,
+   wrongTierDetail,
 } from "./build_upstreams";
 import {
    isReclaimableStorageTable,
@@ -733,9 +736,9 @@ export class InstructedBuild {
    }
 
    /**
-    * Build every planned table in the plan's order, then each rollup that may
-    * read its base's stored table, so a base this run builds is there to
-    * read. Nothing a run builds reads a rollup's table.
+    * Build every planned table in the plan's order: each after every table
+    * it reads (a rollup after its base, through the plan's edges), so an
+    * upstream this run builds is there to read.
     */
    private async buildEveryTable(
       run: InstructedRun,
@@ -743,11 +746,6 @@ export class InstructedBuild {
       tables: RunPlan["tables"],
       connections: RunPlan["connections"],
    ): Promise<void> {
-      const deferred: {
-         persistSource: PersistSource;
-         connectionName: string;
-         connection: MalloyConnection;
-      }[] = [];
       for (const build of builds) {
          if (!connections.get(build.connectionName)) {
             throw new BadRequestError(
@@ -766,25 +764,7 @@ export class InstructedBuild {
          if (!table) continue;
          const persistSource = table.source;
          const connection = connections.get(connectionName)!;
-         // A rollup that may read its base's stored table builds once
-         // every other table has, so a base this run builds is there
-         // to read. Nothing a run builds reads a rollup's table.
-         if (
-            table.kind === "rollup" &&
-            (table.overStoredBase || table.storedBase)
-         ) {
-            deferred.push({ persistSource, connectionName, connection });
-            continue;
-         }
          await this.buildInRun(run, persistSource, connectionName, connection);
-      }
-      for (const later of deferred) {
-         await this.buildInRun(
-            run,
-            later.persistSource,
-            later.connectionName,
-            later.connection,
-         );
       }
    }
 
@@ -880,24 +860,36 @@ export class InstructedBuild {
       const { compiled } = run;
       // Set by the `storage=` build when it grouped the base's stored table.
       let stacked = false;
-      const offered = storedRollupBase(run, persistSource, gated);
+      const overStored = overStoredUpstreamSource(run, persistSource);
+      // A rollup the plan built over its base's table, over the table this
+      // run holds for it: refused, as the source's own failure, when there
+      // is none it can read.
+      let offered: StoredRollupBase | undefined;
+      let overBase: PersistSource | undefined;
+      try {
+         offered = storedRollupBase(run, persistSource, gated);
+         overBase =
+            overStored === undefined
+               ? await overStoredBaseSource(
+                    run,
+                    persistSource,
+                    gated,
+                    connection,
+                 )
+               : undefined;
+      } catch (err) {
+         recordGatedSourceFailure(run, persistSource, gated, err, undefined);
+         return;
+      }
       const storedBase = offered && {
          ...offered,
          onStacked: () => {
             stacked = true;
          },
       };
-      const overStored = overStoredUpstreamSource(run, persistSource);
       const built = await this.buildGatedSource(
          run,
-         overStored ??
-            (await overStoredBaseSource(
-               run,
-               persistSource,
-               gated,
-               connection,
-            )) ??
-            persistSource,
+         overStored ?? overBase ?? persistSource,
          graphConnectionName,
          connection,
          gated,
@@ -2234,6 +2226,89 @@ function baseFreshEnough(
 }
 
 /**
+ * Why a rollup the plan built over its base's table cannot read the table
+ * the run holds for it, or undefined when it can: none is built in this run
+ * or carried into it, it is at another tier or destination than the base
+ * declares now, or, with a declared window, it is of unknown age or past it
+ * ({@link baseFreshEnough}). `destination`: a `storage=` rollup's, whose
+ * base's table must be in it, with the column list its build reads it by.
+ * A host's reference at the wrong tier is refused as the host's
+ * (HostSuppliedWrongTierError).
+ */
+function rollupBaseUnusable(
+   run: InstructedRun,
+   gated: Pick<GatedSource, "sourceEntityId">,
+   names: { sourceName: string; baseName: string },
+   baseAddress: string,
+   baseEntry: ManifestEntry | undefined,
+   destination?: string,
+): string | undefined {
+   const { sourceName, baseName } = names;
+   if (!baseEntry?.physicalTableName) {
+      return "no table of it is built in this run or carried into it";
+   }
+   if (
+      (baseEntry.storageDestinationName ?? undefined) !== destination ||
+      !upstreamEntryIsCurrent(baseAddress, baseEntry, run.planFacts)
+   ) {
+      // A host's reference at the wrong tier: the host must change it.
+      if (
+         run.planFacts.hostInstructed &&
+         !run.builtAddresses.has(baseAddress)
+      ) {
+         throw new HostSuppliedWrongTierError(sourceName, [
+            {
+               name: baseName,
+               detail: wrongTierDetail(
+                  baseName,
+                  baseAddress,
+                  baseEntry,
+                  run.planFacts,
+               ),
+            },
+         ]);
+      }
+      return (
+         `its table ${baseEntry.physicalTableName} is ` +
+         (baseEntry.storageDestinationName
+            ? `in destination '${baseEntry.storageDestinationName}'`
+            : `in its warehouse`) +
+         `, not where the plan builds over it`
+      );
+   }
+   if (destination !== undefined && !baseEntry.schema?.length) {
+      return `its table ${baseEntry.physicalTableName} carries no column list`;
+   }
+   if (!baseFreshEnough(run, gated.sourceEntityId, baseAddress, baseEntry)) {
+      return (
+         `its table ${baseEntry.physicalTableName} is of unknown age or ` +
+         `past the rollup's freshness window`
+      );
+   }
+   return undefined;
+}
+
+/**
+ * The refusal of a rollup the plan built over its base's table, when the
+ * run holds no table of the base it can read: a missing upstream, which
+ * inherits the base's own failure when the base failed in this run
+ * (classifySourceFailure).
+ */
+function refusedRollupBase(
+   sourceName: string,
+   baseName: string,
+   detail: string,
+): ChainedUpstreamMissingError {
+   return new ChainedUpstreamMissingError(
+      [baseName],
+      `persisted upstream of '${sourceName}': '${baseName}' — ${detail}; ` +
+         `a rollup is built over its base's table or not at all, never by ` +
+         `recomputing its base from raw`,
+      [{ name: baseName, detail }],
+   );
+}
+
+/**
  * The source a persisted view or named query builds from when the plan
  * decided it builds over its upstreams' warehouse tables: its build source
  * compiled over them, proven at plan time to build the planned table
@@ -2307,25 +2382,26 @@ async function overStoredBaseSource(
    } catch {
       return undefined;
    }
+   const baseName = base.source.name;
    const baseEntry = run.entries[baseAddress];
-   if (
-      !baseEntry?.physicalTableName ||
-      baseEntry.storageDestinationName ||
-      !upstreamEntryIsCurrent(baseAddress, baseEntry, run.planFacts)
-   ) {
-      return undefined;
-   }
-   if (!baseFreshEnough(run, gated.sourceEntityId, baseAddress, baseEntry)) {
-      return undefined;
+   const unusable = rollupBaseUnusable(
+      run,
+      gated,
+      { sourceName: persistSource.name, baseName },
+      baseAddress,
+      baseEntry,
+   );
+   if (unusable !== undefined) {
+      throw refusedRollupBase(persistSource.name, baseName, unusable);
    }
    // A table altered in its warehouse since its build (a column retyped or
-   // dropped) is not the base's rows: the rollup builds as planned, which
-   // recomputes the base (source_build.ts, movedUpstreams).
+   // dropped) is not the base's rows: refused, and the table handed to the
+   // drift handler, which reads it again; a standalone run then rebuilds it.
    const move = run.builtAddresses.has(baseAddress)
       ? undefined
       : (
            await movedSinceBuild(
-              new Map([[baseAddress, baseEntry]]),
+              new Map([[baseAddress, baseEntry!]]),
               connection,
            )
         ).get(baseAddress);
@@ -2333,24 +2409,16 @@ async function overStoredBaseSource(
       move?.kind === "types_unrecorded" &&
       readsUntypedReferences(run.manifest, run.planFacts)
    ) {
-      noteUntypedReference(persistSource.name, base.source.name, "rollup");
+      noteUntypedReference(persistSource.name, baseName, "rollup");
    } else if (move) {
-      const reason =
-         `persisted upstream '${base.source.name}' was not read from its ` +
-         `table, since ${move.reason}; recomputed from its definition in the ` +
-         `warehouse`;
-      logger.warn(
-         "A rollup's stored base could not be read in place of it; the rollup builds from the warehouse",
-         {
-            sourceName: persistSource.name,
-            upstream: base.source.name,
-            reason: move.reason,
-            kind: move.kind,
-         },
+      run.environment.reportIncompatible?.([baseAddress]);
+      throw new SchemaIncompatibleError(
+         `'${persistSource.name}' was not built: persisted upstream ` +
+            `'${baseName}' was not read from its table, since ${move.reason}, ` +
+            `and a rollup is never built by recomputing its base from raw. ` +
+            `The package reads its tables and derives its plan again.`,
+         [baseAddress],
       );
-      recordUpstreamRecompute(move.kind, "rollup", "recomputed");
-      (run.baseRecomputed ??= new Map()).set(gated.sourceEntityId, reason);
-      return undefined;
    }
    (run.readFrom ??= new Map()).set(gated.sourceEntityId, [baseAddress]);
    return table.overStoredBase.source;
@@ -2404,41 +2472,51 @@ function storedRollupBase(
       return undefined;
    }
    const entry = run.entries[address];
-   if (
-      !entry?.physicalTableName ||
-      entry.storageDestinationName !== destination ||
-      !entry.schema?.length ||
-      !upstreamEntryIsCurrent(address, entry, run.planFacts)
-   ) {
-      return undefined;
-   }
-   if (!baseFreshEnough(run, gated.sourceEntityId, address, entry)) {
-      return undefined;
+   const unusable = rollupBaseUnusable(
+      run,
+      gated,
+      { sourceName: persistSource.name, baseName: base.source.name },
+      address,
+      entry,
+      destination,
+   );
+   if (unusable !== undefined) {
+      throw refusedRollupBase(persistSource.name, base.source.name, unusable);
    }
    // The table must hold every column the base's current build writes, each
    // of a physical type that serves as its declared type: a carried table
-   // whose types drifted is not grouped as if it were the base.
-   let declared: ReturnType<typeof storageBuildCasts>["declaredColumns"];
-   try {
-      declared = storageBuildCasts(base.source).declaredColumns;
-   } catch {
-      return undefined;
-   }
-   const stored = entry.schema.flatMap((c) =>
+   // whose types drifted is not grouped as if it were the base, and is
+   // handed to the drift handler.
+   const declared = storageBuildCasts(base.source).declaredColumns;
+   const stored = entry!.schema!.flatMap((c) =>
       c.name && c.type ? [{ name: c.name, type: c.type }] : [],
    );
    const storedNames = new Set(stored.map((c) => c.name));
-   if (
-      declared.some((c) => !storedNames.has(c.name)) ||
-      storedColumnTypeMismatches(stored, declared).length > 0
-   ) {
-      return undefined;
+   const gone = declared.filter((c) => !storedNames.has(c.name));
+   const retyped = storedColumnTypeMismatches(stored, declared);
+   if (gone.length > 0 || retyped.length > 0) {
+      run.environment.reportIncompatible?.([address]);
+      throw new SchemaIncompatibleError(
+         `'${persistSource.name}' was not built over its base ` +
+            `'${base.source.name}''s table ${entry!.physicalTableName} in ` +
+            `'${destination}': ` +
+            [
+               ...gone.map((c) => `it holds no column '${c.name}'`),
+               ...retyped.map(
+                  (m) =>
+                     `column '${m.column}' is ${m.storedType}, not ${m.declaredType}`,
+               ),
+            ].join(", ") +
+            `. A rollup is never built by recomputing its base from raw; ` +
+            `the package reads its tables and derives its plan again.`,
+         [address],
+      );
    }
    return {
       baseSourceID: table.storedBase.baseSourceID,
       baseName: base.source.name,
       address,
-      entry,
+      entry: entry!,
       companion: table.storedBase.companion,
       grain: table.rollup.grainDimensions,
       measures: table.rollup.measures.map((m) => m.name),
@@ -2480,14 +2558,11 @@ function withBuiltProvenance(
 /**
  * A rollup's entry with `upstreamReuse` saying what its build read: `reused`
  * when it built from its base's stored table ({@link overStoredBaseSource}),
- * `recomputed`, with why, when it could not because that table moved since
- * its build, could not be read, or recorded no column types
- * (`baseRecomputed`), and absent when it built from the warehouse for any
- * other reason. Its build source names the base
- * only in the author's text, which the classification reads, so the
- * classification alone would say `reused` either way, and the key checks
- * over the base's rows (checkRollupKeys) would be skipped for a build that
- * grouped exactly those rows. Any other entry is returned as built.
+ * and absent when the plan built it from the warehouse. Its build source
+ * names the base only in the author's text, which the classification reads,
+ * so the classification alone would say `reused` either way, and the key
+ * checks over the base's rows (checkRollupKeys) would be skipped for a build
+ * that grouped exactly those rows. Any other entry is returned as built.
  */
 function withRollupUpstreamReuse(
    run: InstructedRun,
@@ -2500,9 +2575,7 @@ function withRollupUpstreamReuse(
    // its database base's table in the warehouse, as a database rollup does.
    if (
       run.compiled.tables[persistSource.sourceID]?.kind !== "rollup" ||
-      (entry.storageDestinationName &&
-         !run.readFrom?.has(address) &&
-         !run.baseRecomputed?.has(address))
+      (entry.storageDestinationName && !run.readFrom?.has(address))
    ) {
       return entry;
    }
@@ -2511,14 +2584,6 @@ function withRollupUpstreamReuse(
       upstreamRecomputeReason: _reason,
       ...rest
    } = entry;
-   const recomputed = run.baseRecomputed?.get(address);
-   if (recomputed !== undefined) {
-      return {
-         ...rest,
-         upstreamReuse: "recomputed",
-         upstreamRecomputeReason: recomputed,
-      };
-   }
    return run.readFrom?.has(address)
       ? { ...rest, upstreamReuse: "reused" }
       : rest;

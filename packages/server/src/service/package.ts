@@ -111,6 +111,7 @@ import {
    BuildManifest,
    BuildPlan,
    FreshnessManifest,
+   ManifestEntry,
 } from "./materialization/domain/types";
 import type {
    ChainBuildRequest,
@@ -1745,8 +1746,10 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    }
 
    /** The host port's `incompatibleTables` (see PackageMaterialization.incompatibleTables). */
-   public incompatibleTables(): ReadonlySet<string> {
-      return this.mz.incompatibleTables();
+   public incompatibleTables(
+      prior?: Readonly<Record<string, ManifestEntry>>,
+   ): ReadonlySet<string> {
+      return this.mz.incompatibleTables(prior);
    }
 
    /** The host port's `chainBuildText` (see PackageMaterialization.chainBuildText). */

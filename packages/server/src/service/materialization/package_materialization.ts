@@ -257,6 +257,16 @@ export class PackageMaterialization {
     * them again.
     */
    private readFailed: ReadonlySet<string> = new Set();
+   /**
+    * Tables a build found altered since their build (reportIncompatible), by
+    * address, each with the generation it was judged at
+    * (`physicalTableName@builtAt`), bound by the first run that reads it
+    * ({@link incompatibleTables}): rebuilt rather than carried until a new
+    * generation replaces it. A rebind does not clear them, since a table
+    * this package has no binding for is never judged by one; so one
+    * generation never fails `schema_incompatible` twice in a row.
+    */
+   private buildFound = new Map<string, string | undefined>();
    /** The rebind {@link onIncompatible} runs, and whether another is due after it. */
    private rebinding: { again: boolean } | undefined;
    /** The snapshot from before a bind that is compiling ({@link servedSnapshot}). */
@@ -516,6 +526,9 @@ export class PackageMaterialization {
     * planned from recorded (SchemaIncompatibleError): the drift handler.
     */
    reportIncompatible(handles: readonly string[]): void {
+      for (const h of handles) {
+         if (!this.buildFound.has(h)) this.buildFound.set(h, undefined);
+      }
       this.onIncompatible(handles);
    }
 
@@ -1139,16 +1152,39 @@ export class PackageMaterialization {
    }
 
    /**
-    * The bound tables a bind found incompatible with their contracts, or a
-    * stored read failed closed, by address: a standalone run rebuilds each
-    * in full rather than carry it.
+    * The tables a standalone run rebuilds in full rather than carry, by
+    * address: each a bind found incompatible with its contract or a stored
+    * read failed closed, and each a build found altered since its build
+    * while `prior` (the entries the run would carry) still holds that
+    * generation. The first run to read a build's report binds it to the
+    * generation it would have carried.
     */
-   incompatibleTables(): ReadonlySet<string> {
-      return new Set(
+   incompatibleTables(
+      prior?: Readonly<Record<string, ManifestEntry>>,
+   ): ReadonlySet<string> {
+      const out = new Set(
          [...this.contractVerdicts()]
             .filter(([, v]) => v.reason === "incompatible")
             .map(([id]) => id),
       );
+      for (const [id, judged] of [...this.buildFound]) {
+         const entry = prior?.[id];
+         if (!prior) {
+            out.add(id);
+            continue;
+         }
+         const generation =
+            entry && `${entry.physicalTableName}@${entry.builtAt ?? ""}`;
+         if (generation === undefined) {
+            this.buildFound.delete(id);
+         } else if (judged === undefined || judged === generation) {
+            this.buildFound.set(id, generation);
+            out.add(id);
+         } else {
+            this.buildFound.delete(id);
+         }
+      }
+      return out;
    }
 
    /**

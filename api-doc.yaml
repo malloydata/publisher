@@ -11749,15 +11749,26 @@ components:
         strictUpstreams:
           type: boolean
           default: false
+          deprecated: true
           description: >-
-            When true, a persist upstream that is neither built here nor present
-            in referenceManifest fails the build (compiler strict mode) instead
-            of silently recomputing it live. Per-unit dispatch should set this
-            true.
+            Deprecated: accepted and ignored. Every build is strict: a persist
+            upstream that is neither built here nor present in
+            referenceManifest (nor carried by a standalone run, which builds
+            the upstreams a named source reads when it cannot carry them)
+            fails the build, and a downstream is never built by recomputing
+            its upstreams from raw.
         warehouseReach:
           type: string
           default: recompute
+          deprecated: true
           description: >-
+            Deprecated: no build recomputes a stored upstream from the source
+            warehouse any more, so every value behaves as `refuse`; the
+            values are still validated. What follows is the former
+            behaviour.
+
+
+
             What a strict build (`strictUpstreams: true`) does with a
             `storage=` source whose only build recomputes a stored upstream
             from the source warehouse: the source reaches the warehouse through
@@ -12298,9 +12309,10 @@ components:
             so the previous table is left as it was; an incremental delta,
             which writes in place, fails after its write, and its previous
             entry then understates the table's freshness, never its rows.
-            `schema_incompatible` (a `storage=` view or named query whose
-            upstream's stored table is not what the plan it was planned from
-            recorded for it: the plan was stale, or the upstream changed). It
+            `schema_incompatible` (a build whose upstream's stored table is
+            not what it was planned or built over: a `storage=` view's or
+            named query's upstream whose columns differ from its plan's, or
+            any upstream table altered since its build). It
             is non-terminal, never a refusal: the package reads its tables and
             derives its plan again at once, and the next build either builds
             the source over the upstream's table as it is or the plan refuses

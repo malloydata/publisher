@@ -235,20 +235,21 @@ const SHAPES: Shape[] = [
       query: "run: b_number -> { aggregate: t is count() }",
       servedBy: "materialized",
    },
-   // Rollups: of `a` at grain `ci` built from the warehouse, of `a2` at `cc`
-   // stacked.
-   { query: "run: a -> { aggregate: rn }", servedBy: "rollup" },
-   { query: "run: a -> { aggregate: apple_n }", servedBy: "rollup" },
-   { query: "run: a -> { aggregate: amt_sum }", servedBy: "rollup" },
+   // Rollups: of `a` at grain `ci` and of `a3` refused (never built from the
+   // warehouse in place of their stored base), so `a`'s own table answers
+   // what compares no string; of `a2` at `cc` stacked.
+   { query: "run: a -> { aggregate: rn }", servedBy: "materialized" },
+   { query: "run: a -> { aggregate: apple_n }", servedBy: "live" },
+   { query: "run: a -> { aggregate: amt_sum }", servedBy: "materialized" },
    { query: "run: a2 -> { aggregate: amt_total }", servedBy: "rollup" },
-   { query: "run: a3 -> { aggregate: apple3 }", servedBy: "rollup" },
+   { query: "run: a3 -> { aggregate: apple3 }", servedBy: "live" },
    { query: "run: a -> { aggregate: mn }", servedBy: "live" },
    { query: "run: a -> { group_by: ci; aggregate: rn }", servedBy: "live" },
 ];
 
 /**
- * Each stored table's build: stacked on its upstream, from the warehouse (a
- * rollup), or refused (never recomputed from raw).
+ * Each stored table's build: stacked on its upstream, or refused (never
+ * recomputed from raw).
  */
 const BUILT: Record<string, "reused" | "warehouse" | "refused"> = {
    b_group: "refused",
@@ -263,8 +264,8 @@ const BUILT: Record<string, "reused" | "warehouse" | "refused"> = {
    b_ext: "refused",
    b_join: "refused",
    b_nest: "refused",
-   a3__rollup__cc: "warehouse",
-   a__rollup__ci: "warehouse",
+   a3__rollup__cc: "refused",
+   a__rollup__ci: "refused",
    a2__rollup__cc: "reused",
 };
 
@@ -459,7 +460,11 @@ describe.skipIf(!POSTGRES_URL)(
             failures?: Record<string, { sourceName?: string; reason?: string }>;
          };
          const failures = Object.values(manifest.failures ?? {});
-         expect(failures.map((f) => f.sourceName).sort()).toEqual(
+         expect(
+            failures
+               .map((f) => String(f.sourceName).replace(/__[0-9a-f]{8}$/, ""))
+               .sort(),
+         ).toEqual(
             Object.entries(BUILT)
                .filter(([, how]) => how === "refused")
                .map(([name]) => name)

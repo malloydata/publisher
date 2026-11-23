@@ -5,8 +5,9 @@
  * A host's reference to an upstream table is checked against the
  * `nativeSchema` it carries before a build reads the table in place of its
  * source. With the table altered since its build (`DECIMAL(10,1)` to
- * `DECIMAL(10,0)`, which rounds `2.4` to `2`), a strict build is refused and
- * any other recomputes the upstream, storing live's values. A reference that
+ * `DECIMAL(10,0)`, which rounds `2.4` to `2`), every build is refused with
+ * SourceFailure code `schema_incompatible` (whatever `strictUpstreams`
+ * says), never recomputing the upstream from raw. A reference that
  * carries no types cannot be checked: a strict build reads it as before,
  * with a warning and a count, and the rows it stores are the table's.
  */
@@ -237,31 +238,22 @@ describe("a host's reference is checked against the nativeSchema it carries", ()
       ]);
    });
 
-   it("refuses a strict build over a typed reference whose table moved", () => {
-      expect(typedStrict.status).toBe("FAILED");
-      const failures = Object.values(
-         (
-            typedStrict.manifest as {
-               failures?: Record<string, { reason: string }>;
-            }
-         ).failures ?? {},
-      );
-      expect(failures).toHaveLength(1);
-      expect(failures[0].reason).toContain(
-         "persisted upstream 'a' was not read from its table, since its column 'amt' was built as DECIMAL(10,1) and is now DECIMAL(10,0), and strict upstreams forbid recomputing it from raw",
-      );
-   });
-
-   it("recomputes the upstream for any other build, storing live's values", async () => {
-      expect(typedRelaxed.status).toBe("MANIFEST_FILE_READY");
-      const [entry] = Object.values(
-         (typedRelaxed.manifest as { entries: Record<string, Entry> }).entries,
-      ).filter((e) => e.sourceName === "b");
-      expect(entry.upstreamReuse).toBe("recomputed");
-      expect(await stored("rt_b_relaxed")).toEqual([
-         { cat: "a", total: "19.0" },
-         { cat: "b", total: "4.8" },
-      ]);
+   it("refuses every build over a typed reference whose table moved, strict or not", () => {
+      for (const run of [typedStrict, typedRelaxed]) {
+         expect(run.status).toBe("FAILED");
+         const failures = Object.values(
+            (
+               run.manifest as {
+                  failures?: Record<string, { reason: string; code?: string }>;
+               }
+            ).failures ?? {},
+         );
+         expect(failures).toHaveLength(1);
+         expect(failures[0].code).toBe("schema_incompatible");
+         expect(failures[0].reason).toContain(
+            "persisted upstream 'a' was not read from its table, since its column 'amt' was built as DECIMAL(10,1) and is now DECIMAL(10,0)",
+         );
+      }
    });
 
    it("reads an untyped reference unchecked under strict, warning and counting it", async () => {

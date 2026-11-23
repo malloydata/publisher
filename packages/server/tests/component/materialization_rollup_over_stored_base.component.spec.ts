@@ -12,7 +12,9 @@
  *    built from the warehouse (its planned SQL), which equal live's answer;
  *  - built in a run that rebuilds only the rollup, it reads the base's table
  *    carried from the run before;
- *  - with no base table in the run, it builds from the warehouse as planned;
+ *  - a run of the rollup alone builds its base first and reads that table;
+ *  - a host's reference to the base at another tier refuses the rollup,
+ *    never builds it from the warehouse;
  *  - a rollup in a `storage=` destination, or over a base that is not
  *    persisted, is never offered the base's table.
  */
@@ -376,7 +378,7 @@ describe("a database rollup over a database #@ persist base", () => {
       ]);
    });
 
-   it("builds from the warehouse when the run holds no table of the base", async () => {
+   it("builds the base first when a run names only the rollup, and reads its table", async () => {
       await setUp();
       const pkg = await env.getPackage(parsePackageName(PKG), false);
       const rollupName = Object.values(pkg.getBuildPlan()!.sources).find(
@@ -385,10 +387,12 @@ describe("a database rollup over a database #@ persist base", () => {
       const m = await build({ sourceNames: [rollupName] });
       expect([m.status, m.error]).toEqual(["MANIFEST_FILE_READY", null]);
       const rollup = rollupOf(m, "daily");
-      expect(entries(m).map((e) => e.sourceName)).toEqual([rollup.sourceName]);
-      // It read the raw rows, and says so: no `upstreamReuse`.
-      expect(rollup.upstreamReuse).toBeUndefined();
-      expect(createdBy(rollup.physicalTableName)).toContain(RAW_MARK);
+      const base = entries(m).find((e) => e.sourceName === "daily")!;
+      expect(base).toBeDefined();
+      expect(rollup.upstreamReuse).toBe("reused");
+      expect(createdBy(rollup.physicalTableName)).toContain(
+         base.physicalTableName,
+      );
       const served = await answer(ROLLUP_QUERY);
       expect(served.servedBy).toBe("rollup");
    });
@@ -521,7 +525,7 @@ source: summed is daily -> { ${where}group_by: cat; aggregate: grand is total.su
       });
    });
 
-   it("builds from the warehouse on a host's run whose reference to the base is at another tier", async () => {
+   it("refuses a rollup on a host's run whose reference to the base is at another tier", async () => {
       await setUp();
       const first = await build();
       const base = entries(first).find((e) => e.sourceName === "daily")!;
@@ -554,16 +558,15 @@ source: summed is daily -> { ${where}group_by: cat; aggregate: grand is total.su
       expect(createdBy(read.physicalTableName)).toContain(
          base.physicalTableName,
       );
-      // At another tier, it is not: the rollup reads the warehouse.
+      // At another tier, it is not, and the rollup is refused as the
+      // host's: never built from the warehouse.
       statements.length = 0;
       const moved = await host({ storageDestinationName: "lake" });
-      expect([moved.status, moved.error]).toEqual([
-         "MANIFEST_FILE_READY",
-         null,
-      ]);
-      const warehouse = rollupOf(moved, "daily");
-      expect(warehouse.upstreamReuse).toBeUndefined();
-      expect(createdBy(warehouse.physicalTableName)).toContain(RAW_MARK);
+      expect(moved.status).toBe("FAILED");
+      expect(JSON.stringify(moved.manifest ?? moved.error)).toContain(
+         "supplied at the wrong tier",
+      );
+      expect(statements.some((s) => s.includes(RAW_MARK))).toBe(false);
    });
    it("rebuilds a windowed table whose carried entry has no anchor", async () => {
       await setUp();
