@@ -39,6 +39,8 @@ Two consequences worth knowing. A section merged to `main` ships in the **next**
 
 **Changed: each bind records, for every named source, what its gates and row scope read and whether it carries a gate or a row filter declared on a composite,** and read admission looks them up instead of walking the author's compile per query. A stored gate column's exactness is now read from its table's column contract (`gateExact`, recorded at build), not from the warehouse types its manifest entry carries: a `storage=` gate column held as a float is exact only when its build recorded it so.
 
+**Changed: the rollup leg reads which rollups a query's source could answer from (its own, one through its extends and renames, one through a join) from a list built with the plans,** instead of walking the model's sources on every query.
+
 ## [Unreleased] — a plain DuckDB destination's file is named from its configured name
 
 **Changed: a plain DuckDB `storage=` destination's database file is named from the destination's configured name, not the session's attach alias,** through one guarded path that refuses a name with a separator or `..` and keeps the file under the destinations root.

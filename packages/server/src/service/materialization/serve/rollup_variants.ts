@@ -207,6 +207,7 @@ import {
 import type { MaterializedTableCatalog } from "./query_path";
 import { queryShapeOf } from "./query_path";
 import { STORAGE_DIALECT } from "../domain/dialect";
+import { admissionMode, reportQueryWalk, shadowFact } from "./admission_parity";
 
 type VirtualMap = Map<string, Map<string, string>>;
 
@@ -420,6 +421,13 @@ export class RollupVariantServe {
       byBase: Map<string, RollupVariantPlan[]>;
       /** Each source's join branches, by its `sourceID`. */
       joinBranches?: Map<string, ReturnType<typeof joinRollupBranches>>;
+      /**
+       * The pre-filtered rollup list: each source a rollup can answer
+       * (its own, one through its extends and renames, or one through a
+       * join), with its target and join branches, by `sourceID`. Built
+       * with the plans; a source absent from it has none.
+       */
+      candidates?: ReadonlyMap<string, RollupCandidates>;
    };
 
    constructor(private readonly host: RollupVariantHost) {}
@@ -458,8 +466,58 @@ export class RollupVariantServe {
             if (plans.length > 0) byBase.set(node.sourceID, plans);
          }
       }
-      this.planMemo = { modelDef, switches, byBase };
+      const built: NonNullable<typeof this.planMemo> = {
+         modelDef,
+         switches,
+         byBase,
+      };
+      this.planMemo = built;
+      if (modelDef && byBase.size > 0) {
+         const candidates = new Map<string, RollupCandidates>();
+         for (const node of SourceMap.of(modelDef).nodes()) {
+            const c = this.walkCandidates(node.sourceID);
+            if (c.target || c.branches.length > 0) {
+               candidates.set(node.sourceID, c);
+            }
+         }
+         built.candidates = candidates;
+      } else {
+         built.candidates = new Map();
+      }
       return byBase;
+   }
+
+   /** What a query on `sourceID` could read a rollup through: the walks. */
+   private walkCandidates(sourceID: string): RollupCandidates {
+      const target = this.rollupTarget(sourceID);
+      return {
+         ...(target ? { target } : {}),
+         branches: this.joinBranchesOf(sourceID),
+      };
+   }
+
+   /**
+    * {@link walkCandidates} for a query on `sourceID`, by
+    * `materialize.admissionMode`: looked up in the list built with the
+    * plans under `lookup`, walked under `probe`, both under `shadow` (the
+    * walk deciding).
+    */
+   private candidatesFor(sourceID: string): RollupCandidates {
+      const mode = admissionMode();
+      if (mode === "probe") return this.walkCandidates(sourceID);
+      this.plansByBase();
+      const list = this.planMemo?.candidates;
+      const recorded: RollupCandidates | "unrecorded" =
+         list === undefined ? "unrecorded" : (list.get(sourceID) ?? NONE);
+      if (mode === "lookup") {
+         if (recorded !== "unrecorded") return recorded;
+         reportQueryWalk("rollup_candidates");
+         return this.walkCandidates(sourceID);
+      }
+      const walked = this.walkCandidates(sourceID);
+      return recorded === "unrecorded"
+         ? walked
+         : shadowFact("rollup_candidates", walked, recorded, showCandidates);
    }
 
    /**
@@ -522,11 +580,13 @@ export class RollupVariantServe {
       );
       const sourceID =
          typeof struct?.sourceID === "string" ? struct.sourceID : undefined;
-      const target =
-         localName && sourceID ? this.rollupTarget(sourceID) : undefined;
-      // The query source's joins whose joined source has rollups.
-      const branches =
-         sourceID && localName ? this.joinBranchesOf(sourceID) : [];
+      // The rollups a query on its source could read, from the list the
+      // plans were read with: its own, through its bases, or through a join
+      // whose joined source has rollups.
+      const candidates =
+         localName && sourceID ? this.candidatesFor(sourceID) : NONE;
+      const target = candidates.target;
+      const branches = candidates.branches;
       if (
          !localName ||
          !sourceID ||
@@ -3830,4 +3890,31 @@ export function coverageDecline(
       );
    }
    return undefined;
+}
+
+/** What a query on one source could read a rollup through. */
+interface RollupCandidates {
+   readonly target?: {
+      plans: RollupVariantPlan[];
+      extension?: RollupQuery["extension"];
+   };
+   readonly branches: ReturnType<typeof joinRollupBranches>;
+}
+
+const NONE: RollupCandidates = { branches: [] };
+
+/** A rendering of candidates, for comparing a lookup with its walk. */
+function showCandidates(c: RollupCandidates): string | undefined {
+   if (!c.target && c.branches.length === 0) return undefined;
+   const ext = c.target?.extension?.baseDef as
+      | { sourceID?: unknown }
+      | undefined;
+   return JSON.stringify({
+      plans: (c.target?.plans ?? []).map(
+         (p) =>
+            `${p.baseSourceID}:${p.rollupMeasures.map((m) => m.name).join(",")}`,
+      ),
+      extension: ext ? String(ext.sourceID) : null,
+      branches: c.branches.length,
+   });
 }

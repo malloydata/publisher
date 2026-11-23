@@ -27,9 +27,10 @@ export type AdmissionReadSite = "source_probe" | "stored_probe";
  * the record did not cover it (an inline `extend`, a lane or a stored set
  * the record does not hold) or because admission runs in `probe` or
  * `shadow`: the served copy's per-source declines (`served_copy_declines`),
- * the gates' and row scope's reads and flags (`scope`).
+ * the gates' and row scope's reads and flags (`scope`), the rollups a
+ * query's source could read (`rollup_candidates`).
  */
-type QueryWalkSite = "served_copy_declines" | "scope";
+type QueryWalkSite = "served_copy_declines" | "scope" | "rollup_candidates";
 
 /** Which way admission judges: `materialize.admissionMode`. */
 type AdmissionMode = "probe" | "lookup" | "shadow";
