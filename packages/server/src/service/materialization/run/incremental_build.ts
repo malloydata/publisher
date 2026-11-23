@@ -1100,7 +1100,6 @@ export function ledgerFields(
 }
 
 /**
-/**
  * The publisher's own extension keys on the ledger entry a run reports (see
  * {@link ledgerFields}'s `extensions`), the one way they are carried:
  *  - the keys this release does not know on the caller's echoed entry for
