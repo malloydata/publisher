@@ -351,16 +351,15 @@ each source it drops. So is a source with no scheme
 the page keeps only the legacy size message.
 
 The block is ASCII only (`<`, `>`, `&`, U+2028/9 and every non-ASCII character
-are written as `\uXXXX`), so no name can close the element and the page's charset
-does not matter. Only the first 64 KiB is scanned. The block goes after the first
-`<meta charset>` within the first 1024 bytes, else after `<head>`, else after the
-doctype, else at the start (past a UTF-8 byte-order mark) of a page that fits in
-that 64 KiB; a tag inside an HTML comment, a quoted attribute value, or a
-`<script>`, `<style>`, `<title>`, `<textarea>`, `<noscript>`, `<iframe>`,
-`<noembed>`, `<noframes>`, `<xmp>` or `<plaintext>` element does not count. A
-UTF-16 page, one over 2 MiB, and one with no insertion point in its first
-64 KiB are sent unchanged (the runtime still pins the version from the
-versioned path). An HTML response carries a weak `ETag`
+are written as `\uXXXX`), so no name can close the element, and the page's bytes
+are never decoded: the page's charset does not matter. The block goes right after
+the doctype, so the page stays out of quirks mode; only a byte-order mark,
+whitespace and comments (within the first 64 KiB) may come before the doctype
+for it to be found. A page with no doctype gets the block at its start, past a
+UTF-8 byte-order mark. Before `<html>` or `<head>` is fine: the parser puts the
+element into the head. A UTF-16 page and one over 2 MiB are sent unchanged (the
+runtime still pins the version from the versioned path). An HTML response
+carries a weak `ETag`
 (a hash of the file's size and modification time, a format version and the
 injected block, so a matching `If-None-Match` is answered `304` after a `stat`,
 without reading the file; replicas copy a package without keeping its
@@ -400,8 +399,8 @@ block: behind a gateway that renames paths (a worker that sees
 the internal ones. The block still supplies `versionId`, `apiBase` and
 `hostOrigins`, and its names are used when the URL matches neither shape.
 
-A page with no block at all (one over 2 MiB or in UTF-16, or with no insertion
-point in its first 64 KiB, which the server sends unchanged, a copy cached before the server injected it, or one served through
+A page with no block at all (one over 2 MiB or in UTF-16, which the server sends
+unchanged, a copy cached before the server injected it, or one served through
 something that rewrites it away) uses the URL alone. Served from
 `/versions/<v>/public/`, it still pins `<v>` for every query to its own package
 and never live-reloads (`latest` and `live` there name no version, so they pin

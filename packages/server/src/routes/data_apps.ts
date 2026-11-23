@@ -26,12 +26,7 @@ import { pathToFileURL } from "url";
 import type { PackageLookup } from "../service/environment_ports";
 import { versionRefOf } from "../route_params";
 import { LATEST_VERSION_ALIAS } from "../service/versions/version_service";
-import {
-   injectAfterHeadStart,
-   MAX_INJECTABLE_HTML_BYTES,
-   nonTagTextEnd,
-   openTagEnd,
-} from "./html_inject";
+import { injectAfterDoctype, MAX_INJECTABLE_HTML_BYTES } from "./html_inject";
 import { apiRoute } from "./json_route";
 import {
    PAGE_CONTEXT_HEADER,
@@ -330,7 +325,7 @@ async function sendHtmlWithContext(
       res.removeHeader("ETag");
       return sendNotFound(res);
    }
-   res.send(injectAfterHeadStart(bytes, snippet) ?? bytes);
+   res.send(injectAfterDoctype(bytes, snippet) ?? bytes);
 }
 
 /**
@@ -489,8 +484,84 @@ type DataAppItem = {
    fit?: "viewport";
 };
 
+// Elements whose content is text, never markup.
+const RAW_TEXT_ELEMENTS = [
+   "script",
+   "style",
+   "title",
+   "textarea",
+   "noscript",
+   "noembed",
+   "noframes",
+   "iframe",
+   "xmp",
+];
+const RAW_TEXT_OPEN = new RegExp(
+   `<(${RAW_TEXT_ELEMENTS.join("|")}|plaintext)(?=[\\s/>])`,
+   "iy",
+);
+const RAW_TEXT_CLOSE = new Map(
+   RAW_TEXT_ELEMENTS.map((name) => [
+      name,
+      new RegExp(`</${name}(?=[\\s/>])[^>]{0,1024}>`, "gi"),
+   ]),
+);
+
+/** How far an open tag is followed to its closing `>`, quoted attribute values included. */
+const MAX_TAG_BYTES = 2048;
+
+/**
+ * Where the text that is not markup, starting at the `<` at `at`, ends: an HTML
+ * comment, or a script, style, title, textarea, noscript, noembed, noframes,
+ * iframe or xmp element through its closing tag, or a plaintext element to the end. One that
+ * is never closed runs to the end of `text`. Undefined when `at`
+ * starts neither. A forward-only scan, so a caller that continues from the
+ * returned index never reads a character twice.
+ */
+function nonTagTextEnd(text: string, at: number): number | undefined {
+   if (text.startsWith("<!--", at)) {
+      const close = text.indexOf("-->", at + 2);
+      return close === -1 ? text.length : close + 3;
+   }
+   RAW_TEXT_OPEN.lastIndex = at;
+   const open = RAW_TEXT_OPEN.exec(text);
+   if (!open) return undefined;
+   const closer = RAW_TEXT_CLOSE.get(open[1].toLowerCase());
+   if (!closer) return text.length;
+   closer.lastIndex = at + open[0].length;
+   const close = closer.exec(text);
+   return close ? close.index + close[0].length : text.length;
+}
+
+/**
+ * Where the open tag at the `<` at `at` ends, with quoted attribute values
+ * honored (one opens only right after `=`), so a `>` or `<` inside one is not
+ * taken for markup. Undefined when `at` starts no tag. `closed` is false when
+ * the scan gave up (no `>` or an unpaired quote within the bound): `end` is
+ * then where it stopped, which a caller resumes from, so a run of such tags is
+ * scanned once, not once per `<`.
+ */
+function openTagEnd(
+   text: string,
+   at: number,
+): { end: number; closed: boolean } | undefined {
+   if (!/[a-z]/i.test(text[at + 1] ?? "")) return undefined;
+   const limit = Math.min(text.length, at + MAX_TAG_BYTES);
+   const span = text.slice(at + 1, limit);
+   // HTML whitespace only; `\s` would also take \v and \xA0.
+   const stop = /=[\t\n\f\r ]*(["'])|>/g;
+   // lastIndex only moves forward within the capped span, so this stays linear in it.
+   for (let m = stop.exec(span); m; m = stop.exec(span)) {
+      if (m[0] === ">") return { end: at + 1 + m.index + 1, closed: true };
+      const close = span.indexOf(m[1], stop.lastIndex);
+      if (close === -1) break;
+      stop.lastIndex = close + 1;
+   }
+   return { end: limit, closed: false };
+}
+
 // `input` without the comments and raw-text elements, where a "<meta ...>" literal is not a live tag.
-function stripNonTagText(input: string): string {
+export function stripNonTagText(input: string): string {
    let kept = "";
    let copied = 0;
    for (let i = input.indexOf("<"); i !== -1; ) {

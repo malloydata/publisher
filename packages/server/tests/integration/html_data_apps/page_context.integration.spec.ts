@@ -79,7 +79,7 @@ function writePackage(
          Buffer.from("<p>hi</p>", "utf16le"),
       ]),
    );
-   // Nothing to splice at in its first 64 KiB, so it is sent as it is.
+   // No doctype within reach, so the context goes at the start.
    pub("late-head.html", `${"x".repeat(70 * 1024)}<head></head>`);
    // At the size cap, built to make a naive scan slow.
    pub("hostile.html", "<!--<head>-->".repeat(Math.floor(2097152 / 13)));
@@ -203,7 +203,7 @@ describe("data-app page context and versioned static URLs", () => {
 
    // ── the versioned route ──────────────────────────────────────────
 
-   it("serves a version's page with its context spliced in after the charset meta", async () => {
+   it("serves a version's page with its context spliced in after the doctype", async () => {
       const res = await fetch(versioned("1.0.0", "index.html"));
       expect(res.status).toBe(200);
       expect(res.headers.get("content-type")).toBe("text/html; charset=utf-8");
@@ -215,7 +215,7 @@ describe("data-app page context and versioned static URLs", () => {
       const body = await res.text();
       expect(body).toContain("home v1");
       expect(body).toContain(
-         '<meta charset="utf-8"><script type="application/json" id="publisher-context">',
+         '<!doctype html><script type="application/json" id="publisher-context">',
       );
       expect(contextOf(body)).toEqual({
          v: 1,
@@ -384,7 +384,7 @@ describe("data-app page context and versioned static URLs", () => {
       const bytes = Buffer.from(await res.arrayBuffer());
       const text = bytes.toString("latin1");
       expect(text).toContain(
-         '<meta charset="iso-8859-1"><script type="application/json" id="publisher-context">',
+         '<!doctype html><script type="application/json" id="publisher-context">',
       );
       expect(bytes.includes(Buffer.from([0xe9]))).toBe(true);
       expect(bytes.toString("latin1").endsWith("café</body></html>")).toBe(
@@ -413,16 +413,20 @@ describe("data-app page context and versioned static URLs", () => {
       expect(text.length).toBeGreaterThan(2 * 1024 * 1024);
    });
 
-   it("sends a page with no insertion point in its first 64 KiB unchanged, and a hostile one promptly", async () => {
+   it("puts the context at the start of a page with no doctype, and serves a hostile one promptly", async () => {
       const late = await fetch(versioned("1.0.0", "late-head.html"));
-      expect(await late.text()).toBe(`${"x".repeat(70 * 1024)}<head></head>`);
+      const lateBody = await late.text();
+      expect(lateBody).toStartWith(
+         '<script type="application/json" id="publisher-context">',
+      );
+      expect(lateBody).toEndWith(`${"x".repeat(70 * 1024)}<head></head>`);
 
       const started = performance.now();
       const hostile = await fetch(versioned("1.0.0", "hostile.html"));
       const body = await hostile.text();
       expect(hostile.status).toBe(200);
-      expect(body).not.toContain("publisher-context");
-      expect(body.startsWith("<!--<head>--><!--<head>-->")).toBe(true);
+      expect(contextOf(body).package).toBe(VER);
+      expect(body).toContain("</script><!--<head>--><!--<head>-->");
       expect(performance.now() - started).toBeLessThan(1000);
    });
 
