@@ -393,6 +393,12 @@
         "origin": "materialize",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.mzx_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "d347e975ea5cb13142022738114dfa7bbd2cc74c58c3c6cb7ed0b32d7e126aa6",
         "sourceID": "orders@<hammer>/mzx/mzx.malloy",
@@ -437,6 +443,12 @@
         "origin": "materialize",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.mzx_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "d3b92b1b9e027f20758f5316e9428dde4ffa99cfd32c57bdfd9b2eaf84e00fa2",
         "sourceID": "us_big@<hammer>/mzx/mzx.malloy",
@@ -481,6 +493,12 @@
         "origin": "materialize",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.mzx_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "6b2fdcff71afff25ee88e5bdd43ece2d2ca744fb5ae4d7d9cacff61d19a73116",
         "sourceID": "us_orders@<hammer>/mzx/mzx.malloy",

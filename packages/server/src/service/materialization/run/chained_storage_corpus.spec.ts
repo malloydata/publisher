@@ -231,7 +231,7 @@ async function chainedRows(model: CorpusModel): Promise<ChainedRow[]> {
    const digests = Object.fromEntries(
       [...model.connections.keys()].map((n) => [n, `${n}-digest`]),
    );
-   const facts = chainedPlanFacts(parts.tables, digests, undefined);
+   const facts = chainedPlanFacts(parts.tables, digests, undefined, undefined);
 
    // Each storage= source, with what it reaches.
    const storage = Object.entries(sourcesIn(parts)).flatMap(([id, source]) => {
@@ -310,6 +310,11 @@ async function chainedRows(model: CorpusModel): Promise<ChainedRow[]> {
                   facts,
                   s.address ?? "",
                   s.lift,
+                  // The corpus's DuckDB sources name no collation: no string
+                  // it compares needs a contract to judge it
+                  // (stacked_storage_collation.component.spec.ts judges a
+                  // collated one).
+                  { stringReads: { reads: [] } },
                );
                outcome = `stacked (${result.upstreamReuse})`;
                schema = result.schema.map((c) => ({

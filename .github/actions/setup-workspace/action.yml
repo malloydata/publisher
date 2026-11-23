@@ -32,8 +32,12 @@ runs:
         bun-version: ${{ env.BUN_VERSION }}
         no-cache: ${{ inputs.restore-cache != 'true' }}
 
+    # GitHub's runners only. On Credible's, `bun install` reads the npm mirror
+    # inside GCP, while this cache would download through the farm's NAT.
     - name: Cache Bun dependencies (Linux/macOS)
-      if: runner.os != 'Windows' && inputs.restore-cache == 'true'
+      if: >-
+        runner.os != 'Windows' && inputs.restore-cache == 'true'
+        && runner.environment == 'github-hosted'
       uses: actions/cache@v5
       with:
         path: ~/.bun/install/cache

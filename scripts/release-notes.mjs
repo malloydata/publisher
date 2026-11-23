@@ -118,7 +118,7 @@ function extractBodies(lines, version) {
 }
 
 // GitHub refuses a release body over 125,000 characters with a 422, and it
-// does so in `gh-release`, after npm, Docker and PyPI have published: 0.13.0's
+// does so in `gh-release`, after npm and Docker have published: 0.13.0's
 // 75 sections came to 136k and its page had to be made by hand. The default
 // budget leaves room under that for however GitHub counts (this counts UTF-16
 // code units, so an emoji already costs two here).

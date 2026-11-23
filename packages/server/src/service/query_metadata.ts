@@ -599,6 +599,29 @@ export function buildQueryMetadataInput(args: {
             return null;
          }
       },
+      ...meteringReaders(environment),
+   };
+}
+
+/** The environment a {@link meteringReaders} reads connections and destinations from. */
+export interface MeteringEnvironment {
+   getApiConnection(connectionName: string): UsageCatalogSource & {
+      managed?: boolean;
+   };
+   /** Throws for a name that is not a configured storage destination. */
+   getStorageDestination?(destinationName: string): UsageCatalogSource;
+}
+
+/**
+ * Which connections a statement is metered on, and the catalog each names: a
+ * connection marked `managed`, or a storage destination a stored source runs
+ * on. Every route that runs a model's statements passes these in its
+ * {@link ModelQueryMetadataInput}; a route that leaves them out meters nothing.
+ */
+export function meteringReaders(
+   environment: MeteringEnvironment,
+): Pick<ModelQueryMetadataInput, "meteredConnection" | "meteredCatalog"> {
+   return {
       meteredConnection: (connectionName) => {
          try {
             if (environment.getApiConnection(connectionName).managed === true) {

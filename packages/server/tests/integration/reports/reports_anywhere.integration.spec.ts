@@ -102,56 +102,19 @@ describe("Reports anywhere in a package (E2E)", () => {
       expect(b.title).toBe("Finance summary");
    });
 
-   // DEPRECATED FEATURE COVERAGE — delete together with
-   // the `…/dashboards` / `…/notebooks` routes (see RELEASE_NOTES deprecations).
-   describe("deprecated: the …/dashboards and …/notebooks routes", () => {
-      it("says on the deprecated name route which reports share a basename", async () => {
-         const ambiguous = await fetch(api("/dashboards/summary"));
-         expect(ambiguous.status).toBe(409);
-         const message = ((await ambiguous.json()) as { message?: string })
-            .message;
-         expect(message).toContain("finance/summary.malloy");
-         expect(message).toContain("sales/summary.malloy");
-         // A unique basename still resolves on the deprecated route.
-         const q3 = await getJson<{ path: string; layout: string }>(
-            api("/dashboards/q3"),
-         );
-         expect(q3).toMatchObject({
-            path: "sales/2026/q3.malloy",
-            layout: "grid",
-         });
-      });
-
-      it("warns at load about the shared basename the name route answers 409 for", () => {
-         const shared = warningsByCode(warnings, "report-name-ambiguous");
-         expect(shared).toHaveLength(1);
-         expect(shared[0]).toMatchObject({
-            model: "finance/summary.malloy",
-            subject: "summary",
-            severity: "warn",
-         });
-         expect(shared[0].message).toContain(
-            "finance/summary.malloy, sales/summary.malloy",
-         );
-         expect(shared[0].message).toContain("rename one of the files");
-      });
-
-      it("lists the deprecated aliases by layout", async () => {
-         const dashboards = await getJson<{ path: string }[]>(
-            api("/dashboards"),
-         );
-         expect(dashboards.map((d) => d.path)).toContain(
-            "notebooks/grid_in_notebooks.malloy",
-         );
-         expect(dashboards.map((d) => d.path)).not.toContain(
-            "dashboards/linear_in_dashboards.malloy",
-         );
-         const notebooks = await getJson<{ path: string }[]>(api("/notebooks"));
-         expect(notebooks.map((n) => n.path).sort()).toEqual([
-            "dashboards/linear_in_dashboards.malloy",
-            "deep/story.malloy",
-         ]);
-      });
+   it("lists the linear reports by their tag, wherever they live", async () => {
+      const reports = await getJson<{ path: string; layout: string }[]>(
+         api("/reports"),
+      );
+      expect(
+         reports
+            .filter((r) => r.layout === "linear")
+            .map((r) => r.path)
+            .sort(),
+      ).toEqual([
+         "dashboards/linear_in_dashboards.malloy",
+         "deep/story.malloy",
+      ]);
    });
 
    it("serves each report's manifest by path, of either layout", async () => {
@@ -193,24 +156,9 @@ describe("Reports anywhere in a package (E2E)", () => {
          query: `run: ${story.tiles?.[1].query}`,
       });
       expect(ran.status).toBe(200);
-      // The deprecated notebooks route reads the same report as cells: its
-      // definitions, then its tiles.
-      const asCells = await getJson<{
-         notebookCells?: { kind?: string }[];
-      }>(api("/notebooks/deep/story.malloy"));
-      const queryCell = (asCells.notebookCells ?? []).findIndex(
-         (c) => c.kind === "query",
-      );
-      expect(queryCell).toBeGreaterThanOrEqual(0);
       expect(
-         (await fetch(api(`/reports/deep/story.malloy/cells/${queryCell}`)))
-            .status,
+         (await fetch(api("/reports/deep/story.malloy/cells/1"))).status,
       ).toBe(404);
-      // The deprecated notebooks route still answers the same cell.
-      const old = await fetch(
-         api(`/notebooks/deep/story.malloy/cells/${queryCell}`),
-      );
-      expect(old.status).toBe(200);
    });
 
    it("answers 404 for a path that is not a report", async () => {

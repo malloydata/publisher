@@ -19,7 +19,7 @@
       "snowflake"
    ],
    "homepage": "https://docs.malloydata.dev/documentation/user_guides/publishing/mcp_agents",
-   "version": "0.16.0",
+   "version": "0.17.2",
    "main": "dist/server.mjs",
    "bin": {
       "malloy-publisher": "dist/server.mjs"
@@ -43,7 +43,7 @@
       "test": "bun run test:unit && bun run test:component && bun run test:integration",
       "test:unit": "bun test --timeout 100000 ./src",
       "test:coverage": "bun run test:unit --coverage",
-      "test:component": "bun test --timeout 200000 ./tests/component",
+      "test:component": "bun test --timeout 200000 ./tests/component ./tests/conformance",
       "test:integration": "bun test --timeout 200000 ./tests/integration --max-workers=1",
       "perf:router": "bun tests/perf/router_bench.ts",
       "perf:main-thread": "bun tests/perf/main-thread/run.ts",

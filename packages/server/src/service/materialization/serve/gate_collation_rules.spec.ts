@@ -15,14 +15,23 @@
 
 import { describe, expect, it } from "bun:test";
 import type { Connection } from "@malloydata/malloy";
-import {
-   duckdbCollation,
-   duckdbTableCollation,
-   postgresCollation,
-   postgresTableCollation,
-   unfinalizedPostgresSQL,
-} from "./gate_collation";
+import { probeIO } from "./gate_collation";
 import { equalityOnlyExpr, gateReads } from "./gate_reads";
+import { DUCKDB_COLLATION } from "./collation/duckdb";
+import {
+   POSTGRES_COLLATION,
+   unfinalizedPostgresSQL,
+} from "./collation/postgres";
+
+/** The reads over a connection, through the I/O `gate_collation.ts` builds. */
+const duckdbCollation = (c: Connection, sql: string) =>
+   DUCKDB_COLLATION.sourceColumns(probeIO(c), sql);
+const duckdbTableCollation = (c: Connection, path: string) =>
+   DUCKDB_COLLATION.storedTable(probeIO(c), path);
+const postgresCollation = (c: Connection, sql: string) =>
+   POSTGRES_COLLATION.sourceColumns(probeIO(c), sql);
+const postgresTableCollation = (c: Connection, path: string) =>
+   POSTGRES_COLLATION.storedTable(probeIO(c), path);
 
 /** A connection answering every query with `rows`, recording the SQL. */
 function connection(answer: (sql: string) => Record<string, unknown>[]): {
@@ -480,6 +489,54 @@ describe("gateReads' probe allow-lists (NON_STRING_OPERATORS, comparesNoString)"
       [
          "a case",
          op("=", { node: "case", kids: { caseWhen: [], caseThen: [] } }, num),
+         { equalityOnly: false, comparesNoString: false },
+      ],
+      [
+         "a case on numbers alone",
+         op(
+            ">",
+            {
+               node: "case",
+               kids: {
+                  caseWhen: [op(">", field("amount"))],
+                  caseThen: [num],
+                  caseElse: num,
+               },
+            },
+            num,
+         ),
+         { equalityOnly: true, comparesNoString: true },
+      ],
+      [
+         "a case whose condition compares a string",
+         op(
+            ">",
+            {
+               node: "case",
+               kids: {
+                  caseWhen: [op(">", field("region"), str)],
+                  caseThen: [num],
+                  caseElse: num,
+               },
+            },
+            num,
+         ),
+         { equalityOnly: false, comparesNoString: false },
+      ],
+      [
+         "a case yielding a string",
+         op(
+            "=",
+            {
+               node: "case",
+               kids: {
+                  caseWhen: [op(">", field("amount"))],
+                  caseThen: [str],
+                  caseElse: str,
+               },
+            },
+            str,
+         ),
          { equalityOnly: false, comparesNoString: false },
       ],
       [

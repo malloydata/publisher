@@ -96,6 +96,14 @@ const SKIP_MESSAGE: Record<LegKind, string> = {
    served: "served copy cannot answer this query",
 };
 
+/** Each leg's `STALE` decline. */
+const STALE_DECLINE = {
+   served: "served_copy_stale",
+   rollup: "rollup_stale",
+   view: "view_stale",
+   query: "query_stale",
+} as const satisfies Record<LegKind, LegDecline["code"]>;
+
 /**
  * A leg's skip, at debug: it repeats on every query of a dashboard, and the
  * path report and `publisher_query_route_total` already say why.
@@ -128,6 +136,7 @@ export function variantsOf(
       facts,
       gateSwitches(),
       args.probe ?? collationProbe,
+      pinned.snapshot,
    );
    return legs.map((leg) => ({
       kind: leg.kind,
@@ -137,6 +146,20 @@ export function variantsOf(
          (await admission.admit(leg.kind, answer, true)).used,
       attempt: async () => {
          const answer = await leg.attempt(facts, pinned);
+         // A table a failed reload found built from a changed upstream
+         // (Snapshot.withdrawn) is not read: the query answers as live does.
+         const withdrawn = pinned.snapshot.withdrawn;
+         if (
+            withdrawn &&
+            (answer.tablesRead ?? []).some((b) =>
+               withdrawn.has(b.virtualHandle),
+            )
+         ) {
+            throw new LegDecline(
+               STALE_DECLINE[leg.kind],
+               "a table this answer reads was built from an upstream table that changed since its build",
+            );
+         }
          const outcome = await admission.admit(leg.kind, answer, false);
          if (!outcome.used && "decline" in outcome) throw outcome.decline;
          if (leg.kind === "served") {
@@ -381,6 +404,10 @@ export async function queryPathFor(
                .materializeBindings(pinned, "bound")
                .map((b) => b.tablePath),
          ),
+         servedCopyDetails: servedCopyDetailsOf(
+            host.servedCopy.materializeBindings(pinned, "bound"),
+            host.servedCopy.problems(),
+         ),
          runFailed: answer.leg !== "live" && answer.runFailed,
          databaseRead: answer.databaseRead,
          ...(viewTable ? { view: viewTable } : {}),
@@ -411,6 +438,24 @@ export async function queryPathFor(
       });
       return undefined;
    }
+}
+
+/**
+ * Each served-copy table's `column_types` detail, by table path: the columns
+ * its source's problem names, for the path report's `detail`.
+ */
+function servedCopyDetailsOf(
+   bindings: readonly Binding[],
+   problems: ReturnType<ServedCopyServe["problems"]>,
+): ReadonlyMap<string, string> {
+   const out = new Map<string, string>();
+   for (const p of problems) {
+      if (p.reason !== "column_types" || !p.detail || !p.sourceID) continue;
+      for (const b of bindings) {
+         if (b.sourceIDs?.includes(p.sourceID)) out.set(b.tablePath, p.detail);
+      }
+   }
+   return out;
 }
 
 /**

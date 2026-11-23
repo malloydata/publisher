@@ -70,6 +70,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.emig_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "d844a20cd5cd3838f7274041b99b5fa868167af068c6d03c3a76ff0c23774ff1",
         "sourceID": "daily_orders@<hammer>/emig/emig.malloy",

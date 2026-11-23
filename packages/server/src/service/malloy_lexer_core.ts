@@ -310,6 +310,56 @@ function skipAnnotation(
    return at;
 }
 
+/** An annotation as the lexer reads it: where it starts and ends, and whether it is a `##` one. */
+export interface AnnotationSpan {
+   from: number;
+   to: number;
+   /** A `##` or `##|` model annotation, which tags no statement. */
+   model: boolean;
+}
+
+/**
+ * The annotations from `from` to `to` that tag what follows `to`: the `#` and
+ * `##` lines and the `#|` / `##|` blocks, read as {@link skipAnnotation} reads
+ * them, past spaces and comments. Anything else in the span ends the run of
+ * annotations before it, so only those after the last such character count.
+ */
+export function annotationsBefore(
+   text: string,
+   from: number,
+   to: number,
+): AnnotationSpan[] {
+   let found: AnnotationSpan[] = [];
+   const keep = (): void => undefined;
+   let i = from;
+   while (i < to) {
+      const code = text.charCodeAt(i);
+      if (isSpaceCode(code, text, i)) {
+         i += unitsAt(text, i);
+         continue;
+      }
+      let end = -1;
+      if (code === 35) {
+         end = skipAnnotation(text, i, keep);
+         if (end >= 0) {
+            found.push({ from: i, to: end, model: text.startsWith("##", i) });
+         }
+      } else if (text.startsWith("--", i) || text.startsWith("//", i)) {
+         end = toEndOfLine(text, i);
+      } else if (text.startsWith("/*", i)) {
+         const close = text.indexOf("*/", i + 2);
+         end = close === -1 ? text.length : close + 2;
+      }
+      if (end < 0) {
+         found = [];
+         i += unitsAt(text, i);
+         continue;
+      }
+      i = end;
+   }
+   return found;
+}
+
 /** Whether the line starting at `at` closes a block annotation opened in `column`. */
 export function closesBlock(
    text: string,

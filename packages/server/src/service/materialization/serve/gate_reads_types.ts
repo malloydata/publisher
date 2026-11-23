@@ -12,6 +12,16 @@ import type { QueryMaterializer } from "@malloydata/malloy";
 import type { TableRead } from "../domain/gate_policy";
 
 /** What an entry point's row-level gates read. */
+/** A column of a warehouse table, as a model names it. */
+export interface ColumnOrigin {
+   /** The `.table()` source's connection. */
+   readonly connectionName: string;
+   /** Its table path, as `PersistSourcePlan.reads` names it. */
+   readonly table: string;
+   /** The column's name in that table. */
+   readonly column: string;
+}
+
 export interface GateReads {
    /**
     * Every name the gates read, and every field those are computed from,
@@ -25,6 +35,35 @@ export interface GateReads {
     * base column's), any of which a stored table may hold it under.
     */
    readonly columns: readonly (readonly string[])[];
+   /**
+    * For each of {@link columns}, by position, the warehouse table column it
+    * is a plain read of (a field of a `.table()` source with no expression,
+    * through renames and joins), or undefined when anything computes it on
+    * the way (an expression, a query stage). What a stored copy's gate
+    * column holds a copy of, which the gate policy reads its upstream type
+    * by. Absent: none known.
+    */
+   readonly columnOrigins?: readonly (ColumnOrigin | undefined)[];
+   /**
+    * For each of {@link columns}, by position, the sourceID of the stored
+    * upstream whose table holds it (`stored_upstream.ts`), or undefined when
+    * it reaches none of the sources the walk was told are stored. A reader
+    * that judges a column by its upstream's contract refuses an undefined
+    * one. Absent: not resolved.
+    */
+   readonly columnUpstreams?: readonly (string | undefined)[];
+   /**
+    * The string columns read that are not paths from the entry point (an
+    * inner query's base, computed when the stored table is read), each with
+    * the names it goes by and its stored upstream as for
+    * {@link columnUpstreams}. Set only for a query's result reads
+    * (`result_reads.ts`), whose {@link columns} list entry paths alone; a
+    * chained build judges these too. Absent: none.
+    */
+   readonly elsewhereColumns?: readonly {
+      readonly names: readonly string[];
+      readonly upstream: string | undefined;
+   }[];
    /**
     * A name the gates read that could not be followed to a column: a reader
     * that judges the columns must fail closed.
@@ -84,6 +123,14 @@ export interface GateReads {
     * every column in a group holds the same, and fails otherwise.
     */
    readonly sameCollation?: readonly (readonly (readonly string[])[])[];
+   /**
+    * Of {@link entryPaths}, those whose every read is of a source known to be
+    * read live (a live join beside a stored table), which no stored table's
+    * collation changes: the stored-side check passes over them. Set only for
+    * a query's result reads (`result_reads.ts`), never for a gate's, whose
+    * columns must each be held. Absent: none.
+    */
+   readonly livePaths?: readonly (readonly string[])[];
 }
 
 /** A table an answer read, as the stored-side probe reads it. */
@@ -104,6 +151,8 @@ export interface CollationProbe {
       authorRunnable: QueryMaterializer;
       reads: GateReads | undefined;
       givens?: Record<string, unknown>;
+      /** The bind the query was pinned to: a probe may keep reads per bind. */
+      bind?: object;
    }): Promise<string | undefined>;
    storedRefusal(args: {
       tables: readonly ProbedTable[];
@@ -112,5 +161,14 @@ export interface CollationProbe {
       authorRunnable: QueryMaterializer;
       reads: GateReads | undefined;
       givens?: Record<string, unknown>;
+      /**
+       * The stored side's warehouse reads for one answer, by what they read:
+       * every comparison asked of that answer shares them.
+       */
+      storedReads?: Map<string, Promise<unknown>>;
+      /** The bind the query was pinned to: a probe may keep reads per bind. */
+      bind?: object;
+      /** A database table its catalog does not list is passed over (a result's). */
+      unlistedPasses?: boolean;
    }): Promise<string | undefined>;
 }

@@ -192,8 +192,11 @@ import {
    type Binding,
    heldReadBinding,
    isDatabase,
+   type KeyedTable,
+   manifestUnderCompilerKey,
    type Pinned,
    storageLookupOf,
+   underCompilerKeys,
 } from "../domain/binding";
 import type { ServedCopyJoinBasis } from "./served_copy_serve";
 import {
@@ -250,6 +253,8 @@ interface RollupAnswer {
    runnable: QueryMaterializer;
    /** The rollup that answered: its name, for the path report. */
    rollupSourceName: string;
+   /** The `sourceID` of the source that declares it. */
+   rollupBaseSourceID: string;
    /** For a `storage=` rollup: how its `virtual()` handle resolves. */
    virtualMap?: VirtualMap;
    /** For a `storage=` rollup: its binding. */
@@ -260,6 +265,11 @@ interface RollupAnswer {
     * definition (its collation) reads that table.
     */
    databaseTablePath?: string;
+   /**
+    * For a database rollup whose address is not Malloy's key for it: the run
+    * that answers reads its entry under that key too.
+    */
+   keyedTable?: KeyedTable;
    /**
     * Every stored table the answer reads, when that is more than the
     * rollup's: a join branch answered in a storage destination reads the query
@@ -1065,7 +1075,13 @@ export class RollupVariantServe {
       try {
          result = await runnable.getPreparedResult({
             ...(q.args.givens ? { givens: q.args.givens as never } : {}),
-            buildManifest: q.args.pinned.compilerManifest,
+            buildManifest: manifestUnderCompilerKey(
+               underCompilerKeys(
+                  q.args.pinned.compilerManifest,
+                  q.args.pinned.snapshot.compilerKeys,
+               ),
+               table.keyedTable,
+            ),
          } as never);
       } catch {
          throw new LegDecline(
@@ -1082,7 +1098,9 @@ export class RollupVariantServe {
       return {
          runnable,
          rollupSourceName: plan.rollupSourceName,
+         rollupBaseSourceID: plan.baseSourceID,
          databaseTablePath: databaseTable,
+         ...(table.keyedTable ? { keyedTable: table.keyedTable } : {}),
          ...(await this.joinGraft(q, runnable, variant)),
       };
    }
@@ -1294,6 +1312,7 @@ export class RollupVariantServe {
       return {
          runnable,
          rollupSourceName: plan.rollupSourceName,
+         rollupBaseSourceID: plan.baseSourceID,
          virtualMap,
          binding: table.binding,
          bindings: [...tablesRead, table.binding],
@@ -1446,10 +1465,17 @@ export class RollupVariantServe {
             ...(table.virtualMap ? { virtualMap: table.virtualMap } : {}),
             ...(args.givens ? { givens: args.givens as never } : {}),
             // Explicit even beside a virtualMap: an undefined manifest reads
-            // the Runtime's, unfiltered by freshness.
+            // the Runtime's, unfiltered by freshness. A database table filed
+            // under a key not its address is substituted under that key.
             buildManifest: table.virtualMap
                ? EMPTY_BUILD_MANIFEST
-               : args.pinned.compilerManifest,
+               : manifestUnderCompilerKey(
+                    underCompilerKeys(
+                       args.pinned.compilerManifest,
+                       args.pinned.snapshot.compilerKeys,
+                    ),
+                    table.keyedTable,
+                 ),
          } as never);
       } catch {
          throw new LegDecline(
@@ -1477,10 +1503,14 @@ export class RollupVariantServe {
       return {
          runnable,
          rollupSourceName: plan.rollupSourceName,
+         rollupBaseSourceID: plan.baseSourceID,
          ...(table.virtualMap ? { virtualMap: table.virtualMap } : {}),
          ...(table.binding ? { binding: table.binding } : {}),
          ...(!table.virtualMap && databaseTable
             ? { databaseTablePath: databaseTable }
+            : {}),
+         ...(!table.virtualMap && table.keyedTable
+            ? { keyedTable: table.keyedTable }
             : {}),
          ...(variant.modelDef && variant.cacheScope
             ? {
@@ -1637,12 +1667,7 @@ export class RollupVariantServe {
       plan: RollupVariantPlan,
       pinned: Pinned,
    ): string | undefined {
-      const lookup = storageLookupOf(
-         pinned,
-         rollupSourceID(plan),
-         "rollup",
-         plan.storage !== undefined,
-      );
+      const lookup = this.storageLookup(plan, pinned);
       if (!lookup) return undefined;
       return (
          this.tableOf(plan, pinned)?.binding?.destinationName ??
@@ -1650,6 +1675,35 @@ export class RollupVariantServe {
             ? lookup.binding.destinationName
             : plan.storage)
       );
+   }
+
+   /**
+    * The rollup's storage table at the pin, or undefined when it is read in
+    * the source's own database. Keyed by the rollup's own `sourceID`, never
+    * by its name; the binding decides the tier (storageLookupOf). While no
+    * storage destination is read (`PERSIST_STORAGE_MODE` write-only or off),
+    * a database table bound beside a storage one answers, as `on`'s rules
+    * would with the storage tier removed.
+    */
+   private storageLookup(
+      plan: RollupVariantPlan,
+      pinned: Pinned,
+   ): ReturnType<typeof storageLookupOf> {
+      const sourceID = rollupSourceID(plan);
+      const lookup = storageLookupOf(
+         pinned,
+         sourceID,
+         "rollup",
+         plan.storage !== undefined,
+      );
+      if (!lookup || this.host.serveDestinationConfig()) return lookup;
+      const planned = sourceID
+         ? this.host.catalog()?.planned.get(sourceID)
+         : undefined;
+      return planned &&
+         Object.hasOwn(pinned.snapshot.entries, planned.sourceEntityId)
+         ? undefined
+         : lookup;
    }
 
    /** The rollup's table at the pin: a fresh storage binding, or a planned database one. */
@@ -1662,19 +1716,14 @@ export class RollupVariantServe {
            quotedPath?: string;
            binding?: Binding;
            sourceEntityId?: string;
+           /** A database table filed under a key not its address. */
+           keyedTable?: KeyedTable;
            /** A database table's columns the bind left out (`leftOutColumns`). */
            leftOut?: readonly string[];
         }
       | undefined {
       const sourceID = rollupSourceID(plan);
-      // Keyed by the rollup's own `sourceID`, never by its name; the
-      // binding decides the tier (storageLookupOf).
-      const lookup = storageLookupOf(
-         pinned,
-         sourceID,
-         "rollup",
-         plan.storage !== undefined,
-      );
+      const lookup = this.storageLookup(plan, pinned);
       if (lookup) {
          const binding =
             lookup?.state === "fresh" || lookup?.state === "stale_ok"
@@ -1733,6 +1782,14 @@ export class RollupVariantServe {
       }
       return {
          sourceEntityId: planned.sourceEntityId,
+         ...(planned.compilerKey
+            ? {
+                 keyedTable: {
+                    tableId: planned.sourceEntityId,
+                    compilerKey: planned.compilerKey,
+                 },
+              }
+            : {}),
          ...(leftOut?.length ? { leftOut } : {}),
       };
    }

@@ -29,8 +29,6 @@ export const MATERIALIZATION_IMPORT_ALLOWLIST = {
    "service/materialization/serve/served_copy_serve.ts -> service/materialization/plan/persist_dynamic_terms":
       "2m",
    // R10: outside the module, only index.ts and domain/.
-   "controller/materialization.controller.ts -> service/materialization/run/build_upstreams":
-      "2n",
    "controller/materialization.controller.ts -> service/materialization/run/materialization_service":
       "2n",
    "controller/storage_destination.controller.ts -> service/materialization/run/storage_admin":
@@ -40,6 +38,10 @@ export const MATERIALIZATION_IMPORT_ALLOWLIST = {
    "main_server.ts -> service/materialization/run/materialization_service":
       "2n",
    "package_load/package_load_worker.ts -> service/materialization/plan/build_plan":
+      "2n",
+   // The barrel would load package_materialization, and with it db-duckdb,
+   // which a worker thread must never open (duckdb_instance_sharing.spec.ts).
+   "package_load/package_load_worker.ts -> service/materialization/serve/served_copy_serve":
       "2n",
    "service/catalog_admin.ts -> service/materialization/run/materialization_build_session":
       "2n",
@@ -139,6 +141,16 @@ export const RATCHET_DIALECT_LITERALS = {
    // The dialect table itself: the DialectName union, its rows' keys,
    // standardsql's display name, and STORAGE_DIALECT.
    "service/materialization/domain/dialect.ts": { count: 20, step: "table" },
+   // The collation readers, keyed by dialect: one key per reader.
+   "service/materialization/serve/collation/index.ts": {
+      count: 3,
+      step: "table",
+   },
+   // The dialect table's evidence: one key per row.
+   "service/materialization/domain/dialect_evidence.ts": {
+      count: 9,
+      step: "table",
+   },
    // The SQL half of the dialect table: its comparisons of a narrowed
    // DialectName, CURRENT_SCHEMA_SQL's two keys and type, DuckDB's own
    // literal in duckdbNameMatch, and Snowflake's in its query-tag and cost
@@ -150,16 +162,10 @@ export const RATCHET_DIALECT_LITERALS = {
       count: 1,
       step: "table",
    },
-   // Connection types (FederatedSourceType, the storage destination types),
-   // whose `postgres`, `snowflake` and `duckdb` share a dialect's spelling.
+   // The storage destination types, whose `duckdb` shares a dialect's
+   // spelling.
    "service/materialization/run/materialization_build_session.ts": {
-      count: 4,
-      step: "table",
-   },
-   // FederatedSourceType's `snowflake`, the one engine whose session the
-   // build tags, aligns and reads its cost back from.
-   "service/materialization/run/build_attribution.ts": {
-      count: 3,
+      count: 1,
       step: "table",
    },
    // PASSTHROUGH_SOURCE_TYPES, connection types a `storage=` build reads,
@@ -168,10 +174,10 @@ export const RATCHET_DIALECT_LITERALS = {
       count: 2,
       step: "table",
    },
-   // TABLE_PATH_OPTIONS, the incremental probe's per-dialect table-path
-   // decoding (four keys), and probePostgresVersion's own dialect.
-   "service/materialization/run/incremental_apply.ts": {
-      count: 5,
+   // The passthrough builds, keyed by a connection type whose `postgres` and
+   // `snowflake` share a dialect's spelling.
+   "service/materialization/run/passthrough_build.ts": {
+      count: 2,
       step: "table",
    },
    // The package-local DuckDB connection, by its connection name.
@@ -181,6 +187,106 @@ export const RATCHET_DIALECT_LITERALS = {
       count: 2,
       step: "table",
    },
+};
+/**
+ * Connection-type literals (a configured type spelled as a string literal or
+ * an object key), per file, over materialization and the connection modules
+ * the registry (service/dialects/) absorbs: frozen at their count before the
+ * branches move, each tagged with the step that moves them. `table`: no
+ * branch, frozen: a list of types kept as data (FederatedSourceType,
+ * PASSTHROUGH_SOURCE_TYPES, STORAGE_DESTINATION_TYPES), a table keyed by
+ * type, a type a refusal's message names, a record's engine label, or the
+ * package sandbox's connection name.
+ */
+export const RATCHET_CONNECTION_TYPE_LITERALS = {
+   // READ_ONLY_DIALECTS' `sqlserver`, and the same-catalog gate's `ducklake`.
+   "service/materialization/plan/materialization_eligibility.ts": {
+      count: 2,
+      step: "table",
+   },
+   // the package sandbox's connection name.
+   "service/materialization/run/reclaimer.ts": { count: 1, step: "table" },
+   // a refusal's message naming the destination type file cleanup applies to.
+   "service/materialization/run/storage_admin.ts": { count: 1, step: "table" },
+   // STORAGE_DESTINATION_TYPES, and a refusal's message naming a DuckLake
+   // destination's type.
+   "service/materialization/run/materialization_build_session.ts": {
+      count: 3,
+      step: "table",
+   },
+   // the read-cost record's engine label.
+   "service/materialization/run/build_read_cost.ts": {
+      count: 4,
+      step: "table",
+   },
+   // the DuckLake catalog read of a database table's columns.
+   "service/materialization/run/database_column_read.ts": {
+      count: 3,
+      step: "table",
+   },
+   // the passthrough builds, keyed by a connection type.
+   "service/materialization/run/passthrough_build.ts": {
+      count: 3,
+      step: "table",
+   },
+   // the SQL half of the dialect table: comparisons on a dialect that shares a type's spelling.
+   "service/materialization/run/warehouse_sql.ts": { count: 19, step: "table" },
+   // a read option named after the destination, not a branch.
+   "service/materialization/serve/storage_bindings.ts": {
+      count: 1,
+      step: "table",
+   },
+   // a read option named after the destination, not a branch.
+   "service/materialization/serve/view_variants.ts": {
+      count: 1,
+      step: "table",
+   },
+   // a read option named after the destination, not a branch.
+   "service/materialization/serve/served_copy_serve.ts": {
+      count: 2,
+      step: "table",
+   },
+   // a read option named after the destination, not a branch.
+   "service/materialization/serve/rollup_variants.ts": {
+      count: 1,
+      step: "table",
+   },
+   // the same-catalog rule's `ducklake`, data the registry agrees with.
+   "service/materialization/domain/same_catalog_build.ts": {
+      count: 2,
+      step: "table",
+   },
+   // the dialect table, whose keys share a type's spelling.
+   "service/materialization/domain/dialect.ts": { count: 15, step: "table" },
+   // the dialect table's evidence, keyed the same way.
+   "service/materialization/domain/dialect_evidence.ts": {
+      count: 7,
+      step: "table",
+   },
+   // PASSTHROUGH_SOURCE_TYPES, data the registry agrees with.
+   "service/materialization/domain/source_connection_type.ts": {
+      count: 7,
+      step: "table",
+   },
+   // the object-storage attachments, the DuckLake lookup and the connection
+   // test.
+   "service/connection.ts": { count: 17, step: "D3" },
+   // the DuckDB API surface, the proxy's postgres-only rule, the declarable
+   // destination types and the package sandbox's name.
+   "service/connection_config.ts": { count: 11, step: "D3" },
+   // the listings whose record members are already read (BigQuery's, a
+   // remote Publisher's).
+   "service/db_utils.ts": { count: 2, step: "D3" },
+   // the collation readers' table, keyed by dialect.
+   "service/materialization/serve/collation/index.ts": {
+      count: 2,
+      step: "table",
+   },
+   // the quoting sets, keyed by dialect.
+   "service/quoting.ts": { count: 7, step: "table" },
+   // the package sandbox's name, a DuckLake table path and a DuckDB
+   // connection's Azure attachments.
+   "controller/connection.controller.ts": { count: 12, step: "D3" },
 };
 /** Functions over 200 lines, "<file>#<function>": step. */
 export const RATCHET_LONG_FUNCTIONS = {};
@@ -256,7 +362,7 @@ export const RATCHET_TABLE_IDENTITY = {
 export const RATCHET_STORED_TYPE_PATTERNS = {
    "service/materialization/domain/admission.ts": { count: 1, step: "2r" },
    "service/materialization/domain/gate_policy.ts": { count: 1, step: "2r" },
-   "service/materialization/serve/bind.ts": { count: 4, step: "2r" },
+   "service/materialization/serve/bind.ts": { count: 1, step: "2r" },
    "service/materialization/serve/leg.ts": { count: 1, step: "2r" },
    "service/materialization/serve/rollup_variants.ts": { count: 1, step: "2r" },
    "service/materialization/serve/served_copy_serve.ts": {
@@ -269,7 +375,7 @@ export const RATCHET_STORED_TYPE_PATTERNS = {
  * its port, a file move away from the shell) and the served copy's runtime.
  */
 export const RATCHET_SERVE_IO = {
-   "service/materialization/serve/gate_collation.ts": { count: 10, step: "2r" },
+   "service/materialization/serve/gate_collation.ts": { count: 9, step: "2r" },
    "service/materialization/serve/served_copy_config.ts": {
       count: 2,
       step: "2r",

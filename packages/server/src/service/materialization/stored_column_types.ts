@@ -670,6 +670,42 @@ export function storedColumnsOfOutput(
    return out;
 }
 
+/**
+ * A warehouse column's type (as its catalog names it) in the spelling a
+ * build's schema capture writes ({@link storedColumnsOfOutput}), or undefined
+ * when Malloy reads it as no basic type, which has no spelling. An array is
+ * one, though a dialect maps `DATE[]` to its element's `date`.
+ */
+export function spelledNativeType(
+   nativeType: string,
+   dialect: string,
+): string | undefined {
+   if (isArrayType(nativeType)) return undefined;
+   const [spelled] = storedColumnsOfOutput(
+      [{ name: "c", ...getDialect(dialect).sqlTypeToMalloyType(nativeType) }],
+      { nested: false, bigint: true, timestamptz: true },
+   );
+   return spelled?.type;
+}
+
+/** Whether Malloy reads a column of native type `nativeType` as a string. */
+export function isStringNativeType(
+   nativeType: string,
+   dialect: string,
+): boolean {
+   try {
+      return (
+         getDialect(dialect).sqlTypeToMalloyType(nativeType).type === "string"
+      );
+   } catch {
+      return false;
+   }
+}
+
+function isArrayType(type: string): boolean {
+   return /\[\s*\d*\s*\]\s*$/.test(type) || /^\s*ARRAY\b/i.test(type);
+}
+
 /** One output field's type in DuckDB's spelling, or undefined (see above). */
 function storedTypeOfField(
    field: unknown,
@@ -1438,4 +1474,40 @@ export function canonicalStoredSchema<C extends { name: string }>(
    return schema.map((c) =>
       renamed.has(c.name) ? { ...c, name: renamed.get(c.name)! } : c,
    );
+}
+
+/**
+ * Whether a stored column's native type reads as the Malloy type the plan's
+ * stand-in declared it as. A `storage=` build casts a string, boolean or
+ * date to its declared type and keeps a number's warehouse type
+ * ({@link castToDeclaredTypes}), so a number stood in as BIGINT or DOUBLE may be
+ * stored as any integer, float or decimal type: every numeric type matches
+ * every other (a Malloy `bigint` stood in as a DOUBLE and stored as the
+ * warehouse's BIGINT among them), compared by class, never by spelling.
+ */
+export function sameStoredTypeClass(stored: string, standIn: string): boolean {
+   const a = storedClass(stored);
+   const b = storedClass(standIn);
+   return a === b || (NUMERIC_CLASSES.has(a) && NUMERIC_CLASSES.has(b));
+}
+
+const NUMERIC_CLASSES = new Set(["integer", "float", "decimal"]);
+
+/** A native type's class, case, spacing and parameters aside. */
+function storedClass(nativeType: string): string {
+   const spelled = nativeType.replace(/\s+/g, " ").trim().toUpperCase();
+   const base = spelled.replace(/\(.*\)/, "").trim();
+   if (/^(VARCHAR|TEXT|STRING|CHAR|BPCHAR)/.test(base)) return "string";
+   if (base === "BOOLEAN" || base === "BOOL") return "boolean";
+   if (base === "DATE") return "date";
+   if (base === "TIMESTAMPTZ" || base === "TIMESTAMP WITH TIME ZONE") {
+      return "timestamptz";
+   }
+   if (base.startsWith("TIMESTAMP")) return "timestamp";
+   if (/^U?(TINYINT|SMALLINT|INTEGER|INT|BIGINT|HUGEINT)$/.test(base)) {
+      return "integer";
+   }
+   if (/^(FLOAT|REAL|DOUBLE)/.test(base)) return "float";
+   if (base === "DECIMAL" || base === "NUMERIC") return "decimal";
+   return spelled;
 }

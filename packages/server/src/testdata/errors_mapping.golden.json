@@ -17,6 +17,7 @@
         "This is not transient: retrying fails the same way until the package's versions change.",
         "The MCP tools serve the package's latest version. A package whose versions have no latest yet must have one made latest (PUT .../packages/{package}/latest) before these tools can read it."
       ],
+      "reason": "MANIFEST_VERSION_MISSING",
       "logs": []
     },
     "mcpSetup": {
@@ -25,6 +26,7 @@
         "This is not transient: retrying fails the same way until the package's versions change.",
         "The MCP tools serve the package's latest version. A package whose versions have no latest yet must have one made latest (PUT .../packages/{package}/latest) before these tools can read it."
       ],
+      "reason": "MANIFEST_VERSION_MISSING",
       "logs": [
         [
           "warn",
@@ -51,6 +53,7 @@
         "This is not transient: retrying fails the same way until the package's versions change.",
         "The MCP tools serve the package's latest version. A package whose versions have no latest yet must have one made latest (PUT .../packages/{package}/latest) before these tools can read it."
       ],
+      "reason": "MANIFEST_VERSION_INVALID",
       "logs": []
     },
     "mcpSetup": {
@@ -59,6 +62,7 @@
         "This is not transient: retrying fails the same way until the package's versions change.",
         "The MCP tools serve the package's latest version. A package whose versions have no latest yet must have one made latest (PUT .../packages/{package}/latest) before these tools can read it."
       ],
+      "reason": "MANIFEST_VERSION_INVALID",
       "logs": [
         [
           "warn",
@@ -85,6 +89,7 @@
         "This is not transient: retrying fails the same way until the package's versions change.",
         "The MCP tools serve the package's latest version. A package whose versions have no latest yet must have one made latest (PUT .../packages/{package}/latest) before these tools can read it."
       ],
+      "reason": "VERSION_ID_INVALID",
       "logs": []
     },
     "mcpSetup": {
@@ -93,6 +98,7 @@
         "This is not transient: retrying fails the same way until the package's versions change.",
         "The MCP tools serve the package's latest version. A package whose versions have no latest yet must have one made latest (PUT .../packages/{package}/latest) before these tools can read it."
       ],
+      "reason": "VERSION_ID_INVALID",
       "logs": [
         [
           "warn",
@@ -119,6 +125,7 @@
         "This is not transient: retrying fails the same way until the package's versions change.",
         "The MCP tools serve the package's latest version. A package whose versions have no latest yet must have one made latest (PUT .../packages/{package}/latest) before these tools can read it."
       ],
+      "reason": "VERSION_NOT_FOUND",
       "logs": []
     },
     "mcpSetup": {
@@ -127,6 +134,7 @@
         "This is not transient: retrying fails the same way until the package's versions change.",
         "The MCP tools serve the package's latest version. A package whose versions have no latest yet must have one made latest (PUT .../packages/{package}/latest) before these tools can read it."
       ],
+      "reason": "VERSION_NOT_FOUND",
       "logs": [
         [
           "warn",
@@ -153,6 +161,7 @@
         "This is not transient: retrying fails the same way until the package's versions change.",
         "The MCP tools serve the package's latest version. A package whose versions have no latest yet must have one made latest (PUT .../packages/{package}/latest) before these tools can read it."
       ],
+      "reason": "VERSION_CONFLICT",
       "logs": []
     },
     "mcpSetup": {
@@ -161,6 +170,7 @@
         "This is not transient: retrying fails the same way until the package's versions change.",
         "The MCP tools serve the package's latest version. A package whose versions have no latest yet must have one made latest (PUT .../packages/{package}/latest) before these tools can read it."
       ],
+      "reason": "VERSION_CONFLICT",
       "logs": [
         [
           "warn",
@@ -187,6 +197,7 @@
         "This is not transient: retrying fails the same way until the package's versions change.",
         "The MCP tools serve the package's latest version. A package whose versions have no latest yet must have one made latest (PUT .../packages/{package}/latest) before these tools can read it."
       ],
+      "reason": "PACKAGE_IS_VERSIONED",
       "logs": []
     },
     "mcpSetup": {
@@ -195,6 +206,7 @@
         "This is not transient: retrying fails the same way until the package's versions change.",
         "The MCP tools serve the package's latest version. A package whose versions have no latest yet must have one made latest (PUT .../packages/{package}/latest) before these tools can read it."
       ],
+      "reason": "PACKAGE_IS_VERSIONED",
       "logs": [
         [
           "warn",
@@ -221,6 +233,7 @@
         "This is not transient: retrying fails the same way until the package's versions change.",
         "The MCP tools serve the package's latest version. A package whose versions have no latest yet must have one made latest (PUT .../packages/{package}/latest) before these tools can read it."
       ],
+      "reason": "VERSION_IS_LATEST",
       "logs": []
     },
     "mcpSetup": {
@@ -229,6 +242,7 @@
         "This is not transient: retrying fails the same way until the package's versions change.",
         "The MCP tools serve the package's latest version. A package whose versions have no latest yet must have one made latest (PUT .../packages/{package}/latest) before these tools can read it."
       ],
+      "reason": "VERSION_IS_LATEST",
       "logs": [
         [
           "warn",
@@ -255,6 +269,7 @@
         "This is not transient: retrying fails the same way until the package's versions change.",
         "The MCP tools serve the package's latest version. A package whose versions have no latest yet must have one made latest (PUT .../packages/{package}/latest) before these tools can read it."
       ],
+      "reason": "VERSION_IS_LAST_ACTIVE",
       "logs": []
     },
     "mcpSetup": {
@@ -263,6 +278,7 @@
         "This is not transient: retrying fails the same way until the package's versions change.",
         "The MCP tools serve the package's latest version. A package whose versions have no latest yet must have one made latest (PUT .../packages/{package}/latest) before these tools can read it."
       ],
+      "reason": "VERSION_IS_LAST_ACTIVE",
       "logs": [
         [
           "warn",
@@ -289,6 +305,7 @@
         "This is not transient: retrying fails the same way until the package's versions change.",
         "The MCP tools serve the package's latest version. A package whose versions have no latest yet must have one made latest (PUT .../packages/{package}/latest) before these tools can read it."
       ],
+      "reason": "VERSION_BUILDING",
       "logs": []
     },
     "mcpSetup": {
@@ -297,6 +314,7 @@
         "This is not transient: retrying fails the same way until the package's versions change.",
         "The MCP tools serve the package's latest version. A package whose versions have no latest yet must have one made latest (PUT .../packages/{package}/latest) before these tools can read it."
       ],
+      "reason": "VERSION_BUILDING",
       "logs": [
         [
           "warn",
@@ -323,6 +341,7 @@
         "This is not transient: retrying fails the same way until the package's versions change.",
         "The MCP tools serve the package's latest version. A package whose versions have no latest yet must have one made latest (PUT .../packages/{package}/latest) before these tools can read it."
       ],
+      "reason": "VERSION_NOT_LATEST",
       "logs": []
     },
     "mcpSetup": {
@@ -331,6 +350,7 @@
         "This is not transient: retrying fails the same way until the package's versions change.",
         "The MCP tools serve the package's latest version. A package whose versions have no latest yet must have one made latest (PUT .../packages/{package}/latest) before these tools can read it."
       ],
+      "reason": "VERSION_NOT_LATEST",
       "logs": [
         [
           "warn",
@@ -357,6 +377,7 @@
         "This is not transient: retrying fails the same way until the package's versions change.",
         "The MCP tools serve the package's latest version. A package whose versions have no latest yet must have one made latest (PUT .../packages/{package}/latest) before these tools can read it."
       ],
+      "reason": "VERSION_ARCHIVED",
       "logs": []
     },
     "mcpSetup": {
@@ -365,6 +386,7 @@
         "This is not transient: retrying fails the same way until the package's versions change.",
         "The MCP tools serve the package's latest version. A package whose versions have no latest yet must have one made latest (PUT .../packages/{package}/latest) before these tools can read it."
       ],
+      "reason": "VERSION_ARCHIVED",
       "logs": [
         [
           "warn",
@@ -391,6 +413,7 @@
         "Try the request again later.",
         "If the problem persists, check server logs or contact support."
       ],
+      "reason": "BUILD_PLAN_UNAVAILABLE",
       "logs": []
     },
     "mcpSetup": {
@@ -427,6 +450,7 @@
       "suggestions": [
         "Retry in a few seconds: the build plan is being re-derived after a connection change."
       ],
+      "reason": "BUILD_PLAN_REFRESHING",
       "logs": []
     },
     "mcpSetup": {
@@ -434,6 +458,7 @@
       "suggestions": [
         "Retry in a few seconds: the build plan is being re-derived after a connection change."
       ],
+      "reason": "BUILD_PLAN_REFRESHING",
       "logs": [
         [
           "warn",
@@ -1390,6 +1415,7 @@
         "Try the request again later.",
         "If the problem persists, check server logs or contact support."
       ],
+      "reason": "TABLE_NOT_FOUND",
       "logs": []
     },
     "mcpSetup": {
@@ -1509,6 +1535,7 @@
         "The query and the model are fine. Do not rewrite them.",
         "Retry once. If it fails again, report that the database connection is down rather than changing the query."
       ],
+      "reason": "CONNECTION_FAILED",
       "logs": [
         [
           "warn",
@@ -1552,6 +1579,7 @@
         "The query is fine. Do not rewrite it, and do not retry: it fails the same way until the connection exists.",
         "Report that the environment is missing this connection; it was likely deleted or renamed."
       ],
+      "reason": "CONNECTION_NOT_FOUND",
       "logs": []
     },
     "mcpSetup": {
@@ -1589,6 +1617,86 @@
     },
     "mcpSetup": {
       "message": "An unexpected internal error occurred during executeQuery (Setup).: The connection pool is full.",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
+  "ResultTruncatedError": {
+    "class": "ResultTruncatedError",
+    "http": {
+      "status": 502,
+      "json": {
+        "code": 502,
+        "message": "The database returned 50000 of the 99000 rows it reported, and no row limit cut them: BigQuery returns one results page of about 10 MB, and the rest of the answer was not read. The query was refused rather than answered short. Project fewer columns or return fewer rows so the answer fits in one page.",
+        "reason": "RESULT_TRUNCATED"
+      },
+      "logged": true,
+      "logs": [
+        [
+          "warn",
+          "Database result truncated"
+        ]
+      ]
+    },
+    "mcp": {
+      "message": "The database returned 50000 of the 99000 rows it reported, and no row limit cut them: BigQuery returns one results page of about 10 MB, and the rest of the answer was not read. The query was refused rather than answered short. Project fewer columns or return fewer rows so the answer fits in one page.",
+      "suggestions": [
+        "This is not transient. The same query will fail the same way, so change the query rather than retrying it.",
+        "Shrink the answer so it fits in one results page of about 10 MB: select fewer columns, aggregate, or add a LIMIT."
+      ],
+      "reason": "RESULT_TRUNCATED",
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: The database returned 50000 of the 99000 rows it reported, and no row limit cut them: BigQuery returns one results page of about 10 MB, and the rest of the answer was not read. The query was refused rather than answered short. Project fewer columns or return fewer rows so the answer fits in one page.",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
+  "ResultShapeError": {
+    "class": "ResultShapeError",
+    "http": {
+      "status": 502,
+      "json": {
+        "code": 502,
+        "message": "The database returned a row that does not fit the result's schema, so the result could not be built.",
+        "reason": "RESULT_SHAPE_MISMATCH"
+      },
+      "logged": true,
+      "logs": [
+        [
+          "error",
+          "Database result does not fit its schema"
+        ]
+      ]
+    },
+    "mcp": {
+      "message": "An unexpected internal error occurred during executeQuery.: The database returned a row that does not fit the result's schema, so the result could not be built.",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "reason": "RESULT_SHAPE_MISMATCH",
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: The database returned a row that does not fit the result's schema, so the result could not be built.",
       "suggestions": [
         "Try the request again later.",
         "If the problem persists, check server logs or contact support."
@@ -1723,6 +1831,7 @@
         "The query and the model are fine. Do not rewrite them, and do not retry: it fails the same way until the credentials are fixed.",
         "Report that the connection's user, password, key or token needs updating."
       ],
+      "reason": "CONNECTION_AUTH_FAILED",
       "logs": [
         [
           "warn",
@@ -1766,6 +1875,7 @@
       "suggestions": [
         "Check the path the query or the model reads (a file or table URL) and that the database may read it. Retrying unchanged fails the same way."
       ],
+      "reason": "PATH_ACCESS_DENIED",
       "logs": [
         [
           "warn",
@@ -1942,6 +2052,7 @@
         "Try the request again later.",
         "If the problem persists, check server logs or contact support."
       ],
+      "reason": "MATERIALIZATION_REFUSED",
       "logs": []
     },
     "mcpSetup": {
@@ -2034,8 +2145,8 @@
       ]
     }
   },
-  "WarehouseRecomputeRefusedError": {
-    "class": "WarehouseRecomputeRefusedError",
+  "ContractCaptureFailedError": {
+    "class": "ContractCaptureFailedError",
     "http": {
       "status": 500,
       "json": {
@@ -2051,7 +2162,7 @@
       ]
     },
     "mcp": {
-      "message": "An unexpected internal error occurred during executeQuery.: Failed to materialize source 'rollup' into storage destination 'lake': its only build recomputes its stored upstreams from the source warehouse, and the build instructions refuse that (warehouseReach: refuse): 'rollup' reads the source warehouse (regions) through 'via'",
+      "message": "An unexpected internal error occurred during executeQuery.: The column contract of the table lake.orders_t could not be read back (its collations did not read), so the build is not recorded: a table with no contract is never served from. The previous table, if any, is left as it was; a retry reads it again.",
       "suggestions": [
         "Try the request again later.",
         "If the problem persists, check server logs or contact support."
@@ -2059,7 +2170,45 @@
       "logs": []
     },
     "mcpSetup": {
-      "message": "An unexpected internal error occurred during executeQuery (Setup).: Failed to materialize source 'rollup' into storage destination 'lake': its only build recomputes its stored upstreams from the source warehouse, and the build instructions refuse that (warehouseReach: refuse): 'rollup' reads the source warehouse (regions) through 'via'",
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: The column contract of the table lake.orders_t could not be read back (its collations did not read), so the build is not recorded: a table with no contract is never served from. The previous table, if any, is left as it was; a retry reads it again.",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
+  "SchemaIncompatibleError": {
+    "class": "SchemaIncompatibleError",
+    "http": {
+      "status": 500,
+      "json": {
+        "code": 500,
+        "message": "Internal server error."
+      },
+      "logged": true,
+      "logs": [
+        [
+          "error",
+          "Unhandled internal error"
+        ]
+      ]
+    },
+    "mcp": {
+      "message": "An unexpected internal error occurred during executeQuery.: 'v' was not built over its upstream 'a''s table a_t in 'lake'",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: 'v' was not built over its upstream 'a''s table a_t in 'lake'",
       "suggestions": [
         "Try the request again later.",
         "If the problem persists, check server logs or contact support."
@@ -2201,6 +2350,7 @@
         "Check the database connection configuration used by the model, if applicable.",
         "Consult the Malloy language documentation for syntax rules: https://docs.malloydata.dev/documentation/"
       ],
+      "reason": "ACCESS_DENIED",
       "logs": []
     },
     "mcpSetup": {
@@ -2211,6 +2361,7 @@
         "Check the database connection configuration used by the model, if applicable.",
         "Consult the Malloy language documentation for syntax rules: https://docs.malloydata.dev/documentation/"
       ],
+      "reason": "ACCESS_DENIED",
       "logs": [
         [
           "warn",
@@ -2236,6 +2387,7 @@
       "suggestions": [
         "Suggestion: Access to source 'orders' is restricted by a gate (#(authorize) or #(access_filter)). Supply the givens the gate reads (e.g. a role/region given; get_context lists them under the source's authorize and givens) and retry. This is an authorization denial, not a syntax error."
       ],
+      "reason": "ACCESS_DENIED",
       "logs": []
     },
     "mcpSetup": {
@@ -2243,6 +2395,7 @@
       "suggestions": [
         "Suggestion: Access to source 'orders' is restricted by a gate (#(authorize) or #(access_filter)). Supply the givens the gate reads (e.g. a role/region given; get_context lists them under the source's authorize and givens) and retry. This is an authorization denial, not a syntax error."
       ],
+      "reason": "ACCESS_DENIED",
       "logs": [
         [
           "warn",
@@ -2268,6 +2421,7 @@
       "suggestions": [
         "This is not transient. The request's build instructions or body fail the same way until they change; the message names what is wrong."
       ],
+      "reason": "BUILD_INSTRUCTIONS_INVALID",
       "logs": []
     },
     "mcpSetup": {
@@ -2302,6 +2456,7 @@
         "This is not transient. The table at this name= is not this package's, or who holds it could not be read, so the build fails the same way until that changes.",
         "Choose a name= no other package or table uses, or have the table's holder release it."
       ],
+      "reason": "TABLE_OWNED_ELSEWHERE",
       "logs": []
     },
     "mcpSetup": {
@@ -2336,6 +2491,7 @@
         "This is not transient. The table at this name= is not this package's, or who holds it could not be read, so the build fails the same way until that changes.",
         "Choose a name= no other package or table uses, or have the table's holder release it."
       ],
+      "reason": "TABLE_OWNERSHIP_UNVERIFIED",
       "logs": []
     },
     "mcpSetup": {
@@ -2369,6 +2525,7 @@
       "suggestions": [
         "Suggestion: Access to source 'orders' is restricted by a gate (#(authorize) or #(access_filter)). Supply the givens the gate reads (e.g. a role/region given; get_context lists them under the source's authorize and givens) and retry. This is an authorization denial, not a syntax error."
       ],
+      "reason": "ACCESS_DENIED",
       "logs": []
     },
     "mcpSetup": {
@@ -2376,6 +2533,7 @@
       "suggestions": [
         "Suggestion: Access to source 'orders' is restricted by a gate (#(authorize) or #(access_filter)). Supply the givens the gate reads (e.g. a role/region given; get_context lists them under the source's authorize and givens) and retry. This is an authorization denial, not a syntax error."
       ],
+      "reason": "ACCESS_DENIED",
       "logs": [
         [
           "warn",
@@ -2623,6 +2781,7 @@
         "Try the request again later.",
         "If the problem persists, check server logs or contact support."
       ],
+      "reason": "MATERIALIZATION_CONFLICT",
       "logs": []
     },
     "mcpSetup": {
@@ -2657,6 +2816,7 @@
         "Try the request again later.",
         "If the problem persists, check server logs or contact support."
       ],
+      "reason": "TABLE_IN_USE",
       "logs": []
     },
     "mcpSetup": {
@@ -2691,6 +2851,7 @@
         "Try the request again later.",
         "If the problem persists, check server logs or contact support."
       ],
+      "reason": "TABLE_OWNED_ELSEWHERE",
       "logs": []
     },
     "mcpSetup": {
@@ -2725,6 +2886,7 @@
         "Try the request again later.",
         "If the problem persists, check server logs or contact support."
       ],
+      "reason": "TABLE_OWNERSHIP_UNVERIFIED",
       "logs": []
     },
     "mcpSetup": {
@@ -2792,6 +2954,7 @@
         "Try the request again later.",
         "If the problem persists, check server logs or contact support."
       ],
+      "reason": "FILE_EXISTS",
       "logs": []
     },
     "mcpSetup": {
@@ -2826,6 +2989,7 @@
         "This is not transient: retrying fails the same way while the package is installed from a location.",
         "Make the change in the package's source at that location and reload the package, or publish it as a version."
       ],
+      "reason": "PACKAGE_INSTALLED_FROM_LOCATION",
       "logs": []
     },
     "mcpSetup": {

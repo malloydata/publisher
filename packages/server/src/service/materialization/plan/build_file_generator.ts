@@ -50,9 +50,7 @@
  * needs a dataset, needs a `name=` that names one (`needs_qualified_name`). The served copy re-roots it on that table, on its own connection,
  * as it re-roots a `storage=` source on its destination, and a v1 database
  * `#@ persist` table the same way
- * (`tests/component/r4/served_copy_database.component.spec.ts`). Only a
- * legacy `.malloynb` cell still reads a table through Malloy's compiler
- * manifest (`ModelServing.manifestIfPersistent`).
+ * (`tests/component/r4/served_copy_database.component.spec.ts`).
  *
  * Joins. A join is a reference by default: it is not stored,
  * the served copy keeps it as written, and it reads the joined source (its own
@@ -331,6 +329,10 @@ export interface FieldLike {
    name?: unknown;
    as?: unknown;
    type?: unknown;
+   /** A `sql native` field's warehouse type. */
+   rawType?: unknown;
+   /** An array's element type. */
+   elementTypeDef?: unknown;
    e?: unknown;
    expressionType?: unknown;
    accessModifier?: unknown;
@@ -733,7 +735,7 @@ export function levelFileName(modelFileName: string, level: number): string {
 /**
  * Each plan's depth in its chain of extension tables, by sourceID: 0
  * for one built over the raw chain, its parent's plus one otherwise. A plan
- * whose parent is not among `plans` is depth 0 (see {@link settledChains}).
+ * whose parent is not among `plans` is depth 0 (its copy then refuses it).
  */
 export function chainLevels(
    plans: readonly MaterializePlan[],
@@ -753,23 +755,6 @@ export function chainLevels(
    };
    for (const plan of plans) levelOf(plan);
    return levels;
-}
-
-/**
- * `plans` with every `buildsOver` whose parent is no longer planned removed,
- * to a fixpoint: a parent refused after planning leaves its extension to
- * build over the raw chain. A parent in another file is planned by that
- * file's companion, so its extension keeps it.
- */
-export function settledChains(
-   plans: readonly MaterializePlan[],
-): MaterializePlan[] {
-   const ids = new Set(plans.map((p) => p.sourceID));
-   return plans.map((p) =>
-      p.buildsOver && !p.buildsOver.crossFile && !ids.has(p.buildsOver.sourceID)
-         ? withoutParent(p)
-         : p,
-   );
 }
 
 /** A plan built over the raw chain instead of its parent's build source. */

@@ -60,8 +60,10 @@ import { EMPTY_STORAGE_REASON } from "./declaration";
 import { rollupGateEnforcedAtRead } from "./rollup_plan";
 import {
    storageBuildReadsConnectionType,
+   catalogAuthorSqlMessage,
    unreadableSourceConnectionMessage,
 } from "../domain/source_connection_type";
+import { authorSqlCause } from "../domain/same_catalog_build";
 
 /**
  * What an eligible source carries into the build. Returned by the gate rather
@@ -204,10 +206,46 @@ function assertStorageBuildReadsConnection(
    connectionTypes: TierGateInputs["connectionTypes"],
 ): void {
    const type = connectionTypes?.[persistSource.connectionName];
-   if (type === undefined || storageBuildReadsConnectionType(type)) return;
+   if (type === undefined) return;
+   if (!storageBuildReadsConnectionType(type)) {
+      throw new MaterializationEligibilityError({
+         reason: "storage_source_unsupported",
+         message: unreadableSourceConnectionMessage(persistSource, type),
+      });
+   }
+   // A DuckLake source builds into its own catalog only, on a read-write
+   // session that runs only SQL Malloy generated (the build session's
+   // same-catalog rule), so one carrying author SQL can never build.
+   const cause =
+      type === "ducklake"
+         ? authorSqlCause(sourceDefOf(persistSource))
+         : undefined;
+   if (cause !== undefined) {
+      throw new MaterializationEligibilityError({
+         reason: "storage_source_unsupported",
+         message: catalogAuthorSqlMessage(persistSource, cause),
+      });
+   }
+}
+
+/**
+ * Refuse a source on a connection configured `managed` that carries author
+ * SQL. A managed catalog's tables are built inside the catalog, on a
+ * read-write session that runs only SQL Malloy generated (the build session's
+ * same-catalog rule), whatever the source declares: a host places a database
+ * table there as a build into the catalog itself. So such a source can never
+ * build, and is refused here rather than failing its build.
+ */
+function assertManagedBuildRunsMalloySql(
+   source: PersistSource,
+   plan: TierGateInputs | undefined,
+): void {
+   if (!plan?.managedConnections?.includes(source.connectionName)) return;
+   const cause = authorSqlCause(sourceDefOf(source));
+   if (cause === undefined) return;
    throw new MaterializationEligibilityError({
       reason: "storage_source_unsupported",
-      message: unreadableSourceConnectionMessage(persistSource, type),
+      message: catalogAuthorSqlMessage(source, cause, { managed: true }),
    });
 }
 
@@ -978,6 +1016,12 @@ export interface TierGateInputs {
     */
    connectionTypes?: Readonly<Record<string, string>>;
    /**
+    * The connections configured `managed`, by name
+    * (`CompiledBuildPlan.managedConnections`): every table built on one is
+    * built inside its catalog by SQL Malloy generates.
+    */
+   managedConnections?: readonly string[];
+   /**
     * Every sourceID an access decision of the package reads
     * (`CompiledBuildPlan.accessReads`); unknown refuses every relation that
     * reads the current time.
@@ -1074,6 +1118,7 @@ export function assertTierEligible(
       assertBuildReadsNoCurrentTime(source, plan);
       return;
    }
+   assertManagedBuildRunsMalloySql(source, plan);
    const table = plan?.tables?.[source.sourceID];
    const rollup = table?.rollup;
    assertDatabasePersistNotAuthorizeGated(

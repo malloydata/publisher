@@ -22,6 +22,8 @@
  * ledger in the run store; logs and counts each step.
  */
 
+import { captureDatabaseContract } from "./column_contract_capture";
+import type { Connection as ReadConnectionSource } from "@malloydata/malloy";
 import { errorCodeOf } from "../../../error_code";
 import { recordedTableKey } from "../domain/physical_table";
 import { logger } from "../../../logger";
@@ -63,7 +65,7 @@ import {
    isPairGuardFailure,
    isRenderableWatermarkType,
    planIncrementalStep,
-   probePostgresVersion,
+   probeServerVersion,
    seedCoveredThrough,
    type DeltaTarget,
    type IncrementalLineage,
@@ -72,7 +74,7 @@ import {
    type SqlRunner,
    type WatermarkBound,
 } from "./incremental_apply";
-import { isDecimalDeltaGuardFailure } from "./postgres_numeric_precision";
+import { isDecimalDeltaGuardFailure } from "./passthrough/postgres";
 import { capturedNativeSchema } from "./database_native_types";
 import {
    INCREMENTAL_LATE_ROWS_CODE,
@@ -354,7 +356,7 @@ export async function planSourceRefresh(params: {
       lineage.strategy === "merge" &&
       capabilitiesOf(target.dialect).mergeGatedByServerVersion &&
       ledgerEntry !== null
-         ? await probePostgresVersion(target.runner)
+         ? await probeServerVersion(target.runner, target.dialect)
          : undefined;
    let step: IncrementalStep;
    try {
@@ -917,6 +919,27 @@ export async function refreshOneSourceIncrementally(params: {
               sourceName: persistSource.name,
            })
          : undefined;
+   type ReadConnection = Pick<ReadConnectionSource, "runSQL">;
+   // Its column contract, read again after the delta: a delta writes in
+   // place, outside any transaction, and never changes the column set, so a
+   // read that fails fails the source after the write (the previous entry
+   // understates the table's freshness, never its rows), and a retry reads
+   // it again.
+   const contract =
+      lineage.storageDestinationName === undefined
+         ? await captureDatabaseContract({
+              connection: {
+                 dialectName: target.dialect,
+                 runSQL: (sql, options) =>
+                    target.runner(sql, options) as ReturnType<
+                       ReadConnection["runSQL"]
+                    >,
+              },
+              tableName: target.logicalTablePath,
+              physicalTableName: lineage.physicalTableName,
+              declared: persistSourceDeclaredColumns(persistSource),
+           })
+         : undefined;
    return {
       sourceEntityId,
       sourceName: persistSource.name,
@@ -925,6 +948,7 @@ export async function refreshOneSourceIncrementally(params: {
       connectionName: persistSource.connectionName,
       realization: "COPY",
       ...params.upstreamReuse,
+      ...(contract ? { contract } : {}),
       rowCount: null,
       buildDurationMs: outcome.durationMs ?? null,
       // applyDeltaScript returns no cost figure, even on backends that have one.
@@ -986,7 +1010,7 @@ export function storageRefreshFor(params: {
          );
          // A Postgres numeric a build before the decimal-precision fix stored
          // as DOUBLE, which serves float sums until the table is seeded again
-         // (postgres_numeric_precision.ts); a seed now stores it exactly.
+         // (passthrough/postgres.ts); a seed now stores it exactly.
          const doubles = reseeding ? [] : await numericColumnsStoredAsDouble();
          // The stored table's columns, under the names the delta's SQL
          // emits them (a renamed field's column under its own name), so a

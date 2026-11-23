@@ -12,12 +12,16 @@
  * source's collation and each answer is served, equal to live. Once a
  * stored `category` column is altered to compare case-insensitively (which
  * changes no type), a filter `category = 'books'` would admit `Books` from
- * the table while live admits only `books`: each such answer is then live.
- * A filter that compares no string (`id > 2`) is still served. A filter
+ * the table while live admits only `books`. The table then no longer matches
+ * the contract its build recorded (`collation_changed` at the next bind), so
+ * every answer over it is live, a filter that compares no string (`id > 2`)
+ * included. A filter
  * whose string comparison is made in a stage (an output of a query-shaped
  * source the answer recomputes, a dimension or a join over one, a count
  * grouped by a string, or the query's own earlier stage) is read through
- * that stage, and answers live once the column is altered. Postgres under a
+ * that stage, and answers live once the column is altered. So is a later
+ * stage's filter on a row number an earlier stage computes over a string's
+ * order, which is served as built on Postgres too. Postgres under a
  * `C` and an `en_US` default; DuckDB by its tables' definitions.
  */
 
@@ -81,6 +85,8 @@ source: v is m_tab -> { select: id, category, sb is category = 'books' } extend 
 }
 
 source: v3 is v extend { dimension: vis3 is vis2 and id > 0 }
+
+source: vn is m_tab -> { select: id, category }
 
 source: jv is warehouse.sql("""
   SELECT * FROM (VALUES (1), (2), (3), (4), (5), (6)) AS t(oid)
@@ -222,8 +228,20 @@ const CASES: {
       throughStage: true,
    },
    {
+      // The dimensional indexer's shard-boundary query: its later stage
+      // compares a window function's number, which follows the order of the
+      // strings the earlier stage orders by.
+      name: "a later stage's filter on a row number over a string's order",
+      query: "run: m_tab -> { group_by: value is category order_by: value calculate: rn is row_number() } -> { where: rn = 1 or rn = 2 select: rn, value order_by: rn }",
+      leg: "materialized",
+      strings: true,
+   },
+   {
+      // Over `vn`, whose stage compares no string: one that does (`v`'s
+      // `sb`) is recomputed from the stored rows, which the result rule
+      // judges whether or not the query reads its output.
       name: "a query-shaped source's numeric output (a control)",
-      query: "run: v -> { where: id > 2; select: id; order_by: id }",
+      query: "run: vn -> { where: id > 2; select: id; order_by: id }",
       leg: "materialized",
       strings: false,
    },
@@ -486,15 +504,13 @@ for (const tier of tiers) {
             );
          });
 
-         it(
-            c.strings
-               ? `${c.name}: answers live, equal to live, once its column compares case-insensitively`
-               : `${c.name}: is still served, equal to live, once a column it does not compare is altered`,
-            () => {
-               expect(after[c.name].rows).toEqual(live[c.name] as never);
-               expect(after[c.name].kind).toBe(c.strings ? "live" : c.leg);
-            },
-         );
+         // Once a stored column's collation is altered, its table no longer
+         // matches the contract its build recorded: every query on it
+         // answers live, whatever it compares.
+         it(`${c.name}: answers live, equal to live, once its table's column compares case-insensitively`, () => {
+            expect(after[c.name].rows).toEqual(live[c.name] as never);
+            expect(after[c.name].kind).toBe("live");
+         });
       }
    });
 }

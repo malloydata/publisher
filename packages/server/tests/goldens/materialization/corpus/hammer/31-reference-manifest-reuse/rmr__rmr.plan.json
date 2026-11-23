@@ -87,6 +87,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.rmr_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "017934443568616422765ac9b053f6cabf4ff431ee837c61857c5e61dcf7ddb2",
         "sourceID": "daily@<hammer>/rmr/rmr.malloy",
@@ -111,6 +117,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.rmr_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "0a989cfe00f2150b8f35859f194234f2d6530c5a415ab81bc3b71189689c0653",
         "sourceID": "rollup@<hammer>/rmr/rmr.malloy",

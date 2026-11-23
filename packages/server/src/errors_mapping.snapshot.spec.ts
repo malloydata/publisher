@@ -13,7 +13,8 @@ import {
    BuildPlanRefreshingError,
    BuildPlanUnavailableError,
    ChainedShapeNotCarriedError,
-   WarehouseRecomputeRefusedError,
+   ContractCaptureFailedError,
+   SchemaIncompatibleError,
    ChainedUpstreamMissingError,
    CompileRefusedError,
    ConflictError,
@@ -23,6 +24,8 @@ import {
    ConnectionNotFoundError,
    ConnectionPoolExhaustedError,
    ConnectionSaveError,
+   ResultShapeError,
+   ResultTruncatedError,
    DashboardNotFoundError,
    DestinationNotFoundError,
    DryRunCapacityError,
@@ -294,6 +297,8 @@ const CASES: Array<[string, () => unknown]> = [
       "ConnectionPoolExhaustedError",
       () => new ConnectionPoolExhaustedError("The connection pool is full."),
    ],
+   ["ResultTruncatedError", () => new ResultTruncatedError(50000, 99000)],
+   ["ResultShapeError", () => new ResultShapeError()],
    [
       "DestinationNotFoundError",
       () => new DestinationNotFoundError("No destination named warehouse"),
@@ -355,12 +360,18 @@ const CASES: Array<[string, () => unknown]> = [
       () => new ChainedShapeNotCarriedError("shape not carried"),
    ],
    [
-      "WarehouseRecomputeRefusedError",
+      "ContractCaptureFailedError",
       () =>
-         new WarehouseRecomputeRefusedError(
-            "rollup",
-            "lake",
-            "'rollup' reads the source warehouse (regions) through 'via'",
+         new ContractCaptureFailedError(
+            "lake.orders_t",
+            "its collations did not read",
+         ),
+   ],
+   [
+      "SchemaIncompatibleError",
+      () =>
+         new SchemaIncompatibleError(
+            "'v' was not built over its upstream 'a''s table a_t in 'lake'",
          ),
    ],
    [

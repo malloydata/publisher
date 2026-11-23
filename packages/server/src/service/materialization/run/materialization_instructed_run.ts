@@ -21,6 +21,8 @@ import {
    BadRequestError,
    MaterializationEligibilityError,
    TableOwnershipError,
+   ContractCaptureFailedError,
+   SchemaIncompatibleError,
 } from "../../../errors";
 import { logger } from "../../../logger";
 import type {
@@ -61,7 +63,6 @@ import { redactConnectionSecrets } from "./connection_redaction";
 import {
    type BuildEnvironment,
    type ChainedPlanFacts,
-   type WarehouseReach,
 } from "./build_upstreams";
 import { type BuildQueryMetadata } from "./build_query_tag";
 import type { IncrementalRunContext } from "./incremental_build";
@@ -114,8 +115,6 @@ export interface InstructedBuildOptions {
     * ChainedPlanFacts.hostInstructed).
     */
    hostInstructed?: boolean;
-   /** What a strict build does with the warehouse recompute. */
-   warehouseReach?: WarehouseReach;
    /**
     * Auto-run only: the inline uniqueness checks' passes, read from the run
     * before and recorded for the run after (inline_uniqueness.ts). Undefined
@@ -128,6 +127,16 @@ export interface InstructedBuildOptions {
     * Absent: no such table is ever recognized, and every one refuses.
     */
    packageRuns?: () => Promise<Materialization[]>;
+   /**
+    * Told each instruction whose build is about to write its table, before
+    * the build starts, and whether the author chose its name (`name=`): a
+    * run cancelled because its package is retiring gives back the tables
+    * these builds may have written (Reclaimer.reclaimRetiredRunTables).
+    */
+   onBuildStarted?: (
+      instruction: BuildInstruction,
+      authorNamed: boolean,
+   ) => void;
 }
 
 /** The eligibility gate a source was cleared by. */
@@ -150,6 +159,7 @@ export interface InstructedRun
       | "packageRuns"
       | "uniqueness"
       | "freshness"
+      | "onBuildStarted"
    > {
    planFacts: ChainedPlanFacts;
    index: InstructionIndex;
@@ -324,6 +334,7 @@ export function resolveInstruction(
    persistSource: PersistSource,
    connectionDigests: RunPlan["connectionDigests"],
    tableFolds?: RunPlan["tableFolds"],
+   upstreamSchemas?: RunPlan["upstreamSchemas"],
 ): ResolvedInstruction | undefined {
    // sourceID first, so the caller's sourceEntityId scheme stays opaque; the
    // sourceEntityId lookup is the fallback for instructions without one.
@@ -346,6 +357,7 @@ export function resolveInstruction(
          connectionDigests,
          undefined,
          tableFolds,
+         upstreamSchemas,
       );
    } catch {
       return undefined;
@@ -384,6 +396,7 @@ export function assertNoTableCollisions(
    connectionDigests: RunPlan["connectionDigests"],
    index: InstructionIndex,
    tableFolds?: RunPlan["tableFolds"],
+   upstreamSchemas?: RunPlan["upstreamSchemas"],
 ): void {
    // Keyed by the table segment on its connection or destination: `main.t`
    // and `t` may be one table, as the plan's collision check reads them
@@ -420,6 +433,7 @@ export function assertNoTableCollisions(
                connectionDigests,
                undefined,
                tableFolds,
+               upstreamSchemas,
             );
          } catch {
             // getSQL() throws for a source the eligibility gate is about to
@@ -646,7 +660,9 @@ export function recordInstructedBuildFailure(
          ? { storageDestinationName: instruction.destination }
          : {}),
       // A bounded code beside the prose, for a refusal a client branches on.
-      ...(buildErr instanceof TableOwnershipError
+      ...(buildErr instanceof TableOwnershipError ||
+      buildErr instanceof ContractCaptureFailedError ||
+      buildErr instanceof SchemaIncompatibleError
          ? { code: buildErr.code }
          : {}),
    };

@@ -7,8 +7,11 @@
  * same build source, address, grain, measures and placement as the
  * `#(rollup)` spelling, and the same refusals for the same reasons. Its
  * table takes the rollup's readable name, `<pkg>__<file>__<base>_by_<grain>`,
- * never the base's, and nothing is left out of the plan for its base being
- * stored. (Answers equal to live: r4/v1_preaggregate_over_stored_base.)
+ * never the base's. A grain in the warehouse (no `storage=` of its own) is
+ * refused at plan as `upstream_table_unusable`, in both spellings: its base's
+ * table lives in a storage destination a build in the warehouse cannot read,
+ * and strict upstreams forbid recomputing the base from raw. (Answers equal
+ * to live: r4/v1_preaggregate_over_stored_base.)
  */
 
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
@@ -146,9 +149,13 @@ source: daily is duckdb.table('t.csv') extend {
 `;
 
 describe("a v1 #@ preaggregate over a storage= base", () => {
-   for (const [shape, template] of [
-      ["a query-shaped base", QUERY_SHAPED],
-      ["a table extended with measures", TABLE_EXTENDED],
+   // A query-shaped base builds a stored table, so its warehouse grain is
+   // refused; a table extended with measures builds none
+   // (`persist-not-materializable`), so its warehouse grain reads no stored
+   // upstream and builds as planned.
+   for (const [shape, template, stored] of [
+      ["a query-shaped base", QUERY_SHAPED, true],
+      ["a table extended with measures", TABLE_EXTENDED, false],
    ] as const) {
       it(`plans exactly the #(rollup) it reads as, on ${shape}`, async () => {
          const v1 = await compile(spelled(template, false), false);
@@ -157,17 +164,32 @@ describe("a v1 #@ preaggregate over a storage= base", () => {
          const v2Rollups = rollupsOf(v2.compiled);
          expect(Object.keys(v1Rollups).sort()).toEqual([
             expect.stringMatching(/^daily__rollup__category__[0-9a-f]{8}$/),
-            expect.stringMatching(/^daily__rollup__region__[0-9a-f]{8}$/),
+            ...(stored
+               ? []
+               : [
+                    expect.stringMatching(
+                       /^daily__rollup__region__[0-9a-f]{8}$/,
+                    ),
+                 ]),
          ]);
          // The same build source, at the same content address.
          expect(v1Rollups).toEqual(v2Rollups);
-         // Nothing is refused or left out for the base being stored.
-         expect(codesOf(v1.compiled)).toEqual([]);
+         // Over a stored base the warehouse grain is refused, in both
+         // spellings, and nothing else is.
+         const codes = stored ? ["upstream_table_unusable"] : [];
+         expect(codesOf(v1.compiled)).toEqual(codes);
+         expect(codesOf(v2.compiled)).toEqual(codes);
       });
    }
 
-   it("plans the storage= grain into the destination and the other beside the base", async () => {
+   it("plans the storage= grain into the destination, and refuses the one in the warehouse, naming the base's destination", async () => {
       const { compiled } = await compile(spelled(QUERY_SHAPED, false), false);
+      const refusal = (compiled.annotationFindings ?? []).find(
+         (f) => f.refused?.reason === "upstream_table_unusable",
+      );
+      expect(refusal?.message).toContain(
+         "its upstream 'daily' is stored in the storage= destination 'lake'",
+      );
       const placed = Object.fromEntries(
          Object.entries(rollupsOf(compiled)).map(([name, r]) => [
             name.replace(/__[0-9a-f]{8}$/, ""),
@@ -176,7 +198,6 @@ describe("a v1 #@ preaggregate over a storage= base", () => {
       );
       expect(placed).toEqual({
          daily__rollup__category: ["lake", ["order_count", "total"]],
-         daily__rollup__region: [undefined, ["total"]],
       });
    });
 
@@ -193,15 +214,15 @@ describe("a v1 #@ preaggregate over a storage= base", () => {
          { environmentName: "e1", packageName: "pa", packagePath },
       );
       const tables = instructions.map((i) => i.physicalTableName).sort();
+      // The warehouse grain is refused, so it has no table.
       expect(tables).toEqual([
          expect.stringMatching(/^pa__m__daily__p[0-9a-f]{8}$/),
          expect.stringMatching(/^pa__m__daily_by_category__p[0-9a-f]{8}$/),
-         expect.stringMatching(/^pa__m__daily_by_region__p[0-9a-f]{8}$/),
       ]);
-      expect(new Set(instructions.map((i) => i.sourceEntityId)).size).toBe(3);
+      expect(new Set(instructions.map((i) => i.sourceEntityId)).size).toBe(2);
    });
 
-   it("gives a database grain with no namespace= no container from a storage= base's name=", async () => {
+   it("refuses a database grain over a storage= base's name=, so it takes no container from it", async () => {
       const { compiled, packagePath } = await compile(
          `##! experimental.persistence
 #@ persist storage="lake" name="analytics.lake_daily"
@@ -224,25 +245,21 @@ source: daily is duckdb.sql("SELECT 10 AS amount, 'A' AS category, 'east' AS reg
       );
       expect(instructions.map((i) => i.physicalTableName).sort()).toEqual([
          "analytics.lake_daily",
-         expect.stringMatching(/^pa__m__daily_by_region__p[0-9a-f]{8}$/),
       ]);
+      expect(codesOf(compiled)).toEqual(["upstream_table_unusable"]);
    });
 
    it("plans the v1 spelling the same with PUBLISHER_MATERIALIZE on", async () => {
       const off = await compile(spelled(QUERY_SHAPED, false), false);
       const on = await compile(spelled(QUERY_SHAPED, false), true);
       expect(rollupsOf(on.compiled)).toEqual(rollupsOf(off.compiled));
-      expect(Object.keys(rollupsOf(on.compiled))).toHaveLength(2);
-      // Only the deprecation of the spelling is added.
-      expect(
-         (on.compiled.annotationFindings ?? [])
-            .map((f) => f.code)
-            .filter((c) => c !== "deprecated-preaggregate-annotation")
-            .filter((c) => c.startsWith("preaggregate-")),
-      ).toEqual([]);
+      expect(Object.keys(rollupsOf(on.compiled))).toHaveLength(1);
+      // The same refusal of the warehouse grain either way.
+      expect(codesOf(on.compiled)).toEqual(codesOf(off.compiled));
+      expect(codesOf(on.compiled)).toEqual(["upstream_table_unusable"]);
    });
 
-   it("takes no prefix and no container from the base's name=, and its own namespace= as a container", async () => {
+   it("takes no prefix and no container from the base's name=, and refuses a grain in the warehouse whatever its namespace=", async () => {
       const { compiled, packagePath } = await compile(
          `##! experimental.persistence
 #@ persist storage="lake" name="lake_daily"
@@ -265,13 +282,11 @@ source: daily is duckdb.sql("SELECT 10 AS amount, 'A' AS category, 'east' AS reg
          { environmentName: "e1", packageName: "pa", packagePath },
       );
       expect(instructions.map((i) => i.physicalTableName).sort()).toEqual([
-         expect.stringMatching(
-            /^analytics\.pa__m__daily_by_region__p[0-9a-f]{8}$/,
-         ),
          // The base's own name=, as the author wrote it.
          "lake_daily",
          expect.stringMatching(/^pa__m__daily_by_category__p[0-9a-f]{8}$/),
       ]);
+      expect(codesOf(compiled)).toEqual(["upstream_table_unusable"]);
    });
 
    describe("is refused as the #(rollup) would be", () => {

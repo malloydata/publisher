@@ -30,10 +30,6 @@ import {
    duckdbMalloyConfig,
    usePackageLoadPool,
 } from "../../src/test_helpers/temp_package";
-import {
-   listDashboards,
-   listNotebooks,
-} from "../../src/service/legacy_report_views";
 import { QueryPrivileges } from "../../src/service/model_query_request";
 
 describe("Explore Visibility via worker pool", () => {
@@ -129,9 +125,12 @@ export { customers }`,
          expect(result.data).toBeDefined();
 
          // Reports are always public regardless of the surface.
-         expect((await listNotebooks(pkg, "env")).map((n) => n.path)).toEqual([
-            "report.malloy",
-         ]);
+         expect(
+            pkg
+               .listReports()
+               .filter((r) => r.layout === "linear")
+               .map((r) => r.path),
+         ).toEqual(["report.malloy"]);
 
          // The derived entry always resolves, so it can never be an invalid
          // explores entry -- getInvalidExplores has nothing to report.
@@ -794,9 +793,12 @@ source: secret_tiles is secret extend { view: by_id is { group_by: id } }
          );
          await pkg.reloadAllModels({});
          expect(pkg.getReportLayout("notebooks/nb.malloy")).toBe("linear");
-         expect(listDashboards(pkg, "env").map((d) => d.path)).toEqual([
-            "dashboards/d.malloy",
-         ]);
+         expect(
+            pkg
+               .listReports()
+               .filter((r) => r.layout === "grid")
+               .map((r) => r.path),
+         ).toEqual(["dashboards/d.malloy"]);
          expect(pkg.brokenSurfaceWarnings()[0].message).toContain(
             "including the 1 that compiled",
          );

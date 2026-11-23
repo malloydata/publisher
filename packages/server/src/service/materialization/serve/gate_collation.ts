@@ -3,9 +3,10 @@
 
 /**
  * Whether a gate or a `where:` that a stored copy re-applies compares a string
- * column there as live compares it. The caller's own query filters are judged
- * by the same rules, read as `GateReads` of their own
- * (`queryFilterReadsOfQuery` in `gate_reads.ts`).
+ * column there as live compares it. The caller's own query filters, and the
+ * strings the query's result orders and groups by, are judged by the same
+ * rules, read as `GateReads` of their own (`queryFilterReadsOfQuery` in
+ * `gate_reads.ts`, `resultReadsOfQuery` in `result_reads.ts`).
  *
  * A `storage=` table is read in a DuckLake destination, whose string
  * comparison is byte-exact. Live compares the source column under its own
@@ -17,7 +18,14 @@
  *
  * So, for each string column a gate or a re-applied `where:` compares:
  *
- * - `binary` (byte-exact, every operator): BigQuery; a DuckDB-dialect source
+ * - `binary` (byte-exact, every operator): a BigQuery query that names no
+ *   `COLLATE` and reads only tables whose columns and fields carry no
+ *   collation (`INFORMATION_SCHEMA`, read project-wide in each region the
+ *   project has datasets in and then per listed dataset, once per loaded
+ *   model; see {@link bigquerySource}). Residual risk: an `.sql()` source's
+ *   tables are not known, so a table its credentials may query but whose
+ *   metadata no read lists is compared byte-exact;
+ *   a DuckDB-dialect source
  *   whose instance has no `default_collation` and that names no `COLLATE` in
  *   its SQL or in any table or view it can read; a Postgres column whose
  *   collation is `C`, `POSIX` or of the builtin provider;
@@ -40,7 +48,8 @@
  * rebind compiles a new one, which reads it again), and for a DuckDB
  * instance once per query SQL, so a source altered in place is read again
  * only after a reload; the stored side on every answer, since a stored
- * table is the one place altered after Publisher built it.
+ * table is the one place altered after Publisher built it, once per answer
+ * however many comparisons (the gates, the filters, the result) ask.
  */
 
 import {
@@ -48,6 +57,7 @@ import {
    EMPTY_BUILD_MANIFEST,
    type ModelDef,
    type ModelMaterializer,
+   type PersistSource,
    type QueryMaterializer,
 } from "@malloydata/malloy";
 import { runAsInternalStatement } from "../../duckdb_lockdown";
@@ -57,13 +67,27 @@ import {
    resolveStructRefSource,
 } from "../../governance/ir/prepared_query";
 import { identifier } from "../../malloy_text";
-import { capabilitiesOf } from "../domain/dialect";
+import { queryTableReads, sourceReads } from "../../governance/ir/source_reads";
 
 import type { CollationProbe, GateReads } from "./gate_reads_types";
+import {
+   CATALOG_ROW_LIMIT,
+   type Collation,
+   type ProbeIO,
+} from "./collation/probe_io";
+import { DUCKDB_COLLATION } from "./collation/duckdb";
+import type { PostgresCollationReader } from "./collation/postgres";
+import { collationReaderOf } from "./collation";
+import {
+   BigQueryCatalog,
+   bigqueryDatasetTables,
+   type PlacedTable,
+   placeTable,
+   sqlProjects,
+   TABLE_TYPES,
+} from "./collation/bigquery";
 import { fieldPathsIn } from "./gate_paths";
 import { entryGates } from "./gate_reads";
-
-type Collation = "binary" | "deterministic" | "unknown";
 
 /** What the probe reads through: the author's compile and its connections. */
 interface ProbeRuntime {
@@ -87,6 +111,8 @@ export async function stringGateCollationRefusal(args: {
    reads: GateReads | undefined;
    /** The caller's givens: a probe of a source whose rows read one needs it. */
    givens?: Record<string, unknown>;
+   /** The bind the query was pinned to (BigQuery's reads are kept per bind). */
+   bind?: object;
 }): Promise<string | undefined> {
    const { reads } = args;
    // Nothing the gates and scopes compare is a string (an allow-list over
@@ -106,13 +132,12 @@ export async function stringGateCollationRefusal(args: {
       return "no author compile";
    }
    const modelDef = prepared.modelDef as ModelDef | undefined;
-   const entryName =
-      typeof prepared.structRef === "string" ? prepared.structRef : undefined;
    if (!modelDef) return "no author compile";
    const struct = resolveStructRefSource(
       prepared.structRef as never,
       modelDef as never,
    ) as { dialect?: unknown; connection?: unknown } | undefined;
+   const entryName = namedEntryOf(prepared.structRef, struct, modelDef);
    const named = struct?.dialect;
    const dialect = typeof named === "string" ? named : "";
    const connectionName =
@@ -121,10 +146,23 @@ export async function stringGateCollationRefusal(args: {
       args.authorRunnable as unknown as { runtime?: ProbeRuntime }
    ).runtime;
    if (!runtime) return "no runtime";
-   const read = capabilitiesOf(dialect).stringCollation;
-   if (read === "binary") return undefined;
-   if (read === undefined) return "a dialect whose collation is not read";
-   if (read === "instance") {
+   const connect = async (name: string | undefined = connectionName) =>
+      probeIO(await runtime.connections.lookupConnection(name));
+   const reader = collationReaderOf(dialect);
+   if (reader === undefined) return "a dialect whose collation is not read";
+   if (reader.scope === "dataset") {
+      // Query-wide, as for a DuckDB instance: every table the query reads,
+      // and its SQL, so every column the gates and scopes read counts.
+      const source = await bigquerySource({
+         authorRunnable: args.authorRunnable,
+         ...(args.givens ? { givens: args.givens } : {}),
+         ...(args.bind ? { bind: args.bind } : {}),
+      });
+      return source.known && source.collated.size === 0
+         ? undefined
+         : "a query that reads a string under a collation";
+   }
+   if (reader.scope === "instance") {
       // Instance-wide: the instance's setting, its tables and views, and the
       // whole query's SQL, so every column the gates and scopes read counts,
       // however far from the entry point.
@@ -139,11 +177,7 @@ export async function stringGateCollationRefusal(args: {
       const collation = await probeOnce(
          modelDef,
          `${connectionName}\u0000instance\u0000${sql}`,
-         async () =>
-            duckdbCollation(
-               await runtime.connections.lookupConnection(connectionName),
-               sql,
-            ),
+         async () => reader.sourceColumns(await connect(), sql),
       );
       return collation === "binary"
          ? undefined
@@ -151,7 +185,10 @@ export async function stringGateCollationRefusal(args: {
    }
    // Per column: only a named entry point's own paths can be probed (a
    // caller's inline `extend` or `include` has no name to compile a probe
-   // over; the instance-wide check above needs none).
+   // over; the instance-wide check above needs none). A source imported from
+   // another file is named too: Malloy hands its query the source's struct,
+   // not its name, and `namedEntryOf` resolves it to the name only when it
+   // is that source unchanged.
    if (entryName === undefined) return "no named entry point";
    if (!reads.entryPathsComplete) return "a scope from elsewhere";
    // A comparison of a string the query makes (a given, a literal, a cast,
@@ -161,10 +198,7 @@ export async function stringGateCollationRefusal(args: {
       const fallback = await probeOnce(
          modelDef,
          `${connectionName}\u0000default`,
-         async () =>
-            postgresDefaultCollation(
-               await runtime.connections.lookupConnection(connectionName),
-            ),
+         async () => reader.defaultCollation(await connect()),
       );
       if (!need.includes(fallback)) {
          return `a comparison under a ${fallback} default collation`;
@@ -201,17 +235,15 @@ export async function stringGateCollationRefusal(args: {
                modelDef,
                `${connectionName}\u0000${path.join(".")}`,
                async () =>
-                  postgresCollationIdentity(
-                     await runtime.connections.lookupConnection(connectionName),
-                     unfinalizedPostgresSQL(
-                        await probeSql({
-                           runtime,
-                           modelDef,
-                           entryName,
-                           path,
-                           ...(args.givens ? { givens: args.givens } : {}),
-                        }),
-                     ),
+                  reader.collationIdentity(
+                     await connect(),
+                     await probeSql({
+                        runtime,
+                        modelDef,
+                        entryName,
+                        path,
+                        ...(args.givens ? { givens: args.givens } : {}),
+                     }),
                   ),
             ),
          );
@@ -228,6 +260,330 @@ export const collationProbe: CollationProbe = {
    sourceRefusal: stringGateCollationRefusal,
    storedRefusal: storedTableCollationRefusal,
 };
+
+/**
+ * The BigQuery catalog reads, by the loaded model's runtime, then the bind
+ * (the serving snapshot the query was pinned to), then what each reads.
+ * Each query compiles a model of its own, so a compiled model would read the
+ * catalog per query. A read is repeated:
+ *
+ * - under another runtime (the package reloaded its models) or another bind
+ *   (a build, a rebind, or any other change to what is served);
+ * - five minutes after a read that answered, so a source changed in place
+ *   (a `CREATE OR REPLACE` with a collation) is seen within that window with
+ *   no rebind;
+ * - a minute after a read that failed or was denied, which answers live
+ *   until then without being issued again.
+ *
+ * The scope is held here; the timers that drop an entry are the BigQuery
+ * reader's (`collation/bigquery.ts`).
+ */
+const bigqueryProbes = new WeakMap<
+   object,
+   WeakMap<object, Map<string, Promise<unknown>>>
+>();
+
+/** The bind of a caller that names none (a spec, a probe outside a query). */
+const NO_BIND = {};
+
+/** The BigQuery reads kept for `runtime` and `bind`. */
+function bigqueryReadsOf(
+   runtime: object,
+   bind: object,
+): Map<string, Promise<unknown>> {
+   let byBind = bigqueryProbes.get(runtime);
+   if (!byBind) {
+      byBind = new WeakMap();
+      bigqueryProbes.set(runtime, byBind);
+   }
+   let byKey = byBind.get(bind);
+   if (!byKey) {
+      byKey = new Map();
+      byBind.set(bind, byKey);
+   }
+   return byKey;
+}
+
+/**
+ * What a BigQuery query's strings compare under. `known: false` (answer
+ * live): its SQL names a `COLLATE`; a read failed or was denied (and is
+ * then not issued again for a minute (`BIGQUERY_FAILURE_TTL_MS`)); a table it
+ * reads is not one a read saw; a view (or a materialized view, an external
+ * table) it reads is in a project holding a collated column; it holds
+ * author SQL (an `.sql()` source, a raw SQL expression) and a project it
+ * may read holds a collated column, or could not be read; or a table path
+ * this cannot place. Else `collated`: each collated column and field of
+ * the tables it reads, by path, with its collations; empty, every string it
+ * reads compares byte-exact.
+ *
+ * Each project is read project-wide, once per region it has datasets in
+ * (the connection's `location`, or each location `datasets.list` names):
+ * one query lists the datasets holding a collated column, and one, filtered
+ * to the tables Malloy says the query reads, confirms each of them and its
+ * type, so a hidden table is never taken for byte-exact (BigQuery documents
+ * that a region-qualified read needs permission on the project, not which
+ * rows a caller permitted on less sees). A table in a collated dataset is
+ * read again with its dataset. With no region to read (no `location`, and
+ * `datasets.list` unreachable or empty), each dataset a `.table()` source
+ * reads is read on its own, and a view or author SQL answers live. A
+ * default collation (a table's, a dataset's) is taken to be resolved into
+ * each column's own, which BigQuery does not document.
+ *
+ * The residual risk is author SQL and views over a project whose reads list
+ * no collated column: their tables are not known, so a table the
+ * credentials may query but whose metadata no read lists would be compared
+ * byte-exact.
+ */
+async function bigquerySource(args: {
+   authorRunnable: QueryMaterializer;
+   givens?: Record<string, unknown>;
+   /** The bind the query was pinned to: its reads are kept per bind. */
+   bind?: object;
+}): Promise<
+   | { known: false }
+   | {
+        known: true;
+        collated: ReadonlyMap<string, ReadonlySet<string>>;
+        catalog: BigQueryCatalog;
+     }
+> {
+   const unknown = { known: false } as const;
+   try {
+      const prepared = await readPreparedQuery(args.authorRunnable);
+      const modelDef = prepared.modelDef as ModelDef | undefined;
+      if (!modelDef) return unknown;
+      const struct = resolveStructRefSource(
+         prepared.structRef as never,
+         modelDef as never,
+      ) as { connection?: unknown } | undefined;
+      const runtime = (
+         args.authorRunnable as unknown as { runtime?: ProbeRuntime }
+      ).runtime;
+      if (!runtime) return unknown;
+      const { sql } = await args.authorRunnable.getPreparedResult(
+         (args.givens ? { givens: args.givens } : {}) as never,
+      );
+      const connectionName =
+         typeof struct?.connection === "string" ? struct.connection : undefined;
+      return await bigqueryCollatedPaths({
+         reads: bigqueryReadsOf(runtime, args.bind ?? NO_BIND),
+         io: probeIO(
+            await runtime.connections.lookupConnection(connectionName),
+         ),
+         connectionName,
+         sql,
+         tables: queryTableReads(
+            prepared.compositeResolvedSourceDef ?? struct,
+            prepared.pipeline,
+         ),
+      });
+   } catch {
+      return unknown;
+   }
+}
+
+/**
+ * Whether a `storage=` build's warehouse SQL on BigQuery reads only strings
+ * compared byte-exact: `sql`, the build of `source`, reading the tables its
+ * definition reads (unknown: every project the SQL names is read instead),
+ * judged by the catalog reads an answer's check makes
+ * ({@link bigqueryCollatedPaths}), complete or not at all. False whenever a
+ * read fails or is incomplete: the build's column contract then records its
+ * strings compared `none`, which fails closed.
+ */
+export async function bigqueryBuildCompareBinary(args: {
+   connection: Connection;
+   source: PersistSource;
+   sql: string;
+}): Promise<boolean> {
+   try {
+      const read = await bigqueryCollatedPaths({
+         reads: new Map(),
+         io: probeIO(args.connection),
+         connectionName: args.source.connectionName,
+         sql: args.sql,
+         tables: sourceReads(args.source),
+      });
+      return read.known && read.collated.size === 0;
+   } catch {
+      return false;
+   }
+}
+
+/**
+ * The collated column paths of the tables BigQuery `sql` reads, from the
+ * catalog through `io`, or unknown when they cannot be read whole.
+ */
+async function bigqueryCollatedPaths(args: {
+   reads: Map<string, Promise<unknown>>;
+   io: ProbeIO;
+   connectionName: string | undefined;
+   sql: string;
+   tables: ReturnType<typeof sourceReads>;
+}): Promise<
+   | { known: false }
+   | {
+        known: true;
+        collated: ReadonlyMap<string, ReadonlySet<string>>;
+        catalog: BigQueryCatalog;
+     }
+> {
+   const unknown = { known: false } as const;
+   const { sql, tables, connectionName } = args;
+   try {
+      if (/\bcollate\b/i.test(sql)) return unknown;
+      const catalog = new BigQueryCatalog(args.reads, args.io, connectionName);
+      const { job } = catalog;
+      if (job.projects.length === 0) return unknown;
+      const placed: PlacedTable[] = [];
+      for (const t of tables ?? []) {
+         // A table on another connection is not this query's to place.
+         if (
+            connectionName !== undefined &&
+            t.connectionName !== connectionName
+         ) {
+            return unknown;
+         }
+         const p = placeTable(t.table, job.projects);
+         if (p === undefined) return unknown;
+         placed.push(p);
+      }
+      // Whether every project in `projects` is read and holds no collated
+      // column: what author SQL and a view are served under.
+      const clean = async (projects: Iterable<string>) => {
+         for (const project of projects) {
+            const d = await catalog.collatedDatasets(project);
+            if (d === undefined || d.size > 0) return false;
+         }
+         return true;
+      };
+      if (tables === undefined) {
+         const projects = new Set([...job.projects, ...sqlProjects(sql)]);
+         return (await clean(projects))
+            ? { known: true, collated: new Map(), catalog }
+            : unknown;
+      }
+      const types = await catalog.tableTypes(placed);
+      // A failed or denied read answers live; only a project with no region
+      // to read is read dataset by dataset.
+      if (types === undefined) return unknown;
+      const collated = new Map<string, Set<string>>();
+      for (const t of placed) {
+         if (types !== "no_region") {
+            // Coverage, by table: the project-wide read must see it.
+            const type = t.projects
+               .map((p) => types.get(`${p}.${t.datasetName}.${t.name}`))
+               .find((x) => x !== undefined);
+            if (type === undefined) return unknown;
+            if (!TABLE_TYPES.has(type)) {
+               if (!(await clean(t.projects))) return unknown;
+               continue;
+            }
+            let inCollated = false;
+            for (const p of t.projects) {
+               const d = await catalog.collatedDatasets(p);
+               if (d === undefined) return unknown;
+               if (d.has(t.datasetName)) inCollated = true;
+            }
+            if (!inCollated) continue;
+         }
+         const datasetTable = (await catalog.datasetTables(t.dataset)).get(
+            t.name,
+         );
+         // Coverage, by table: the dataset's read must see it, as a table.
+         if (
+            datasetTable === undefined ||
+            !TABLE_TYPES.has(datasetTable.type)
+         ) {
+            return unknown;
+         }
+         for (const [path, c] of datasetTable.collated) {
+            let set = collated.get(path);
+            if (!set) {
+               set = new Set();
+               collated.set(path, set);
+            }
+            set.add(c);
+         }
+      }
+      return { known: true, collated, catalog };
+   } catch {
+      return unknown;
+   }
+}
+
+/**
+ * A BigQuery database table, judged against its source: kept only when its
+ * own collated columns and fields are exactly the source's, path for path
+ * and collation for collation, an empty set on both sides included (a
+ * build's `CREATE TABLE AS` is not known to keep or drop a collation, and a
+ * source replaced after the build may have lost the one its copy kept).
+ * The table's dataset is read once per loaded model when its project-wide
+ * read lists it as holding no collated column (a build reloads the models,
+ * so a rebuilt table is read again); else on every answer. Unknown whenever
+ * either side cannot be read.
+ */
+async function bigqueryDatabaseTableCollation(
+   t: StoredTable,
+   args: {
+      authorRunnable: QueryMaterializer;
+      givens?: Record<string, unknown>;
+      bind?: object;
+   },
+   io: ProbeIO,
+   connectionName: string | undefined,
+   memo: Map<string, Promise<unknown>>,
+): Promise<Collation> {
+   const source = await bigquerySource(args);
+   if (!source.known) return "unknown";
+   const tablePath = t.tablePath;
+   if (tablePath === undefined) return "unknown";
+   const placed = placeTable(tablePath, source.catalog.job.projects);
+   if (placed === undefined) return "unknown";
+   if (source.collated.size === 0) {
+      // A table in a dataset no project-wide read lists as collated, and
+      // seen by the read filtered to it, holds no collated column.
+      const types = await source.catalog.tableTypes([placed]);
+      if (types === undefined) return "unknown";
+      const type =
+         types === "no_region"
+            ? undefined
+            : placed.projects
+                 .map((p) =>
+                    types.get(`${p}.${placed.datasetName}.${placed.name}`),
+                 )
+                 .find((x) => x !== undefined);
+      let listed = types === "no_region";
+      for (const p of placed.projects) {
+         const d = await source.catalog.collatedDatasets(p);
+         if (d === undefined || d.has(placed.datasetName)) listed = true;
+      }
+      if (!listed && type !== undefined && TABLE_TYPES.has(type)) {
+         return "binary";
+      }
+   }
+   // The stored side, read on every answer (once per answer).
+   const stored = (
+      await memoized(
+         memo,
+         ["bigquery-dataset", connectionName, placed.dataset],
+         () => bigqueryDatasetTables(io, placed.dataset),
+      )
+   ).get(placed.name);
+   if (stored === undefined || !TABLE_TYPES.has(stored.type)) return "unknown";
+   for (const [path, collations] of source.collated) {
+      if (
+         collations.size !== 1 ||
+         !collations.has(stored.collated.get(path) ?? "")
+      ) {
+         return "unknown";
+      }
+   }
+   for (const [path, c] of stored.collated) {
+      if (!source.collated.get(path)?.has(c)) return "unknown";
+   }
+   return "binary";
+}
 
 /** Each column's collation identity, by model, then connection and path. */
 const identities = new WeakMap<
@@ -368,20 +724,18 @@ async function probe(args: {
    connectionName: string | undefined;
    givens?: Record<string, unknown>;
 }): Promise<Collation> {
-   const read = capabilitiesOf(args.dialect).stringCollation;
-   if (read === "binary") return "binary";
-   if (read === undefined) return "unknown";
+   const reader = collationReaderOf(args.dialect);
+   // Read query-wide, never per column.
+   if (reader === undefined || reader.scope === "dataset") return "unknown";
    if (args.path.some((p) => malloyIdentifiers(p).length !== 1)) {
       return "unknown";
    }
    const sql = await probeSql(args);
-   const connection = await args.runtime.connections.lookupConnection(
-      args.connectionName,
+   const io = probeIO(
+      await args.runtime.connections.lookupConnection(args.connectionName),
    );
    try {
-      return read === "instance"
-         ? await duckdbCollation(connection, sql)
-         : await postgresCollation(connection, unfinalizedPostgresSQL(sql));
+      return await reader.sourceColumns(io, sql);
    } catch {
       // Unreadable: fail closed.
       return "unknown";
@@ -391,125 +745,96 @@ async function probe(args: {
 type Rows = { rows: Record<string, unknown>[] };
 
 /**
- * Publisher's own catalog read, admitted past a locked DuckDB instance's gate,
- * which refuses settings reads to caller and author SQL (duckdb_lockdown.ts).
+ * Publisher's own catalog read over `connection`, admitted past a locked
+ * DuckDB instance's gate (duckdb_lockdown.ts), at the connection's default
+ * page unless `options` asks for more rows.
  */
-async function rows(
+async function catalogRead(
    connection: Connection,
    sql: string,
-): Promise<Rows["rows"]> {
-   const result = (await runAsInternalStatement(sql, () =>
-      connection.runSQL(sql),
-   )) as unknown as Rows;
-   return result.rows ?? [];
-}
-
-/** Postgres rows, which Malloy's Postgres connection reads from a `row` column. */
-function pgRows(connection: Connection, sql: string): Promise<Rows["rows"]> {
-   return rows(connection, `SELECT row_to_json(t) AS row FROM (${sql}) t`);
+   options?: { rowLimit: number },
+): Promise<Rows & { totalRows?: unknown }> {
+   return (await runAsInternalStatement(sql, () =>
+      connection.runSQL(sql, options),
+   )) as unknown as Rows & { totalRows?: unknown };
 }
 
 /**
- * A DuckDB-dialect source compares bytes unless the instance sets a
- * `default_collation`, or a `COLLATE` appears in the source's SQL or in the
- * definition of any table or view the instance holds (a column's collation
- * is not otherwise readable).
+ * The I/O the collation reads go through over `connection`: its catalog
+ * reads, each admitted past a locked DuckDB instance's gate
+ * (duckdb_lockdown.ts), and, for BigQuery, what its driver holds (the
+ * client's `datasets.list`, its projects and location), read duck-typed
+ * here and nowhere else.
  */
-/**
- * How many user definitions in the instance name a `COLLATE`: tables, views,
- * and macros (a macro can return a collated value to a view or a query).
- * Attached databases' definitions are listed too.
- */
-const DUCKDB_COLLATE_DEFINITIONS =
-   "SELECT (SELECT count(*) FROM duckdb_tables() WHERE NOT internal AND sql ILIKE '%collate%') + (SELECT count(*) FROM duckdb_views() WHERE NOT internal AND sql ILIKE '%collate%') + (SELECT count(*) FROM duckdb_functions() WHERE NOT internal AND function_type IN ('macro', 'table_macro') AND (macro_definition IS NULL OR macro_definition ILIKE '%collate%')) AS n";
-
-export async function duckdbCollation(
-   connection: Connection,
-   sql: string,
-): Promise<Collation> {
-   if (/\bcollate\b/i.test(sql)) return "unknown";
-   const [setting] = await rows(
-      connection,
-      "SELECT current_setting('default_collation') AS c",
-   );
-   if (String(setting?.c ?? "").trim() !== "") return "unknown";
-   const [defs] = await rows(connection, DUCKDB_COLLATE_DEFINITIONS);
-   return Number(defs?.n ?? 1) === 0 ? "binary" : "unknown";
-}
-
-/**
- * A Postgres collation row, judged: the database default by the database's
- * own collation and locale provider (an ICU default is deterministic, never
- * binary, whatever `datcollate` says), any other by its own row. Binary under
- * a libc `C`, `POSIX` or `C.UTF-8`, and under the builtin provider (Postgres 17+:
- * `pg_c_utf8`, `ucs_basic`, `pg_unicode_fast`, or a database created with
- * it), which orders and compares by code point, as UTF-8 bytes do.
- */
-export function postgresJudged(
-   row: Record<string, unknown> | undefined,
-): Collation {
-   if (!row) return "unknown";
-   // libc `C`, `POSIX`, and `C.UTF-8` (its codeset spelled any way; the
-   // locale name itself compares exactly),
-   // which glibc orders by code point, as UTF-8 bytes do.
-   const binaryName = (c: unknown) =>
-      typeof c === "string" &&
-      (c === "C" || c === "POSIX" || /^C\.[Uu][Tt][Ff]-?8$/.test(c));
-   if (row.name === "default") {
-      if (row.dbp === "b") return "binary";
-      return row.dbp !== "i" && binaryName(row.dbc)
-         ? "binary"
-         : "deterministic";
-   }
-   if (row.det !== true) return "unknown";
-   if (row.prov === "b") return "binary";
-   return row.prov === "c" && binaryName(row.cc) ? "binary" : "deterministic";
-}
-
-/** The columns {@link postgresJudged} reads, from `pg_collation c, pg_database d`. */
-const PG_COLLATION_COLUMNS =
-   "c.collname AS name, c.collisdeterministic AS det, c.collcollate AS cc, c.collprovider AS prov, d.datcollate AS dbc, to_jsonb(d) ->> 'datlocprovider' AS dbp";
-
-/** The Postgres database's default collation, as {@link postgresJudged} reads it. */
-async function postgresDefaultCollation(
-   connection: Connection,
-): Promise<Collation> {
-   const [row] = await pgRows(
-      connection,
-      `SELECT ${PG_COLLATION_COLUMNS} FROM pg_collation c, pg_database d WHERE c.collname = 'default' AND d.datname = current_database()`,
-   );
-   return postgresJudged(row);
-}
-
-/**
- * Malloy's Postgres query SQL with its final stage taken off: a compiled
- * query ends `SELECT row_to_json(finalStage) as row FROM <stage> AS
- * finalStage`, one JSON column with no collation, so the probe reads the
- * stage it wraps instead, whose `probe_value` keeps its column's collation.
- * SQL with no such stage is returned as it is.
- */
-export function unfinalizedPostgresSQL(sql: string): string {
-   return sql.replace(
-      /\bSELECT row_to_json\(finalStage\) as row FROM (__stage\d+) AS finalStage\s*$/,
-      "SELECT * FROM $1",
-   );
-}
-
-/**
- * A Postgres column's collation, read from the source's own SQL
- * (`pg_collation_for`, looked up by its OID): binary under a libc `C` or
- * `POSIX`, deterministic under any other deterministic collation, the
- * database default included.
- */
-export async function postgresCollation(
-   connection: Connection,
-   sql: string,
-): Promise<Collation> {
-   const [row] = await pgRows(
-      connection,
-      `SELECT ${PG_COLLATION_COLUMNS} FROM pg_collation c, pg_database d WHERE c.oid = (pg_collation_for((SELECT q.probe_value FROM (${sql}) q LIMIT 1)))::regcollation AND d.datname = current_database()`,
-   );
-   return postgresJudged(row);
+export function probeIO(connection: Connection): ProbeIO {
+   return {
+      dialectName: connection.dialectName,
+      async rows(sql) {
+         return (await catalogRead(connection, sql)).rows ?? [];
+      },
+      async completeRows(sql) {
+         const result = await catalogRead(connection, sql, {
+            rowLimit: CATALOG_ROW_LIMIT,
+         });
+         const found = result.rows ?? [];
+         if (
+            found.length >= CATALOG_ROW_LIMIT ||
+            result.totalRows === undefined ||
+            result.totalRows === null ||
+            Number(result.totalRows) !== found.length
+         ) {
+            throw new Error("a catalog read that may be incomplete");
+         }
+         return found;
+      },
+      async datasetLocations(project) {
+         const client = (
+            connection as unknown as {
+               bigQuery?: {
+                  getDatasets(options: {
+                     projectId: string;
+                     autoPaginate: boolean;
+                  }): Promise<[{ metadata?: { location?: unknown } }[]]>;
+               };
+            }
+         ).bigQuery;
+         if (!client || typeof client.getDatasets !== "function") {
+            throw new Error("no BigQuery client");
+         }
+         const [datasets] = await client.getDatasets({
+            projectId: project,
+            autoPaginate: true,
+         });
+         const locations = new Set<string>();
+         for (const d of datasets) {
+            const l = d.metadata?.location;
+            if (typeof l !== "string" || l === "")
+               throw new Error("no location");
+            locations.add(l.toLowerCase());
+         }
+         return [...locations];
+      },
+      jobContext() {
+         const c = connection as unknown as {
+            projectId?: unknown;
+            billingProjectId?: unknown;
+            location?: unknown;
+         };
+         // The client's `{{projectId}}` placeholder stands for a project not
+         // resolved yet: no project to read.
+         const projects = [c.projectId, c.billingProjectId].filter(
+            (p): p is string =>
+               typeof p === "string" && p !== "" && !p.includes("{{"),
+         );
+         return {
+            projects: [...new Set(projects)],
+            location:
+               typeof c.location === "string" && c.location !== ""
+                  ? c.location.toLowerCase()
+                  : undefined,
+         };
+      },
+   };
 }
 
 /** A table an answer read, as the stored-side check reads it. */
@@ -548,10 +873,22 @@ export async function storedTableCollationRefusal(args: {
    reads: GateReads | undefined;
    /** The caller's givens: a probe of a source whose rows read one needs it. */
    givens?: Record<string, unknown>;
+   /** This answer's stored-side reads, shared across its comparisons. */
+   storedReads?: Map<string, Promise<unknown>>;
+   /** The bind the query was pinned to (BigQuery's reads are kept per bind). */
+   bind?: object;
+   /**
+    * A database table its catalog does not list is passed over (its read
+    * fails, and its fallback decides), for the query's result; a gate's, a
+    * scope's and a filter's tables are judged however they are found.
+    */
+   unlistedPasses?: boolean;
 }): Promise<string | undefined> {
    if (args.tables.length === 0) return undefined;
+   const memo = args.storedReads ?? new Map<string, Promise<unknown>>();
    if (await comparesNoString(args)) return undefined;
    const sourceDialect = await entryDialectOf(args.authorRunnable);
+
    const equalityOnly = args.reads?.equalityOnly === true;
    const runtime = (
       args.answerRunnable as unknown as { runtime?: ProbeRuntime }
@@ -565,7 +902,8 @@ export async function storedTableCollationRefusal(args: {
    // absolute bar: it is kept when it holds every column the scope reads
    // under its source's own collation (a stored `C` column under a
    // case-insensitive source compares otherwise, though it is binary).
-   const perColumn = capabilitiesOf(sourceDialect).stringCollation === "column";
+   const sourceReader = collationReaderOf(sourceDialect);
+   const perColumn = sourceReader?.scope === "column";
    let sameCollationNeeded = false;
    for (const t of args.tables) {
       if (perColumn && t.tier === "database") {
@@ -574,7 +912,7 @@ export async function storedTableCollationRefusal(args: {
       }
       let collation: Collation;
       try {
-         collation = await storedSide(t, args, runtime, sourceDialect);
+         collation = await storedSide(t, args, runtime, sourceDialect, memo);
       } catch {
          collation = "unknown";
       }
@@ -582,15 +920,21 @@ export async function storedTableCollationRefusal(args: {
          return `a stored table compares strings under a ${collation} collation`;
       }
    }
-   if (!sameCollationNeeded) return undefined;
+   // Set only for a per-column reader; the scope test narrows it.
+   if (!sameCollationNeeded || sourceReader?.scope !== "column") {
+      return undefined;
+   }
    let why: string | undefined;
    try {
       why = await databaseCollationRefusal({
+         reader: sourceReader,
          tables: args.tables.filter((t) => t.tier === "database"),
          authorRunnable: args.authorRunnable,
          storedRuntime: runtime,
          reads: args.reads,
+         memo,
          ...(args.givens ? { givens: args.givens } : {}),
+         ...(args.unlistedPasses ? { unlistedPasses: true } : {}),
       });
    } catch {
       why = "a collation that could not be read";
@@ -598,62 +942,6 @@ export async function storedTableCollationRefusal(args: {
    return why === undefined
       ? undefined
       : `a stored table does not keep its source's collation: ${why}`;
-}
-
-/**
- * The resolved identity of a Postgres collation, from `pg_collation c` and
- * `pg_database d`: the database default by the database's own provider and
- * locale, any other by its provider, determinism and locale, each with the
- * library version it was recorded under (two clusters on different ICU or
- * libc versions do not match). Never by name, since `default` and a
- * same-named collation mean other things in other databases. An explicit
- * column collation equal to the database default reads as another identity:
- * that over-blocks, never under-blocks.
- */
-const PG_COLLATION_IDENTITY = `CASE WHEN c.collname = 'default' AND c.collnamespace = 'pg_catalog'::regnamespace THEN concat_ws('|', 'db', coalesce(to_jsonb(d) ->> 'datlocprovider', ''), d.datcollate, d.datctype, coalesce(to_jsonb(d) ->> 'daticulocale', ''), coalesce(to_jsonb(d) ->> 'datlocale', ''), coalesce(to_jsonb(d) ->> 'daticurules', ''), coalesce(to_jsonb(d) ->> 'datcollversion', '')) ELSE concat_ws('|', 'coll', c.collprovider, c.collisdeterministic::text, coalesce(c.collcollate, ''), coalesce(c.collctype, ''), coalesce(to_jsonb(c) ->> 'colliculocale', ''), coalesce(to_jsonb(c) ->> 'colllocale', ''), coalesce(to_jsonb(c) ->> 'collicurules', ''), coalesce(to_jsonb(c) ->> 'collversion', '')) END`;
-
-/** The identity of the collation `sql`'s `probe_value` compares under. */
-async function postgresCollationIdentity(
-   connection: Connection,
-   sql: string,
-): Promise<string | undefined> {
-   const [row] = await pgRows(
-      connection,
-      `SELECT ${PG_COLLATION_IDENTITY} AS id FROM pg_collation c, pg_database d WHERE c.oid = (pg_collation_for((SELECT q.probe_value FROM (${sql}) q LIMIT 1)))::regcollation AND d.datname = current_database()`,
-   );
-   return typeof row?.id === "string" ? row.id : undefined;
-}
-
-/** The identity of the database's default collation. */
-async function postgresDefaultIdentity(
-   connection: Connection,
-): Promise<string | undefined> {
-   const [row] = await pgRows(
-      connection,
-      `SELECT ${PG_COLLATION_IDENTITY} AS id FROM pg_collation c, pg_database d WHERE c.collname = 'default' AND c.collnamespace = 'pg_catalog'::regnamespace AND d.datname = current_database()`,
-   );
-   return typeof row?.id === "string" ? row.id : undefined;
-}
-
-/**
- * Every column of a Postgres table, by name: its collation's identity, or
- * null for a column that has none (not a string).
- */
-async function postgresColumnIdentities(
-   connection: Connection,
-   tablePath: string,
-): Promise<Map<string, string | null>> {
-   const path = tablePath.replace(/'/g, "''");
-   const columns = await pgRows(
-      connection,
-      `SELECT a.attname AS col, CASE WHEN a.attcollation = 0 THEN NULL ELSE (SELECT ${PG_COLLATION_IDENTITY} FROM pg_collation c, pg_database d WHERE c.oid = a.attcollation AND d.datname = current_database()) END AS id FROM pg_attribute a WHERE a.attrelid = '${path}'::regclass AND a.attnum > 0 AND NOT a.attisdropped`,
-   );
-   return new Map(
-      columns.map((c) => [
-         String(c.col),
-         typeof c.id === "string" ? c.id : null,
-      ]),
-   );
 }
 
 /**
@@ -737,13 +1025,19 @@ export function namedEntryOf(
  * (it reads that source's rows under that source's gates and scopes).
  */
 async function databaseCollationRefusal(args: {
+   /** The source dialect's per-column reader. */
+   reader: PostgresCollationReader;
    tables: readonly StoredTable[];
    authorRunnable: QueryMaterializer;
    storedRuntime: ProbeRuntime;
    reads: GateReads | undefined;
+   /** This answer's stored-side reads, shared across its comparisons. */
+   memo: Map<string, Promise<unknown>>;
    givens?: Record<string, unknown>;
+   /** A table its catalog does not list is passed over (a result's). */
+   unlistedPasses?: boolean;
 }): Promise<string | undefined> {
-   const { reads } = args;
+   const { reads, memo, reader } = args;
    if (reads === undefined || reads.unresolved) return "gate reads unread";
    if (!reads.entryPathsComplete) return "a scope from elsewhere";
    const prepared = await readPreparedQuery(args.authorRunnable);
@@ -761,45 +1055,89 @@ async function databaseCollationRefusal(args: {
       args.authorRunnable as unknown as { runtime?: ProbeRuntime }
    ).runtime;
    if (!runtime) return "no runtime";
-   const source = await runtime.connections.lookupConnection(connectionName);
-   const paths = stringPaths(struct, reads.entryPaths);
-   if (paths === undefined) return "an unreadable gate path";
-   const compared = new Set<string>();
-   for (const path of paths) {
-      const id = await postgresCollationIdentity(
-         source,
-         unfinalizedPostgresSQL(
-            await probeSql({
-               runtime,
-               modelDef,
-               entryName,
-               path,
-               ...(args.givens ? { givens: args.givens } : {}),
-            }),
-         ),
-      );
-      if (id === undefined) return `\`${path.join(".")}\` unread`;
-      compared.add(id);
-   }
-   const sourceDefault = await postgresDefaultIdentity(source);
+   const source = probeIO(
+      await runtime.connections.lookupConnection(connectionName),
+   );
+   const sourceDefault = await memoized(
+      memo,
+      ["source-default", connectionName],
+      () => reader.defaultIdentity(source),
+   );
    if (sourceDefault === undefined) return "the source's default unread";
-   // Each column the reads name, by every name it goes by, must be one of
-   // the tables' own; each string one joins the compared collations.
+   // Every column the stored tables hold, by name: its collation's identity.
    const held = new Map<string, string | null>();
+   let listedTables = 0;
    for (const t of args.tables) {
       if (t.tablePath === undefined) return "a table with no path";
-      const connection = await args.storedRuntime.connections.lookupConnection(
-         t.destinationName ?? connectionName,
+      const storedName = t.destinationName ?? connectionName;
+      const connection = probeIO(
+         await args.storedRuntime.connections.lookupConnection(storedName),
       );
-      if ((await postgresDefaultIdentity(connection)) !== sourceDefault) {
+      const path = t.tablePath;
+      if (
+         args.unlistedPasses &&
+         !(await memoized(
+            memo,
+            ["listed", reader.scope, storedName, path],
+            () => reader.tableListed(connection, path),
+         ).catch(() => true))
+      ) {
+         continue;
+      }
+      listedTables++;
+      const storedDefault = await memoized(
+         memo,
+         ["stored-default", storedName],
+         () => reader.defaultIdentity(connection),
+      );
+      if (storedDefault !== sourceDefault) {
          return "a stored table's connection has another default collation";
       }
-      for (const [col, id] of await postgresColumnIdentities(
-         connection,
-         t.tablePath,
+      const tablePath = t.tablePath;
+      for (const [col, id] of await memoized(
+         memo,
+         ["columns", storedName, tablePath],
+         () => reader.columnIdentities(connection, tablePath),
       )) {
          held.set(col, id);
       }
+   }
+   // Every table unlisted: nothing stored is read (each read fails).
+   if (listedTables === 0) return undefined;
+   // A result read of a source known to be read live, which no stored table
+   // holds under any name it goes by, is no stored column: it is passed
+   // over, path and column both. A gate's reads never are (no `livePaths`).
+   const live = new Set((reads.livePaths ?? []).map((p) => p.join("\u0000")));
+   const kept = reads.entryPaths
+      .map((path, i) => ({ path, names: reads.columns[i] ?? [] }))
+      .filter(
+         ({ path, names }) =>
+            !live.has(path.join("\u0000")) || names.some((n) => held.has(n)),
+      );
+   const paths = stringPaths(
+      struct,
+      kept.map((k) => k.path),
+   );
+   if (paths === undefined) return "an unreadable gate path";
+   const compared = new Set<string>();
+   for (const path of paths) {
+      const id = await memoized(
+         memo,
+         ["source", connectionName, path.join(".")],
+         async () =>
+            reader.collationIdentity(
+               source,
+               await probeSql({
+                  runtime,
+                  modelDef,
+                  entryName,
+                  path,
+                  ...(args.givens ? { givens: args.givens } : {}),
+               }),
+            ),
+      );
+      if (id === undefined) return `\`${path.join(".")}\` unread`;
+      compared.add(id);
    }
    // The names the entry point's own `where:` reads, and whether a rollup's
    // table was read: a rollup is built with its base's own `where:` applied.
@@ -808,7 +1146,8 @@ async function databaseCollationRefusal(args: {
       (t) => (t as { kind?: unknown }).kind === "rollup",
    );
    let storedStrings = 0;
-   for (const names of reads.columns) {
+   const columns = live.size === 0 ? reads.columns : kept.map((k) => k.names);
+   for (const names of columns) {
       const found = names.filter((n) => held.has(n));
       if (found.length === 0) {
          if (rollupRead && names.some((n) => ownWhere.has(n))) continue;
@@ -825,58 +1164,6 @@ async function databaseCollationRefusal(args: {
       return "a stored string column with no compared source path";
    }
    return compared.size <= 1 ? undefined : "a column under another collation";
-}
-
-/** The last name of a table path, its quotes off. */
-function tableNameOf(path: string): string {
-   const parts = path.match(/"(?:[^"]|"")*"|`[^`]*`|[^.]+/g) ?? [path];
-   const last = parts[parts.length - 1].trim();
-   return /^["`]/.test(last) ? last.slice(1, -1).replace(/""/g, '"') : last;
-}
-
-/**
- * A DuckDB or DuckLake table compares bytes unless the instance sets a
- * `default_collation` or the table's definition names a `COLLATE`; a table
- * the catalog does not list is unknown.
- */
-export async function duckdbTableCollation(
-   connection: Connection,
-   tablePath: string,
-): Promise<Collation> {
-   const [setting] = await rows(
-      connection,
-      "SELECT current_setting('default_collation') AS c",
-   );
-   if (String(setting?.c ?? "").trim() !== "") return "unknown";
-   const name = tableNameOf(tablePath).replace(/'/g, "''");
-   const defs = await rows(
-      connection,
-      `SELECT sql FROM duckdb_tables() WHERE table_name = '${name}'`,
-   );
-   if (defs.length === 0) return "unknown";
-   return defs.every(
-      (d) => typeof d.sql === "string" && !/\bcollate\b/i.test(d.sql),
-   )
-      ? "binary"
-      : "unknown";
-}
-
-/**
- * A Postgres table's collatable columns, together: binary when every one is
- * `C`/`POSIX`, deterministic when every one is deterministic, else unknown.
- */
-export async function postgresTableCollation(
-   connection: Connection,
-   tablePath: string,
-): Promise<Collation> {
-   const path = tablePath.replace(/'/g, "''");
-   const columns = await pgRows(
-      connection,
-      `SELECT ${PG_COLLATION_COLUMNS} FROM pg_attribute a JOIN pg_collation c ON c.oid = a.attcollation, pg_database d WHERE a.attrelid = '${path}'::regclass AND a.attnum > 0 AND NOT a.attisdropped AND d.datname = current_database()`,
-   );
-   const judged = columns.map(postgresJudged);
-   if (judged.includes("unknown")) return "unknown";
-   return judged.includes("deterministic") ? "deterministic" : "binary";
 }
 
 /** The dialect of the source a compiled query runs on, or "" when unread. */
@@ -908,9 +1195,13 @@ async function storedSide(
    args: {
       virtualMap: ReadonlyMap<string, ReadonlyMap<string, string>> | undefined;
       authorRunnable: QueryMaterializer;
+      givens?: Record<string, unknown>;
+      bind?: object;
+      unlistedPasses?: boolean;
    },
    runtime: ProbeRuntime,
    sourceDialect: string,
+   memo: Map<string, Promise<unknown>>,
 ): Promise<Collation> {
    if (t.tier === "storage") {
       const name = [...(args.virtualMap ?? new Map())].find(
@@ -922,28 +1213,84 @@ async function storedSide(
       // destination's name, which a runtime without that alias does not
       // resolve (unknown).
       const connectionName = name ?? t.destinationName;
-      if (connectionName === undefined || t.tablePath === undefined) {
+      const tablePath = t.tablePath;
+      if (connectionName === undefined || tablePath === undefined) {
          return "unknown";
       }
-      return duckdbTableCollation(
-         await runtime.connections.lookupConnection(connectionName),
-         t.tablePath,
+      return memoized(
+         memo,
+         ["duckdb-table", connectionName, tablePath],
+         // Every destination speaks the storage dialect, DuckDB.
+         async () =>
+            DUCKDB_COLLATION.storedTable(
+               probeIO(
+                  await runtime.connections.lookupConnection(connectionName),
+               ),
+               tablePath,
+            ),
       );
    }
-   const read = capabilitiesOf(sourceDialect).stringCollation;
-   if (read !== "instance" && read !== "column") return "binary";
+   const reader = collationReaderOf(sourceDialect);
+   if (reader === undefined) return "binary";
    const connectionName =
       t.destinationName ?? (await entryConnectionOf(args.authorRunnable));
-   const connection =
-      await runtime.connections.lookupConnection(connectionName);
-   if (t.tablePath === undefined) {
+   const connection = probeIO(
+      await runtime.connections.lookupConnection(connectionName),
+   );
+   if (reader.scope === "dataset") {
+      return bigqueryDatabaseTableCollation(
+         t,
+         args,
+         connection,
+         connectionName,
+         memo,
+      );
+   }
+   const tablePath = t.tablePath;
+   if (tablePath === undefined) {
       // No path to read the table's own columns by: the instance-wide check
       // for DuckDB, and unknown elsewhere.
-      return read === "instance" ? duckdbCollation(connection, "") : "unknown";
+      return reader.scope === "instance"
+         ? memoized(memo, ["duckdb-instance", connectionName], () =>
+              reader.sourceColumns(connection, ""),
+           )
+         : "unknown";
    }
-   return read === "instance"
-      ? duckdbTableCollation(connection, t.tablePath)
-      : postgresTableCollation(connection, t.tablePath);
+   // A table its catalog does not list is passed over where the caller
+   // asks (a result's): its read fails, and its fallback decides.
+   if (
+      args.unlistedPasses &&
+      !(await memoized(
+         memo,
+         ["listed", reader.scope, connectionName, tablePath],
+         () => reader.tableListed(connection, tablePath),
+      ).catch(() => true))
+   ) {
+      return "binary";
+   }
+   return memoized(memo, [reader.scope, connectionName, tablePath], () =>
+      reader.storedTable(connection, tablePath),
+   );
+}
+
+/**
+ * `run`'s answer, read once per `parts` in `memo` (one answer's stored-side
+ * reads): a failed read is kept too, and fails each asker closed.
+ */
+function memoized<T>(
+   memo: Map<string, Promise<unknown>>,
+   parts: readonly (string | undefined)[],
+   run: () => Promise<T>,
+): Promise<T> {
+   const key = JSON.stringify(parts);
+   let p = memo.get(key) as Promise<T> | undefined;
+   if (p === undefined) {
+      p = run();
+      // Read once even when it fails; each awaiter sees the failure.
+      p.catch(() => undefined);
+      memo.set(key, p);
+   }
+   return p;
 }
 
 /** The connection of the source a compiled query runs on. */

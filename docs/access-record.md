@@ -20,7 +20,6 @@ SPDX-License-Identifier: MIT
 Every route that runs a query emits one record per request, on success and on refusal alike:
 
 - the REST query route, `POST …/models/{path}/query`;
-- the legacy notebook cell route;
 - the `execute_query` MCP tool;
 - value lookups in the `get_context` MCP tool, one record per lookup;
 - raw SQL against a connection, recorded with `decision: "ungated"` because no gate runs on it.

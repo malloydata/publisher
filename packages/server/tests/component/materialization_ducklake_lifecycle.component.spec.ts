@@ -53,10 +53,12 @@ import * as os from "os";
 import * as path from "path";
 import { unrecordedAudit } from "../../src/service/access_record";
 import * as connection from "../../src/service/connection";
+import * as connectionDialects from "../../src/service/dialects";
 import { Environment } from "../../src/service/environment";
 import { parsePackageName } from "../../src/service/identity";
 import * as dialects from "../../src/service/materialization/domain/dialect";
 import { backupSuffix } from "../../src/service/materialization/run/build_table_names";
+import { BuildCancelledError } from "../../src/service/materialization/domain/build_cancelled";
 import { listStorageTables } from "../../src/service/materialization/run/storage_admin";
 import { MaterializationService } from "../../src/service/materialization/run/materialization_service";
 import { QueryPrivileges } from "../../src/service/model_query_request";
@@ -159,6 +161,8 @@ describe.skipIf(process.platform === "win32")(
       const spies: { mockRestore(): void }[] = [];
       /** Every catalog attach the run layer asked for, in order. */
       const attaches: { fn: string; dbName: string }[] = [];
+      /** The bind's read-only reads of its stored tables (their contracts). */
+      const bindReads: { fn: string; dbName: string }[] = [];
 
       const catalogFile = () => path.join(lakeDir, "catalog.ducklake");
 
@@ -305,13 +309,15 @@ describe.skipIf(process.platform === "win32")(
                connection,
                "attachDuckLakeReadOnlyIfPresent",
             ).mockImplementation(async (session, dbName) => {
-               attaches.push({ fn: "readOnlyIfPresent", dbName });
+               // A bind's read-only read of its stored tables, kept apart
+               // from the builds' attaches.
+               bindReads.push({ fn: "readOnlyIfPresent", dbName });
                if (!fs.existsSync(catalogFile())) return false;
                await attachFileLake(session as never, dbName, true);
                return true;
             }),
             spyOn(
-               connection,
+               connectionDialects,
                "federateSourceForPassthrough",
             ).mockImplementation(async (session, sourceType) => {
                await session.runSQL(
@@ -526,6 +532,12 @@ describe.skipIf(process.platform === "win32")(
          expect(attaches).toEqual(
             NAMES.map(() => ({ fn: "readWrite", dbName: LAKE })),
          );
+         // And the bind's read-only reads of the tables it binds, for their
+         // contracts: never a read-write attach.
+         expect(bindReads.length).toBeGreaterThan(0);
+         for (const read of bindReads) {
+            expect(read).toEqual({ fn: "readOnlyIfPresent", dbName: LAKE });
+         }
 
          const tables = [daily, orders, sales]
             .map((e) => e.physicalTableName)
@@ -726,6 +738,8 @@ class LakeFixture {
    service!: MaterializationService;
    /** Every catalog attach the run layer asked for, in order. */
    readonly attaches: { fn: string; dbName: string }[] = [];
+   /** The bind's read-only reads of its stored tables (their contracts). */
+   readonly bindReads: { fn: string; dbName: string }[] = [];
    /** Every statement a build session ran after its source was federated. */
    readonly statements: string[] = [];
    /** Called before each recorded statement runs; throwing fails it. */
@@ -918,33 +932,36 @@ class LakeFixture {
             connection,
             "attachDuckLakeReadOnlyIfPresent",
          ).mockImplementation(async (session, dbName) => {
-            this.attaches.push({ fn: "readOnlyIfPresent", dbName });
+            // A bind's read-only read of its stored tables, kept apart from
+            // the builds' attaches.
+            this.bindReads.push({ fn: "readOnlyIfPresent", dbName });
             if (!fs.existsSync(this.catalogFile())) return false;
             await this.attachFileLake(session as never, dbName, true);
             return true;
          }),
-         spyOn(connection, "federateSourceForPassthrough").mockImplementation(
-            async (session, sourceType) => {
-               await session.runSQL(
-                  "CREATE OR REPLACE TEMP MACRO postgres_query(alias, q) AS TABLE SELECT * FROM query(q)",
+         spyOn(
+            connectionDialects,
+            "federateSourceForPassthrough",
+         ).mockImplementation(async (session, sourceType) => {
+            await session.runSQL(
+               "CREATE OR REPLACE TEMP MACRO postgres_query(alias, q) AS TABLE SELECT * FROM query(q)",
+            );
+            // Recorded from here on: the build's own statements.
+            const run = session.runSQL.bind(session);
+            session.runSQL = (async (sql: string, ...rest: unknown[]) => {
+               // The session's lockdown (duckdb_lockdown.ts) runs once the
+               // source is federated; it is not the build's own SQL.
+               if (!LOCKDOWN_STATEMENT.test(sql)) this.statements.push(sql);
+               await this.onStatement?.(sql);
+               const result = await (run as (...a: unknown[]) => unknown)(
+                  sql,
+                  ...rest,
                );
-               // Recorded from here on: the build's own statements.
-               const run = session.runSQL.bind(session);
-               session.runSQL = (async (sql: string, ...rest: unknown[]) => {
-                  // The session's lockdown (duckdb_lockdown.ts) runs once the
-                  // source is federated; it is not the build's own SQL.
-                  if (!LOCKDOWN_STATEMENT.test(sql)) this.statements.push(sql);
-                  await this.onStatement?.(sql);
-                  const result = await (run as (...a: unknown[]) => unknown)(
-                     sql,
-                     ...rest,
-                  );
-                  await this.afterStatement?.(sql);
-                  return result;
-               }) as typeof session.runSQL;
-               return { handle: "warehouse", sourceType };
-            },
-         ),
+               await this.afterStatement?.(sql);
+               return result;
+            }) as typeof session.runSQL;
+            return { handle: "warehouse", sourceType };
+         }),
       );
 
       this.env = await Environment.create(
@@ -1230,12 +1247,16 @@ describe.skipIf(process.platform === "win32")(
             "BEGIN TRANSACTION",
             'CREATE OR REPLACE TABLE "lake"."orders_g1"',
             'DESCRIBE "lake"."orders_g1"',
+            // The column contract's read of its collations, before COMMIT.
+            "SELECT sql, current_setting('default_collation') AS dc FROM duckdb_tables() WHERE NOT internal AND lower(table_name) = lower('orders_g1') AND (lower(schema_name) = lower('lake') OR lower(database_name) = lower('lake'))",
             "COMMIT",
             'SELECT count(*) AS n FROM "lake"."orders_g1"',
             "DESCRIBE (passthrough)",
             "BEGIN TRANSACTION",
             'CREATE OR REPLACE TABLE "lake"."daily_g1"',
             'DESCRIBE "lake"."daily_g1"',
+            // The column contract's read of its collations, before COMMIT.
+            "SELECT sql, current_setting('default_collation') AS dc FROM duckdb_tables() WHERE NOT internal AND lower(table_name) = lower('daily_g1') AND (lower(schema_name) = lower('lake') OR lower(database_name) = lower('lake'))",
             "COMMIT",
             'SELECT count(*) AS n FROM "lake"."daily_g1"',
          ]);
@@ -1520,6 +1541,8 @@ source: events is warehouse.sql("""
             'SELECT (SELECT COUNT(*) FROM (SELECT * FROM postgres_query(\'warehouse\', \'SELECT "wm" FROM (SELECT "id", "cat", "amt", "wm" FROM (SELECT * FROM (SELECT ',
             `DESCRIBE "lake"."${TABLE}"`,
             `SELECT count(*) AS n FROM "lake"."${TABLE}"`,
+            // The column contract's read of its collations.
+            `SELECT sql, current_setting('default_collation') AS dc FROM duckdb_tables() WHERE NOT internal AND lower(table_name) = lower('${TABLE}') AND (lower(schema_name) = lower('lake') OR lower(database_name) = lower('lake'))`,
          ]);
          const script = lake.statements.find((s) => s.startsWith("BEGIN;"))!;
          expect(script.split("\n")[1]).toBe(
@@ -1605,6 +1628,62 @@ source: events is warehouse.sql("""
          expect(asRows((await lake.ask(ROWS)).rows)).toEqual(
             await warehouseRowsBelow(60),
          );
+      });
+
+      it("fails a delta whose column contract does not read back after its write: contract_capture_failed, retryable, and a retry records it", async () => {
+         const previous = await lake.run();
+         const previousEntry = lake.entriesByName(previous).events as Entry & {
+            contract?: unknown;
+         };
+         expect(previousEntry.contract).toMatchObject({ v: 1 });
+         fs.appendFileSync(csv(lake.root), "7,c,64.0,70\n");
+         lake.onStatement = (sql) => {
+            if (
+               sql.startsWith(
+                  "SELECT sql, current_setting('default_collation') AS dc FROM duckdb_tables()",
+               ) &&
+               sql.includes(`lower('${TABLE}')`)
+            ) {
+               throw new Error("injected: catalog read failed");
+            }
+         };
+         let failed: Materialization;
+         const rowsBefore = await lake.storedRows(TABLE, "id");
+         lake.statements.length = 0;
+         try {
+            failed = await lake.run();
+         } finally {
+            lake.onStatement = undefined;
+         }
+         const failure = (
+            failed.manifest as {
+               failures: Record<string, Record<string, unknown>>;
+            }
+         ).failures[address];
+         expect(failure).toMatchObject({
+            sourceName: "events",
+            code: "contract_capture_failed",
+            retryable: true,
+         });
+         // A delta writes in place, outside any transaction: its rows stand,
+         // and the previous entry, which understates their freshness, still
+         // names the table with its contract.
+         const delta = lake.statements.findIndex((x) => x.startsWith("BEGIN;"));
+         const read = lake.statements.findIndex((x) =>
+            x.startsWith(
+               "SELECT sql, current_setting('default_collation') AS dc FROM duckdb_tables()",
+            ),
+         );
+         expect(delta).toBeGreaterThanOrEqual(0);
+         expect(read).toBeGreaterThan(delta);
+         expect(await lake.storedRows(TABLE, "id")).not.toEqual(rowsBefore);
+         expect(previousEntry.physicalTableName).toBe(TABLE);
+         // A retry reads the contract again, and records it.
+         const retried = await lake.run();
+         expect(
+            (lake.entriesByName(retried).events as { contract?: unknown })
+               .contract,
+         ).toMatchObject({ v: 1 });
       });
    },
 );
@@ -1750,7 +1829,15 @@ source: plain is raw extend { measure: total is amt.sum() }
             // The mark names the table at its site: the destination's.
             shared_t: `${OWN_MARK} table=${LAKE}.main.shared_t`,
          });
-         const answer = await lake.ask(OWNED);
+         // The bind's read of the new table through the destination may
+         // meet the catalog mid-change ("No snapshot found"): unread, it
+         // answers live and is read again until it reads.
+         let answer = await lake.ask(OWNED);
+         const deadline = Date.now() + 20_000;
+         while (answer.servedFrom !== "storage" && Date.now() < deadline) {
+            await new Promise((r) => setTimeout(r, 250));
+            answer = await lake.ask(OWNED);
+         }
          expect(answer.servedFrom).toBe("storage");
          expect(answer.servedBy.tableId).toBe(
             lake.entriesByName(builtRun).owned.sourceEntityId,
@@ -1971,6 +2058,8 @@ describe.skipIf(process.platform === "win32")(
             "BEGIN TRANSACTION",
             `CREATE OR REPLACE TABLE "lake"."${DAILY}"`,
             `DESCRIBE "lake"."${DAILY}"`,
+            // The column contract's read of its collations, before COMMIT.
+            `SELECT sql, current_setting('default_collation') AS dc FROM duckdb_tables() WHERE NOT internal AND lower(table_name) = lower('${DAILY}') AND (lower(schema_name) = lower('lake') OR lower(database_name) = lower('lake'))`,
             "COMMIT",
             `SELECT count(*) AS n FROM "lake"."${DAILY}"`,
          ]);
@@ -2069,6 +2158,73 @@ describe.skipIf(process.platform === "win32")(
          expect(await lake.catalogTables()).toEqual([DAILY]);
          expect((await lake.ask(TWO_QUERIES.orders)).servedFrom).toBeNull();
          expect((await lake.ask(TWO_QUERIES.daily)).servedFrom).toBe("storage");
+      });
+
+      it("fails a rebuild whose column contract does not read back, rolling it back so the previous table stands: contract_capture_failed, retryable", async () => {
+         const before = await lake.run({ forceRefresh: true });
+         expect(before.status).toBe("MANIFEST_FILE_READY");
+         const ordersId = lake.entriesByName(before).orders.sourceEntityId;
+         const filesBeforeCapture = await lake.dataFiles();
+         lake.statements.length = 0;
+         const failedCapture = await failing(
+            (sql) => {
+               if (
+                  sql.startsWith(
+                     "SELECT sql, current_setting('default_collation') AS dc FROM duckdb_tables()",
+                  ) &&
+                  sql.includes(`lower('${ORDERS}')`)
+               ) {
+                  throw new Error("injected: catalog read failed");
+               }
+            },
+            () => lake.run({ forceRefresh: true }),
+         );
+         expect([failedCapture.status, failedCapture.error]).toEqual([
+            "MANIFEST_FILE_READY",
+            null,
+         ]);
+         const failure = (
+            failedCapture.manifest as {
+               failures: Record<string, Record<string, unknown>>;
+            }
+         ).failures[ordersId];
+         expect(failure).toMatchObject({
+            sourceName: "orders",
+            code: "contract_capture_failed",
+            retryable: true,
+            reason: expect.stringContaining(
+               `The column contract of the table "lake"."${ORDERS}" could not be read back (its column collations did not read)`,
+            ),
+         });
+         // Read inside the CTAS's transaction, so the failure rolled it back.
+         expect(lake.statements.map(statementShape).slice(0, 6)).toEqual([
+            "DESCRIBE (passthrough)",
+            "BEGIN TRANSACTION",
+            `CREATE OR REPLACE TABLE "lake"."${ORDERS}"`,
+            `DESCRIBE "lake"."${ORDERS}"`,
+            `SELECT sql, current_setting('default_collation') AS dc FROM duckdb_tables() WHERE NOT internal AND lower(table_name) = lower('${ORDERS}') AND (lower(schema_name) = lower('lake') OR lower(database_name) = lower('lake'))`,
+            "ROLLBACK",
+         ]);
+         // The previous generation's table stands: its files and rows.
+         expect((await lake.dataFiles())[ORDERS]).toEqual(
+            filesBeforeCapture[ORDERS],
+         );
+         expect(await lake.storedRows(ORDERS, "cat, amt")).toEqual([
+            ["a", 1],
+            ["a", 2],
+            ["b", 4],
+         ]);
+         // The previous run's entry, with its contract, still names it.
+         expect(
+            (lake.entriesByName(before).orders as { contract?: unknown })
+               .contract,
+         ).toMatchObject({ v: 1 });
+         // A retry, once the read works, records it.
+         const retried = await lake.run({ forceRefresh: true });
+         expect(
+            (lake.entriesByName(retried).orders as { contract?: unknown })
+               .contract,
+         ).toMatchObject({ v: 1 });
       });
    },
 );
@@ -2329,8 +2485,6 @@ source: sb_sales is sb_raw extend {
                "persist-query-not-built:sb_query__query",
                "persist-view-not-built:sb_viewed__by_cat__view",
                "rollup-not-built:sb_sales",
-               // Its 0.14 code, repeated beside it this release only.
-               "preaggregate-not-built:sb_sales",
             ].sort(),
          );
          const plan = lake.pkg.getBuildPlan();
@@ -2375,6 +2529,252 @@ source: sb_sales is sb_raw extend {
             expect(answer.servedBy.kind, query).toBe("live");
             expect(answer.rows, query).toEqual(LIVE);
          }
+      });
+   },
+);
+
+/**
+ * Retiring a package (deleting or unloading it) while a run builds into a
+ * DuckLake destination: the run is aborted, and before the retire returns it
+ * drops the `storage=` tables it wrote, the one whose write committed after
+ * the abort included, and keeps every table a committed run names.
+ */
+describe.skipIf(process.platform === "win32")(
+   "retiring a package mid-run on a DuckLake storage= destination",
+   () => {
+      const DAILY = selfName("daily");
+      const ORDERS = selfName("orders");
+      const COUNT = /^SELECT count\(\*\) AS n FROM "lake"\./;
+
+      /**
+       * Start a run and retire the package with `retire` once `when` says so
+       * (after a statement ran). Resolves once the retire has, with the
+       * run's id.
+       */
+      async function retireMidRun(
+         lake: LakeFixture,
+         retire: "deletePackage" | "unloadPackage",
+         when: (sql: string) => boolean,
+         options: { forceRefresh?: boolean } = {},
+      ): Promise<string> {
+         lake.env.setPackageRetiringHook((packageName) =>
+            lake.service.abortPackageRuns(ENV, packageName),
+         );
+         let retired: Promise<void> | undefined;
+         lake.afterStatement = (sql) => {
+            if (!retired && when(sql)) retired = lake.env[retire](PKG);
+         };
+         try {
+            const created = await lake.service.createMaterialization(ENV, PKG, {
+               forceRefresh: options.forceRefresh ?? false,
+            });
+            const deadline = Date.now() + 120_000;
+            while (!retired) {
+               if (Date.now() > deadline) throw new Error("never retired");
+               await new Promise((r) => setTimeout(r, 20));
+            }
+            await retired;
+            expect(
+               (await lake.repo.getMaterializationById(created.id))?.status,
+            ).toBe("CANCELLED");
+            return created.id;
+         } finally {
+            lake.afterStatement = undefined;
+         }
+      }
+
+      for (const retire of ["deletePackage", "unloadPackage"] as const) {
+         describe(`${retire}, after the first table was built`, () => {
+            const lake = new LakeFixture(`retire-built-${retire}`, () => ({
+               "m.malloy": TWO_SOURCES,
+            }));
+            beforeAll(() => lake.setUp());
+            afterAll(() => lake.tearDown());
+
+            it("leaves no table of the run in the destination", async () => {
+               await retireMidRun(lake, retire, (sql) => COUNT.test(sql));
+               expect(await lake.catalogTables()).toEqual([]);
+            });
+         });
+
+         describe(`${retire}, when the first table's write commits after the abort`, () => {
+            const lake = new LakeFixture(`retire-race-${retire}`, () => ({
+               "m.malloy": TWO_SOURCES,
+            }));
+            beforeAll(() => lake.setUp());
+            afterAll(() => lake.tearDown());
+
+            it("leaves no table of the run in the destination", async () => {
+               // An interrupt that reaches the CREATE rolls it back, so the
+               // race is a build whose write commits and which then answers
+               // cancelled: it never reports its table built.
+               let retired: Promise<void> | undefined;
+               lake.service = serviceOverEnvironment(
+                  () => lake.repo,
+                  () => lake.env,
+                  (real) => ({
+                     buildOneSource: async (options) => {
+                        if (retired) return real.buildOneSource(options);
+                        retired = lake.env[retire](PKG);
+                        const ignoringAbort = { ...options };
+                        delete ignoringAbort.signal;
+                        await real.buildOneSource(ignoringAbort);
+                        throw new BuildCancelledError();
+                     },
+                  }),
+               );
+               lake.env.setPackageRetiringHook((packageName) =>
+                  lake.service.abortPackageRuns(ENV, packageName),
+               );
+               const created = await lake.service.createMaterialization(
+                  ENV,
+                  PKG,
+                  {},
+               );
+               const deadline = Date.now() + 120_000;
+               while (!retired) {
+                  if (Date.now() > deadline) throw new Error("never retired");
+                  await new Promise((r) => setTimeout(r, 20));
+               }
+               await retired;
+               expect(
+                  (await lake.repo.getMaterializationById(created.id))?.status,
+               ).toBe("CANCELLED");
+               expect(await lake.catalogTables()).toEqual([]);
+            });
+         });
+      }
+
+      describe("unloadPackage, after a committed run", () => {
+         const lake = new LakeFixture("retire-committed", () => ({
+            "m.malloy": TWO_SOURCES,
+         }));
+         beforeAll(() => lake.setUp());
+         afterAll(() => lake.tearDown());
+
+         it("keeps every table the committed run names, and the package answers equal to live", async () => {
+            const live: Record<string, Answer["rows"]> = {};
+            for (const [name, query] of Object.entries(TWO_QUERIES)) {
+               live[name] = (await lake.ask(query)).rows;
+            }
+            expect((await lake.run()).status).toBe("MANIFEST_FILE_READY");
+            await retireMidRun(
+               lake,
+               "unloadPackage",
+               (sql) => COUNT.test(sql),
+               {
+                  forceRefresh: true,
+               },
+            );
+            expect(await lake.catalogTables()).toEqual([DAILY, ORDERS].sort());
+            await lake.env.addPackage(PKG);
+            lake.pkg = await lake.env.getPackage(parsePackageName(PKG), false);
+            await lake.reopenServe();
+            for (const [name, query] of Object.entries(TWO_QUERIES)) {
+               expect((await lake.ask(query)).rows, name).toEqual(live[name]!);
+            }
+         });
+      });
+   },
+);
+
+/**
+ * A stored source that a model reaches only through an import of an import,
+ * by a join the served copy leaves out across connections (Credible's
+ * `crm_current` via `pipeline.malloy`). That model's served copy holds the
+ * source nowhere, so nothing there reads it: it raised `served-copy-not-served`
+ * (`fields_not_carried`), which said the source inherits fields its table does
+ * not carry. It does not, and the model that names it serves it from its
+ * table; the warning is gone, and every answer is the same.
+ */
+describe.skipIf(process.platform === "win32")(
+   "a stored source reached in an importing model only by a join left out across connections",
+   () => {
+      const ROWS = `warehouse.sql("""SELECT * FROM (VALUES ('a', 'east', 'ok', 1.0), ('a', 'east', 'cancelled', 2.0), ('b', 'west', 'ok', 4.0)) AS t(category, region, status, amount)""")`;
+      const lake = new LakeFixture("unreached", () => ({
+         "m.malloy": `import "deals.malloy"\n`,
+         "deals.malloy": `import "crm.malloy"
+source: d_raw is ${ROWS} extend {
+  join_one: cur is crm_current on category = cur.category and region = cur.region
+}
+source: d11_incl is d_raw -> {
+  group_by: category, region, is_deleted is status = 'cancelled', cur_amt is cur.amt
+  aggregate: amt is amount.sum()
+}
+#@ persist storage="lake" name="gtmval_deals11"
+source: deals11 is d11_incl extend { where: not is_deleted }
+#@ persist storage="lake" name="gtmval_d_unrelated"
+source: d_unrelated is ${ROWS} -> { group_by: region; aggregate: n is count() }
+`,
+         "crm.malloy": `##! experimental.persistence
+source: crm_raw is ${ROWS}
+#@ persist storage="lake" name="gtmval_crm_current"
+source: crm_current is crm_raw -> { group_by: category, region; aggregate: amt is amount.sum() }
+`,
+      }));
+      beforeAll(() => lake.setUp());
+      afterAll(() => lake.tearDown());
+
+      const QUERIES: [model: string, query: string, served: boolean][] = [
+         // `deals11` joins the stored `crm_current` to the warehouse's rows:
+         // no engine reads both, and it is never built by recomputing
+         // `crm_current` from raw, so it is refused and answered live.
+         [
+            "m.malloy",
+            "run: deals11 -> { group_by: category, region; aggregate: a is amt.sum() }",
+            false,
+         ],
+         [
+            "m.malloy",
+            "run: d_raw -> { group_by: category; aggregate: a is cur.amt.sum() }",
+            false,
+         ],
+         [
+            "deals.malloy",
+            "run: crm_current -> { group_by: category, region; aggregate: a is amt.sum() }",
+            true,
+         ],
+      ];
+      async function askIn(model: string, query: string) {
+         const result = await lake.pkg
+            .getModel(model)!
+            .runQuery(
+               unrecordedAudit(),
+               { query } as never,
+               QueryPrivileges.of({ includeHiddenFilesAndSources: true }),
+            );
+         return {
+            rows: (result.compactResult as Record<string, unknown>[])
+               .map((r) =>
+                  JSON.stringify(
+                     Object.fromEntries(
+                        Object.entries(r).map(([k, v]) => [k, String(v)]),
+                     ),
+                  ),
+               )
+               .sort(),
+            servedBy: result.path?.servedBy?.kind ?? "live",
+         };
+      }
+
+      it("raises no warning on it there, and every answer equals live", async () => {
+         const live = [];
+         for (const [model, query] of QUERIES) {
+            live.push((await askIn(model, query)).rows);
+         }
+         expect((await lake.run()).status).toBe("MANIFEST_FILE_READY");
+         for (const [i, [model, query, served]] of QUERIES.entries()) {
+            const answer = await askIn(model, query);
+            expect(answer.rows, query).toEqual(live[i]);
+            if (served) expect(answer.servedBy, query).toBe("materialized");
+         }
+         // Read once each model's served copy has compiled.
+         const warned = (lake.pkg.getPackageMetadata().warnings ?? [])
+            .filter((w) => w.code === "served-copy-not-served")
+            .map((w) => [w.model, w.subject, w.reason]);
+         expect(
+            warned.filter(([, subject]) => subject === "crm_current"),
+         ).toEqual([]);
       });
    },
 );

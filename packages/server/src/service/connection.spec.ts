@@ -22,18 +22,21 @@ import { components } from "../api";
 import {
    attachDuckLakeReadOnlyIfPresent,
    attachDuckLakeReadWrite,
-   buildCloudStorageSecretSQL,
-   storageSecretScope,
    buildEnvironmentMalloyConfig,
-   buildPgConnectionString,
    buildProxiedSslQuery,
    createEnvironmentConnections,
    EnvironmentPooledPostgresConnection,
-   resolveProxiedTls,
-   testConnectionConfig,
    isExpiredCredentialError,
    redactTestFailure,
+   resolveProxiedTls,
+   testConnectionConfig,
 } from "./connection";
+import { buildCloudStorageSecretSQL } from "./cloud_storage_secret";
+import { storageSecretScope } from "./dialects/ducklake_catalog";
+import { bigQueryAttachSQL } from "./dialects/bigquery";
+import { snowflakeAttachSQL } from "./dialects/snowflake";
+import { buildPgConnectionString } from "./postgres_conninfo";
+import { countStatements } from "./single_select";
 import {
    DEFAULT_S3_CREDENTIAL_CHAIN,
    resolveCloudStorageCredentials,
@@ -217,7 +220,7 @@ describe("connection integration tests", () => {
                expect(dbNames).toContain("pg_test");
 
                const result = await connection.runSQL(
-                  "SELECT 1 as test_value FROM pg_test.information_schema.tables LIMIT 1",
+                  "SELECT 1 as test_value FROM information_schema.schemata WHERE catalog_name = 'pg_test' LIMIT 1",
                );
                expect(result.rows).toBeDefined();
             },
@@ -268,7 +271,7 @@ describe("connection integration tests", () => {
 
                // listSchemas equivalent
                const result = await connection.runSQL(
-                  "SELECT schema_name FROM pg_schemas.information_schema.schemata ORDER BY schema_name",
+                  "SELECT schema_name FROM information_schema.schemata WHERE catalog_name = 'pg_schemas' ORDER BY schema_name",
                );
                expect(result.rows.length).toBeGreaterThan(0);
                const schemaNames = result.rows.map(
@@ -324,8 +327,9 @@ describe("connection integration tests", () => {
                // listTables equivalent
                const result = await connection.runSQL(`
                   SELECT table_schema, table_name, table_type
-                  FROM pg_tables_db.information_schema.tables
-                  WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
+                  FROM information_schema.tables
+                  WHERE table_catalog = 'pg_tables_db'
+                    AND table_schema NOT IN ('pg_catalog', 'information_schema')
                   ORDER BY table_schema, table_name
                `);
                expect(result.rows).toBeDefined();
@@ -334,7 +338,7 @@ describe("connection integration tests", () => {
          );
 
          it(
-            "should get table columns from attached PostgreSQL database",
+            "refuses reading the attached PostgreSQL database's own information_schema",
             async () => {
                if (!hasPostgresCredentials()) {
                   console.log(
@@ -375,19 +379,16 @@ describe("connection integration tests", () => {
                ) as DuckDBConnection;
                createdConnections.push(connection);
 
-               const result = await connection.runSQL(`
-                  SELECT column_name, data_type, is_nullable
-                  FROM pg_cols.information_schema.columns
-                  WHERE table_schema = 'information_schema'
-                    AND table_name = 'tables'
-                  ORDER BY ordinal_position
-               `);
-               expect(result.rows.length).toBeGreaterThan(0);
-               const columnNames = result.rows.map(
-                  (row) => (row as Record<string, unknown>)["column_name"],
-               );
-               expect(columnNames).toContain("table_name");
-               expect(columnNames).toContain("table_schema");
+               // The attached database's own system schemas are not
+               // readable from caller SQL; only its tables are.
+               await expect(
+                  connection.runSQL(`
+                     SELECT column_name, data_type, is_nullable
+                     FROM pg_cols.information_schema.columns
+                     WHERE table_schema = 'information_schema'
+                       AND table_name = 'tables'
+                  `),
+               ).rejects.toThrow("pg_cols.information_schema");
             },
             { timeout: 30000 },
          );
@@ -533,7 +534,7 @@ describe("connection integration tests", () => {
                createdConnections.push(connection);
 
                const result = await connection.runSQL(
-                  "SELECT schema_name FROM bq_schemas.information_schema.schemata",
+                  "SELECT schema_name FROM information_schema.schemata WHERE catalog_name = 'bq_schemas'",
                );
                expect(result.rows.length).toBeGreaterThan(0);
                const datasetNames = result.rows.map(
@@ -2005,9 +2006,9 @@ describe("connection integration tests", () => {
          });
 
          it("should drop explicitly-null Snowflake options from private-key connOptions", async () => {
-            // This is the path that actually throws. A key-pair connection
+            // This is the path that actually throws. A Snowflake connection
             // bypasses the core connection registry (which strips nulls itself)
-            // and is built directly by buildSnowflakePrivateKeyConnection, where
+            // and is built directly by buildSnowflakeConnection, where
             // cloneApiConnection's shallow spread leaves nulls intact. A
             // surviving null reaches SnowflakeConnection.getDigest(), whose
             // makeDigest reads `.length` off each part and special-cases only
@@ -3083,11 +3084,11 @@ describe("connection integration tests", () => {
          );
 
          // The DSN-leak fix itself, pinned without depending on any extension:
-         // `attachedDatabases[].name` has a `pattern` in api-doc.yaml but there
-         // is no request validator, so a hyphen reaches the ATTACH. Unquoted it
-         // fails to parse after the DSN literal, which is what truncates the
-         // redactor's anchor away.
-         it("quotes a hyphenated attached-database alias in the ATTACH", async () => {
+         // an attached-database alias unquoted after the DSN literal fails to
+         // parse, which is what truncates the redactor's anchor away. A name
+         // off `attachedDatabases[].name`'s pattern (a hyphen) is now refused
+         // before any ATTACH, and a valid one is still quoted.
+         it("refuses a hyphenated attached-database alias, and quotes a valid one, in the ATTACH", async () => {
             const sql: string[] = [];
             sinon
                .stub(DuckDBConnection.prototype, "runSQL")
@@ -3096,27 +3097,35 @@ describe("connection integration tests", () => {
                   return { rows: [], totalRows: 0, runStats: {} } as never;
                });
 
-            await testConnectionConfig({
-               name: "probe_duckdb",
-               type: "duckdb",
-               duckdbConnection: {
-                  attachedDatabases: [
-                     {
-                        name: "evil-db",
-                        type: "postgres",
-                        postgresConnection: {
-                           connectionString: `postgres://alice:${leakedPassword}@127.0.0.1:1/db`,
+            const withAlias = (name: string) =>
+               testConnectionConfig({
+                  name: "probe_duckdb",
+                  type: "duckdb",
+                  duckdbConnection: {
+                     attachedDatabases: [
+                        {
+                           name,
+                           type: "postgres",
+                           postgresConnection: {
+                              connectionString: `postgres://alice:${leakedPassword}@127.0.0.1:1/db`,
+                           },
                         },
-                     },
-                  ],
-               },
-            });
+                     ],
+                  },
+               });
+            const isPostgresAttach = (q: string) =>
+               q.startsWith("ATTACH") && q.includes("TYPE postgres");
 
-            const attach = sql.find(
-               (q) => q.startsWith("ATTACH") && q.includes("TYPE postgres"),
-            );
+            const refused = await withAlias("evil-db");
+            expect(refused.status).toBe("failed");
+            expect(refused.errorMessage).toContain("attachedDatabases[0].name");
+            expect(refused.errorMessage).not.toContain(leakedPassword);
+            expect(sql.some(isPostgresAttach)).toBe(false);
+
+            await withAlias("Evil_db");
+            const attach = sql.find(isPostgresAttach);
             expect(attach).toBeDefined();
-            expect(attach).toContain('AS "evil-db"');
+            expect(attach).toContain('AS "Evil_db"');
             expect(attach).not.toContain(leakedPassword);
          });
 
@@ -4831,5 +4840,121 @@ describe("storageSecretScope", () => {
             managed: false,
          }),
       ).toBe("/srv/lake/");
+   });
+});
+
+describe("attached database ATTACH and SECRET SQL quotes the name", () => {
+   // Built as if validation had been bypassed: each statement must still read
+   // as exactly one statement to DuckDB's parser, with the name inside a quoted
+   // identifier or an escaped string literal.
+   const hostileNames = [
+      'evil"; SELECT 1 --',
+      "evil'; SELECT 1 --",
+      "evil AS x; DROP TABLE t; --",
+      "evil\nSELECT 1",
+   ];
+
+   it("keeps a valid name's BigQuery ATTACH as it was, but quoted", () => {
+      expect(bigQueryAttachSQL("sales_bq", "my-project")).toBe(
+         `ATTACH 'project=my-project' AS "sales_bq" (TYPE bigquery, READ_ONLY);`,
+      );
+   });
+
+   it("keeps a valid name's Snowflake statements as they were, but quoted", () => {
+      const statements = snowflakeAttachSQL("sales_sf", [
+         "      TYPE snowflake",
+      ]);
+      expect(statements.createSecret).toBe(
+         `CREATE OR REPLACE SECRET "sales_sf_secret" (\n      TYPE snowflake\n   );`,
+      );
+      expect(statements.test).toBe(
+         `SELECT * FROM snowflake_query('SELECT 1', 'sales_sf_secret');`,
+      );
+      expect(statements.attach).toBe(
+         `ATTACH 'sales_sf' AS "sales_sf" (TYPE snowflake, SECRET "sales_sf_secret", READ_ONLY);`,
+      );
+   });
+
+   for (const name of hostileNames) {
+      it(`quotes and escapes a hostile name (${JSON.stringify(name)})`, async () => {
+         const bigquery = bigQueryAttachSQL(name, "p'roj");
+         expect(bigquery).toContain(`AS "${name.replace(/"/g, '""')}"`);
+         expect(bigquery).toContain(`'project=p''roj'`);
+         expect(await countStatements(bigquery)).toBe(1);
+
+         const snowflake = snowflakeAttachSQL(name, ["      TYPE snowflake"]);
+         const quotedSecret = `"${`${name}_secret`.replace(/"/g, '""')}"`;
+         expect(snowflake.createSecret).toContain(
+            `CREATE OR REPLACE SECRET ${quotedSecret} (`,
+         );
+         expect(snowflake.test).toContain(
+            `'${`${name}_secret`.replace(/'/g, "''")}'`,
+         );
+         expect(snowflake.attach).toContain(
+            `ATTACH '${name.replace(/'/g, "''")}' AS "${name.replace(/"/g, '""')}"`,
+         );
+         expect(snowflake.attach).toContain(`SECRET ${quotedSecret},`);
+         for (const sql of [
+            snowflake.createSecret,
+            snowflake.test,
+            snowflake.attach,
+         ]) {
+            expect(await countStatements(sql)).toBe(1);
+         }
+      });
+   }
+
+   it("leaves a valid name's catalog reachable by its unquoted name", async () => {
+      // A model reads an attached catalog as `name.schema.table`, unquoted:
+      // quoting the alias at ATTACH must not change the name it answers to.
+      const connection = new DuckDBConnection({
+         name: "attach_quote_probe",
+         databasePath: ":memory:",
+      });
+      try {
+         const alias = bigQueryAttachSQL("Sales_Db", "x").match(
+            / AS ("[^"]+") /,
+         )?.[1];
+         expect(alias).toBe(`"Sales_Db"`);
+         await connection.runSQL(`ATTACH ':memory:' AS ${alias}`);
+         await connection.runSQL(
+            "CREATE TABLE Sales_Db.main.t AS SELECT 1 AS a",
+         );
+         const result = await connection.runSQL("SELECT a FROM sales_db.t");
+         expect(result.rows).toEqual([{ a: 1 }]);
+      } finally {
+         await connection.close();
+      }
+   });
+});
+
+describe("buildCloudStorageSecretSQL — region", () => {
+   // Built as if validation had been bypassed: a quote in the region must stay
+   // inside its string literal, on both S3 arms.
+   const hostile = "us-east-1'); SET threads=1; --";
+
+   for (const provider of ["config", "credential_chain"] as const) {
+      it(`escapes the region on the ${provider} arm`, async () => {
+         const sql = buildCloudStorageSecretSQL("secret_s3_x", {
+            type: "s3",
+            accessKeyId: "AK",
+            secretAccessKey: "SK",
+            region: hostile,
+            provider,
+         });
+         expect(sql).toContain(`REGION '${hostile.replace(/'/g, "''")}'`);
+         expect(await countStatements(sql)).toBe(1);
+      });
+   }
+
+   it("keeps a valid region as it was", () => {
+      expect(
+         buildCloudStorageSecretSQL("secret_s3_x", {
+            type: "s3",
+            accessKeyId: "AK",
+            secretAccessKey: "SK",
+            region: "eu-west-2",
+         }),
+      ).toContain("REGION 'eu-west-2'");
    });
 });

@@ -1,0 +1,19 @@
+>>>markdown
+A join a cell's run: writes is the caller's join, gated as a run target is.
+>>>malloy
+import "../models/orders.malloy"
+import "../models/secured.malloy"
+import "../models/hidden.malloy"
+>>>malloy
+run: orders extend { join_one: g is gated on g.id = id } -> { group_by: id, gid is g.id; order_by: id }
+>>>malloy
+run: orders extend { join_one: l is locked on l.id = id } -> { aggregate: order_count, ln is l.n }
+>>>malloy
+run: orders extend { join_one: h is hidden on h.id = id } -> { aggregate: order_count, s is h.secret_total }
+>>>malloy
+run: orders -> { join_one: g is gated on g.id = id; aggregate: order_count, gn is g.n }
+>>>malloy
+source: with_gated is orders extend { join_one: g is gated on g.id = id }
+run: with_gated -> { group_by: id, gid is g.id; order_by: id }
+>>>malloy
+run: orders -> { join_one: h is hidden on h.id = id; aggregate: order_count, s is h.secret_total }

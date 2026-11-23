@@ -1,0 +1,7 @@
+>>>malloy
+import "../models/secured.malloy"
+>>>malloy
+run: locked -> { aggregate: n }
+>>>malloy
+source: derived_locked is locked extend { measure: m is count() }
+run: derived_locked -> { aggregate: m }

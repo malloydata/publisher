@@ -5,23 +5,13 @@
  * End to end, through the real package and environment: a database table
  * read by Malloy's build-manifest substitution (a rollup, a persisted view, a
  * persisted query), built by a real run and then altered in its warehouse,
- * takes each moved column by the rule the served copy of a `#(materialize)`
- * or `#@ persist` table takes it (`driftedColumnRead`), once the package binds
- * again (`Package.reloadAllModels`, the path a run's commit, a manifest bind
- * and a restart take):
- *
- * | Drift                           | Read                                    |
- * | ------------------------------- | --------------------------------------- |
- * | a wider integer (a widening)    | as it is: served                        |
- * | a timestamp that gained a zone  | DuckDB: as it is (UTC); else left out   |
- * | a dropped column                | left out                                |
- * | a type Malloy cannot read       | left out                                |
- * | a boolean now an integer        | a faithful cast, in the projection      |
- *
- * A left-out column sends only the queries that read it live: a rollup keeps
- * serving every other query, and a persisted view or query, whose every
- * query reads all its columns, answers live. Every answer equals live's,
- * read before the first build, when nothing is built.
+ * no longer matches the column contract its build recorded, once the package
+ * binds again (`Package.reloadAllModels`, the path a run's commit, a manifest
+ * bind and a restart take). Whatever the drift (a wider integer, a zone, a
+ * dropped column, a type Malloy cannot read, a boolean now an integer), the
+ * table is left out, never cast or narrowed: every query on it answers live,
+ * equal to live's answer read before the first build, and the serve verdict
+ * says `incompatible`, naming the table and the columns that moved.
  *
  * DuckDB, and Postgres when `PUBLISHER_TEST_POSTGRES_URL` names one.
  */
@@ -433,46 +423,115 @@ for (const tier of tiers) {
       });
 
       for (const name of Object.keys(QUERIES)) {
-         const kind = KINDS.find((k) => name.endsWith(` ${k}`));
-         const answersLive = kind !== undefined && tier.live.includes(kind);
-         it(`${name}: ${answersLive ? "answered live" : "still served from its table"}, equal to live`, async () => {
+         it(`${name}: answered live, its table incompatible with its contract, equal to live`, async () => {
             const after = await ask(f, QUERIES[name]);
             expect(after.rows).toEqual(live[name].rows);
-            if (answersLive) {
-               expect(after.kind).toBe("live");
-            } else {
-               expect({ kind: after.kind, skipped: after.skipped }).toEqual({
-                  kind: before[name].kind,
-                  skipped: after.skipped,
-               });
-            }
+            expect(after.kind).toBe("live");
          });
       }
 
-      it("warns per column: cast or answered live, by the same rule", () => {
-         const warnings = (f.pkg.getPackageMetadata().warnings ?? []).filter(
-            (w) => w.code === "database-column-type-mismatch",
-         );
-         const cast = warnings.filter((w) =>
-            (w.message ?? "").includes("read through a cast"),
-         );
-         const lost = warnings.filter((w) =>
-            (w.message ?? "").includes(
-               "answered live until the table is rebuilt",
-            ),
-         );
-         // The view and query of one text share a table: it and the rollup
-         // each cast `flag`.
-         expect(cast.length).toBe(2);
-         // No warning answers the whole table live any more.
+      it("says why on each table's verdict: incompatible, never a cast", () => {
+         const incompatible = f.pkg
+            .materialization()
+            .serveVerdicts()
+            .filter((v) => v.reason === "incompatible");
+         expect(incompatible.length).toBeGreaterThan(0);
+         for (const v of incompatible) {
+            expect(v.table?.physicalTableName).toBeTruthy();
+            expect(v.incompatibility?.columns.length).toBeGreaterThan(0);
+         }
+         // The old drift warning, which cast or left a column out, is gone.
          expect(
-            warnings.filter((w) =>
-               (w.message ?? "").includes("every query on it"),
+            (f.pkg.getPackageMetadata().warnings ?? []).filter(
+               (w) => w.code === "database-column-type-mismatch",
             ),
          ).toEqual([]);
-         // Each left-out drift, on the shared view-and-query table and on
-         // the rollup's.
-         expect(lost.length).toBe(2 * tier.live.length);
       });
    });
 }
+
+describe("a stored read that finds its table gone since the bind (the drift handler's failed-read trigger)", () => {
+   let restore: () => void;
+   let f: Fixture;
+   let drop: (() => Promise<void>) | undefined;
+   const live: Record<string, Answer> = {};
+   let dropped = "";
+   let staleMarks = 0;
+   const QUERY = QUERIES["view num"];
+   beforeAll(async () => {
+      restore = installSettings({
+         env: {
+            PUBLISHER_MATERIALIZE: "true",
+            PERSIST_STORAGE_MODE: "off",
+            PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: "true",
+         },
+      }).restore;
+      await freshLoadPool();
+      const w = await tiers[0].warehouse();
+      drop = w.drop;
+      f = await fixture(w.config);
+      live.before = await ask(f, QUERY);
+      const run = await build(f);
+      expect(run.status).toBe("MANIFEST_FILE_READY");
+      // Out of band, with no bind after it: the view's table is dropped.
+      const warehouse = await f.env.getMalloyConnection("warehouse");
+      dropped = Object.values(
+         (
+            run.manifest as {
+               entries: Record<string, { physicalTableName: string }>;
+            }
+         ).entries,
+      )
+         .map((e) => e.physicalTableName)
+         .find((t) => t.includes("v_num") || t.includes("q_num"))!;
+      await warehouse.runSQL(`DROP TABLE ${dropped}`);
+      // Every drift report marks the build plan stale and derives it again.
+      const plan = (
+         f.pkg.materialization() as unknown as {
+            plan: { markStale(changed?: Iterable<string>): void };
+         }
+      ).plan;
+      const markStale = plan.markStale.bind(plan);
+      plan.markStale = (changed?: Iterable<string>) => {
+         staleMarks++;
+         markStale(changed);
+      };
+   }, 300_000);
+   afterAll(async () => {
+      await f?.cleanup();
+      await drop?.();
+      restore();
+      await freshLoadPool();
+   });
+
+   it("answers that query live, equal to live, rather than failing it", async () => {
+      expect(dropped).not.toBe("");
+      const answer = await ask(f, QUERY);
+      expect(answer.rows).toEqual(live.before.rows);
+      expect(answer.kind).toBe("live");
+   });
+
+   it("fails the table closed, then the rebind judges it: never served again until it is rebuilt", async () => {
+      const deadline = Date.now() + 20_000;
+      let verdict: { reason?: string; table?: { physicalTableName: string } } =
+         {};
+      while (Date.now() < deadline) {
+         verdict =
+            f.pkg
+               .materialization()
+               .serveVerdicts()
+               .find((v) => v.table?.physicalTableName === dropped) ?? {};
+         if (verdict.reason !== undefined) break;
+         await new Promise((r) => setTimeout(r, 100));
+      }
+      // Gone at the rebind's read: unread (not_found), or failed closed.
+      expect(["incompatible", "stale", undefined]).toContain(verdict.reason);
+      // And the build plan was derived again, from what the rebind bound.
+      expect(staleMarks).toBeGreaterThan(0);
+      await f.pkg.materialization().whenBuildPlanCurrent(20_000);
+      expect(f.pkg.materialization().isBuildPlanStale()).toBe(false);
+      const again = await ask(f, QUERY);
+      expect(again.rows).toEqual(live.before.rows);
+      expect(again.kind).toBe("live");
+   });
+});

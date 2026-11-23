@@ -3,8 +3,10 @@
 
 /**
  * Which strings a query's result depends on the order or the equality of,
- * for the check that a `storage=` copy answers as its source does
- * (`gate_collation.ts` judges them, the router asks).
+ * for the check that a stored table answers as its source does
+ * (`gate_collation.ts` judges them, the router asks): a `storage=` copy by
+ * the source's collation, and every stored table, a database one included,
+ * by whether its stored columns still compare as the source's do.
  *
  * A `storage=` table is read in a DuckLake destination, which compares
  * strings byte-exact. Live compares the source column under its own
@@ -45,6 +47,7 @@ import {
 } from "../../governance/ir/prepared_query";
 import { capabilitiesOf, type Capabilities } from "../domain/dialect";
 import type { GateReads } from "./gate_reads_types";
+import { storedUpstreamResolver } from "./stored_upstream";
 
 /** How a value is used by the result. */
 type Use = "order" | "group" | "value";
@@ -225,6 +228,22 @@ function castMakesString(n: Record<string, unknown>): boolean {
 interface Col {
    readonly path: readonly string[];
    readonly entry: boolean;
+   /**
+    * Every name the value goes by on the way from the column to the read (the
+    * column's, a rename's, a dimension's, a stage output's), any of which a
+    * stored table may hold it under.
+    */
+   readonly names: readonly string[];
+   /**
+    * The column's source is known to be read live, never from a stored
+    * table ({@link ResultReadWalk.knownLive}).
+    */
+   readonly live: boolean;
+   /**
+    * The stored upstream, by sourceID, whose table holds the column, or
+    * undefined when it reaches none ({@link storedUpstreamResolver}).
+    */
+   readonly upstream: string | undefined;
 }
 
 /**
@@ -258,13 +277,34 @@ function combine(srcs: readonly Src[]): Src {
 }
 
 /** The column `path` (read from the entry point or not), as a {@link Src}. */
-function column(path: readonly string[], entry: boolean): Src {
+function column(
+   path: readonly string[],
+   entry: boolean,
+   live: boolean,
+   upstream: string | undefined,
+): Src {
    return {
       kind: "columns",
       cols: new Map([
-         [`${entry ? "e" : "x"}\u0000${path.join("\u0000")}`, { path, entry }],
+         [
+            `${entry ? "e" : "x"}\u0000${path.join("\u0000")}`,
+            { path, entry, names: [path[path.length - 1]], live, upstream },
+         ],
       ]),
    };
+}
+
+/** `src` with `name` among the names each of its columns goes by. */
+function alias(src: Src, name: unknown): Src {
+   if (src.kind !== "columns" || typeof name !== "string") return src;
+   const cols = new Map<string, Col>();
+   for (const [k, c] of src.cols) {
+      cols.set(
+         k,
+         c.names.includes(name) ? c : { ...c, names: [...c.names, name] },
+      );
+   }
+   return { kind: "columns", cols };
 }
 
 /** Nodes whose value is not a string, whatever their operands are. */
@@ -289,8 +329,25 @@ const NON_STRING_NODES = new Set([
 /** A path's records, by its key, and whether each is read from the entry point. */
 class Reads {
    readonly paths = new Map<string, readonly string[]>();
+   /** Each entry path's names, by its key. */
+   readonly names = new Map<string, Set<string>>();
+   /** The keys of entry paths every read of which is of a known-live source. */
+   readonly live = new Map<string, boolean>();
+   /**
+    * Each entry path's stored upstream, by its key: undefined when any read
+    * of it reaches none, or two reads reach different ones.
+    */
+   readonly upstreams = new Map<string, string | undefined>();
    /** A read that is not a path from the entry point (an inner query's base). */
    elsewhere = false;
+   /**
+    * Those reads' columns, by key: the names each goes by and its stored
+    * upstream, as for an entry path's.
+    */
+   readonly elsewhereColumns = new Map<
+      string,
+      { names: Set<string>; upstream: string | undefined }
+   >();
    /** A string under the database's default collation was compared. */
    literal = false;
    /** The columns one value combines, which must hold one collation. */
@@ -303,10 +360,36 @@ class Reads {
       }
       if (src.kind !== "columns") return;
       const group: (readonly string[])[] = [];
-      for (const c of src.cols.values()) {
-         if (!c.entry) this.elsewhere = true;
-         else {
-            this.paths.set(c.path.join("\u0000"), c.path);
+      for (const [k, c] of src.cols) {
+         if (!c.entry) {
+            this.elsewhere = true;
+            const seen = this.elsewhereColumns.get(k);
+            if (seen === undefined) {
+               this.elsewhereColumns.set(k, {
+                  names: new Set(c.names),
+                  upstream: c.upstream,
+               });
+            } else {
+               for (const n of c.names) seen.names.add(n);
+               if (seen.upstream !== c.upstream) seen.upstream = undefined;
+            }
+         } else {
+            const key = c.path.join("\u0000");
+            this.paths.set(key, c.path);
+            let names = this.names.get(key);
+            if (names === undefined) {
+               names = new Set();
+               this.names.set(key, names);
+            }
+            for (const n of c.names) names.add(n);
+            this.live.set(key, (this.live.get(key) ?? true) && c.live);
+            const seen = this.upstreams.has(key);
+            this.upstreams.set(
+               key,
+               !seen || this.upstreams.get(key) === c.upstream
+                  ? c.upstream
+                  : undefined,
+            );
             group.push(c.path);
          }
       }
@@ -326,11 +409,16 @@ class ResultReadWalk {
    private steps = 0;
    /** Each join's `on` and each inner query, walked once. */
    private readonly walked = new Set<unknown>();
+   /** The stored upstream a column's owner is read from. */
+   private readonly upstreamOf: (owner: unknown) => string | undefined;
 
    constructor(
       private readonly modelDef: unknown,
       private readonly stored: ReadonlySet<string>,
-   ) {}
+      private readonly storedSources: ReadonlySet<string>,
+   ) {
+      this.upstreamOf = storedUpstreamResolver(modelDef, stored);
+   }
 
    private tooDeep(): boolean {
       return ++this.steps > 8192;
@@ -377,6 +465,29 @@ class ResultReadWalk {
 
    /** The queries of the stored query-shaped sources the model names. */
    private storedQueries?: Set<string>;
+
+   /**
+    * Whether a column of `owner` is known to be read live, so no stored
+    * table's collation can change it: the answer names the sources whose
+    * tables it reads by ID, and `owner` is a table or SQL source of its own
+    * whose ID is not one of them (the parent beside a joined rollup, say).
+    * A query-shaped source, one with no ID, or an answer that names no
+    * source is not known live: its columns are judged. The stored-side
+    * check still judges such a column wherever a stored table holds it.
+    */
+   knownLive(owner: unknown): boolean {
+      if (this.storedSources.size === 0) return false;
+      const s = owner as
+         | { sourceID?: unknown; query?: unknown; type?: unknown }
+         | undefined;
+      if (typeof s?.sourceID !== "string" || s.query !== undefined) {
+         return false;
+      }
+      if (this.storedSources.has(s.sourceID) || this.isStored(owner)) {
+         return false;
+      }
+      return s.type === "table" || s.type === "sql_select";
+   }
 
    /** The source a query-shaped source's query runs on, or undefined. */
    private baseOf(query: { structRef?: unknown }): unknown {
@@ -511,14 +622,17 @@ class ResultReadWalk {
       mode: Mode,
       stage: Stage,
    ): Src {
+      // The stage's output name is one more the value goes by (a stored
+      // result's table holds its outputs by it).
+      const output = qf.as ?? qf.name;
       if (qf.type === "fieldref" && Array.isArray(qf.path)) {
-         return this.field(input, qf.path as string[], mode);
+         return alias(this.field(input, qf.path as string[], mode), output);
       }
       if (qf.type === "turtle") return NONE;
       if (qf.e !== undefined) {
          if (mode === "trace" && nonStringType(qf.type)) return NONE;
          const src = this.expr(qf.e, input, mode, stage);
-         return nonStringType(qf.type) ? NONE : src;
+         return nonStringType(qf.type) ? NONE : alias(src, output);
       }
       this.unresolved = true;
       return NONE;
@@ -570,7 +684,7 @@ class ResultReadWalk {
       if (f.e !== undefined) {
          if (mode === "trace" && nonStringType(f.type)) return NONE;
          const src = this.expr(f.e, at, mode, undefined);
-         return nonStringType(f.type) ? NONE : src;
+         return nonStringType(f.type) ? NONE : alias(src, last);
       }
       if (f.join !== undefined) return NONE;
       const query = (owner as { query?: unknown }).query;
@@ -595,15 +709,26 @@ class ResultReadWalk {
          };
          for (const stage of stages) s = { kind: "stage", stage, input: s };
          // A rename keeps the stage output's own name.
-         return this.field(
-            s,
-            [typeof f.name === "string" ? f.name : last],
-            "trace",
+         return alias(
+            this.field(
+               s,
+               [typeof f.name === "string" ? f.name : last],
+               "trace",
+            ),
+            last,
          );
       }
       return nonStringType(f.type)
          ? NONE
-         : column([...prefix, last], scope.entry);
+         : alias(
+              column(
+                 [...prefix, last],
+                 scope.entry,
+                 this.knownLive(owner),
+                 this.upstreamOf(owner),
+              ),
+              f.name,
+           );
    }
 
    /**
@@ -631,6 +756,34 @@ class ResultReadWalk {
       const own = (owner as { primaryKey?: unknown }).primaryKey;
       if (typeof own === "string") {
          this.consume(this.field(at, [own], "trace"), "group");
+      }
+   }
+
+   /**
+    * The `where:`s of `source` and of every source joined to it, however
+    * deep, each judged in its own scope, used by the query or not: a chained
+    * build applies them over the stored tables, and a join a measure counts
+    * through (`k.count()`) reads none of its fields, so is not otherwise
+    * reached.
+    */
+   sourceFilters(source: unknown, prefix: readonly string[], depth = 0): void {
+      if (depth > 16 || this.tooDeep()) {
+         this.unresolved = true;
+         return;
+      }
+      const at: Scope = { kind: "source", source, prefix, entry: true };
+      for (const f of asArray(
+         (source as { filterList?: unknown }).filterList,
+      )) {
+         this.expr((f as { e?: unknown }).e, at, "judge", undefined);
+      }
+      for (const j of fieldsOf(source).values()) {
+         if (j.join === undefined) continue;
+         this.inner(j);
+         if (j.onExpression !== undefined) {
+            this.expr(j.onExpression, at, "judge", undefined);
+         }
+         this.sourceFilters(j, [...prefix, activeName(j)], depth + 1);
       }
    }
 
@@ -889,10 +1042,23 @@ function readsOf(
    unresolved: boolean,
    equalityOnly: boolean,
 ): GateReads {
-   const entryPaths = [...reads.paths.values()];
+   const keys = [...reads.paths.keys()];
+   const entryPaths = keys.map((k) => reads.paths.get(k)!);
+   const livePaths = keys
+      .filter((k) => reads.live.get(k) === true)
+      .map((k) => reads.paths.get(k)!);
    return {
       names: new Set(entryPaths.flat()),
-      columns: entryPaths.map((p) => [p[p.length - 1]]),
+      columns: keys.map((k) => [...(reads.names.get(k) ?? [])]),
+      columnUpstreams: keys.map((k) => reads.upstreams.get(k)),
+      ...(reads.elsewhereColumns.size > 0
+         ? {
+              elsewhereColumns: [...reads.elsewhereColumns.values()].map(
+                 (c) => ({ names: [...c.names], upstream: c.upstream }),
+              ),
+           }
+         : {}),
+      ...(livePaths.length > 0 ? { livePaths } : {}),
       unresolved,
       scoped: false,
       gated: false,
@@ -916,7 +1082,16 @@ function readsOf(
 export async function resultReadsOfQuery(
    runnable: QueryMaterializer,
    stored: ReadonlySet<string>,
-   options: { fromStage: number; orderOnly?: number },
+   options: {
+      fromStage: number;
+      orderOnly?: number;
+      /**
+       * Every source, by ID, whose table the answer reads: `stored`, and a
+       * rollup's base. Only {@link ResultReadWalk.knownLive} reads it; absent,
+       * `stored`.
+       */
+      storedSources?: ReadonlySet<string>;
+   },
 ): Promise<ResultReads | undefined> {
    try {
       const prepared = await readPreparedQuery(runnable);
@@ -935,7 +1110,11 @@ export async function resultReadsOfQuery(
       const entry =
          resolved !== null && typeof resolved === "object" ? resolved : named;
       if (entry === undefined) return undefined;
-      const walk = new ResultReadWalk(prepared.modelDef, stored);
+      const walk = new ResultReadWalk(
+         prepared.modelDef,
+         stored,
+         options.storedSources ?? stored,
+      );
       // A query-shaped entry point's own query, which every answer reads.
       walk.inner(entry);
       walk.pipeline(
@@ -959,4 +1138,121 @@ export async function resultReadsOfQuery(
    } catch {
       return undefined;
    }
+}
+
+/**
+ * What a chained `storage=` build computes over its stored upstreams depends
+ * on the order or the equality of strings for, read with the build's base as
+ * the entry point, or undefined when it cannot be read. The build runs on the
+ * destination, byte-exact, so each string it groups, compares or orders must
+ * compare there as the base's source compares it live.
+ *
+ * `runnable` is a query on the base (by name). With `downstream`, the build
+ * computes that query-shaped source's own query, which must run on the same
+ * base; without, the runnable's own pipeline (a rollup's grouping). Either is
+ * read as an inner query: its last stage's order is not a table's. The
+ * filters inside its stages (a `where:`, a `having:`, a filtered measure's)
+ * are the query-filter check's, over the returned `stages`; the base's own
+ * `where:`s, and every joined source's and `on`, are read here.
+ */
+export async function chainBuildReadsOfQuery(
+   runnable: QueryMaterializer,
+   stored: ReadonlySet<string>,
+   downstream?: string,
+): Promise<(ResultReads & { stages: readonly unknown[] }) | undefined> {
+   try {
+      const prepared = await readPreparedQuery(runnable);
+      if (prepared.modelDef === undefined) return undefined;
+      const entry = resolveStructRefSource(
+         prepared.structRef as never,
+         prepared.modelDef as never,
+      ) as { dialect?: unknown } | undefined;
+      if (entry === undefined) return undefined;
+      let stages: unknown = prepared.pipeline;
+      if (downstream !== undefined) {
+         const contents = (
+            prepared.modelDef as { contents?: Record<string, unknown> }
+         ).contents;
+         const query = (
+            contents?.[downstream] as
+               | { query?: { structRef?: unknown; pipeline?: unknown } }
+               | undefined
+         )?.query;
+         // The downstream's query must run on the runnable's entry point,
+         // named, or handed as its struct (a source imported from another
+         // file is).
+         const entryName = baseNameOf(prepared.structRef, contents);
+         if (
+            entryName === undefined ||
+            baseNameOf(query?.structRef, contents) !== entryName
+         ) {
+            return undefined;
+         }
+         stages = query?.pipeline;
+      }
+      if (!Array.isArray(stages)) return undefined;
+      const walk = new ResultReadWalk(prepared.modelDef, stored, stored);
+      const scope: Scope = {
+         kind: "source",
+         source: entry,
+         prefix: [],
+         entry: true,
+      };
+      walk.inner(entry);
+      // The base's own `where:`s and its joins', which the build applies
+      // again over the stored tables (a stored base's too: its re-root
+      // keeps them).
+      walk.sourceFilters(entry, []);
+      walk.pipeline(stages as Stage[], scope, { fromStage: 0, inner: true });
+      return {
+         stages,
+         ordered: readsOf(walk.ordered, walk.unresolved, false),
+         grouped: readsOf(walk.grouped, walk.unresolved, true),
+         stringCollation: capabilitiesOf(
+            typeof entry.dialect === "string" ? entry.dialect : "",
+         ).stringCollation,
+      };
+   } catch {
+      return undefined;
+   }
+}
+
+/** The base a query-shaped source's own query runs on, by name, or undefined. */
+export async function chainBuildBaseOf(
+   runnable: QueryMaterializer,
+   downstream: string,
+): Promise<string | undefined> {
+   try {
+      const prepared = await readPreparedQuery(runnable);
+      const contents = (
+         prepared.modelDef as { contents?: Record<string, unknown> } | undefined
+      )?.contents;
+      return baseNameOf(
+         (
+            contents?.[downstream] as
+               | { query?: { structRef?: unknown } }
+               | undefined
+         )?.query?.structRef,
+         contents,
+      );
+   } catch {
+      return undefined;
+   }
+}
+
+/**
+ * The model's name for the source a query runs on: its reference, or the
+ * name declaring the inlined source by its `sourceID`, when exactly one does.
+ */
+function baseNameOf(
+   ref: unknown,
+   contents: Record<string, unknown> | undefined,
+): string | undefined {
+   if (typeof ref === "string") return ref;
+   const id = (ref as { sourceID?: unknown } | undefined)?.sourceID;
+   if (typeof id !== "string") return undefined;
+   const names = Object.entries(contents ?? {})
+      .filter(([, d]) => (d as { sourceID?: unknown })?.sourceID === id)
+      .map(([name]) => name);
+   return names.length === 1 ? names[0] : undefined;
 }

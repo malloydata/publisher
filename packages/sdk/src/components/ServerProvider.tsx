@@ -14,13 +14,11 @@ import React, {
 } from "react";
 import {
    ConnectionsApi,
-   DashboardsApi,
    DataAppsApi,
    DatabasesApi,
    EnvironmentsApi,
    MaterializationsApi,
    ModelsApi,
-   NotebooksApi,
    PackagesApi,
    AgentsApi,
    PublisherApi,
@@ -189,9 +187,7 @@ const getApiClients = (
       environments: new EnvironmentsApi(config, basePath, axiosInstance),
       packages: new PackagesApi(config, basePath, axiosInstance),
       agents: new AgentsApi(config, basePath, axiosInstance),
-      dashboards: new DashboardsApi(config, basePath, axiosInstance),
       dataApps: new DataAppsApi(config, basePath, axiosInstance),
-      notebooks: new NotebooksApi(config, basePath, axiosInstance),
       reports: new ReportsApi(config, basePath, axiosInstance),
       connections: new ConnectionsApi(config, basePath, axiosInstance),
       databases: new DatabasesApi(config, basePath, axiosInstance),

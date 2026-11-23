@@ -5,6 +5,7 @@ import { describe, expect, it } from "bun:test";
 import type { components } from "../../../api";
 import { computeServeVerdicts, type ServeVerdictFacts } from "./serve_verdict";
 import { reachableSourceIDs } from "../text/source_map";
+import { verdictWarnings } from "../package_warnings";
 
 type PersistSourcePlan = components["schemas"]["PersistSourcePlan"];
 
@@ -565,6 +566,26 @@ describe("computeServeVerdicts", () => {
       ]);
    });
 
+   it("says a bound database table whose build recorded no column types answers live, not stale", () => {
+      const [verdict] = computeServeVerdicts(
+         facts([plan("orders")], {
+            boundEntityIds: new Set(["entity-orders"]),
+            // Left out of the pinned manifest by the bind, as a stale one is.
+            freshEntityIds: new Set(),
+            typesUnrecordedEntityIds: new Set(["entity-orders"]),
+         }),
+      );
+      expect(verdict).toMatchObject({
+         verdict: "live",
+         reason: "types_unrecorded",
+      });
+      expect(verdict.message).toContain("recorded no column types");
+      expect(verdict.fixes?.join(" ")).toContain("Rebuild");
+      expect(verdictWarnings([verdict]).map((w) => w.code)).toEqual([
+         "materialization-types-unrecorded",
+      ]);
+   });
+
    // P13: a deployment the source cannot be written into is a publish
    // warning, and the source serves live.
    describe("deployment facts", () => {
@@ -687,6 +708,50 @@ describe("reachableSourceIDs", () => {
       ]);
    });
 
+   // A source no model's copy reads, as the facade's outcome reports it.
+   const NOT_READ = {
+      serves: false,
+      notServedIn: [
+         { model: "m.malloy", reasons: ["cross_connection_unbuilt"] },
+      ],
+   };
+
+   it("judges a #(materialize) and a #@ persist source alike when no copy reads its table", () => {
+      const judged = (materialize: "serves" | undefined) =>
+         computeServeVerdicts(
+            facts([plan("orders")], {
+               boundEntityIds: new Set(["entity-orders"]),
+               materialize: () => materialize,
+               servedCopyOutcome: () => NOT_READ,
+            }),
+         )[0];
+      const shape = (v: ReturnType<typeof judged>) => ({
+         verdict: v.verdict,
+         reason: v.reason,
+         notServedIn: v.notServedIn,
+      });
+      expect(shape(judged("serves"))).toEqual(shape(judged(undefined)));
+      expect(shape(judged(undefined))).toEqual({
+         verdict: "live",
+         reason: "served_copy",
+         notServedIn: NOT_READ.notServedIn,
+      });
+   });
+
+   it("keeps a source another model serves serves, naming the models that do not", () => {
+      const v = computeServeVerdicts(
+         facts([plan("orders")], {
+            boundEntityIds: new Set(["entity-orders"]),
+            materialize: () => undefined,
+            servedCopyOutcome: () => ({ ...NOT_READ, serves: true }),
+         }),
+      )[0];
+      expect(v).toMatchObject({
+         verdict: "serves",
+         notServedIn: NOT_READ.notServedIn,
+      });
+   });
+
    it("judges a #(materialize) source by the served copy, not the serve shape", () => {
       const bound = {
          boundStorageNames: new Set(["orders"]),
@@ -700,7 +765,9 @@ describe("reachableSourceIDs", () => {
          computeServeVerdicts(
             facts([plan("orders", extra)], {
                ...bound,
-               materialize: () => state,
+               materialize: () => (state === "not_served" ? "serves" : state),
+               servedCopyOutcome: () =>
+                  state === "not_served" ? NOT_READ : undefined,
             }),
          )[0];
       expect(verdictWith("serves")).toMatchObject({ verdict: "serves" });
@@ -724,7 +791,9 @@ describe("reachableSourceIDs", () => {
          computeServeVerdicts(
             facts([plan("orders")], {
                boundEntityIds: bound,
-               materialize: () => state,
+               materialize: () => (state === "not_served" ? "serves" : state),
+               servedCopyOutcome: () =>
+                  state === "not_served" ? NOT_READ : undefined,
             }),
          )[0];
       expect(databaseWith("serves")).toMatchObject({ verdict: "serves" });

@@ -68,6 +68,27 @@ source: vgn is t -> { group_by: amt; aggregate: n is count(), s is amt.sum() } e
 source: vgb is t -> { group_by: amt; aggregate: nb } extend {
   dimension: many is nb > 2
 }
+
+source: te is duckdb.sql("SELECT TIMESTAMP '2026-01-01 00:00:00' AS ts, 2 AS amt") extend {
+  dimension: age_hours is hours(ts to now)
+}
+
+source: tm is t extend {
+  measure: mf is max(category) { where: category > 'M' }
+  measure: mp is max(pick 'x' when category > 'M' else null)
+  measure: np is sum(pick 1 when category > 'M' else 0)
+  measure: nd is count(category)
+  measure: np_ok is amt.sum() * 2 + c + count(amt)
+}
+
+source: tj is duckdb.sql("SELECT 1 AS oid, 'Books' AS cat") extend {
+  join_one: tt is t on cat = tt.category
+  join_one: tn is t on oid = tn.id
+}
+
+source: vr is t -> { group_by: category; order_by: category; calculate: rn is row_number() } extend {
+  dimension: first is rn = 1
+}
 `;
 
 let conn: DuckDBConnection;
@@ -180,6 +201,19 @@ describe("queryFilterReadsOfQuery: the caller's own filters", () => {
             )
          ).comparesNoString,
       ).toBe(false);
+   });
+
+   // Strict-origin mode: a time difference and arithmetic were read as
+   // possibly comparing a string, so a non-binary origin declined them.
+   it("compares no string for a time difference or arithmetic", async () => {
+      for (const q of [
+         "run: te -> { where: age_hours > 700; aggregate: n is count() }",
+         "run: te -> { where: hours(ts to now) > 700; aggregate: n is count() }",
+         "run: te -> { where: amt * 2 > 3, amt / 2 > 0, amt % 2 = 0; aggregate: n is count() }",
+         "run: te -> { where: amt + 1 > amt - 1, -amt < 0; aggregate: n is count() }",
+      ]) {
+         expect((await reads(q)).comparesNoString, q).toBe(true);
+      }
    });
 
    it("reads a view's filter and a nest's filter", async () => {
@@ -298,6 +332,185 @@ describe("queryFilterReadsOfQuery: the caller's own filters", () => {
          const r = await reads(q);
          expect(r.comparesNoString, q).toBe(true);
          expect(r.scoped, q).toBe(false);
+      }
+   });
+
+   it("reads a later stage's filter on a window function through what orders and partitions it", async () => {
+      // The dimensional indexer's shard-boundary query: `rn` is a number, but
+      // which row is 1 follows the order of `category`.
+      for (const q of [
+         "run: t -> { group_by: value is category order_by: value calculate: rn is row_number() } -> { where: rn = 1 or rn = 2 select: rn, value order_by: rn }",
+         "run: t -> { group_by: category order_by: category calculate: rn is row_number() } -> { where: rn = 1 select: category }",
+         "run: t -> { group_by: value is category, id calculate: r is rank() { partition_by: value order_by: id } } -> { where: r = 1 select: value }",
+         "run: t -> { group_by: value is category order_by: value calculate: p is lag(value) } -> { where: p = 'books' select: value }",
+      ]) {
+         const r = await reads(q);
+         expect(r.unresolved, q).toBe(false);
+         expect(r.comparesNoString, q).toBe(false);
+         expect(r.equalityOnly, q).toBe(false);
+         expect(r.entryPaths, q).toContainEqual(["category"]);
+         expect(r.entryPathsComplete, q).toBe(true);
+      }
+      // Ordered by a number alone, it compares no string.
+      const byNumber = await reads(
+         "run: t -> { group_by: id order_by: id calculate: rn is row_number() } -> { where: rn = 1 select: id }",
+      );
+      expect(byNumber.unresolved).toBe(false);
+      expect(byNumber.entryPaths).toEqual([["id"]]);
+      // Ordered by a string computed in the stage: no path from the entry point.
+      const computed = await reads(
+         "run: t -> { group_by: k is concat(category, '-x') order_by: k calculate: rn is row_number() } -> { where: rn = 1 select: k }",
+      );
+      expect(computed.unresolved).toBe(false);
+      expect(computed.comparesNoString).toBe(false);
+      expect(computed.entryPathsComplete).toBe(false);
+   });
+
+   it("still reads a window function it cannot follow as unread", async () => {
+      // Ordered by an aggregate: what the count groups by is not followed.
+      const r = await reads(
+         "run: t -> { group_by: category; aggregate: n is count() order_by: n desc calculate: rn is row_number() } -> { where: rn = 1 select: category }",
+      );
+      expect(r.unresolved).toBe(true);
+      expect(r.comparesNoString).toBe(false);
+   });
+
+   it("leaves a query-shaped source's own window function unread, as a gate reads it", async () => {
+      // Only the caller's own stages are followed through a window function.
+      const r = await reads("run: vr -> { where: first; select: category }");
+      expect(r.unresolved).toBe(true);
+      expect(r.comparesNoString).toBe(false);
+   });
+
+   it("reads a null test of a string column as comparing no string, and only that", async () => {
+      for (const q of [
+         "run: t -> { where: category is not null; select: id }",
+         "run: t -> { where: category is null and amt > 1; select: id }",
+         "run: t -> { aggregate: x is count() { where: category is not null } }",
+      ]) {
+         const r = await reads(q);
+         expect(r.comparesNoString, q).toBe(true);
+         expect(r.entryPaths, q).toEqual([]);
+      }
+      for (const q of [
+         "run: t -> { where: category = ''; select: id }",
+         "run: t -> { where: category is null or category = 'x'; select: id }",
+         "run: t -> { where: nullif(category, 'x') is null; select: id }",
+         "run: t -> { where: lc is null; select: id }",
+         "run: t -> { where: late is null; select: id }",
+      ]) {
+         expect((await reads(q)).comparesNoString, q).toBe(false);
+      }
+   });
+
+   it("reads a having: on a measure through its definition: its filters and what it aggregates", async () => {
+      for (const q of [
+         "run: tm -> { group_by: id; aggregate: n is count(); having: mf is null }",
+         "run: tm -> { group_by: id; aggregate: n is count(); having: mp is null }",
+         "run: tm -> { group_by: id; aggregate: n is count(); having: np > 0 }",
+      ]) {
+         const r = await reads(q);
+         expect(r.comparesNoString, q).toBe(false);
+         expect(r.scoped, q).toBe(true);
+         expect(r.entryPaths, q).toContainEqual(["category"]);
+      }
+      // An ordering inside the measure: equality alone is not enough.
+      expect(
+         (
+            await reads(
+               "run: tm -> { group_by: id; aggregate: n is count(); having: np > 0 }",
+            )
+         ).equalityOnly,
+      ).toBe(false);
+      expect(
+         (
+            await reads(
+               "run: tm -> { group_by: id; aggregate: n is count(); having: np_ok > 0 }",
+            )
+         ).comparesNoString,
+      ).toBe(true);
+   });
+
+   it("reads a having: on an aggregate output through what it aggregates, never on trust", async () => {
+      for (const q of [
+         // An output naming a measure, and one computing it inline.
+         "run: tm -> { group_by: id; aggregate: x is np; having: x > 0 }",
+         "run: tm -> { group_by: id; aggregate: x is sum(pick 1 when category > 'M' else 0); having: x > 0 }",
+         // A distinct count of a string counts what a collation tells apart.
+         "run: tm -> { group_by: id; aggregate: n is count(); having: nd > 1 }",
+         "run: tm -> { group_by: id; aggregate: x is count(category); having: x > 1 }",
+         // `max` of a string orders it.
+         "run: tm -> { group_by: id; aggregate: n is count(); having: mx is null }",
+         // Through a join whose on: compares strings.
+         "run: tj -> { group_by: oid; aggregate: x is tt.amt.sum(); having: x > 0 }",
+      ]) {
+         const r = await reads(q);
+         expect(r.comparesNoString, q).toBe(false);
+         expect(r.scoped, q).toBe(true);
+      }
+      for (const q of [
+         "run: tm -> { group_by: id; aggregate: x is amt.sum(); having: x > 0 }",
+         "run: tm -> { group_by: id; aggregate: x is count(amt); having: x > 1 }",
+         "run: tj -> { group_by: oid; aggregate: x is tn.amt.sum(); having: x > 0 }",
+      ]) {
+         expect((await reads(q)).comparesNoString, q).toBe(true);
+      }
+   });
+
+   it("reads a later stage's having: on an aggregate of an earlier stage's computed output back to it", async () => {
+      for (const q of [
+         "run: tm -> { select: id, big is pick 1 when category > 'M' else 0 } -> { group_by: id; aggregate: x is big.sum(); having: x > 0 }",
+         "run: tm -> { group_by: id; aggregate: y is np } -> { group_by: id; aggregate: x is y.sum(); having: x > 0 }",
+         "run: tm -> { select: id, big is pick 1 when category > 'M' else 0 } -> { select: id, b2 is big } -> { group_by: id; aggregate: x is b2.sum(); having: x > 0 }",
+      ]) {
+         const r = await reads(q);
+         expect(r.comparesNoString, q).toBe(false);
+         expect(r.scoped, q).toBe(true);
+      }
+      for (const q of [
+         "run: tm -> { select: id, amt } -> { select: id, a2 is amt } -> { group_by: id; aggregate: x is a2.sum(); having: x > 0 }",
+      ]) {
+         expect((await reads(q)).comparesNoString, q).toBe(true);
+      }
+   });
+
+   it("reads a numeric pick as comparing no string, and a pick comparing or yielding a string as comparing one", async () => {
+      for (const q of [
+         "run: tm -> { group_by: id; aggregate: x is sum(pick 1 when amt > 1 else 0); having: x > 0 }",
+         "run: tm -> { select: id, p is pick 1 when amt > 1 else 0 } -> { where: p > 0; select: id }",
+         "run: tm -> { select: id, p is pick amt when amt > 1 else 0 } -> { group_by: id; aggregate: x is p.sum(); having: x > 0 }",
+         "run: tm -> { group_by: id; aggregate: y is sum(pick 1 when amt > 1 else 0) } -> { group_by: id; aggregate: x is y.sum(); having: x > 0 }",
+         "run: tm -> { select: id, a2 is amt * 2 } -> { group_by: id; aggregate: x is a2.sum(); having: x > 0 }",
+      ]) {
+         expect((await reads(q)).comparesNoString, q).toBe(true);
+      }
+      for (const q of [
+         // A condition comparing a string, directly or through a dimension.
+         "run: tm -> { select: id, p is pick 1 when category > 'M' else 0 } -> { where: p > 0; select: id }",
+         "run: tm -> { select: id, p is pick 1 when is_books else 0 } -> { where: p > 0; select: id }",
+         // A branch yielding a string, or computed from one.
+         "run: tm -> { select: id, p is pick 'a' when amt > 1 else 'b' } -> { where: p > 'a'; select: id }",
+         "run: tm -> { select: id, p is pick 1 when amt > 1 else length(category) } -> { where: p > 0; select: id }",
+         "run: tm -> { group_by: id; aggregate: x is count(pick category when amt > 1 else null); having: x > 0 }",
+         "run: tm -> { select: id, big is pick 1 when category > 'M' else 0 } -> { select: id, b2 is big * 2 } -> { group_by: id; aggregate: x is b2.sum(); having: x > 0 }",
+      ]) {
+         expect((await reads(q)).comparesNoString, q).toBe(false);
+      }
+   });
+
+   it("reads a field through a join whose on: compares strings as comparing one, a null test included", async () => {
+      for (const q of [
+         "run: tj -> { where: tt.category is null; select: oid }",
+         "run: tj -> { where: tt.id is null; select: oid }",
+         "run: tj -> { where: tt.amt > 1; select: oid }",
+      ]) {
+         expect((await reads(q)).comparesNoString, q).toBe(false);
+      }
+      for (const q of [
+         "run: tj -> { where: tn.category is null; select: oid }",
+         "run: tj -> { where: tn.amt > 1; select: oid }",
+      ]) {
+         expect((await reads(q)).comparesNoString, q).toBe(true);
       }
    });
 

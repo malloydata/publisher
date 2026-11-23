@@ -57,12 +57,24 @@ interface MaterializationPackage extends BuildPlanPackage {
     */
    forgetKeyUniqueness(sourceEntityIds: Iterable<string>): void;
    /**
+    * The bound tables a bind found incompatible with their contracts, by
+    * address, which a standalone run rebuilds in full rather than carry.
+    */
+   incompatibleTables?(
+      prior?: Readonly<Record<string, ManifestEntry>>,
+   ): ReadonlySet<string>;
+   /**
     * The text a chained `storage=` build compiles on its destination alone:
     * the request's downstream, with each stored upstream the request carries
     * re-rooted as the served copy re-roots it, from those entries alone and
     * never the package's bound tables.
     */
    chainBuildText(request: ChainBuildRequest): ChainBuildText;
+   /**
+    * The drift handler, for a build that found an upstream's table not as
+    * its plan recorded it: read the tables and derive the plan again.
+    */
+   reportIncompatible?(handles: readonly string[]): void;
    /**
     * The tables the newest auto-run of this package lists as kept after a
     * rename, which its warnings name (`table-kept`).
@@ -132,6 +144,12 @@ export interface MaterializationEnvironment {
     */
    getStaleCompileErrors(): ReadonlyMap<string, unknown>;
    withPackageLock<T>(packageName: string, fn: () => Promise<T>): Promise<T>;
+   /**
+    * Whether a compiled copy of the package is in memory; never loads it
+    * (`Environment.hasLoadedPackage`). A run's start reads it under the
+    * package's lock, so a package a delete removed starts no build.
+    */
+   hasLoadedPackage(packageName: string): boolean;
 
    getVersionService(): MaterializationVersions | null;
    /**

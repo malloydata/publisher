@@ -21,11 +21,11 @@ import { describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import * as path from "path";
 import {
-   bigQueryQueryLabelValue,
    snowflakeSessionCheckSQL,
    snowflakeSessionParitySQL,
    snowflakeSetQueryTagSQL,
-} from "./build_query_tag";
+} from "./passthrough/snowflake";
+import { bigQueryQueryLabelValue } from "./passthrough/bigquery";
 import { DatabaseTier, swapIntoPlace } from "./database_build_strategy";
 import { capturedNativeSchema } from "./database_native_types";
 import { describeDialects } from "../domain/dialect";
@@ -40,7 +40,7 @@ import {
    pairDeltaStatements,
    lateRowsSql,
    probeMaxWatermark,
-   probePostgresVersion,
+   probeServerVersion,
    probeStoredWatermark,
    probeTargetColumns,
    renderSqlBound,
@@ -239,7 +239,7 @@ async function statements(): Promise<Record<string, unknown>> {
    });
    {
       const r = recorder();
-      await probePostgresVersion(r.run);
+      await probeServerVersion(r.run, "postgres");
       out.probePostgresVersion = r.statements;
    }
    out.renderSqlBound = perDialect((d) =>

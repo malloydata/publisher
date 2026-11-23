@@ -121,3 +121,54 @@ describe("assertSingleSelect", () => {
       );
    });
 });
+
+describe("assertSingleSelect judges the text as the DuckDB connector will run it", () => {
+   // @malloydata/db-duckdb splits raw SQL on its statement separator wherever
+   // it appears and runs every part, while DuckDB's parser reads the separator
+   // as the start of a line comment. So the gate refuses the separator itself.
+   const separated: [string, string][] = [
+      [
+         "a statement placed after it on the same line",
+         "SELECT 1 AS one -- hack: split on this SET memory_limit='256MB'",
+      ],
+      [
+         "a statement placed after it on the next line",
+         "SELECT 1 AS one -- hack: split on this\nSELECT 2 AS two",
+      ],
+      ["it inside a string literal", "SELECT '-- hack: split on this' AS s"],
+      ["it inside a block comment", "SELECT 1 /* -- hack: split on this */"],
+      ["it alone, trailing a SELECT", "SELECT 1 -- hack: split on this"],
+   ];
+
+   for (const kind of [
+      "managed database",
+      "locked-down DuckDB connection",
+   ] as const) {
+      it.each(separated)(
+         `refuses %s with a 400 on a ${kind}, without echoing the SQL`,
+         async (_label, sql) => {
+            const refused = assertSingleSelect("sales", sql, kind);
+            await expect(refused).rejects.toBeInstanceOf(BadRequestError);
+            await expect(refused).rejects.toThrow(`'sales' is a ${kind}`);
+            await expect(refused).rejects.toThrow("statement separator");
+            await expect(refused).rejects.not.toThrow("memory_limit");
+         },
+      );
+   }
+
+   it("still lets a plain SELECT, and a comment that is not the separator, through", async () => {
+      await assertSingleSelect("sales", "SELECT 1 AS one");
+      await assertSingleSelect("sales", "SELECT 1 AS one -- hack: a note");
+      await assertSingleSelect(
+         "sales",
+         "SELECT 1 AS one",
+         "locked-down DuckDB connection",
+      );
+   });
+
+   it("still refuses a semicolon-separated script", async () => {
+      await expect(
+         assertSingleSelect("sales", "SELECT 1; SET memory_limit='256MB'"),
+      ).rejects.toThrow("runs only as a single SELECT");
+   });
+});

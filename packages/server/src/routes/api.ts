@@ -27,13 +27,13 @@ import {
    assertListingTakesNoVersionId,
    booleanParam,
    optionalBooleanParam,
+   createBodyWithVersionId,
    queryVersionRefOf,
    assertNoCollectionReload,
    assertNoDropTables,
    versionRefOf,
 } from "../route_params";
 import { processStorageDestinationsOrThrow } from "../service/connection_config";
-import { registerDeprecatedRoutes } from "./deprecated";
 import {
    apiRoute,
    legacyErrorBody,
@@ -762,8 +762,6 @@ function registerPackageRoutes(
          ),
       ),
    );
-
-   registerDeprecatedRoutes(app, apiPrefix, environmentStore, querySlots);
 }
 
 function registerQueryRoutes(
@@ -910,7 +908,7 @@ function registerMaterializationRoutes(
             materializationController.createMaterialization(
                req.params.environmentName,
                req.params.packageName,
-               req.body || {},
+               createBodyWithVersionId(req),
             ),
          { status: 201 },
       ),

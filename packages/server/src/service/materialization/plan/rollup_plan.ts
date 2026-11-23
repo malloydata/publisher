@@ -79,6 +79,7 @@ import { keyCheckPipeline } from "../text/key_check_text";
 import {
    primaryKeyOf,
    recordedTimezoneOf,
+   stageZonedTruncations,
    timezoneOf,
 } from "../../governance/ir/compiled_model";
 import type { ModelDef, SourceDef } from "@malloydata/malloy";
@@ -988,6 +989,11 @@ interface RollupFacts {
    /** The time zone the source sets, and whether a source in it joins it. */
    zone: ReturnType<typeof timezoneOf>;
    joinedInZone: boolean;
+   /**
+    * The timestamp truncations the source's query computed in a zone of its
+    * own ({@link stageZonedTruncations}).
+    */
+   stageZoned: ReadonlySet<string>;
    /** Whether a same-zone joiner reads a rollup placed in `storage` (none: database). */
    readInZone(storage: string | undefined): boolean;
    scope: Parameters<typeof decomposeMeasure>[1];
@@ -1139,6 +1145,7 @@ function rollupFactsOf(
       timeFields,
       zone,
       joinedInZone: joinersInZone.length > 0,
+      stageZoned: stageZonedTruncations(def),
       readInZone,
       scope,
       joinsRead,
@@ -1220,6 +1227,22 @@ function declarationRefusal(
          "time_zone",
          decl,
          `the source sets its own time zone (\`timezone: '${zone}'\`), and a query on it is never read from a rollup, whose stored times would be read in another zone, nor through a join (${noJoin}), so its table would cost a build no query reads`,
+      );
+   }
+   // A `storage=` rollup is read through a declaration that restates each
+   // timestamp truncation over its stored value in the reading query's zone,
+   // which truncates one its source's query computed in a zone of its own
+   // again and serves a wrong value, so such a rollup is not planned and its
+   // reads are answered live.
+   const stageZoned =
+      decl.storage === undefined
+         ? undefined
+         : decl.grain.find((g) => facts.stageZoned.has(g));
+   if (stageZoned !== undefined) {
+      return unservable(
+         "time_zone",
+         decl,
+         `its grain dimension \`${stageZoned}\` is a truncation its source's query computed in a zone of its own, which a \`storage=\` rollup would truncate again in the reading query's zone`,
       );
    }
    // A hidden grain dimension is stored and redeclared with its modifier on
@@ -1616,6 +1639,7 @@ function gateFieldNames(
             exprs: ["false"],
             route: "authorize",
             selfContained: true,
+            baseHops: 0,
          },
       ];
       unkeepable.add("(an unreadable gate)");
@@ -1623,6 +1647,15 @@ function gateFieldNames(
    for (const entry of entries) {
       // The walk's fail-closed deny: no entry point to graft on.
       if (!entry.struct) unkeepable.add("(an unreadable gate)");
+      // A row filter read through a `->` derivation filters the derivation's
+      // base before the derivation runs; the rollup's rows are the
+      // derivation's output, so no grain proves it exact there.
+      if (
+         entry.baseHops > 0 &&
+         canonicalAuthorizeRoute(entry.route) !== AUTHORIZE_ROUTE
+      ) {
+         unkeepable.add("(a row filter on a derivation's base)");
+      }
       for (const expr of entry.exprs) {
          for (const id of malloyIdentifiers(expr)) {
             const f = byName.get(id);

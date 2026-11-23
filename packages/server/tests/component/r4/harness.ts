@@ -15,8 +15,19 @@
  *
  * Today the served side is the v1 storage serve shape; materialization v2's
  * rewriter is checked against the same scenarios when it lands (phase 3).
+ *
+ * Strict-origin mode (`PUBLISHER_TEST_STRICT_ORIGIN=1`, off by default;
+ * src/test_helpers/conformance/strict_origin.ts has the whole contract): the
+ * scenario's origin DuckDB (and each extra origin) compares strings under
+ * `default_collation='nocase'`, the storage destination becomes a byte-exact
+ * DuckDB of its own (`storage=` tables computed on the origin and copied in
+ * through Parquet), a database table's schema and native-schema captures are
+ * read as failed, and every {@link R4Fixture.run} is recorded and held to one
+ * invariant: served equals live as strings. A spec reaching the destination
+ * through {@link R4Fixture.duckdb} reaches the origin instead under the switch.
  */
 
+import { captureTableContract } from "../../../src/service/materialization/run/column_contract_capture";
 import { storedKeyCheckSql } from "../../../src/service/materialization/text/key_check_text";
 import { expect, it } from "bun:test";
 import { tryCompileMaterializeCompanion } from "../../../src/service/materialization/plan/materialize_compile";
@@ -120,6 +131,12 @@ import {
    withOrdering,
 } from "../../../src/test_helpers/conformance/answer_difference";
 import { QueryPrivileges } from "../../../src/service/model_query_request";
+import {
+   declinesOf,
+   recordStrictCase,
+   STRICT_ORIGIN,
+   STRICT_ORIGIN_SETUP_SQL,
+} from "../../../src/test_helpers/conformance/strict_origin";
 
 /**
  * The storage destination every scenario builds into: the scenario's own
@@ -291,6 +308,11 @@ export interface R4Fixture {
    /** The scenario's database: its source tables and its stored ones. */
    duckdb: DuckDBConnection;
    /**
+    * The storage destination its `storage=` tables are built in: the
+    * scenario's database, or under strict-origin mode a database of its own.
+    */
+   destination: DuckDBConnection;
+   /**
     * With {@link R4Scenario.preaggregate}: each database `#(rollup)`
     * rollup built, by its generated source name, to the table it was built
     * into in the scenario's database.
@@ -336,6 +358,12 @@ export interface R4Fixture {
    rollupRefusals: { reason: string; sourceName: string }[];
    /** For a `#(materialize)` scenario: each source's plan, by its name. */
    materializePlans: Record<string, MaterializePlan>;
+   /** For a `#(materialize)` scenario: each source the plan refused, and why. */
+   materializeRefusals: {
+      sourceName: string;
+      reason: string;
+      message: string;
+   }[];
    /**
     * Read every database table's columns from the scenario's database, as a
     * package's bind reads them, and hold the bindings and the build manifest
@@ -345,6 +373,12 @@ export interface R4Fixture {
    observeDatabaseColumns(): Promise<{
       drifted: ObservedDrift[];
       unread: { sourceEntityId: string; reason: string }[];
+      /** Tables that no longer match their column contracts, left out. */
+      incompatible: {
+         sourceEntityId: string;
+         code: string;
+         columns: string[];
+      }[];
    }>;
    /** Rows of a stored table, by its physical name, with SQL over it. */
    storedSQL(
@@ -362,7 +396,13 @@ export function freshDuckDB(
    name: string,
    dir: string = scratchDir(),
 ): DuckDBConnection {
-   const connection = new DuckDBConnection(name, path.join(dir, `${name}.db`));
+   const connection = STRICT_ORIGIN
+      ? new DuckDBConnection({
+           name,
+           databasePath: path.join(dir, `${name}.db`),
+           setupSQL: STRICT_ORIGIN_SETUP_SQL,
+        })
+      : new DuckDBConnection(name, path.join(dir, `${name}.db`));
    opened.push(connection);
    return connection;
 }
@@ -458,12 +498,35 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
    let duckdb: DuckDBConnection;
    let pinned: PinnedClockDuckDB | undefined;
    if (scenario.clock !== undefined) {
-      pinned = new PinnedClockDuckDB("duckdb", path.join(dir, "duckdb.db"));
+      pinned = STRICT_ORIGIN
+         ? new PinnedClockDuckDB({
+              name: "duckdb",
+              databasePath: path.join(dir, "duckdb.db"),
+              setupSQL: STRICT_ORIGIN_SETUP_SQL,
+           })
+         : new PinnedClockDuckDB("duckdb", path.join(dir, "duckdb.db"));
       pinned.clock = scenario.clock;
       opened.push(pinned);
       duckdb = pinned;
    } else {
       duckdb = freshDuckDB("duckdb", dir);
+   }
+   // The storage destination: the scenario's own database, or under strict
+   // mode a byte-exact DuckDB of its own (its catalog named `duckdb` too).
+   // A pinned clock pins the destination's too, which a served read runs on.
+   let dest: DuckDBConnection = duckdb;
+   let pinnedDest: PinnedClockDuckDB | undefined;
+   if (STRICT_ORIGIN) {
+      fs.mkdirSync(path.join(dir, "dest"));
+      const destPath = path.join(dir, "dest", `${DESTINATION}.db`);
+      if (pinned) {
+         pinnedDest = new PinnedClockDuckDB(DESTINATION, destPath);
+         pinnedDest.clock = scenario.clock;
+         dest = pinnedDest;
+      } else {
+         dest = new DuckDBConnection(DESTINATION, destPath);
+      }
+      opened.push(dest);
    }
    const warehouse = scenario.warehouse;
    if (warehouse) {
@@ -514,6 +577,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
    const plan: Record<string, { name: string; sourceEntityId: string }> = {};
    // eslint-disable-next-line @typescript-eslint/no-explicit-any
    const authorDef = (compiled as any)._modelDef;
+   const materializeRefusals: R4Fixture["materializeRefusals"] = [];
    const companion = scenario.materialize
       ? await tryCompileMaterializeCompanion({
            packagePath: dir,
@@ -536,7 +600,19 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
            }),
            // P9's probes, against the author's model, as the build plan runs them.
            probe: materializer,
-        }).then((c) => c.generated)
+        }).then((c) => {
+           for (const r of c.refused) {
+              materializeRefusals.push({
+                 sourceName: r.sourceName,
+                 reason:
+                    "refused" in r.outcome
+                       ? r.outcome.refused.reason
+                       : r.outcome.malformed,
+                 message: r.reason,
+              });
+           }
+           return c.generated;
+        })
       : undefined;
    if (scenario.materialize && !companion) {
       throw new Error("the #(materialize) companion did not compile");
@@ -607,6 +683,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
          schema?: { name: string; type: string }[];
          heldRead?: FreshnessAwareManifestEntry["heldRead"];
          leftOutColumns?: string[];
+         contract?: unknown;
       }
    > = {};
    // The join_ones a package's build reads the rollups' key checks for.
@@ -645,7 +722,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
             `CREATE TABLE ${table} AS ${target.buildSQL({ entries: {} })}`,
          );
          // Its columns, captured as a database build captures them.
-         const rollupSchema = await capturedDatabaseSchema({
+         const rollupSchema = await strictCapture(capturedDatabaseSchema, {
             connection: duckdb,
             physicalTableName: table,
             dialect: duckdb.dialectName,
@@ -654,6 +731,12 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
          databaseEntries[target.buildId] = {
             tableName: table,
             ...(rollupSchema ? { schema: rollupSchema } : {}),
+            // Its column contract, as a build records it.
+            contract: await captureTableContract({
+               connection: duckdb,
+               tableName: table,
+               tier: "database",
+            }),
          };
          const check = plan.keyCheck;
          const checks = scenario.rollupKeyChecks ?? true;
@@ -813,6 +896,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
          schema?: { name: string; type: string }[];
          nativeSchema?: { name: string; type: string }[];
          keyUniqueness?: KeyUniqueness;
+         contract?: unknown;
       }
    > = {};
    // A pair table's leaf key checks, run on the source's own connection once
@@ -877,7 +961,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
          databaseEntries[entityIdOf(source, i)] = { tableName: table };
          // The warehouse's own column types, captured as a database build
          // captures them (database_native_types.ts).
-         const nativeSchema = await capturedNativeSchema({
+         const nativeSchema = await strictCapture(capturedNativeSchema, {
             run: (sql) => builder.runSQL(sql, { rowLimit: 100_000 }),
             physicalTableName: table,
             dialect: builder.dialectName,
@@ -885,7 +969,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
          });
          // And its columns, read back as a database build reads them
          // (database_build_strategy.ts), which its binding declares.
-         const schema = await capturedDatabaseSchema({
+         const schema = await strictCapture(capturedDatabaseSchema, {
             connection: builder,
             physicalTableName: table,
             dialect: builder.dialectName,
@@ -898,6 +982,12 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
             ...(schema ? { schema } : {}),
             ...(nativeSchema ? { nativeSchema } : {}),
             ...(leafKeys ? { keyUniqueness: { parentKeys: leafKeys } } : {}),
+            // Its column contract, as a build records it.
+            contract: await captureTableContract({
+               connection: builder,
+               tableName: table,
+               tier: "database",
+            }),
          };
          continue;
       }
@@ -910,13 +1000,13 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
          // Its columns and their warehouse types, captured as a database
          // build captures them (database_build_strategy.ts), which the
          // served copy's binding of a `#@ persist` table declares.
-         const schema = await capturedDatabaseSchema({
+         const schema = await strictCapture(capturedDatabaseSchema, {
             connection: duckdb,
             physicalTableName: table,
             dialect: duckdb.dialectName,
             sourceName: source.name,
          });
-         const nativeSchema = await capturedNativeSchema({
+         const nativeSchema = await strictCapture(capturedNativeSchema, {
             run: (sql) => duckdb.runSQL(sql, { rowLimit: 100_000 }),
             physicalTableName: table,
             dialect: duckdb.dialectName,
@@ -924,6 +1014,12 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
          });
          databaseServeEntries[entityIdOf(source, i)] = {
             tableName: table,
+            // Its column contract, as a build records it.
+            contract: await captureTableContract({
+               connection: duckdb,
+               tableName: table,
+               tier: "database",
+            }),
             // The connection the build wrote it on, as a build's entry
             // records it, so the bind's connection check runs.
             connectionName: source.connectionName,
@@ -978,7 +1074,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
                },
             ]),
             connections: new FixedConnectionMap(
-               new Map([[DESTINATION, duckdb]]),
+               new Map([[DESTINATION, dest]]),
                DESTINATION,
             ),
          });
@@ -986,6 +1082,12 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
          storedBuildSQL[source.name] = planned.sql;
       }
       const origin = connections.get(source.connectionName);
+      // Where the SELECT runs: an extension table's over its parent's stored
+      // table in the destination, any other on its origin. Under strict mode
+      // the destination is a database of its own, so an origin's rows are
+      // copied in through Parquet, as from any other origin.
+      const builder =
+         over?.overStored && parentEntry ? dest : (origin ?? duckdb);
       // Cast to the declared types as the storage build does, a 128-bit
       // integer computed in DuckDB stored as DECIMAL(38,0) (P4-01).
       const computedInDuckDB = !origin || origin === duckdb;
@@ -999,9 +1101,10 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
                  exactIntegers: computedInDuckDB
                     ? wideIntegerColumns(
                          (
-                            await duckdb.runSQL(`DESCRIBE (${built.sql})`, {
-                               rowLimit: 10_000,
-                            })
+                            await (builder === dest ? dest : duckdb).runSQL(
+                               `DESCRIBE (${built.sql})`,
+                               { rowLimit: 10_000 },
+                            )
                          ).rows.map((r) => ({
                             name: String(r.column_name),
                             type: String(r.column_type),
@@ -1011,16 +1114,26 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
               },
            );
       builtSQL[source.name] = select;
-      if (origin && origin !== duckdb) {
+      if (builder !== dest) {
          // Built on its origin, its rows copied into the destination.
          const file = path.join(dir, `${table}.parquet`);
-         await origin.runSQL(`COPY (${select}) TO '${file}' (FORMAT parquet)`);
-         await duckdb.runSQL(
+         const copy = (sql: string) =>
+            builder.runSQL(`COPY (${sql}) TO '${file}' (FORMAT parquet)`);
+         try {
+            await copy(select);
+         } catch (err) {
+            // Strict mode only, as below: a value the casts cannot convert
+            // stores the computed types instead.
+            if (!STRICT_ORIGIN || !isCastConversionError(err)) throw err;
+            builtSQL[source.name] = built.sql;
+            await copy(built.sql);
+         }
+         await dest.runSQL(
             `CREATE TABLE ${DESTINATION}.${table} AS SELECT * FROM read_parquet('${file}')`,
          );
       } else {
          try {
-            await duckdb.runSQL(
+            await dest.runSQL(
                `CREATE TABLE ${DESTINATION}.${table} AS ${select}`,
             );
          } catch (err) {
@@ -1028,16 +1141,15 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
             // stores the computed types instead.
             if (!isCastConversionError(err)) throw err;
             builtSQL[source.name] = built.sql;
-            await duckdb.runSQL(
+            await dest.runSQL(
                `CREATE TABLE ${DESTINATION}.${table} AS ${built.sql}`,
             );
          }
       }
       // runSQL returns 10 rows unless told otherwise: one per column here.
-      const described = await duckdb.runSQL(
-         `DESCRIBE ${DESTINATION}.${table}`,
-         { rowLimit: 10_000 },
-      );
+      const described = await dest.runSQL(`DESCRIBE ${DESTINATION}.${table}`, {
+         rowLimit: 10_000,
+      });
       entries[`h${i}`] = {
          sourceEntityId: `h${i}`,
          sourceName: source.name,
@@ -1079,7 +1191,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
                           storedKey,
                        ),
                     },
-                    duckdb,
+                    dest,
                     table,
                  );
          if (record) {
@@ -1266,8 +1378,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
    });
    const serveConfig = new MalloyConfig({ connections: {} });
    serveConfig.wrapConnections(
-      () =>
-         new FixedConnectionMap(new Map([[DESTINATION, duckdb]]), DESTINATION),
+      () => new FixedConnectionMap(new Map([[DESTINATION, dest]]), DESTINATION),
    );
    model.setServeDestinationConfig(() => serveConfig);
    // The served copy (materialization v2) compiles the author's own files with
@@ -1340,6 +1451,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
       builtSQL,
       checkFailures,
       duckdb,
+      destination: dest,
       model,
       viewRefusals,
       rollupRefusals: (rollups?.refused ?? []).map((r) => ({
@@ -1349,9 +1461,11 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
       materializePlans: Object.fromEntries(
          Object.values(materializePlans).map((p) => [p.sourceName, p]),
       ),
+      materializeRefusals,
       setClock(at) {
          if (!pinned) throw new Error("the scenario's clock is not pinned");
          pinned.clock = at;
+         if (pinnedDest) pinnedDest.clock = at;
       },
       async observeDatabaseColumns() {
          // Each entry with what its build captured and its connection, as a
@@ -1388,7 +1502,11 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
                ...(leftOutColumns ? { leftOutColumns } : {}),
             });
          }
-         return { drifted: applied.drifted, unread: applied.unread };
+         return {
+            drifted: applied.drifted,
+            unread: applied.unread,
+            incompatible: applied.incompatible,
+         };
       },
       async storedSQL(sql) {
          const text = sql((sourceName) => {
@@ -1396,7 +1514,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
             if (!table) throw new Error(`no stored table for ${sourceName}`);
             return `${DESTINATION}.${table}`;
          });
-         return (await duckdb.runSQL(text)).rows as Row[];
+         return (await dest.runSQL(text)).rows as Row[];
       },
       setBindings(next) {
          model.setServeBindings(next);
@@ -1461,11 +1579,32 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
          const live = await runOnce(query.malloy, query.givens);
          model.setServeBindings(bindings);
          manifestOn = true;
-         const served = await runOnce(query.malloy, query.givens);
+         const served = await runOnce(query.malloy, query.givens).catch(
+            (err: unknown) => {
+               recordStrictCase({
+                  harness: "r4",
+                  malloy: query.malloy,
+                  ...(query.givens ? { givens: query.givens } : {}),
+                  live: live.rows,
+                  servedError: err instanceof Error ? err.message : String(err),
+               });
+               throw err;
+            },
+         );
          const truth = query.truthSql
             ? ((await duckdb.runSQL(query.truthSql, { rowLimit: 10_000 }))
                  .rows as Row[])
             : undefined;
+         recordStrictCase({
+            harness: "r4",
+            malloy: query.malloy,
+            ...(query.givens ? { givens: query.givens } : {}),
+            live: live.rows,
+            served: served.rows,
+            servedFrom: served.servedFrom,
+            servedBy: served.path?.servedBy,
+            declines: declinesOf(served.path?.considered),
+         });
          return {
             malloy: query.malloy,
             live: live.rows,
@@ -1489,6 +1628,18 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
          };
       },
    };
+}
+
+/**
+ * A build-time schema capture, read as failed under strict mode (as a
+ * Postgres capture fails on an unqualified name), so the bind takes its
+ * fallback; the capture itself otherwise.
+ */
+async function strictCapture<A, R>(
+   capture: (args: A) => Promise<R | undefined>,
+   args: A,
+): Promise<R | undefined> {
+   return STRICT_ORIGIN ? undefined : capture(args);
 }
 
 /**

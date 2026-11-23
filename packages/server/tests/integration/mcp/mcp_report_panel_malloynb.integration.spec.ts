@@ -1,0 +1,374 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
+/// <reference types="bun-types" />
+
+/**
+ * A `.malloynb` shown through the MCP report tools, on a curated package:
+ * `list_reports` lists it, `show_report` opens it, and the panel's
+ * `report_api` runs its cells as the REST query route does, the surface and
+ * `#(authorize)` included, because both call the same controller. MCP
+ * `execute_query` still refuses the notebook's path.
+ */
+
+import { rm } from "fs/promises";
+import path from "path";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { initializeMcpServer } from "../../../src/mcp/server";
+import { bootMainServer } from "../../harness/main_server";
+import {
+   fixture,
+   startPackageEnv,
+   type PackageEnv,
+} from "../../harness/reports";
+
+const ENV = "mcp-report-panel-malloynb-env";
+/** The fixture as published, behind its `index.malloy` surface. */
+const PKG = "malloynb-curated";
+/** The same files with no `index.malloy`: every source is on the surface. */
+const OPEN = "malloynb-open";
+
+interface Cell {
+   type: "markdown" | "code";
+   text: string;
+   runQuery?: string;
+}
+
+type Outcome = { rows: unknown[][] } | { refused: number; message?: string };
+
+/** An answer as rows of plain values, or the refusal's status and message. */
+const outcomeOf = (
+   status: number,
+   body: { result?: string; message?: string },
+): Outcome => {
+   if (status !== 200 || body.result === undefined)
+      return { refused: status, message: body.message };
+   const parsed = JSON.parse(body.result) as {
+      data?: {
+         array_value?: {
+            record_value?: { number_value?: number; string_value?: string }[];
+         }[];
+      };
+   };
+   return {
+      rows: (parsed.data?.array_value ?? []).map((row) =>
+         (row.record_value ?? []).map(
+            (cell) => cell.number_value ?? cell.string_value ?? null,
+         ),
+      ),
+   };
+};
+
+describe(".malloynb through the MCP report tools (E2E)", () => {
+   let env: PackageEnv;
+   let client: Client;
+
+   beforeAll(async () => {
+      env = await startPackageEnv(
+         ENV,
+         {
+            [PKG]: fixture("malloynb-parity"),
+            [OPEN]: fixture("malloynb-parity"),
+         },
+         {
+            prepare: async (dir, pkg) => {
+               if (pkg === OPEN) await rm(path.join(dir, "index.malloy"));
+            },
+         },
+      );
+      // The process's own services, the ones the REST routes call.
+      const { services } = await bootMainServer();
+      const server = initializeMcpServer(services);
+      const [clientTransport, serverTransport] =
+         InMemoryTransport.createLinkedPair();
+      await server.connect(serverTransport);
+      client = new Client({ name: "malloynb-panel-test", version: "0.0.0" });
+      await client.connect(clientTransport);
+   }, 300_000);
+
+   afterAll(async () => {
+      await client?.close();
+      await env?.stop();
+   });
+
+   /** The `run:` the SDK's `Report` sends for cell `i` of `nb`: its served `runQuery`. */
+   const cellQuery = async (
+      nb: string,
+      i: number,
+      pkg = PKG,
+   ): Promise<string> => {
+      const report = await env.getJson<{
+         notebook?: { notebookCells?: Cell[] };
+      }>(env.api(`/reports/notebooks/${nb}`, pkg));
+      const query = report.notebook?.notebookCells?.[i]?.runQuery;
+      if (query === undefined) throw new Error(`${nb} cell ${i} has no run:`);
+      return query;
+   };
+
+   /** Cell `i` of `nb` over REST and through `report_api`, as outcomes. */
+   const both = async (
+      nb: string,
+      i: number,
+      givens: object = {},
+      pkg = PKG,
+   ) => {
+      const query = await cellQuery(nb, i, pkg);
+      const res = await env.query(`notebooks/${nb}`, { query, givens }, pkg);
+      const rest = outcomeOf(res.status, await res.json());
+      const result = await client.callTool({
+         name: "report_api",
+         arguments: {
+            operation: "query",
+            environmentName: ENV,
+            packageName: pkg,
+            path: `notebooks/${nb}`,
+            body: { query, givens },
+         },
+      });
+      const answer = result.structuredContent as {
+         status: number;
+         data: { result?: string; message?: string };
+      };
+      expect(result.isError).toBe(answer.status >= 400);
+      return { rest, panel: outcomeOf(answer.status, answer.data) };
+   };
+
+   it("list_reports lists a .malloynb, linear", async () => {
+      const result = await client.callTool({
+         name: "list_reports",
+         arguments: { environmentName: ENV, packageName: PKG },
+      });
+      expect(result.isError).toBe(false);
+      const block = (result.content as { resource?: { text: string } }[])[0];
+      const reports = (
+         JSON.parse(block.resource!.text) as {
+            reports: { path: string; layout: string }[];
+         }
+      ).reports;
+      expect(reports).toContainEqual(
+         expect.objectContaining({
+            path: "notebooks/surface.malloynb",
+            layout: "linear",
+         }),
+      );
+   });
+
+   it("show_report opens a .malloynb in the panel", async () => {
+      const result = await client.callTool({
+         name: "show_report",
+         arguments: {
+            environmentName: ENV,
+            packageName: PKG,
+            path: "notebooks/authorize.malloynb",
+         },
+      });
+      expect(result.isError).toBeFalsy();
+      expect(result.structuredContent).toMatchObject({
+         environmentName: ENV,
+         packageName: PKG,
+         path: "notebooks/authorize.malloynb",
+         layout: "linear",
+      });
+   });
+
+   it("report_api reads a .malloynb's cells as GET …/reports/{path} does", async () => {
+      const result = await client.callTool({
+         name: "report_api",
+         arguments: {
+            operation: "getReport",
+            environmentName: ENV,
+            packageName: PKG,
+            path: "notebooks/surface.malloynb",
+         },
+      });
+      expect(result.isError).toBe(false);
+      const rest = await env.getJson(
+         env.api("/reports/notebooks/surface.malloynb"),
+      );
+      expect((result.structuredContent as { data: unknown }).data).toEqual(
+         rest,
+      );
+   });
+
+   it("report_api runs a published source's cell as REST does", async () => {
+      const { rest, panel } = await both("surface.malloynb", 2);
+      expect(rest).toEqual({ rows: [[6]] });
+      expect(panel).toEqual(rest);
+   });
+
+   it("report_api refuses a cell over a hidden source with REST's 404", async () => {
+      const { rest, panel } = await both("surface.malloynb", 3);
+      expect(rest).toMatchObject({ refused: 404 });
+      expect(panel).toEqual(rest);
+   });
+
+   it("report_api applies #(authorize) as REST does: 403 without the role, rows with it", async () => {
+      const denied = await both("authorize.malloynb", 1, {
+         ROLES: ["viewer"],
+      });
+      expect(denied.rest).toEqual({
+         refused: 403,
+         message: 'Access denied for source "locked".',
+      });
+      expect(denied.panel).toEqual(denied.rest);
+      const allowed = await both("authorize.malloynb", 1, {
+         ROLES: ["admin"],
+      });
+      expect(allowed.rest).toEqual({ rows: [[6]] });
+      expect(allowed.panel).toEqual(allowed.rest);
+   });
+
+   it("report_api filters rows by #(access_filter) as REST does, and denies a gate given left unsupplied", async () => {
+      const cases: [number, object, Outcome][] = [
+         [
+            1,
+            {},
+            { refused: 403, message: 'Access denied for source "gated".' },
+         ],
+         [1, { GROUPS: [1, 2] }, { rows: [[2]] }],
+         [1, { GROUPS: [] }, { rows: [[0]] }],
+         [3, { GROUPS: [4, 5] }, { rows: [[4], [5]] }],
+      ];
+      for (const [i, givens, expected] of cases) {
+         const { rest, panel } = await both("row_level.malloynb", i, givens);
+         expect(rest).toEqual(expected);
+         expect(panel).toEqual(rest);
+      }
+   });
+
+   it("report_api takes a given a later cell declares as REST does, and refuses an unknown one", async () => {
+      const cases: [number, object, Outcome][] = [
+         [0, { REGION: "EU" }, { rows: [[6]] }],
+         [1, {}, { rows: [[350]] }],
+         [1, { REGION: "EU" }, { rows: [[1200]] }],
+         [2, { REGION: "EU", GROUPS: [1] }, { rows: [[1]] }],
+         [
+            2,
+            { REGION: "EU" },
+            { refused: 403, message: 'Access denied for source "gated".' },
+         ],
+      ];
+      for (const [i, givens, expected] of cases) {
+         const { rest, panel } = await both("later_given.malloynb", i, givens);
+         expect(rest).toEqual(expected);
+         expect(panel).toEqual(rest);
+      }
+      const typo = await both("later_given.malloynb", 0, { NOtaGiven: 1 });
+      expect(typo.rest).toMatchObject({ refused: 400 });
+      expect((typo.rest as { message?: string }).message).toContain(
+         "unknown given 'NOtaGiven'",
+      );
+      expect(typo.panel).toEqual(typo.rest);
+   });
+
+   it("report_api answers every query cell of every notebook as REST does on a package with no index.malloy", async () => {
+      const listing = await env.getJson<{ path: string }[]>(
+         env.api("/reports", OPEN),
+      );
+      const notebooks = listing
+         .map((r) => r.path)
+         .filter((p) => p.endsWith(".malloynb"));
+      expect(notebooks.length).toBeGreaterThan(0);
+      let compared = 0;
+      let answered = 0;
+      for (const nbPath of notebooks) {
+         const nb = nbPath.replace(/^notebooks\//, "");
+         const report = await env.getJson<{
+            notebook?: { notebookCells?: Cell[] };
+         }>(env.api(`/reports/${nbPath}`, OPEN));
+         const cells = report.notebook?.notebookCells ?? [];
+         for (let i = 0; i < cells.length; i++) {
+            if (cells[i].type !== "code" || cells[i].runQuery === undefined)
+               continue;
+            for (const givens of [
+               {},
+               { ROLES: ["admin"], GROUPS: [1, 2], REGION: "EU" },
+            ]) {
+               const { rest, panel } = await both(nb, i, givens, OPEN);
+               expect([nbPath, i, givens, panel]).toEqual([
+                  nbPath,
+                  i,
+                  givens,
+                  rest,
+               ]);
+               compared++;
+               if ("rows" in rest) answered++;
+            }
+         }
+      }
+      // Rows as well as refusals, so the comparison is not only of errors.
+      expect(answered).toBeGreaterThan(0);
+      expect(answered).toBeLessThan(compared);
+   });
+
+   it("the advice show_report gives answers: execute_query on the model_path get_context returns, with a derived source in the query text", async () => {
+      for (const [pkg, expected] of [
+         [PKG, "index.malloy"],
+         [OPEN, "models/orders.malloy"],
+      ] as const) {
+         const context = await client.callTool({
+            name: "get_context",
+            arguments: {
+               search_targets: [{ target_type: "source" }],
+               scopes: [{ environment: ENV, package: pkg }],
+            },
+         });
+         const block = (
+            context.content as { resource?: { text: string }; text?: string }[]
+         )[0];
+         const payload = JSON.parse(
+            block.resource?.text ?? block.text ?? "{}",
+         ) as {
+            sources?: {
+               source_info: {
+                  resource_id: { source: string; model_path: string };
+               };
+            }[];
+         };
+         const orders = payload.sources?.find(
+            (s) => s.source_info.resource_id.source === "orders",
+         );
+         const modelPath = orders?.source_info.resource_id.model_path;
+         expect([pkg, modelPath]).toEqual([pkg, expected]);
+         const result = await client.callTool({
+            name: "execute_query",
+            arguments: {
+               environmentName: ENV,
+               packageName: pkg,
+               modelPath,
+               // surface.malloynb's cells 4 and 5: a source derived from a
+               // published one, then a run over it.
+               query: "source: mine is orders extend { where: id > 2 }\nrun: mine -> { aggregate: order_count }",
+            },
+         });
+         expect([pkg, result.isError]).toEqual([pkg, false]);
+         const rows = (
+            JSON.parse(
+               (result.content as { resource?: { text: string } }[])[0]
+                  .resource!.text,
+            ) as { rows: unknown[] }
+         ).rows;
+         expect(rows).toEqual([{ order_count: 4 }]);
+      }
+   });
+
+   it("execute_query still refuses a .malloynb's path, with a surface or without one", async () => {
+      for (const pkg of [PKG, OPEN]) {
+         const result = await client.callTool({
+            name: "execute_query",
+            arguments: {
+               environmentName: ENV,
+               packageName: pkg,
+               modelPath: "notebooks/surface.malloynb",
+               query: "run: orders -> { aggregate: order_count }",
+            },
+         });
+         expect(result.isError).toBe(true);
+         expect(JSON.stringify(result.content)).toContain(
+            `Resource not found: model 'notebooks/surface.malloynb' in package '${pkg}' for environment '${ENV}'`,
+         );
+      }
+   });
+});

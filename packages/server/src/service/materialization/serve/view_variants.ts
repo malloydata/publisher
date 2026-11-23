@@ -15,7 +15,7 @@
  * - `run: ops -> by_carrier -> { … }`: a query that starts from the view,
  *   which only its text shows; its later stages read the stored result;
  * - never `ops -> by_carrier + { … }` (a refinement changes the view's own
- *   query: skipped `MISSING_FIELD`), `ops -> { nest: by_carrier }` or a
+ *   query: skipped `SHAPE_MISMATCH`), `ops -> { nest: by_carrier }` or a
  *   hand-written look-alike (neither reads as a call, so the leg does not
  *   apply), nor a call on another source, an extension or a caller's own
  *   redefinition (the run target's `sourceID` must be the view's source's).
@@ -87,6 +87,8 @@ import {
    type Binding,
    heldReadBinding,
    isDatabase,
+   type KeyedTable,
+   manifestUnderCompilerKey,
    type Pinned,
    storageLookupOf,
 } from "../domain/binding";
@@ -144,7 +146,14 @@ export interface ViewAnswer {
       tier: "database";
       tablePath?: string;
       destinationName?: string;
+      /** Stored as of its build: see `Binding.asOfBuild`. */
+      asOfBuild?: true;
    };
+   /**
+    * For a database view whose address is not Malloy's key for it: the run
+    * that answers reads its entry under that key too.
+    */
+   keyedTable?: KeyedTable;
    /** Where `govern()` grafts the source's gates on the variant. */
    graftScope: GraftScope;
 }
@@ -158,6 +167,18 @@ export interface ViewTable {
    built: boolean;
    /** Bound, but past its freshness window. */
    stale: boolean;
+   /**
+    * A storage table bound, but no storage destination is read
+    * (`PERSIST_STORAGE_MODE` write-only or off), and no database table is
+    * bound beside it: the serve verdict's `storage_mode`.
+    */
+   storageNotServed?: true;
+   /**
+    * A database table read because the storage mode reads no destination,
+    * while a storage table is bound beside it: the path report names that
+    * one `NOT_SERVED` (`storage_mode`).
+    */
+   storageTwinNotServed?: true;
    dataAsOf?: string;
 }
 
@@ -174,6 +195,12 @@ export interface ResolvedTable extends ViewTable {
     * declines while one is.
     */
    leftOut?: readonly string[];
+   /**
+    * A database table stored as of its build: its manifest entry in the
+    * pinned snapshot says so (`FreshnessAwareManifestEntry.asOfBuild`), so
+    * read admission declines an access decision over it.
+    */
+   asOfBuild?: true;
 }
 
 export interface CompiledVariant {
@@ -266,6 +293,7 @@ export class PersistedViewServe {
          binding,
          databaseTable,
          leftOut,
+         asOfBuild,
          ...table
       } = this.tableOf(called.plan, pinned, pinned.compilerManifest);
       void virtualMap;
@@ -273,6 +301,7 @@ export class PersistedViewServe {
       void binding;
       void databaseTable;
       void leftOut;
+      void asOfBuild;
       return table;
    }
 
@@ -346,6 +375,9 @@ export class PersistedViewServe {
       if (!table.built) {
          throw new LegDecline("view_not_built");
       }
+      if (table.storageNotServed) {
+         throw new LegDecline("view_storage_mode");
+      }
       if (table.stale || (!table.virtualMap && !table.databaseTable)) {
          throw new LegDecline("view_stale");
       }
@@ -391,12 +423,24 @@ export class PersistedViewServe {
       const planned = this.host.catalog()?.planned.get(plan.buildSourceID);
       const tableId = planned?.sourceEntityId;
       const withId = tableId !== undefined ? { tableId } : {};
-      const lookup = storageLookupOf(
+      const bound =
+         tableId !== undefined ? pinned.snapshot.entries[tableId] : undefined;
+      const storageServes = !!this.host.serveDestinationConfig();
+      const stored = storageLookupOf(
          pinned,
          plan.buildSourceID,
          isPersistedQuerySourceID(plan.buildSourceID) ? "query" : "view",
          plan.storage !== undefined,
       );
+      // No storage destination is read (PERSIST_STORAGE_MODE write-only or
+      // off): a database table bound beside the storage one answers, as
+      // `on`'s rules would with the storage tier removed.
+      const lookup = !storageServes && bound ? undefined : stored;
+      // The storage table read in its place, named by the path report.
+      const databaseId =
+         !lookup && stored && stored.state !== "not_built"
+            ? { ...withId, storageTwinNotServed: true as const }
+            : withId;
       if (lookup) {
          if (lookup.state === "not_built") {
             return { ...withId, tier: "storage", built: false, stale: false };
@@ -405,7 +449,18 @@ export class PersistedViewServe {
          const dataAsOf = binding.freshAsOf
             ? { dataAsOf: binding.freshAsOf }
             : {};
-         if (lookup.state === "stale" || !this.host.serveDestinationConfig()) {
+         if (!storageServes) {
+            // Not read whatever its freshness: the storage mode decides.
+            return {
+               ...withId,
+               ...dataAsOf,
+               tier: "storage",
+               built: true,
+               stale: false,
+               storageNotServed: true,
+            };
+         }
+         if (lookup.state === "stale") {
             return {
                ...withId,
                ...dataAsOf,
@@ -434,12 +489,11 @@ export class PersistedViewServe {
             ]),
          };
       }
-      const bound =
-         tableId !== undefined ? pinned.snapshot.entries[tableId] : undefined;
       if (!bound || tableId === undefined) {
-         return { ...withId, tier: "database", built: false, stale: false };
+         return { ...databaseId, tier: "database", built: false, stale: false };
       }
       const dataAsOf = bound.dataAsOf ? { dataAsOf: bound.dataAsOf } : {};
+      const asOfBuild = bound.asOfBuild ? { asOfBuild: true as const } : {};
       const fresh = freshManifest?.entries[tableId]?.tableName;
       const leftOut = bound.leftOutColumns?.length
          ? { leftOut: bound.leftOutColumns }
@@ -458,7 +512,7 @@ export class PersistedViewServe {
             : undefined;
       if (held) {
          return {
-            ...withId,
+            ...databaseId,
             ...dataAsOf,
             tier: "database",
             built: true,
@@ -469,20 +523,22 @@ export class PersistedViewServe {
                [held.destinationName, new Map([[tableId, held.tablePath]])],
             ]),
             ...leftOut,
+            ...asOfBuild,
          };
       }
       return fresh
          ? {
-              ...withId,
+              ...databaseId,
               ...dataAsOf,
               tier: "database",
               built: true,
               stale: false,
               databaseTable: fresh,
               ...leftOut,
+              ...asOfBuild,
            }
          : {
-              ...withId,
+              ...databaseId,
               ...dataAsOf,
               tier: "database",
               built: true,
@@ -742,21 +798,15 @@ export async function readStoredVariant(args: {
 }): Promise<ViewAnswer> {
    const { variant, table } = args;
    // Sources folded apart on one build share Malloy's key: under it, this
-   // variant reads its own table.
-   const own =
-      args.compilerKey && table.tableId
-         ? args.buildManifest?.entries[table.tableId]
+   // variant reads its own table, and so does the run that answers.
+   const keyedTable =
+      args.compilerKey && table.tableId && !table.virtualMap
+         ? { tableId: table.tableId, compilerKey: args.compilerKey }
          : undefined;
-   const buildManifest =
-      own && args.buildManifest
-         ? {
-              ...args.buildManifest,
-              entries: {
-                 ...args.buildManifest.entries,
-                 [args.compilerKey!]: own,
-              },
-           }
-         : args.buildManifest;
+   const buildManifest = manifestUnderCompilerKey(
+      args.buildManifest,
+      keyedTable,
+   );
    if (!variant.materializer || !variant.modelDef) {
       // Warned once per compiled variant: the leg asks on every query.
       const fields = { modelPath: args.modelPath, view: args.subject };
@@ -801,13 +851,18 @@ export async function readStoredVariant(args: {
       binding,
       databaseTable,
       leftOut,
+      asOfBuild,
       ...reported
    } = table;
    void quotedPath;
    void leftOut;
+   // An access decision over a table stored as of its build is declined at
+   // read admission, which sees the table only through what is reported here.
+   const stamp = asOfBuild ? { asOfBuild } : {};
    return {
       runnable,
       table: reported,
+      ...(keyedTable ? { keyedTable } : {}),
       ...(virtualMap ? { virtualMap } : {}),
       // A database table read through its typed source is still a database
       // table to the path report and the gate policy, as through the
@@ -819,6 +874,7 @@ export async function readStoredVariant(args: {
                  tier: "database" as const,
                  tablePath: binding.tablePath,
                  destinationName: binding.destinationName,
+                 ...stamp,
               },
            }
          : !virtualMap && databaseTable
@@ -826,6 +882,7 @@ export async function readStoredVariant(args: {
                 databaseTableRead: {
                    tier: "database" as const,
                    tablePath: databaseTable,
+                   ...stamp,
                 },
              }
            : {}),

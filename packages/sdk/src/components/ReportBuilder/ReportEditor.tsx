@@ -459,7 +459,7 @@ export function ReportEditor(props: ReportEditorProps) {
    const note = ordinary || caption === saveLabel ? "" : caption;
 
    // After every hook, so the hook order does not depend on the URI. Same
-   // reasoning as `Dashboard`'s own check.
+   // reasoning as `Report`'s own check.
    if (!uriNamesBoth && "resourceUri" in props)
       return (
          <Alert severity="error" sx={{ m: 2 }}>

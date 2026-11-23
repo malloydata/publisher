@@ -89,6 +89,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.ivc_orders"
+          }
+        ],
         "refresh": "incremental",
         "sourceEntityId": "98a9b66e913464c7653ea2b213b70a5e0b49a6224e5820587102347c6fd459be",
         "sourceID": "batch_totals@<hammer>/ivc/ivc.malloy",
@@ -119,6 +125,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.ivc_orders"
+          }
+        ],
         "refresh": "incremental",
         "sourceEntityId": "9d7e97a0b40f210d3911745033de9529cf5282b33f3eb0f9159568015c305bdf",
         "sourceID": "doubled@<hammer>/ivc/ivc.malloy",

@@ -15,8 +15,12 @@
       {
         "connectionName": "orders_pg",
         "dependsOn": {
-          "orders__rollup__category__389984bb@<hammer>/pa/pa.malloy.preaggregate.malloy": [],
-          "orders__rollup__region__85a0fa84@<hammer>/pa/pa.malloy.preaggregate.malloy": []
+          "orders__rollup__category__389984bb@<hammer>/pa/pa.malloy.preaggregate.malloy": [
+            "orders@<hammer>/pa/pa.malloy"
+          ],
+          "orders__rollup__region__85a0fa84@<hammer>/pa/pa.malloy.preaggregate.malloy": [
+            "orders@<hammer>/pa/pa.malloy"
+          ]
         },
         "order": [
           "orders__rollup__category__389984bb@<hammer>/pa/pa.malloy.preaggregate.malloy",
@@ -186,11 +190,15 @@
         "nodes": [
           [
             {
-              "dependsOn": [],
+              "dependsOn": [
+                "orders@<hammer>/pa/pa.malloy"
+              ],
               "sourceID": "orders__rollup__category__389984bb@<hammer>/pa/pa.malloy.preaggregate.malloy"
             },
             {
-              "dependsOn": [],
+              "dependsOn": [
+                "orders@<hammer>/pa/pa.malloy"
+              ],
               "sourceID": "orders__rollup__region__85a0fa84@<hammer>/pa/pa.malloy.preaggregate.malloy"
             }
           ]
@@ -242,6 +250,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.pa_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "92d61a9306e44a690f5cf72f43d6fc00acf3c3f2d0c9298a70d7cdd211b05067",
         "sourceID": "orders@<hammer>/pa/pa.malloy",
@@ -277,6 +291,12 @@
           ]
         },
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.pa_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "04803cb53503036fdb1f5e6b1b64ca6941a7f419563f2b6f31e222f7825a5bdc",
         "sourceID": "orders__rollup__category__389984bb@<hammer>/pa/pa.malloy.preaggregate.malloy",
@@ -312,6 +332,12 @@
           ]
         },
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.pa_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "4f696de650cac5319e7ccbb2bf531fd7ba3c436d45ac7cea6a9ff42c8dce83f3",
         "sourceID": "orders__rollup__region__85a0fa84@<hammer>/pa/pa.malloy.preaggregate.malloy",

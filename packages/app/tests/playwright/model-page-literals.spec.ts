@@ -15,12 +15,9 @@ import { requireModelViewer } from "./helpers/publisherStatus";
  * `PUBLISHER_MODEL_PAGE=viewer`. Skipped on any other server (see
  * `requireModelViewer`).
  *
- * The default page embeds the Explorer, which writes a drilled cell back into
- * Malloy with `ASTQuery.toMalloy()`. `@malloydata/malloy-interfaces` puts a
- * string value into that text unescaped (its `escapeString` is a TODO), so
- * drilling into `27" Monitor` sends `drill: name = "27" Monitor"`, a compile
- * error, and drilling into `x" or "a" = "a` sends a filter that matches every
- * row. Nobody has to type anything: the values are data.
+ * The values are data, so nobody has to type them: a page that wrote one into
+ * Malloy text without escaping it would send `name = "27" Monitor"`, a compile
+ * error, or a filter that matches every row for `x" or "a" = "a`.
  *
  * These specs hold the `viewer` page, the model viewer, to what it promises:
  * the same data is listed and queried, each value comes back as written, and

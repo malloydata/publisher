@@ -198,8 +198,9 @@ follow the same rule ([the served copy](#the-served-copy-materialization-v2-publ
   is grafted and proven there as on live. Otherwise the rollup is not built (a
   `rollup-not-built` warning, reason `access_filter`, or `authorize` for a lock) and its queries are answered live: with the switch off, in
   a `storage=` destination, when a gate reads a field the grain drops, or when a gate reads through
-  a join or the source joins a gated source. A caller's own join into a gated source keeps the
-  query off every rollup too. [preaggregation.md](preaggregation.md#rollup-materialization-v2-behind-publisher_materialize)
+  a join or the source joins a gated source, or the source inherits a row filter through a `->`
+  derivation (which filters the derivation's base, not the rows the rollup holds). A caller's own
+  join into a gated source keeps the query off every rollup too. [preaggregation.md](preaggregation.md#rollup-materialization-v2-behind-publisher_materialize)
   has the full rule, which v1 and v2 rollups share.
 - **Two more conditions hold under every switch**, so that a gate filters the stored rows exactly
   as it filters live's. Each covers every field the gate reads, every field any `where:` reads
@@ -207,7 +208,13 @@ follow the same rule ([the served copy](#the-served-copy-materialization-v2-publ
   joined source's, and a query-shaped source's base's and stages'), and every field those are
   computed from, through renames, joins and the stages of a query-shaped source. Every `where:`
   counts, not only one that reads a given: a scope written as a literal merges neighbours just the
-  same. The cost: a source whose `where:` reads a column genuinely stored as a float answers live.
+  same. The cost: a source whose `where:` reads a column genuinely stored as a float answers live,
+  unless the column is a plain copy of a warehouse double that compares as DuckDB's does
+  (Snowflake's `FLOAT`, `DOUBLE` and `REAL`, Postgres's `double precision`, DuckDB's `DOUBLE`),
+  stored as a DuckDB `DOUBLE`: the copy holds the same bits, so the gate admits the same rows.
+  The type is read from the table's manifest entry (`upstreamSchemas`); a column the build
+  computed, a copy of BigQuery's `FLOAT64` (whose comparisons with NaN are false, DuckDB's true),
+  of a 4-byte float, of an exact number, or of a table whose types were not recorded, answers live.
   - A query that sets its own `timezone:` (or reads a table built in another zone) answers live
     when the gate reads a time value the table stored in its build's zone: a truncation computed
     in a query stage, or a rollup's time grain. The path report says `served_copy_time_zone` or
@@ -224,7 +231,13 @@ follow the same rule ([the served copy](#the-served-copy-materialization-v2-publ
   - A `storage=` table compares a string column byte-exact, and the source compares it under
     its own collation. So a gate, or a `where:` the copy re-applies, that compares a string column
     is read from a `storage=` table only when the source's comparison is known to match: on
-    BigQuery always; on a DuckDB-dialect source when the instance sets no `default_collation`
+    BigQuery when no column or `STRUCT` field the query's tables hold carries a collation (read
+    from `INFORMATION_SCHEMA`: project-wide in each region the project has datasets in, then per
+    collated dataset; each table the query reads must itself be seen by a read filtered to it; a
+    view or an `.sql()` source, whose tables are not known, is served only when its projects list
+    no collated column), and
+    the query's SQL names no `COLLATE`; on a
+    DuckDB-dialect source when the instance sets no `default_collation`
     and no `COLLATE` appears in the query's SQL or in any table or view the instance holds; on
     Postgres, for `=`, `!=` and `in`, when the column's collation is deterministic (the database
     default included), and for any other comparison (an ordering, a pattern, a function's value)
@@ -257,11 +270,18 @@ follow the same rule ([the served copy](#the-served-copy-materialization-v2-publ
     the queried source's own fields, and a caller's inline `extend` that adds its own `where:` or
     gate answer live too.
 
+    The same judgement holds the query's own filters and its result's string ordering and
+    grouping on a database table, each over the strings it reads, with one difference for the
+    result: a string of a source the answer reads live (the parent beside a joined rollup), which
+    no stored table holds under any name it goes by, is passed over, since no stored collation can
+    change it. A scope's and a gate's columns must each be held.
+
     **What it costs.** Unlike the source side of a `storage=` check, which is read once per
     compiled model, this is read on every answer, because a stored table is the one place that can
-    be altered after Publisher built it. Each time the served copy or a rollup would answer a gated
-    or scoped query from a database Postgres table, and the gates and scopes compare a string,
-    Publisher runs these queries on the warehouse, one after another, before the query itself:
+    be altered after Publisher built it. Each time an answer would be read from a database
+    Postgres table, and its gates, scopes, filters or result compare, order or group a string,
+    Publisher runs these queries on the warehouse, one after another, before the query itself
+    (each once per answer, however many of those ask):
 
     - for each string field the gates and scopes compare, one that names the field's collation
       (`pg_collation_for` over a one-row read through the queried source's own SQL, so a
@@ -289,10 +309,9 @@ source, `materialize-not-built` for a `#(materialize)` source, `persist-view-not
 persisted view and `persist-query-not-built` for a persisted query (`subject` the view or query),
 and `rollup-not-built` for a rollup (`subject` its base, or `<base>.<measure>` for one
 measure). Each warning carries the record's bounded `reason` as a field, so a client never reads
-it from the message. A rollup's code was `preaggregate-not-built`: for this release each
-`rollup-not-built` warning is repeated with that old code and the same message, so a reader that
-matches it keeps working, and then the repeat is removed. `persist-source-refused`, which 0.14.0
-repeated beside `persist-not-built` for one release, is no longer produced.
+it from the message. A rollup's code was `preaggregate-not-built`, which 0.15.0 and 0.16 repeated
+beside each `rollup-not-built` warning; since 0.17.0 it is no longer produced. Nor is
+`persist-source-refused`, which 0.14.0 repeated beside `persist-not-built`.
 
 ### Sources that read the current time
 
@@ -784,18 +803,50 @@ in the same
 is reported too; one moved by a widening that loses nothing is not. Rebuilding the table
 clears it.
 
-The same holds when the table did not move but its source did: a warehouse column retyped
-upstream after the build, so the source now declares a type the table's value does not read as
-(an integer column now declared `string`). The build's SQL, and so the table's content address,
-is unchanged, so the bind finds the table as built. Every mechanism (a persisted view or query, a
+**A column retyped upstream re-addresses the sources that read it.** A source's content address
+folds in the native column types of every table its build reads (its plan entry's `reads`, each
+with its `upstreamSchemas`: `NUMERIC(12,4)`, `FLOAT64`, `DOUBLE`, read from the warehouse's catalog,
+DuckDB's `DESCRIBE`), keeping only the columns the build's SQL names, so such a column retyped
+or dropped upstream moves the address even though the build's SQL is unchanged (one added,
+dropped or retyped beside it does not): the table built from the old column is no longer the
+source's, the source answers live, and the next run builds a new table rather than carrying or
+reusing the old one. The types are read when a package is first loaded in a process and again on
+every explicit reload or publish, as Malloy's own schemas are. A read whose catalog query or
+connection fails is retried with backoff within the read's 15-second timeout; a read that still
+fails keeps the table's last reading, so a passing failure never moves an address. A table this
+process has never read is not addressed by an unknown schema: each source whose build reads it is
+refused alone, with reason `upstream_unread` and a `*-not-built` warning naming the table, so it
+answers live, no run builds it, and a host's instruction for it is refused, until a reload (or a
+connection change's plan refresh) reads the catalog and plans it at its address, where a table
+already built for it serves again. A table the dialect gives no catalog to read folds `no_catalog`,
+one the catalog does not hold (a BigQuery wildcard table such as `events_*`) folds `not_found`, and an
+unqualified name the catalog holds in more than one schema folds `ambiguous`: each a stable value, so
+such a source is planned and built. A source whose tables cannot be known (an
+`.sql()` source or a raw SQL expression in its lineage, so no `reads`) folds nothing: a column
+retyped under it is not seen, and is handled at the bind as below. Each build records what it
+read on its manifest entry (`upstreamSchemas`).
+
+A reload or publish that refetches the schemas and then fails to compile (a column a source
+reads was dropped, say) keeps the previous model serving, reported `stale`. It still reads the
+upstream tables again, and each source whose build names a column that changed or is gone stops
+serving its stored tables: its queries answer as live does, which for a dropped column is
+live's error. Sources whose columns did not change keep serving. The stale message names the
+changed tables and the sources that answer live.
+
+The same holds when the table did not move but its source did, and the address did not move with
+it (the type was read before the retype, with no reload since, or the source has no `reads`): a
+warehouse column retyped upstream after the build, so the source now declares a type the table's
+value does not read as (an integer column now declared `string`). The bind finds the table as
+built. Every mechanism (a persisted view or query, a
 `#(materialize)` or `#@ persist` source, a rollup) takes the column as moved: a query that reads
 it answers live with `MISSING_FIELD` and the column in its path report's detail, a query that
 does not still serves, and the warning says what its source reads changed type since the build. A
 column the table holds as a naive timestamp now declared `date`, or as an integer now declared
 `boolean`, is read through its faithful cast (`DATE`, `BOOLEAN`) and not reported: those are also
 the types a build writes by design for a `date` truncation and a `boolean` flag, and the cast
-leaves such a value as it is. Because the address did not move, a normal run
-reuses the table; only a forced refresh (`forceRefresh`) rebuilds it and clears the warning. The log line has the same code and names each changed column. A table
+leaves such a value as it is. While the address has not moved, a normal run
+reuses the table; a reload that reads the new type moves it, and a forced refresh
+(`forceRefresh`) rebuilds it in place; either clears the warning. The log line has the same code and names each changed column. A table
 whose columns cannot be read at the bind (missing, unreadable, or slower than the bound) is answered
 live, with a `database-table-unread` package warning that names the table, a fixed reason (the
 driver's own text, secrets redacted, is in the log alone) and whether a retry is pending, and read
@@ -803,12 +854,17 @@ again with backoff (after 1 second, doubling to at most a
 minute, ten times), and by any later poll of an unchanged manifest, until a read succeeds, when the
 warning clears. A change made after a bind is read at the next one.
 
-**Columns with no Malloy basic type.** A stored list or struct column is declared as Malloy's array
+**Columns with no Malloy basic type.** A `storage=` build stores an array column, public or hidden
+(a BigQuery `ARRAY`, a DuckDB or Postgres list, a persisted query's `nest:`), as a DuckDB list of its element type
+(`VARCHAR[]`, `BIGINT[]`, `STRUCT(…)[]`), and a struct (record) column, public or hidden (a BigQuery
+`STRUCT`, a DuckDB `STRUCT`), as a DuckDB `STRUCT(…)` of its mapped field types, a struct inside it or a
+list it holds included. A stored list or struct column is declared as Malloy's array
 or record type, so it reads back as it does live, when the source's field is one; a column Malloy has
 no faithful declaration for (a MAP, UNION, ENUM, BLOB, INTERVAL or JSON column, a list or struct
 holding one, a list or struct whose field live types as a warehouse-native type or that holds one, or
-a list or struct holding an integer live keeps exact past 2^53, such as a DuckDB `BIGINT[]`) is left out
-of its source, so a query reading it is answered live and every other query reads the table. A list or
+a list or struct holding an integer live keeps exact past 2^53, such as a DuckDB `BIGINT[]` or a
+BigQuery `STRUCT` with an `INT64` field) is left out of its source as a whole column, so a query
+reading it, or any field of it, is answered live and every other query reads the table. A list or
 struct of zoned timestamps is declared `timestamptz`, as live types it. A stored scalar whose field live
 types as a warehouse-native type (`sql native`: a `uuid`, or a Postgres `json`, `jsonb` or composite
 type, which the destination stores as text) is left out the same way, and a Postgres `bytea` or
@@ -823,22 +879,23 @@ no type declares is counted in `publisher_storage_serve_shape_type_fallback_tota
 
 **A column the served copy cannot carry sends a `#(materialize)` source live as a whole.** A
 `#(materialize)` source leaves a column out per query, as above, only when the column is stored: a
-list (a DuckDB `BIGINT[]`, a BigQuery `ARRAY<INT64>`), a MAP, a UUID and the like. Three kinds of
-column are never on its table, and each one sends **every** query over the source live, whatever
-the query reads, in a `storage=` table and a database one (a database origin) alike:
+list (a DuckDB `BIGINT[]`, a BigQuery `ARRAY<INT64>`), a struct holding such an integer, a MAP, a
+UUID and the like. A list or struct column its table lacks is left out per query too: a `storage=`
+build by an earlier release left every array and struct column out of its table, so such a table
+serves every query that does not read the column until its next full build. Two kinds of column
+are never on its table, and each one sends **every** query over the source live, whatever the query
+reads, in a `storage=` table and a database one (a database origin) alike:
 
-- a struct (record) column of the source's own, such as a DuckDB `STRUCT(a BIGINT)` or a BigQuery
-  `STRUCT<…>`: Malloy types it as a join, so the plan stores no column for it and the served copy
-  cannot carry the field (`served-copy-not-served`, reason `fields_not_carried`);
 - a column of an `inline=` join that no `type:` declares, such as a BigQuery `GEOGRAPHY` or a
   DuckDB `MAP` on the joined source (`served-copy-not-served`, reason `column_types`);
 - a nest of a database table outside DuckDB, which its warehouse stores as JSON (`column_types`).
 
 The answers are live's, so nothing is wrong, only slower. Each query's path report says
 `servedBy: live` and skips the table as `NOT_SERVED` with code `served_copy`; the package's
-`served-copy-not-served` warning names why, in its message and its `reason` field; the path report
-itself does not. A v1 `#@ persist`
-`storage=` source stores a struct column of its own and serves it from the table.
+`served-copy-not-served` warning names why, in its message and its `reason` field. For
+`column_types`, the warning's message and the path report's `detail` also name each column, with
+its declared type and its stored type (or that the table does not hold it); a hidden column is
+named only as "a hidden column", with no types.
 
 **Integers past 2^53.** A stored table's columns are declared to Malloy as plain numbers, which it
 reads through a JavaScript number, so 9007199254740993 would come back as 9007199254740992. A
@@ -864,15 +921,14 @@ the warehouse's `information_schema` finds in more than one schema, where the bu
 which table it wrote). A database column whose type its build did not record is the one exception
 on BigQuery: BigQuery has exactly one integer type, so the column is read as `INT64` and still
 serves. Either way the package reports the source as a warning with code
-`database-native-type-missing` (for this release also repeated under its former code,
-`stored-native-schema-missing`), naming its columns and whether each is read as `INT64` or answered
+`database-native-type-missing` (`stored-native-schema-missing` before 0.15, and repeated under
+that code through 0.16), naming its columns and whether each is read as `INT64` or answered
 live; the next full rebuild records the types and clears it. Served never exceeds live where Malloy's dialect says live rounds: on a source whose live answer
 itself rounds such values (Postgres returns its rows through JSON), a `storage=` table reads the
 column as a plain number, which rounds the same way, and a database one reads it through
 Postgres's own `bigint` type, on live's own path ([known limitation
-12](materialization-v2-plan.md#known-limitations-to-revisit)). Where the dialect says live keeps
-every digit but the connector does not, served is the exact answer and live rounds: Snowflake's
-`NUMBER(p,0)` today (see "Snowflake: live and served differences" below).
+12](materialization-v2-plan.md#known-limitations-to-revisit)). Snowflake's `NUMBER(p,0)` keeps every
+digit live as well as served (see "Snowflake: how live reads integers and timestamps" below).
 
 **A 128-bit integer in DuckLake.** DuckLake (DuckDB 1.5) writes a `HUGEINT` or `UHUGEINT` column to
 its Parquet files as a `DOUBLE`, while its catalog still reports the 128-bit type, so a value past
@@ -892,8 +948,9 @@ cannot tell which it has. A plain DuckDB table keeps every digit. So:
   whose table stores one answers live; the path report skips that table with `MISSING_FIELD` and
   names the stored column. The package reports each such column with
   `storage-column-type-mismatch`, handled live.
-- A chained build never stacks on a table holding such a column: the downstream recomputes from
-  its raw source, so the rounded values are never stored again as exact.
+- A chained build never stacks on a table holding such a column, and is never built by
+  recomputing its upstream from raw in its place: the downstream fails, and answers live, so the
+  rounded values are never stored again as exact.
 - A 128-bit integer inside a list or struct is not cast, so DuckLake stores that leaf rounded too.
   Such a column is left out at serve (a list or struct holding a big integer has no stored
   declaration, above), and a chained build never stacks on its table, so the rounding is never
@@ -904,20 +961,33 @@ cannot tell which it has. A plain DuckDB table keeps every digit. So:
 - A database build on a `ducklake` connection still stores the 128-bit type, which is answered
   live as above.
 
-**Snowflake: live and served differences.** Two Snowflake answers differ between live and served
-today, and in both the served answer is the right one; each needs a fix in Malloy's Snowflake
-connector, not in Publisher.
+**Snowflake: how live reads integers and timestamps.** Every Snowflake connection Publisher
+builds, password or key pair, reads its rows so that a live answer equals the served one:
 
-- *Integers past 2^53.* Malloy's Snowflake dialect says live keeps every digit of a `NUMBER(p,0)`, so
-  a stored read keeps them too (above). Live does not, on any connection Publisher configures: the
-  connector gives snowflake-sdk the configured options without its own `jsTreatIntegerAsBigInt`
-  default, so the driver returns the integer as a JavaScript number. A `sum()` over a
-  `NUMBER(38,0)` past 2^53, such as 4530000000000225187, comes back rounded live
-  (4530000000000225300) and exact served. Publisher does not round the served answer to match.
-- *`TIMESTAMP_TZ`.* The connector pins the session's text format for `TIMESTAMP_NTZ` and
-  `TIMESTAMP_LTZ`, not for `TIMESTAMP_TZ`, so live renders a zoned value in the account's own format
-  and offset (`2026-01-15 10:00:00.000 -0800`), and served renders the same instant in UTC ISO form
-  (`2026-01-15T18:00:00.000Z`). The instant is the same; only the text differs.
+- *Integers.* An integer column (a `NUMBER(p,0)`, or a `sum()` over one) is read with every digit,
+  as Malloy's Snowflake connector does by default (`jsTreatIntegerAsBigInt`); the connector applies
+  that default only to options it reads from the environment or a TOML file, so Publisher sets it
+  itself. A value within ±2^53 is a number, as before; past it, a `bigint` field's value keeps every
+  digit and a compact answer gives it as a JSON string, as for a DuckDB `BIGINT`. A `sum()` over a
+  `NUMBER(38,0)` of 4530000000000225187 answers `"4530000000000225187"` live and served. Until 0.17
+  live answered the rounded number 4530000000000225300.
+- *Dates and timestamps.* A `DATE`, `TIMESTAMP_NTZ`, `TIMESTAMP_LTZ` or `TIMESTAMP_TZ` value is
+  answered as its instant in UTC ISO form, as a stored copy (DuckDB) answers it: a
+  `TIMESTAMP_TZ` of `2026-01-15 10:00:00 -08:00` answers `2026-01-15T18:00:00.000Z`, and a `DATE`
+  `2026-01-15T00:00:00.000Z`. A `TIMESTAMP_TZ`'s own offset is not kept, live or served: a stored copy
+  holds only the instant, so keeping it live would make the two differ. Until 0.17 a compact live
+  answer rendered each in the session's text format (`2026-01-15 10:00:00.000 -0800`,
+  `2026-01-15T18:00:00.000+00:00`, `2026-01-15`). The full result's `timestamp_value` and
+  `date_value` were already UTC ISO and are unchanged.
+
+An integer inside a nested (array or record) column is not covered: a Snowflake nest arrives as
+JSON, which the driver parses into JavaScript numbers, so a value in it past 2^53 is rounded live.
+
+**What a host's manifest must carry.** The bind holds each bound table to the column contract its
+build recorded ([the column contract](#the-column-contract-and-what-a-bind-checks)), so a host that
+binds its own manifest must store each entry's `contract` and send it back unparsed, beside its
+`schema` (a `storage=` entry) or `nativeSchema` (a database entry). An entry with no contract is
+`contract_missing` and answers live until it is rebuilt.
 
 A run's record (`GET …/packages/{packageName}/materializations/{materializationId}`, and the
 listing) returns its build manifest. Each entry names the physical table it built, and a database
@@ -960,7 +1030,7 @@ Warnings about the deployment rather than one item carry codes of their own, suc
 Renamed and retired codes:
 
 - `persist-source-refused`, `persist-not-built`'s former name, is no longer produced (0.14.0 repeated it for one release, as announced).
-- `preaggregate-not-built`, `preaggregate-join-one-key-repeated` and `stored-native-schema-missing` are now `rollup-not-built`, `rollup-join-one-key-repeated` and `database-native-type-missing`. For this release each is repeated under its former code, with the same message, in the package's REST `warnings` (the Console and the MCP tools show it once); then the repeat is removed.
+- `preaggregate-not-built`, `preaggregate-join-one-key-repeated` and `stored-native-schema-missing` are now `rollup-not-built`, `rollup-join-one-key-repeated` and `database-native-type-missing`. 0.15.0 and 0.16 repeated each under its former code, with the same message, in the package's REST `warnings`; since 0.17.0 the former codes are no longer produced.
 - `preaggregate-not-a-measure`, `preaggregate-unknown-grain` and `preaggregate-not-mergeable` are now `rollup-not-a-measure`, `rollup-unknown-grain` and `rollup-not-mergeable` (load failures, so only the `[code]` in the failure's message and `loadErrors[].codes` change).
 - `table-kept-after-rename` is now `table-kept`: it also fires after a `storage=` or tier move and for a destination no longer configured, and its `reason` field says which.
 - The rollup refusals `preaggregate-hidden-field`, `preaggregate-access-filter`, `preaggregate-time-zone`, `preaggregate-current-time`, `preaggregate-reads-given`, `preaggregate-unreadable-measure`, `preaggregate-join-level` and `preaggregate-name-clash` are no longer produced: each is `rollup-not-built`, with the reason `hidden_field`, `access_filter` (or `authorize` for a lock), `time_zone`, `current_time`, `reads_given` or `inherited_where_with_given`, `unreadable_measure`, `join_not_in_grain` or `partial_name_collision` on its `refusedSources` record.
@@ -968,6 +1038,87 @@ Renamed and retired codes:
 - `RefusedSource.reason` `empty_storage` and `env_reference` name mistakes that now fail the publish and the load (`persist-invalid`), so no served package reports them. The plan still refuses such a source with them as a backstop, so it is never built in its own warehouse, and a plan computed without the load's check can carry one. `OmittedSource.reason` `persist_annotation_unparseable` is no longer produced.
 
 The package manifest's own policy is not an annotation and keeps its own rule: [refused at publish, a warning at load](#the-persistence-policy-the-publish-gate).
+
+## Every build is strict
+
+A table that reads another persisted source is built over that source's table, or not at all. No
+build, standalone, scheduled or a host's, recomputes a persisted upstream from raw in its place:
+that would rebuild a table nobody asked to rebuild, and store rows that need not match the table
+every other reader of the upstream sees. A downstream that cannot be built over its upstream's
+table answers live instead, through the served copy, which reads that table.
+
+`strictUpstreams` and `warehouseReach` in `buildInstructions` are accepted and ignored. Both are
+still validated (a non-boolean `strictUpstreams`, or a `warehouseReach` other than `recompute` or
+`refuse`, is a 400), and a request that sends either logs one warning,
+`buildInstructions options are deprecated and ignored`. A later release removes them.
+
+**Refused when the package is planned.** What the plan can see, it refuses before any run, as
+`upstream_table_unusable` in `refusedSources`, with a `*-not-built` warning and a `message` naming
+the upstream and why. Each answers live until the model changes:
+
+- a database table over a `storage=` upstream, and a `storage=` table over an upstream stored in
+  another destination: neither build can read that table where it runs;
+- a downstream over an upstream that is itself refused, or not planned;
+- a persisted view or named query whose compile over its upstream's table fails, one that reaches
+  several `#(materialize)` sources, one whose `#(materialize)` upstream is declared in another file
+  or has no table it can build from there, and one that reads that upstream in another time zone
+  than its table was built in;
+- a rollup over a pair table, over an extension of a `#(materialize)` source in another file, over
+  a base whose `where:` reads a given and is re-applied at read, with a grain that reads a private
+  dimension, or over any persisted base whose build over the base's table did not compile;
+- a `storage=` build over its upstreams' tables that groups, filters or orders a string the
+  upstream's contract records as compared otherwise than live: the destination compares strings
+  byte-exact, so it would hold other groups or rows than live computes. Each string is judged
+  against the contract of the upstream whose table holds its column.
+
+**Failed by the run.** What only a run can find fails that source's build, and the source answers
+live: a persisted upstream the run neither built nor was handed by reference
+(`chained_upstream_missing`), a shape over stored upstreams the destination could not carry
+(`chained_shape_not_carried`), or an upstream whose table moved since the plan was proven over it
+(SourceFailure code `schema_incompatible`). `schema_incompatible` is non-terminal and `retryable`:
+the build reports the table to the drift handler, which reads the package's tables again and
+derives the plan again from them, so the next build is proven over the table as it is, or refused
+at plan. One table generation never fails `schema_incompatible` twice in a row.
+
+A standalone run of named sources (`sourceNames`) also takes in every persisted upstream they read,
+through the plan's edges. It carries each upstream whose table it can serve and rebuilds the rest:
+a missing table, one at another tier or destination, one past its freshness window, one with no
+contract, or one a bind found incompatible.
+
+An extension's own `#(materialize)` table is held to the same rule: one whose build over its
+parent's table does not compile, or cannot be written, is refused at plan as
+`upstream_table_unusable`, naming the parent and why, and is never built over the chain from the
+warehouse ([extension tables](#the-served-copy-materialization-v2-publisher_materialize)).
+
+### The column contract and what a bind checks
+
+Every build, on both tiers, records what its table holds column by column in the entry's
+`contract`: each column's type as the engine holding it names it, its collation, how a stored read
+of it compares with live (`compare`: `exact`, `equality` or `none`), whether a row-level gate over
+it reads the same rows as live (`gateExact`), and the type the source declared for it. A `storage=`
+table also records its destination session's `default_collation`, and a pair table its leaf key
+check (`keys`). The contract is read back with the same catalog reads a bind makes, before the swap
+or commit, so a table straight out of a build always matches it. A build whose contract cannot be
+read back fails that source with `contract_capture_failed`, which is retryable, and leaves the
+previous table as it was.
+
+Every bind (a run's commit, a manifest bind, a reload, a restart) reads each bound table and holds
+it to its contract with one comparator, on both tiers. A table whose recorded column is gone,
+holds another type or another collation, whose destination's `default_collation` changed under a
+string column that declares none, or whose source now declares another type than it was built for,
+is `incompatible`; one with no contract is `contract_missing`. Both are left out whole and answer
+live; neither is ever cast or narrowed into serving. Both are non-terminal, never a plan-time
+refusal: a rebuild fixes them, and a standalone run rebuilds such a table in full (an incremental
+source reseeds). Each verdict names the table generation it judged (`table`), so a host drops one
+about a table it has since replaced and rebuilds once per generation. A catalog read that fails or
+times out leaves the table unread, answered live and read again, never `incompatible`.
+
+**After an upgrade to this release, every stored table built by an earlier release answers live**
+(`contract_missing`) until it is rebuilt. Run a full build once, `POST …/materializations` on a
+standalone server or a host's full build of every materialized package, to rebuild them. On a
+fleet, run it once every worker is on this release: entries written by an older worker carry no
+contract, so a host that rebuilds on `contract_missing` during a rolling deploy may rebuild the
+same source more than once until the rollout completes.
 
 ## Will it serve? The serve verdict
 
@@ -981,8 +1132,18 @@ a working one: the build succeeds, the manifest binds, and every query is quietl
 plan and the binding on every read. Its `tier` is where queries read the table: a storage binding
 that stores the source decides it, so a source with no `storage=` that a host's build instructions
 placed in a storage destination is judged as a storage table, as queries read it; with no storage
-binding, `storage=` does. A source the served copy reads whose storage table is stale while its
-database table is fresh is judged on the database tier, which the served copy reads.
+binding, `storage=` does. A source the served copy reads that is bound in both tiers is read from
+one table: the storage table while it is fresh and `PERSIST_STORAGE_MODE` is `on`, else the
+database table (fresh, beside a stale storage table; beside a storage table the served copy cannot
+read whole, such as one missing a column the source exposes; or under `write-only` and `off`, where
+no storage table is read). A storage table that holds a column it cannot read back as live answers
+it (a list stored as its text) is still read, for the queries that do not read that column; a query
+that does is answered live. Its verdict is judged on that tier. A rollup, persisted view or persisted
+query reads its storage binding first under `on`. Under `write-only` and `off` it skips the storage
+binding when a database table is bound beside it, and answers from that table as under `on` with the
+storage table removed (while it is fresh, else live); the path report names the storage table
+`NOT_SERVED` `storage_mode`, and the verdict is judged on the database tier. With no database table
+bound, it answers live (`storage_mode`).
 
 | `verdict` | Meaning |
 | --- | --- |
@@ -1001,9 +1162,76 @@ A `live` verdict's `reason`:
 | `shadowed` | Its storage table is bound, but every model's source of that name is another source. | Rename it. |
 | `destination_missing` | `storage=` names a destination this environment does not configure, so no build can write its table. Not reported while `PERSIST_STORAGE_MODE` is `off`, which ignores `storage=`. | Configure the destination, name a configured one, or drop `storage=`. |
 | `connection_cannot_hold_table` | Materialized in its own warehouse, on a connection whose type creates no tables. | Add `storage=` naming a configured destination, or drop the annotation. |
+| `contract_missing` | Its table is bound, but its manifest entry carries no column contract: it was built by an earlier release, its contract capture failed, or a host sent none. The bind cannot tell whether the table still holds what it was built to hold, so it is never served from. Non-terminal: a rebuild fixes it. The warning is `materialization-contract-missing`. | Rebuild the table. A host stores each entry's `contract` and sends it back. |
+| `incompatible` | Its table is bound, but no longer holds what its contract records: a column gone, retyped or recollated, the destination's `default_collation` changed under a string column that declares none, the source now declaring another type (`declared_moved`), or an upstream it was built from changed under it (`upstream_altered`). `incompatibility` says which and names the columns. Non-terminal: a rebuild fixes it. The warning is `materialization-table-incompatible`. | Rebuild the table; a standalone run rebuilds it in full on its own. |
+| `types_unrecorded` | Retained, no longer produced: a table with no recorded types is `contract_missing`. | — |
 | `stale` | Its table is past its freshness window, and its fallback does not serve stale. | Run a build, widen the freshness window, or set its fallback to `stale_ok`. |
 | `materialization_off` | A `#(materialize)` source, which only the served copy reads, and the served copy is off. | Set `PUBLISHER_MATERIALIZE=true` (and, for `storage=`, `PERSIST_STORAGE_MODE=on`). |
-| `served_copy` | A `#(materialize)` source whose table is bound, but no model's served copy re-roots it. | Fix what the `served-copy-not-served` warning names, or drop `#(materialize)` if a source it is built on already answers its queries. |
+| `served_copy` | A source the served copy reads (`#(materialize)`, or `#@ persist` on a source) whose table is built and bound, but no model's served copy reads it, so every query on it is answered live. `notServedIn` says where and why (below). | Fix what the `served-copy-not-served` warning names; for `#(materialize)`, or drop it if a source it is built on already answers its queries. |
+
+**Built but not served.** A table can build `READY`, and the run report success, while no query
+reads it: the served copy that reads it did not compile, or left the source out. The build, the
+manifest and the Builds page all show the table built; the serve verdict is where it shows as not
+served. `notServedIn`, read from the same compile of record as the `served-copy-not-served`
+warnings (never by running a query), says where and why. It is the same for a `#(materialize)`
+source and a `#@ persist` one, and present exactly when some model that holds the source does not
+read its table. Each entry is one model file whose served copy holds the source (declares or
+imports it) but does not read its table, with `reasons`:
+
+- every `served-copy-not-served` reason that model's warnings give for the source, on the source or
+  on the model's whole copy, most actionable first, the codes `publisher_served_copy_bind_total`
+  counts: for example `cross_connection_join` (a join the copy left out across connections, and the
+  source with it) before `fields_not_carried`, or `cross_connection_unbuilt` (a join across
+  connections that cannot be left out, so the model's whole copy is off until both sides are built
+  into one destination);
+- `not_rerooted` alone when no warning names one.
+
+When a model's whole copy is off, every stored source it holds lists it, not only the one whose join
+failed it. A source no model's copy holds and none reads lists its declaring model, `not_rerooted`.
+A source "read" by a model means re-rooted on its table there, or, for an extension that inherits
+`#@ persist` and shares its base's table, read through that base; an extension with a table of its
+own that the copy reads through its base does not read that table.
+
+**`serves` does not mean every model.** A source two models hold can be served in one and answered
+live in the other (an importer whose own copy is off). Its verdict is `serves`, because queries
+through the first model read its table, and `notServedIn` names the second. A consumer must read
+`notServedIn` on every verdict, not only on a `live` one.
+
+**Pending after a bind.** A bind returns before each model's served copy recompiles over the tables
+it bound, and that compile is what `notServedIn` and a `served_copy` reason are read from. Until it
+lands, a verdict on a source the served copy reads (`#(materialize)` or `#@ persist`), held by a
+model whose copy is not yet compiled over the tables bound now, carries `servedCopyPending: true`
+and no served-copy judgement: a bound, fresh table reads `serves`, even one the compile will leave
+unread. **A host that reads `GET …/packages/{pkg}/status` after a bind must re-read it while any
+verdict carries `servedCopyPending`**; once it is absent, that verdict is final for the bind. The
+compile usually lands well under a second after the bind. A query never waits on it: each compiles
+or reuses the copy over the tables bound when it starts. A read that finds a copy pending starts its
+compile if nothing else has, one at a time per model, so polling clears the marker on its own: a
+freshness window that lapses changes the tables a query reads with no bind, and a model nobody
+queries would otherwise stay pending. A copy whose compile fails outright is recorded as
+`compile_failed`, not left pending, and is retried: by the next query at once, and by a read
+30 seconds later. While a model's copy is pending, the package's `served-copy-not-served` warnings
+for that model are withheld rather than carried over from the previous bind, so a bind response
+never lists a stale one; they appear with the compile that lands.
+
+For example, a model whose copy fails across connections reports every table it holds, either
+kind, as:
+
+```json
+{ "sourceName": "carriers_s", "origin": "persist", "tier": "storage", "verdict": "live",
+  "reason": "served_copy",
+  "notServedIn": [{ "model": "m.malloy", "reasons": ["cross_connection_unbuilt"] }] }
+```
+
+A join the copy leaves out alone (the source still serves the queries that do not use it) keeps the
+source `serves` with no `notServedIn`: only its `served-copy-not-served` warning, and the path
+report of a query that uses the join, say so. A table that is stale reads `stale`, and one
+`PERSIST_STORAGE_MODE` keeps off its storage table reads `storage_mode`, with no `notServedIn`. A
+rollup, persisted view or persisted query is read by a leg of its own, never by the served copy, so
+it never carries `notServedIn`. To check a package after a build, read `GET …/packages/{pkg}/status`
+and look for a `live` verdict with reason `served_copy`, and for `notServedIn` on any verdict; a host
+joining verdicts to its own build records joins on `sourceID`, or on the build plan's
+`sourceEntityId` for that `sourceID`.
 
 `unreachable` is also a publish warning, code `materialization-unreachable`: the table is built
 for no query. So are the two deployment facts: `destination_missing` warns with code
@@ -1052,6 +1280,13 @@ standalone run or a control plane built the table.
   names it `READ_FAILED`. The worker logs it at error level with code
   `ducklake_catalog_unavailable` and reopens the destination, so the next query reads the table
   again.
+- A stored read that fails at run time (a column renamed or dropped after the build, say) answers
+  live under `freshness.fallback="live"`, with `servedFrom: live_fallback` and the table named
+  `READ_FAILED`: a `storage=` table and a database table the served copy reads. Under any other
+  fallback the error is returned. A rollup, on either tier, answers live this way whatever its
+  fallback, since a rollup only accelerates: a database rollup on any store failure, and a
+  `storage=` one unless the same answer also reads a stored table whose fallback is not `live`.
+  None is retried live for a bad given or a cancelled query.
 
 Each key resolves on its own, most specific first: the source's own declaration, then the model
 file's (`## freshness.window="…"`, or inside `## materialization { … }`), then `materialization.freshness`
@@ -1134,7 +1369,7 @@ If the load does not take, the run still settles at `MANIFEST_FILE_READY`, since
 
 A build ignores the package's [published surface](discovery-and-access.md). It builds every `#@ persist` source in every model, including one `index.malloy` does not export, so a hidden intermediate can be persisted and an exported source that reads it reads the built table.
 
-Each run records a **trigger** in its metadata: `on_demand` (a manual/API build) or `scheduler` (a scheduled fire), the words `RunContext.trigger` uses. Runs recorded before 0.15 say `ON_DEMAND` and `SCHEDULER`, and every reader accepts both. Only one materialization can be active per (environment, package) at a time — a second concurrent build is rejected with HTTP 409, and the scheduler coalesces (skips) rather than stacking a second build. A package with published versions builds per version, under the rules in [package-versions.md](package-versions.md#materializations): a run under `scope: "version"`, or one with `buildInstructions`, holds its own version's slot instead.
+Each run records a **trigger** in its metadata: `on_demand` (a manual/API build) or `scheduler` (a scheduled fire), the words `RunContext.trigger` uses. Runs recorded before 0.15 say `ON_DEMAND` and `SCHEDULER`. The API and the CLI accept both; since 0.16.1 the scheduler reads only `scheduler`, so a scheduled fire a release before 0.15 recorded is not read when it anchors a schedule. Only one materialization can be active per (environment, package) at a time — a second concurrent build is rejected with HTTP 409, and the scheduler coalesces (skips) rather than stacking a second build. A package with published versions builds per version, under the rules in [package-versions.md](package-versions.md#materializations): a run under `scope: "version"`, or one with `buildInstructions`, holds its own version's slot instead.
 
 On demand, via the CLI:
 
@@ -1384,8 +1619,8 @@ Every query result carries `path`, the path report. It says which materialized t
 - `tableId` is the table's `sourceEntityId`, the content address the build plan and manifest key on. Sources that build the same SQL and name the same table share one table, so they share one id.
 - `kind` is `materialized` (a stored source), `rollup`, `view` (a persisted view's table), `query` (a persisted named query's table) or, on `servedBy`, `live`. A client treats a kind it does not know as a stored table it cannot name.
 - `considered` lists the tables on the queried source's chain (the source, what it extends or renames, and the source its query reads from) and the rollups of a source on it: `storage=` tables, then database rollups, then database tables nearest first. That is not the order they are tried: the router tries a persisted view or query first, then rollups (coarsest first), then the served copy. A table that was not tried because an earlier one answered is left out.
-- `reason` is one of `NOT_BUILT` (not bound to this package yet), `STALE` (past its freshness window), `ROW_LEVEL_GATE` (the entry point has a row-level gate, which stored data cannot keep yet), `MISSING_FIELD` (the query does not compile against the stored form, or reaches a field a rollup does not carry), `SHAPE_MISMATCH` (the query is not the shape a persisted view's or query's stored result answers: not a call of it, a refined call, or text naming beside the call a name the stored result takes over), `COUNT_SEMANTICS` (a rollup cannot reproduce an aggregate the query computes), `GRAIN_TOO_COARSE` (a rollup's grain does not hold the query's groups), `TIME_ZONE` (built in another time zone), `CROSS_CONNECTION` (the query needs a join the table's connection cannot reach), `READ_FAILED` (the stored read failed and the query answered live: the freshness fallback allowed it, or the failure answers live whatever the fallback says, as DECIMAL arithmetic past what the destination holds and a destination catalog missing on the worker do), `OPTED_OUT` (the queried source opts out with `#@ -persist`) or `NOT_SERVED` (the table answers no query at all, because its serve verdict is `live`; or it serves, but the served copy declined this query on it; see below). The list is closed, and codes may be added. Releases before 0.15 said `CONTRACT` for `ROW_LEVEL_GATE`, `RUN_FAILED` for `READ_FAILED` and `WARNED` for `NOT_SERVED` and `OPTED_OUT`; a client should read both.
-- A `NOT_SERVED` skip carries `code`, the serve verdict's reason the table will not serve: `storage_mode` (a `storage=` table, or a table a host's storage binding placed in a destination, while `PERSIST_STORAGE_MODE` is `off` or `write-only`; the query reads the source's own warehouse, where its database table may answer), `unreachable` (nothing the package publishes reaches it), `row_level_gate` (every published entry point over it carries a row-level gate, which stored data cannot keep yet; a rollup only, for a stored table, while `PUBLISHER_MATERIALIZE_GATED_SOURCES` is on, or a `storage=` table that stores its own gate column as a zoned timestamp, which the destination compares in its own session zone), `refused` (the package refuses to serve it), `shadowed` (its storage table is bound to another source of the same name), `materialization_off` (only the served copy reads it, and the served copy is off) or `served_copy` (only the served copy reads it, and it does not re-root the queried source). Codes are always snake_case. Where the verdict says a table will never serve, it replaces what one query alone showed, but only where the router never tried the table: a source the bind refuses reads `NOT_SERVED` `refused`, not `NOT_BUILT`, and a table every published entry point gates reads `NOT_SERVED` `row_level_gate`, not `ROW_LEVEL_GATE`. A skip the router reached by trying the table (`MISSING_FIELD`, `SHAPE_MISMATCH`, `GRAIN_TOO_COARSE`, `COUNT_SEMANTICS`) keeps its own reason, and `STALE`, `READ_FAILED` and `OPTED_OUT` stay as they are, since only the query knows them. A `storage=` table and its database copy share a `tableId` but each reads its own verdict. The set of codes is open. A table whose verdict serves is also `NOT_SERVED` when the served copy declines one query on it. A `storage=` table only the served copy reads carries `code` `served_copy` for each such decline: the served copy re-roots nothing the query reads, a gate on the queried source cannot be grafted on it, a gate or the query's result (through a wildcard such as `select: *`) needs a column the served copy leaves out of a stored table's type, the source exposes a field the compile of record does not classify or carry, a composite resolves to another member than live, or the source's ungated `where:` reads a column the table does not hold exactly or does not compare as its source does. A database table is named this way only for that last case, with a `detail` and no `code` ([the comparison rules](#access_filter-gated-sources-and-materialization), a Postgres collation included). A query that itself names a column the table leaves out is `MISSING_FIELD`, and a gate the table cannot keep is `ROW_LEVEL_GATE`.
+- `reason` is one of `NOT_BUILT` (not bound to this package yet), `STALE` (past its freshness window), `ROW_LEVEL_GATE` (the entry point has a row-level gate, which stored data cannot keep yet), `MISSING_FIELD` (the query does not compile against the stored form, or reaches a field a rollup does not carry), `SHAPE_MISMATCH` (the query is not the shape a persisted view's or query's stored result answers: not a call of it, a refined call, or text naming beside the call a name the stored result takes over), `COUNT_SEMANTICS` (a rollup cannot reproduce an aggregate the query computes), `GRAIN_TOO_COARSE` (a rollup's grain does not hold the query's groups), `TIME_ZONE` (built in another time zone), `CROSS_CONNECTION` (the query needs a join the table's connection cannot reach), `READ_FAILED` (the stored read failed and the query answered live: the freshness fallback allowed it, or the failure answers live whatever the fallback says, as DECIMAL arithmetic past what the destination holds, a destination catalog missing on the worker, and a rollup's failed read do), `OPTED_OUT` (the queried source opts out with `#@ -persist`) or `NOT_SERVED` (the table answers no query at all, because its serve verdict is `live`; or it serves, but the served copy declined this query on it; see below). The list is closed, and codes may be added. Releases before 0.15 said `CONTRACT` for `ROW_LEVEL_GATE`, `RUN_FAILED` for `READ_FAILED` and `WARNED` for `NOT_SERVED` and `OPTED_OUT`; a client should read both.
+- A `NOT_SERVED` skip carries `code`, the serve verdict's reason the table will not serve: `storage_mode` (a `storage=` table, or a table a host's storage binding placed in a destination, while `PERSIST_STORAGE_MODE` is `off` or `write-only`; the query reads the source's own warehouse, where its database table may answer), `unreachable` (nothing the package publishes reaches it), `row_level_gate` (every published entry point over it carries a row-level gate, which stored data cannot keep yet; a rollup only, for a stored table, while `PUBLISHER_MATERIALIZE_GATED_SOURCES` is on, or a `storage=` table that stores its own gate column as a zoned timestamp, which the destination compares in its own session zone), `refused` (the package refuses to serve it), `shadowed` (its storage table is bound to another source of the same name), `materialization_off` (only the served copy reads it, and the served copy is off) or `served_copy` (a `#(materialize)` table the served copy does not re-root). A `#@ persist` table whose verdict is `served_copy` keeps the served copy's own decline on its path report (such as `CROSS_CONNECTION`), which says more about the one query; its verdict's `notServedIn` says the same for every query. Codes are always snake_case. Where the verdict says a table will never serve, it replaces what one query alone showed, but only where the router never tried the table: a source the bind refuses reads `NOT_SERVED` `refused`, not `NOT_BUILT`, and a table every published entry point gates reads `NOT_SERVED` `row_level_gate`, not `ROW_LEVEL_GATE`. A skip the router reached by trying the table (`MISSING_FIELD`, `SHAPE_MISMATCH`, `GRAIN_TOO_COARSE`, `COUNT_SEMANTICS`) keeps its own reason, and `STALE`, `READ_FAILED` and `OPTED_OUT` stay as they are, since only the query knows them. A `storage=` table and its database copy share a `tableId` but each reads its own verdict. The set of codes is open. A table whose verdict serves is also `NOT_SERVED` when the served copy declines one query on it. A `storage=` table only the served copy reads carries `code` `served_copy` for each such decline: the served copy re-roots nothing the query reads, a gate on the queried source cannot be grafted on it, a gate or the query's result (through a wildcard such as `select: *`) needs a column the served copy leaves out of a stored table's type, the source exposes a field the compile of record does not classify or carry, a composite resolves to another member than live, or the source's ungated `where:` reads a column the table does not hold exactly or does not compare as its source does. A database table is named this way only for that last case, with a `detail` and no `code` ([the comparison rules](#access_filter-gated-sources-and-materialization), a Postgres collation included). A query that itself names a column the table leaves out is `MISSING_FIELD`, and a gate the table cannot keep is `ROW_LEVEL_GATE`.
 - `warnings` has one entry per such table, with its `code`, `tableId`, `sourceName` and a sentence for a person. A table whose source the caller cannot list gets no warning, though its skip keeps its code. The package's own warnings and `GET …/packages/{pkg}/status` carry the full message and the fixes.
 - `detail` is in the caller's own terms: the field path or aggregate in the query that a rollup cannot reproduce. A compile error against the stored form or a run-time storage error carries no `detail`, since its message can name storage paths and generated sources; it is in the server log.
 - `notConsidered` names up to ten tables near the queried source that the query cannot use: on a source that extends it (`below`) or that shares an ancestor with it (`sibling`). Querying that source instead, or moving an annotation, would let one answer. A source the caller cannot list (hidden by the package's `index.malloy` or the file's exports) is never named, unless the caller may see hidden sources.
@@ -1406,10 +1641,10 @@ With `PUBLISHER_MATERIALIZE` on (the default), a query on a built database `#(ma
 - **Dimensions that depend on the caller.** A `#(materialize)` dimension whose value depends on what the caller sets is not stored: one that reads a given (directly or through another dimension), the current time, or the query's time zone (`hour(ts)`, `ts.month`, `ts::date`; a `date`'s own truncations are civil and do not). The table stores its inputs, and the served copy keeps the dimension's definition and computes it at read, so each caller gets its own value and no table holds one caller's. Publisher finds these by compiling small probe queries against your model (never running them) beside its own reading of the compiled model; either one marking a dimension keeps it out. Where the dimension is declared matters, because the served copy computes it from a definition it keeps, and it keeps only the materialized source's own declaration. A dimension that reads a given or the current time and is declared on a base (in the same file or another) refuses the source (a `materialize-not-built` warning naming the dimension and saying to declare it on the materialized source itself; it serves live), and a time-zone-dependent one declared there is stored as built, so a query over that table that sets a time zone is answered live, whether the query writes `timezone:` itself or runs on a source that declares one (`ny is orders extend { timezone: 'America/New_York' }`, or anything on its chain). A source whose time-zone-dependent dimensions are all ones the served copy keeps answers a `timezone:` query from its table, unless its rows depend on the zone: a `where:` with a timestamp literal (`where: ts > @2026-03-08 09:00`), its own or one a base it is built on writes, filters different rows in every zone, and the table holds the rows of the build's, so a `timezone:` query over it is answered live. An `inline=` join through which a given is read is refused the same way, since its stored columns would hold one caller's values.
 - **A base scoped by a given.** The common governed shape is a base that keeps one tenant's rows (`source: tenant_orders is orders extend { where: org_id = $ORG_ID }`) with extensions over it. Only a materialized source's **own** given-reading `where:` is left out of the build and applied again at read; the served copy keeps only that source's declaration. A given-reading `where:` the source inherits from a base, wherever the base is declared (the same file or another, one or several `extend` or rename hops up, or a materialized parent), refuses the source at plan: it is not built and is answered live, under the term, with a `materialize-not-built` warning that says to move the given-reading `where:` onto the materialized source itself. To serve the shape from a table, write the term on the source you materialize: `source: tenant_orders is orders extend { where: org_id = $ORG_ID }` with `#(materialize)` on it, and extensions over `tenant_orders` that declare none read its table, its term applied for each caller. An extension that declares its own `#(materialize)` over such a parent is refused the same way, and its queries are answered from the parent's table. This is a speed limit, not a correctness one: the refused source answers exactly what it answers live. A term that reads its given through a dimension (`where: is_mine`) is refused for the dimension, as above. The source's own term must also read only fields its table stores, its own dimensions: one over a join's field or a measure cannot be applied again over the table and refuses the source (reason `given_where_over_unstored_field`), as a rollup's term over a field its grain drops does. A served source whose compiled filters lost a given-reading term is still never answered from the copy (`served-copy-not-served`, `read_terms_not_kept`).
 - **Rolling windows.** A `#(materialize)` source whose `where:` keeps the last stretch of time, one comparison of a stored timestamp with `now` (`ts >= now - 30 days`, optionally `now` alone or offset by a whole number of one unit), builds with the window as of the build and is re-applied at every read at the read's own clock, a window inherited from the base included, so a read between refreshes trims to its own cut-off. An incremental refresh appends above the watermark and then deletes the rows below the new cut-off, less a day's margin, in the same transaction. A window that keeps rows *older* than a moving cut-off (`ts < now - 30 days`) would have to be built as of the end of the refresh interval, which a build on demand does not know, and any other `where:` that reads `now` or a relative time filter string, directly or through a dimension or a join that reads it (`where: is_recent`), is not a shape Publisher can store, nor is one `where:` term that reads both `now` and a given: each leaves the source unbuilt, and it serves live. A query that sets a `timezone:` is answered live from a source with a window, since Malloy takes the offset in that zone's wall time and across a daylight-saving change the read needs up to an hour the table does not hold. A dimension whose value depends on the current time, directly or through another dimension or a join, is never stored; the served copy computes it at read.
-- **Extension tables.** An extension that declares its own `#(materialize)` has a table of its own (one that declares none reads its parent's). When the two are on one tier (both database, or both in one `storage=` destination), carry no incremental key, its build reads its parent's table rather than recomputing the chain, and runs after the parent's (a database one reads it in the warehouse). The parent may be declared in another file, imported directly or through any number of files between: the extension's build imports a copy of each file on the way, each pointing at the next one's copy, the last with the parent re-rooted on its table, and Publisher compiles the extension both ways and keeps that build only when it stores the same columns, with the same types, as the build over the chain. A file between that declares `#(materialize)` on the chain itself, planned or not, an import it cannot rewrite, or a build that does not prove the same columns builds over the chain from the warehouse, with the same rows. A `storage=` extension's build carries the chain's declarations out of their files into one text, so across files it also needs each file on the chain to import the next one whole (`import "file.malloy"`, not a selective import, which may leave a name for the importing file to declare itself) and no file on the chain to bind another file's chain source's name to anything else; otherwise it builds from the warehouse. Across files, as in one, a windowed extension never reads a parent's table of unknown or stale age: the run rebuilds the parent first. A `storage=` extension's build runs in the destination over the parent's stored table and reads nothing from the warehouse, so a strict build that refuses the warehouse (`warehouseReach: refuse`) builds it, and its entry says `upstreamReuse: reused`; under `strictUpstreams`, a parent with no table in that destination refuses it. A join the parent inlines (`inline=`) is read in that build from the parent's stored `j__<field>` columns, as the served copy reads it, so an extension that reads `j.<field>` still builds over the parent's table. One whose build over the parent does not compile (a field it reads that the parent's table does not carry, or, for `storage=`, a join to a source the destination does not hold, such as one the parent does not inline) builds over the chain from the warehouse, with the same rows. That fallback is per extension: every other extension in the model still builds over its parent's table. A source elsewhere in the file that reads the parent and would not compile over the parent's table (a sibling extension that falls back itself, say) is left out of the extension's build as an empty source, so it cannot cost the extension its parent's table; if the extension reads that source, its build does not compile and it too builds over the chain from the warehouse. An extension of a source that inlines a join_many always builds over the chain, since the parent's pair table holds each parent once per child. Its served copy keeps the `extend { … }` blocks of every source it is built on, ahead of its own: those in its own file, and those in a file it imports whole (`import "base.malloy"`) when that file imports nothing itself and no name the blocks read is one the importing file declares or imports from elsewhere, so each name reads what it reads in the parent's file. An extension that meets that is served from its own table as one in the parent's file is; one that does not (a selective import, say) keeps its own blocks only, and a parent's measure, join or view it reads then answers live; so a measure, join or view a parent declares is still the extension's; a stored computed dimension's definition is dropped from them as from its own. A `rename:` in those blocks reads its stored column by the field's new name; one with an access modifier (`internal rename:`) keeps the source from being served from its table. A private or internal field stays exactly as hidden on the extension as on the source you wrote, whichever source declared or hid it. A query on the extension reads its own table, and the path report lists its table and its parents' on the chain, nearest first. A source in an importing file that declares no `#(materialize)` of its own, and a `where:` it adds, are served from its parent's table, whatever the column's type.
+- **Extension tables.** An extension that declares its own `#(materialize)` has a table of its own (one that declares none reads its parent's). When the two are on one tier (both database, or both in one `storage=` destination), carry no incremental key, its build reads its parent's table rather than recomputing the chain, and runs after the parent's (a database one reads it in the warehouse). The parent may be declared in another file, imported directly or through any number of files between: the extension's build imports a copy of each file on the way, each pointing at the next one's copy, the last with the parent re-rooted on its table, and Publisher compiles the extension both ways and keeps that build only when it stores the same columns, with the same types, as the build over the chain. A file between that declares `#(materialize)` on the chain itself, planned or not, or an import it cannot rewrite, leaves the extension building over the chain from the warehouse, with the same rows; a build over the parent's table that does not prove the same columns is refused at plan (`upstream_table_unusable`). A `storage=` extension's build carries the chain's declarations out of their files into one text, so across files it also needs each file on the chain to import the next one whole (`import "file.malloy"`, not a selective import, which may leave a name for the importing file to declare itself) and no file on the chain to bind another file's chain source's name to anything else; otherwise it is refused at plan (`upstream_table_unusable`). Across files, as in one, a windowed extension never reads a parent's table of unknown or stale age: the run rebuilds the parent first. A `storage=` extension's build runs in the destination over the parent's stored table and reads nothing from the warehouse, and its entry says `upstreamReuse: reused`; a parent with no table in that destination fails it, as every build is strict. A join the parent inlines (`inline=`) is read in that build from the parent's stored `j__<field>` columns, as the served copy reads it, so an extension that reads `j.<field>` still builds over the parent's table. One whose build over the parent does not compile (a field it reads that the parent's table does not carry, or, for `storage=`, a join to a source the destination does not hold, such as one the parent does not inline) is refused when the package is planned, as `upstream_table_unusable` with a `message` naming the parent and why, and answers live; it is never built over the chain from the warehouse. That refusal is per extension: every other extension in the model still builds over its parent's table. A source elsewhere in the file that reads the parent and would not compile over the parent's table (a sibling extension refused itself, say) is left out of the extension's build as an empty source, so it cannot cost the extension its parent's table; if the extension reads that source, its build does not compile and it too is refused. An extension of a source that inlines a join_many always builds over the chain, since the parent's pair table holds each parent once per child. Its served copy keeps the `extend { … }` blocks of every source it is built on, ahead of its own: those in its own file, and those in a file it imports whole (`import "base.malloy"`) when no name the blocks read is one that file imports (the parent's file may import other files, as long as the blocks read nothing from them) or one the importing file declares or imports from elsewhere, so each name reads what it reads in the parent's file. An extension that meets that is served from its own table as one in the parent's file is; one that does not (a selective import, say) is served from its parent's table with its own blocks applied over it while that table is bound, and otherwise keeps its own blocks only, and a parent's measure, join or view it reads then answers live; so a measure, join or view a parent declares is still the extension's; a stored computed dimension's definition is dropped from them as from its own. A `rename:` in those blocks reads its stored column by the field's new name; one with an access modifier (`internal rename:`) keeps the source from being served from its table. A private or internal field stays exactly as hidden on the extension as on the source you wrote, whichever source declared or hid it. A query on the extension reads its own table, and the path report lists its table and its parents' on the chain, nearest first. A source in an importing file that declares no `#(materialize)` of its own, and a `where:` it adds, are served from its parent's table, whatever the column's type.
 - **Joins are references by default.** A `#(materialize)` source's table holds its own rows only; its joins stay as you wrote them, and read the joined source (from its own table, when that source is materialized) at query time. A dimension whose value reads through a join is computed at read, not stored.
 - **`inline=["j"]`** on a join_one stores the dimensions that read through `j` (one hop) and the joined source's own dimensions as `j__<field>` columns, for tools that read the table outside Malloy. The served copy answers the join from those columns, with no join at read: it replaces the join with a record of the stored fields under the join's name, so `j.<field>` reads the table, an unmatched row reads nulls as the live LEFT JOIN does, and on the storage tier a query through it no longer crosses connections. What the columns cannot answer is answered live: a measure, view or join of the joined source (`MISSING_FIELD` in the path report), an aggregate at the join's own grain such as `j.x.sum()`, `j.count()` or a measure that reads one, in `having:` or filtered too (`COUNT_SEMANTICS`; a record would compute it once per row of the source, where the join computes it once per joined row), a `j.*` selection, and a query that sets a `timezone:`. Row-grain aggregates such as `sum(j.x)` and `count(j.k)` read the table. Each joined field keeps its annotations and classification on the stored copy, so a classified joined source stays served, but a query that returns an annotated field of `j` as a column (`group_by: j.name`) is answered live (`MISSING_FIELD`), so the result carries the field's `#(doc)`, `#(classification)` and render tags; filtering on it, aggregating it, or returning it under another name (`n is j.name`) reads the table. If the source's own text reads the join past what the table stores (a join of the joined source), the served copy keeps the join as written and raises a `served-copy-not-served` warning naming the join and why. A join you hide (`internal join_one:` or `private join_one:`) is inlined too: the record keeps the join's modifier and the stored columns behind it are `private`, so a caller reads `j.<field>` exactly where live lets it (an `internal` join through the caller's own `extend`, a `private` one never), while your own dimensions, measures, views and gates over it read the table. A hidden join_many is inlined the same way (see the pair table below). The join must be keyed by one equality on a column of a declared source on the same connection, and a build first checks that key is unique in the joined source: a key held twice fails the build, naming the join, rather than storing a row once per match. When an auto-run's build reads the joined source's `#@ persist` table, the check reads that table too. An auto-run skips the check only when its answer cannot have changed: the joined source is itself a `#@ persist` table that the build reads, that table was not written since a check over it passed in the run before, every other run of the package had finished before that run began, and the check's SQL is the same. Otherwise it runs, on every build: a joined warehouse table's rows change without its address changing, and so do an incremental table's. A control plane's builds (with `buildInstructions`) always run it. Each run records the checks in its `metadata.inlineUniquenessChecks`: the passes the next run may rely on, and whether each check ran or was skipped. Deleting a run's record forgets the passes every other run of the package records, so the next run checks again: the record is part of what shows the table was not written since. `inline=` on a join_cross is refused until a later release. An `inline=` that is not a list of names, or that names something that is not a join of the source, fails the publish and the load (`materialize-invalid`). A refused `inline=` (a join_cross, a join keyed through another join, a join_one with no single key, a join defined in place, one on another connection, a join through which a given is read, or a `j__<field>` column that clashes with one of the source's own) is a `materialize-not-built` package warning naming why, and the source serves live. A join through which a given is read is one whose joined source's `where:`, `on`, fields or own joins read a given (`where: region = $REGION`): its stored columns would hold one caller's rows, so the source is refused ("inline= names `j`, through which a given is read") and answers live for each caller, while the model's other sources build and serve; reference the join instead of inlining it. More generally, a source whose generated build text does not compile is refused on its own (`materialize-not-built`, "its generated build did not compile", a Publisher bug worth reporting) and the rest of the model builds.
-- **`inline=["j"]` on a join_many** stores a **pair table**: one row per row of live's LEFT JOIN through the join (each `j__<field>` column beside the source's own), so a parent with no child keeps one row with null child columns. One flag is written at build: `__parent_row` is true on exactly one row per parent. A tool reading the table outside Malloy counts parents with `WHERE __parent_row` and pairs with `count(*)`. The served copy reads the table as the source itself, with no join at read: `j` is a record of the child columns (`j.miles` reads the column on the same row), each measure over the source's own fields aggregates only the `__parent_row` rows, and an aggregate through the join reads every row, the null-extended row of a parent with no child included. Since Malloy 0.0.438 ([malloydata/malloy#3208](https://github.com/malloydata/malloy/pull/3208)) live's `count()`, `sum` and `avg` through the join skip that row (they read only the rows where `j`'s key is not null). So the served copy re-declares each measure that counts through the join (`seg_n is j.count()`, a filtered count, a ratio over one), or sums or averages a value that is not a stored column of `j` (`j.sum(1)`, `j.sum(j.miles ?? 0)`, `j.avg(1)`, a column of the source summed through the join, a stored computed field of `j`), over the rows where `j`'s stored key is not null, and serves it; a view or query that reads such a measure is served too. A sum or average of a stored column of `j` (null on that row) is served as written, and a `min`, `max` or distinct count is served, as live reads that row too. Every `count()`, `sum` and `avg` through the join is served only when `j`'s key is unique and never null on a row of the joined source: a child with a NULL key is one live skips and the table holds, and two equal children of one key are stored as one row. Each auto-run build checks that key over the joined source once the table is written, without failing the build, and records the answer beside the table; where the check failed, or no record is held (a table a host's manifest binds), those aggregates are answered live (`COUNT_SEMANTICS`). Still answered live (materialization v2 known limitation 40): a count, or a sum or average of such a value, written in the query or in a view's own `aggregate:` (`aggregate: n is j.count()`) rather than in a measure, and a measure that pairs one with a `min` or `max` of a value not null on that row. A many-to-many join_many is served the same way. Each query is checked before the table answers it, and one the flat table cannot reproduce exactly is answered live (path report reason `COUNT_SEMANTICS`): an aggregate over the source's own fields written in the query rather than declared as a measure, a parent measure grouped or filtered by a field of `j`, an aggregate that reads both sides at once or goes through another join, a window or `all()`/`exclude()`, a `select:`, and a join to the source from another source. The joined source's own measures and views are not on the record, so a query that reads one (`j.seg_miles`) is answered live (`MISSING_FIELD`), as is a query that returns a classified or annotated field of `j` as a column, exactly as for an inlined join_one (a record's fields carry no annotations; each child column keeps its field's annotations and class, an inferred class included, by the same rule as a join_one's), and a source whose own text reads one through the join is not served from the table. A dimension of the source that reads through the join_many is computed at read. A query that reads no field of `j` (no field, aggregate, filter, group-by or nest through it) is not answered from the pair table, which would scan every pair row to count each parent once (about 2 to 5.5 times live up to five children a parent): it goes to the next table that can answer it, or live, and the path report shows the pair table skipped with `COUNT_SEMANTICS`. A row-level gate that reads `j` counts as a filter on `j`, so parent measures under it are answered live. Child and mixed queries read the table faster than live (about 0.2 to 0.4 times, up to five children a parent). A join_many you hide (`internal join_many:` or `private join_many:`) is stored the same way: the record keeps the join's modifier and every stored column behind it is `private`, so a caller reads `j.<field>` exactly where live lets it (an `internal` join through the caller's own `extend`, a `private` one never) and the stored columns never, while your own dimensions, measures, views and gates over it read the table; a caller's own `extend` or `include` over a pair source is answered live, as for a public join_many. The pair table needs a declared primary key on every side that is stored, and a joined source with no joins of its own other than the path below it; a path through a join the joined source hides is refused, since nothing reads through it. Anything else is a `materialize-not-built` warning.
+- **`inline=["j"]` on a join_many** stores a **pair table**: one row per row of live's LEFT JOIN through the join (each `j__<field>` column beside the source's own), so a parent with no child keeps one row with null child columns. One flag is written at build: `__parent_row` is true on exactly one row per parent. A tool reading the table outside Malloy counts parents with `WHERE __parent_row` and pairs with `count(*)`. The served copy reads the table as the source itself, with no join at read: `j` is a record of the child columns (`j.miles` reads the column on the same row), each measure over the source's own fields aggregates only the `__parent_row` rows, and an aggregate through the join reads every row, the null-extended row of a parent with no child included. Since Malloy 0.0.438 ([malloydata/malloy#3208](https://github.com/malloydata/malloy/pull/3208)) live's `count()`, `sum` and `avg` through the join skip that row (they read only the rows where `j`'s key is not null). So the served copy re-declares each measure that counts through the join (`seg_n is j.count()`, a filtered count, a ratio over one), or sums or averages a value that is not a stored column of `j` (`j.sum(1)`, `j.sum(j.miles ?? 0)`, `j.avg(1)`, a column of the source summed through the join, a stored computed field of `j`), over the rows where `j`'s stored key is not null, and serves it; a view or query that reads such a measure is served too. A sum or average of a stored column of `j` (null on that row) is served as written, and a `min`, `max` or distinct count is served, as live reads that row too. Every `count()`, `sum` and `avg` through the join is served only when `j`'s key is unique and never null on a row of the joined source: a child with a NULL key is one live skips and the table holds, and two equal children of one key are stored as one row. Each auto-run build checks that key over the joined source once the table is written, without failing the build, and records the answer beside the table; where the check failed, or no record is held (a table a host's manifest binds), those aggregates are answered live (`COUNT_SEMANTICS`). Still answered live (materialization v2 known limitation 40): a count, or a sum or average of such a value, written in the query or in a view's own `aggregate:` (`aggregate: n is j.count()`) rather than in a measure, and a measure that pairs one with a `min` or `max` of a value not null on that row. A many-to-many join_many is served the same way. Each query is checked before the table answers it, and one the flat table cannot reproduce exactly is answered live (path report reason `COUNT_SEMANTICS`): an aggregate over the source's own fields written in the query rather than declared as a measure, a parent measure grouped or filtered by a field of `j`, an aggregate that reads both sides at once or goes through another join, a window or `all()`/`exclude()`, a `select:`, and a join to the source from another source. The joined source's own measures and views are not on the record, so a query that reads one (`j.seg_miles`) is answered live (`MISSING_FIELD`), as is a query that returns a classified or annotated field of `j` as a column, exactly as for an inlined join_one (a record's fields carry no annotations; each child column keeps its field's annotations and class, an inferred class included, by the same rule as a join_one's), and a source whose own text reads one through the join is not served from the table. A dimension of the source that reads through the join_many is computed at read. A query that reads no field of `j` (no field, aggregate, filter, group-by or nest through it) is not answered from the pair table, which would scan every pair row to count each parent once (about 2 to 5.5 times live up to five children a parent): it goes to the next table that can answer it, or live, and the path report shows the pair table skipped with `COUNT_SEMANTICS`. A row-level gate that reads `j` counts as a filter on `j`, so parent measures under it are answered live. Child and mixed queries read the table faster than live (about 0.2 to 0.4 times, up to five children a parent). A join_many you hide (`internal join_many:` or `private join_many:`) is stored the same way: the record keeps the join's modifier and every stored column behind it is `private`, so a caller reads `j.<field>` exactly where live lets it (an `internal` join through the caller's own `extend`, a `private` one never) and the stored columns never, while your own dimensions, measures, views and gates over it read the table; a caller's own `extend` or `include` over a pair source is answered live, as for a public join_many. The pair table needs a declared primary key on every side that is stored, and a joined source with no joins of its own other than the path below it; a path through a join the joined source hides is refused, since nothing reads through it. Its build groups by every stored column, so on BigQuery, whose `GROUP BY` refuses GEOGRAPHY, JSON, ARRAY and STRUCT columns, a pair table holding one, on either side, is refused with reason `inline_unsupported` naming the column; leave the column out, or inline no join_many. Anything else is a `materialize-not-built` warning.
 - **A path of join_manys**, `inline=["items.options"]`, stores one pair table with one row per row of live's LEFT JOIN through every join of the path (`items__options__<field>` beside `items__<field>` and the source's own), and one more flag per level above the last: `__child_row` is true on one row per order and item (an order with no item included). `items.options.kind` reads the column on the same row. An aggregate at the last join (`items.options.extra.sum()`, a measure over it) is answered from the table, grouped or filtered by any level, under the same rule as one hop: a measure that counts there (`items.options.count()`), or at a flagged middle level (`items.count()`), is re-declared over the rows where that level's stored key is not null, since the flag also marks an order with no item, and a count written in the query is answered live. A measure over `items` (`items.price.sum()` declared on the source) is answered from the table when the query reads nothing of `items.options`. Once it does, live aggregates each item once by its key (and an order with no item as none). The table still answers a sum or an average of a stored column of `items` (`items.price.sum()`, `items.price.avg()`), and a measure re-declared over `items`' key (`items.count()`, an average of a computed field of `items`), beside `items.options`, when each item has exactly one order: every join down to `items` keyed on the level above's primary key (`join_many: items on items.order_id = id`, with `primary_key: id`), which the build checks unique and never null, so `__child_row` marks each item once whichever order groups it. A count or an aggregate of a computed field of `items` written in the query, and a level whose join is keyed on anything else (a dimension, or another source's field, where an item may meet several orders), are answered live beside the deeper level. As at one hop, an aggregate written in the query above the last join, or a measure grouped or filtered by a level below its own, is answered live. Naming `"items"` too adds nothing: the path's table answers it. A path through a join_one (`planes.maintenance`) is refused: live counts each maintenance row once however many flights share the plane, which no stored row can reproduce.
 - **More than one join_many**, `inline=["items", "payments"]`, stores one table in blocks, one per join_many: each block is that join's own pair table, marked by `__pair_lane` (0, 1, …), with the other blocks' columns null on its rows, so a tool reading the table outside Malloy filters on `__pair_lane` first. Each query is answered from the one block it reads; a query that reads both (`items.count()` beside `payments.count()`, or a filter on one with measures of the other) is answered live, since live counts each over their cross product. A path's table and a table of several blocks refresh incrementally as a one-join table does (below), replacing whole parents.
 - Every pair table is built only when the source's primary key, and on a path the key of every level between it and the last join, are unique and never null: each build checks them first (a full build and an incremental refresh alike), as it checks an inlined join_one's key, and a repeated or null key refuses the build (a level's row flag marks one row per key, where live counts each row), so the source answers live. The check is one `GROUP BY` of the source on its primary key, and of each middle level on its key, per build. The last join's key is checked by one more `GROUP BY` of its joined source, after the build and without failing it (above): a count, sum or average through the last join is served only where it passed. The source's own check reads the rows the build stores: a given's term or a rolling window's upper bound that the build leaves out is left out of the check too, so a key held by two tenants, or repeated past the window's cut-off, refuses the build. It reads the source itself, so it is never skipped as an unchanged joined table's check can be. Another block's number columns are stored as nulls of a type the union does not widen, so an integer or decimal column keeps its type.
@@ -1438,7 +1673,7 @@ table below says it is skipped.
 | --- | --- |
 | The row scope | For the served copy and a rollup: a `where:` the stored table re-applies at read reads only columns stored exactly (not a binary float or a 128-bit integer standing for an exact type; the served copy's rule, a rollup judges its own grain) and compared as its source compares them. Skipped when the entry point is gated, where the gate's rules below decide, and when the query lists no stored columns to judge. |
 | The caller's own filters | Each string comparison the query makes on the stored rows compares as live (its collation, on both sides). Fails closed when the filters, or a persisted result's table, cannot be read. |
-| The result's order and grouping | Over a `storage=` table, a string the query orders by needs its source to compare bytes, and one it groups or compares by equality needs equality to be byte equality there. Fails closed when the result cannot be read. |
+| The result's order and grouping | Over a `storage=` table, a string the query orders by needs its source to compare bytes, and one it groups or compares by equality needs equality to be byte equality there. On a database table, the stored side is judged as for a gate: the stored column must still compare as its source does (an `ALTER … COLLATE` after the build answers live). A `storage=` destination's own `default_collation` is not re-checked for the result. Fails closed when the result cannot be read. |
 | Past an entry-point gate | The leg is one that may read past a gate, every table it read keeps the gate (by kind, tier and the deployment's switches), and no row filter is declared on a composite the entry point reads. |
 | The gate's columns | Past a gate: every column a gate reads, on every table the answer reads, is stored exactly, holds no zone the destination would compare in its own session zone, and compares as its source compares it. |
 
@@ -1474,7 +1709,7 @@ source: flights is duckdb.table('flights') extend {
 - **Where it is stored.** Without `storage=`, in the source's own warehouse; with `storage=`, in that destination (needs `PERSIST_STORAGE_MODE=on`). The table is built from the source's own rows, never from a table the source itself is persisted to, and rebuilt whole.
 - **Fails the publish and the load** (`persist-view-invalid`): an incremental key (`watermark=`, `merge_key=`), an `@env.` reference, an empty `storage=`, or a `name=` that ends the way Publisher's own names do. A `#@` line that does not parse is `persist-view-unparseable`, an unknown key is `persist-unknown-key`, and the retired `partition=` and `realization=` are `persist-retired-key`. A `#@` line spanning several lines is still refused alone (`persist-view-not-built`).
 - **Not built, with a warning** (`persist-view-not-built`, severity `warn`, and the view is answered live): a view whose result reads a given (reason `reads_given`, as for any build that reads one) or reads the current time over a gated source (`current_time`; an ungated one is built as of its build, [Sources that read the current time](#sources-that-read-the-current-time)): it differs per caller; a view whose result nests, on either tier (reason `nested_result`: a nest's stored rows cannot be rebuilt exactly, so no read could use its table; persist a view over the same data without the nest instead); and, on a source with a row-level gate (`#(access_filter)`, or an `#(authorize)` that filters rows), a view that does not group by every field the gate reads, under its own name, in one grouping stage with no `limit:`, no `all()` or `exclude()` and no `calculate:`. That last one is a warning, not an error, because the gate may be added later by another author.
-- **Gates.** A query on a gated source is answered from a persisted view only with `PUBLISHER_MATERIALIZE_GATED_SOURCES` on as well: the source's gates are written on the view's stored result and grafted and proven there exactly as on live, so each caller gets the groups the gate keeps. With the switch off, such a query is answered live, and the view over a gated source is not built on either tier (`persist-view-not-built`, reason `access_filter` for a row filter, `authorize` for a lock): it could not be read past the gate, so no table holds the gated groups. With the switch on, a database view over a gated source is built and read past the gate; a `storage=` view over one is refused either way. Publisher does not authenticate callers: the gate holds only behind the gateway that sets the givens from a verified identity ([operating model](security-posture.md#operating-model-a-microservice-behind-your-gateway)).
+- **Gates.** A query on a gated source is answered from a persisted view only with `PUBLISHER_MATERIALIZE_GATED_SOURCES` on as well: the source's gates are written on the view's stored result and grafted and proven there exactly as on live, so each caller gets the groups the gate keeps. With the switch off, such a query is answered live, and the view over a gated source is not built on either tier (`persist-view-not-built`, reason `access_filter` for a row filter, `authorize` for a lock): it could not be read past the gate, so no table holds the gated groups. With the switch on, a database view over a gated source is built and read past the gate; a `storage=` view over one is refused either way, and so is a view on a source that inherits a row filter through a `->` derivation, since that filter applies to the derivation's base, not the view's stored rows. Publisher does not authenticate callers: the gate holds only behind the gateway that sets the givens from a verified identity ([operating model](security-posture.md#operating-model-a-microservice-behind-your-gateway)).
 - **The path report.** A query that calls a persisted view lists its table first, as `kind: "view"`: `used` when it answered (`servedBy.kind` is `view`), else skipped with `NOT_BUILT`, `STALE`, `ROW_LEVEL_GATE`, `SHAPE_MISMATCH` (the query is not a call of the view as written) or `MISSING_FIELD`. A query that calls no persisted view does not list one. A `storage=` view's answer reports `servedFrom: "storage"`, a database one's `servedFrom: "database"`.
 - **The build plan** lists each persisted view as a generated source named `<source>__<view>__view`; its serve verdict reads `The persisted view \`<view>\` of \`<source>\``, reached through the source.
 
@@ -1518,7 +1753,43 @@ The same package definition behaves differently depending on who drives material
 - **Per-version tables.** Both build them. Standalone, an auto-run of a `scope: "version"` package builds each version into tables of its own, named with the version (`<package>__<file>__<source>__v1_2_0__p<8 hex>`, or a `name=` prefix in its place), reuses only that version's earlier runs, and reclaims them when the version is archived ([package versions](package-versions.md#materializations), [readable table names](#readable-table-names)). Hosted, the control plane assigns each version's build targets in its instructions.
 - **Incremental refresh.** Available to both, with the same declarations and the same delta. Standalone, the scheduler drives it; hosted, the control plane does, subject to the three host responsibilities in [Driving it from a control plane](#driving-it-from-a-control-plane) — a stable physical name per incremental source, `reseed` rather than `forceRefresh` to ask for a rebuild, and the boundary read back from each manifest entry.
 - **Who owns the boundary.** Standalone it is the publisher's own store, always. A hosted deployment that spreads one package's refreshes over several workers can instead hold the boundary itself and echo it back on the instructions ([Supplying the ledger yourself](#supplying-the-ledger-yourself)), because that store is per-process and a refresh landing on a worker that has never seen the table would otherwise re-seed. The publisher still derives every boundary and still validates every one it is handed.
-- **Physical-table GC.** Deleting a materialization, an environment or a package removes the materialization **records only** — physical tables are intentionally left in place (physical-table GC is the caller's responsibility), so clean up tables you no longer want explicitly.
+- **Physical-table GC.** Deleting a materialization, an environment or a package removes the materialization **records only** — physical tables are intentionally left in place (physical-table GC is the caller's responsibility), so clean up tables you no longer want explicitly. One exception: an auto-run that a package's delete or unload aborts drops the tables its builds wrote before it settles, Publisher-named ones only, so a retire leaves no table that no record names. It keeps a table at an author's `name=` (it may have stood before the run), one any other committed run of the package, of any version, names, and one another package has marked since.
+
+## What each dialect is known to do
+
+Publisher decides what it may build, refresh and serve on a warehouse by one table of capabilities per Malloy dialect (`packages/server/src/service/materialization/domain/dialect.ts`); a dialect the table does not name gets every capability's safe value, so whatever asks refuses, rebuilds in full or answers live. A cell that claims more than its safe value is backed by evidence: a conformance probe that runs the real engine in CI (**bold**), or a note that it is taken on trust (ending in `?`, unverified). Plain cells are at their safe value. The table below is generated from the evidence file (`domain/dialect_evidence.ts`) and checked by its spec, so it cannot drift.
+
+<!-- dialect-evidence:begin (generated by dialect_evidence.spec.ts) -->
+
+| Capability                      | `duckdb`       | `postgres`   | `standardsql` | `snowflake` | `databricks` | `trino` | `presto` | `mysql` | `sqlserver` |
+| ------------------------------- | -------------- | ------------ | ------------- | ----------- | ------------ | ------- | -------- | ------- | ----------- |
+| `binary64Types`                 | **2 types**    | **1 type**   | none          | 6 types?    | none         | none    | none     | none    | none        |
+| `castsToIntegerType`            | **yes**        | **yes**      | yes?          | yes?        | yes?         | **yes** | yes?     | **no**  | yes?        |
+| `catalogHidesTables`            | no             | no           | no            | yes?        | no           | no      | no       | **yes** | no          |
+| `decodedTablePath`              | **yes**        | **yes**      | yes?          | yes?        | no           | no      | no       | no      | no          |
+| `dependencyGuard`               | no             | **yes**      | no            | no          | no           | no      | no       | no      | no          |
+| `driverKeepsBigIntegers`        | **yes**        | no           | no            | no          | no           | no      | no       | no      | no          |
+| `foldsTableNameCase`            | **yes**        | no           | no            | no          | yes?         | **yes** | yes?     | no      | yes?        |
+| `incrementalSourceRange`        | no             | **yes**      | yes?          | yes?        | no           | no      | no       | no      | no          |
+| `incrementalTargetDml`          | **yes**        | **yes**      | yes?          | yes?        | no           | no      | no       | no      | no          |
+| `leafBudget`                    | **120**        | **50**       | 120?          | 120?        | 120?         | 50      | 50       | 50      | 115?        |
+| `liveRoundsBigIntegersMeasured` | no             | **yes**      | no            | no          | no           | no      | no       | no      | no          |
+| `liveWritesFloat4Shortest`      | no             | **yes**      | no            | no          | no           | no      | no       | no      | no          |
+| `merge`                         | **yes**        | **yes**      | yes?          | yes?        | no           | no      | no       | no      | no          |
+| `mergeGatedByServerVersion`     | no             | **yes**      | no            | no          | no           | no      | no       | no      | no          |
+| `needsQualifiedTable`           | no             | no           | yes?          | no          | no           | no      | no       | no      | no          |
+| `nestedColumns`                 | **yes**        | no           | no            | no          | no           | no      | no       | no      | no          |
+| `onlyBigIntegerType`            | none           | none         | `INT64`?      | none        | none         | none    | none     | none    | none        |
+| `pairDelta`                     | **yes**        | no           | no            | no          | no           | no      | no       | no      | no          |
+| `passthroughNumericAsDouble`    | no             | **yes**      | no            | no          | no           | no      | no       | no      | no          |
+| `relationProbe`                 | **yes**        | **yes**      | yes?          | yes?        | yes?         | **yes** | no       | no      | yes?        |
+| `stringCollation`               | **`instance`** | **`column`** | `dataset`?    | none        | none         | none    | none     | none    | none        |
+| `tableOwnership`                | **yes**        | **yes**      | yes?          | yes?        | yes?         | **yes** | yes?     | **yes** | yes?        |
+| `transactionalSwap`             | **yes**        | **yes**      | no            | no          | no           | no      | no       | no      | no          |
+| `ungroupableTypes`              | none           | **11 types** | 4 types?      | none        | none         | none    | none     | none    | none        |
+| `utcSessions`                   | **yes**        | no           | no            | no          | no           | no      | no       | no      | no          |
+
+<!-- dialect-evidence:end -->
 
 ## Attribute a build's cost
 

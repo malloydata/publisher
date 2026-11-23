@@ -28,6 +28,7 @@ import {
    preaggregateGateLines,
    refusalCodeOf,
 } from "./plan/load_gate_text";
+import { DUCKLAKE_DATA_INLINING_ON } from "../dialects/ducklake_inlining";
 import { CronEvaluator } from "./run/cron_evaluator";
 import type { Binding } from "./domain/binding";
 import { INCREMENTAL_LATE_ROWS_CODE } from "./domain/incremental";
@@ -47,7 +48,10 @@ import {
    SERVED_COPY_WARNING_CODE,
    type ServedCopyProblem,
 } from "./serve/served_copy_serve";
-import { namesServedCopyAlias } from "./serve/served_copy_config";
+import {
+   namesServedCopyAlias,
+   withoutServedCopyAliases,
+} from "./serve/served_copy_config";
 import {
    NATIVE_SCHEMA_MISSING_CODE,
    type NativeSchemaNotice,
@@ -125,49 +129,6 @@ const ROLLUP_JOIN_ONE_KEY_REPEATED_CODE = "rollup-join-one-key-repeated";
 /** The code on the warning for a database table whose columns drifted outside a build. */
 export const DATABASE_COLUMN_TYPE_MISMATCH_CODE =
    "database-column-type-mismatch";
-
-/**
- * Warning codes renamed in 0.15.0, each with the code 0.14.0 shipped for it:
- * a warning under the new code is repeated under the old one, with the same
- * message, for this release only, so a client switching on the old code
- * keeps working. Removed in the next release.
- */
-export const RETAINED_WARNING_ALIASES: Readonly<Record<string, string>> = {
-   [ROLLUP_NOT_BUILT_CODE]: "preaggregate-not-built",
-   [ROLLUP_JOIN_ONE_KEY_REPEATED_CODE]: "preaggregate-join-one-key-repeated",
-   [NATIVE_SCHEMA_MISSING_CODE]: "stored-native-schema-missing",
-};
-
-/**
- * `warnings`, each one whose code was renamed followed by its repeat under
- * the code 0.14.0 shipped ({@link RETAINED_WARNING_ALIASES}).
- */
-export function withRetainedAliases<T extends object>(
-   warnings: readonly T[],
-): T[] {
-   return warnings.flatMap((w) => {
-      const code = (w as { code?: unknown }).code;
-      const alias =
-         typeof code === "string" ? RETAINED_WARNING_ALIASES[code] : undefined;
-      return alias ? [w, { ...w, code: alias }] : [w];
-   });
-}
-
-/** `warnings` less each retained-alias repeat of a warning beside it (for a reader that reads each once). */
-export function withoutRetainedAliases<
-   T extends { code?: string; message?: string; subject?: string },
->(warnings: readonly T[]): T[] {
-   const key = (code: string | undefined, w: T) =>
-      `${code}\u0000${w.subject ?? ""}\u0000${w.message ?? ""}`;
-   const present = new Set(warnings.map((w) => key(w.code, w)));
-   const aliasOf = new Map(
-      Object.entries(RETAINED_WARNING_ALIASES).map(([now, old]) => [old, now]),
-   );
-   return warnings.filter((w) => {
-      const now = w.code !== undefined ? aliasOf.get(w.code) : undefined;
-      return now === undefined || !present.has(key(now, w));
-   });
-}
 
 /**
  * The findings on authored annotations: an unservable one (a valid
@@ -409,6 +370,45 @@ export function keptTableWarnings(
 }
 
 /**
+ * One warning per materialized source whose table is written into a DuckLake
+ * catalog that records data inlining on ({@link DUCKLAKE_DATA_INLINING_ON}):
+ * its `storage=` destination, or its own connection. A small table is then
+ * kept as rows in the catalog database, which a read-only view scoped to the
+ * catalog's files does not protect. Known once Publisher has attached the
+ * catalog; cleared when an attach finds it recording 0.
+ */
+export function dataInliningWarnings(
+   plan: BuildPlan | null,
+   limitOf: (name: string) => number | undefined,
+): ApiPackageWarning[] {
+   const warnings: ApiPackageWarning[] = [];
+   for (const source of Object.values(plan?.sources ?? {})) {
+      const storage = source.annotationFields?.storage?.trim();
+      const target = storage || source.connectionName;
+      const limit = target ? limitOf(target) : undefined;
+      if (!target || !limit) continue;
+      const where = storage
+         ? `storage destination \`${target}\``
+         : `connection \`${target}\``;
+      warnings.push({
+         ...(source.modelPath ? { model: source.modelPath } : {}),
+         subject: source.preaggregate?.baseSourceName ?? source.name,
+         code: DUCKLAKE_DATA_INLINING_ON,
+         severity: "warn",
+         message:
+            `is stored in ${where}, whose DuckLake catalog records ` +
+            `data_inlining_row_limit ${limit}: a stored table of ${limit} rows ` +
+            `or fewer can be kept as rows in the catalog database rather than ` +
+            `a file, and inlined rows bypass read access scoped to the ` +
+            `catalog's files. Record 0 on the catalog ` +
+            `(set_option('data_inlining_row_limit', 0), or the admin API's ` +
+            `PATCH /catalogs/{catalog}).`,
+      });
+   }
+   return warnings;
+}
+
+/**
  * One `*-not-built` warning per refusal record in the plan's
  * `refusedSources`, whatever the mechanism. A record a planner's finding
  * made carries that finding's code and subject ({@link RefusalNotices}). A
@@ -532,11 +532,15 @@ export function asOfBuildWarnings(
 /**
  * Warnings for `storage=` sources the serve path is not honoring, per
  * PERSIST_STORAGE_MODE: `off` ignores the annotation, `write-only` builds but
- * does not route. `on` warns nothing.
+ * does not route. `on` warns nothing. A source whose table is also bound,
+ * and fresh, in its own database is answered from that table, and the
+ * warning says so.
  */
 export function storageWarnings(
    plan: BuildPlan | null,
    mode: string,
+   /** Whether a table of this content address is bound and fresh in its own database. */
+   databaseFresh: (sourceEntityId: string) => boolean = () => false,
 ): ApiPackageWarning[] {
    if (mode === "on" || !plan?.sources) return [];
    const warnings: ApiPackageWarning[] = [];
@@ -551,23 +555,30 @@ export function storageWarnings(
          ? `Measures of \`${rollup.baseSourceName}\` pre-aggregated at grain ` +
            `(${rollup.grainDimensions.join(", ")}) declare `
          : "";
-      const message = rollup
-         ? mode === "off"
-            ? `${at}storage="${storage}", but PERSIST_STORAGE_MODE is off, so ` +
-              `the rollup is not built. Queries that would have used it are ` +
-              `answered from \`${rollup.baseSourceName}\` instead — correct, ` +
-              `but unaccelerated.`
-            : `${at}storage="${storage}", and the rollup is built, but ` +
-              `PERSIST_STORAGE_MODE is write-only, so the serve path does not ` +
-              `route to it. Queries are answered from ` +
-              `\`${rollup.baseSourceName}\` — correct, but unaccelerated.`
-         : mode === "off"
-           ? `declares storage="${storage}" but PERSIST_STORAGE_MODE is off; ` +
-             `the annotation is ignored and the source is served live from ` +
-             `its own warehouse.`
-           : `is materialized into storage "${storage}" but ` +
-             `PERSIST_STORAGE_MODE is write-only; the serve path is not ` +
-             `routed to the materialized table (served live).`;
+      const fromDatabase =
+         !!source.sourceEntityId && databaseFresh(source.sourceEntityId);
+      const message = fromDatabase
+         ? `${rollup ? at : "declares "}storage="${storage}", but ` +
+           `PERSIST_STORAGE_MODE is ${mode}, so no query reads the storage ` +
+           `table. Queries are answered from its table in the source's own ` +
+           `database, which is bound and fresh.`
+         : rollup
+           ? mode === "off"
+              ? `${at}storage="${storage}", but PERSIST_STORAGE_MODE is off, so ` +
+                `the rollup is not built. Queries that would have used it are ` +
+                `answered from \`${rollup.baseSourceName}\` instead — correct, ` +
+                `but unaccelerated.`
+              : `${at}storage="${storage}", and the rollup is built, but ` +
+                `PERSIST_STORAGE_MODE is write-only, so the serve path does not ` +
+                `route to it. Queries are answered from ` +
+                `\`${rollup.baseSourceName}\` — correct, but unaccelerated.`
+           : mode === "off"
+             ? `declares storage="${storage}" but PERSIST_STORAGE_MODE is off; ` +
+               `the annotation is ignored and the source is served live from ` +
+               `its own warehouse.`
+             : `is materialized into storage "${storage}" but ` +
+               `PERSIST_STORAGE_MODE is write-only; the serve path is not ` +
+               `routed to the materialized table (served live).`;
       warnings.push({
          model: source.modelPath ?? "",
          subject: rollup ? rollup.baseSourceName : source.name,
@@ -782,12 +793,14 @@ export function persistencePolicyWarnings(
 ): string[] {
    const warnings: string[] = [];
    const sources = plan?.sources ? Object.values(plan.sources) : [];
+   // Present, not truthy: an empty string is a schedule that never fires,
+   // so it must reach the cron rule rather than skip every rule.
    const packageSchedule = metadata.materialization?.schedule ?? null;
    const packageFreshness = metadata.materialization?.freshness ?? null;
    const scope = metadata.scope ?? "package";
 
    // A package-level cron is legal only with scope: version.
-   if (packageSchedule && scope !== "version") {
+   if (packageSchedule !== null && scope !== "version") {
       warnings.push(
          `materialization.schedule (cron) in ${PACKAGE_MANIFEST_NAME} requires ` +
             `"scope": "version": a package-scoped lineage is reused across ` +
@@ -796,25 +809,45 @@ export function persistencePolicyWarnings(
       );
    }
 
-   // Schedule and freshness are mutually exclusive.
-   if (packageSchedule) {
-      const freshnessDeclared =
-         !!(
-            packageFreshness &&
-            (packageFreshness.window || packageFreshness.fallback)
-         ) || sources.some((s) => s.freshness != null);
-      if (freshnessDeclared) {
+   // Schedule and freshness are mutually exclusive. The message names where
+   // the freshness is declared: the package's manifest, or a source in a
+   // model file (a refused source's window counts too, R-06).
+   if (packageSchedule !== null) {
+      const packageDeclares = !!(
+         packageFreshness &&
+         (packageFreshness.window || packageFreshness.fallback)
+      );
+      const sourceDeclaring = [
+         ...sources,
+         ...Object.values(plan?.refusedSources ?? {}),
+      ].find((s) => s.freshness != null);
+      if (packageDeclares) {
          warnings.push(
             `materialization.schedule and freshness are mutually exclusive in ` +
                `${PACKAGE_MANIFEST_NAME}: declare either a schedule (power tier) ` +
                `or freshness (objective tier), never both.`,
+         );
+      } else if (sourceDeclaring) {
+         const where = sourceDeclaring.modelPath
+            ? ` in ${sourceDeclaring.modelPath}`
+            : "";
+         warnings.push(
+            `materialization.schedule and freshness are mutually exclusive: ` +
+               `${PACKAGE_MANIFEST_NAME} sets materialization.schedule, and ` +
+               `source '${sourceDeclaring.name}'${where} declares freshness ` +
+               `(on the source or its model file). Declare either a schedule ` +
+               `(power tier) or freshness (objective tier), never both: remove ` +
+               `the schedule, or the source's freshness.`,
          );
       }
    }
 
    // A valid 5-field cron, here so publish, PATCH, load and the scheduler all
    // apply one rule and a bad cron cannot silently never arm.
-   if (packageSchedule && !new CronEvaluator().isValid(packageSchedule)) {
+   if (
+      packageSchedule !== null &&
+      !new CronEvaluator().isValid(packageSchedule)
+   ) {
       warnings.push(
          `materialization.schedule in ${PACKAGE_MANIFEST_NAME} is not a valid ` +
             `5-field UNIX cron: ${JSON.stringify(packageSchedule)}. Use ` +
@@ -854,6 +887,33 @@ function compilerReasons(detail: string | undefined): string {
    return reasons.length > 0 ? `: ${reasons.join("; ")}.` : ".";
 }
 
+/**
+ * The joins a served copy's compile refused across connections, from its
+ * compiler message, as `: <file> line <n>: Cannot join …; ….`: the file by
+ * its name only (no server path), each served-copy alias said as the
+ * storage destination, and only the refusals themselves (identifiers and
+ * connection names; no source excerpt, no other diagnostic). `.` when the
+ * message names none.
+ */
+function refusedJoins(detail: string | undefined): string {
+   const out: string[] = [];
+   let file = "";
+   for (const line of (detail ?? "").split("\n")) {
+      const named = /^FILE: (.+)$/.exec(line);
+      if (named) {
+         file = named[1].trim().split("/").pop() ?? "";
+         continue;
+      }
+      const refusal = /^line (\d+): (Cannot join .+)$/.exec(line);
+      if (refusal) {
+         out.push(
+            `${file ? `${file} ` : ""}line ${refusal[1]}: ${withoutServedCopyAliases(refusal[2].trim())}`,
+         );
+      }
+   }
+   return out.length > 0 ? `: ${out.join("; ")}.` : ".";
+}
+
 /** The `database-native-type-missing` sentence for one source. */
 function nativeSchemaMissingMessage(n: NativeSchemaNotice): string {
    const names = (columns: string[]) =>
@@ -890,7 +950,38 @@ function nativeSchemaMissingMessage(n: NativeSchemaNotice): string {
  * A caller-safe sentence for why a served copy leaves a source unserved. The
  * compiler's own message stays in the logs: it can name the destination alias.
  */
+/**
+ * A dropped storage table's problem, said of the source the database table
+ * now serves: the reason, then that the served copy reads its database table
+ * instead of leaving the source as written.
+ */
+function fellBackMessage(message: string): string {
+   const instead = "the served copy reads its database table instead.";
+   const at = message.search(/[Tt]he served copy leaves /);
+   if (at < 0)
+      return `${message} ${instead[0].toUpperCase()}${instead.slice(1)}`;
+   const head = message.slice(0, at);
+   return head.endsWith(". ") || head === ""
+      ? `${head}${instead[0].toUpperCase()}${instead.slice(1)}`
+      : `${head}${instead}`;
+}
+
 function servedCopyProblemMessage(
+   problem: ServedCopyProblem,
+   inlinedButKept = false,
+   takesInline = true,
+): string {
+   const message = servedCopyProblemReasonMessage(
+      problem,
+      inlinedButKept,
+      takesInline,
+   );
+   // A storage table the served copy dropped for a source it then
+   // re-rooted on its database table: the reason, said of that table.
+   return problem.servedFromDatabase ? fellBackMessage(message) : message;
+}
+
+function servedCopyProblemReasonMessage(
    problem: ServedCopyProblem,
    inlinedButKept = false,
    /** Whether the source's declaration takes `inline=` (a `#(materialize)` one). */
@@ -905,9 +996,18 @@ function servedCopyProblemMessage(
             ? "This source's table does not compile with its kept blocks, so the served copy re-roots it with its own blocks only, or leaves it as written."
             : "This model's served copy does not compile, so its stored sources answer live.";
       case "cross_connection_unbuilt":
-         return "This model's served copy re-roots a source onto its storage destination, which moves a join of it across connections, and the join cannot be left out; the copy compiles once both sides are built into one destination, and serves live until then.";
+         return (
+            "This model's served copy re-roots a source onto its storage destination, which moves a join of it across connections, and the join cannot be left out; the copy compiles once both sides are built into one destination, and serves live until then" +
+            // The compiler's reasons, each served-copy alias said as the
+            // destination, so the join and its file can be found.
+            refusedJoins(problem.detail)
+         );
       case "column_types":
-         return "This source's stored column types differ from the types the model declares, or one cannot be declared on its table, so the served copy leaves it as written and it answers live.";
+         return (
+            "This source's stored column types differ from the types the model declares, or one cannot be declared on its table, so the served copy leaves it as written and it answers live" +
+            // The columns, named with their declared and stored types.
+            (problem.detail ? `: ${problem.detail}.` : ".")
+         );
       case "no_declaration":
          return "This source's declaration was not found in the compiled model, so the served copy leaves it as written and it answers live.";
       case "definition_not_parsed":
@@ -935,6 +1035,25 @@ function servedCopyProblemMessage(
       case "fields_not_carried":
          return "This source inherits fields (a measure, view or join declared on the source it is built from) that its stored table does not carry, so the served copy leaves it as written.";
       case "cross_connection_join":
+         if (problem.leftOutWhole) {
+            return (
+               `This source's join${join ? ` \`${join}\`` : ""} reads a source the served copy moves to its ` +
+               "storage destination, so the join crosses connections there, and it cannot be left out alone " +
+               "(what reads it cannot be left out with it). The served copy leaves this source out, so its " +
+               "queries are answered live, and the model's other stored sources still serve. To serve it, " +
+               "store this source in the same destination, or build the joined source in its own database " +
+               "(drop `storage=`)."
+            );
+         }
+         if (problem.declarerNotStored) {
+            return (
+               `This source's join${join ? ` \`${join}\`` : ""} reads a source the served copy reads from its ` +
+               "storage destination, which this source's own connection cannot reach. Queries that use the " +
+               "join are answered live; the others are answered as before. To serve them too, store this " +
+               "source in the same destination, or build the joined source in its own database (drop its " +
+               "`storage=`)."
+            );
+         }
          return (
             `This source is stored in a destination its join${join ? ` \`${join}\`` : ""} cannot reach: ` +
             "the joined source reads another connection. Queries that use the join are answered live; " +

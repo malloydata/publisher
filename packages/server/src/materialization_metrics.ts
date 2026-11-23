@@ -259,26 +259,23 @@ export type EligibilityRefusalReason =
  * How a chained `storage=` source (one that reads a storage-materialized
  * upstream) was built: `parent_reuse` = built by reading the upstream's stored
  * lake table ("stack on the parent" — reuses the parent's work and is
- * consistent-by-construction); `inline_fallback` = stacking was ineligible/failed
- * so the upstream was recomputed from raw against the warehouse (non-strict);
- * `strict_shape_fallback` = under `strictUpstreams`, the downstream reaches the
- * source warehouse (a table joined beside a stored parent, through a
- * non-persisted source), so no build over the parents exists and it was
- * recomputed from raw — the one recompute strict permits; `strict_refused` =
- * under `strictUpstreams`, a persisted upstream was neither built in the run
- * nor referenced, or the downstream reads only stored upstreams yet could not be
- * built over them, so the build failed loudly rather than recomputing a table
- * the orchestrator meant to pin.
+ * consistent-by-construction); `strict_refused` = no build over its stored
+ * upstreams exists (an upstream neither built in the run nor referenced, a
+ * path to the warehouse, a shape the build could not carry, a string the
+ * destination compares otherwise), so the build failed rather than
+ * recomputing its upstreams from raw.
+ *
+ * Retained label values, no longer produced (every build is strict, and none
+ * recomputes from raw): `inline_fallback` (stacking failed and the upstream
+ * was recomputed, non-strict) and `strict_shape_fallback` (the one recompute
+ * `strictUpstreams` used to permit).
  */
 type ChainedStorageBuildOutcome =
    | "parent_reuse"
-   | "inline_fallback"
-   | "strict_shape_fallback"
    | "strict_refused"
    // The parent-reuse attempt failed on infrastructure (attach, CTAS, the
-   // destination being unreachable) rather than on shape. Distinct from
-   // `inline_fallback` because it is an outage, not a modelling limit: the build
-   // fails rather than recomputing from raw against the same destination.
+   // destination being unreachable) rather than on shape: an outage, not a
+   // modelling limit, and the build fails.
    | "infra_failure";
 
 const runCounter = lazyCounter(
@@ -440,6 +437,21 @@ const keyCheckCounter = lazyCounter(
       "the key unknown or repeated, so queries that need it unique are " +
       "answered live.",
 );
+const contractCaptureCounter = lazyCounter(
+   "publisher_materialization_contract_capture_total",
+   "Column contracts a build captured over the table it wrote. Labels: tier " +
+      "('database'|'storage'), outcome ('captured'|'unread'). An unread " +
+      "capture records no contract: the table is not served from until it " +
+      "is rebuilt (serve verdict reason contract_missing).",
+);
+const incompatibleDetectedCounter = lazyCounter(
+   "publisher_materialization_incompatible_detected_total",
+   "Bound tables a bind's catalog read found no longer matching the column " +
+      "contract their build recorded, so they answer live until rebuilt. " +
+      "Labels: trigger ('bind'), code ('column_gone'|'column_retyped'|" +
+      "'collation_changed'|'declared_moved'|...). A failed stored read is " +
+      "never counted: it leaves the table unread until that read.",
+);
 const storageTableRetainedCounter = lazyCounter(
    "publisher_storage_tables_retained_total",
    "Tables a FAILED run left in a storage= destination and deliberately did not " +
@@ -489,10 +501,23 @@ const storedColumnTypeMismatchCounter = lazyCounter(
 const chainedStorageBuildCounter = lazyCounter(
    "publisher_storage_chained_build_total",
    "Chained storage= source builds (a source reading a storage-materialized " +
-      "upstream). Label: outcome ('parent_reuse'|'inline_fallback'|" +
-      "'strict_shape_fallback'|'strict_refused'|'infra_failure'). The " +
-      "parent_reuse share is the headline signal for how far the " +
-      "stack-on-the-parent path gets us vs recompute-from-raw.",
+      "upstream). Label: outcome ('parent_reuse'|'strict_refused'|" +
+      "'infra_failure'; 'inline_fallback' and 'strict_shape_fallback' are " +
+      "retained but no longer produced: no build recomputes its upstreams " +
+      "from raw).",
+);
+const upstreamRecomputeCounter = lazyCounter(
+   "publisher_materialization_upstream_recompute_total",
+   "Builds that could not check a stored upstream's database table against " +
+      "the column types its build recorded. Labels: reason ('moved', a " +
+      "column retyped or dropped since its build; 'unreadable', its columns " +
+      "could not be read; 'types_unrecorded', its build recorded no column " +
+      "types; 'reference_types_unrecorded', a host's reference carried no " +
+      "nativeSchema; 'persisted_result', a persisted view or query, which " +
+      "builds from its source's definition by design), build ('chained' for a build over the upstream, " +
+      "'rollup' for a database rollup over its stored base), and outcome " +
+      "('recomputed' from its definition, or 'read_unchecked': a strict " +
+      "host-instructed build read the referenced table as before).",
 );
 const staleUpstreamEntryCounter = lazyCounter(
    "publisher_materialization_stale_upstream_entry_total",
@@ -775,6 +800,26 @@ export function recordKeyCheck(
    keyCheckCounter().add(1, { kind, outcome });
 }
 
+/**
+ * Record a table a bind's catalog read found incompatible with its contract
+ * (package_materialization.ts), by code. A failed stored read is never
+ * counted: it leaves the table unread until that read.
+ */
+export function recordIncompatibleDetected(
+   trigger: "bind",
+   code: string,
+): void {
+   incompatibleDetectedCounter().add(1, { trigger, code });
+}
+
+/** Record one column contract capture (run/column_contract_capture.ts). */
+export function recordContractCapture(
+   tier: BuildTier,
+   outcome: "captured" | "unread",
+): void {
+   contractCaptureCounter().add(1, { tier, outcome });
+}
+
 /** Record how long the router took to choose the leg that answered a query. */
 export function recordQueryRouteDuration(
    durationMs: number,
@@ -878,6 +923,24 @@ export function recordChainedStorageBuild(
  */
 export function recordStaleUpstreamEntry(tier: "database" | "storage"): void {
    staleUpstreamEntryCounter().add(1, { tier });
+}
+
+/**
+ * Record a build that recomputed a stored upstream whose database table it
+ * could not read in place of it (see {@link upstreamRecomputeCounter}). Once
+ * per build per upstream.
+ */
+export function recordUpstreamRecompute(
+   reason:
+      | "moved"
+      | "unreadable"
+      | "types_unrecorded"
+      | "reference_types_unrecorded"
+      | "persisted_result",
+   build: "chained" | "rollup",
+   outcome: "recomputed" | "read_unchecked",
+): void {
+   upstreamRecomputeCounter().add(1, { reason, build, outcome });
 }
 
 /** Visible for tests. Drops cached instruments so a fresh MeterProvider can capture emissions. */

@@ -1,0 +1,23 @@
+>>>markdown
+Each code cell puts a render tag or a name in the way of reading its `run:`.
+>>>malloy
+import "../models/orders.malloy"
+source: importé is orders
+>>>malloy
+#| bar_chart {
+  size: lg
+|#
+run: orders -> { group_by: region; aggregate: order_count; order_by: region }
+>>>malloy
+#|(markdown)
+Orders (by region
+|#
+run: orders -> { aggregate: order_count }
+>>>malloy
+run: orders -> { aggregate: order_count }
+#|(markdown)
+then run: orders -> { group_by: brand }
+|#
+source: noted is orders
+>>>malloy
+run: importé -> { aggregate: order_count }

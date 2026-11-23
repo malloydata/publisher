@@ -32,6 +32,7 @@ import {
    type BuildPlanPackage,
    type BuildPlanParts,
    type FinishedBuildPlan,
+   type UpstreamSchemaReader,
 } from "./build_plan";
 import { loadGateText } from "./load_gate_text";
 import { newCrossFileCompanions } from "./materialize_compile";
@@ -204,9 +205,34 @@ async function collectPackageParts(
             ? { keyCheckCompilers: keyChecks.keyCheckCompilers }
             : {}),
          crossFileCompanions,
+         ...(pkg.planChainBuildText
+            ? { chainBuildText: pkg.planChainBuildText }
+            : {}),
+         ...(pkg.boundStorageColumns
+            ? { boundStorageColumns: pkg.boundStorageColumns }
+            : {}),
+         ...(pkg.planChainStringReads
+            ? {
+                 stringReads: {
+                    read: pkg.planChainStringReads,
+                    ...(pkg.boundStorageContract
+                       ? { boundContract: pkg.boundStorageContract }
+                       : {}),
+                 },
+              }
+            : {}),
       });
    }
    return parts;
+}
+
+/** `pkg`'s reader of its upstream tables' types for `use`, when it has one. */
+function upstreamReaderOf(
+   pkg: BuildPlanPackage,
+   use: "load" | "run",
+): { readUpstreamSchemas?: UpstreamSchemaReader } {
+   const read = pkg.readUpstreamSchemas?.bind(pkg);
+   return read ? { readUpstreamSchemas: (tables) => read(tables, use) } : {};
 }
 
 /**
@@ -240,6 +266,7 @@ export async function compilePackageBuildPlan(
       versionScoped: versionOwnsTables(pkg),
       keyCheckCompilers: keyChecks.keyCheckCompilers,
       keepIncrementalUnbuildable,
+      ...upstreamReaderOf(pkg, "run"),
    });
    reportDigestSkipped(digestSkipped);
    return compiled;
@@ -262,6 +289,7 @@ export async function computeLoadPlan(
    const { compiled, digestSkipped } = await finishPackagePlan(parts, {
       getMalloyConnection: (name) => pkg.getMalloyConnection(name),
       versionScoped: versionOwnsTables(pkg),
+      ...upstreamReaderOf(pkg, "load"),
    });
    return {
       packagePlan: derivePackagePlan(compiled, pkg.getMaterializationConfig()),

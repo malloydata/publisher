@@ -35,8 +35,6 @@ on:
       - Release sync
       - skills
       - hammer-nightly
-      # Its own dispatch; build.yml's calls land in build's run.
-      - python-sdk
     types: [completed]
 
 permissions:

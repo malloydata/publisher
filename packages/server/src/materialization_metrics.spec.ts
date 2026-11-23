@@ -28,6 +28,8 @@ import {
    recordBuildReadBytes,
    recordDuplicateTargetSkipped,
    recordIncrementalStep,
+   recordContractCapture,
+   recordIncompatibleDetected,
    recordKeyCheck,
    recordManifestBindDegraded,
    recordQueryRoute,
@@ -35,6 +37,7 @@ import {
    recordScheduledFire,
    recordSharedAddressInstructions,
    recordStaleUpstreamEntry,
+   recordUpstreamRecompute,
    recordStoredColumnTypeMismatch,
    recordTableCollision,
    recordStorageTableRetained,
@@ -368,8 +371,6 @@ describe("materialization_metrics", () => {
    it("counts chained storage builds labeled by outcome", async () => {
       recordChainedStorageBuild("parent_reuse");
       recordChainedStorageBuild("parent_reuse");
-      recordChainedStorageBuild("inline_fallback");
-      recordChainedStorageBuild("strict_shape_fallback");
       recordChainedStorageBuild("strict_refused");
 
       expect(
@@ -377,16 +378,6 @@ describe("materialization_metrics", () => {
             outcome: "parent_reuse",
          }),
       ).toBe(2);
-      expect(
-         await harness.collectCounter("publisher_storage_chained_build_total", {
-            outcome: "inline_fallback",
-         }),
-      ).toBe(1);
-      expect(
-         await harness.collectCounter("publisher_storage_chained_build_total", {
-            outcome: "strict_shape_fallback",
-         }),
-      ).toBe(1);
       expect(
          await harness.collectCounter("publisher_storage_chained_build_total", {
             outcome: "strict_refused",
@@ -466,6 +457,10 @@ const EMISSIONS: Record<string, () => void> = {
    publisher_query_route_duration_ms: () => recordQueryRouteDuration(1, "live"),
    publisher_materialization_key_check_total: () =>
       recordKeyCheck("parent", "not_unique"),
+   publisher_materialization_incompatible_detected_total: () =>
+      recordIncompatibleDetected("bind", "column_retyped"),
+   publisher_materialization_contract_capture_total: () =>
+      recordContractCapture("storage", "unread"),
    publisher_storage_tables_retained_total: () => recordStorageTableRetained(),
    publisher_storage_build_attribution_skipped_total: () =>
       recordAttributionSkipped("tag_failed"),
@@ -479,6 +474,8 @@ const EMISSIONS: Record<string, () => void> = {
       recordChainedStorageBuild("parent_reuse"),
    publisher_materialization_stale_upstream_entry_total: () =>
       recordStaleUpstreamEntry("storage"),
+   publisher_materialization_upstream_recompute_total: () =>
+      recordUpstreamRecompute("moved", "chained", "recomputed"),
 };
 
 /** Every instrument name `materialization_metrics.ts` passes to a lazy constructor. */

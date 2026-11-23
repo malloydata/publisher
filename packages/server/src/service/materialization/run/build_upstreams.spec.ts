@@ -5,6 +5,7 @@ import { Manifest } from "@malloydata/malloy";
 import { describe, expect, it } from "bun:test";
 import type { ManifestEntry } from "../domain/types";
 import {
+   builtFromOf,
    ChainedPackageStaleError,
    chainedPlanFacts,
    currentUpstreamEntries,
@@ -305,6 +306,7 @@ describe("upstreamReuseFromManifest", () => {
          fields: { upstreamReuse: "reused" },
          inManifestOnly: [],
          missing: [],
+         definitionsRead: [],
       });
    });
 
@@ -445,7 +447,12 @@ describe("upstreamReuseFromManifest", () => {
          sqlInlinesStored: false,
          compilerMissing: [],
       });
-      expect(out).toEqual({ fields: {}, inManifestOnly: [], missing: [] });
+      expect(out).toEqual({
+         fields: {},
+         inManifestOnly: [],
+         missing: [],
+         definitionsRead: [],
+      });
    });
 
    it("two models' same-named sources resolve by id, not by name", () => {
@@ -529,7 +536,12 @@ describe("upstreamReuseFromManifest", () => {
          compilerMissing: [],
          rootAddress: "addr-daily",
       });
-      expect(out).toEqual({ fields: {}, inManifestOnly: [], missing: [] });
+      expect(out).toEqual({
+         fields: {},
+         inManifestOnly: [],
+         missing: [],
+         definitionsRead: [],
+      });
    });
 });
 
@@ -656,6 +668,7 @@ describe("current tiers (implied destinations, the source's own connection)", ()
             persistTables({ tier_up: up, tier_stored: stored }),
             { duckdb: "dig" },
             undefined,
+            undefined,
             (sourceID) =>
                sourceID === "tier_up" ? { destination: "lake2" } : undefined,
          ),
@@ -672,6 +685,7 @@ describe("current tiers (implied destinations, the source's own connection)", ()
          chainedPlanFacts(
             persistTables({ tier_own: up }),
             { duckdb: "dig" },
+            undefined,
             undefined,
             () => ({
                destination: "duckdb",
@@ -692,6 +706,7 @@ describe("current tiers (implied destinations, the source's own connection)", ()
             persistTables({ tier_mode: stored }),
             { duckdb: "dig" },
             undefined,
+            undefined,
          ),
       );
       expect(off.declaredTiersByAddress?.tiermode).toEqual([null]);
@@ -699,6 +714,7 @@ describe("current tiers (implied destinations, the source's own connection)", ()
          chainedPlanFacts(
             persistTables({ tier_mode: stored }),
             { duckdb: "dig" },
+            undefined,
             undefined,
          ),
       );
@@ -719,6 +735,7 @@ describe("current tiers (implied destinations, the source's own connection)", ()
          chainedPlanFacts(
             persistTables({ split_base: base, split_ext: ext }),
             { duckdb: "dig" },
+            undefined,
             undefined,
          ),
       );
@@ -867,5 +884,35 @@ describe("withChainBuildText", () => {
       expect(errorCodeOf(new ChainedPackageStaleError("x"))).toBe(
          "package_stale",
       );
+   });
+});
+
+describe("builtFromOf", () => {
+   it("names no upstream for a build given no manifest", () => {
+      expect(builtFromOf("SELECT 1", undefined, {}, "a")).toBeUndefined();
+   });
+
+   it("names each stored table the build SQL reads, but its own", () => {
+      const built = builtFromOf(
+         'SELECT * FROM "up_t"',
+         {
+            entries: { u1: { tableName: '"up_t"' }, me: { tableName: '"me"' } },
+         } as never,
+         {
+            u1: {
+               sourceEntityId: "u1",
+               physicalTableName: "up_t",
+               builtAt: "2026-11-01T00:00:00.000Z",
+            } as never,
+         },
+         "me",
+      );
+      expect(built).toEqual([
+         {
+            sourceEntityId: "u1",
+            physicalTableName: "up_t",
+            builtAt: "2026-11-01T00:00:00.000Z",
+         },
+      ]);
    });
 });

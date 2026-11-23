@@ -34,4 +34,26 @@ describe("referenceManifestToEntries", () => {
          connectionName: "warehouse",
       });
    });
+
+   it("carries a reference's nativeSchema onto the seeded entry, for the altered-upstream check", () => {
+      const nativeSchema = [{ name: "amt", type: "DECIMAL(10,1)" }];
+      const entries = referenceManifestToEntries([
+         { sourceEntityId: "up", physicalTableName: "up_t", nativeSchema },
+      ]);
+      expect(entries.up.nativeSchema).toEqual(nativeSchema);
+   });
+
+   it("carries a reference's schema, dataAsOf, builtAt and contract onto the seeded entry", () => {
+      const ref = {
+         sourceEntityId: "up",
+         physicalTableName: "up_t",
+         storageDestinationName: "lake",
+         schema: [{ name: "cat", type: "VARCHAR" }],
+         dataAsOf: "2026-11-20T00:00:00.000Z",
+         builtAt: "2026-11-20T00:05:00.000Z",
+         contract: { v: 1, dialect: "duckdb", columns: [] },
+      };
+      const { up } = referenceManifestToEntries([ref]);
+      expect(up).toEqual(ref);
+   });
 });

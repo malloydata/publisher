@@ -7,9 +7,11 @@
  * destination but serving stays live (docs/configuration.md), and under
  * `off` the destination is inert, so with storage tables bound the served
  * copy, the rollup leg, the persisted-view leg and the persisted-query leg
- * all answer live, and the path report says so. Before the fix the rollup,
- * persisted-view and persisted-query legs read the destination under
- * `write-only`, while the serve verdict said `live/storage_mode`.
+ * all answer live, and the path report says so: each skips its table as
+ * `NOT_SERVED` with the serve verdict's `storage_mode`. Before the fix the
+ * rollup, persisted-view and persisted-query legs read the destination under
+ * `write-only`, while the serve verdict said `live/storage_mode`; after it,
+ * the persisted-view and persisted-query legs named their table `STALE`.
  *
  * Each leg is bound twice: to a table its own `storage=` names, and to a
  * storage table a host placed for a source that names no destination (a
@@ -18,6 +20,7 @@
  * it did, and the one whose gate is not is never read.
  */
 
+import { contractFor } from "../../../src/test_helpers/contract_fixture";
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { FixedConnectionMap, MalloyConfig } from "@malloydata/malloy";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -161,6 +164,8 @@ interface Answer {
    servedFrom: string | null;
    servedBy: string;
    tier?: string;
+   /** The path report's skipped candidates, `REASON` or `REASON:code`. */
+   skipped: string[];
 }
 
 /**
@@ -224,6 +229,9 @@ async function loadAndBind(mode: string): Promise<{
             servedFrom: r.servedFrom ?? null,
             servedBy: by?.kind ?? "live",
             ...(by?.tier ? { tier: by.tier } : {}),
+            skipped: (r.path?.considered ?? [])
+               .filter((c) => c.outcome === "skipped")
+               .map((c) => (c.code ? `${c.reason}:${c.code}` : `${c.reason}`)),
          };
       };
       const cases = [...LEGS, ...GATED_CASES];
@@ -255,6 +263,7 @@ async function loadAndBind(mode: string): Promise<{
             sourceEntityId: entry.sourceEntityId,
             sourceName: entry.name,
             physicalTableName: table,
+            contract: contractFor(),
             storageDestinationName: entry.annotationFields?.storage ?? "lake",
             ...(entry.origin === "rollup" ? { origin: "rollup" } : {}),
             schema: (
@@ -303,6 +312,11 @@ for (const mode of ["on", "write-only", "off"] as const) {
                expect(after.servedFrom).not.toBe("storage");
                expect(after.tier).not.toBe("storage");
                expect(after.servedBy).toBe("live");
+               // Its table is named as the storage mode leaves it, the serve
+               // verdict's reason, never as stale.
+               if (c.onServedBy !== "live") {
+                  expect(after.skipped).toEqual(["NOT_SERVED:storage_mode"]);
+               }
             }
          });
       }

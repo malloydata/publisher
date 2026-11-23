@@ -10,6 +10,7 @@
  * own `asOfBuild` decides it.
  */
 
+import { contractFor } from "../../../test_helpers/contract_fixture";
 import { afterEach, describe, expect, it } from "bun:test";
 import { tempBuildPlanPackages } from "../../../test_helpers/incremental_test_harness";
 import type { ManifestEntry } from "../domain/types";
@@ -65,6 +66,7 @@ describe("a run over a table stored as of its build", () => {
             {
                sourceEntityId: i.sourceEntityId,
                physicalTableName: i.physicalTableName,
+               contract: contractFor(),
                connectionName: "duckdb",
             } as ManifestEntry,
          ]),

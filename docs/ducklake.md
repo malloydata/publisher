@@ -69,8 +69,15 @@ Two consequences for models:
   through a `duckdb` connection whose `attachedDatabases` entry holds a credential for it; those secrets
   are not scoped.
 - A `managed: true` connection attached read-only is scoped narrower, to its `main` schema's recorded
-  path, so a model reads only the catalog's own tables. Tables a build wrote to a `destinationSchema` are
-  served through the storage destination's own session, as before.
+  path: its storage secret, or on a local data path its file allowlist. Its SQL is also held to `main` before it runs, since DuckLake answers columns, row counts, file
+  statistics and inlined rows from the catalog without opening a file: a model, or raw SQL, on a managed
+  connection may name only `t`, `main.t`, `<connection>.t` or `<connection>.main.t` with a plain name (no
+  path, glob or dot, so nothing a replacement scan reads as a file), and is refused for
+  another schema or catalog, the metadata catalog, DuckDB's catalog views and functions, `DESCRIBE`,
+  `SHOW`, `SUMMARIZE`, and table functions other than `range`, `generate_series` and `unnest`
+  ([security posture](security-posture.md)). So a model reads only the catalog's own tables. Tables a
+  build wrote to a `destinationSchema` are served through the storage destination's own session, as
+  before.
 
 A catalog with nothing to scope to, a config with no `bucketUrl` whose catalog records no data path, is
 not attached: the attach fails naming the catalog, and the next lookup retries it. A `publisher` proxy
@@ -136,6 +143,23 @@ one and never between them. The read-only serving attach observes the new snapsh
 with no re-attach and no package reload — the catalog is consulted per transaction rather than pinned
 at attach time. Note that this is a property of a **Postgres-backed** catalog, which is the supported
 configuration; a DuckDB-file catalog attached read-only does not behave this way.
+
+**Data inlining off on the catalogs Publisher creates.** DuckLake's default keeps a table of up to 10
+rows as rows in the catalog database rather than as a file, and a reader confined to the catalog's files
+(a managed connection's read-only view, a storage secret scoped to a prefix) still reads those rows. A
+build session's `ducklake_default_data_inlining_row_limit=0` does not override a limit the catalog
+records. So whenever Publisher creates a catalog, at a destination's first build or through the admin
+API's `POST /catalogs`, it records `data_inlining_row_limit` 0 in the catalog
+(`CALL <catalog>.set_option('data_inlining_row_limit', 0)`), and every writer's small tables land in
+files. A `dataInliningRowLimit` on the `POST` is recorded after it, so an explicit limit still wins.
+
+An existing catalog is the host's, and Publisher never changes its setting. An attach that finds it
+recording a limit above 0 logs a warning with code `ducklake-data-inlining-on`, and each package that
+stores a table there (its `storage=` destination, or its own DuckLake connection) carries a package
+warning of the same code, from the attach on. Record 0 to clear it: `CALL <catalog>.set_option(
+'data_inlining_row_limit', 0)`, or `PATCH /catalogs/{catalog}` with `"dataInliningRowLimit": 0`. A
+catalog that records no limit is not warned about: Publisher's own builds and loads then write files,
+but another writer using DuckLake's default would inline, so record 0 on it as well.
 
 **The catalog's credentials live in a DuckDB secret.** Publisher puts the catalog role's user,
 password and any client-key password (`sslpassword`) in a temporary DuckDB secret (never persisted, redacted when listed) and attaches with a
@@ -281,7 +305,11 @@ takes the connection's name, so the two may be named differently and a table pat
 connection still resolves. That session can write the catalog, so it runs only SQL Malloy generated: a
 source carrying an `.sql()` source or a `sql_*` expression anywhere beneath it is refused, as every
 DuckLake source was before, and so is a table read from a file or URL (`lake.table('/x.csv')`),
-which that session would read with the destination's storage credential. A chained build (a
+which that session would read with the destination's storage credential. Such a source is refused when
+the package loads (`persist-not-built`, reason `storage_source_unsupported`) and answered live, rather
+than failing its build. On a connection configured `managed` the same holds with no `storage=` too: a
+managed catalog's tables are built inside it, so a `#@ persist`, `#(materialize)` or rollup over author
+SQL there is refused at load whatever it declares. A chained build (a
 downstream stacked on its stored parents in the destination) runs on the same kind of session and follows
 the same rule: a downstream carrying author SQL is recomputed from raw instead of stacked on its parents.
 
@@ -295,11 +323,12 @@ record names no sink; a log collector maps it. Its fields, each left out when th
 | `environment` | The environment the statement ran in; empty for an admin load or copy. |
 | `connection` | The connection or storage destination, by the name the environment gives it; the catalog's name for an admin load or copy. |
 | `catalog` | The DuckLake catalog the statement ran on: the connection's `catalog.metadataSchema`, which is also the catalog's name on the admin API. It names the same catalog whatever a connection is called. |
-| `surface` | `serve` (a model query), `sql` (raw SQL on a `managed` connection), `build`, `load` or `copy`. |
+| `surface` | `serve` (a model query or a notebook cell), `sql` (raw SQL on a `managed` connection), `build`, `load` or `copy`. |
 | `package` | The package served or built. |
 | `duration_ms` | Wall-clock milliseconds the statement ran. |
 | `rows` | Rows returned or written, when the result reports a count. |
-| `status` | `ok` or `error`. |
+| `bytes_out` | UTF-8 bytes of the statement's result as Publisher serialized it for the caller, in the shape asked for: a model query's `result` (`serve`, full or compact; MCP's `execute_query` asks for compact), a notebook cell's `result`, raw SQL's `data` (`sql`). The envelope around it (the HTTP response's other fields, an MCP answer's metadata) is not counted. For Publisher's own MCP `execute_query`, it is the compact result the query returned to the tool, before the tool wraps it and trims rows to fit its size budget: the agent can receive fewer bytes than it counts. Absent on a build, a load or a copy, on a failed statement, and when a row or byte cap refused the result. The record of a statement that answered goes out once its result is serialized; `duration_ms` is still the statement's own. |
+| `status` | `ok` or `error`. On `serve` or `sql`, `ok` without `bytes_out` means the statement ran but its result was never returned: a row or byte cap refused it (the caller got a 413), or a later step failed. A collector that counts completed answers should not count those. |
 | `threads` | The `duckdb.threads` setting: the thread count a DuckDB instance of the process opens with. Left out under `off`, and when the cap could not be applied (a `@malloydata/db-duckdb` release that changed the internals Publisher patches, which Publisher logs at startup); a connection that sets its own `threads` is not reflected. |
 | `worker` | The host name of the process that ran it: the pod's name in Kubernetes. |
 

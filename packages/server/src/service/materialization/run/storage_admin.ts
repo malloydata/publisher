@@ -20,9 +20,12 @@ import { BadRequestError, StorageCatalogNotFoundError } from "../../../errors";
 import {
    attachDuckLakeReadOnlyIfPresent,
    attachDuckLakeReadWrite,
-   escapeSQL,
 } from "../../connection";
-import { storageDestinationRoot } from "../../connection_config";
+import { escapeSQL } from "../../duckdb_session_setup";
+import {
+   storageDestinationFile,
+   storageDestinationRoot,
+} from "../../connection_config";
 import { quoteIdentifier, quoteManifestTablePath } from "../../quoting";
 import { STORAGE_DIALECT } from "../domain/dialect";
 import {
@@ -34,6 +37,7 @@ import {
    assertSupportedDestination,
    destinationAllowlist,
    lockDownDestinationSession,
+   isCatalogDestination,
    requireDuckLakeConfig,
    withDestinationSession,
    withIsolatedSession,
@@ -129,7 +133,7 @@ export async function listStorageTables(params: {
    assertSupportedDestination(destinationName, destinationConnection);
 
    return withIsolatedSession(`list_${destinationName}`, async (session) => {
-      if (destinationConnection.type === "ducklake") {
+      if (isCatalogDestination(destinationConnection)) {
          const cfg = requireDuckLakeConfig(
             destinationName,
             destinationConnection,
@@ -150,15 +154,17 @@ export async function listStorageTables(params: {
          // Existence is checked by listing the environment's destinations
          // directory, so the request-supplied name is only compared, never used
          // to reach the filesystem before the attach.
+         const dbPath = storageDestinationFile(
+            environmentPath,
+            destinationName,
+         );
          const destinationRoot = storageDestinationRoot(environmentPath);
-         const fileName = `${destinationName}.duckdb`;
          if (
             !existsSync(destinationRoot) ||
-            !readdirSync(destinationRoot).includes(fileName)
+            !readdirSync(destinationRoot).includes(path.basename(dbPath))
          ) {
             return [];
          }
-         const dbPath = path.join(destinationRoot, fileName);
          await session.runSQL(
             `ATTACH '${escapeSQL(dbPath)}' AS ${quoteIdentifier(destinationName, STORAGE_DIALECT)} (READ_ONLY)`,
          );
@@ -213,7 +219,7 @@ export async function cleanupStorageFiles(params: {
       snapshotsOlderThan,
       filesOlderThan,
    } = params;
-   if (destinationConnection.type !== "ducklake") {
+   if (!isCatalogDestination(destinationConnection)) {
       throw new BadRequestError(
          `Storage destination '${destinationName}' is type ` +
             `'${destinationConnection.type ?? ""}'; file cleanup applies only to ` +

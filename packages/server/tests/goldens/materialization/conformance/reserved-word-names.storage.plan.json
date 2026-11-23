@@ -5,26 +5,34 @@
       {
         "connectionName": "duckdb",
         "dependsOn": {
+          "month@<pkg>/m.malloy": [],
           "order@<pkg>/m.malloy": []
         },
         "order": [
-          "order@<pkg>/m.malloy"
+          "order@<pkg>/m.malloy",
+          "month@<pkg>/m.malloy"
         ]
       }
     ],
     "droppedPersistSources": [],
     "kinds": {
+      "month@<pkg>/m.malloy": "persist",
       "order@<pkg>/m.malloy": "persist"
     },
     "materializePlans": {},
     "rollupPlans": {},
     "sourceGateOutcomes": {
+      "month@<pkg>/m.malloy": {
+        "attributed": true,
+        "classification": "row_level"
+      },
       "order@<pkg>/m.malloy": {
         "attributed": true,
         "classification": "row_level"
       }
     },
     "sourceModelPaths": {
+      "month@<pkg>/m.malloy": "m.malloy",
       "order@<pkg>/m.malloy": "m.malloy"
     }
   },
@@ -38,6 +46,10 @@
             {
               "dependsOn": [],
               "sourceID": "order@<pkg>/m.malloy"
+            },
+            {
+              "dependsOn": [],
+              "sourceID": "month@<pkg>/m.malloy"
             }
           ]
         ]
@@ -47,6 +59,38 @@
     "omittedSources": [],
     "refusedSources": {},
     "sources": {
+      "month@<pkg>/m.malloy": {
+        "annotationFields": {
+          "name": "month",
+          "storage": "lake"
+        },
+        "columns": [
+          {
+            "name": "month",
+            "type": "number"
+          },
+          {
+            "name": "group",
+            "type": "string"
+          },
+          {
+            "name": "total",
+            "type": "number"
+          }
+        ],
+        "connectionName": "duckdb",
+        "dialect": "duckdb",
+        "freshness": null,
+        "modelPath": "m.malloy",
+        "name": "month",
+        "origin": "persist",
+        "preaggregate": null,
+        "queryMetadata": null,
+        "refresh": null,
+        "sourceEntityId": "b1c24636d6f3b6c816d73f62633897d22a6daddc3b0713245fb2a83c0861cb48",
+        "sourceID": "month@<pkg>/m.malloy",
+        "sql": "sha256:961db5e8a78a3802"
+      },
       "order@<pkg>/m.malloy": {
         "annotationFields": {
           "name": "order",

@@ -158,6 +158,10 @@ export type ErrorReason =
    // 409: a create-only report write found a file at the path; another name
    // may be free.
    | "FILE_EXISTS"
+   // 502: the database answered with fewer rows than it reported, and no row
+   // limit cut them (a BigQuery results page cut at its byte size).
+   | "RESULT_TRUNCATED"
+   | "RESULT_SHAPE_MISMATCH"
    // Package versions; each is raised only as a PackageVersionError, whose
    // reason fixes its status (see PACKAGE_VERSION_ERROR_STATUS).
    | PackageVersionErrorReason;
@@ -485,7 +489,7 @@ export function internalErrorToHttpError(
          json: { code: status, message, problems: row.problems(error) },
       };
    }
-   const answer = httpError(status, message, resolve(row.reason, error));
+   const answer = httpError(status, message, errorReason(error));
    const refusalReason = row.refusalReason?.(error);
    if (refusalReason !== undefined) answer.json.refusalReason = refusalReason;
    return headers ? { ...answer, headers } : answer;
@@ -818,6 +822,28 @@ export class ConnectionFailedError extends ConnectionError {
 }
 
 /**
+ * The database reported more rows than it returned, and no row limit cut
+ * them: BigQuery returns one results page of about 10 MB, and the connector
+ * reads only that page (malloydata/malloy#3243). A short answer is a wrong
+ * answer, so it is refused rather than served: 502 with
+ * `reason: RESULT_TRUNCATED`. Retrying returns the same page, so the caller
+ * shrinks the answer instead.
+ */
+export class ResultTruncatedError extends ConnectionError {
+   override get kind(): "result_truncated" {
+      return "result_truncated";
+   }
+
+   constructor(returned: number, reported: number) {
+      super(
+         `The database returned ${returned} of the ${reported} rows it reported, and no row limit cut them: BigQuery returns one results page of about 10 MB, and the rest of the answer was not read. The query was refused rather than answered short. Project fewer columns or return fewer rows so the answer fits in one page.`,
+         { callerSafe: true },
+      );
+      this.name = "ResultTruncatedError";
+   }
+}
+
+/**
  * A model names a connection the environment does not have, usually one
  * deleted after the package loaded: 424 with `reason: CONNECTION_NOT_FOUND`.
  * Distinct from {@link ConnectionNotFoundError}, the 404 for a name the caller
@@ -847,6 +873,30 @@ export class ConnectionPoolExhaustedError extends ConnectionError {
    constructor(message: string) {
       super(message, { callerSafe: true });
       this.name = "ConnectionPoolExhaustedError";
+   }
+}
+
+/**
+ * The database answered, but a row does not fit the schema Malloy declared for
+ * the result, so the result could not be built (Malloy's wrapper threw on a
+ * value of the wrong type). A 502 like any other database-side failure: the
+ * query and the model are not the caller's to fix, and the server is not
+ * failing on its own. The message is server-authored; the wrapper's own text
+ * (a JavaScript TypeError) is logged where this is raised.
+ */
+export class ResultShapeError extends ConnectionError {
+   override get kind(): "result_shape" {
+      return "result_shape";
+   }
+
+   constructor(options?: { cause?: unknown }) {
+      super(
+         "The database returned a row that does not fit the result's schema, " +
+            "so the result could not be built.",
+         { callerSafe: true },
+      );
+      if (options?.cause !== undefined) this.cause = options.cause;
+      this.name = "ResultShapeError";
    }
 }
 
@@ -1078,8 +1128,7 @@ export class MaterializationEligibilityError extends Error {
  * A chained `storage=` build depends on a persisted upstream it has no table
  * for (not built this run, not supplied, or in another destination).
  * Recomputing it from raw would rebuild a stored table nobody asked for, so
- * under `strictUpstreams` this is refused outright, while a shape failure
- * ({@link MaterializationEligibilityError}) falls back.
+ * the build fails: every build is strict, and none falls back.
  */
 export class ChainedUpstreamMissingError extends Error {
    get kind(): "chained_upstream_missing" {
@@ -1109,8 +1158,8 @@ export class ChainedUpstreamMissingError extends Error {
 /**
  * A chained `storage=` build had every stored upstream, but the model assembled
  * over them did not compile: a limit of what the build can carry, not of the
- * source. Recomputing from raw would rebuild the handed-in tables, so under
- * `strictUpstreams` it is refused like a missing upstream.
+ * source. Recomputing from raw would rebuild the handed-in tables, so it
+ * fails like a missing upstream: every build is strict.
  */
 export class ChainedShapeNotCarriedError extends Error {
    get kind(): "chained_shape_not_carried" {
@@ -1124,26 +1173,55 @@ export class ChainedShapeNotCarriedError extends Error {
 }
 
 /**
- * A strict, orchestrated `storage=` build refused the warehouse recompute
- * (ms2data/service#6756, publisher#1327): the source reaches the source
- * warehouse through an intermediate no stored table stands in for, so its only
- * build would recompute its stored upstreams from raw, and the orchestrator
- * said `warehouseReach: "refuse"`. A property of the model and the
- * instructions, so retrying the same ones fails the same way.
+ * A build wrote its table but could not read back the table's column
+ * contract (`ManifestEntry.contract`), which a table must carry to be served
+ * from. The source fails with SourceFailure code `contract_capture_failed`
+ * (non-terminal: a retry reads it again), and its previous table, if any, is
+ * left as it was: the read runs before the write is swapped in or committed
+ * wherever the build has a staging table or a transaction.
  */
-export class WarehouseRecomputeRefusedError extends Error {
-   get kind(): "warehouse_recompute_refused" {
-      return "warehouse_recompute_refused";
+export class ContractCaptureFailedError extends Error {
+   get kind(): "contract_capture_failed" {
+      return "contract_capture_failed";
    }
 
-   constructor(sourceName: string, destinationName: string, reason: string) {
+   /** The SourceFailure `code`. */
+   readonly code = "contract_capture_failed";
+
+   constructor(table: string, read: string) {
       super(
-         `Failed to materialize source '${sourceName}' into storage ` +
-            `destination '${destinationName}': its only build recomputes its ` +
-            `stored upstreams from the source warehouse, and the build ` +
-            `instructions refuse that (warehouseReach: refuse): ${reason}`,
+         `The column contract of the table ${table} could not be read back ` +
+            `(${read}), so the build is not recorded: a table with no ` +
+            `contract is never served from. The previous table, if any, is ` +
+            `left as it was; a retry reads it again.`,
       );
-      this.name = "WarehouseRecomputeRefusedError";
+      this.name = "ContractCaptureFailedError";
+   }
+}
+
+/**
+ * A build's upstream table is not what the plan it was planned from recorded
+ * for it (its stored columns read otherwise than the plan's proof assumed):
+ * the plan is stale, or the upstream incompatible. The source fails with
+ * SourceFailure code `schema_incompatible` (non-terminal), and the package
+ * reads its tables and derives its plan again, which then proves the build
+ * against the upstream's recorded columns or refuses it at plan.
+ */
+export class SchemaIncompatibleError extends Error {
+   get kind(): "schema_incompatible" {
+      return "schema_incompatible";
+   }
+
+   /** The SourceFailure `code`. */
+   readonly code = "schema_incompatible";
+
+   constructor(
+      message: string,
+      /** The tables found otherwise, by content address, for the drift handler. */
+      readonly handles: readonly string[] = [],
+   ) {
+      super(message);
+      this.name = "SchemaIncompatibleError";
    }
 }
 
@@ -1587,7 +1665,9 @@ type BadRequestKind =
 type ConnectionKind =
    | "connection"
    | "connection_failed"
-   | "connection_pool_exhausted";
+   | "connection_pool_exhausted"
+   | "result_truncated"
+   | "result_shape";
 type NotQueryableKind = "not_queryable" | "off_surface";
 type PackageAdmissionKind = "package_admission_refused" | "dry_run_capacity";
 type ServiceUnavailableKind = "service_unavailable" | PackageAdmissionKind;
@@ -1621,6 +1701,8 @@ interface ErrorByKind {
    connection_failed: ConnectionFailedError;
    unconfigured_connection: UnconfiguredConnectionError;
    connection_pool_exhausted: ConnectionPoolExhaustedError;
+   result_truncated: ResultTruncatedError;
+   result_shape: ResultShapeError;
    destination_not_found: DestinationNotFoundError;
    storage_destination_not_found: StorageDestinationNotFoundError;
    storage_catalog_not_found: StorageCatalogNotFoundError;
@@ -1633,7 +1715,8 @@ interface ErrorByKind {
    materialization_eligibility: MaterializationEligibilityError;
    chained_upstream_missing: ChainedUpstreamMissingError;
    chained_shape_not_carried: ChainedShapeNotCarriedError;
-   warehouse_recompute_refused: WarehouseRecomputeRefusedError;
+   contract_capture_failed: ContractCaptureFailedError;
+   schema_incompatible: SchemaIncompatibleError;
    publisher_config: PublisherConfigError;
    server_configuration: ServerConfigurationError;
    frozen_config: FrozenConfigError;
@@ -1708,6 +1791,8 @@ const ERROR_CLASSES: {
    connection_failed: ConnectionFailedError,
    unconfigured_connection: UnconfiguredConnectionError,
    connection_pool_exhausted: ConnectionPoolExhaustedError,
+   result_truncated: ResultTruncatedError,
+   result_shape: ResultShapeError,
    destination_not_found: DestinationNotFoundError,
    storage_destination_not_found: StorageDestinationNotFoundError,
    storage_catalog_not_found: StorageCatalogNotFoundError,
@@ -1720,7 +1805,8 @@ const ERROR_CLASSES: {
    materialization_eligibility: MaterializationEligibilityError,
    chained_upstream_missing: ChainedUpstreamMissingError,
    chained_shape_not_carried: ChainedShapeNotCarriedError,
-   warehouse_recompute_refused: WarehouseRecomputeRefusedError,
+   contract_capture_failed: ContractCaptureFailedError,
+   schema_incompatible: SchemaIncompatibleError,
    publisher_config: PublisherConfigError,
    server_configuration: ServerConfigurationError,
    frozen_config: FrozenConfigError,
@@ -2160,6 +2246,27 @@ export const ERROR_TABLE: { [K in ErrorKind]: ErrorMapping<ErrorByKind[K]> } = {
          ],
       },
    },
+   result_truncated: {
+      ...CONNECTION,
+      reason: "RESULT_TRUNCATED",
+      log: { summary: "Database result truncated", level: "warn" },
+      mcp: {
+         advice: "fixed",
+         suggestions: [
+            NOT_TRANSIENT_CHANGE_QUERY,
+            "Shrink the answer so it fits in one results page of about 10 MB: select fewer columns, aggregate, or add a LIMIT.",
+         ],
+      },
+   },
+   result_shape: {
+      ...CONNECTION,
+      reason: "RESULT_SHAPE_MISMATCH",
+      log: {
+         summary: "Database result does not fit its schema",
+         level: "error",
+      },
+      mcp: { advice: "internal" },
+   },
    materialization_not_found: { status: 404, mcp: { advice: "internal" } },
    materialization_conflict: {
       status: 409,
@@ -2226,7 +2333,8 @@ export const ERROR_TABLE: { [K in ErrorKind]: ErrorMapping<ErrorByKind[K]> } = {
    // No specific answer: a generalized 500, its detail only logged.
    chained_upstream_missing: UNHANDLED,
    chained_shape_not_carried: UNHANDLED,
-   warehouse_recompute_refused: UNHANDLED,
+   contract_capture_failed: UNHANDLED,
+   schema_incompatible: UNHANDLED,
    publisher_config: UNHANDLED,
    write_verify: UNHANDLED,
    unknown: UNHANDLED,
@@ -2236,4 +2344,9 @@ export const ERROR_TABLE: { [K in ErrorKind]: ErrorMapping<ErrorByKind[K]> } = {
 export function errorMapping(error: unknown): ErrorMapping<Error> {
    // The row is typed for its kind; errorKind guarantees `error` is of it.
    return ERROR_TABLE[errorKind(error)] as ErrorMapping<Error>;
+}
+
+/** The `reason` an error's HTTP body carries, which MCP errors carry too. */
+export function errorReason(error: unknown): ErrorReason | undefined {
+   return resolve(errorMapping(error).reason, error as Error);
 }

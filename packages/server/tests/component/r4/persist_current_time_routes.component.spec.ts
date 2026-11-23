@@ -12,6 +12,18 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import type { ModelMaterializer } from "@malloydata/malloy";
+import { gateSwitches } from "../../../src/config";
+import type { Pinned } from "../../../src/service/materialization/domain/binding";
+import {
+   makeLegs,
+   type PersistedQueryServe,
+} from "../../../src/service/materialization/serve/leg";
+import {
+   collationProbe,
+   ReadAdmission,
+} from "../../../src/service/materialization/serve/read_admission";
+import type { PersistedViewServe } from "../../../src/service/materialization/serve/view_variants";
 import { useMaterializationOn } from "../../../src/test_helpers/settings_env";
 import {
    freshLoadPool,
@@ -71,14 +83,43 @@ function answer(outcome: Outcome): { ids: number[]; servedBy: string } {
    };
 }
 
+/** The ungated routes' queries, each answered live before the bind. */
+const SERVED = [
+   { query: "run: recent -> { group_by: id }", servedBy: "materialized" },
+   { query: "run: recent_q", servedBy: "query" },
+   { query: "run: ev_views -> last7", servedBy: "view" },
+];
+
+/** Rows with every value as a string (never through a double), sorted. */
+function exactRows(outcome: Outcome): string[] {
+   if ("error" in outcome) throw new Error(outcome.error);
+   return outcome.answer.rows
+      .map((r) =>
+         JSON.stringify(
+            Object.fromEntries(
+               Object.entries(r).map(([k, v]) => [k, String(v)]),
+            ),
+         ),
+      )
+      .sort();
+}
+
 describe("stored relations that read the current time, by route", () => {
    let fixture: LoadedFixture;
+   const live = new Map<string, Outcome>();
    useMaterializationOn();
    beforeAll(async () => {
       await freshLoadPool();
-      fixture = await (
-         await loadFixture({ "data/ev.csv": ROWS, "m.malloy": MODEL })
-      ).bind();
+      const loader = await loadFixture({
+         "data/ev.csv": ROWS,
+         "m.malloy": MODEL,
+      });
+      // The rows sit days inside the window, so a table built now holds
+      // live's answer.
+      for (const { query } of SERVED) {
+         live.set(query, await loader.run("m.malloy", query));
+      }
+      fixture = await loader.bind();
    }, 300_000);
    afterAll(async () => {
       await fixture?.dispose();
@@ -118,19 +159,23 @@ describe("stored relations that read the current time, by route", () => {
       );
    });
 
-   it("serves each from its table", async () => {
+   it("serves each from its table, equal to live", async () => {
       expect(
          answer(
             await fixture.run("m.malloy", "run: recent -> { group_by: id }"),
          ),
       ).toEqual({ ids: [1, 2], servedBy: "materialized" });
-      expect(
-         answer(await fixture.run("m.malloy", "run: recent_q")).servedBy,
-      ).toBe("query");
-      expect(
-         answer(await fixture.run("m.malloy", "run: ev_views -> last7"))
-            .servedBy,
-      ).toBe("view");
+      for (const { query, servedBy } of SERVED) {
+         const l = live.get(query)!;
+         const s = await fixture.run("m.malloy", query);
+         expect({ query, servedBy: answer(s).servedBy }).toEqual({
+            query,
+            servedBy,
+         });
+         expect(answer(l).servedBy).toBe("live");
+         expect(exactRows(l).length).toBeGreaterThan(0);
+         expect(exactRows(s)).toEqual(exactRows(l));
+      }
    });
 
    it("says so in the serve verdict", () => {
@@ -164,6 +209,52 @@ describe("stored relations that read the current time, by route", () => {
       );
       expect(warning?.message).toContain("reads the current time");
       expect(asOfBuild("gated_views -> last7")).toBeUndefined();
+   });
+
+   // A database persisted view's or query's table has no serve binding, only
+   // its manifest entry, so the flag must reach the leg through the entry:
+   // the backstop then declines an access decision over it on its own, with
+   // the plan-time refusals and the given-reading decline out of the way.
+   it("marks a persisted view's and query's table as of its build, and declines an access decision over it", async () => {
+      const model = fixture.pkg.getModel("m.malloy")! as unknown as {
+         pinNow(): Pinned;
+         persistedViews: PersistedViewServe;
+         persistedQueries: PersistedQueryServe;
+         modelMaterializer: ModelMaterializer;
+      };
+      const pinned = model.pinNow();
+      const legs = makeLegs(pinned, {
+         persistedViews: model.persistedViews,
+         persistedQueries: model.persistedQueries,
+      });
+      for (const [kind, queryString] of [
+         ["view", "run: ev_views -> last7"],
+         ["query", "run: recent_q"],
+      ] as const) {
+         const query = {
+            queryString,
+            givens: undefined,
+            authorRunnable: model.modelMaterializer.loadQuery(queryString),
+         };
+         const leg = legs.find((l) => l.kind === kind)!;
+         const answer = await leg.attempt(query, pinned);
+         expect({ kind, read: answer.resultTableRead }).toMatchObject({
+            kind,
+            read: { tier: "database", asOfBuild: true },
+         });
+         const admission = new ReadAdmission(
+            query,
+            gateSwitches(),
+            collationProbe,
+         );
+         expect({
+            kind,
+            verdict: (await admission.decide(kind, answer, true)).verdict,
+         }).toMatchObject({
+            kind,
+            verdict: { admit: false, reason: "as_of_build_access" },
+         });
+      }
    });
 
    it("refuses a grant table a gated source joins as current_time", () => {

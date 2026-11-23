@@ -83,6 +83,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.rfs_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "9e5e51436de410d2744df57f04a2f660aaebe9725a0d8bd9449f763a168c3f50",
         "sourceID": "daily@<hammer>/rfs/rfs.malloy",
@@ -111,6 +117,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.rfs_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "5b1498387954654e207f8792e17e1bda2336913eda8007641eb0a025a713db6e",
         "sourceID": "weekly@<hammer>/rfs/rfs.malloy",

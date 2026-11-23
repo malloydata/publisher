@@ -204,18 +204,25 @@ source: daily is orders -> {
       }
    });
 
-   it("still fails a missing table, not catalog, whose fallback does not allow live", async () => {
-      fixture.setBindings(
-         fixture.bindings.map((b) => {
-            const { freshnessFallback: _, ...rest } = b;
-            return { ...rest, tablePath: "lake.no_such_table" };
-         }),
-      );
-      await expect(
-         fixture.runAsIs(
+   // A table gone since the bind is the drift handler's failed-read
+   // trigger: answered live in that same query, whatever the fallback.
+   it("answers a missing table, not catalog, live, whatever its fallback", async () => {
+      for (const freshnessFallback of [undefined, "fail" as const]) {
+         fixture.setBindings(
+            fixture.bindings.map((b) => {
+               const { freshnessFallback: _, ...rest } = b;
+               return {
+                  ...rest,
+                  tablePath: "lake.no_such_table",
+                  ...(freshnessFallback ? { freshnessFallback } : {}),
+               };
+            }),
+         );
+         const { servedFrom } = await fixture.runAsIs(
             "run: daily -> { group_by: region; aggregate: t is total.sum() }",
-         ),
-      ).rejects.toThrow();
+         );
+         expect(servedFrom).toBe("live_fallback");
+      }
    });
 
    it("reports nothing considered for a source with no table", async () => {

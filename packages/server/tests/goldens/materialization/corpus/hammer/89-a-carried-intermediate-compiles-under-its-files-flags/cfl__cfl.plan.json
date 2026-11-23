@@ -91,6 +91,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.cfl_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "2ea78588915bc00b4efb8b94868a14ed503d2ea5d2ed0dedcd37042ca14f5ba5",
         "sourceID": "daily@<hammer>/cfl/cfl.malloy",
@@ -115,6 +121,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.cfl_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "198f637e0b29e9e18bec81e49117c69565ea81f82c50615107a9f02920d90db2",
         "sourceID": "rollup@<hammer>/cfl/cfl.malloy",

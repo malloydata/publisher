@@ -22,8 +22,27 @@ const SERVER_DIR = path.resolve(
 );
 const SERVER_ENTRY = path.join(SERVER_DIR, "src", "server.ts");
 
-/** An OS-assigned free TCP port. */
+/** Every port {@link getFreePort} has handed out in this process. */
+const handedOut = new Set<number>();
+
+/**
+ * An OS-assigned free TCP port, never one already handed out in this process.
+ * The port is released before it is returned, so the OS can assign it again:
+ * a test that picks one port for itself (an MCP or admin port) and lets
+ * `spawnServer` pick the others would otherwise boot two listeners on one port.
+ */
 export async function getFreePort(): Promise<number> {
+   for (let attempt = 0; attempt < 100; attempt++) {
+      const port = await osAssignedPort();
+      if (!handedOut.has(port)) {
+         handedOut.add(port);
+         return port;
+      }
+   }
+   throw new Error("no free port this process has not already handed out");
+}
+
+function osAssignedPort(): Promise<number> {
    return new Promise<number>((resolve, reject) => {
       const srv = net.createServer();
       srv.on("error", reject);

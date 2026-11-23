@@ -15,8 +15,7 @@ interface FilterFields {
 }
 
 /**
- * Which legacy fields a query actually used. `filterParams` is the *parsed*
- * value (after JSON.parse for the GET notebook-cell path), so an empty `{}` is
+ * Which legacy fields a query actually used. An empty `filterParams` `{}` is
  * a no-op opt-out, not a use.
  */
 function usedFilterFields(options: FilterFields): {
@@ -38,8 +37,8 @@ function usedFilterFields(options: FilterFields): {
 }
 
 /**
- * Count a query that used `filterParams` / `filter_params` or `bypassFilters`
- * / `bypass_filters`. The REST routes count through
+ * Count a query that used `filterParams` or `bypassFilters`. The REST route
+ * counts through
  * {@link setFilterDeprecationHeaders}; MCP, which has no headers to set,
  * calls this directly.
  */
@@ -56,8 +55,7 @@ export function recordDeprecatedFilterUsage(options: FilterFields): {
 /**
  * Attach RFC 8594 deprecation headers, and count the use, when the request
  * actually supplied legacy `#(filter)` values (`filterParams` /
- * `bypassFilters` on POST, `filter_params` / `bypass_filters` on the
- * notebook-cell GET).
+ * `bypassFilters` on POST).
  */
 export const setFilterDeprecationHeaders = (
    res: HeaderSetter,

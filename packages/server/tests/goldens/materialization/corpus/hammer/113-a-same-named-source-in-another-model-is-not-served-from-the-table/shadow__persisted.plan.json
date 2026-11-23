@@ -71,6 +71,12 @@
         "origin": "persist",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "orders_pg",
+            "table": "public.shadow_orders"
+          }
+        ],
         "refresh": null,
         "sourceEntityId": "6b3756a5d555cfcbfe71a470eef341f9605dfbcaf40457429a985988860d8717",
         "sourceID": "daily@<hammer>/shadow/persisted.malloy",

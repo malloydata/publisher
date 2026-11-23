@@ -361,10 +361,61 @@
         "origin": "materialize",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "duckdb",
+            "table": "'data/orders.csv'"
+          }
+        ],
         "refresh": null,
-        "sourceEntityId": "c215bd26b05cb26ff0cc5d7d83a4ed555895a01a0516d9ce4abfe890ba3be71c",
+        "sourceEntityId": "e3123e46ca09ab86ce28636d7ffe05042025dc5cda562c3786bcf0b9c4ad9ca6",
         "sourceID": "orders@<pkg>/m.malloy",
-        "sql": "sha256:cc419a75aa319b9e"
+        "sql": "sha256:cc419a75aa319b9e",
+        "upstreamSchemas": [
+          {
+            "columns": [
+              {
+                "name": "id",
+                "nativeType": "BIGINT"
+              },
+              {
+                "name": "customer_id",
+                "nativeType": "BIGINT"
+              },
+              {
+                "name": "region",
+                "nativeType": "VARCHAR"
+              },
+              {
+                "name": "status",
+                "nativeType": "VARCHAR"
+              },
+              {
+                "name": "amount",
+                "nativeType": "DOUBLE"
+              },
+              {
+                "name": "discount",
+                "nativeType": "DOUBLE"
+              },
+              {
+                "name": "order_date",
+                "nativeType": "DATE"
+              },
+              {
+                "name": "created_at",
+                "nativeType": "TIMESTAMP"
+              },
+              {
+                "name": "order",
+                "nativeType": "BIGINT"
+              }
+            ],
+            "connectionName": "duckdb",
+            "dialect": "duckdb",
+            "table": "'data/orders.csv'"
+          }
+        ]
       },
       "wide@<pkg>/m.malloy": {
         "annotationFields": {
@@ -417,10 +468,61 @@
         "origin": "materialize",
         "preaggregate": null,
         "queryMetadata": null,
+        "reads": [
+          {
+            "connectionName": "duckdb",
+            "table": "'data/orders.csv'"
+          }
+        ],
         "refresh": null,
-        "sourceEntityId": "2f6d3e57f13e9e62faf8122e60768b040c87df9c415fd3890f48c5d3915609ce",
+        "sourceEntityId": "096ef4223a870d93cbadb8d536e5ec94269c97c6aef6b62e8b89622774d48605",
         "sourceID": "wide@<pkg>/m.malloy",
-        "sql": "sha256:639f45767a268523"
+        "sql": "sha256:639f45767a268523",
+        "upstreamSchemas": [
+          {
+            "columns": [
+              {
+                "name": "id",
+                "nativeType": "BIGINT"
+              },
+              {
+                "name": "customer_id",
+                "nativeType": "BIGINT"
+              },
+              {
+                "name": "region",
+                "nativeType": "VARCHAR"
+              },
+              {
+                "name": "status",
+                "nativeType": "VARCHAR"
+              },
+              {
+                "name": "amount",
+                "nativeType": "DOUBLE"
+              },
+              {
+                "name": "discount",
+                "nativeType": "DOUBLE"
+              },
+              {
+                "name": "order_date",
+                "nativeType": "DATE"
+              },
+              {
+                "name": "created_at",
+                "nativeType": "TIMESTAMP"
+              },
+              {
+                "name": "order",
+                "nativeType": "BIGINT"
+              }
+            ],
+            "connectionName": "duckdb",
+            "dialect": "duckdb",
+            "table": "'data/orders.csv'"
+          }
+        ]
       }
     }
   }

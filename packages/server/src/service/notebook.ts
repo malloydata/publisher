@@ -195,7 +195,7 @@ export function artifactNoteOfText(text: string): string | undefined {
 
 export type NotebookCellKind = "markdown" | "query" | "definition";
 
-/** One cell of a served notebook, as the reader sliced it from the file. */
+/** One cell of a linear `.malloy` report, as the reader sliced it from the file. */
 export interface NotebookCellSpan {
    kind: NotebookCellKind;
    type: "markdown" | "code";
@@ -212,8 +212,6 @@ export interface NotebookCellSpan {
    /** 1-based and inclusive. */
    startLine: number;
    endLine: number;
-   /** A query cell's index into `modelDef.queryList` and `modelInfo.anonymous_queries`. */
-   queryIndex?: number;
 }
 
 /**
@@ -425,10 +423,9 @@ function markdownLineBody(noteText: string): string {
 }
 
 /**
- * A served notebook's cells, read off Malloy's parse tree and token stream.
+ * A linear report's cells, read off Malloy's parse tree and token stream.
  * Pure over its inputs. `modelDef` is the compile of the same `text`, used only
- * to check that every `run:` the reader found is one Malloy compiled, so the
- * k-th query cell is `queryList[k]`.
+ * to check that every `run:` the reader found is one Malloy compiled.
  *
  * All-or-nothing: a top-level construct the reader cannot classify, or a
  * default-channel token outside every recognized statement and note, refuses
@@ -766,7 +763,7 @@ export function readNotebookCells(
    if (modelDef && runCount !== modelDef.queryList.length) {
       return refuse({
          line: 1,
-         message: `Line 1: the notebook reader found ${runCount} run: statements where Malloy compiled ${modelDef.queryList.length}, so its query cells cannot be matched to their results. Fix: none in the file; report it, since the reader and the compiler disagree.`,
+         message: `Line 1: the notebook reader and the Malloy compiler disagree on the number of run: statements. The reader found ${runCount} and the compiler ${modelDef.queryList.length}. Fix: none in the file; report it.`,
       });
    }
 
@@ -774,13 +771,11 @@ export function readNotebookCells(
    const annotations: string[] = [];
    // The markdown cell a contiguous `##(markdown)` run is building, which the next adjacent line joins.
    let lineRun: NotebookCellSpan | undefined;
-   let runsSeen = 0;
    items.forEach((item, index) => {
       const belowTag = index > artifactAt;
       if (item.kind === "statement") {
          lineRun = undefined;
-         const queryIndex = item.run ? runsSeen++ : undefined;
-         // A `run:` above the tag is header, so a definition cell, but it still holds its queryList slot.
+         // A `run:` above the tag is header, so a definition cell.
          const pushed: NotebookCellSpan =
             item.run && belowTag
                ? {
@@ -797,7 +792,6 @@ export function readNotebookCells(
                     }),
                     startLine: item.startLine,
                     endLine: item.endLine,
-                    queryIndex,
                  }
                : {
                     kind: "definition",
