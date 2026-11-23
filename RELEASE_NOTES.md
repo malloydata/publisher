@@ -21,6 +21,10 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — a plain DuckDB destination's file is named from its configured name
+
+**Changed: a plain DuckDB `storage=` destination's database file is named from the destination's configured name, not the session's attach alias,** through one guarded path that refuses a name with a separator or `..` and keeps the file under the destinations root.
+
 ## [Unreleased] — a storage destination's `default_collation` is held to the column contract
 
 **Changed: a `storage=` table's contract records its destination session's `default_collation` (`contract.defaultCollation`), read in the build's session, and every bind reads the destination's current value beside the table's column collations.** A bind that finds another value reports the table `incompatible` with `incompatibility.code` `collation_changed`, naming its string columns that declare no collation of their own, and it answers live until it is rebuilt. A read that fails leaves the table unread, as before. A table built under a non-default setting passes its own contract, and records its strings as compared unlike live (`compare: none`), so nothing stacks on them or serves them past a gate.
