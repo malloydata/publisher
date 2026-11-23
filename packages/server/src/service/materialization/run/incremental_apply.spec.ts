@@ -20,6 +20,7 @@ import {
    decodeTablePathSegments,
    deltaScript,
    deltaStatements,
+   isMergeKeyGuardFailure,
    isPairGuardFailure,
    ledgerLineageMismatch,
    PAIR_GUARD_MESSAGE,
@@ -1309,5 +1310,64 @@ describe("seedCoveredThrough", () => {
          NOW,
       );
       expect(result.bound).toBeUndefined();
+   });
+});
+
+describe("a merge whose source repeats a key", () => {
+   const merge = (dialect: string) =>
+      deltaStatements({
+         dialect,
+         quotedTablePath: "tgt",
+         deltaSQL: "SELECT * FROM src",
+         columns: ["id", "amount"],
+         mergeKeys: ["id"],
+         watermarkName: "updated_at",
+         start: { malloyType: "date", value: "2024-06-01" },
+         end: { malloyType: "date", value: "2024-07-01" },
+      })[0];
+
+   it("is guarded on Postgres and DuckDB, where the guard's failure is executed", () => {
+      for (const dialect of ["postgres", "duckdb"]) {
+         expect(merge(dialect)).toContain("__merge_key_rows > 1");
+      }
+   });
+
+   it("is merged unguarded on BigQuery and Snowflake, whose planning of the guard is unverified", () => {
+      for (const dialect of ["standardsql", "snowflake"]) {
+         expect(merge(dialect)).toContain("USING (SELECT * FROM src) AS __s");
+      }
+   });
+
+   // Verified by message match only: neither engine runs in these tests. The
+   // messages are as each engine documents and raises them.
+   it.each([
+      [
+         "BigQuery",
+         "UPDATE/MERGE must match at most one source row for each target row",
+      ],
+      [
+         "Snowflake (ERROR_ON_NONDETERMINISTIC_MERGE)",
+         "100090 (42P18): Duplicate row detected during DML action\nRow Values: [1, 10]",
+      ],
+      [
+         "Postgres, past the guard",
+         "MERGE command cannot affect row a second time",
+      ],
+      [
+         "the guard",
+         'invalid input syntax for type integer: "incremental-merge-key-not-unique"',
+      ],
+   ])("reads %s's refusal as a repeated key", (_engine, message) => {
+      expect(isMergeKeyGuardFailure(new Error(message))).toBe(true);
+   });
+
+   it("reads any other failure as itself", () => {
+      for (const message of [
+         "permission denied for table tgt",
+         "Duplicate column name",
+         "Query exceeded resource limits",
+      ]) {
+         expect(isMergeKeyGuardFailure(new Error(message))).toBe(false);
+      }
    });
 });

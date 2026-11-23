@@ -971,28 +971,28 @@
       "MERGE INTO tgt AS __t\nUSING (SELECT * FROM (SELECT __g.*, COUNT(*) OVER (PARTITION BY \"id\", \"org\") AS __merge_key_rows FROM (SELECT * FROM src) AS __g) AS __k WHERE CAST(CASE WHEN __merge_key_rows > 1 THEN 'incremental-merge-key-not-unique' END AS INTEGER) IS NULL) AS __s\nON (__t.\"id\" = __s.\"id\" OR (__t.\"id\" IS NULL AND __s.\"id\" IS NULL)) AND (__t.\"org\" = __s.\"org\" OR (__t.\"org\" IS NULL AND __s.\"org\" IS NULL))\nWHEN MATCHED THEN UPDATE SET \"amount\" = __s.\"amount\", \"updated_at\" = __s.\"updated_at\"\nWHEN NOT MATCHED THEN INSERT (\"id\", \"amount\", \"updated_at\") VALUES (__s.\"id\", __s.\"amount\", __s.\"updated_at\")"
     ],
     "standardsql": [
-      "MERGE INTO tgt AS __t\nUSING (SELECT * FROM (SELECT __g.*, COUNT(*) OVER (PARTITION BY `id`, `org`) AS __merge_key_rows FROM (SELECT * FROM src) AS __g) AS __k WHERE (CASE WHEN __merge_key_rows > 1 THEN ERROR('incremental-merge-key-not-unique') END) IS NULL) AS __s\nON (__t.`id` = __s.`id` OR (__t.`id` IS NULL AND __s.`id` IS NULL)) AND (__t.`org` = __s.`org` OR (__t.`org` IS NULL AND __s.`org` IS NULL))\nWHEN MATCHED THEN UPDATE SET `amount` = __s.`amount`, `updated_at` = __s.`updated_at`\nWHEN NOT MATCHED THEN INSERT (`id`, `amount`, `updated_at`) VALUES (__s.`id`, __s.`amount`, __s.`updated_at`)"
+      "MERGE INTO tgt AS __t\nUSING (SELECT * FROM src) AS __s\nON (__t.`id` = __s.`id` OR (__t.`id` IS NULL AND __s.`id` IS NULL)) AND (__t.`org` = __s.`org` OR (__t.`org` IS NULL AND __s.`org` IS NULL))\nWHEN MATCHED THEN UPDATE SET `amount` = __s.`amount`, `updated_at` = __s.`updated_at`\nWHEN NOT MATCHED THEN INSERT (`id`, `amount`, `updated_at`) VALUES (__s.`id`, __s.`amount`, __s.`updated_at`)"
     ],
     "snowflake": [
-      "MERGE INTO tgt AS __t\nUSING (SELECT * FROM (SELECT __g.*, COUNT(*) OVER (PARTITION BY \"id\", \"org\") AS __merge_key_rows FROM (SELECT * FROM src) AS __g) AS __k WHERE CAST(CASE WHEN __merge_key_rows > 1 THEN 'incremental-merge-key-not-unique' END AS INTEGER) IS NULL) AS __s\nON (__t.\"id\" = __s.\"id\" OR (__t.\"id\" IS NULL AND __s.\"id\" IS NULL)) AND (__t.\"org\" = __s.\"org\" OR (__t.\"org\" IS NULL AND __s.\"org\" IS NULL))\nWHEN MATCHED THEN UPDATE SET \"amount\" = __s.\"amount\", \"updated_at\" = __s.\"updated_at\"\nWHEN NOT MATCHED THEN INSERT (\"id\", \"amount\", \"updated_at\") VALUES (__s.\"id\", __s.\"amount\", __s.\"updated_at\")"
+      "MERGE INTO tgt AS __t\nUSING (SELECT * FROM src) AS __s\nON (__t.\"id\" = __s.\"id\" OR (__t.\"id\" IS NULL AND __s.\"id\" IS NULL)) AND (__t.\"org\" = __s.\"org\" OR (__t.\"org\" IS NULL AND __s.\"org\" IS NULL))\nWHEN MATCHED THEN UPDATE SET \"amount\" = __s.\"amount\", \"updated_at\" = __s.\"updated_at\"\nWHEN NOT MATCHED THEN INSERT (\"id\", \"amount\", \"updated_at\") VALUES (__s.\"id\", __s.\"amount\", __s.\"updated_at\")"
     ],
     "databricks": [
-      "MERGE INTO tgt AS __t\nUSING (SELECT * FROM (SELECT __g.*, COUNT(*) OVER (PARTITION BY `id`, `org`) AS __merge_key_rows FROM (SELECT * FROM src) AS __g) AS __k WHERE CAST(CASE WHEN __merge_key_rows > 1 THEN 'incremental-merge-key-not-unique' END AS INTEGER) IS NULL) AS __s\nON (__t.`id` = __s.`id` OR (__t.`id` IS NULL AND __s.`id` IS NULL)) AND (__t.`org` = __s.`org` OR (__t.`org` IS NULL AND __s.`org` IS NULL))\nWHEN MATCHED THEN UPDATE SET `amount` = __s.`amount`, `updated_at` = __s.`updated_at`\nWHEN NOT MATCHED THEN INSERT (`id`, `amount`, `updated_at`) VALUES (__s.`id`, __s.`amount`, __s.`updated_at`)"
+      "MERGE INTO tgt AS __t\nUSING (SELECT * FROM src) AS __s\nON (__t.`id` = __s.`id` OR (__t.`id` IS NULL AND __s.`id` IS NULL)) AND (__t.`org` = __s.`org` OR (__t.`org` IS NULL AND __s.`org` IS NULL))\nWHEN MATCHED THEN UPDATE SET `amount` = __s.`amount`, `updated_at` = __s.`updated_at`\nWHEN NOT MATCHED THEN INSERT (`id`, `amount`, `updated_at`) VALUES (__s.`id`, __s.`amount`, __s.`updated_at`)"
     ],
     "trino": [
-      "MERGE INTO tgt AS __t\nUSING (SELECT * FROM (SELECT __g.*, COUNT(*) OVER (PARTITION BY \"id\", \"org\") AS __merge_key_rows FROM (SELECT * FROM src) AS __g) AS __k WHERE CAST(CASE WHEN __merge_key_rows > 1 THEN 'incremental-merge-key-not-unique' END AS INTEGER) IS NULL) AS __s\nON (__t.\"id\" = __s.\"id\" OR (__t.\"id\" IS NULL AND __s.\"id\" IS NULL)) AND (__t.\"org\" = __s.\"org\" OR (__t.\"org\" IS NULL AND __s.\"org\" IS NULL))\nWHEN MATCHED THEN UPDATE SET \"amount\" = __s.\"amount\", \"updated_at\" = __s.\"updated_at\"\nWHEN NOT MATCHED THEN INSERT (\"id\", \"amount\", \"updated_at\") VALUES (__s.\"id\", __s.\"amount\", __s.\"updated_at\")"
+      "MERGE INTO tgt AS __t\nUSING (SELECT * FROM src) AS __s\nON (__t.\"id\" = __s.\"id\" OR (__t.\"id\" IS NULL AND __s.\"id\" IS NULL)) AND (__t.\"org\" = __s.\"org\" OR (__t.\"org\" IS NULL AND __s.\"org\" IS NULL))\nWHEN MATCHED THEN UPDATE SET \"amount\" = __s.\"amount\", \"updated_at\" = __s.\"updated_at\"\nWHEN NOT MATCHED THEN INSERT (\"id\", \"amount\", \"updated_at\") VALUES (__s.\"id\", __s.\"amount\", __s.\"updated_at\")"
     ],
     "presto": [
-      "MERGE INTO tgt AS __t\nUSING (SELECT * FROM (SELECT __g.*, COUNT(*) OVER (PARTITION BY \"id\", \"org\") AS __merge_key_rows FROM (SELECT * FROM src) AS __g) AS __k WHERE CAST(CASE WHEN __merge_key_rows > 1 THEN 'incremental-merge-key-not-unique' END AS INTEGER) IS NULL) AS __s\nON (__t.\"id\" = __s.\"id\" OR (__t.\"id\" IS NULL AND __s.\"id\" IS NULL)) AND (__t.\"org\" = __s.\"org\" OR (__t.\"org\" IS NULL AND __s.\"org\" IS NULL))\nWHEN MATCHED THEN UPDATE SET \"amount\" = __s.\"amount\", \"updated_at\" = __s.\"updated_at\"\nWHEN NOT MATCHED THEN INSERT (\"id\", \"amount\", \"updated_at\") VALUES (__s.\"id\", __s.\"amount\", __s.\"updated_at\")"
+      "MERGE INTO tgt AS __t\nUSING (SELECT * FROM src) AS __s\nON (__t.\"id\" = __s.\"id\" OR (__t.\"id\" IS NULL AND __s.\"id\" IS NULL)) AND (__t.\"org\" = __s.\"org\" OR (__t.\"org\" IS NULL AND __s.\"org\" IS NULL))\nWHEN MATCHED THEN UPDATE SET \"amount\" = __s.\"amount\", \"updated_at\" = __s.\"updated_at\"\nWHEN NOT MATCHED THEN INSERT (\"id\", \"amount\", \"updated_at\") VALUES (__s.\"id\", __s.\"amount\", __s.\"updated_at\")"
     ],
     "mysql": [
-      "MERGE INTO tgt AS __t\nUSING (SELECT * FROM (SELECT __g.*, COUNT(*) OVER (PARTITION BY `id`, `org`) AS __merge_key_rows FROM (SELECT * FROM src) AS __g) AS __k WHERE CAST(CASE WHEN __merge_key_rows > 1 THEN 'incremental-merge-key-not-unique' END AS INTEGER) IS NULL) AS __s\nON (__t.`id` = __s.`id` OR (__t.`id` IS NULL AND __s.`id` IS NULL)) AND (__t.`org` = __s.`org` OR (__t.`org` IS NULL AND __s.`org` IS NULL))\nWHEN MATCHED THEN UPDATE SET `amount` = __s.`amount`, `updated_at` = __s.`updated_at`\nWHEN NOT MATCHED THEN INSERT (`id`, `amount`, `updated_at`) VALUES (__s.`id`, __s.`amount`, __s.`updated_at`)"
+      "MERGE INTO tgt AS __t\nUSING (SELECT * FROM src) AS __s\nON (__t.`id` = __s.`id` OR (__t.`id` IS NULL AND __s.`id` IS NULL)) AND (__t.`org` = __s.`org` OR (__t.`org` IS NULL AND __s.`org` IS NULL))\nWHEN MATCHED THEN UPDATE SET `amount` = __s.`amount`, `updated_at` = __s.`updated_at`\nWHEN NOT MATCHED THEN INSERT (`id`, `amount`, `updated_at`) VALUES (__s.`id`, __s.`amount`, __s.`updated_at`)"
     ],
     "sqlserver": [
-      "MERGE INTO tgt AS __t\nUSING (SELECT * FROM (SELECT __g.*, COUNT(*) OVER (PARTITION BY \"id\", \"org\") AS __merge_key_rows FROM (SELECT * FROM src) AS __g) AS __k WHERE CAST(CASE WHEN __merge_key_rows > 1 THEN 'incremental-merge-key-not-unique' END AS INTEGER) IS NULL) AS __s\nON (__t.\"id\" = __s.\"id\" OR (__t.\"id\" IS NULL AND __s.\"id\" IS NULL)) AND (__t.\"org\" = __s.\"org\" OR (__t.\"org\" IS NULL AND __s.\"org\" IS NULL))\nWHEN MATCHED THEN UPDATE SET \"amount\" = __s.\"amount\", \"updated_at\" = __s.\"updated_at\"\nWHEN NOT MATCHED THEN INSERT (\"id\", \"amount\", \"updated_at\") VALUES (__s.\"id\", __s.\"amount\", __s.\"updated_at\")"
+      "MERGE INTO tgt AS __t\nUSING (SELECT * FROM src) AS __s\nON (__t.\"id\" = __s.\"id\" OR (__t.\"id\" IS NULL AND __s.\"id\" IS NULL)) AND (__t.\"org\" = __s.\"org\" OR (__t.\"org\" IS NULL AND __s.\"org\" IS NULL))\nWHEN MATCHED THEN UPDATE SET \"amount\" = __s.\"amount\", \"updated_at\" = __s.\"updated_at\"\nWHEN NOT MATCHED THEN INSERT (\"id\", \"amount\", \"updated_at\") VALUES (__s.\"id\", __s.\"amount\", __s.\"updated_at\")"
     ],
     "unknown_dialect": [
-      "MERGE INTO tgt AS __t\nUSING (SELECT * FROM (SELECT __g.*, COUNT(*) OVER (PARTITION BY \"id\", \"org\") AS __merge_key_rows FROM (SELECT * FROM src) AS __g) AS __k WHERE CAST(CASE WHEN __merge_key_rows > 1 THEN 'incremental-merge-key-not-unique' END AS INTEGER) IS NULL) AS __s\nON (__t.\"id\" = __s.\"id\" OR (__t.\"id\" IS NULL AND __s.\"id\" IS NULL)) AND (__t.\"org\" = __s.\"org\" OR (__t.\"org\" IS NULL AND __s.\"org\" IS NULL))\nWHEN MATCHED THEN UPDATE SET \"amount\" = __s.\"amount\", \"updated_at\" = __s.\"updated_at\"\nWHEN NOT MATCHED THEN INSERT (\"id\", \"amount\", \"updated_at\") VALUES (__s.\"id\", __s.\"amount\", __s.\"updated_at\")"
+      "MERGE INTO tgt AS __t\nUSING (SELECT * FROM src) AS __s\nON (__t.\"id\" = __s.\"id\" OR (__t.\"id\" IS NULL AND __s.\"id\" IS NULL)) AND (__t.\"org\" = __s.\"org\" OR (__t.\"org\" IS NULL AND __s.\"org\" IS NULL))\nWHEN MATCHED THEN UPDATE SET \"amount\" = __s.\"amount\", \"updated_at\" = __s.\"updated_at\"\nWHEN NOT MATCHED THEN INSERT (\"id\", \"amount\", \"updated_at\") VALUES (__s.\"id\", __s.\"amount\", __s.\"updated_at\")"
     ]
   },
   "deltaStatements.mergeWithWindow": {
@@ -1010,46 +1010,46 @@
     ],
     "standardsql": [
       "BEGIN TRANSACTION",
-      "MERGE INTO tgt AS __t\nUSING (SELECT * FROM (SELECT __g.*, COUNT(*) OVER (PARTITION BY `id`) AS __merge_key_rows FROM (SELECT * FROM src) AS __g) AS __k WHERE (CASE WHEN __merge_key_rows > 1 THEN ERROR('incremental-merge-key-not-unique') END) IS NULL) AS __s\nON (__t.`id` = __s.`id` OR (__t.`id` IS NULL AND __s.`id` IS NULL))\nWHEN MATCHED THEN UPDATE SET `amount` = __s.`amount`, `updated_at` = __s.`updated_at`\nWHEN NOT MATCHED THEN INSERT (`id`, `amount`, `updated_at`) VALUES (__s.`id`, __s.`amount`, __s.`updated_at`)",
+      "MERGE INTO tgt AS __t\nUSING (SELECT * FROM src) AS __s\nON (__t.`id` = __s.`id` OR (__t.`id` IS NULL AND __s.`id` IS NULL))\nWHEN MATCHED THEN UPDATE SET `amount` = __s.`amount`, `updated_at` = __s.`updated_at`\nWHEN NOT MATCHED THEN INSERT (`id`, `amount`, `updated_at`) VALUES (__s.`id`, __s.`amount`, __s.`updated_at`)",
       "DELETE FROM tgt WHERE `updated_at` < TIMESTAMP '2026-01-01 00:00:00'",
       "COMMIT TRANSACTION"
     ],
     "snowflake": [
-      "EXECUTE IMMEDIATE $$\nBEGIN\n  BEGIN TRANSACTION;\n  MERGE INTO tgt AS __t\nUSING (SELECT * FROM (SELECT __g.*, COUNT(*) OVER (PARTITION BY \"id\") AS __merge_key_rows FROM (SELECT * FROM src) AS __g) AS __k WHERE CAST(CASE WHEN __merge_key_rows > 1 THEN 'incremental-merge-key-not-unique' END AS INTEGER) IS NULL) AS __s\nON (__t.\"id\" = __s.\"id\" OR (__t.\"id\" IS NULL AND __s.\"id\" IS NULL))\nWHEN MATCHED THEN UPDATE SET \"amount\" = __s.\"amount\", \"updated_at\" = __s.\"updated_at\"\nWHEN NOT MATCHED THEN INSERT (\"id\", \"amount\", \"updated_at\") VALUES (__s.\"id\", __s.\"amount\", __s.\"updated_at\");\n  DELETE FROM tgt WHERE \"updated_at\" < TIMESTAMP '2026-01-01 00:00:00';\n  COMMIT;\nEXCEPTION\n  WHEN OTHER THEN\n    ROLLBACK;\n    RAISE;\nEND\n$$"
+      "EXECUTE IMMEDIATE $$\nBEGIN\n  BEGIN TRANSACTION;\n  MERGE INTO tgt AS __t\nUSING (SELECT * FROM src) AS __s\nON (__t.\"id\" = __s.\"id\" OR (__t.\"id\" IS NULL AND __s.\"id\" IS NULL))\nWHEN MATCHED THEN UPDATE SET \"amount\" = __s.\"amount\", \"updated_at\" = __s.\"updated_at\"\nWHEN NOT MATCHED THEN INSERT (\"id\", \"amount\", \"updated_at\") VALUES (__s.\"id\", __s.\"amount\", __s.\"updated_at\");\n  DELETE FROM tgt WHERE \"updated_at\" < TIMESTAMP '2026-01-01 00:00:00';\n  COMMIT;\nEXCEPTION\n  WHEN OTHER THEN\n    ROLLBACK;\n    RAISE;\nEND\n$$"
     ],
     "databricks": [
       "BEGIN",
-      "MERGE INTO tgt AS __t\nUSING (SELECT * FROM (SELECT __g.*, COUNT(*) OVER (PARTITION BY `id`) AS __merge_key_rows FROM (SELECT * FROM src) AS __g) AS __k WHERE CAST(CASE WHEN __merge_key_rows > 1 THEN 'incremental-merge-key-not-unique' END AS INTEGER) IS NULL) AS __s\nON (__t.`id` = __s.`id` OR (__t.`id` IS NULL AND __s.`id` IS NULL))\nWHEN MATCHED THEN UPDATE SET `amount` = __s.`amount`, `updated_at` = __s.`updated_at`\nWHEN NOT MATCHED THEN INSERT (`id`, `amount`, `updated_at`) VALUES (__s.`id`, __s.`amount`, __s.`updated_at`)",
+      "MERGE INTO tgt AS __t\nUSING (SELECT * FROM src) AS __s\nON (__t.`id` = __s.`id` OR (__t.`id` IS NULL AND __s.`id` IS NULL))\nWHEN MATCHED THEN UPDATE SET `amount` = __s.`amount`, `updated_at` = __s.`updated_at`\nWHEN NOT MATCHED THEN INSERT (`id`, `amount`, `updated_at`) VALUES (__s.`id`, __s.`amount`, __s.`updated_at`)",
       "DELETE FROM tgt WHERE `updated_at` < TIMESTAMP '2026-01-01 00:00:00'",
       "COMMIT"
     ],
     "trino": [
       "BEGIN",
-      "MERGE INTO tgt AS __t\nUSING (SELECT * FROM (SELECT __g.*, COUNT(*) OVER (PARTITION BY \"id\") AS __merge_key_rows FROM (SELECT * FROM src) AS __g) AS __k WHERE CAST(CASE WHEN __merge_key_rows > 1 THEN 'incremental-merge-key-not-unique' END AS INTEGER) IS NULL) AS __s\nON (__t.\"id\" = __s.\"id\" OR (__t.\"id\" IS NULL AND __s.\"id\" IS NULL))\nWHEN MATCHED THEN UPDATE SET \"amount\" = __s.\"amount\", \"updated_at\" = __s.\"updated_at\"\nWHEN NOT MATCHED THEN INSERT (\"id\", \"amount\", \"updated_at\") VALUES (__s.\"id\", __s.\"amount\", __s.\"updated_at\")",
+      "MERGE INTO tgt AS __t\nUSING (SELECT * FROM src) AS __s\nON (__t.\"id\" = __s.\"id\" OR (__t.\"id\" IS NULL AND __s.\"id\" IS NULL))\nWHEN MATCHED THEN UPDATE SET \"amount\" = __s.\"amount\", \"updated_at\" = __s.\"updated_at\"\nWHEN NOT MATCHED THEN INSERT (\"id\", \"amount\", \"updated_at\") VALUES (__s.\"id\", __s.\"amount\", __s.\"updated_at\")",
       "DELETE FROM tgt WHERE \"updated_at\" < TIMESTAMP '2026-01-01 00:00:00'",
       "COMMIT"
     ],
     "presto": [
       "BEGIN",
-      "MERGE INTO tgt AS __t\nUSING (SELECT * FROM (SELECT __g.*, COUNT(*) OVER (PARTITION BY \"id\") AS __merge_key_rows FROM (SELECT * FROM src) AS __g) AS __k WHERE CAST(CASE WHEN __merge_key_rows > 1 THEN 'incremental-merge-key-not-unique' END AS INTEGER) IS NULL) AS __s\nON (__t.\"id\" = __s.\"id\" OR (__t.\"id\" IS NULL AND __s.\"id\" IS NULL))\nWHEN MATCHED THEN UPDATE SET \"amount\" = __s.\"amount\", \"updated_at\" = __s.\"updated_at\"\nWHEN NOT MATCHED THEN INSERT (\"id\", \"amount\", \"updated_at\") VALUES (__s.\"id\", __s.\"amount\", __s.\"updated_at\")",
+      "MERGE INTO tgt AS __t\nUSING (SELECT * FROM src) AS __s\nON (__t.\"id\" = __s.\"id\" OR (__t.\"id\" IS NULL AND __s.\"id\" IS NULL))\nWHEN MATCHED THEN UPDATE SET \"amount\" = __s.\"amount\", \"updated_at\" = __s.\"updated_at\"\nWHEN NOT MATCHED THEN INSERT (\"id\", \"amount\", \"updated_at\") VALUES (__s.\"id\", __s.\"amount\", __s.\"updated_at\")",
       "DELETE FROM tgt WHERE \"updated_at\" < TIMESTAMP '2026-01-01 00:00:00'",
       "COMMIT"
     ],
     "mysql": [
       "BEGIN",
-      "MERGE INTO tgt AS __t\nUSING (SELECT * FROM (SELECT __g.*, COUNT(*) OVER (PARTITION BY `id`) AS __merge_key_rows FROM (SELECT * FROM src) AS __g) AS __k WHERE CAST(CASE WHEN __merge_key_rows > 1 THEN 'incremental-merge-key-not-unique' END AS INTEGER) IS NULL) AS __s\nON (__t.`id` = __s.`id` OR (__t.`id` IS NULL AND __s.`id` IS NULL))\nWHEN MATCHED THEN UPDATE SET `amount` = __s.`amount`, `updated_at` = __s.`updated_at`\nWHEN NOT MATCHED THEN INSERT (`id`, `amount`, `updated_at`) VALUES (__s.`id`, __s.`amount`, __s.`updated_at`)",
+      "MERGE INTO tgt AS __t\nUSING (SELECT * FROM src) AS __s\nON (__t.`id` = __s.`id` OR (__t.`id` IS NULL AND __s.`id` IS NULL))\nWHEN MATCHED THEN UPDATE SET `amount` = __s.`amount`, `updated_at` = __s.`updated_at`\nWHEN NOT MATCHED THEN INSERT (`id`, `amount`, `updated_at`) VALUES (__s.`id`, __s.`amount`, __s.`updated_at`)",
       "DELETE FROM tgt WHERE `updated_at` < TIMESTAMP '2026-01-01 00:00:00'",
       "COMMIT"
     ],
     "sqlserver": [
       "BEGIN",
-      "MERGE INTO tgt AS __t\nUSING (SELECT * FROM (SELECT __g.*, COUNT(*) OVER (PARTITION BY \"id\") AS __merge_key_rows FROM (SELECT * FROM src) AS __g) AS __k WHERE CAST(CASE WHEN __merge_key_rows > 1 THEN 'incremental-merge-key-not-unique' END AS INTEGER) IS NULL) AS __s\nON (__t.\"id\" = __s.\"id\" OR (__t.\"id\" IS NULL AND __s.\"id\" IS NULL))\nWHEN MATCHED THEN UPDATE SET \"amount\" = __s.\"amount\", \"updated_at\" = __s.\"updated_at\"\nWHEN NOT MATCHED THEN INSERT (\"id\", \"amount\", \"updated_at\") VALUES (__s.\"id\", __s.\"amount\", __s.\"updated_at\")",
+      "MERGE INTO tgt AS __t\nUSING (SELECT * FROM src) AS __s\nON (__t.\"id\" = __s.\"id\" OR (__t.\"id\" IS NULL AND __s.\"id\" IS NULL))\nWHEN MATCHED THEN UPDATE SET \"amount\" = __s.\"amount\", \"updated_at\" = __s.\"updated_at\"\nWHEN NOT MATCHED THEN INSERT (\"id\", \"amount\", \"updated_at\") VALUES (__s.\"id\", __s.\"amount\", __s.\"updated_at\")",
       "DELETE FROM tgt WHERE \"updated_at\" < TIMESTAMP '2026-01-01 00:00:00'",
       "COMMIT"
     ],
     "unknown_dialect": [
       "BEGIN",
-      "MERGE INTO tgt AS __t\nUSING (SELECT * FROM (SELECT __g.*, COUNT(*) OVER (PARTITION BY \"id\") AS __merge_key_rows FROM (SELECT * FROM src) AS __g) AS __k WHERE CAST(CASE WHEN __merge_key_rows > 1 THEN 'incremental-merge-key-not-unique' END AS INTEGER) IS NULL) AS __s\nON (__t.\"id\" = __s.\"id\" OR (__t.\"id\" IS NULL AND __s.\"id\" IS NULL))\nWHEN MATCHED THEN UPDATE SET \"amount\" = __s.\"amount\", \"updated_at\" = __s.\"updated_at\"\nWHEN NOT MATCHED THEN INSERT (\"id\", \"amount\", \"updated_at\") VALUES (__s.\"id\", __s.\"amount\", __s.\"updated_at\")",
+      "MERGE INTO tgt AS __t\nUSING (SELECT * FROM src) AS __s\nON (__t.\"id\" = __s.\"id\" OR (__t.\"id\" IS NULL AND __s.\"id\" IS NULL))\nWHEN MATCHED THEN UPDATE SET \"amount\" = __s.\"amount\", \"updated_at\" = __s.\"updated_at\"\nWHEN NOT MATCHED THEN INSERT (\"id\", \"amount\", \"updated_at\") VALUES (__s.\"id\", __s.\"amount\", __s.\"updated_at\")",
       "DELETE FROM tgt WHERE \"updated_at\" < TIMESTAMP '2026-01-01 00:00:00'",
       "COMMIT"
     ]
@@ -1062,28 +1062,28 @@
       "MERGE INTO tgt AS __t\nUSING (SELECT * FROM (SELECT __g.*, COUNT(*) OVER (PARTITION BY \"id\") AS __merge_key_rows FROM (SELECT * FROM src) AS __g) AS __k WHERE CAST(CASE WHEN __merge_key_rows > 1 THEN 'incremental-merge-key-not-unique' END AS INTEGER) IS NULL) AS __s\nON (__t.\"id\" = __s.\"id\" OR (__t.\"id\" IS NULL AND __s.\"id\" IS NULL))\nWHEN NOT MATCHED THEN INSERT (\"id\") VALUES (__s.\"id\")"
     ],
     "standardsql": [
-      "MERGE INTO tgt AS __t\nUSING (SELECT * FROM (SELECT __g.*, COUNT(*) OVER (PARTITION BY `id`) AS __merge_key_rows FROM (SELECT * FROM src) AS __g) AS __k WHERE (CASE WHEN __merge_key_rows > 1 THEN ERROR('incremental-merge-key-not-unique') END) IS NULL) AS __s\nON (__t.`id` = __s.`id` OR (__t.`id` IS NULL AND __s.`id` IS NULL))\nWHEN NOT MATCHED THEN INSERT (`id`) VALUES (__s.`id`)"
+      "MERGE INTO tgt AS __t\nUSING (SELECT * FROM src) AS __s\nON (__t.`id` = __s.`id` OR (__t.`id` IS NULL AND __s.`id` IS NULL))\nWHEN NOT MATCHED THEN INSERT (`id`) VALUES (__s.`id`)"
     ],
     "snowflake": [
-      "MERGE INTO tgt AS __t\nUSING (SELECT * FROM (SELECT __g.*, COUNT(*) OVER (PARTITION BY \"id\") AS __merge_key_rows FROM (SELECT * FROM src) AS __g) AS __k WHERE CAST(CASE WHEN __merge_key_rows > 1 THEN 'incremental-merge-key-not-unique' END AS INTEGER) IS NULL) AS __s\nON (__t.\"id\" = __s.\"id\" OR (__t.\"id\" IS NULL AND __s.\"id\" IS NULL))\nWHEN NOT MATCHED THEN INSERT (\"id\") VALUES (__s.\"id\")"
+      "MERGE INTO tgt AS __t\nUSING (SELECT * FROM src) AS __s\nON (__t.\"id\" = __s.\"id\" OR (__t.\"id\" IS NULL AND __s.\"id\" IS NULL))\nWHEN NOT MATCHED THEN INSERT (\"id\") VALUES (__s.\"id\")"
     ],
     "databricks": [
-      "MERGE INTO tgt AS __t\nUSING (SELECT * FROM (SELECT __g.*, COUNT(*) OVER (PARTITION BY `id`) AS __merge_key_rows FROM (SELECT * FROM src) AS __g) AS __k WHERE CAST(CASE WHEN __merge_key_rows > 1 THEN 'incremental-merge-key-not-unique' END AS INTEGER) IS NULL) AS __s\nON (__t.`id` = __s.`id` OR (__t.`id` IS NULL AND __s.`id` IS NULL))\nWHEN NOT MATCHED THEN INSERT (`id`) VALUES (__s.`id`)"
+      "MERGE INTO tgt AS __t\nUSING (SELECT * FROM src) AS __s\nON (__t.`id` = __s.`id` OR (__t.`id` IS NULL AND __s.`id` IS NULL))\nWHEN NOT MATCHED THEN INSERT (`id`) VALUES (__s.`id`)"
     ],
     "trino": [
-      "MERGE INTO tgt AS __t\nUSING (SELECT * FROM (SELECT __g.*, COUNT(*) OVER (PARTITION BY \"id\") AS __merge_key_rows FROM (SELECT * FROM src) AS __g) AS __k WHERE CAST(CASE WHEN __merge_key_rows > 1 THEN 'incremental-merge-key-not-unique' END AS INTEGER) IS NULL) AS __s\nON (__t.\"id\" = __s.\"id\" OR (__t.\"id\" IS NULL AND __s.\"id\" IS NULL))\nWHEN NOT MATCHED THEN INSERT (\"id\") VALUES (__s.\"id\")"
+      "MERGE INTO tgt AS __t\nUSING (SELECT * FROM src) AS __s\nON (__t.\"id\" = __s.\"id\" OR (__t.\"id\" IS NULL AND __s.\"id\" IS NULL))\nWHEN NOT MATCHED THEN INSERT (\"id\") VALUES (__s.\"id\")"
     ],
     "presto": [
-      "MERGE INTO tgt AS __t\nUSING (SELECT * FROM (SELECT __g.*, COUNT(*) OVER (PARTITION BY \"id\") AS __merge_key_rows FROM (SELECT * FROM src) AS __g) AS __k WHERE CAST(CASE WHEN __merge_key_rows > 1 THEN 'incremental-merge-key-not-unique' END AS INTEGER) IS NULL) AS __s\nON (__t.\"id\" = __s.\"id\" OR (__t.\"id\" IS NULL AND __s.\"id\" IS NULL))\nWHEN NOT MATCHED THEN INSERT (\"id\") VALUES (__s.\"id\")"
+      "MERGE INTO tgt AS __t\nUSING (SELECT * FROM src) AS __s\nON (__t.\"id\" = __s.\"id\" OR (__t.\"id\" IS NULL AND __s.\"id\" IS NULL))\nWHEN NOT MATCHED THEN INSERT (\"id\") VALUES (__s.\"id\")"
     ],
     "mysql": [
-      "MERGE INTO tgt AS __t\nUSING (SELECT * FROM (SELECT __g.*, COUNT(*) OVER (PARTITION BY `id`) AS __merge_key_rows FROM (SELECT * FROM src) AS __g) AS __k WHERE CAST(CASE WHEN __merge_key_rows > 1 THEN 'incremental-merge-key-not-unique' END AS INTEGER) IS NULL) AS __s\nON (__t.`id` = __s.`id` OR (__t.`id` IS NULL AND __s.`id` IS NULL))\nWHEN NOT MATCHED THEN INSERT (`id`) VALUES (__s.`id`)"
+      "MERGE INTO tgt AS __t\nUSING (SELECT * FROM src) AS __s\nON (__t.`id` = __s.`id` OR (__t.`id` IS NULL AND __s.`id` IS NULL))\nWHEN NOT MATCHED THEN INSERT (`id`) VALUES (__s.`id`)"
     ],
     "sqlserver": [
-      "MERGE INTO tgt AS __t\nUSING (SELECT * FROM (SELECT __g.*, COUNT(*) OVER (PARTITION BY \"id\") AS __merge_key_rows FROM (SELECT * FROM src) AS __g) AS __k WHERE CAST(CASE WHEN __merge_key_rows > 1 THEN 'incremental-merge-key-not-unique' END AS INTEGER) IS NULL) AS __s\nON (__t.\"id\" = __s.\"id\" OR (__t.\"id\" IS NULL AND __s.\"id\" IS NULL))\nWHEN NOT MATCHED THEN INSERT (\"id\") VALUES (__s.\"id\")"
+      "MERGE INTO tgt AS __t\nUSING (SELECT * FROM src) AS __s\nON (__t.\"id\" = __s.\"id\" OR (__t.\"id\" IS NULL AND __s.\"id\" IS NULL))\nWHEN NOT MATCHED THEN INSERT (\"id\") VALUES (__s.\"id\")"
     ],
     "unknown_dialect": [
-      "MERGE INTO tgt AS __t\nUSING (SELECT * FROM (SELECT __g.*, COUNT(*) OVER (PARTITION BY \"id\") AS __merge_key_rows FROM (SELECT * FROM src) AS __g) AS __k WHERE CAST(CASE WHEN __merge_key_rows > 1 THEN 'incremental-merge-key-not-unique' END AS INTEGER) IS NULL) AS __s\nON (__t.\"id\" = __s.\"id\" OR (__t.\"id\" IS NULL AND __s.\"id\" IS NULL))\nWHEN NOT MATCHED THEN INSERT (\"id\") VALUES (__s.\"id\")"
+      "MERGE INTO tgt AS __t\nUSING (SELECT * FROM src) AS __s\nON (__t.\"id\" = __s.\"id\" OR (__t.\"id\" IS NULL AND __s.\"id\" IS NULL))\nWHEN NOT MATCHED THEN INSERT (\"id\") VALUES (__s.\"id\")"
     ]
   },
   "pairDeltaStatements": {

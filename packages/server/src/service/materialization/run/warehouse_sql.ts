@@ -935,24 +935,29 @@ export function transactsInScriptingBlock(dialect: string): boolean {
 /**
  * A condition true for a row where `failing` is false or NULL, which fails
  * the statement with `message` (plain text, no quote) where `failing` is
- * true. DuckDB and BigQuery raise it with their `error()`. Postgres and
- * Snowflake have none, so the message is cast to an integer, which fails
- * quoting it; the cast is of a CASE over a row's value, never a constant, so
- * no planner raises it while planning.
+ * true, or undefined on a dialect where that is not proven.
+ *
+ * DuckDB raises it with its `error()`. Postgres has none, so the message is
+ * cast to an integer, which fails quoting it; the cast is of a CASE over a
+ * row's value, never a constant, so the planner does not raise it while
+ * planning. Both are executed against the engine in
+ * incremental_dml_semantics.spec.ts and the component specs. Another engine
+ * might fold the cast while planning and fail every statement, so it gets no
+ * guard (see mergeKeyGuard).
  */
 export function passesUnless(
    dialect: string,
    failing: string,
    message: string,
-): string {
+): string | undefined {
    const text = `'${message}'`;
    switch (registeredDialect(dialect)) {
       case "duckdb":
          return `(CASE WHEN ${failing} THEN error(${text}) END) IS NULL`;
-      case "standardsql":
-         return `(CASE WHEN ${failing} THEN ERROR(${text}) END) IS NULL`;
-      default:
+      case "postgres":
          return `CAST(CASE WHEN ${failing} THEN ${text} END AS INTEGER) IS NULL`;
+      default:
+         return undefined;
    }
 }
 

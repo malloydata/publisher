@@ -658,9 +658,36 @@ function nullSafeKeyMatch(left: string, right: string, column: string): string {
 /** The text a merge's key guard fails with; {@link isMergeKeyGuardFailure} reads it. */
 export const MERGE_KEY_GUARD_MESSAGE = "incremental-merge-key-not-unique";
 
-/** Whether an error is a merge's key guard failing (and the delta rolled back). */
+/**
+ * The errors an engine raises itself when a merge's source holds one key on
+ * more than one row that matches a stored row: where there is no guard
+ * ({@link mergeKeyGuard}), they are how a repeated key is known. Matched by
+ * message text only; neither engine is run in these tests.
+ *
+ *  - BigQuery: "UPDATE/MERGE must match at most one source row for each
+ *    target row".
+ *  - Snowflake, under its default `ERROR_ON_NONDETERMINISTIC_MERGE`:
+ *    "Duplicate row detected during DML action" (error 100090).
+ *  - Postgres, past the guard: "MERGE command cannot affect row a second
+ *    time".
+ */
+const ENGINE_REPEATED_KEY_ERRORS = [
+   /UPDATE\/MERGE must match at most one source row for each target row/i,
+   /Duplicate row detected during DML action/i,
+   /MERGE command cannot affect row a second time/i,
+];
+
+/**
+ * Whether an error is a merge's key guard failing, or the engine refusing a
+ * merge whose source repeats a key (ENGINE_REPEATED_KEY_ERRORS); either way
+ * the delta rolled back.
+ */
 export function isMergeKeyGuardFailure(err: unknown): boolean {
-   return errMessage(err).includes(MERGE_KEY_GUARD_MESSAGE);
+   const message = errMessage(err);
+   return (
+      message.includes(MERGE_KEY_GUARD_MESSAGE) ||
+      ENGINE_REPEATED_KEY_ERRORS.some((pattern) => pattern.test(message))
+   );
 }
 
 /**
@@ -679,19 +706,31 @@ export function isMergeKeyGuardFailure(err: unknown): boolean {
  * second read of the source and judges the rows the merge writes.
  * `PARTITION BY` groups NULLs as equal: the relation of the merge's
  * {@link nullSafeKeyMatch}.
+ *
+ * Postgres and DuckDB only, where the guard's failure is executed in tests
+ * ({@link passesUnless}). On BigQuery and Snowflake the delta is merged
+ * unguarded, and only a repeated key that matches a stored row is caught, by
+ * the engine's own error (see isMergeKeyGuardFailure); a new key repeated in
+ * one delta is inserted twice, as live holds it.
  */
 function mergeKeyGuard(
    dialect: string,
    deltaSQL: string,
    matchNames: readonly string[],
 ): string {
+   const passes = passesUnless(
+      dialect,
+      "__merge_key_rows > 1",
+      MERGE_KEY_GUARD_MESSAGE,
+   );
+   if (passes === undefined) return deltaSQL;
    const partition = matchNames
       .map((k) => quoteIdentifier(k, dialect))
       .join(", ");
    return (
       `SELECT * FROM (SELECT __g.*, COUNT(*) OVER (PARTITION BY ${partition}) ` +
       `AS __merge_key_rows FROM (${deltaSQL}) AS __g) AS __k ` +
-      `WHERE ${passesUnless(dialect, "__merge_key_rows > 1", MERGE_KEY_GUARD_MESSAGE)}`
+      `WHERE ${passes}`
    );
 }
 
