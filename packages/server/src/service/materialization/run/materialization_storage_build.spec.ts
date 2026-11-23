@@ -18,6 +18,10 @@ import {
    createMocks,
 } from "../../../test_helpers/materialization_service_harness";
 import { StorageBuildStrategy } from "./storage_build_strategy";
+import {
+   indexCallerLedger,
+   type IncrementalRunContext,
+} from "./incremental_build";
 import { resetMaterializationTelemetryForTesting } from "../../../materialization_metrics";
 import {
    startMetricsHarness,
@@ -694,5 +698,125 @@ describe("the storage tier's build destination resolution", () => {
       await run();
 
       expect(write.called).toBe(true);
+   });
+});
+
+// The ledger entry is opaque to hosts: a key this release does not know on the
+// echoed entry reaches the entry a stored build reports, unchanged.
+describe("the storage tier's build carries an echoed ledger entry's unknown keys", () => {
+   let ctx: ReturnType<typeof createMocks>;
+   beforeEach(() => {
+      ctx = createMocks();
+   });
+   afterEach(() => ctx.sandbox.restore());
+
+   const DECLARATION = {
+      refresh: "incremental",
+      incremental: true,
+      declaredWatermark: true,
+      declaredMergeKey: false,
+      watermark: { name: "order_month", kind: "dimension", malloyType: "date" },
+      watermarkOrderable: true,
+      mergeKeys: [],
+      scopeColumns: [],
+      scopeIncomplete: false,
+      watermarkInMergeKeys: false,
+      strategy: "range_replace",
+      malformed: [],
+      unknownKeys: [],
+      calculateFields: [],
+      outputColumns: ["order_month"],
+   };
+
+   async function build(reseed?: boolean) {
+      const context = {
+         environmentId: "env",
+         packageName: "pkg",
+         materializationId: "m1",
+         forceRefresh: false,
+         now: new Date("2024-07-01T00:00:00Z"),
+         declarations: { monthly: DECLARATION },
+         ledger: {},
+         callerLedger: indexCallerLedger([
+            {
+               connectionName: "duckdb",
+               physicalTableName: "monthly__mabc",
+               storageDestinationName: "shared",
+               coveredThrough: "2024-06-01",
+               coveredThroughType: "date",
+               watermark: "order_month",
+               strategy: "range_replace",
+               sourceEntityId: "abcdef1234567890",
+               parent: { sourceEntityId: "up", coveredThrough: "2024-06-01" },
+            } as never,
+         ]),
+      } as unknown as IncrementalRunContext;
+      // A chained source rebuilds; the write reports the boundary it reached.
+      const write = sinon.stub().resolves({
+         storageDestinationName: "shared",
+         schema: [{ name: "order_month", type: "DATE" }],
+         seededThrough: { value: "2024-07-01", malloyType: "date" },
+      });
+      const strategy = new StorageBuildStrategy({
+         buildDownstreamViaParents: write,
+      }) as unknown as {
+         build: (p: unknown) => Promise<{
+            refresh?: string;
+            ledger?: Record<string, unknown>;
+         }>;
+      };
+      return strategy.build({
+         persistSource: fakeSource({
+            name: "monthly",
+            sourceEntityId: "abcdef1234567890",
+            connectionName: "duckdb",
+            dialectName: "postgres",
+            annotationFields: { storage: "shared", refresh: "incremental" },
+         }),
+         instruction: {
+            sourceEntityId: "abcdef1234567890",
+            materializedTableId: "mt",
+            physicalTableName: "monthly__mabc",
+            realization: "COPY",
+            destination: "shared",
+            ...(reseed ? { reseed } : {}),
+         },
+         manifest: new Manifest(),
+         environment: buildEnvironmentStub({
+            connections: { duckdb: { name: "duckdb", type: "postgres" } },
+            destinations: { shared: { name: "shared", type: "ducklake" } },
+         }),
+         storedBuildSQL: "SELECT 1",
+         buildSQL: "SELECT 1",
+         builtEntries: {
+            up: {
+               sourceEntityId: "up",
+               sourceName: "daily",
+               physicalTableName: "daily__mabc",
+               storageDestinationName: "shared",
+               schema: [{ name: "order_month", type: "DATE" }],
+            },
+         },
+         dependsOnStorageUpstream: true,
+         incremental: context,
+         contentSourceEntityId: "abcdef1234567890",
+      });
+   }
+
+   it("reports the carried key beside the boundary the build reached", async () => {
+      const entry = await build();
+      expect(entry.refresh).toBe("full");
+      expect(entry.ledger).toMatchObject({
+         physicalTableName: "monthly__mabc",
+         storageDestinationName: "shared",
+         coveredThrough: "2024-07-01",
+         parent: { sourceEntityId: "up", coveredThrough: "2024-06-01" },
+      });
+   });
+
+   it("carries nothing from an entry a reseed ignores", async () => {
+      const entry = await build(true);
+      expect(entry.ledger?.coveredThrough).toBe("2024-07-01");
+      expect(entry.ledger).not.toHaveProperty("parent");
    });
 });

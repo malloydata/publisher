@@ -46,6 +46,7 @@ import type {
    IncrementalStrategy,
    LateRows,
    LedgerEntry,
+   MalformedLedgerEntry,
    ManifestEntry,
 } from "../domain/types";
 import {
@@ -127,6 +128,13 @@ export interface IncrementalRunContext {
     * is one neither can be held to.
     */
    callerLedger?: ReadonlyMap<string, RecordedBoundary>;
+   /**
+    * The defect of each entry the controller dropped from {@link callerLedger}
+    * as malformed, by the `physicalTableName` it named. Its source seeds as
+    * any source with no entry does, under `ledger_entry_malformed` rather than
+    * `no_boundary`, so a corrupted entry is told apart from a missing one.
+    */
+   malformedCallerLedger?: ReadonlyMap<string, string>;
    /**
     * The `lateRows` the package's bound manifest reports, by content address:
     * what earlier deltas' late-row checks found and no rebuild has cleared.
@@ -358,8 +366,19 @@ export async function planSourceRefresh(params: {
    if (context.callerLedger) {
       // No fallback to the local store for a table the caller omitted: a
       // worker's own row may be a generation stale, which is why this mode
-      // exists. No entry means the ordinary `no_boundary` seed.
+      // exists. No entry means the ordinary `no_boundary` seed, unless the
+      // caller sent one the controller dropped as malformed.
       ledgerEntry = context.callerLedger.get(recordedTableKey(lineage)) ?? null;
+      const defect = context.malformedCallerLedger?.get(
+         lineage.physicalTableName,
+      );
+      if (ledgerEntry === null && defect !== undefined && !forceRefresh) {
+         return {
+            mode: "seed",
+            reasonCode: "ledger_entry_malformed",
+            reason: `the supplied ledger entry for this table was malformed (${defect}) and was dropped`,
+         };
+      }
    } else {
       try {
          ledgerEntry = await context.ledger.getIncrementalLedgerEntry(
@@ -810,9 +829,10 @@ export function refreshFields(
  * Empty when there is no boundary (a non-incremental or empty source), so the
  * spread adds no key rather than an explicit undefined.
  *
- * `extensions` are publisher-owned keys beyond the ones listed here; the entry
- * is opaque to hosts, which return it whole. A known key always wins over an
- * extension of the same name.
+ * `extensions` are publisher-owned keys beyond the ones listed here, normally
+ * {@link carriedLedgerExtensions}, which a caller may amend with values it
+ * computed this run. The entry is opaque to hosts, which return it whole. A
+ * known key always wins over an extension of the same name.
  */
 export function ledgerFields(
    lineage: IncrementalLineage | undefined,
@@ -843,6 +863,26 @@ export function ledgerFields(
 }
 
 /**
+ * The keys this release does not know on the caller's echoed entry for this
+ * source's table, to carry onto the entry the run reports: a fresh object, so
+ * a caller may set a key it computed this run over a carried one. Undefined
+ * when the run reads the local store, the caller sent no entry for the table
+ * or one with no such keys, or the source is reseeded, whose entry is ignored.
+ */
+export function carriedLedgerExtensions(
+   refresh:
+      | { context: IncrementalRunContext; lineage: IncrementalLineage }
+      | undefined,
+   reseed: boolean | undefined,
+): Record<string, unknown> | undefined {
+   if (!refresh || reseed || refresh.context.forceRefresh) return undefined;
+   const carried = refresh.context.callerLedger?.get(
+      recordedTableKey(refresh.lineage),
+   )?.extensions;
+   return carried ? { ...carried } : undefined;
+}
+
+/**
  * The run's incremental context, or undefined when no source in the package
  * asked for an incremental refresh (the common case), leaving the build path
  * untouched.
@@ -863,6 +903,8 @@ export function incrementalRunContext(
        * (even empty) replaces it for the whole run.
        */
       ledger: LedgerEntry[] | undefined;
+      /** The caller's entries dropped as malformed; read only beside `ledger`. */
+      malformedLedger?: MalformedLedgerEntry[];
    },
    localLedger: IncrementalLedgerStore,
 ): IncrementalRunContext | undefined {
@@ -875,13 +917,20 @@ export function incrementalRunContext(
       if (declaration.incremental) declarations[sourceID] = declaration;
    }
    if (Object.keys(declarations).length === 0) return undefined;
-   const { ledger, ...rest } = run;
+   const { ledger, malformedLedger, ...rest } = run;
    return {
       ...rest,
       declarations,
       ledger: localLedger,
       ...(ledger !== undefined
          ? { callerLedger: indexCallerLedger(ledger) }
+         : {}),
+      ...(ledger !== undefined && malformedLedger?.length
+         ? {
+              malformedCallerLedger: new Map(
+                 malformedLedger.map((m) => [m.physicalTableName, m.defect]),
+              ),
+           }
          : {}),
    };
 }
@@ -986,7 +1035,11 @@ export async function refreshOneSourceIncrementally(params: {
       // applyDeltaScript returns no cost figure, even on backends that have one.
       queryCostBytes: null,
       // A delta reports where it advanced to; a skip, the boundary in force.
-      ...ledgerFields(lineage, outcome.coveredThrough),
+      ...ledgerFields(
+         lineage,
+         outcome.coveredThrough,
+         carriedLedgerExtensions({ context, lineage }, instruction.reseed),
+      ),
       ...refreshFields(outcome.refresh),
       ...lateRowsFields(outcome.lateRows),
       ...(nativeSchema?.length ? { nativeSchema } : {}),

@@ -158,6 +158,73 @@ describe("incremental refresh fallback reasons", () => {
       expect(step.mode === "seed" && step.reason).toContain("connection reset");
    });
 
+   it("seeds with ledger_entry_malformed when the caller's entry for the table was dropped", async () => {
+      const caller = (forceRefresh = false) =>
+         ({
+            ...context(),
+            forceRefresh,
+            callerLedger: new Map(),
+            malformedCallerLedger: new Map([
+               [
+                  "analytics.daily",
+                  "'strategy' must be 'merge' or 'range_replace'",
+               ],
+            ]),
+         }) as unknown as IncrementalRunContext;
+      const step = await planSourceRefresh({
+         context: caller(),
+         lineage: LINEAGE,
+         target: target(),
+         columns: COLUMNS,
+      });
+      expect(step).toMatchObject({
+         mode: "seed",
+         reasonCode: "ledger_entry_malformed",
+      });
+      expect(step.mode === "seed" && step.reason).toContain(
+         "'strategy' must be",
+      );
+
+      // Counted and logged under its own reason, not as no_boundary.
+      await applyIncrementalStep({
+         context: caller(),
+         lineage: LINEAGE,
+         step,
+         target: target(),
+         sourceName: "daily",
+      });
+      expect(await counted("seed", "ledger_entry_malformed")).toBe(1);
+      expect(await counted("seed", "no_boundary")).toBe(0);
+      expect(
+         warn
+            .getCalls()
+            .some(
+               (c) =>
+                  c.args[0] === "Rebuilding an incremental source in full" &&
+                  c.args[1]?.reasonCode === "ledger_entry_malformed",
+            ),
+      ).toBe(true);
+
+      // A reseed ignores the entry, dropped or not.
+      expect(
+         await planSourceRefresh({
+            context: caller(true),
+            lineage: LINEAGE,
+            target: target(),
+            columns: COLUMNS,
+         }),
+      ).toMatchObject({ mode: "seed", reasonCode: "forced" });
+      // Another table with no entry is the ordinary first build.
+      expect(
+         await planSourceRefresh({
+            context: caller(),
+            lineage: { ...LINEAGE, physicalTableName: "analytics.other" },
+            target: target(),
+            columns: COLUMNS,
+         }),
+      ).toMatchObject({ mode: "seed", reasonCode: "no_boundary" });
+   });
+
    it("seeds with plan_error when the delta cannot be planned", async () => {
       const failing: DeltaTarget = {
          ...target(),

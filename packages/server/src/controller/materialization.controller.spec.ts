@@ -614,9 +614,22 @@ describe("MaterializationController.createMaterialization validation", () => {
             expect(fields).toMatchObject({
                environmentName: "env",
                packageName: "pkg",
+               reasonCode: "ledger_entry_malformed",
             });
             expect(String(fields.defect)).toContain(defect);
             expect(fields.table).toBe(table);
+            // A drop that names a table reaches the run, so that source seeds
+            // under ledger_entry_malformed rather than no_boundary.
+            expect(parsed.malformedLedger).toEqual(
+               table === undefined
+                  ? undefined
+                  : [
+                       {
+                          physicalTableName: table,
+                          defect: String(fields.defect),
+                       },
+                    ],
+            );
          }
          // Every entry malformed still leaves a caller-owned (empty) ledger, not
          // "use the local store": the sources seed.

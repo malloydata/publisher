@@ -8,6 +8,7 @@ import { Materialization } from "../storage/DatabaseInterface";
 import {
    BuildInstruction,
    LedgerEntry,
+   MalformedLedgerEntry,
    ManifestReference,
 } from "../service/materialization/domain/types";
 import { MaterializationService } from "../service/materialization/run/materialization_service";
@@ -67,6 +68,7 @@ export class MaterializationController {
       buildInstructions?: BuildInstruction[];
       referenceManifest?: ManifestReference[];
       ledger?: LedgerEntry[];
+      malformedLedger?: MalformedLedgerEntry[];
       runContext?: RunContext;
       versionId?: VersionRef;
    } {
@@ -77,6 +79,7 @@ export class MaterializationController {
          buildInstructions?: BuildInstruction[];
          referenceManifest?: ManifestReference[];
          ledger?: LedgerEntry[];
+         malformedLedger?: MalformedLedgerEntry[];
          runContext?: RunContext;
          versionId?: VersionRef;
       } = {};
@@ -119,6 +122,9 @@ export class MaterializationController {
          }
          if (parsed.ledger !== undefined) {
             result.ledger = parsed.ledger;
+         }
+         if (parsed.malformedLedger?.length) {
+            result.malformedLedger = parsed.malformedLedger;
          }
       }
       if (body.forceRefresh !== undefined) {
@@ -213,6 +219,7 @@ export class MaterializationController {
       /** The deprecated options the payload sent, which are ignored. */
       deprecatedOptions: ("strictUpstreams" | "warehouseReach")[];
       ledger?: LedgerEntry[];
+      malformedLedger?: MalformedLedgerEntry[];
    } {
       if (typeof raw !== "object" || raw === null) {
          throw new BuildInstructionsInvalidError(
@@ -231,6 +238,7 @@ export class MaterializationController {
          referenceManifest?: ManifestReference[];
          deprecatedOptions: ("strictUpstreams" | "warehouseReach")[];
          ledger?: LedgerEntry[];
+         malformedLedger?: MalformedLedgerEntry[];
       } = {
          sources: sources.map((instruction) =>
             this.validateInstruction(instruction),
@@ -285,18 +293,33 @@ export class MaterializationController {
          // of the package. Errors about the REQUEST (duplicates, a table not
          // instructed, a moved definition) stay 400s in validateInstructions.
          const ledger: LedgerEntry[] = [];
+         const malformed: MalformedLedgerEntry[] = [];
          for (const entry of obj.ledger) {
             const checked = this.validateLedgerEntry(entry);
             if ("defect" in checked) {
                logger.warn(
                   "Dropped a malformed buildInstructions.ledger entry; its source seeds",
-                  { ...context, table: checked.table, defect: checked.defect },
+                  {
+                     ...context,
+                     table: checked.table,
+                     defect: checked.defect,
+                     reasonCode: "ledger_entry_malformed",
+                  },
                );
+               // Its source seeds under its own reason, told apart from a
+               // source the caller sent no entry for.
+               if (checked.table !== undefined) {
+                  malformed.push({
+                     physicalTableName: checked.table,
+                     defect: checked.defect,
+                  });
+               }
                continue;
             }
             ledger.push(checked.entry);
          }
          result.ledger = ledger;
+         if (malformed.length > 0) result.malformedLedger = malformed;
       }
       return result;
    }

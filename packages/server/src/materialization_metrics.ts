@@ -107,6 +107,7 @@ export const INCREMENTAL_STEP_REASONS = [
    "table_emptied",
    "shape_mismatch",
    "ledger_unreadable",
+   "ledger_entry_malformed",
    "plan_error",
    "chained_storage",
    "pair_parent_row",

@@ -11968,19 +11968,22 @@ components:
 
         OPAQUE to hosts: store each entry whole (as JSON, say) and echo it back
         unchanged. Do not rebuild it from the fields listed here. The publisher
-        may add keys at any time (`additionalProperties`), and a key a host
-        drops is lost to the next run.
+        may add keys at any time (`additionalProperties`): it carries a key it
+        does not know on an echoed entry onto the entry the next run reports
+        (a release before this one dropped such keys), and a key a host drops
+        is lost to the next run.
 
         A returned entry is validated at create time: one naming a table the
         run does not instruct, or whose `sourceEntityId` is no longer the
         source's, is a 400, as are duplicate entries for one table. An entry
-        whose own shape is malformed (a required field missing or empty, an
-        unknown `strategy`, `mergeKeys` not an array of strings, an empty
-        `storageDestinationName`) is not a 400: it is dropped with a logged
-        warning and its source seeds (rebuilds in full), so one corrupted
-        entry cannot wedge every build of the package. After a publish or
-        rollback that changes the source, delete the entry (the source seeds)
-        or set `reseed`.
+        whose own shape is malformed (not an object, a required field missing,
+        empty or not a string, an unknown `strategy`, `mergeKeys` not an array
+        of strings, an empty `storageDestinationName`, an unusable
+        `physicalTableName`) is not a 400: it is dropped with a logged warning
+        before those checks, and its source seeds (rebuilds in full) under the
+        reason `ledger_entry_malformed`, so one corrupted entry cannot wedge
+        every build of the package. After a publish or rollback that changes
+        the source, delete the entry (the source seeds) or set `reseed`.
       additionalProperties: true
       required:
         [
