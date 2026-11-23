@@ -158,3 +158,55 @@ describe("which package a watched file belongs to", () => {
       expect(ignoredByWatch(env, at("sales", "notes.bin"), file)).toBe(true);
    });
 });
+
+describe("WatchModeController with a real watcher", () => {
+   it("reloads the package of a changed model, and never recompiles the server's own .retired folder", async () => {
+      const envDir = fs.mkdtempSync(path.join(root, "env-"));
+      fs.mkdirSync(path.join(envDir, "sales"));
+      fs.mkdirSync(path.join(envDir, ".retired", "x"), { recursive: true });
+      const reloaded: string[] = [];
+      const environment = {
+         getEnvironmentPath: () => envDir,
+         getPackage: async (name: unknown) => {
+            reloaded.push(String(name));
+            return {};
+         },
+      };
+      const controller = new WatchModeController(
+         fakeOf<PackageLookup & { serverRootPath: string }>({
+            serverRootPath: root,
+            getEnvironment: async () => environment,
+         }),
+      );
+      const error = spyOn(logger, "error").mockImplementation(() => logger);
+      try {
+         await controller.ensureWatching("retired-wiring-marker");
+         await new Promise<void>((resolve) =>
+            controller.watcher!.once("ready", () => resolve()),
+         );
+         // The retired file first: were it watched, its event would be
+         // delivered before the real package's.
+         fs.writeFileSync(
+            path.join(envDir, ".retired", "x", "m.malloy"),
+            "source: a is duckdb.table('a')\n",
+         );
+         fs.writeFileSync(
+            path.join(envDir, "sales", "m.malloy"),
+            "source: a is duckdb.table('a')\n",
+         );
+         const deadline = Date.now() + 10_000;
+         while (reloaded.length === 0 && Date.now() < deadline) {
+            await new Promise((resolve) => setTimeout(resolve, 25));
+         }
+         // Let any event for the retired file settle, bounded.
+         await new Promise((resolve) => setTimeout(resolve, 300));
+         expect(reloaded).toEqual(["sales"]);
+         // A watched .retired would reach reloadPackage, which refuses the
+         // name and logs the failure.
+         expect(linesMentioning(error, "retired-wiring-marker")).toEqual([]);
+      } finally {
+         error.mockRestore();
+         await controller.watcher?.close();
+      }
+   });
+});
