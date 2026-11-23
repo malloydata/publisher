@@ -137,16 +137,41 @@ export interface IncrementalRunContext {
    priorLateRows?: ReadonlyMap<string, LateRows>;
 }
 
+/** The `LedgerEntry` keys this release reads; any other key is an extension. */
+const KNOWN_LEDGER_KEYS: ReadonlySet<string> = new Set([
+   "connectionName",
+   "physicalTableName",
+   "storageDestinationName",
+   "coveredThrough",
+   "coveredThroughType",
+   "watermark",
+   "mergeKeys",
+   "strategy",
+   "sourceEntityId",
+]);
+
+/** The keys of a wire ledger entry this release does not know, or undefined. */
+function ledgerExtensions(
+   entry: LedgerEntry,
+): Record<string, unknown> | undefined {
+   const extra = Object.entries(entry).filter(
+      ([key]) => !KNOWN_LEDGER_KEYS.has(key),
+   );
+   return extra.length > 0 ? Object.fromEntries(extra) : undefined;
+}
+
 /**
  * Index a caller-supplied ledger by table (the same key the local store uses),
  * converting each wire entry into the boundary shape the planner reads. Every
- * field is one the publisher reported on a manifest entry, echoed back.
+ * field is one the publisher reported on a manifest entry, echoed back; keys
+ * this release does not know ride along as `extensions`, untouched.
  */
 export function indexCallerLedger(
    entries: LedgerEntry[],
 ): Map<string, RecordedBoundary> {
    const index = new Map<string, RecordedBoundary>();
    for (const entry of entries) {
+      const extensions = ledgerExtensions(entry);
       index.set(
          recordedTableKey({
             connectionName: entry.connectionName,
@@ -163,6 +188,7 @@ export function indexCallerLedger(
             physicalTableName: entry.physicalTableName,
             connectionName: entry.connectionName,
             storageDestinationName: entry.storageDestinationName,
+            ...(extensions ? { extensions } : {}),
          },
       );
    }
@@ -783,14 +809,20 @@ export function refreshFields(
  *
  * Empty when there is no boundary (a non-incremental or empty source), so the
  * spread adds no key rather than an explicit undefined.
+ *
+ * `extensions` are publisher-owned keys beyond the ones listed here; the entry
+ * is opaque to hosts, which return it whole. A known key always wins over an
+ * extension of the same name.
  */
 export function ledgerFields(
    lineage: IncrementalLineage | undefined,
    bound: WatermarkBound | undefined,
+   extensions?: Readonly<Record<string, unknown>>,
 ): { ledger: LedgerEntry } | Record<never, never> {
    if (!lineage || !bound) return {};
    return {
       ledger: {
+         ...extensions,
          connectionName: lineage.connectionName,
          physicalTableName: lineage.physicalTableName,
          // Absent (not undefined) for a database table: absence MEANS database
