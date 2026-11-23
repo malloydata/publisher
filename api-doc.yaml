@@ -11913,11 +11913,13 @@ components:
             do not name the parent's current build, the extension rebuilds in
             full (`upstream_generation_skipped`). It is preferred over both.
 
-            It must name the reference's table (the same `connectionName`,
-            `physicalTableName` and `storageDestinationName`). One that does
-            not, or whose own shape is malformed (see `LedgerEntry`), is dropped
-            with a logged warning and the request proceeds as if it were
-            absent; it is never a 400. Keys this release does not know are
+            It must name the reference's table and source (the same
+            `connectionName`, `physicalTableName`, `storageDestinationName` and
+            `sourceEntityId`). One that does not, or whose own shape is malformed
+            (see `LedgerEntry`), is dropped with a logged warning and the request
+            proceeds as if it were absent, never a 400: the extensions fall back
+            to the bound manifest's entry, then the worker's own, and rebuild in
+            full only when neither proves which build of the parent they read. Keys this release does not know are
             kept. Unlike `BuildInstructions.ledger`, it names a table this run
             does not build, and is never written to. Optional and additive.
 
