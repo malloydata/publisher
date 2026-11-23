@@ -233,7 +233,13 @@ export class VersionStore {
    async holdLegacy(packageName: string): Promise<LegacyTree | null> {
       assertSafePackageName(packageName);
       const packagePath = safeJoinUnderRoot(this.environmentPath, packageName);
-      const contents = await fs.promises.readdir(packagePath).catch(() => null);
+      // Only a missing folder means "no tree". Any other failure (a file named
+      // <pkg>, EACCES, EMFILE) throws, so the publish fails before it touches
+      // the folder rather than treating an unreadable tree as absent.
+      const contents = await fs.promises.readdir(packagePath).catch((err) => {
+         if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+         throw err;
+      });
       const prior = (await this.listHeldLegacy())
          .filter((held) => held.packageName === packageName)
          .sort(heldLastFirst);

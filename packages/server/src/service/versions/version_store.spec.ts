@@ -257,6 +257,20 @@ describe("VersionStore legacy trees", () => {
       expect(await store.holdLegacy("sales")).toBeNull();
    });
 
+   it("holds nothing for an empty package folder, and removes the folder", async () => {
+      fs.mkdirSync(path.join(envPath, "sales"));
+      expect(await store.holdLegacy("sales")).toBeNull();
+      expect(fs.existsSync(path.join(envPath, "sales"))).toBe(false);
+   });
+
+   it("fails, leaving the path alone, when the package's path cannot be read as a folder", async () => {
+      fs.writeFileSync(path.join(envPath, "sales"), "not a folder");
+      await expect(store.holdLegacy("sales")).rejects.toThrow();
+      expect(fs.readFileSync(path.join(envPath, "sales"), "utf8")).toBe(
+         "not a folder",
+      );
+   });
+
    it("names a held tree by when it was held", async () => {
       await writes({ name: "a" })(path.join(envPath, "a"));
       const held = await store.holdLegacy("a");
