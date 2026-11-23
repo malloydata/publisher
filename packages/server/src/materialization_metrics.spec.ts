@@ -371,8 +371,6 @@ describe("materialization_metrics", () => {
    it("counts chained storage builds labeled by outcome", async () => {
       recordChainedStorageBuild("parent_reuse");
       recordChainedStorageBuild("parent_reuse");
-      recordChainedStorageBuild("inline_fallback");
-      recordChainedStorageBuild("strict_shape_fallback");
       recordChainedStorageBuild("strict_refused");
 
       expect(
@@ -380,16 +378,6 @@ describe("materialization_metrics", () => {
             outcome: "parent_reuse",
          }),
       ).toBe(2);
-      expect(
-         await harness.collectCounter("publisher_storage_chained_build_total", {
-            outcome: "inline_fallback",
-         }),
-      ).toBe(1);
-      expect(
-         await harness.collectCounter("publisher_storage_chained_build_total", {
-            outcome: "strict_shape_fallback",
-         }),
-      ).toBe(1);
       expect(
          await harness.collectCounter("publisher_storage_chained_build_total", {
             outcome: "strict_refused",

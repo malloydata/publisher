@@ -29,8 +29,6 @@ export const MATERIALIZATION_IMPORT_ALLOWLIST = {
    "service/materialization/serve/served_copy_serve.ts -> service/materialization/plan/persist_dynamic_terms":
       "2m",
    // R10: outside the module, only index.ts and domain/.
-   "controller/materialization.controller.ts -> service/materialization/run/build_upstreams":
-      "2n",
    "controller/materialization.controller.ts -> service/materialization/run/materialization_service":
       "2n",
    "controller/storage_destination.controller.ts -> service/materialization/run/storage_admin":

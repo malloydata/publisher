@@ -480,7 +480,6 @@ export class InstructedBuild {
          priorRefusals = [],
          clearedTiers,
          hostInstructed = false,
-         warehouseReach = "recompute",
          uniqueness,
          packageRuns,
       } = options;
@@ -512,7 +511,6 @@ export class InstructedBuild {
                   index.bySourceEntityId.get(sourceEntityId),
             ),
             hostInstructed,
-            warehouseReach,
             materializePlans: materializePlansOf(tables),
          },
          ...this.seedInstructedRun(seedEntries, connections, strict),

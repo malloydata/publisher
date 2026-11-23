@@ -103,23 +103,12 @@ export interface ChainedPlanFacts {
     */
    hostInstructed?: boolean;
    /**
-    * What a strict build does with a source whose only build recomputes a
-    * stored upstream from the warehouse: `recompute` builds it and reports
-    * `upstreamReuse: recomputed`; `refuse` fails it
-    * ({@link WarehouseRecomputeRefusedError}). Only a host sets it; absent
-    * means `recompute`, and a non-strict build ignores it.
-    */
-   warehouseReach?: WarehouseReach;
-   /**
     * The plan's `#(materialize)` plans by sourceID. A `storage=` extension
     * table among them (one with `buildsOver.overStored`) builds over its
     * parent's stored table from its own chain, not by lifting author text.
     */
    materializePlans?: Readonly<Record<string, MaterializePlan>>;
 }
-
-/** See {@link ChainedPlanFacts.warehouseReach}. */
-export type WarehouseReach = "recompute" | "refuse";
 
 /** A build with no plan to consult: nothing is known to be stored. */
 export const NO_PLAN_FACTS: ChainedPlanFacts = {

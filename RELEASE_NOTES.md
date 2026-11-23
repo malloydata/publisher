@@ -21,6 +21,16 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — breaking: `strictUpstreams` and `warehouseReach` do nothing, and their last traces are retired
+
+**Changed: `buildInstructions.strictUpstreams` and `buildInstructions.warehouseReach` are accepted and ignored.** Both are still validated (a non-boolean `strictUpstreams`, or a `warehouseReach` other than `recompute` or `refuse`, is a 400), and a request that sends either logs one warning, `buildInstructions options are deprecated and ignored`, naming them. A later release removes them from the API. **What to do:** stop sending them.
+
+**Removed: the `warehouse_recompute_refused` failure (`WarehouseRecomputeRefusedError`).** No build recomputes a stored upstream from the warehouse, so nothing raised it; a source with no build over its upstreams' tables is refused at plan (`upstream_table_unusable`) or fails with `chained_shape_not_carried`.
+
+**Changed: `publisher_storage_chained_build_total{outcome}` no longer produces `inline_fallback` or `strict_shape_fallback`.** The values are retained so a dashboard's queries still parse; they stay at zero. The outcomes produced are `parent_reuse`, `strict_refused` and `infra_failure`.
+
+**Docs:** `upstreamReuse` and the chaining guides now describe always-strict builds.
+
 ## [Unreleased] — a stacked `storage=` build's collation guard reads its upstreams' contracts, decided at plan
 
 **Changed: whether a `storage=` build over its upstreams' tables in its destination compares its strings as live does is decided from the column contracts those tables recorded, never by probing the source's collation at build.** The plan reads the strings the build groups, compares or orders (a chained `#@ persist` source, a view or named query built in its destination, a rollup over its base's table) and records them on the table's plan. When the package has bound its upstreams' tables, the plan judges them there: a column the build orders must be recorded `compare: exact`, one it groups or compares for equality `exact` or `equality`. A build that fails the check is refused at plan as `upstream_table_unusable`, with a `message` naming the string, and answered live. An upstream built in the same run is judged at build against the contract it has just recorded, with the same verdict and no probe. Verdicts are the ones #1996's probe gave for Postgres and DuckDB sources.

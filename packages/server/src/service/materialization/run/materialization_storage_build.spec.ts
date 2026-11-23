@@ -144,8 +144,6 @@ describe("the storage tier's build (chained-build fallback ladder)", () => {
          | "collation";
       /** The host instructed the run (orchestrated). */
       hostInstructed?: boolean;
-      /** The host's `warehouseReach` (ms2data/service#6756). */
-      warehouseReach?: "recompute" | "refuse";
    }): Promise<{
       physicalTableName: string;
       storageDestinationName?: string;
@@ -298,7 +296,7 @@ describe("the storage tier's build (chained-build fallback ladder)", () => {
             },
          },
          dependsOnStorageUpstream: true,
-         ...(opts.hostInstructed || opts.warehouseReach
+         ...(opts.hostInstructed
             ? {
                  planFacts: {
                     persistSourceIds: new Set<string>(),
@@ -306,9 +304,6 @@ describe("the storage tier's build (chained-build fallback ladder)", () => {
                     addressBySourceId: {},
                     compilerKeyBySourceId: {},
                     hostInstructed: true,
-                    ...(opts.warehouseReach
-                       ? { warehouseReach: opts.warehouseReach }
-                       : {}),
                  },
               }
             : {}),
@@ -337,12 +332,7 @@ describe("the storage tier's build (chained-build fallback ladder)", () => {
    });
 
    it("a downstream that reaches the warehouse through a non-persisted source: refused, never recomputed, strict or not", async () => {
-      for (const opts of [
-         { strict: true },
-         { strict: false },
-         { strict: true, warehouseReach: "recompute" as const },
-         { strict: true, warehouseReach: "refuse" as const },
-      ]) {
+      for (const opts of [{ strict: true }, { strict: false }]) {
          const call = callInto({ ...opts, stackOnParent: "raw" });
          await expect(call).rejects.toBeInstanceOf(ChainedShapeNotCarriedError);
          await expect(call).rejects.toThrow(

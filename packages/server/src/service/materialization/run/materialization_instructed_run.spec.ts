@@ -564,25 +564,6 @@ describe("executeInstructedBuild", () => {
          expect((odd as BuildRunFailedError).retryable).toBeUndefined();
       });
 
-      // ms2data/service#6756: the instructions refused the only build there
-      // is, so the same instructions refuse it again.
-      it("marks a source refused under warehouseReach refuse deterministic, and its dependent too", async () => {
-         const { WarehouseRecomputeRefusedError } = await import(
-            "../../../errors"
-         );
-         const refused = new WarehouseRecomputeRefusedError(
-            "up",
-            "lake",
-            "'up' reads the source warehouse (regions) through 'via'",
-         );
-         const failures = await runChain(refused.message, refused);
-         expect(failures["bupupupupupupupu"].retryable).toBe(false);
-         expect(failures["bupupupupupupupu"].reason).toContain(
-            "warehouseReach: refuse",
-         );
-         expect(failures["bdowndowndowndow"].retryable).toBe(false);
-      });
-
       it("omits the field when the failure is not recognized", async () => {
          const failures = await runChain("something odd happened");
          expect("retryable" in failures["bupupupupupupupu"]).toBe(false);

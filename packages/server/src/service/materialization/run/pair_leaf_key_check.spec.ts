@@ -138,7 +138,6 @@ async function scenario() {
          strict: false,
          priorRefusals: [],
          hostInstructed: orchestrated,
-         warehouseReach: "recompute",
          uniqueness: ledger,
       });
       expect(result.failures).toEqual({});
