@@ -1593,6 +1593,49 @@ if (POSTGRES_URL) {
       });
    });
 
+   describe("an incremental storage= extension stacked on its parent with a column DuckDB computes as HUGEINT", () => {
+      // DuckDB computes a 128-bit integer (a sum of integers, or here an
+      // integer past BIGINT), which the build stores as DECIMAL(38,0): the
+      // delta's HUGEINT is no widening of it, or the extension would rebuild
+      // in full on every run.
+      let root = "";
+      const f = new Fixture(DUCKLAKE(() => root));
+      let second: Materialization;
+      const seedsInSecond: typeof f.seeds = [];
+
+      beforeAll(async () => {
+         root = fs.realpathSync(
+            fs.mkdtempSync(path.join(fs.realpathSync("/tmp"), "xcl-")),
+         );
+         await f.open(`##! experimental { persistence }
+source: raw is warehouse.table('__RAW__')
+
+#(materialize) refresh="incremental" watermark="ts" merge_key="id" lookback="7 days"__S__
+source: ev is raw
+
+#(materialize) refresh="incremental" watermark="ts" merge_key="id"__S__
+source: ext_sum is ev extend { dimension: id_big is id + 100000000000000000000 }
+`);
+         await f.build({});
+         await f.insert(SECOND);
+         const before = f.seeds.length;
+         second = await f.build({});
+         seedsInSecond.push(...f.seeds.slice(before));
+      }, 400_000);
+      afterAll(async () => {
+         await f.close();
+         fs.rmSync(root, { recursive: true, force: true });
+      });
+
+      it("deltas on the second run, with no reseed", () => {
+         expect([second.status, (second as { error?: unknown }).error]).toEqual(
+            ["MANIFEST_FILE_READY", null],
+         );
+         expect(entryNamed(second, "ext_sum")![1].refresh).toBe("delta");
+         expect(seedsInSecond).toEqual([]);
+      });
+   });
+
    describe("an incremental storage= extension stacked on its parent, refreshed after a parent-only run", () => {
       let root = "";
       const f = new Fixture(DUCKLAKE(() => root));

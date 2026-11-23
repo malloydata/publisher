@@ -133,20 +133,36 @@ function holds(stored: NumericType, delta: NumericType): boolean {
    }
 }
 
+/** Whether two type spellings are one type. */
+function sameType(a: string, b: string): boolean {
+   const norm = (t: string) => t.trim().toLowerCase().replace(/\s+/g, "");
+   return norm(a) === norm(b);
+}
+
 /**
  * Each column whose stored type does not hold its delta type losslessly, as
  * `"name" (stored → delta)` text for a seed's reason, or an empty list.
  * Columns either side lacks, and types not judged, are left out.
+ *
+ * `asBuilt` is what a full build stores a column of a delta type as, where
+ * its own casts change it (a 128-bit integer stored as `DECIMAL(38,0)` in a
+ * `storage=` destination; see DeltaTarget.storedAsBuilt). A stored type a
+ * rebuild would produce again is not a widening: rebuilding would write the
+ * same column, so the source would rebuild on every run.
  */
 export function widenedColumns(
    stored: ReadonlyMap<string, string>,
    delta: ReadonlyMap<string, string>,
+   asBuilt: (deltaType: string) => readonly string[] = (t) => [t],
 ): string[] {
    const widened: string[] = [];
    for (const [column, deltaType] of delta) {
       const storedType = stored.get(column);
       if (storedType === undefined) continue;
-      if (storedType.trim().toLowerCase() === deltaType.trim().toLowerCase()) {
+      if (
+         sameType(storedType, deltaType) ||
+         asBuilt(deltaType).some((built) => sameType(storedType, built))
+      ) {
          continue;
       }
       const s = numericType(storedType);

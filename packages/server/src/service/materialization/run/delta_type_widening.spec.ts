@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "bun:test";
+import { storedTypesAsBuilt } from "../stored_column_types";
 import { widenedColumns } from "./delta_type_widening";
 
 /** Whether a column stored as `stored` is judged unable to hold `delta`. */
@@ -73,5 +74,38 @@ describe("whether a stored column holds a delta's type", () => {
             ]),
          ),
       ).toEqual(['"id" (INTEGER → BIGINT)']);
+   });
+});
+
+describe("a delta type a storage= build casts", () => {
+   const judged = (stored: string, delta: string) =>
+      widenedColumns(
+         new Map([["c", stored]]),
+         new Map([["c", delta]]),
+         storedTypesAsBuilt,
+      );
+
+   it.each(["DECIMAL(38,0)", "HUGEINT", "DOUBLE"])(
+      "is no widening of a %s column a rebuild would write from a HUGEINT",
+      (stored) => {
+         expect(judged(stored, "HUGEINT")).toEqual([]);
+      },
+   );
+
+   it("still finds a genuine widening", () => {
+      expect(judged("INTEGER", "BIGINT")).toEqual(['"c" (INTEGER → BIGINT)']);
+      expect(judged("FLOAT", "DOUBLE")).toEqual(['"c" (FLOAT → DOUBLE)']);
+      expect(judged("DECIMAL(10,0)", "HUGEINT")).toEqual([
+         '"c" (DECIMAL(10,0) → HUGEINT)',
+      ]);
+   });
+
+   it("is judged on the raw type when no build cast is known", () => {
+      expect(
+         widenedColumns(
+            new Map([["c", "DECIMAL(38,0)"]]),
+            new Map([["c", "HUGEINT"]]),
+         ),
+      ).toEqual(['"c" (DECIMAL(38,0) → HUGEINT)']);
    });
 });
