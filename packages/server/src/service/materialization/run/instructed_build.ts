@@ -170,6 +170,7 @@ import {
    buildKindOf,
    buildTierOf,
    reportSourceBuilt,
+   reportSourceFailed,
    reportSourceRefused,
 } from "./run_telemetry";
 
@@ -556,6 +557,7 @@ export class InstructedBuild {
          builtThisRun: [],
          retainedThisRun: [],
          failures: {},
+         resolvedInstructions: new Set(),
          failedBySourceID: new Map(),
          upstreamsBySourceID: upstreamsBySourceID(builds),
          failedReasons: [],
@@ -589,6 +591,7 @@ export class InstructedBuild {
          // check before, so the run settles CANCELLED here rather than
          // committing a partial manifest that would serve.
          if (run.signal?.aborted) throw new BuildCancelledError();
+         recordUnresolvedInstructions(run, instructions, options.refusedAtPlan);
 
          settled = settleRefusals(run);
 
@@ -1017,6 +1020,7 @@ export class InstructedBuild {
       );
       if (!resolved) return undefined;
       const { instruction, orchestrated } = resolved;
+      run.resolvedInstructions.add(instruction);
 
       if (this.refuseIneligibleInstructedSource(run, persistSource, resolved)) {
          return undefined;
@@ -1545,6 +1549,124 @@ function settleRefusals(run: InstructedRun): {
    }
    run.pendingRefusals = [];
    return { refusalsInFailures, refusedBesideBuilt };
+}
+
+/** `SourceFailure.code` of an instruction no planned source resolves to. */
+export const INSTRUCTION_UNRESOLVED_CODE = "instruction_unresolved";
+
+/**
+ * Fail every instruction no source in the run's plan resolved to, so each
+ * instructed source ends in `entries` or `failures` and a run never reports
+ * success for a source it neither built nor failed. One the plan refused
+ * (`refusedAtPlan`) is a refusal with the plan's reason, settled like any
+ * other; any other is a failure coded `instruction_unresolved`.
+ */
+function recordUnresolvedInstructions(
+   run: InstructedRun,
+   instructions: BuildInstruction[],
+   refusedAtPlan: InstructedBuildOptions["refusedAtPlan"],
+): void {
+   // Several instructions may name one source (the index applies the last
+   // for each sourceID and address, and reports the clash): one the index
+   // did not apply is that source's, and its outcome is the applied one's.
+   const resolved = (i: BuildInstruction | undefined): boolean =>
+      i !== undefined && run.resolvedInstructions.has(i);
+   const applied = (instruction: BuildInstruction): boolean =>
+      resolved(instruction) ||
+      (instruction.sourceID !== undefined &&
+         resolved(run.index.bySourceID.get(instruction.sourceID))) ||
+      resolved(run.index.bySourceEntityId.get(instruction.sourceEntityId));
+   const pending = new Set(run.pendingRefusals.map((p) => p.failedKey));
+   for (const instruction of instructions) {
+      if (applied(instruction)) continue;
+      const key = instruction.sourceEntityId;
+      if (run.failures[key] || run.builtAddresses.has(key) || pending.has(key))
+         continue;
+      const tier = buildTierOf(instruction);
+      const destination = instruction.destination
+         ? { storageDestinationName: instruction.destination }
+         : {};
+      const refused = refusedAtPlan?.(instruction);
+      if (refused) {
+         const reason =
+            `'${refused.name}' is not built: the build plan refuses it ` +
+            `(${refused.reason}): ${refused.message}`;
+         const err = new MaterializationEligibilityError({
+            message: reason,
+            reason: refused.reason,
+         });
+         run.refusals.push(err);
+         reportSourceRefused(
+            {
+               kind: buildKindOf(run.compiled, refused.sourceID),
+               tier,
+               sourceEntityId: key,
+               sourceName: refused.name,
+            },
+            refused.reason,
+         );
+         run.failedBySourceID.set(refused.sourceID, {
+            name: refused.name,
+            reason,
+            retryable: false,
+         });
+         run.pendingRefusals.push({
+            failedKey: key,
+            failure: {
+               sourceEntityId: key,
+               sourceName: refused.name,
+               materializedTableId: instruction.materializedTableId,
+               physicalTableName: instruction.physicalTableName,
+               reason,
+               refused: true,
+               refusalReason: refused.reason,
+               retryable: false,
+               ...destination,
+            },
+            errorEntry: {
+               sourceEntityId: key,
+               sourceName: refused.name,
+               physicalTableName: instruction.physicalTableName,
+               materializedTableId: instruction.materializedTableId,
+               error: reason,
+            } as ManifestEntry,
+            refused,
+            sourceID: refused.sourceID,
+            own: true,
+         });
+         continue;
+      }
+      const reason =
+         `No source in the package's build plan resolves the instruction ` +
+         `for '${key}' (table '${instruction.physicalTableName}'), so it was ` +
+         `not built. Read the package's build plan again and instruct the ` +
+         `sources it holds.`;
+      run.failedReasons.push(reason);
+      reportSourceFailed(
+         {
+            kind: buildKindOf(run.compiled, instruction.sourceID),
+            tier,
+            sourceEntityId: key,
+            sourceName: instruction.sourceID?.split("@")[0] ?? key,
+            method: "full",
+            ...(instruction.destination
+               ? { destination: instruction.destination }
+               : {}),
+         },
+         new Error(reason),
+         false,
+         false,
+      );
+      run.failures[key] = {
+         sourceEntityId: key,
+         materializedTableId: instruction.materializedTableId,
+         physicalTableName: instruction.physicalTableName,
+         reason,
+         code: INSTRUCTION_UNRESOLVED_CODE,
+         retryable: false,
+         ...destination,
+      };
+   }
 }
 
 /**

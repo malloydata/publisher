@@ -19,14 +19,10 @@ compiler's reach, not by what the downstream names: rendered with every stored
 entry available, `rollup`'s SQL substitutes `daily`'s table and **inlines**
 `daily_counts`, because the warehouse cannot read a lake table.
 
-Three things must hold. The build must treat `rollup` as reading a stored
-upstream (a `storage=` table was inlined), so under `strictUpstreams` it is
-refused rather than quietly recomputing `daily_counts` — the table the
-orchestrator pinned — and non-strict it is recomputed and the entry says so.
-And the rows must mean what the entry says: after the warehouse changes, a
-non-strict rebuild of `rollup` alone reads `daily`'s stale stored table and the
-*recomputed* `daily_counts`, so one measure is stale and the other is fresh in
-the same row. That split is exactly the skew `recomputed` warns of.
+So the build must treat `rollup` as reading a stored upstream (a `storage=`
+table was inlined). It cannot stack on `daily`, which is not in the lake, and
+no build recomputes a stored upstream from raw, so `rollup` is not built, with
+or without `strictUpstreams`, and answers live.
 
 ## Publisher
 
@@ -73,12 +69,9 @@ source: rollup is daily -> {
 ## Publish
 
 `daily_counts` lands in the lake, `daily` in the warehouse. `rollup` cannot be
-built over `daily`'s table in the lake (it is not there), so it is recomputed:
-`daily` substituted from its warehouse table, `daily_counts` inlined.
+built over `daily`'s table in the lake (it is not there), so it is not built.
 
 expect binding: daily_counts -> lake
-expect binding: rollup -> lake
-expect upstreams: rollup -> recomputed
 
 ## Query rollup
 
@@ -96,7 +89,17 @@ Expect:
 
 Strict: `rollup` alone, reusing both stored upstreams. `daily_counts` is a
 pinned stored table the build SQL would inline, and the build cannot stack on
-`daily`, which is not in the lake — so strict refuses rather than recomputing.
+`daily`, which is not in the lake — so it is refused rather than recomputing.
+
+- rollup -> sjs_rollup__g2 @ lake
+  reference: daily
+  reference: daily_counts
+
+cites: materialized outside destination 'lake'
+
+## Build refused (orchestrated, pkg=sjs)
+
+Without strict: refused the same way, since the flag is ignored.
 
 - rollup -> sjs_rollup__g2 @ lake
   reference: daily
@@ -106,36 +109,20 @@ cites: materialized outside destination 'lake'
 
 ## Mutate orders_pg.sjs_orders
 
-A new order on a date `daily` already holds, so both measures have a chance to
-see it: the join from `daily`'s stored rows only reaches dates that table has.
+A new order on a date `daily` already holds.
 
 | order_id:int | order_date:date | amount:num |
 | ------------ | --------------- | ---------- |
 | 99           | 2026-01-02      | 1000       |
 
-## Build (orchestrated, pkg=sjs)
-
-Non-strict: `rollup` alone, over the same two references. The build cannot
-stack on `daily` (not in the lake), so it falls back to a recompute whose SQL
-reads `daily`'s stored table as built — stale — and recomputes `daily_counts`
-from the warehouse — fresh — and the entry says so.
-
-- rollup -> sjs_rollup__g2 @ lake (recomputed)
-  reference: daily
-  reference: daily_counts
-
-cites: materialized outside destination 'lake'
-
-## Bind sjs
-
 ## Query rollup (again)
 
-One row, two freshnesses: `grand_total` from the stale table (a fresh `daily`
-would say 1375), `orders` counting the new order. That is what a `recomputed`
-entry warns a reader to expect.
+`rollup` was never built, and the host's runs left the package serving its
+host's (empty) manifest, so `daily` and `daily_counts` answer live too: both
+measures follow the warehouse, the new order included.
 
 Expect:
 
 | grand_total:num | orders:num |
 | --------------- | ---------- |
-| 375             | 5          |
+| 1375            | 5          |

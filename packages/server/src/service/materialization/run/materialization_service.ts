@@ -88,7 +88,10 @@ import {
    rebindsOwnVersionAfter,
    referenceManifestToEntries,
 } from "./manifest_committer";
-import type { EligibilityTier } from "./materialization_instructed_run";
+import {
+   type EligibilityTier,
+   planRefusalOf,
+} from "./materialization_instructed_run";
 import { isActiveRun, outcomeFor } from "./run_status";
 import { packageRelativeRun, withChainBuildText } from "./build_upstreams";
 import { tallySources } from "./run_telemetry";
@@ -280,6 +283,11 @@ interface RunTarget {
    owned: string | undefined;
    reader: ServingReader;
    compiled: RunPlan;
+   /**
+    * The sources the run's own plan refused, by sourceID: absent from
+    * `compiled`, so an instruction naming one is failed with its refusal.
+    */
+   planRefusals: Record<string, RefusedSource>;
 }
 
 /** A run's instructions, and what deriving them decided. */
@@ -1376,6 +1384,7 @@ export class MaterializationService {
          owned,
          reader,
          compiled,
+         planRefusals: packagePlan.plan?.refusedSources ?? {},
       };
    }
 
@@ -1627,7 +1636,16 @@ export class MaterializationService {
          refused: derivedRefused,
          cleared: clearedTiers,
       } = derived;
+      // An instruction is checked against the plan the package serves
+      // (validateInstructions); the run's own plan may have refused its
+      // source since (judged against tables bound after the served plan was
+      // derived), and then holds no table for it.
+      const refusedAtPlan = planRefusalOf(
+         pkg.getBuildPlan()?.sources ?? {},
+         target.planRefusals,
+      );
       return await this.collaborators.executeInstructedBuild({
+         refusedAtPlan,
          compiled,
          environment: withChainBuildText(
             environment,
