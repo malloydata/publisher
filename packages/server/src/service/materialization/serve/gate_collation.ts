@@ -1079,8 +1079,9 @@ async function databaseCollationRefusal(args: {
       () => reader.defaultIdentity(source),
    );
    if (sourceDefault === undefined) return "the source's default unread";
-   // Every column the stored tables hold, by name: its collation's identity.
-   const held = new Map<string, string | null>();
+   // Every column the stored tables hold, by name: each identity any table
+   // holds it under (a read names its column, not its table; fail closed).
+   const held = new Map<string, Set<string | null>>();
    let listedTables = 0;
    for (const t of args.tables) {
       if (t.tablePath === undefined) return "a table with no path";
@@ -1115,7 +1116,7 @@ async function databaseCollationRefusal(args: {
          ["columns", storedName, tablePath],
          () => reader.columnIdentities(connection, tablePath),
       )) {
-         held.set(col, id);
+         holdColumn(held, col, id);
       }
    }
    // Every table unlisted: nothing stored is read (each read fails).
@@ -1171,16 +1172,31 @@ async function databaseCollationRefusal(args: {
          return "a scope column no stored table holds";
       }
       for (const n of found) {
-         const id = held.get(n);
-         if (id === null || id === undefined) continue;
-         storedStrings++;
-         compared.add(id);
+         for (const id of held.get(n) ?? []) {
+            if (id === null) continue;
+            storedStrings++;
+            compared.add(id);
+         }
       }
    }
    if (storedStrings > 0 && paths.length === 0) {
       return "a stored string column with no compared source path";
    }
    return compared.size <= 1 ? undefined : "a column under another collation";
+}
+
+/** Record that a table read holds `name` under `collation`. */
+export function holdColumn(
+   held: Map<string, Set<string | null>>,
+   name: string,
+   collation: string | null,
+): void {
+   let set = held.get(name);
+   if (!set) {
+      set = new Set();
+      held.set(name, set);
+   }
+   set.add(collation);
 }
 
 /** The dialect of the source a compiled query runs on, or "" when unread. */

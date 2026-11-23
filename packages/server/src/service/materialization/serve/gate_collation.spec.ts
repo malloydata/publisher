@@ -615,10 +615,13 @@ source: s_join is pg.table('public.dsc_base') extend {
 
       const refusal = async (
          source: string,
-         tablePath: string,
+         tablePaths: string | readonly string[],
          destinationName?: string,
          kind?: string,
       ) => {
+         const paths =
+            typeof tablePaths === "string" ? [tablePaths] : tablePaths;
+         const tablePath = paths.join("+");
          const runtime = new SingleConnectionRuntime({ connection: pg });
          const materializer = runtime.loadModel(MODEL);
          const author = materializer.loadQuery(
@@ -626,14 +629,12 @@ source: s_join is pg.table('public.dsc_base') extend {
          );
          const reads = await gateReadsOfQuery(author as never);
          const probed = await storedTableCollationRefusal({
-            tables: [
-               {
-                  tier: "database",
-                  tablePath,
-                  ...(destinationName ? { destinationName } : {}),
-                  ...(kind ? { kind } : {}),
-               },
-            ],
+            tables: paths.map((p) => ({
+               tier: "database" as const,
+               tablePath: p,
+               ...(destinationName ? { destinationName } : {}),
+               ...(kind ? { kind } : {}),
+            })),
             answerRunnable: {
                runtime: {
                   connections: {
@@ -656,21 +657,26 @@ source: s_join is pg.table('public.dsc_base') extend {
                connection: async (name) => (name === "other" ? other : pg),
             }),
          );
-         const contract = await captureDatabaseContract({
-            connection: destinationName === "other" ? other : pg,
-            tableName: tablePath,
-            physicalTableName: tablePath,
-         }).catch(() => undefined);
+         const contracts = new Map<
+            string,
+            Awaited<ReturnType<typeof captureDatabaseContract>>
+         >();
+         for (const [i, p] of paths.entries()) {
+            const contract = await captureDatabaseContract({
+               connection: destinationName === "other" ? other : pg,
+               tableName: p,
+               physicalTableName: p,
+            }).catch(() => undefined);
+            if (contract) contracts.set(`t${i}`, contract);
+         }
          const looked = await lookupStoredRefusal({
-            tables: [
-               {
-                  tier: "database",
-                  tablePath,
-                  virtualHandle: "t",
-                  ...(destinationName ? { destinationName } : {}),
-                  ...(kind ? { kind } : {}),
-               },
-            ],
+            tables: paths.map((p, i) => ({
+               tier: "database" as const,
+               tablePath: p,
+               virtualHandle: `t${i}`,
+               ...(destinationName ? { destinationName } : {}),
+               ...(kind ? { kind } : {}),
+            })),
             authorRunnable: author as never,
             reads,
             bind: makeSnapshot(
@@ -678,7 +684,7 @@ source: s_join is pg.table('public.dsc_base') extend {
                {},
                undefined,
                undefined,
-               contract ? new Map([["t", contract]]) : undefined,
+               contracts.size > 0 ? contracts : undefined,
             ),
          });
          expect({
@@ -706,6 +712,17 @@ source: s_join is pg.table('public.dsc_base') extend {
       it("refuses a column altered to another collation after the build", async () => {
          expect(await refusal("s", "dsc_alt")).toBeDefined();
          expect(await refusal("s_ren", "dsc_alt")).toBeDefined();
+      });
+
+      // A read names its column, not the table that holds it: when two
+      // tables an answer reads hold `region` under different collations,
+      // the one read may be either, so both are compared. Matching by name
+      // alone kept whichever table came last, and admitted `dsc_alt`'s
+      // `C` column as the source's own whenever `dsc_st` followed it.
+      it("refuses a column two tables read hold under different collations, in either order", async () => {
+         expect(await refusal("s", ["dsc_alt", "dsc_st"])).toBeDefined();
+         expect(await refusal("s", ["dsc_st", "dsc_alt"])).toBeDefined();
+         expect(await refusal("s", ["dsc_st", "dsc_st"])).toBeUndefined();
       });
 
       it("refuses a table on another database whose same-named collation differs", async () => {

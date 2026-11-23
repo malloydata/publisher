@@ -36,7 +36,7 @@ import type { ColumnContract } from "../domain/column_contract";
 import { collationReaderOf } from "./collation";
 import { placeTable, sqlProjects, TABLE_TYPES } from "./collation/bigquery";
 import { fieldPathsIn } from "./gate_paths";
-import { namedEntryOf, stringPaths } from "./gate_collation";
+import { holdColumn, namedEntryOf, stringPaths } from "./gate_collation";
 import type {
    CollationProbe,
    GateReads,
@@ -369,7 +369,10 @@ function databaseRefusal(
    if (source?.defaultIdentity === undefined) {
       return "the source's default unread";
    }
-   const held = new Map<string, string | null>();
+   // Every collation each name is held under, by any table read: a read
+   // names its column, not the table holding it, so a name two tables hold
+   // under different collations compares under both (fail closed).
+   const held = new Map<string, Set<string | null>>();
    for (const t of tables) {
       if (t.tablePath === undefined) return "a table with no path";
       const storedName = t.destinationName ?? entry.connectionName;
@@ -381,7 +384,7 @@ function databaseRefusal(
       }
       const contract = contractOf(t, snapshot);
       if (!contract) return "a table with no contract";
-      for (const c of contract.columns) held.set(c.name, c.collation);
+      for (const c of contract.columns) holdColumn(held, c.name, c.collation);
    }
    const live = new Set((reads.livePaths ?? []).map((p) => p.join("\u0000")));
    const kept = reads.entryPaths
@@ -415,10 +418,11 @@ function databaseRefusal(
          return "a scope column no stored table holds";
       }
       for (const n of found) {
-         const id = held.get(n);
-         if (id === null || id === undefined) continue;
-         storedStrings++;
-         compared.add(id);
+         for (const id of held.get(n) ?? []) {
+            if (id === null) continue;
+            storedStrings++;
+            compared.add(id);
+         }
       }
    }
    if (storedStrings > 0 && paths.length === 0) {
