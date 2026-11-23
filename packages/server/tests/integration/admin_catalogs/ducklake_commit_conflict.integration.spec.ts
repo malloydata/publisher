@@ -60,10 +60,11 @@ describe.skipIf(!SUPERUSER)(
          return session;
       }
 
-      /** Both transactions delete-then-insert the same new key; A commits first. */
+      /** Both transactions delete-then-insert the same new key, each setting a commit message with `extra_info` when `recorded`; A commits first. */
       async function sameNewKey(
          id: number,
          retries: number,
+         recorded = false,
       ): Promise<{ second: string; rows: number }> {
          const a = await instance(`conflict_a_${id}`, retries);
          const b = await instance(`conflict_b_${id}`, retries);
@@ -78,6 +79,11 @@ describe.skipIf(!SUPERUSER)(
             await session.runSQL(
                `INSERT INTO ${CATALOG}.s1.t VALUES (${id}, '${label}')`,
             );
+            if (recorded) {
+               await session.runSQL(
+                  `CALL ${CATALOG}.set_commit_message('publisher-admin', '${label}', extra_info => '{"label":"${label}","id":${id}}')`,
+               );
+            }
          }
          expect(await commitOutcome(a)).toBe("committed");
          const second = await commitOutcome(b);
@@ -118,6 +124,27 @@ describe.skipIf(!SUPERUSER)(
          // Observed: the engine's conflict check is per table and operation, not per key.
          expect(second).toBe("committed");
          expect(rows).toBe(2);
+      });
+
+      it("keeps a commit's extra_info when the engine retries the commit", async () => {
+         const { second } = await sameNewKey(30, DEFAULT_RETRIES, true);
+         expect(second).toBe("committed");
+         // Observed: the retried commit lands as a later snapshot carrying the message and extra_info it set.
+         const rows = await superuser(
+            `select snapshot_id::int as id, author, commit_message, commit_extra_info from ${CATALOG}.ducklake_snapshot_changes where commit_extra_info like '%"id":30}' order by 1`,
+            DB,
+         );
+         expect(rows).toHaveLength(2);
+         expect(
+            rows.map((r) => [
+               r.author,
+               r.commit_message,
+               JSON.parse(String(r.commit_extra_info)).label,
+            ]),
+         ).toEqual([
+            ["publisher-admin", "from_a", "from_a"],
+            ["publisher-admin", "from_b", "from_b"],
+         ]);
       });
 
       it("with retry off, the later commit fails only on the snapshot id the earlier one took", async () => {

@@ -67,6 +67,20 @@ function adminRoute(
    };
 }
 
+/** A list's page size: `limit`, an integer from 1 to 1000, default 100. */
+function listLimit(req: express.Request): number {
+   const raw = req.query.limit;
+   const limit = raw === undefined ? 100 : Number(raw);
+   if (!Number.isInteger(limit) || limit < 1 || limit > 1000) {
+      throw new CatalogAdminError(
+         400,
+         "INVALID_REQUEST",
+         "'limit' must be an integer from 1 to 1000.",
+      );
+   }
+   return limit;
+}
+
 export function registerAdminRoutes(
    app: express.Express,
    apiPrefix: string,
@@ -150,16 +164,39 @@ export function registerAdminRoutes(
    );
    app.post(
       `${table}/loads`,
-      adminRoute(
-         catalogs,
-         (c, req) =>
-            c.loadTable(
-               req.params.catalogName,
-               req.params.schemaName,
-               req.params.tableName,
-               req.body,
-            ),
-         { status: 201 },
+      adminRoute(catalogs, async (c, req, res) => {
+         const { load, created } = await c.loadTable(
+            req.params.catalogName,
+            req.params.schemaName,
+            req.params.tableName,
+            req.body,
+            req.get("Idempotency-Key"),
+         );
+         if (created) res.location(`loads/${load.id}`);
+         res.status(created ? 201 : 200).json(load);
+      }),
+   );
+   app.get(
+      `${table}/loads`,
+      adminRoute(catalogs, (c, req) =>
+         c.listLoads(
+            req.params.catalogName,
+            req.params.schemaName,
+            req.params.tableName,
+            listLimit(req),
+            typeof req.query.after === "string" ? req.query.after : undefined,
+         ),
+      ),
+   );
+   app.get(
+      `${table}/loads/:loadId`,
+      adminRoute(catalogs, (c, req) =>
+         c.getLoad(
+            req.params.catalogName,
+            req.params.schemaName,
+            req.params.tableName,
+            req.params.loadId,
+         ),
       ),
    );
    app.delete(
@@ -175,18 +212,9 @@ export function registerAdminRoutes(
    );
    app.get(
       `${catalog}/snapshots`,
-      adminRoute(catalogs, async (c, req) => {
-         const raw = req.query.limit;
-         const limit = raw === undefined ? 100 : Number(raw);
-         if (!Number.isInteger(limit) || limit < 1 || limit > 1000) {
-            throw new CatalogAdminError(
-               400,
-               "INVALID_REQUEST",
-               "'limit' must be an integer from 1 to 1000.",
-            );
-         }
-         return c.listSnapshots(req.params.catalogName, limit);
-      }),
+      adminRoute(catalogs, (c, req) =>
+         c.listSnapshots(req.params.catalogName, listLimit(req)),
+      ),
    );
    app.delete(
       `${catalog}/snapshots`,

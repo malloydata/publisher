@@ -9,6 +9,7 @@
  */
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
+import { createHash } from "crypto";
 import {
    copyFileSync,
    mkdirSync,
@@ -30,6 +31,7 @@ import {
    attachDuckLakeReadWrite,
 } from "../../../src/service/connection";
 import { createIsolatedBuildSession } from "../../../src/service/materialization/run/materialization_build_session";
+import { canonicalSha } from "../../../src/service/package_revision";
 import {
    mergeStatements,
    mergeStorageTable,
@@ -135,11 +137,11 @@ describe.skipIf(!SUPERUSER)("loads", () => {
       return session;
    }
 
-   const load = (
+   const load = async (
       table: string,
       body: Record<string, unknown>,
       catalog = CATALOG,
-   ) => admin.loadTable(catalog, "s", table, body);
+   ) => (await admin.loadTable(catalog, "s", table, body)).load;
 
    const merge = (
       table: string,
@@ -196,6 +198,27 @@ describe.skipIf(!SUPERUSER)("loads", () => {
       }
    }
 
+   /** What `run` answers, and the statements every DuckDB session ran meanwhile. */
+   async function recorded<T>(run: () => Promise<T>) {
+      const original = DuckDBConnection.prototype.runSQL;
+      const seen: string[] = [];
+      const spy = spyOn(
+         DuckDBConnection.prototype,
+         "runSQL",
+      ).mockImplementation(function (
+         this: DuckDBConnection,
+         ...args: Parameters<typeof original>
+      ) {
+         seen.push(args[0]);
+         return original.apply(this, args);
+      });
+      try {
+         return { value: await run(), seen };
+      } finally {
+         spy.mockRestore();
+      }
+   }
+
    beforeAll(async () => {
       await superuser(`DROP DATABASE IF EXISTS ${DB} WITH (FORCE)`);
       await superuser(`CREATE DATABASE ${DB}`);
@@ -227,7 +250,7 @@ describe.skipIf(!SUPERUSER)("loads", () => {
          const first = await parquet(
             "SELECT i AS id, 'v' || i AS v FROM range(1, 6) t(i)",
          );
-         expect(await merge("basic", [first])).toEqual({
+         expect(await merge("basic", [first])).toMatchObject({
             rowsInserted: 5,
             rowsReplaced: 0,
             rowsUnchanged: 0,
@@ -238,7 +261,7 @@ describe.skipIf(!SUPERUSER)("loads", () => {
          const second = await parquet(
             "SELECT * FROM (VALUES (2, 'changed'), (5, 'v5'), (6, 'new')) t(id, v)",
          );
-         expect(await merge("basic", [second])).toEqual({
+         expect(await merge("basic", [second])).toMatchObject({
             rowsInserted: 1,
             rowsReplaced: 1,
             rowsUnchanged: 1,
@@ -288,7 +311,7 @@ describe.skipIf(!SUPERUSER)("loads", () => {
          await merge("heal", [a]);
          await sql(writer, `INSERT INTO ${CATALOG}.s.heal VALUES (1, 'x')`);
          expect(await rowsOf("heal")).toHaveLength(2);
-         expect(await merge("heal", [a])).toEqual({
+         expect(await merge("heal", [a])).toMatchObject({
             rowsInserted: 0,
             rowsReplaced: 1,
             rowsUnchanged: 0,
@@ -376,7 +399,7 @@ describe.skipIf(!SUPERUSER)("loads", () => {
             const first = await merge(table, [object]);
             expect(first.rowsInserted).toBe(3);
             const before = await snapshotId();
-            expect(await merge(table, [object])).toEqual({
+            expect(await merge(table, [object])).toMatchObject({
                rowsInserted: 0,
                rowsReplaced: 0,
                rowsUnchanged: 3,
@@ -478,6 +501,415 @@ describe.skipIf(!SUPERUSER)("loads", () => {
       });
    });
 
+   describe("the Load resource", () => {
+      const UUID =
+         /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+      const body = (
+         objects: string[],
+         extra: Record<string, unknown> = {},
+      ) => ({ mode: "merge", key: ["id"], objects, ...extra });
+      /** A load with an optional `Idempotency-Key`, answered as the route sees it: the Load, and whether it was created. */
+      const outcome = (
+         table: string,
+         objects: string[],
+         key?: string,
+         extra: Record<string, unknown> = {},
+         catalog = CATALOG,
+      ) => admin.loadTable(catalog, "s", table, body(objects, extra), key);
+      /** An object holding the rows `1..n`, valued `<tag>1..<tag>n`. */
+      const rowsObject = (tag: string, n = 3) =>
+         parquet(
+            `SELECT i AS id, '${tag}' || i AS v FROM range(1, ${n + 1}) t(i)`,
+         );
+      const snapshotRow = async (id: number) =>
+         (
+            await superuser(
+               `select author, commit_message, commit_extra_info from ${CATALOG}.ducklake_snapshot_changes where snapshot_id = ${id}`,
+               DB,
+            )
+         )[0];
+
+      it("answers a commit created, with the load's id, snapshot and time, and a no-op with its counts alone", async () => {
+         const object = await rowsObject("v");
+         const first = await outcome("res_basic", [object]);
+         expect(first.created).toBe(true);
+         expect(first.load).toMatchObject({
+            mode: "merge",
+            rowsInserted: 3,
+            rowsReplaced: 0,
+            rowsUnchanged: 0,
+            rowsDeleted: 0,
+            rowCount: 3,
+            cursorMax: null,
+         });
+         expect(first.load.id).toMatch(UUID);
+         const [newest] = await admin.listSnapshots(CATALOG, 1);
+         expect(first.load.snapshotId).toBe(newest.id);
+         expect(first.load.committedAt).toBe(newest.time);
+         const retry = await outcome("res_basic", [object]);
+         expect(retry.created).toBe(false);
+         expect(retry.load).toStrictEqual({
+            mode: "merge",
+            rowsInserted: 0,
+            rowsReplaced: 0,
+            rowsUnchanged: 3,
+            rowsDeleted: 0,
+            rowCount: 3,
+            cursorMax: null,
+         });
+      });
+
+      it("answers a load that only adds a column created, though no row changed", async () => {
+         await merge("res_column", [await parquet("SELECT 1 AS id, 'a' AS v")]);
+         const widened = await outcome("res_column", [
+            await parquet("SELECT 1 AS id, 'a' AS v, NULL::VARCHAR AS extra"),
+         ]);
+         expect(widened.created).toBe(true);
+         expect(widened.load).toMatchObject({
+            rowsInserted: 0,
+            rowsReplaced: 0,
+            rowsUnchanged: 1,
+         });
+         expect(widened.load.id).toMatch(UUID);
+         expect(widened.load.snapshotId).toBe(await snapshotId());
+      });
+
+      it("records the load in its own snapshot, with the key's digest and never the key", async () => {
+         const request = body([await rowsObject("v")], {
+            cursor: "id",
+            commitMessage: "orders run 7",
+         });
+         const { load } = await admin.loadTable(
+            CATALOG,
+            "s",
+            "res_record",
+            request,
+            "order-run-7",
+         );
+         const row = await snapshotRow(load.snapshotId!);
+         expect([row.author, row.commit_message]).toEqual([
+            "publisher-admin",
+            "orders run 7",
+         ]);
+         const extra = String(row.commit_extra_info);
+         expect(extra).not.toContain("order-run-7");
+         expect(JSON.parse(extra)).toEqual({
+            publisherLoad: 1,
+            id: load.id,
+            table: "s.res_record",
+            keyDigest: createHash("sha256").update("order-run-7").digest("hex"),
+            requestDigest: canonicalSha(request),
+            mode: "merge",
+            result: {
+               rowsInserted: 3,
+               rowsReplaced: 0,
+               rowsUnchanged: 0,
+               rowsDeleted: 0,
+               rowCount: 3,
+               cursorMax: "3",
+               cursorType: "BIGINT",
+            },
+         });
+         const unkeyed = await outcome("res_record", [
+            await parquet("SELECT 9 AS id, 'z' AS v"),
+         ]);
+         const unkeyedRow = await snapshotRow(unkeyed.load.snapshotId!);
+         expect(
+            JSON.parse(String(unkeyedRow.commit_extra_info)),
+         ).not.toHaveProperty("keyDigest");
+      });
+
+      it("replays a keyed load that committed: created, the same Load, nothing written", async () => {
+         const object = await rowsObject("v");
+         const first = await outcome("rp_basic", [object], "k1");
+         const before = await snapshotId();
+         const replay = await outcome("rp_basic", [object], "k1");
+         expect(replay).toStrictEqual(first);
+         expect(await snapshotId()).toBe(before);
+      });
+
+      it("flushes the rows a replayed load left inlined, as the retry of a load that failed after its commit must", async () => {
+         await admin.createCatalog({
+            name: "idem_inl",
+            dataPath: join(root, "idem_inl"),
+            encrypted: false,
+            dataInliningRowLimit: 100,
+            schemas: ["s"],
+         });
+         const object = await parquet(
+            "SELECT * FROM (VALUES (1, 'a'), (2, 'b')) t(id, v)",
+            join(root, "idem_inl"),
+         );
+         const first = await outcome("flushed", [object], "k", {}, "idem_inl");
+         const inl = await attached("loads_idem_inl", "write", "idem_inl");
+         await sql(inl, "INSERT INTO idem_inl.s.flushed VALUES (3, 'c')");
+         expect(await inlinedRows("idem_inl", "flushed")).toBe(1);
+         expect(
+            await outcome("flushed", [object], "k", {}, "idem_inl"),
+         ).toEqual(first);
+         expect(await inlinedRows("idem_inl", "flushed")).toBe(0);
+      });
+
+      it("does not revert a later load when an earlier one is retried", async () => {
+         const a = await parquet("SELECT 1 AS id, 'from_a' AS v");
+         const b = await parquet("SELECT 1 AS id, 'from_b' AS v");
+         const first = await outcome("rp_revert", [a], "key-a");
+         await outcome("rp_revert", [b], "key-b");
+         expect(await outcome("rp_revert", [a], "key-a")).toStrictEqual(first);
+         expect(await rowsOf("rp_revert")).toEqual([{ id: 1, v: "from_b" }]);
+      });
+
+      it("still replays after a later load added a column and widened another", async () => {
+         const a = await parquet("SELECT 1 AS id, 5::INTEGER AS n");
+         const first = await outcome("rp_alter", [a], "k");
+         const later = await outcome("rp_alter", [
+            await parquet("SELECT 1 AS id, 5::BIGINT AS n, 'x' AS extra"),
+         ]);
+         expect(later.created).toBe(true);
+         expect(
+            (await admin.getTable(CATALOG, "s", "rp_alter")).columns.map(
+               (c) => `${c.name} ${c.type}`,
+            ),
+         ).toEqual(["id INTEGER", "n BIGINT", "extra VARCHAR"]);
+         expect(await outcome("rp_alter", [a], "k")).toStrictEqual(first);
+      });
+
+      it("refuses a key reused with a different body as 409 IDEMPOTENCY_KEY_REUSED, and writes nothing", async () => {
+         await outcome("rp_reuse", [await rowsObject("a")], "k");
+         const before = await snapshotId();
+         const error = await refusal(
+            outcome("rp_reuse", [await rowsObject("b")], "k"),
+         );
+         expect([error.status, error.reason]).toEqual([
+            409,
+            "IDEMPOTENCY_KEY_REUSED",
+         ]);
+         expect(await snapshotId()).toBe(before);
+      });
+
+      it("scopes a key to its table", async () => {
+         const object = await rowsObject("v");
+         const first = await outcome("rp_scope_a", [object], "shared");
+         const other = await outcome("rp_scope_b", [object], "shared");
+         expect(other.created).toBe(true);
+         expect(other.load.id).not.toBe(first.load.id);
+      });
+
+      it("does not outlive the table it was recorded for: a DELETE or a PUT replace ends it", async () => {
+         const a = await rowsObject("a");
+         const first = await outcome("rp_reset", [a], "k");
+         await admin.deleteTable(CATALOG, "s", "rp_reset");
+         const afterDelete = await outcome("rp_reset", [a], "k");
+         expect(afterDelete.created).toBe(true);
+         expect(afterDelete.load.id).not.toBe(first.load.id);
+         expect(afterDelete.load.rowsInserted).toBe(3);
+         await admin.putTable(
+            CATALOG,
+            "s",
+            "rp_reset",
+            { source: { uri: await rowsObject("b"), format: "parquet" } },
+            false,
+         );
+         const afterReplace = await outcome("rp_reset", [a], "k");
+         expect(afterReplace.created).toBe(true);
+         expect(afterReplace.load.id).not.toBe(afterDelete.load.id);
+         expect(afterReplace.load.rowsReplaced).toBe(3);
+      });
+
+      it("stores nothing for a no-op, so its key runs again", async () => {
+         const a = await rowsObject("a");
+         await merge("rp_noop", [a]);
+         expect((await outcome("rp_noop", [a], "k")).created).toBe(false);
+         await merge("rp_noop", [await rowsObject("b")]);
+         expect((await outcome("rp_noop", [a], "k")).created).toBe(true);
+         expect(await rowsOf("rp_noop")).toEqual([
+            { id: 1, v: "a1" },
+            { id: 2, v: "a2" },
+            { id: 3, v: "a3" },
+         ]);
+      });
+
+      it("keeps a record only as long as its snapshot", async () => {
+         await admin.createCatalog({
+            name: "idem_exp",
+            dataPath: join(root, "idem_exp"),
+            encrypted: false,
+            schemas: ["s"],
+         });
+         const [a, b] = [
+            await parquet("SELECT 1 AS id, 'a' AS v", join(root, "idem_exp")),
+            await parquet("SELECT 1 AS id, 'b' AS v", join(root, "idem_exp")),
+         ];
+         const first = await outcome("aged", [a], "k", {}, "idem_exp");
+         await outcome("aged", [b], undefined, {}, "idem_exp");
+         await admin.deleteSnapshots("idem_exp", new Date(Date.now() + 60_000));
+         await expect(
+            admin.getLoad("idem_exp", "s", "aged", first.load.id!),
+         ).rejects.toMatchObject({ reason: "LOAD_NOT_FOUND" });
+         const rerun = await outcome("aged", [a], "k", {}, "idem_exp");
+         expect(rerun.created).toBe(true);
+         expect(rerun.load.id).not.toBe(first.load.id);
+      });
+
+      describe("reads", () => {
+         it("answers a load by id, with who committed it and the message", async () => {
+            const { load } = await outcome("rd_one", [await rowsObject("v")]);
+            expect(
+               await admin.getLoad(CATALOG, "s", "rd_one", load.id!),
+            ).toStrictEqual({
+               ...load,
+               author: "publisher-admin",
+               commitMessage: "load s.rd_one",
+            });
+         });
+
+         it("answers 404 LOAD_NOT_FOUND for an id it has not, one that is not an id and another table's, and 404 CATALOG_NOT_FOUND for a catalog it has not", async () => {
+            const mine = await outcome("rd_miss", [await rowsObject("v")]);
+            const theirs = await outcome("rd_other", [await rowsObject("v")]);
+            for (const id of [
+               "00000000-0000-4000-8000-000000000000",
+               "not-an-id",
+               theirs.load.id!,
+            ]) {
+               const error = await refusal(
+                  admin.getLoad(CATALOG, "s", "rd_miss", id),
+               );
+               expect([id, error.status, error.reason]).toEqual([
+                  id,
+                  404,
+                  "LOAD_NOT_FOUND",
+               ]);
+            }
+            const missing = await refusal(
+               admin.getLoad("no_such_catalog", "s", "rd_miss", mine.load.id!),
+            );
+            expect([missing.status, missing.reason]).toEqual([
+               404,
+               "CATALOG_NOT_FOUND",
+            ]);
+         });
+
+         it("lists a table's loads newest first in pages, without no-ops or other tables' loads, across a drop and recreate", async () => {
+            const ids: string[] = [];
+            for (const tag of ["a", "b", "c", "d", "e"]) {
+               const { load } = await outcome("rd_list", [
+                  await parquet(`SELECT 1 AS id, '${tag}' AS v`),
+               ]);
+               ids.push(load.id!);
+            }
+            await outcome("rd_list", [
+               await parquet("SELECT 1 AS id, 'e' AS v"),
+            ]);
+            await outcome("rd_list_other", [await rowsObject("v")]);
+            const first = await admin.listLoads(CATALOG, "s", "rd_list", 2);
+            expect(first.items.map((l) => l.id)).toEqual([ids[4], ids[3]]);
+            expect(first.items[0]).toMatchObject({
+               author: "publisher-admin",
+               commitMessage: "load s.rd_list",
+               rowsReplaced: 1,
+            });
+            const second = await admin.listLoads(
+               CATALOG,
+               "s",
+               "rd_list",
+               2,
+               first.nextCursor,
+            );
+            expect(second.items.map((l) => l.id)).toEqual([ids[2], ids[1]]);
+            const third = await admin.listLoads(
+               CATALOG,
+               "s",
+               "rd_list",
+               2,
+               second.nextCursor,
+            );
+            expect(third.items.map((l) => l.id)).toEqual([ids[0]]);
+            expect(third).not.toHaveProperty("nextCursor");
+            await admin.deleteTable(CATALOG, "s", "rd_list");
+            const recreated = await outcome("rd_list", [await rowsObject("v")]);
+            expect(
+               (await admin.listLoads(CATALOG, "s", "rd_list", 100)).items.map(
+                  (l) => l.id,
+               ),
+            ).toEqual([recreated.load.id, ...ids.slice().reverse()]);
+         });
+      });
+
+      describe("the reads it makes of the catalog database", () => {
+         /** How many queries `run` makes on the table lock's own connection. */
+         async function lockReads(run: () => Promise<unknown>) {
+            const lock = spyOn(admin, "withTableLock");
+            let reads = 0;
+            lock.mockImplementation(
+               (catalog, schema, table, fn) =>
+                  CatalogAdmin.prototype.withTableLock.call(
+                     admin,
+                     catalog,
+                     schema,
+                     table,
+                     (held) =>
+                        fn({
+                           ...held,
+                           pg: async (query) => {
+                              reads++;
+                              return held.pg(query);
+                           },
+                        }),
+                  ) as ReturnType<typeof fn>,
+            );
+            try {
+               await run();
+               return reads;
+            } finally {
+               lock.mockRestore();
+            }
+         }
+
+         it("adds one read to a load that commits and two to a keyed one, one to a keyed no-op or replay, and none to a no-op", async () => {
+            const a = await rowsObject("a");
+            const b = await rowsObject("b");
+            await merge("rd_count", [a]);
+            const noop = await lockReads(() => outcome("rd_count", [a]));
+            expect(noop).toBe(3);
+            expect(await lockReads(() => outcome("rd_count", [b]))).toBe(
+               noop + 1,
+            );
+            expect(await lockReads(() => outcome("rd_count", [a], "k"))).toBe(
+               noop + 2,
+            );
+            expect(await lockReads(() => outcome("rd_count", [a], "k"))).toBe(
+               noop + 1,
+            );
+            expect(await lockReads(() => outcome("rd_count", [a], "j"))).toBe(
+               noop + 1,
+            );
+            expect(
+               await lockReads(() => refusal(outcome("rd_count", [b], "k"))),
+            ).toBe(noop);
+         });
+
+         it("makes one read for a load's record on a GET, beside the catalog's existence check", async () => {
+            const { load } = await outcome("rd_get", [await rowsObject("v")]);
+            const reads: (() => Promise<unknown>)[] = [
+               () => admin.getLoad(CATALOG, "s", "rd_get", load.id!),
+               () => admin.listLoads(CATALOG, "s", "rd_get", 10),
+            ];
+            for (const read of reads) {
+               const { seen } = await recorded(read);
+               const queries = seen.filter((s) =>
+                  s.includes("postgres_query('admin_pg'"),
+               );
+               expect(queries).toHaveLength(2);
+               expect(
+                  queries.filter((s) =>
+                     s.includes("ducklake_snapshot_changes"),
+                  ),
+               ).toHaveLength(1);
+            }
+         });
+      });
+   });
+
    describe("replace", () => {
       async function seeded(table: string): Promise<void> {
          await merge(table, [
@@ -499,7 +931,7 @@ describe.skipIf(!SUPERUSER)("loads", () => {
                maxDeletedRows: 3,
                objects: [object],
             }),
-         ).toEqual({
+         ).toMatchObject({
             rowsInserted: 1,
             rowsReplaced: 0,
             rowsUnchanged: 2,
@@ -569,7 +1001,7 @@ describe.skipIf(!SUPERUSER)("loads", () => {
                maxDeletedRows: 0,
                objects: [same],
             }),
-         ).toEqual({
+         ).toMatchObject({
             rowsInserted: 0,
             rowsReplaced: 0,
             rowsUnchanged: 5,
@@ -1254,11 +1686,13 @@ describe.skipIf(!SUPERUSER)("loads", () => {
          expect(busy?.message).toContain("is already running");
          expect(first.rowsInserted).toBe(3);
          expect(
-            await other.loadTable(CATALOG, "s", "overlap", {
-               mode: "merge",
-               key: ["id"],
-               objects: [object],
-            }),
+            (
+               await other.loadTable(CATALOG, "s", "overlap", {
+                  mode: "merge",
+                  key: ["id"],
+                  objects: [object],
+               })
+            ).load,
          ).toMatchObject({ rowsUnchanged: 3, rowsInserted: 0 });
       });
 
@@ -1573,31 +2007,11 @@ describe.skipIf(!SUPERUSER)("loads", () => {
             schemaName: "s",
             tableName: table,
             key: [],
+            record: { id: table, table: `s.${table}`, requestDigest: "" },
             assertLockHeld: async () => undefined,
             columnGroupBudget,
             ...body,
-         });
-
-      /** What `run` answers, and the statements every DuckDB session ran meanwhile. */
-      async function recorded<T>(run: () => Promise<T>) {
-         const original = DuckDBConnection.prototype.runSQL;
-         const seen: string[] = [];
-         const spy = spyOn(
-            DuckDBConnection.prototype,
-            "runSQL",
-         ).mockImplementation(function (
-            this: DuckDBConnection,
-            ...args: Parameters<typeof original>
-         ) {
-            seen.push(args[0]);
-            return original.apply(this, args);
-         });
-         try {
-            return { value: await run(), seen };
-         } finally {
-            spy.mockRestore();
-         }
-      }
+         }).then((outcome) => outcome.result);
 
       const passesOf = (seen: string[]) =>
          seen.filter((s) => s.startsWith('INSERT INTO "__publisher_changes"'))
@@ -1639,7 +2053,7 @@ describe.skipIf(!SUPERUSER)("loads", () => {
                   budget,
                ),
             );
-            expect(value).toEqual({
+            expect(value).toMatchObject({
                rowsInserted: 2,
                rowsReplaced: 4,
                rowsUnchanged: 2,
@@ -1695,7 +2109,7 @@ describe.skipIf(!SUPERUSER)("loads", () => {
                   { mode: "merge", key: ["id"], objects: [object] },
                   budget,
                ),
-            ).toEqual({
+            ).toMatchObject({
                rowsInserted: 1,
                rowsReplaced: 4,
                rowsUnchanged: 1,
@@ -1752,7 +2166,7 @@ describe.skipIf(!SUPERUSER)("loads", () => {
                   },
                   budget,
                ),
-            ).toEqual({
+            ).toMatchObject({
                rowsInserted: 1,
                rowsReplaced: 2,
                rowsUnchanged: 3,

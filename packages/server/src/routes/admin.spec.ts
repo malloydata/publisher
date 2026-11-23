@@ -148,21 +148,29 @@ describe("the admin listener", () => {
       expect(ifAbsent).toBe(true);
    });
 
-   it("routes a load POST to 201 with the body as given, and answers a refusal's detail", async () => {
+   it("routes a load POST with the body and Idempotency-Key as given: 201 with a Location for a created load, 200 with none for a no-op, and a refusal's detail", async () => {
       const seen: unknown[] = [];
       let refuse: CatalogAdminError | undefined = undefined;
+      let created = true;
+      const counts = {
+         mode: "merge" as const,
+         rowsInserted: 1,
+         rowsReplaced: 0,
+         rowsUnchanged: 0,
+         rowsDeleted: 0,
+         rowCount: 1,
+         cursorMax: null,
+      };
       const app = createAdminApp(
          catalogs({
-            loadTable: async (c, s, t, body) => {
-               seen.push([c, s, t, body]);
+            loadTable: async (c, s, t, body, key) => {
+               seen.push([c, s, t, body, key]);
                if (refuse) throw refuse;
                return {
-                  rowsInserted: 1,
-                  rowsReplaced: 0,
-                  rowsUnchanged: 0,
-                  rowsDeleted: 0,
-                  rowCount: 1,
-                  cursorMax: null,
+                  load: created
+                     ? { ...counts, id: "abc", snapshotId: 7, committedAt: "x" }
+                     : counts,
+                  created,
                };
             },
          }),
@@ -175,10 +183,20 @@ describe("the admin listener", () => {
          key: ["id"],
          objects: ["o"],
       };
-      const ok = await request(app).post(path).send(body);
+      const ok = await request(app)
+         .post(path)
+         .set("Idempotency-Key", "run-1")
+         .send(body);
       expect(ok.status).toBe(201);
-      expect(ok.body.rowsInserted).toBe(1);
-      expect(seen).toEqual([["ds_x", "s", "t", body]]);
+      expect(ok.headers.location).toBe("loads/abc");
+      expect(ok.body).toMatchObject({ id: "abc", rowsInserted: 1 });
+      expect(seen).toEqual([["ds_x", "s", "t", body, "run-1"]]);
+      created = false;
+      const noop = await request(app).post(path).send(body);
+      expect(noop.status).toBe(200);
+      expect(noop.headers.location).toBeUndefined();
+      expect(noop.body).not.toHaveProperty("id");
+      expect(seen[1]).toEqual(["ds_x", "s", "t", body, undefined]);
       refuse = new CatalogAdminError(
          422,
          "LOAD_DELETE_LIMIT_EXCEEDED",
@@ -197,6 +215,48 @@ describe("the admin listener", () => {
          reason: "LOAD_DELETE_LIMIT_EXCEEDED",
          detail: { wouldDelete: 4, rowsBefore: 5, maxDeletedRows: 3 },
       });
+   });
+
+   it("routes a load's reads: one by id, and a list with its limit and cursor, refusing a limit outside 1 to 1000", async () => {
+      const seen: unknown[] = [];
+      const read = { id: "abc", mode: "merge", author: "publisher-admin" };
+      const app = createAdminApp(
+         catalogs({
+            getLoad: async (c, s, t, id) => {
+               seen.push(["get", c, s, t, id]);
+               if (id === "gone") {
+                  throw new CatalogAdminError(404, "LOAD_NOT_FOUND", "no");
+               }
+               return read as never;
+            },
+            listLoads: async (c, s, t, limit, after) => {
+               seen.push(["list", c, s, t, limit, after]);
+               return { items: [read as never], nextCursor: "next" };
+            },
+         }),
+         watch,
+      );
+      const path = "/api/v0/catalogs/ds_x/schemas/s/tables/t/loads";
+      expect((await request(app).get(`${path}/abc`)).body).toEqual(read);
+      const gone = await request(app).get(`${path}/gone`);
+      expect([gone.status, gone.body.reason]).toEqual([404, "LOAD_NOT_FOUND"]);
+      const list = await request(app).get(`${path}?limit=5&after=MQ`);
+      expect(list.body).toEqual({ items: [read], nextCursor: "next" });
+      await request(app).get(path);
+      expect(seen).toEqual([
+         ["get", "ds_x", "s", "t", "abc"],
+         ["get", "ds_x", "s", "t", "gone"],
+         ["list", "ds_x", "s", "t", 5, "MQ"],
+         ["list", "ds_x", "s", "t", 100, undefined],
+      ]);
+      for (const limit of ["0", "1001", "1.5", "x"]) {
+         const refused = await request(app).get(`${path}?limit=${limit}`);
+         expect([limit, refused.status, refused.body.reason]).toEqual([
+            limit,
+            400,
+            "INVALID_REQUEST",
+         ]);
+      }
    });
 
    it("routes a schema PUT to 201 or 200, passes If-None-Match, and maps a refusal to its reason", async () => {

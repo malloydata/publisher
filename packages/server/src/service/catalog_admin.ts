@@ -18,6 +18,7 @@
 
 import { settings } from "../settings";
 import type { DuckDBConnection } from "@malloydata/db-duckdb";
+import { createHash, randomUUID } from "crypto";
 import { Client } from "pg";
 import type { components } from "../api";
 import { BadRequestError, ConflictError } from "../errors";
@@ -52,17 +53,21 @@ import {
    dropStorageTable,
 } from "./materialization/run/storage_admin";
 import { parseS3Endpoint } from "./gcs_s3_utils";
+import { canonicalSha } from "./package_revision";
 import { redactPgSecrets } from "../pg_helpers";
 import { errMessage } from "../utils";
 import { quoteIdentifier } from "./quoting";
 import { containsStatementSeparator } from "./single_select";
 import { withStatementUsage } from "./statement_usage";
 import {
+   LOAD_COMMIT_AUTHOR,
    type LoadFormat,
    type LoadOptions,
+   type LoadRecord,
    type LoadResult,
    LoadRefusalError,
    copyStorageTable,
+   flushStorageTable,
    loadStorageTable,
    mergeStorageTable,
    quotedList,
@@ -82,6 +87,11 @@ const RESERVED_SCHEMAS = ["main", ...RESERVED_SCHEMA_NAMES];
 const INTERVAL = /^(\d+) (second|minute|hour|day|week)s?$/;
 /** Used by a snapshot delete when the catalog records no file-deletion grace. */
 const DEFAULT_FILE_DELETION_GRACE = "1 day";
+/** The longest `Idempotency-Key`, as the v1 API allows. */
+const MAX_IDEMPOTENCY_KEY = 255;
+/** A load's id: the UUID this server minted, which a read matches before it asks the catalog database. */
+const LOAD_ID =
+   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 /** An admin refusal: its HTTP status, the machine-readable `reason`, and the `detail` a caller can act on. */
 export class CatalogAdminError extends Error {
@@ -146,9 +156,13 @@ export interface TableLock {
 /** Postgres's advisory-lock key for a table's name, as {@link tableLockName} spells it. */
 const TABLE_LOCK_KEY = "hashtextextended($1, 0)";
 
-/** A table's lock name: the schema and table folded as the engine folds them, the catalog as given. */
+/** A table's name within a catalog, folded as the engine folds it: how a load's record and the table's lock name it. */
+const foldedTableName = (schema: string, table: string) =>
+   `${schema.toLowerCase()}.${table.toLowerCase()}`;
+
+/** A table's lock name: the folded table name under the catalog as given. */
 const tableLockName = (catalog: string, schema: string, table: string) =>
-   `${catalog}.${schema.toLowerCase()}.${table.toLowerCase()}`;
+   `${catalog}.${foldedTableName(schema, table)}`;
 
 export interface CatalogAdminConfig {
    /** A libpq connection string (keyword or URI form) for the catalog database. */
@@ -269,6 +283,20 @@ export interface CatalogSnapshot {
    time: string;
    changes: Record<string, unknown>;
    /** Who committed it, as DuckLake records it; null when none was set. */
+   author: string | null;
+   commitMessage: string | null;
+}
+
+/** A load as the API answers it: its counts and mode, and, when it committed a snapshot, its id and that snapshot's number and time. */
+export interface Load extends LoadResult {
+   mode: "merge" | "replace";
+   id?: string;
+   snapshotId?: number;
+   committedAt?: string;
+}
+
+/** A load as a read answers it: also who committed its snapshot, and the message. */
+export interface LoadRead extends Load {
    author: string | null;
    commitMessage: string | null;
 }
@@ -916,18 +944,31 @@ export class CatalogAdmin {
     * whole load: either busy is refused (503 `LOAD_BUSY`), not waited on, so
     * neither order can deadlock, and a refusal by a busy slot opens no
     * connection to the catalog database.
+    *
+    * A load that committed has an id and its snapshot (`created`). An
+    * `idempotencyKey` that an earlier load of this table with the same body
+    * committed under replays that load, and the same key with another body is
+    * refused (409 `IDEMPOTENCY_KEY_REUSED`).
     */
    async loadTable(
       name: string,
       schema: string,
       table: string,
       body: unknown,
-   ): Promise<LoadResult> {
+      idempotencyKey?: string,
+   ): Promise<{ load: Load; created: boolean }> {
       identifier(name, "catalog");
       identifier(schema, "schema");
       identifier(table, "table");
       refuseReserved(schema, TABLE_SCHEMA_HINT);
       const request = loadRequest(body);
+      const keyDigest = idempotencyKeyDigest(idempotencyKey);
+      const record = {
+         id: randomUUID(),
+         table: foldedTableName(schema, table),
+         ...(keyDigest ? { keyDigest } : {}),
+         requestDigest: canonicalSha(request),
+      };
       return withLoadSlot(() =>
          this.withTableLock(
             name,
@@ -936,10 +977,39 @@ export class CatalogAdmin {
             async ({ pg, assertLockHeld }) => {
                await this.requireCatalog(pg, name);
                await requireRecordedSchema(pg, name, schema);
-               const owner = await this.schemaOwner(pg, name);
-               let result: LoadResult;
+               const [earlier] = keyDigest
+                  ? await readLoads(pg, name, schema, table, {
+                       keyDigest,
+                       limit: 1,
+                    })
+                  : [];
+               if (earlier && earlier.requestDigest !== record.requestDigest) {
+                  throw new CatalogAdminError(
+                     409,
+                     "IDEMPOTENCY_KEY_REUSED",
+                     "The Idempotency-Key was used for a different request to this table; send a new key for a new request.",
+                  );
+               }
+               const destinationConnection = this.connection(
+                  name,
+                  await this.schemaOwner(pg, name),
+               );
+               if (earlier) {
+                  try {
+                     await flushStorageTable({
+                        destinationName: name,
+                        destinationConnection,
+                        schemaName: schema,
+                        tableName: table,
+                     });
+                  } catch (error) {
+                     throw this.loadFailure(error);
+                  }
+                  return { load: earlier.load, created: true };
+               }
+               let outcome: Awaited<ReturnType<typeof mergeStorageTable>>;
                try {
-                  result = await withStatementUsage(
+                  outcome = await withStatementUsage(
                      {
                         environment: "",
                         connection: name,
@@ -950,16 +1020,18 @@ export class CatalogAdmin {
                         mergeStorageTable({
                            ...request,
                            destinationName: name,
-                           destinationConnection: this.connection(name, owner),
+                           destinationConnection,
                            schemaName: schema,
                            tableName: table,
+                           record,
                            assertLockHeld,
                         }),
-                     (r) => r.rowsInserted + r.rowsReplaced,
+                     (r) => r.result.rowsInserted + r.result.rowsReplaced,
                   );
                } catch (error) {
                   throw this.loadFailure(error);
                }
+               const { result, committedAfter } = outcome;
                logger.info("Loaded rows into a DuckLake table", {
                   catalog: name,
                   schema,
@@ -970,10 +1042,89 @@ export class CatalogAdmin {
                   rowsReplaced: result.rowsReplaced,
                   rowsDeleted: result.rowsDeleted,
                });
-               return result;
+               if (committedAfter === undefined) {
+                  return {
+                     load: { mode: request.mode, ...result },
+                     created: false,
+                  };
+               }
+               const [stored] = await readLoads(pg, name, schema, table, {
+                  id: record.id,
+                  above: committedAfter,
+                  limit: 1,
+               });
+               if (!stored) {
+                  throw new Error(
+                     `Load ${record.id} committed, but its record could not be read back; retrying it is safe.`,
+                  );
+               }
+               return { load: stored.load, created: true };
             },
          ),
       );
+   }
+
+   /** One load of a table, by the id its create answered. */
+   async getLoad(
+      name: string,
+      schema: string,
+      table: string,
+      id: string,
+   ): Promise<LoadRead> {
+      identifier(name, "catalog");
+      identifier(schema, "schema");
+      identifier(table, "table");
+      const [stored] = await this.withCatalogDatabase(async (pg) => {
+         await this.requireCatalog(pg, name);
+         return LOAD_ID.test(id)
+            ? readLoads(pg, name, schema, table, { id, limit: 1 })
+            : [];
+      });
+      if (!stored) {
+         throw new CatalogAdminError(
+            404,
+            "LOAD_NOT_FOUND",
+            `No load '${id}' of table '${schema}.${table}' in catalog '${name}', or its snapshot has been expired.`,
+         );
+      }
+      return withAuthor(stored);
+   }
+
+   /**
+    * A table's loads, newest first, `limit` at a time. `after` is the
+    * `nextCursor` of the page before. A table dropped and created again under
+    * its name shares one history.
+    */
+   async listLoads(
+      name: string,
+      schema: string,
+      table: string,
+      limit: number,
+      after?: string,
+   ): Promise<{ items: LoadRead[]; nextCursor?: string }> {
+      identifier(name, "catalog");
+      identifier(schema, "schema");
+      identifier(table, "table");
+      const below = after === undefined ? undefined : decodeCursor(after);
+      const size = Math.max(1, Math.min(limit, 1000));
+      const found = await this.withCatalogDatabase(async (pg) => {
+         await this.requireCatalog(pg, name);
+         return readLoads(pg, name, schema, table, {
+            below,
+            limit: size + 1,
+         });
+      });
+      const page = found.slice(0, size);
+      return {
+         items: page.map(withAuthor),
+         ...(found.length > size
+            ? {
+                 nextCursor: encodeCursor(
+                    page[page.length - 1].load.snapshotId!,
+                 ),
+              }
+            : {}),
+      };
    }
 
    // ---- internals ----
@@ -1518,6 +1669,127 @@ async function requireRecordedSchema(
          `No schema '${schema}' in catalog '${catalog}'.`,
       );
    }
+}
+
+/** The SHA-256 of an `Idempotency-Key`, which is all a load's record keeps of it: the key itself never reaches SQL text. */
+function idempotencyKeyDigest(key: string | undefined): string | undefined {
+   if (key === undefined) return undefined;
+   if (key === "" || key.length > MAX_IDEMPOTENCY_KEY) {
+      throw badRequest(
+         `'Idempotency-Key' must be 1 to ${MAX_IDEMPOTENCY_KEY} characters.`,
+      );
+   }
+   return createHash("sha256").update(key).digest("hex");
+}
+
+/** A page position as a list's `after`: opaque to the caller, a snapshot id to this server. */
+const encodeCursor = (snapshotId: number) =>
+   Buffer.from(String(snapshotId)).toString("base64url");
+
+function decodeCursor(after: string): number {
+   const id = /^[A-Za-z0-9_-]+$/.test(after)
+      ? Buffer.from(after, "base64url").toString()
+      : "";
+   if (!/^\d{1,15}$/.test(id)) {
+      throw badRequest("'after' is not a cursor this server returned.");
+   }
+   return Number(id);
+}
+
+/** A load recorded in a snapshot, with what a read adds to it. */
+interface StoredLoad {
+   load: Load;
+   requestDigest: string;
+   author: string | null;
+   commitMessage: string | null;
+}
+
+const withAuthor = ({ load, author, commitMessage }: StoredLoad): LoadRead => ({
+   ...load,
+   author,
+   commitMessage,
+});
+
+/** Which of a table's loads {@link readLoads} selects. */
+interface LoadFilter {
+   limit: number;
+   /** The load with this id. */
+   id?: string;
+   /** Loads sent under this key digest, since the table now live was created: a key does not outlive a DELETE or a PUT replace. */
+   keyDigest?: string;
+   /** Snapshots below, and above, these ids. */
+   below?: number;
+   above?: number;
+}
+
+/**
+ * A table's recorded loads, newest first, read on the catalog database itself
+ * (one query) from the snapshots their records are the `extra_info` of. The
+ * record is matched as text and parsed here, never cast in SQL: a snapshot
+ * another writer annotated is skipped, not an error.
+ */
+async function readLoads(
+   pg: CatalogQuery,
+   catalog: string,
+   schema: string,
+   table: string,
+   filter: LoadFilter,
+): Promise<StoredLoad[]> {
+   const meta = pgIdent(catalog);
+   const has = (field: string, value: string) =>
+      `position(${pgLiteral(`"${field}":${JSON.stringify(value)}`)} in c.commit_extra_info) > 0`;
+   const where = [
+      `c.author = ${pgLiteral(LOAD_COMMIT_AUTHOR)}`,
+      `c.commit_extra_info LIKE '{"publisherLoad":1,%'`,
+      has("table", foldedTableName(schema, table)),
+   ];
+   if (filter.id) where.push(has("id", filter.id));
+   if (filter.keyDigest) {
+      where.push(
+         has("keyDigest", filter.keyDigest),
+         `c.snapshot_id >= (SELECT t.begin_snapshot FROM ${meta}.ducklake_table t JOIN ${meta}.ducklake_schema sc ` +
+            "ON t.schema_id = sc.schema_id " +
+            `WHERE sc.schema_name = ${pgLiteral(schema)} AND lower(t.table_name) = ${pgLiteral(table.toLowerCase())} ` +
+            "AND sc.end_snapshot IS NULL AND t.end_snapshot IS NULL)",
+      );
+   }
+   if (filter.below !== undefined) {
+      where.push(`c.snapshot_id < ${filter.below}`);
+   }
+   if (filter.above !== undefined) {
+      where.push(`c.snapshot_id > ${filter.above}`);
+   }
+   const found = await pg(
+      "SELECT c.snapshot_id, " +
+         `to_char(s.snapshot_time AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS committed_at, ` +
+         "c.author, c.commit_message, c.commit_extra_info " +
+         `FROM ${meta}.ducklake_snapshot_changes c JOIN ${meta}.ducklake_snapshot s ON s.snapshot_id = c.snapshot_id ` +
+         `WHERE ${where.join(" AND ")} ORDER BY c.snapshot_id DESC LIMIT ${filter.limit}`,
+   );
+   return found.flatMap((row) => {
+      let record: LoadRecord;
+      try {
+         record = JSON.parse(String(row.commit_extra_info));
+      } catch {
+         return [];
+      }
+      if (record?.publisherLoad !== 1) return [];
+      return [
+         {
+            load: {
+               id: record.id,
+               snapshotId: Number(row.snapshot_id),
+               committedAt: String(row.committed_at),
+               mode: record.mode,
+               ...record.result,
+            },
+            requestDigest: record.requestDigest,
+            author: row.author == null ? null : String(row.author),
+            commitMessage:
+               row.commit_message == null ? null : String(row.commit_message),
+         },
+      ];
+   });
 }
 
 /** Drops a connection that has stopped answering by destroying its socket: node-pg has no public destroy, and `end()` waits for an `end` event a dead socket may never emit. */

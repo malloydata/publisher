@@ -270,6 +270,47 @@ describe("a load's request body", () => {
    });
 });
 
+describe("an Idempotency-Key", () => {
+   const refusedKey = async (key: string) => {
+      const error = await admin.loadTable("c", "s", "t", valid, key).then(
+         () => undefined,
+         (e) => e,
+      );
+      return error as CatalogAdminError;
+   };
+
+   it("is refused when empty or longer than 255 characters, before taking any lock", async () => {
+      for (const key of ["", "k".repeat(256)]) {
+         const error = await refusedKey(key);
+         expect([error.status, error.reason]).toEqual([400, "INVALID_REQUEST"]);
+         expect(error.message).toContain("'Idempotency-Key'");
+      }
+   });
+
+   it("is taken at 255 characters, and only then reaches the catalog database", async () => {
+      expect((await refusedKey("k".repeat(255))).reason).not.toBe(
+         "INVALID_REQUEST",
+      );
+   });
+});
+
+describe("a load list's cursor", () => {
+   it("is refused as a 400 when it is not one this server gave, before the catalog database is reached", async () => {
+      for (const after of ["", "!!", "MQ==x", "bm9wZQ", "LTE"]) {
+         const error = await admin.listLoads("c", "s", "t", 10, after).then(
+            () => undefined,
+            (e) => e,
+         );
+         expect(error).toBeInstanceOf(CatalogAdminError);
+         expect([
+            after,
+            (error as CatalogAdminError).status,
+            (error as CatalogAdminError).reason,
+         ]).toEqual([after, 400, "INVALID_REQUEST"]);
+      }
+   });
+});
+
 describe("a load's failure as an admin refusal", () => {
    const failure = (error: unknown) =>
       (
@@ -436,6 +477,8 @@ describe("the admin API's documented reasons", () => {
          expect.arrayContaining([
             "CATALOG_NOT_FOUND",
             "LOAD_BUSY",
+            "LOAD_NOT_FOUND",
+            "IDEMPOTENCY_KEY_REUSED",
             "LOAD_CONFLICT",
             "LOAD_COLUMN_MISMATCH",
             "LOAD_DELETE_LIMIT_EXCEEDED",

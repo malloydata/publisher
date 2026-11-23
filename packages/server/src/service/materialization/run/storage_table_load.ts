@@ -582,6 +582,31 @@ export interface LoadResult {
    cursorType?: string;
 }
 
+/** The author a load's snapshot carries, which the Load resource's reads filter on. */
+export const LOAD_COMMIT_AUTHOR = "publisher-admin";
+
+/**
+ * A load's record: the `extra_info` of the snapshot it commits, so it is
+ * atomic with the data, readable by every replica and expires with the
+ * snapshot. `table` is the folded `<schema>.<table>`; digests are SHA-256 hex.
+ */
+export interface LoadRecord {
+   publisherLoad: 1;
+   id: string;
+   table: string;
+   keyDigest?: string;
+   requestDigest: string;
+   mode: "merge" | "replace";
+   result: LoadResult;
+}
+
+/** What a keyed load reports: its counts, and whether it committed a snapshot. */
+export interface LoadOutcome {
+   result: LoadResult;
+   /** Present when the load committed: the snapshot its transaction read, a floor below its own snapshot for finding its record. */
+   committedAfter?: number;
+}
+
 type LoadRefusalReason =
    | "LOAD_COLUMN_MISMATCH"
    | "LOAD_DELETE_LIMIT_EXCEEDED"
@@ -1477,6 +1502,8 @@ interface KeyedLoadParams {
    objects: string[];
    cursor?: string;
    maxDeletedRows?: number;
+   /** The load's identity, recorded in the snapshot it commits. */
+   record: Pick<LoadRecord, "id" | "table" | "keyDigest" | "requestDigest">;
    /** Throws when the caller's exclusion on the table is gone; called right before the commit. */
    assertLockHeld: () => Promise<void>;
    /** Internal: the bytes both sides of a compare pass may hold, in place of half the session's memory limit; tests set it small to force several passes. */
@@ -1504,7 +1531,7 @@ interface KeyedLoadParams {
  */
 export async function mergeStorageTable(
    params: KeyedLoadParams,
-): Promise<LoadResult> {
+): Promise<LoadOutcome> {
    const { destinationName, schemaName, tableName } = params;
    return withLoadSession(
       { ...params, purpose: "load", uris: params.objects },
@@ -1517,7 +1544,7 @@ export async function mergeStorageTable(
             .map(q)
             .join(".");
          const stageColumns = await createStage(session, params.objects);
-         const { plan, layout, stats, rowsBefore } = await inTransaction(
+         const outcome = await inTransaction(
             session,
             target,
             () => planAndApply(session, params, target, stageColumns),
@@ -1529,16 +1556,29 @@ export async function mergeStorageTable(
             schemaName,
             tableName,
          );
-         return {
-            rowsInserted: plan.inserted,
-            rowsReplaced: plan.replaced,
-            rowsUnchanged: plan.unchanged,
-            rowsDeleted: plan.deleted,
-            rowCount: rowsBefore + plan.inserted - plan.deleted,
-            cursorMax: stats.cursorMax,
-            ...(layout.cursor ? { cursorType: layout.cursor.type } : {}),
-         };
+         return outcome;
       },
+   );
+}
+
+/**
+ * Flushes the rows a table holds inlined in the catalog database. A replayed
+ * load runs it, since the retry it answers may follow a load that committed
+ * and failed before its own flush.
+ */
+export async function flushStorageTable(params: {
+   destinationName: string;
+   destinationConnection: ApiConnection;
+   schemaName: string;
+   tableName: string;
+}): Promise<void> {
+   return withLoadSession({ ...params, purpose: "load", uris: [] }, (session) =>
+      flushInlinedRows(
+         session,
+         params.destinationName,
+         params.schemaName,
+         params.tableName,
+      ),
    );
 }
 
@@ -1548,12 +1588,7 @@ async function planAndApply(
    params: KeyedLoadParams,
    target: string,
    stageColumns: readonly Column[],
-): Promise<{
-   plan: LoadPlan;
-   layout: LoadLayout;
-   stats: { rows: number; cursorMax: string | null };
-   rowsBefore: number;
-}> {
+): Promise<LoadOutcome> {
    const exists =
       rows(
          await session.runSQL(
@@ -1605,6 +1640,15 @@ async function planAndApply(
          },
       );
    }
+   const result: LoadResult = {
+      rowsInserted: plan.inserted,
+      rowsReplaced: plan.replaced,
+      rowsUnchanged: plan.unchanged,
+      rowsDeleted: plan.deleted,
+      rowCount: rowsBefore + plan.inserted - plan.deleted,
+      cursorMax: stats.cursorMax,
+      ...(layout.cursor ? { cursorType: layout.cursor.type } : {}),
+   };
    const changesRows = plan.inserted + plan.replaced + plan.deleted > 0;
    if (
       !exists ||
@@ -1612,15 +1656,27 @@ async function planAndApply(
       layout.added.length > 0 ||
       layout.retyped.length > 0
    ) {
-      await applyLoad(session, params, layout, target, exists, changesRows);
+      return {
+         result,
+         committedAfter: await applyLoad(
+            session,
+            params,
+            layout,
+            target,
+            exists,
+            changesRows,
+            result,
+         ),
+      };
    }
-   return { plan, layout, stats, rowsBefore };
+   return { result };
 }
 
 /**
  * Writes the stage to the table inside the load's transaction: the new and
  * widened columns, then, when rows change, the stale rows deleted and the new and
- * changed rows inserted, and the commit message set.
+ * changed rows inserted, and the commit message and record set. Answers the
+ * snapshot id the transaction reads, which the commit lands above.
  */
 async function applyLoad(
    session: DuckDBConnection,
@@ -1629,7 +1685,8 @@ async function applyLoad(
    target: string,
    exists: boolean,
    changesRows: boolean,
-): Promise<void> {
+   result: LoadResult,
+): Promise<number> {
    const written = [
       ...layout.keys,
       ...layout.columns.filter((c) => c.inStage).map((c) => c.name),
@@ -1684,10 +1741,23 @@ async function applyLoad(
          await session.runSQL(statements.insert);
       }
    }
+   const record: LoadRecord = {
+      publisherLoad: 1,
+      ...params.record,
+      mode: params.mode,
+      result,
+   };
    await runInternalSQL(
       session,
-      `CALL ${q(params.destinationName)}.set_commit_message('publisher-admin', ` +
-         `'${escapeSQL(message)}')`,
+      `CALL ${q(params.destinationName)}.set_commit_message('${LOAD_COMMIT_AUTHOR}', ` +
+         `'${escapeSQL(message)}', extra_info => '${escapeSQL(JSON.stringify(record))}')`,
+   );
+   const [snapshot] = rows(
+      await runInternalSQL(
+         session,
+         `SELECT id FROM ${q(params.destinationName)}.current_snapshot()`,
+      ),
    );
    await params.assertLockHeld();
+   return Number(snapshot.id);
 }

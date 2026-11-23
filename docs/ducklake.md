@@ -246,12 +246,18 @@ curl -s -X PUT $A/catalogs/sales/schemas/staging/tables/orders -H 'Content-Type:
 curl -s -X PUT $A/catalogs/sales/schemas/staging/tables/orders_2025 -H 'Content-Type: application/json' \
   -d '{"source": {"catalog": "sales_2025", "schema": "main", "table": "orders"}}'
 
-# Apply Parquet objects under the data path to staging.charges, upserting by id (201, with the
-# counts of rows inserted, replaced, unchanged and deleted). `"mode": "replace"` with
-# `maxDeletedRows` makes the table equal to the objects instead.
+# Apply Parquet objects under the data path to staging.charges, upserting by id (201 with the
+# load's `id` and a `Location`, and the counts of rows inserted, replaced, unchanged and deleted;
+# 200 with the counts alone when nothing changed). `"mode": "replace"` with `maxDeletedRows` makes
+# the table equal to the objects instead. A retry with the same `Idempotency-Key` replays the load.
 curl -s -X POST $A/catalogs/sales/schemas/staging/tables/charges/loads -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: charges-run_1' \
   -d '{"commitMessage": "charges run_1", "mode": "merge", "key": ["id"], "cursor": "created",
        "objects": ["/srv/lake/sales/uploads/run_1/charges-0.parquet"]}'
+
+# Read a load by the id it answered, or the table's loads, newest first.
+curl -s $A/catalogs/sales/schemas/staging/tables/charges/loads/$LOAD_ID
+curl -s "$A/catalogs/sales/schemas/staging/tables/charges/loads?limit=20"
 
 # What it holds: the catalog, one schema's tables, or every table of every schema.
 curl -s $A/catalogs/sales
@@ -298,12 +304,31 @@ stream in batches:
   LOAD_DELETE_LIMIT_EXCEEDED`), so an empty or truncated extract cannot empty a table.
 - A row the objects do not change is not rewritten, so a load retried after it committed writes nothing
   and takes no snapshot. It reports the same `rowCount` and `cursorMax` as the first call, with every row
-  counted in `rowsUnchanged` and none inserted, replaced or deleted, and it still answers `201`. A retry is
-  safe because it finds nothing to change, provided no other load of the table committed in between.
+  counted in `rowsUnchanged` and none inserted, replaced or deleted, and it answers `200`, with no `id`. A
+  retry is safe because it finds nothing to change, provided no other load of the table committed in
+  between; an `Idempotency-Key` (below) makes it safe even then.
   Of two rows with one key, the later object in `objects` wins, then the later row of an object.
 - A load that commits records `commitMessage` (optional; `load <schema>.<table>` when absent) as its
   snapshot's message, with the author `publisher-admin`; `GET …/snapshots` lists both as `commitMessage`
   and `author`. A load that changes nothing writes no snapshot, so records nothing.
+- A load that commits is a resource: it answers `201` with an `id`, the `snapshotId` and `committedAt` of
+  its snapshot, its `mode`, and a `Location` of `loads/{id}`. That includes a load that only adds or
+  widens a column. The snapshot carries the load's record, so it is committed with the rows, readable by
+  every replica, and kept in no table of its own. `GET …/loads/{id}` answers the load with the snapshot's
+  `author` and `commitMessage` (`404 LOAD_NOT_FOUND` when there is none), and `GET …/loads` lists the
+  table's loads newest first as `{items, nextCursor}`, paged by `limit` (1 to 1000, default 100) and the
+  opaque `after`. A table dropped and created again under its name shares one history. A load is readable
+  for as long as its snapshot: `DELETE …/snapshots` (and a storage destination's cleanup) expires both.
+- `Idempotency-Key` (optional, at most 255 characters) makes a retried load safe after other loads
+  committed. A load that repeats a key an earlier committed load of this table was sent under, with the
+  same body, writes nothing and answers that load's `201`, `Location` and body again, after flushing any
+  rows the table holds inlined (so a retry still heals a load that failed after its commit). The same key
+  with a different body is `409 IDEMPOTENCY_KEY_REUSED`. A key belongs to its table and does not outlive a
+  table DELETE or a PUT that replaces it; the server keeps only its SHA-256. It differs from the v1 API's
+  `Idempotency-Key` in three ways: a record lasts as long as its snapshot, not 24 hours; a duplicate that
+  arrives while the first is running is `503 LOAD_BUSY`, not made to wait, and its retry replays; and a
+  load that changed nothing stores nothing, so its key, sent again after another load committed, runs
+  again.
 - A new column is added, even when no row changes. An existing one keeps its type when the objects type
   it the same or narrower, losslessly, and is widened to the objects' type when that is a lossless widening
   of the table's: a wider integer, a decimal with no fewer integer or fraction digits, an integer into a

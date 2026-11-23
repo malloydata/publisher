@@ -462,7 +462,7 @@ paths:
         between, finds nothing to do, writes nothing and takes no snapshot. It
         reports the same `rowCount` and `cursorMax` as the first call, with
         every row counted in `rowsUnchanged` and none inserted, replaced or
-        deleted, and still answers `201`. A retry is safe because it finds
+        deleted, and answers `200` (below). A retry is safe because it finds
         nothing to change.
         Of two rows of one key, the later one wins: the later object in
         `objects`, then the later row of an object. A key stored more than once
@@ -509,8 +509,34 @@ paths:
         commit writes nothing; one from the flush after it may follow a
         committed load. Either way a retry after any `500` is safe.
 
-        Synchronous: it answers `201` once the rows are committed, with the
-        counts of what changed.
+        Synchronous: it answers once the rows are committed, with the counts of
+        what changed. **A load that committed is a resource**: it answers `201`
+        with its `id`, the `snapshotId` and `committedAt` of the snapshot it
+        committed (which carries the load's record, atomically with the rows),
+        and a `Location` of `loads/{id}`, which `GET` reads for as long as that
+        snapshot lasts. That includes a load that only added or widened a column.
+        A load that changed nothing committed nothing: it answers `200` with the
+        counts and `mode` alone, no `id` and no `Location`, and a `GET` finds
+        nothing of it.
+
+        **`Idempotency-Key`** makes a retry safe even after another load of the
+        table committed in between. A load that repeats a key an earlier
+        committed load of this table was sent under, with the same body, writes
+        nothing and answers that load's `201`, `Location` and `Load` again (after
+        flushing any rows its table holds inlined in the catalog database, so a
+        retry still heals a load that failed after its commit). The same key with
+        a different body is `409 IDEMPOTENCY_KEY_REUSED`. A key belongs to its
+        table, and does not outlive a table DELETE or a PUT that replaces the
+        table. The server keeps a SHA-256 of the key, never the key. This
+        deviates from `Idempotency-Key` in `api-doc.v1.yaml` in three ways:
+        a record lasts as long as its snapshot, not 24 hours (`DELETE
+        …/snapshots?olderThan` expires snapshots, and the key with them); a
+        duplicate that arrives while the first is running is refused `503
+        LOAD_BUSY`, not made to wait, and its retry replays; and a load that
+        changed nothing stores nothing, so its key, sent again after another load
+        committed, runs again.
+      parameters:
+        - $ref: "#/components/parameters/idempotencyKey"
       requestBody:
         required: true
         content:
@@ -519,7 +545,18 @@ paths:
               $ref: "#/components/schemas/LoadRequest"
       responses:
         "201":
-          description: The load's counts
+          description: The load committed (or is the replay of one that did), with its id, snapshot and counts
+          headers:
+            Location:
+              description: The load, relative to this request's URL, `loads/{id}`
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Load"
+        "200":
+          description: The load changed nothing, so committed nothing; the counts, without an `id`
           content:
             application/json:
               schema:
@@ -529,7 +566,8 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
-          description: DuckLake refused the commit because another request changed the table (replaced, dropped or created it) while the load ran (`LOAD_CONFLICT`); nothing was written, retry
+          description: |
+            DuckLake refused the commit because another request changed the table (replaced, dropped or created it) while the load ran (`LOAD_CONFLICT`); nothing was written, retry. Or the `Idempotency-Key` was used for a different request to this table (`IDEMPOTENCY_KEY_REUSED`)
           content:
             application/json:
               schema:
@@ -550,6 +588,88 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+    get:
+      tags: [tables]
+      operationId: list-loads
+      summary: List a table's loads
+      description: |
+        The loads of the table that committed, newest first: each is the record
+        its snapshot carries, so a load is listed for as long as its snapshot is
+        kept, and one a snapshot expiry removed is gone. A load that changed
+        nothing is not listed. A table dropped and created again under the same
+        name shares one history.
+
+        This is the admin API's first list in the v1 grammar: `{items,
+        nextCursor}`, paged with `limit` and `after`, in a stable order. `nextCursor`
+        is absent on the last page. The error envelope is still this API's.
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          description: How many, from 1 to 1000.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+            default: 100
+        - name: after
+          in: query
+          required: false
+          description: The `nextCursor` of the page before; opaque
+          schema:
+            type: string
+      responses:
+        "200":
+          description: A page of the table's loads
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LoadList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/NotConfigured"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /catalogs/{catalogName}/schemas/{schemaName}/tables/{tableName}/loads/{loadId}:
+    parameters:
+      - $ref: "#/components/parameters/catalogName"
+      - $ref: "#/components/parameters/schemaName"
+      - $ref: "#/components/parameters/tableName"
+      - name: loadId
+        in: path
+        required: true
+        description: The `id` a load answered
+        schema:
+          type: string
+    get:
+      tags: [tables]
+      operationId: get-load
+      summary: Read a load
+      description: |
+        A load that committed, as its create answered it, with the `author` and
+        `commitMessage` of its snapshot. It answers `404 LOAD_NOT_FOUND` when no
+        load of this table has that id, including a load whose snapshot has
+        been expired.
+      responses:
+        "200":
+          description: The load
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Load"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/NotConfigured"
         "500":
           $ref: "#/components/responses/InternalServerError"
 
@@ -711,6 +831,23 @@ components:
       description: A table in the schema.
       schema:
         $ref: "#/components/schemas/Identifier"
+    idempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: |
+        Makes a retried load safe: a load of this table that repeats a key an
+        earlier committed load was sent under, with the same body, answers that
+        load again and writes nothing; the same key with another body is `409
+        IDEMPOTENCY_KEY_REUSED`. Use a fresh UUID per logical load. Unlike
+        `Idempotency-Key` in the v1 API, a record lasts as long as its snapshot
+        (not 24 hours), a duplicate that arrives while the first runs is `503
+        LOAD_BUSY` (not made to wait), and a load that changed nothing stores
+        nothing.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 255
 
   responses:
     BadRequest:
@@ -720,7 +857,7 @@ components:
           schema:
             $ref: "#/components/schemas/Error"
     NotFound:
-      description: No such catalog (`CATALOG_NOT_FOUND`), schema (`SCHEMA_NOT_FOUND`) or table (`TABLE_NOT_FOUND`), or no such source for a table write (`SOURCE_NOT_FOUND`)
+      description: No such catalog (`CATALOG_NOT_FOUND`), schema (`SCHEMA_NOT_FOUND`) or table (`TABLE_NOT_FOUND`), no such source for a table write (`SOURCE_NOT_FOUND`), or no such load (`LOAD_NOT_FOUND`)
       content:
         application/json:
           schema:
@@ -1000,6 +1137,7 @@ components:
       type: object
       required:
         [
+          mode,
           rowsInserted,
           rowsReplaced,
           rowsUnchanged,
@@ -1009,8 +1147,33 @@ components:
         ]
       description: |
         What a load did, in rows. `rowCount` is the table's rows after the load,
-        which is its rows before, plus `rowsInserted`, less `rowsDeleted`.
+        which is its rows before, plus `rowsInserted`, less `rowsDeleted`. A
+        load that committed also carries `id`, `snapshotId` and `committedAt`; a
+        load that changed nothing has none of them. A read adds `author` and
+        `commitMessage`.
       properties:
+        id:
+          type: string
+          format: uuid
+          description: The load's id, for `GET …/loads/{id}`. Absent when the load changed nothing and so committed nothing
+        snapshotId:
+          type: integer
+          format: int64
+          description: The snapshot the load committed; the one `GET /snapshots` lists with this load's `commitMessage`. Absent with no `id`
+        committedAt:
+          type: string
+          format: date-time
+          description: When that snapshot was taken. Absent with no `id`
+        mode:
+          type: string
+          enum: [merge, replace]
+          description: The request's `mode`
+        author:
+          type: ["string", "null"]
+          description: Who committed the snapshot (`publisher-admin`). On a read only
+        commitMessage:
+          type: ["string", "null"]
+          description: The message the snapshot carries, the request's `commitMessage` or `load <schema>.<table>`. On a read only
         rowsInserted:
           type: integer
           format: int64
@@ -1042,6 +1205,18 @@ components:
         cursorType:
           type: string
           description: The cursor column's type as DuckDB names it (`BIGINT`, `DATE`, `TIMESTAMP WITH TIME ZONE`); present when a `cursor` was given
+
+    LoadList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Load"
+        nextCursor:
+          type: string
+          description: Opaque position; send it back as `after` for the next page. Absent on the last page
 
     Snapshot:
       type: object
@@ -1113,7 +1288,7 @@ components:
             SOURCE_NOT_FOUND, TABLE_EXISTS, OBJECT_OUTSIDE_DATA_PATH,
             INVALID_REQUEST, SCHEMA_EXISTS, SCHEMA_RESERVED, LOAD_BUSY,
             LOAD_CONFLICT, LOAD_COLUMN_MISMATCH, LOAD_DELETE_LIMIT_EXCEEDED,
-            OBJECT_UNREADABLE.
+            OBJECT_UNREADABLE, LOAD_NOT_FOUND, IDEMPOTENCY_KEY_REUSED.
             `SCHEMA_EXISTS`: a create-only schema PUT found the schema.
             `SCHEMA_RESERVED`: the schema name is one the engine owns, `main`,
             or a name starting `__ducklake_metadata_`; also refused as the
@@ -1123,6 +1298,9 @@ components:
             another request (a table PUT or DELETE, a schema drop) changed
             the table while the load ran; nothing was written, retry. A schema
             dropped before the load's transaction began is `SCHEMA_NOT_FOUND` (404).
+            `LOAD_NOT_FOUND` (404): no load of the table has the id, or its
+            snapshot was expired. `IDEMPOTENCY_KEY_REUSED` (409): a load's
+            `Idempotency-Key` was used for a different request to the table.
             `LOAD_COLUMN_MISMATCH` (422): the objects' columns do not match
             the table's; `detail` is a `ColumnMismatchDetail`.
             `LOAD_DELETE_LIMIT_EXCEEDED` (422): a replace would delete more rows than
