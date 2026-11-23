@@ -75,6 +75,10 @@ export class MaterializationScheduler {
    private readonly unreadableVersions = new Set<string>();
    /** A sweep is running: a tick that finds one is skipped (see tick). */
    private sweeping = false;
+   /** When the running sweep began, for the skip warning. */
+   private sweepStartedAtMs = 0;
+   /** Ticks skipped behind the running sweep so far. */
+   private skippedBehindSweep = 0;
 
    constructor(
       private readonly host: Pick<MaterializationHost, "getLoadedEnvironments">,
@@ -121,16 +125,41 @@ export class MaterializationScheduler {
    public async tick(nowMs: number = Date.now()): Promise<void> {
       if (this.sweeping) {
          recordSchedulerTickSkipped();
-         logger.debug(
-            "MaterializationScheduler: skipped a tick; the one before is still running",
-         );
+         this.skippedBehindSweep += 1;
+         const runningForMs = Date.now() - this.sweepStartedAtMs;
+         if (this.skippedBehindSweep === 1) {
+            // Never cleared by a timeout: the old sweep may still be firing,
+            // and a second beside it would fire the same schedule twice. A
+            // sweep that never settles therefore stops every later tick, so
+            // the first skip of a run says so at warn.
+            logger.warn(
+               "MaterializationScheduler: skipped a tick; the sweep before it is still running. If this repeats, that sweep is stuck and no schedule fires until it settles or the server restarts",
+               { runningForMs },
+            );
+         } else {
+            logger.debug(
+               "MaterializationScheduler: skipped a tick; the one before is still running",
+               { runningForMs },
+            );
+         }
          return;
       }
       this.sweeping = true;
+      this.sweepStartedAtMs = Date.now();
       try {
          await this.sweep(nowMs);
       } finally {
          this.sweeping = false;
+         if (this.skippedBehindSweep > 0) {
+            logger.warn(
+               "MaterializationScheduler: the sweep that caused skipped ticks has finished; ticks run again",
+               {
+                  skippedTicks: this.skippedBehindSweep,
+                  ranForMs: Date.now() - this.sweepStartedAtMs,
+               },
+            );
+            this.skippedBehindSweep = 0;
+         }
       }
    }
 

@@ -519,4 +519,47 @@ describe("MaterializationScheduler: published versions", () => {
          ["p", undefined],
       ]);
    });
+
+   it("warns once when ticks are skipped behind a sweep that has not settled, and once more when it settles", async () => {
+      const warn = spyOn(logger, "warn").mockImplementation(() => logger);
+      try {
+         const service = fakeService();
+         let release: () => void = () => {};
+         const held = new Promise<void>((resolve) => (release = resolve));
+         const fire = service.createMaterialization;
+         service.createMaterialization = ((...args: Parameters<typeof fire>) => {
+            fire(...args);
+            return held.then(() => ({}));
+         }) as typeof fire;
+         const sched = makeScheduler(
+            [fakePackage("p", { schedule: "* * * * *" })],
+            service,
+         );
+         const skipWarns = () =>
+            (warn.mock.calls as unknown as unknown[][]).filter(([message]) =>
+               String(message).includes("skipped a tick"),
+            );
+         const settledWarns = () =>
+            (warn.mock.calls as unknown as unknown[][]).filter(([message]) =>
+               String(message).includes("has finished"),
+            );
+         await sched.tick(t0);
+         const stuck = sched.tick(dueLater);
+         await sched.tick(dueLater + 1);
+         await sched.tick(dueLater + 2);
+         expect(service.calls).toHaveLength(1);
+         expect(skipWarns()).toHaveLength(1);
+         expect(skipWarns()[0][1]).toHaveProperty("runningForMs");
+         expect(settledWarns()).toHaveLength(0);
+
+         release();
+         await stuck;
+         expect(settledWarns()).toHaveLength(1);
+         expect(settledWarns()[0][1]).toMatchObject({ skippedTicks: 2 });
+         await sched.tick(dueLater + 3);
+         expect(settledWarns()).toHaveLength(1);
+      } finally {
+         warn.mockRestore();
+      }
+   });
 });
