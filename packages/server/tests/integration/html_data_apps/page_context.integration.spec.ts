@@ -458,6 +458,31 @@ describe("data-app page context and versioned static URLs", () => {
       }
    });
 
+   it("answers the versioned route of a package with no versions without a registry read", async () => {
+      const { environmentStore } = await bootMainServer();
+      const versions = (
+         await environmentStore.getEnvironment(
+            parseEnvironmentName(ENV_NAME),
+            false,
+         )
+      ).getVersionService()!;
+      const read = spyOn(
+         versions as unknown as { readRecords(name: string): unknown },
+         "readRecords",
+      );
+      try {
+         for (const v of ["1.0.0", "latest"]) {
+            const res = await fetch(
+               `${baseUrl}/environments/${ENV_NAME}/packages/${PLAIN}/versions/${v}/public/index.html`,
+            );
+            expect([v, res.status]).toEqual([v, 404]);
+         }
+         expect(read).not.toHaveBeenCalled();
+      } finally {
+         read.mockRestore();
+      }
+   });
+
    it("redirects latest to the version it names now, uncached, keeping the query", async () => {
       const res = await noFollow(
          versioned(

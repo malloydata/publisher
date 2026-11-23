@@ -158,6 +158,15 @@ async function serveFromPackage(
       // than 404ing. The versioned route is strict instead: its path names a
       // version that must exist, and a package with no versions has none.
       let staticVersionId: string | undefined;
+      // Refused from memory: the registry keeps nothing for a package with no versions, so asking would re-read it under the storage lock on every request.
+      const loaded = environment.peekPackage(packageName);
+      if (
+         versionInPath !== undefined &&
+         loaded &&
+         loaded.getVersionId() === undefined
+      ) {
+         return sendNotFound(res);
+      }
       if (versionInPath === undefined) {
          staticVersionId = await versions?.pinnableVersion(
             packageName,
