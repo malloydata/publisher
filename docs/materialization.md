@@ -1096,8 +1096,13 @@ Every build, on both tiers, records what its table holds column by column in the
 `contract`: each column's type as the engine holding it names it, its collation, how a stored read
 of it compares with live (`compare`: `exact`, `equality` or `none`), whether a row-level gate over
 it reads the same rows as live (`gateExact`), and the type the source declared for it. A `storage=`
-table also records its destination session's `default_collation`, and a pair table its leaf key
-check (`keys`). The contract is read back with the same catalog reads a bind makes, before the swap
+table also records its destination session's `default_collation`. Its `keys` record the key checks
+the build ran: a pair table's leaf key, a rollup's own key, the primary keys of the sources that
+read a rollup through a join_many, and a stored source's own primary key, each named
+`<level>:<subject>.<keyColumn>` (the API reference lists them), so a join to a rollup serves from
+a host's manifest as from this server's own run. A `storage=` column is gate-exact when its type
+holds what it was given exactly, or when it is a destination double that copies a warehouse 8-byte
+double unchanged, as the plan read that warehouse column's type. The contract is read back with the same catalog reads a bind makes, before the swap
 or commit, so a table straight out of a build always matches it. A build whose contract cannot be
 read back fails that source with `contract_capture_failed`, which is retryable, and leaves the
 previous table as it was.
