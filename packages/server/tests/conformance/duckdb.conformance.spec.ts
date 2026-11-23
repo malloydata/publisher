@@ -281,8 +281,14 @@ describe("DuckDB conformance", () => {
       );
       const found = quoted.columns.length === 2 && bare.columns.length === 1;
       expect({ quoted, bare }).toEqual({
-         quoted: { columns: ["a", "B"] },
-         bare: { columns: ["v"] },
+         quoted: {
+            columns: ["a", "B"],
+            types: new Map([
+               ["a", "INTEGER"],
+               ["B", "INTEGER"],
+            ]),
+         },
+         bare: { columns: ["v"], types: new Map([["v", "INTEGER"]]) },
       });
       expect(found).toBe(CAN.decodedTablePath);
    });

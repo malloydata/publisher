@@ -32,8 +32,12 @@ import { DUCKLAKE_DATA_INLINING_ON } from "../dialects/ducklake_inlining";
 import { CronEvaluator } from "./run/cron_evaluator";
 import type { Binding } from "./domain/binding";
 import {
+   INCREMENTAL_CHECK_FAILED_CODE,
    INCREMENTAL_LATE_ROWS_CODE,
+   INCREMENTAL_MERGE_KEY_NOT_UNIQUE_CODE,
    MATERIALIZE_EXTENSION_GENERATION_UNPROVEN_CODE,
+   type IncrementalCheck,
+   type IncrementalCheckFinding,
 } from "./domain/incremental";
 import type { UnprovenGeneration } from "./run/incremental_upstream";
 import {
@@ -328,6 +332,86 @@ export function lateRowWarnings(
                `(\`lateRows\`).`,
          },
       ];
+   });
+}
+
+/** A source's unpassed incremental checks (PackageMaterialization's record). */
+export type IncrementalCheckState = Partial<
+   Record<IncrementalCheck, IncrementalCheckFinding>
+>;
+
+/** What a failed check could not do, for its warning. */
+const CHECK_DOES: Record<IncrementalCheck, string> = {
+   merge_key:
+      "check, after rebuilding it in full, that its table holds each merge_key= value once",
+   delta_types:
+      "read the column types of its delta to check the table's columns hold them",
+};
+
+/**
+ * The warnings for incremental sources whose checks the newest refreshes
+ * did not pass, each kept until that check passes:
+ *
+ *  - `persist-incremental-merge-key-not-unique`: a refresh read one
+ *    `merge_key=` value on more than one row of the source. No merge leaves
+ *    its table equal to live, so the source is rebuilt in full, as it is on
+ *    every refresh that reads a repeated key.
+ *  - `persist-incremental-check-failed`: a check could not run (named with
+ *    its error's code, never its message), so the source is rebuilt in full
+ *    on every refresh until it can, which would otherwise show only as a
+ *    `refresh: full` on each run.
+ */
+export function incrementalCheckWarnings(
+   plan: BuildPlan | null,
+   checks: ReadonlyMap<string, IncrementalCheckState>,
+): ApiPackageWarning[] {
+   if (checks.size === 0) return [];
+   return Object.values(plan?.sources ?? {}).flatMap((source) => {
+      const state = source.sourceEntityId
+         ? checks.get(source.sourceEntityId)
+         : undefined;
+      if (!state) return [];
+      const annotation =
+         source.origin === "materialize" ? "#(materialize)" : "#@ persist";
+      const key = source.annotationFields?.merge_key;
+      const at = {
+         ...(source.modelPath ? { model: source.modelPath } : {}),
+         subject: source.name,
+         severity: "warn" as const,
+      };
+      return Object.values(state).flatMap((finding) => {
+         if (!finding || finding.outcome === "passed") return [];
+         if (finding.outcome === "not_unique") {
+            return [
+               {
+                  ...at,
+                  code: INCREMENTAL_MERGE_KEY_NOT_UNIQUE_CODE,
+                  message:
+                     `its merge_key=${key ? JSON.stringify(key) : ""} is not ` +
+                     `unique: an incremental refresh read the same key on more ` +
+                     `than one row of the source. A merge cannot store both ` +
+                     `rows, so the refresh was rolled back and the table ` +
+                     `rebuilt in full (reason merge_key_not_unique), as it will ` +
+                     `be on every refresh that reads a repeated key. Declare a ` +
+                     `merge_key= the source holds once per row in its ` +
+                     `${annotation} annotation, or drop merge_key= to refresh ` +
+                     `by watermark range.`,
+               },
+            ];
+         }
+         return [
+            {
+               ...at,
+               code: INCREMENTAL_CHECK_FAILED_CODE,
+               message:
+                  `its incremental refresh could not ` +
+                  `${CHECK_DOES[finding.check]} (${finding.errorCode}), so ` +
+                  `the table is rebuilt in full on every refresh until it ` +
+                  `can. The server log names the failure under the same ` +
+                  `source.`,
+            },
+         ];
+      });
    });
 }
 

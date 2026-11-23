@@ -116,6 +116,8 @@ import {
 import { STORED_COLUMN_TYPE_MISMATCH_CODE } from "./stored_column_types";
 import { tablePathParts } from "../quoting";
 import * as warnings from "./package_warnings";
+import type { IncrementalCheckState } from "./package_warnings";
+import type { IncrementalCheckFinding } from "./domain/incremental";
 import { PlanLifecycle } from "./plan_lifecycle";
 import { type DeploymentFacts, ServeVerdicts } from "./serve_verdicts";
 import { SourceMap } from "./text/source_map";
@@ -220,6 +222,13 @@ export class PackageMaterialization {
     * (Reclaimer.reclaimRenamedTables), set by that run.
     */
    private keptTables: readonly KeptTable[] = [];
+   /**
+    * What the newest refreshes found of each incremental source's checks,
+    * by content address, while one is unpassed (see noteIncrementalCheck).
+    * In memory: after a restart, the next run that finds it again restores
+    * it.
+    */
+   private incrementalChecks = new Map<string, IncrementalCheckState>();
    /**
     * The same entries as table names only, the manifest models hydrate with
     * and /compile reads. Surfaced on /status so the control plane can confirm
@@ -2025,6 +2034,32 @@ export class PackageMaterialization {
 
    keptTableWarnings(): ApiPackageWarning[] {
       return warnings.keptTableWarnings(this.plan.buildPlan, this.keptTables);
+   }
+
+   /**
+    * What a run found of a source's incremental check: a finding that is not
+    * `passed` is kept, and warned of, until that check passes.
+    */
+   noteIncrementalCheck(
+      sourceEntityId: string,
+      finding: IncrementalCheckFinding,
+   ): void {
+      const state = { ...this.incrementalChecks.get(sourceEntityId) };
+      if (finding.outcome === "passed") delete state[finding.check];
+      else state[finding.check] = finding;
+      if (Object.keys(state).length === 0) {
+         this.incrementalChecks.delete(sourceEntityId);
+      } else {
+         this.incrementalChecks.set(sourceEntityId, state);
+      }
+   }
+
+   /** See package_warnings.ts, `incrementalCheckWarnings`. */
+   incrementalCheckWarnings(): ApiPackageWarning[] {
+      return warnings.incrementalCheckWarnings(
+         this.plan.buildPlan,
+         this.incrementalChecks,
+      );
    }
 
    /**

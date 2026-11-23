@@ -1130,6 +1130,8 @@ export class MaterializationService {
          // a delta or skip carries it until a rebuild.
          if (incremental) {
             incremental.priorLateRows = pkg.boundLateRows?.();
+            incremental.noteIncrementalCheck = (sourceEntityId, finding) =>
+               pkg.noteIncrementalCheck?.(sourceEntityId, finding);
             incremental.boundEntries = pkg.boundIncrementalEntries?.();
             // Standalone only: which build of its parent's table each
             // incremental extension last read, when the local ledger store

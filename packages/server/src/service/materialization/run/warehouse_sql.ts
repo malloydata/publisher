@@ -765,6 +765,9 @@ export function targetColumnsProbeSql(
    segments: string[],
 ): string | undefined {
    const alias = quoteIdentifier("column_name", dialect);
+   // Each column's type as the catalog spells it, which a delta's own types
+   // are compared with (delta_type_widening.ts).
+   const typeAlias = quoteIdentifier("column_type", dialect);
    const knownDialect = registeredDialect(dialect);
    if (knownDialect === "duckdb") {
       // `duckdb_columns()`: an attached DuckLake catalog has no
@@ -779,7 +782,7 @@ export function targetColumnsProbeSql(
       // The catalog is the FIRST segment (the path is `<destination>.<name>`);
       // counting from the end would misread a longer name's container.
       const database = segments[0];
-      return `SELECT column_name AS ${alias}
+      return `SELECT column_name AS ${alias}, data_type AS ${typeAlias}
               FROM duckdb_columns()
               WHERE database_name = '${escapeSqlString(database, dialect)}'
                 AND schema_name = '${escapeSqlString(schema, dialect)}'
@@ -803,7 +806,7 @@ export function targetColumnsProbeSql(
             : "information_schema.columns";
       return probeSelect(
          dialect,
-         `SELECT column_name AS ${alias}
+         `SELECT column_name AS ${alias}, data_type AS ${typeAlias}
            FROM ${infoSchema}
            WHERE table_schema = ${schema}
              AND table_name = '${escapeSqlString(table, dialect)}'
@@ -818,10 +821,84 @@ export function targetColumnsProbeSql(
       .slice(0, -1)
       .map((s) => quoteIdentifier(s, dialect))
       .join(".");
-   return `SELECT column_name AS ${alias}
+   return `SELECT column_name AS ${alias}, data_type AS ${typeAlias}
               FROM ${container}.INFORMATION_SCHEMA.COLUMNS
               WHERE table_name = '${escapeSqlString(table, dialect)}'
               ORDER BY ordinal_position`;
+}
+
+/**
+ * The read of each of `columns` of `sql`'s rows with its type, without
+ * reading a row, spelled as targetColumnsProbeSql reads a stored column's,
+ * or undefined for a dialect it is not read on.
+ *
+ * Postgres: `pg_typeof` of each column of an empty read, joined to one row so
+ * there is a row to type; a domain reads as its base type. Its `regtype`
+ * text is `information_schema`'s `data_type` for every number type
+ * (`integer`, `bigint`, `real`, `double precision`, `numeric`).
+ *
+ * DuckDB (MotherDuck too): `DESCRIBE` of the query, which binds it and runs
+ * nothing, spelled as `duckdb_columns()` spells a stored column.
+ *
+ * Not read elsewhere. BigQuery has one integer and one float type, so
+ * neither widens; Snowflake's types are not read without running the query.
+ */
+export function deltaColumnTypesSql(
+   dialect: string,
+   sql: string,
+   columns: readonly string[],
+):
+   | {
+        sql: string;
+        typesOf(rows: Record<string, unknown>[]): Map<string, string>;
+     }
+   | undefined {
+   if (columns.length === 0) return undefined;
+   switch (registeredDialect(dialect)) {
+      case "postgres":
+         break;
+      case "duckdb":
+         return {
+            sql: `DESCRIBE (${sql})`,
+            typesOf: (rows) => {
+               const wanted = new Set(columns);
+               return new Map(
+                  rows.flatMap((r) =>
+                     typeof r["column_name"] === "string" &&
+                     typeof r["column_type"] === "string" &&
+                     wanted.has(r["column_name"])
+                        ? [[r["column_name"], r["column_type"]] as const]
+                        : [],
+                  ),
+               );
+            },
+         };
+      default:
+         return undefined;
+   }
+   const types = columns
+      .map(
+         (c, i) =>
+            `(SELECT coalesce(nullif(typbasetype, 0), oid)::regtype::text ` +
+            `FROM pg_type WHERE oid = pg_typeof(__q.${quoteIdentifier(c, dialect)})) AS t${i}`,
+      )
+      .join(", ");
+   return {
+      sql: probeSelect(
+         dialect,
+         `SELECT ${types} FROM (SELECT 1) AS __one LEFT JOIN ` +
+            `(SELECT * FROM (${sql}) AS __b LIMIT 0) AS __q ON true`,
+      ),
+      typesOf: (rows) => {
+         const row = rows[0] ?? {};
+         return new Map(
+            columns.flatMap((c, i) => {
+               const type = row[`t${i}`];
+               return typeof type === "string" ? [[c, type] as const] : [];
+            }),
+         );
+      },
+   };
 }
 
 /**
@@ -875,6 +952,39 @@ export function snowflakeScriptingBlock(statements: string[]): string {
  */
 export function transactsInScriptingBlock(dialect: string): boolean {
    return registeredDialect(dialect) === "snowflake";
+}
+
+/**
+ * A condition true for a row where `failing` is false or NULL, which fails
+ * the statement with `message` (plain text, no quote) where `failing` is
+ * true, or undefined on a dialect where that is not proven.
+ *
+ * DuckDB raises it with its `error()`, BigQuery with its `ERROR()`, both
+ * evaluated per row inside the CASE branch (BigQuery's documented runtime
+ * error). Postgres has none, so the message is cast to an integer, which
+ * fails quoting it; the cast is of a CASE over a row's value, never a
+ * constant, so the planner does not raise it while planning. Postgres and
+ * DuckDB are executed against the engine in incremental_dml_semantics.spec.ts
+ * and the component specs; BigQuery's text is pinned. Snowflake has no
+ * runtime error function, and a cast there might be folded while planning
+ * and fail every statement, so it gets no guard (see mergeKeyGuard).
+ */
+export function passesUnless(
+   dialect: string,
+   failing: string,
+   message: string,
+): string | undefined {
+   const text = `'${message}'`;
+   switch (registeredDialect(dialect)) {
+      case "duckdb":
+         return `(CASE WHEN ${failing} THEN error(${text}) END) IS NULL`;
+      case "standardsql":
+         return `(CASE WHEN ${failing} THEN ERROR(${text}) END) IS NULL`;
+      case "postgres":
+         return `CAST(CASE WHEN ${failing} THEN ${text} END AS INTEGER) IS NULL`;
+      default:
+         return undefined;
+   }
 }
 
 /**

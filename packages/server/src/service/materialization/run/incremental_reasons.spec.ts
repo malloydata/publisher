@@ -11,12 +11,14 @@ import {
 } from "../../../test_helpers/metrics_harness";
 import type { IncrementalDeclaration } from "../domain/incremental";
 import {
+   MERGE_KEY_GUARD_MESSAGE,
    PAIR_GUARD_MESSAGE,
    warehouseDeltaTarget,
    type DeltaTarget,
    type SqlRunner,
 } from "./incremental_apply";
 import {
+   advanceLedgerAfterSeed,
    applyIncrementalStep,
    planSourceRefresh,
    type IncrementalRunContext,
@@ -311,6 +313,257 @@ describe("incremental refresh fallback reasons", () => {
       expect(applied).toEqual({ applied: false });
       expect(await counted("seed", "pair_parent_row")).toBe(1);
    });
+
+   it("rebuilds with merge_key_not_unique when a merge's delta repeats a key, and tells the package", async () => {
+      const merge = {
+         ...LINEAGE,
+         mergeKeys: ["id"],
+         strategy: "merge",
+      } as unknown as typeof LINEAGE;
+      const noted: [string, string][] = [];
+      const step = {
+         mode: "delta",
+         start: { malloyType: "date", value: "2024-06-01" },
+         end: { malloyType: "date", value: "2024-07-01" },
+         coveredThrough: { malloyType: "date", value: "2024-07-01" },
+         statements: ["MERGE INTO t USING s ON true"],
+      } as never;
+      const withNotes = {
+         ...context(),
+         noteIncrementalCheck: (
+            id: string,
+            f: { check: string; outcome: string },
+         ) => noted.push([id, `${f.check}:${f.outcome}`]),
+      };
+      const applied = await applyIncrementalStep({
+         context: withNotes,
+         lineage: merge,
+         step,
+         target: {
+            ...target(merge),
+            runner: async () => {
+               throw new Error(
+                  `invalid input syntax for type integer: "${MERGE_KEY_GUARD_MESSAGE}"`,
+               );
+            },
+         },
+         sourceName: "daily",
+      });
+      expect(applied).toEqual({ applied: false });
+      expect(await counted("seed", "merge_key_not_unique")).toBe(1);
+      expect(noted).toEqual([["sid", "merge_key:not_unique"]]);
+      const logged = warn
+         .getCalls()
+         .find(
+            (c) =>
+               (c.args[1] as { code?: string })?.code ===
+               "persist-incremental-merge-key-not-unique",
+         );
+      expect(logged?.args[1]).toMatchObject({
+         sourceName: "daily",
+         mergeKeys: ["id"],
+      });
+
+      // A delta that commits finds the key unique, which clears the warning.
+      await applyIncrementalStep({
+         context: withNotes,
+         lineage: merge,
+         step,
+         target: { ...target(merge), runner: async () => ({ rows: [] }) },
+         sourceName: "daily",
+      });
+      expect(noted).toEqual([
+         ["sid", "merge_key:not_unique"],
+         ["sid", "merge_key:passed"],
+         ["sid", "delta_types:passed"],
+      ]);
+   });
+
+   it.each([
+      ["repeats a key", [{ repeated: 1 }], false],
+      ["holds each key once", [], true],
+   ] as const)(
+      "records a merge source's boundary after a rebuild only when the table holds each key once: %s",
+      async (_label, repeatedRows, unique) => {
+         const merge = {
+            ...LINEAGE,
+            mergeKeys: ["id"],
+            scopeColumns: ["org"],
+            strategy: "merge",
+         } as unknown as typeof LINEAGE;
+         const noted: [string, string][] = [];
+         const upserted: unknown[] = [];
+         const probes: string[] = [];
+         const bound = await advanceLedgerAfterSeed({
+            context: {
+               ...context({
+                  upsertIncrementalLedgerEntry: async (e: unknown) => {
+                     upserted.push(e);
+                     return e as never;
+                  },
+               }),
+               noteIncrementalCheck: (
+                  id: string,
+                  f: { check: string; outcome: string },
+               ) => noted.push([id, `${f.check}:${f.outcome}`]),
+            },
+            lineage: merge,
+            quotedTablePath: `"analytics"."daily"`,
+            dialect: "postgres",
+            runner: async (sql) => {
+               probes.push(sql);
+               if (sql.includes("HAVING COUNT(*) > 1")) {
+                  return { rows: [...repeatedRows] };
+               }
+               return { rows: [{ watermark_max: "2024-06-30" }] };
+            },
+         });
+         expect(probes[0]).toContain(
+            'GROUP BY "id", "org" HAVING COUNT(*) > 1',
+         );
+         expect(noted).toEqual([
+            ["sid", unique ? "merge_key:passed" : "merge_key:not_unique"],
+         ]);
+         expect(bound === undefined).toBe(!unique);
+         expect(upserted.length).toBe(unique ? 1 : 0);
+      },
+   );
+
+   it("tells the package when the repeated-key check after a rebuild fails, and records no boundary", async () => {
+      const merge = {
+         ...LINEAGE,
+         mergeKeys: ["payload"],
+         strategy: "merge",
+      } as unknown as typeof LINEAGE;
+      const noted: unknown[] = [];
+      const upserted: unknown[] = [];
+      const bound = await advanceLedgerAfterSeed({
+         context: {
+            ...context({
+               upsertIncrementalLedgerEntry: async (e: unknown) => {
+                  upserted.push(e);
+                  return e as never;
+               },
+            }),
+            noteIncrementalCheck: (id: string, f: unknown) =>
+               noted.push([id, f]),
+         },
+         lineage: merge,
+         quotedTablePath: `"analytics"."daily"`,
+         dialect: "postgres",
+         runner: async () => {
+            // As Postgres answers a GROUP BY on a json column.
+            throw Object.assign(
+               new Error(
+                  "could not identify an equality operator for type json",
+               ),
+               { code: "42883" },
+            );
+         },
+      });
+      expect(bound).toBeUndefined();
+      expect(upserted).toEqual([]);
+      expect(noted).toEqual([
+         ["sid", { check: "merge_key", outcome: "failed", errorCode: "42883" }],
+      ]);
+   });
+
+   it("tells the package when a delta's column types cannot be read", async () => {
+      const noted: unknown[] = [];
+      const applied = await applyIncrementalStep({
+         context: {
+            ...context(),
+            noteIncrementalCheck: (id: string, f: unknown) =>
+               noted.push([id, f]),
+         },
+         lineage: LINEAGE,
+         step: {
+            mode: "seed",
+            reasonCode: "shape_mismatch",
+            reason: "the delta's column types could not be read",
+            failedCheck: { check: "delta_types", errorCode: "42501" },
+         },
+         target: target(),
+         sourceName: "daily",
+      });
+      expect(applied).toEqual({ applied: false });
+      expect(noted).toEqual([
+         [
+            "sid",
+            { check: "delta_types", outcome: "failed", errorCode: "42501" },
+         ],
+      ]);
+   });
+
+   it.each([
+      ["finds a repeated key", [{ repeated: 1 }], undefined, "not_unique"],
+      ["cannot run", "fails", undefined, "failed"],
+      ["finds each key once", [], "2024-07-01", "passed"],
+   ] as const)(
+      "on Snowflake, whose merge has no key guard, records the boundary after a delta only when the probe %s",
+      async (_label, answer, covered, outcome) => {
+         const merge = {
+            ...LINEAGE,
+            mergeKeys: ["id"],
+            strategy: "merge",
+         } as unknown as typeof LINEAGE;
+         const noted: [string, string][] = [];
+         const upserted: unknown[] = [];
+         const deleted: unknown[] = [];
+         const probes: string[] = [];
+         const snowflake = warehouseDeltaTarget({
+            dialect: "snowflake",
+            runner: async (sql) => {
+               probes.push(sql);
+               if (sql.includes("HAVING COUNT(*) > 1")) {
+                  if (answer === "fails")
+                     throw new Error("warehouse suspended");
+                  return { rows: [...answer] };
+               }
+               return { rows: [] };
+            },
+            quotedTablePath: `"ANALYTICS"."DAILY"`,
+            lineage: merge,
+            sourceSQL: "SELECT * FROM base",
+         });
+         const applied = await applyIncrementalStep({
+            context: {
+               ...context({
+                  upsertIncrementalLedgerEntry: async (e: unknown) => {
+                     upserted.push(e);
+                     return e as never;
+                  },
+                  deleteIncrementalLedgerEntry: async (...a: unknown[]) => {
+                     deleted.push(a);
+                  },
+               }),
+               noteIncrementalCheck: (
+                  id: string,
+                  f: { check: string; outcome: string },
+               ) => noted.push([id, `${f.check}:${f.outcome}`]),
+            },
+            lineage: merge,
+            step: {
+               mode: "delta",
+               start: { malloyType: "date", value: "2024-06-01" },
+               end: { malloyType: "date", value: "2024-07-01" },
+               coveredThrough: { malloyType: "date", value: "2024-07-01" },
+               statements: ["MERGE INTO t USING s ON true"],
+            },
+            target: { ...snowflake, windowRows: undefined },
+            sourceName: "daily",
+         });
+         // The probe reads only the keys the delta's range wrote.
+         expect(probes.find((q) => q.includes("HAVING"))).toContain(
+            `WHERE "order_date" >= DATE '2024-06-01' AND "order_date" < DATE '2024-07-01'`,
+         );
+         expect(applied).toMatchObject({ applied: true, refresh: "delta" });
+         expect(applied.coveredThrough?.value).toBe(covered);
+         expect(upserted.length).toBe(covered ? 1 : 0);
+         expect(deleted.length).toBe(covered ? 0 : 1);
+         expect(noted[0]).toEqual(["sid", `merge_key:${outcome}`]);
+      },
+   );
 
    it("fails, rather than rebuilding, when a pair delta fails for any other reason", async () => {
       const pair = {
