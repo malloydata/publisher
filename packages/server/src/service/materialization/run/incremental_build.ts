@@ -151,7 +151,7 @@ const KNOWN_LEDGER_KEYS: ReadonlySet<string> = new Set([
 ]);
 
 /** The keys of a wire ledger entry this release does not know, or undefined. */
-export function ledgerExtensions(
+function ledgerExtensions(
    entry: LedgerEntry,
 ): Record<string, unknown> | undefined {
    const extra = Object.entries(entry).filter(
