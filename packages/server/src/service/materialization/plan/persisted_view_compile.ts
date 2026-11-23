@@ -453,11 +453,14 @@ async function persistedQueryRefusalReason(
          refusal: "generated_build_failed",
       };
    }
-   // A given the query reads with no default (its own, or a source's
-   // `where:` a `#(materialize)` build leaves out) has no value at build, so
-   // the companion that declares the query's build source would not compile,
-   // leaving out every persisted view and query of the model. Refused here,
-   // as the build target's own check refuses one read with a default.
+   // A persisted query that reads any given (its own, or a source's `where:`
+   // a `#(materialize)` build leaves out) is refused as `reads_given`, with a
+   // default or without: one table cannot hold every caller's result. One
+   // with no default is refused here, before its companion is written: it
+   // has no value at build, so the companion that declares the query's build
+   // source would not compile, leaving out every persisted view and query of
+   // the model. One with a default is refused by the build target's own
+   // check (persisted_view.ts, `persistedQueryReadsGivenRefusal`).
    const declared = (modelDef as { givens?: Record<string, unknown> } | null)
       ?.givens;
    const unvalued = (givens ?? []).some(
