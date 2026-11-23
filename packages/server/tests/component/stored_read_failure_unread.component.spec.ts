@@ -172,6 +172,37 @@ describe("a failed stored read leaves its table unread, never incompatible", () 
       expect(pkg.incompatibleTables().has(address)).toBe(false);
    }, 120_000);
 
+   it("keeps a table failed closed when a bind replaced the entries its rebind read, and reads it again", async () => {
+      const mz = pkg.materialization() as unknown as {
+         readDatabaseColumns: (...a: unknown[]) => Promise<unknown>;
+         databaseEntries: Record<string, unknown> | undefined;
+         readFailed: ReadonlySet<string>;
+      };
+      const read = mz.readDatabaseColumns.bind(mz);
+      let reads = 0;
+      let failedAfterDiscard: boolean | undefined;
+      mz.readDatabaseColumns = async (...a: unknown[]) => {
+         reads += 1;
+         const out = await read(...a);
+         if (reads === 1) {
+            // A bind lands while the first rebind reads: its read is stale.
+            mz.databaseEntries = { ...mz.databaseEntries };
+            setTimeout(() => {
+               failedAfterDiscard ??= mz.readFailed.has(address);
+            }, 0);
+         }
+         return out;
+      };
+      try {
+         readFailed();
+         await until(async () => (await ask()) === "materialized");
+         expect(reads).toBeGreaterThanOrEqual(2);
+         expect(failedAfterDiscard).toBe(true);
+      } finally {
+         mz.readDatabaseColumns = read;
+      }
+   }, 120_000);
+
    it("never finds a table incompatible for a read that failed on something else (a permission)", async () => {
       readFailed();
       expect(verdictOf()?.reason).not.toBe("incompatible");

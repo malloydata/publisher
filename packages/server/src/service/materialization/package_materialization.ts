@@ -553,7 +553,9 @@ export class PackageMaterialization {
          try {
             do {
                run.again = false;
-               await this.rebindFromCatalog();
+               // Again when the read was discarded, or a read failed since
+               // it began: every failed-closed table is read.
+               if (!(await this.rebindFromCatalog())) run.again = true;
                await this.plan.refresh(async () => undefined);
             } while (run.again && !this.disposed);
          } catch (err) {
@@ -572,9 +574,14 @@ export class PackageMaterialization {
 
    /**
     * Read every bound table again, on both tiers, and bind what it finds as
-    * one commit, clearing the tables {@link onIncompatible} failed closed.
+    * one commit, clearing the tables {@link onIncompatible} had failed closed
+    * when the reads began. False when another rebind is due: the read was
+    * discarded (a bind replaced the entries) or a read failed since.
     */
-   private async rebindFromCatalog(): Promise<void> {
+   private async rebindFromCatalog(): Promise<boolean> {
+      // Only the tables failed closed before these reads began are judged
+      // by them: one a read failed on since is read by the next rebind.
+      const judged = this.readFailed;
       const database = this.databaseEntries;
       const observed =
          database && Object.keys(database).length > 0
@@ -585,21 +592,26 @@ export class PackageMaterialization {
          Object.keys(storage).length > 0
             ? await this.readStorageColumns(storage, this.storageSite)
             : undefined;
-      if (this.disposed) return;
+      if (this.disposed) return true;
+      // A bind that replaced the entries meanwhile discards what was read
+      // of them: the tables stay failed closed, for another rebind.
+      const applied =
+         (!observed || this.databaseEntries === database) &&
+         (!storageObserved || this.storageEntries === storage);
+      if (!applied) return false;
       await this.commit(() => {
-         if (observed && this.databaseEntries === database) {
-            this.observedColumns = observed;
-         }
-         if (storageObserved && this.storageEntries === storage) {
-            this.storageObserved = storageObserved;
-         }
-         this.readFailed = new Set();
+         if (observed) this.observedColumns = observed;
+         if (storageObserved) this.storageObserved = storageObserved;
+         this.readFailed = new Set(
+            [...this.readFailed].filter((h) => !judged.has(h)),
+         );
       });
       this.logObservedOutcome();
       // A table still unread (a swap's rename window outlasting the read) is
       // read again with backoff, as a bind's are, and serves once it is.
       if (observed) this.scheduleUnreadRetry(1);
       if (storageObserved) this.scheduleStorageRetry(1);
+      return this.readFailed.size === 0;
    }
 
    /**
