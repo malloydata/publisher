@@ -4668,22 +4668,22 @@ describe("buildCloudStorageSecretSQL — scope", () => {
          type: "s3",
          ...base,
          provider: "credential_chain",
-         scope: ["s3://b/p/main/", "s3://b/p/sync_a/"],
+         scope: ["s3://b/p/main/", "s3://b/p/extra_a/"],
       });
       const key = buildCloudStorageSecretSQL("s", {
          type: "s3",
          ...base,
-         scope: ["s3://b/p/main/", "s3://b/p/sync_a/"],
+         scope: ["s3://b/p/main/", "s3://b/p/extra_a/"],
       });
       const gcs = buildCloudStorageSecretSQL("s", {
          type: "gcs",
          ...base,
-         scope: ["gs://b/p/main/", "gs://b/p/sync_a/"],
+         scope: ["gs://b/p/main/", "gs://b/p/extra_a/"],
       });
       expect(chain).toContain("PROVIDER credential_chain");
-      expect(chain).toContain("SCOPE ['s3://b/p/main/', 's3://b/p/sync_a/']");
-      expect(key).toContain("SCOPE ['s3://b/p/main/', 's3://b/p/sync_a/']");
-      expect(gcs).toContain("SCOPE ['gs://b/p/main/', 'gs://b/p/sync_a/']");
+      expect(chain).toContain("SCOPE ['s3://b/p/main/', 's3://b/p/extra_a/']");
+      expect(key).toContain("SCOPE ['s3://b/p/main/', 's3://b/p/extra_a/']");
+      expect(gcs).toContain("SCOPE ['gs://b/p/main/', 'gs://b/p/extra_a/']");
    });
 
    it("emits the list form for a single prefix", () => {
@@ -4802,7 +4802,7 @@ describe("storageSecretScope", () => {
          scopeOf({
             recordedDataPath: "s3://bucket/org_a/db_b/",
             schemaPaths: schemas({ main }),
-            readableSchemas: ["sync_a"],
+            readableSchemas: ["extra_a"],
             readOnly: false,
             managed: true,
          }),
@@ -4822,9 +4822,9 @@ describe("storageSecretScope", () => {
          scopeOf({
             recordedDataPath: "s3://bucket/org_a/db_b/",
             schemaPaths: schemas({
-               sync_a: { path: "sync_a/", relative: true },
+               extra_a: { path: "extra_a/", relative: true },
             }),
-            readableSchemas: ["sync_a"],
+            readableSchemas: ["extra_a"],
             readOnly: true,
             managed: true,
          }),
@@ -4877,29 +4877,32 @@ describe("storageSecretScope", () => {
 
       it("returns main and each listed schema, with one trailing slash apiece", () => {
          expect(
-            view(["sync_a", "sync_b"], {
-               sync_a: { path: "sync_a/", relative: true },
-               sync_b: {
-                  path: "s3://bucket/org_a/db_b/sync_b//",
+            view(["extra_a", "extra_b"], {
+               extra_a: { path: "extra_a/", relative: true },
+               extra_b: {
+                  path: "s3://bucket/org_a/db_b/extra_b//",
                   relative: false,
                },
             }),
          ).toEqual([
             "s3://bucket/org_a/db_b/main/",
-            "s3://bucket/org_a/db_b/sync_a/",
-            "s3://bucket/org_a/db_b/sync_b/",
+            "s3://bucket/org_a/db_b/extra_a/",
+            "s3://bucket/org_a/db_b/extra_b/",
          ]);
          expect(error.called).toBe(false);
       });
 
       it("drops, and logs with catalog and schema, an entry that does not resolve strictly under the data path", () => {
          const bad = {
-            outside: { path: "s3://other/sync/", relative: false },
-            sibling: { path: "s3://bucket/org_a/db_bx/sync/", relative: false },
+            outside: { path: "s3://other/extra/", relative: false },
+            sibling: {
+               path: "s3://bucket/org_a/db_bx/extra/",
+               relative: false,
+            },
             parent: { path: "../x/", relative: true },
             inner_parent: { path: "a/../x/", relative: true },
             empty_segment: { path: "a//b/", relative: true },
-            leading_slash: { path: "/sync/", relative: true },
+            leading_slash: { path: "/extra/", relative: true },
             root_relative: { path: "", relative: true },
             root_slashes: { path: "//", relative: true },
             root_absolute: { path: "s3://bucket/org_a/db_b/", relative: false },
@@ -4920,12 +4923,12 @@ describe("storageSecretScope", () => {
 
       it("skips, and logs, a listed schema the catalog does not record", () => {
          expect(
-            view(["sync_a", "ghost"], {
-               sync_a: { path: "sync_a/", relative: true },
+            view(["extra_a", "ghost"], {
+               extra_a: { path: "extra_a/", relative: true },
             }),
          ).toEqual([
             "s3://bucket/org_a/db_b/main/",
-            "s3://bucket/org_a/db_b/sync_a/",
+            "s3://bucket/org_a/db_b/extra_a/",
          ]);
          expect(error.callCount).toBe(1);
          expect(error.firstCall.args[1]).toEqual({
@@ -4936,17 +4939,17 @@ describe("storageSecretScope", () => {
 
       it("keeps main's legacy handling whatever the listed schemas are", () => {
          expect(
-            view(["sync_a"], {
+            view(["extra_a"], {
                main: { path: "s3://elsewhere/main", relative: false },
-               sync_a: { path: "sync_a/", relative: true },
+               extra_a: { path: "extra_a/", relative: true },
             }),
-         ).toEqual(["s3://elsewhere/main/", "s3://bucket/org_a/db_b/sync_a/"]);
+         ).toEqual(["s3://elsewhere/main/", "s3://bucket/org_a/db_b/extra_a/"]);
       });
 
       it("lists a prefix once when two schemas share a path", () => {
          expect(
-            view(["sync_a"], {
-               sync_a: { path: "main/", relative: true },
+            view(["extra_a"], {
+               extra_a: { path: "main/", relative: true },
             }),
          ).toEqual(["s3://bucket/org_a/db_b/main/"]);
       });

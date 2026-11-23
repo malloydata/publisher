@@ -494,19 +494,12 @@ paths:
         A load runs in a session bounded to `PUBLISHER_ADMIN_MEMORY_LIMIT` of
         memory (default 1.5 GB) or the operator's lower
         `PUBLISHER_DUCKDB_MEMORY_LIMIT`, and `PUBLISHER_ADMIN_MAX_TEMP_DIRECTORY_SIZE`
-        of spill (default 6 GiB). A keyed load
-        compares the table's columns in narrow passes, the keys first and then
-        groups of columns sized to half the session's memory. A keyed replace
-        or merge of 10 million rows by 21 columns stays within the spill limit
-        (measured); spill grows with the stage's size plus the widest single
-        column, and one column whose rows times width exceed that budget by
-        itself may still spill past it. A keyless replace has no key to narrow by: when the row
-        counts match (every retry) it compares whole rows of both sides, and a
-        table larger than the session's memory can exceed the spill limit, so
-        give a large stream a `key`. A load that outgrows either limit answers
-        `500`. A `500` before the commit writes nothing; one from the flush
-        after it may follow a committed load. Either way a retry after any
-        `500` is safe.
+        of spill (default 6 GiB). A keyed load stays within the spill limit by
+        comparing columns in passes; a keyless replace of a table larger than
+        the session's memory can exceed it, so give a large stream a `key`. A
+        load that outgrows either limit answers `500`. A `500` before the
+        commit writes nothing; one from the flush after it may follow a
+        committed load. Either way a retry after any `500` is safe.
 
         Synchronous: it answers `201` once the rows are committed, with the
         counts of what changed.

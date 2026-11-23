@@ -47,7 +47,9 @@ Two consequences worth knowing. A section merged to `main` ships in the **next**
 
 **Added: `ducklakeConnection.readableSchemas`, the schemas a managed read-only DuckLake connection may read besides `main`.** The connection's storage credential was scoped to `main`'s files only; it is now scoped to `main` plus each listed schema (bare lowercase names, order and duplicates ignored). Anything else in the bucket stays unreadable. SQL on the connection may name a listed schema's tables (`s.t` or `<connection>.s.t`) as it does `main`'s, its schema and table listings show the listed schemas beside `main`, and every other schema stays refused. Valid only on a connection with `managed: true` and a read-only attach, never on a storage destination.
 
-**What to do:** nothing; all four are additive. See [admin-api-doc.yaml](admin-api-doc.yaml) and [docs/ducklake.md](docs/ducklake.md).
+**Changed: `POST /catalogs` refuses an uppercase or reserved name in `schemas[]`.** Each name must now be lowercase (`[a-z_][a-z0-9_]*`) and not reserved (`main`, `memory`, the system schemas, any name starting `__ducklake_metadata_`), the rules `PUT /catalogs/{catalog}/schemas/{schema}` applies; an uppercase name answers `400 INVALID_REQUEST` and a reserved one `400 SCHEMA_RESERVED`. Earlier releases accepted any plain identifier.
+
+**Who is affected:** a caller that creates a catalog with an uppercase schema name. **What to do:** lowercase the name. The additions above change nothing for other callers. See [admin-api-doc.yaml](admin-api-doc.yaml) and [docs/ducklake.md](docs/ducklake.md).
 
 ## [Unreleased] — the incremental ledger entry is opaque, and a malformed one seeds
 

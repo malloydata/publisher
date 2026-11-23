@@ -454,13 +454,13 @@ describe("toPublicConnection", () => {
          type: "ducklake",
          ducklakeConnection: {
             catalog: { postgresConnection: { host: "catalog.db" } },
-            readableSchemas: ["sync_a", "sync_b"],
+            readableSchemas: ["extra_a", "extra_b"],
          },
       } as unknown as ApiConnection);
 
       expect(view.ducklakeConnection?.readableSchemas).toEqual([
-         "sync_a",
-         "sync_b",
+         "extra_a",
+         "extra_b",
       ]);
    });
 

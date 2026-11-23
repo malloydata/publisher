@@ -740,17 +740,17 @@ describe("Environment: connections and storage destinations are disjoint", () =>
          stubCatalog(statements, {
             ...RECORDED,
             schemas: {
-               sync_a: { path: "sync_a/", path_is_relative: true },
-               sync_b: { path: "sync_b/", path_is_relative: null },
+               extra_a: { path: "extra_a/", path_is_relative: true },
+               extra_b: { path: "extra_b/", path_is_relative: null },
             },
          });
          const connection = await buildEnvironmentMalloyConfig(
-            [readableView(["sync_b", "sync_a", "main", "sync_a"])],
+            [readableView(["extra_b", "extra_a", "main", "extra_a"])],
             envPath,
          ).malloyConfig.connections.lookupConnection("db_x");
          expect(secrets(statements)).toHaveLength(1);
          expect(secrets(statements)[0]).toContain(
-            "SCOPE ['gs://bucket/org_a/db_x/main/', 'gs://bucket/org_a/db_x/sync_a/', 'gs://bucket/org_a/db_x/sync_b/']",
+            "SCOPE ['gs://bucket/org_a/db_x/main/', 'gs://bucket/org_a/db_x/extra_a/', 'gs://bucket/org_a/db_x/extra_b/']",
          );
          expect(
             statements.filter((sql) => /\.ducklake_schema WHERE/.test(sql)),
@@ -758,8 +758,8 @@ describe("Environment: connections and storage destinations are disjoint", () =>
          expect(allowedForLockdown(connection)).toEqual(
             expect.arrayContaining([
                "gs://bucket/org_a/db_x/main/",
-               "gs://bucket/org_a/db_x/sync_a/",
-               "gs://bucket/org_a/db_x/sync_b/",
+               "gs://bucket/org_a/db_x/extra_a/",
+               "gs://bucket/org_a/db_x/extra_b/",
             ]),
          );
       });
@@ -772,7 +772,9 @@ describe("Environment: connections and storage destinations are disjoint", () =>
             const statements: string[] = [];
             stubCatalog(statements, {
                ...RECORDED,
-               schemas: { sync_a: { path: "sync_a/", path_is_relative: true } },
+               schemas: {
+                  extra_a: { path: "extra_a/", path_is_relative: true },
+               },
             });
             const lake = noPathLake("db_x", { managed: true }, "s3");
             lake.ducklakeConnection!.storage = {
@@ -782,7 +784,7 @@ describe("Environment: connections and storage destinations are disjoint", () =>
                   region: "us-east-1",
                },
             };
-            lake.ducklakeConnection!.readableSchemas = ["sync_a"];
+            lake.ducklakeConnection!.readableSchemas = ["extra_a"];
             const connection = (await buildEnvironmentMalloyConfig(
                [lake],
                envPath,
@@ -790,7 +792,7 @@ describe("Environment: connections and storage destinations are disjoint", () =>
                storageSecretRenewer: () => Promise<void>;
             };
             const scope =
-               "SCOPE ['gs://bucket/org_a/db_x/main/', 'gs://bucket/org_a/db_x/sync_a/']";
+               "SCOPE ['gs://bucket/org_a/db_x/main/', 'gs://bucket/org_a/db_x/extra_a/']";
             expect(secrets(statements)[0]).toContain("REFRESH 'auto'");
             expect(secrets(statements)[0]).toContain(scope);
 
@@ -809,13 +811,13 @@ describe("Environment: connections and storage destinations are disjoint", () =>
          stubCatalog(statements, {
             ...RECORDED,
             schemas: {
-               sync_a: { path: "sync_a/", path_is_relative: true },
+               extra_a: { path: "extra_a/", path_is_relative: true },
                escape: { path: "../other/", path_is_relative: true },
             },
          });
-         await lookupView(readableView(["escape", "ghost", "sync_a"]));
+         await lookupView(readableView(["escape", "ghost", "extra_a"]));
          expect(secrets(statements)[0]).toContain(
-            "SCOPE ['gs://bucket/org_a/db_x/main/', 'gs://bucket/org_a/db_x/sync_a/']",
+            "SCOPE ['gs://bucket/org_a/db_x/main/', 'gs://bucket/org_a/db_x/extra_a/']",
          );
          expect(
             error
@@ -832,9 +834,9 @@ describe("Environment: connections and storage destinations are disjoint", () =>
          const statements: string[] = [];
          stubCatalog(statements, {
             dataPath: "gs://bucket/org_a/db_x/",
-            schemas: { sync_a: { path: "sync_a/", path_is_relative: true } },
+            schemas: { extra_a: { path: "extra_a/", path_is_relative: true } },
          });
-         const failure = await lookupView(readableView(["sync_a"]));
+         const failure = await lookupView(readableView(["extra_a"]));
          expect(failure?.message).toMatch(
             /No storage secret could be scoped for DuckLake catalog 'db_x'/,
          );

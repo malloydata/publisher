@@ -1084,19 +1084,19 @@ describe("ducklake shape validation", () => {
 
       it("accepts lowercase schema names on a managed read-only connection", () => {
          expect(() =>
-            assemble(withReadable(["sync_a", "_b2", "main", "sync_a"])),
+            assemble(withReadable(["extra_a", "_b2", "main", "extra_a"])),
          ).not.toThrow();
          expect(() => assemble(withReadable([]))).not.toThrow();
          expect(() =>
-            assemble(withReadable(["sync_a"], { managed: true }, true)),
+            assemble(withReadable(["extra_a"], { managed: true }, true)),
          ).not.toThrow();
       });
 
       it("rejects a name that is not a plain lowercase identifier", () => {
          for (const bad of [
-            "Sync_A",
-            "sync-a",
-            "1sync",
+            "Extra_A",
+            "extra-a",
+            "1extra",
             "",
             "a.b",
             "x'; --",
@@ -1108,7 +1108,7 @@ describe("ducklake shape validation", () => {
                /readableSchemas must be a list of lowercase schema names/,
             );
          }
-         expect(() => assemble(withReadable("sync_a"))).toThrow(
+         expect(() => assemble(withReadable("extra_a"))).toThrow(
             /readableSchemas must be a list/,
          );
       });
@@ -1123,7 +1123,7 @@ describe("ducklake shape validation", () => {
             "__ducklake_metadata_",
             "__ducklake_metadata_lake",
          ]) {
-            expect(() => assemble(withReadable(["sync_a", name]))).toThrow(
+            expect(() => assemble(withReadable(["extra_a", name]))).toThrow(
                new RegExp(`readableSchemas names '${name}', a reserved schema`),
             );
          }
@@ -1137,7 +1137,7 @@ describe("ducklake shape validation", () => {
 
       it("rejects the field on a connection that is not managed", () => {
          for (const extra of [{}, { managed: false }]) {
-            expect(() => assemble(withReadable(["sync_a"], extra))).toThrow(
+            expect(() => assemble(withReadable(["extra_a"], extra))).toThrow(
                /readableSchemas requires a managed, read-only connection/,
             );
          }
@@ -1145,13 +1145,13 @@ describe("ducklake shape validation", () => {
 
       it("rejects the field on a read-write connection", () => {
          expect(() =>
-            assemble(withReadable(["sync_a"], { managed: true }, false)),
+            assemble(withReadable(["extra_a"], { managed: true }, false)),
          ).toThrow(/readableSchemas requires a managed, read-only connection/);
       });
 
       it("rejects the field on a storage destination, even a managed one", () => {
          const { accepted, rejected } = validateStorageDestinations([
-            withReadable(["sync_a"]),
+            withReadable(["extra_a"]),
             valid,
          ]);
          expect(accepted).toHaveLength(1);
@@ -1194,18 +1194,18 @@ describe("ducklake shape validation", () => {
       };
 
       it("is the same for absent, empty, main-only and reordered or duplicated lists", () => {
-         const same = tempDirectory(["sync_a", "sync_b"]);
+         const same = tempDirectory(["extra_a", "extra_b"]);
          expect(same).toBeDefined();
-         expect(tempDirectory(["sync_b", "sync_a", "sync_b"])).toBe(same);
-         expect(tempDirectory(["main", "sync_b", "sync_a"])).toBe(same);
+         expect(tempDirectory(["extra_b", "extra_a", "extra_b"])).toBe(same);
+         expect(tempDirectory(["main", "extra_b", "extra_a"])).toBe(same);
          const none = tempDirectory(undefined);
          expect(tempDirectory([])).toBe(none);
          expect(tempDirectory(["main"])).toBe(none);
       });
 
       it("differs when the readable set changes", () => {
-         const base = tempDirectory(["sync_a"]);
-         expect(tempDirectory(["sync_a", "sync_b"])).not.toBe(base);
+         const base = tempDirectory(["extra_a"]);
+         expect(tempDirectory(["extra_a", "extra_b"])).not.toBe(base);
          expect(tempDirectory(undefined)).not.toBe(base);
       });
    });
