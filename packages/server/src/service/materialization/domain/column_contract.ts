@@ -115,6 +115,7 @@ export function keyUniquenessOfContract(
         keyColumn?: string;
         unique?: boolean;
         parentKeys?: Record<string, boolean>;
+        parentKeyColumns?: Record<string, string>;
      }
    | undefined {
    const keys = parseContract(contract)?.keys;
@@ -123,6 +124,7 @@ export function keyUniquenessOfContract(
       ([name, check]) => check.level === "rollup" && name.startsWith("rollup:"),
    );
    const parentKeys: Record<string, boolean> = {};
+   const parentKeyColumns: Record<string, string> = {};
    for (const s of sources) {
       for (const level of ["parent", "stored"] as const) {
          const check = keys[contractKeyName(level, s.relativeID, s.primaryKey)];
@@ -130,6 +132,7 @@ export function keyUniquenessOfContract(
          // Both must hold: a source checked as both is unique only if both say so.
          parentKeys[s.sourceID] =
             (parentKeys[s.sourceID] ?? true) && check.unique;
+         parentKeyColumns[s.sourceID] = s.primaryKey;
       }
    }
    const anyParent = Object.keys(parentKeys).length > 0;
@@ -138,7 +141,7 @@ export function keyUniquenessOfContract(
       ...(own
          ? { keyColumn: own[0].slice("rollup:".length), unique: own[1].unique }
          : {}),
-      ...(anyParent ? { parentKeys } : {}),
+      ...(anyParent ? { parentKeys, parentKeyColumns } : {}),
    };
 }
 

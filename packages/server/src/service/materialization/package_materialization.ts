@@ -1606,6 +1606,7 @@ export class PackageMaterialization {
             if (!checked(b)) return b;
             const {
                primaryKeys: _forgotten,
+               primaryKeyColumns: _forgottenColumns,
                rollupKey: _forgottenKey,
                ...rest
             } = b;

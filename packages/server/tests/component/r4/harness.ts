@@ -764,16 +764,21 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
          }
          if (checks !== false && (plan.parentKeyChecks ?? []).length > 0) {
             const parentKeys: Record<string, boolean> = {};
+            const parentKeyColumns: Record<string, string> = {};
             for (const parent of plan.parentKeyChecks ?? []) {
                const record =
                   checks === "unique"
                      ? { unique: true }
                      : await runRollupKeyCheck(parent, duckdb, table);
-               if (record) parentKeys[parent.sourceID] = record.unique;
+               if (record) {
+                  parentKeys[parent.sourceID] = record.unique;
+                  parentKeyColumns[parent.sourceID] = parent.keyColumn;
+               }
             }
             databaseEntries[target.buildId].keyUniqueness = {
                ...databaseEntries[target.buildId].keyUniqueness,
                parentKeys,
+               parentKeyColumns,
             };
          }
          rollupPlanned.push([
@@ -1216,6 +1221,10 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
                   ...entry.keyUniqueness?.parentKeys,
                   [source.sourceID]: record.unique,
                },
+               parentKeyColumns: {
+                  ...entry.keyUniqueness?.parentKeyColumns,
+                  [source.sourceID]: storedKey,
+               },
             };
          }
       }
@@ -1226,6 +1235,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
          : [];
       if (rollupChecks.length > 0 && checks !== false) {
          const parentKeys: Record<string, boolean> = {};
+         const parentKeyColumns: Record<string, string> = {};
          for (const parent of rollupChecks) {
             const record =
                checks === "unique"
@@ -1236,7 +1246,10 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
                           duckdb,
                        table,
                     );
-            if (record) parentKeys[parent.sourceID] = record.unique;
+            if (record) {
+               parentKeys[parent.sourceID] = record.unique;
+               parentKeyColumns[parent.sourceID] = parent.keyColumn;
+            }
          }
          const entry = entries[`h${i}`] as ManifestEntry & {
             keyUniqueness?: KeyUniqueness;
@@ -1244,6 +1257,10 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
          entry.keyUniqueness = {
             ...entry.keyUniqueness,
             parentKeys: { ...entry.keyUniqueness?.parentKeys, ...parentKeys },
+            parentKeyColumns: {
+               ...entry.keyUniqueness?.parentKeyColumns,
+               ...parentKeyColumns,
+            },
          };
       }
       // A storage rollup's own key check (known limitation 29), run on its

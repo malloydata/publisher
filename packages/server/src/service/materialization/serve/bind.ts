@@ -61,6 +61,7 @@ import {
    type Binding,
    type BindingKind,
    deriveServeBindings,
+   primaryKeyColumnsOf,
    primaryKeysOf,
 } from "../domain/binding";
 import { groupAliasesByName, planSourceIds } from "../domain/source_aliases";
@@ -478,6 +479,9 @@ export function deriveDatabaseServeBindings(args: {
          // (a pair table's leaf key); internal, never
          // from a host's manifest.
          ...(primaryKeysOf(entry) ? { primaryKeys: primaryKeysOf(entry) } : {}),
+         ...(primaryKeyColumnsOf(entry)
+            ? { primaryKeyColumns: primaryKeyColumnsOf(entry) }
+            : {}),
       });
    }
    return bindings;

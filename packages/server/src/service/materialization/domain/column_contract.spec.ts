@@ -473,6 +473,10 @@ describe("the key checks a contract records", () => {
          keyColumn: "category",
          unique: true,
          parentKeys: { [ORDERS.sourceID]: true, [USERS.sourceID]: false },
+         parentKeyColumns: {
+            [ORDERS.sourceID]: "id",
+            [USERS.sourceID]: "user_id",
+         },
       });
    });
 

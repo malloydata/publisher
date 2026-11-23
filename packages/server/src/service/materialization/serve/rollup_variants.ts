@@ -190,6 +190,7 @@ import { gateSwitches, getMaterializeEnabled } from "../../../config";
 import { boundTablePath, buildVirtualMap, sqlReadsTable } from "./bindings";
 import {
    type Binding,
+   checkedKeyIs,
    heldReadBinding,
    isDatabase,
    type KeyedTable,
@@ -1113,10 +1114,10 @@ export class RollupVariantServe {
          read,
          primaryKeyOf(childDef),
          this.storedIn(plan, q.args.pinned) !== undefined
-            ? verdictOf(
-                 this.tableOf(plan, q.args.pinned)?.binding?.primaryKeys?.[
-                    plan.baseSourceID
-                 ],
+            ? this.bindingKeyUniqueness(
+                 this.tableOf(plan, q.args.pinned)?.binding,
+                 plan.baseSourceID,
+                 primaryKeyOf(childDef),
               )
             : this.parentKeyUniqueness(
                  plan,
@@ -1690,9 +1691,30 @@ export class RollupVariantServe {
       const sourceID = (struct as { sourceID?: unknown } | undefined)?.sourceID;
       const id = this.tableOf(plan, pinned)?.sourceEntityId;
       if (typeof sourceID !== "string" || id === undefined) return "unknown";
-      return verdictOf(
-         pinned.snapshot.entries[id]?.keyUniqueness?.parentKeys?.[sourceID],
+      const checks = pinned.snapshot.entries[id]?.keyUniqueness;
+      // A check of the key the source declared then, not now, says nothing.
+      const key = primaryKeyOf(
+         SourceMap.of(this.host.modelDef()).node(sourceID)?.def,
       );
+      if (!checkedKeyIs(checks?.parentKeyColumns, sourceID, key)) {
+         return "unknown";
+      }
+      return verdictOf(checks?.parentKeys?.[sourceID]);
+   }
+
+   /**
+    * What `binding`'s build found of `sourceID`'s primary key `key`: unknown
+    * when it checked another column, or recorded none.
+    */
+   private bindingKeyUniqueness(
+      binding: Binding | undefined,
+      sourceID: string,
+      key: string | undefined,
+   ): KeyVerdict {
+      if (!checkedKeyIs(binding?.primaryKeyColumns, sourceID, key)) {
+         return "unknown";
+      }
+      return verdictOf(binding?.primaryKeys?.[sourceID]);
    }
 
    /**
@@ -1713,6 +1735,8 @@ export class RollupVariantServe {
          const unique = binding.primaryKeys[id];
          if (unique === undefined) continue;
          if (primaryKeyOf(map.node(id)?.def) !== key) continue;
+         // Checked as another column: the key moved since the build.
+         if (!checkedKeyIs(binding.primaryKeyColumns, id, key)) continue;
          if (!unique) return "repeated";
          found = true;
       }

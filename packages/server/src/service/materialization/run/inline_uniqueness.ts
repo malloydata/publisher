@@ -719,6 +719,7 @@ export function keyUniquenessAt(
    if (!records || table === undefined) return undefined;
    const own = keyUniquenessOf(records[address], entry);
    const parentKeys: Record<string, boolean> = {};
+   const parentKeyColumns: Record<string, string> = {};
    for (const [key, record] of Object.entries(records)) {
       if (
          record.sourceID !== undefined &&
@@ -726,11 +727,15 @@ export function keyUniquenessAt(
          record.table === table
       ) {
          parentKeys[record.sourceID] = record.unique;
+         parentKeyColumns[record.sourceID] = record.keyColumn;
       }
    }
    const anyParent = Object.keys(parentKeys).length > 0;
    if (!own && !anyParent) return undefined;
-   return { ...(own ?? {}), ...(anyParent ? { parentKeys } : {}) };
+   return {
+      ...(own ?? {}),
+      ...(anyParent ? { parentKeys, parentKeyColumns } : {}),
+   };
 }
 
 /**
