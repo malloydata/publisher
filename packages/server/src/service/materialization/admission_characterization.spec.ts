@@ -317,7 +317,16 @@ async function routed(args: {
    // Each stored table's contract, as its build would record its strings:
    // byte-wise, or under the stored side's collation.
    const pinned = pin(
-      makeSnapshot([], {}, undefined, undefined, contractsOf(args)),
+      makeSnapshot(
+         [],
+         {},
+         undefined,
+         undefined,
+         contractsOf({
+            ...args,
+            storedCollation: args.storedCollation ?? "binary",
+         }),
+      ),
       new Date(0),
    );
    const authorRunnable = authorOf(
@@ -328,8 +337,17 @@ async function routed(args: {
    // The routed compile: the author's own query (so a composite resolves to
    // the same member), read through a runtime whose stored tables compare
    // as `storedCollation`.
+   // A database table sits in its source's own warehouse: its instance is
+   // the author's, so an author instance's collation is the stored side's
+   // too (no deployment reads a database table on another instance).
+   const storedCollation =
+      args.storedCollation ??
+      (args.tables.some((t) => t.tier === "database")
+         ? args.authorCollation
+         : undefined) ??
+      "binary";
    const runnable = {
-      runtime: storedRuntime(args.storedCollation ?? "binary"),
+      runtime: storedRuntime(storedCollation),
       getPreparedQuery: () => authorRunnable.getPreparedQuery(),
    } as unknown as QueryMaterializer;
    const candidates = variantsOf(
@@ -858,7 +876,7 @@ const COLLATION: Record<string, Record<string, string>> = {
          "used, past the gate",
    },
    "row filter, string equality": {
-      "author instance nocase, database": "used, past the gate",
+      "author instance nocase, database": "skipped row_level_gate",
       "author instance nocase, storage, kept past its own gate":
          "skipped row_level_gate",
       "stored table nocase, database": "skipped row_level_gate",
@@ -866,7 +884,7 @@ const COLLATION: Record<string, Record<string, string>> = {
          "skipped row_level_gate",
    },
    "row filter, string ordering": {
-      "author instance nocase, database": "used, past the gate",
+      "author instance nocase, database": "skipped row_level_gate",
       "author instance nocase, storage, kept past its own gate":
          "skipped row_level_gate",
       "stored table nocase, database": "skipped row_level_gate",
@@ -876,7 +894,7 @@ const COLLATION: Record<string, Record<string, string>> = {
    // A gate on a boolean computed by ordering a string is judged as the
    // string gates above are: both collation probes run.
    "row filter, boolean over a string": {
-      "author instance nocase, database": "used, past the gate",
+      "author instance nocase, database": "skipped row_level_gate",
       "author instance nocase, storage, kept past its own gate":
          "skipped row_level_gate",
       "stored table nocase, database": "skipped row_level_gate",
@@ -894,7 +912,8 @@ const COLLATION: Record<string, Record<string, string>> = {
    // An ungated scope on a database table is judged by the stored side's
    // collation too, whatever its columns' types.
    "no gate, a where: ordering a string": {
-      "author instance nocase, database": "used",
+      "author instance nocase, database":
+         "skipped does_not_answer (served_copy_not_served)",
       "author instance nocase, storage, kept past its own gate":
          "skipped does_not_answer (served_copy_not_served)",
       "stored table nocase, database":
@@ -1116,16 +1135,20 @@ const QUERY_FILTERS: Record<string, Record<string, string>> = {
       "binary, view, storage": "used",
       "binary, query, database": "used",
       "binary, query, storage": "used",
-      "author instance nocase, served, database": "used",
+      "author instance nocase, served, database":
+         "skipped does_not_answer (served_copy_not_served): the query filters on a column a stored table does not compare as its source does: a stored table compares strings under a unknown collation",
       "author instance nocase, served, storage":
          "skipped does_not_answer (served_copy_not_served): the query filters on a column a stored table does not compare as its source does: an instance that compares strings under a collation",
-      "author instance nocase, rollup, database": "used",
+      "author instance nocase, rollup, database":
+         "skipped does_not_answer (rollup_row_level_gate): the query filters on a column a stored table does not compare as its source does: a stored table compares strings under a unknown collation",
       "author instance nocase, rollup, storage":
          "skipped does_not_answer (rollup_row_level_gate): the query filters on a column a stored table does not compare as its source does: an instance that compares strings under a collation",
-      "author instance nocase, view, database": "used",
+      "author instance nocase, view, database":
+         "skipped does_not_answer (view_missing_field): the query filters on a column a stored table does not compare as its source does: a stored table compares strings under a unknown collation",
       "author instance nocase, view, storage":
          "skipped does_not_answer (view_missing_field): the query filters on a column a stored table does not compare as its source does: an instance that compares strings under a collation",
-      "author instance nocase, query, database": "used",
+      "author instance nocase, query, database":
+         "skipped does_not_answer (query_missing_field): the query filters on a column a stored table does not compare as its source does: a stored table compares strings under a unknown collation",
       "author instance nocase, query, storage":
          "skipped does_not_answer (query_missing_field): the query filters on a column a stored table does not compare as its source does: an instance that compares strings under a collation",
       "stored table nocase, served, database":
@@ -1154,16 +1177,20 @@ const QUERY_FILTERS: Record<string, Record<string, string>> = {
       "binary, view, storage": "used",
       "binary, query, database": "used",
       "binary, query, storage": "used",
-      "author instance nocase, served, database": "used",
+      "author instance nocase, served, database":
+         "skipped does_not_answer (served_copy_not_served): the query filters on a column a stored table does not compare as its source does: a stored table compares strings under a unknown collation",
       "author instance nocase, served, storage":
          "skipped does_not_answer (served_copy_not_served): the query filters on a column a stored table does not compare as its source does: an instance that compares strings under a collation",
-      "author instance nocase, rollup, database": "used",
+      "author instance nocase, rollup, database":
+         "skipped does_not_answer (rollup_row_level_gate): the query filters on a column a stored table does not compare as its source does: a stored table compares strings under a unknown collation",
       "author instance nocase, rollup, storage":
          "skipped does_not_answer (rollup_row_level_gate): the query filters on a column a stored table does not compare as its source does: an instance that compares strings under a collation",
-      "author instance nocase, view, database": "used",
+      "author instance nocase, view, database":
+         "skipped does_not_answer (view_missing_field): the query filters on a column a stored table does not compare as its source does: a stored table compares strings under a unknown collation",
       "author instance nocase, view, storage":
          "skipped does_not_answer (view_missing_field): the query filters on a column a stored table does not compare as its source does: an instance that compares strings under a collation",
-      "author instance nocase, query, database": "used",
+      "author instance nocase, query, database":
+         "skipped does_not_answer (query_missing_field): the query filters on a column a stored table does not compare as its source does: a stored table compares strings under a unknown collation",
       "author instance nocase, query, storage":
          "skipped does_not_answer (query_missing_field): the query filters on a column a stored table does not compare as its source does: an instance that compares strings under a collation",
       "stored table nocase, served, database":
@@ -1542,7 +1569,15 @@ function handFacts(args: {
       probes: {
          scope: {
             source: { refusal: refusal(args.authorCollation) },
-            stored: { refusal: refusal(args.storedCollation) },
+            // A database table is on the author's instance (see routed).
+            stored: {
+               refusal: refusal(
+                  args.storedCollation ??
+                     (args.tables.some((t) => t.tier === "database")
+                        ? args.authorCollation
+                        : undefined),
+               ),
+            },
          },
       },
    };
