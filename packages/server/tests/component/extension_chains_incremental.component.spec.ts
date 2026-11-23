@@ -113,8 +113,10 @@ interface Entry {
    ledger?: Record<string, unknown> & {
       parent?: {
          sourceEntityId: string;
+         advancedBy?: string;
          builtAt?: string;
          coveredThrough?: string;
+         coveredThroughType?: string;
       };
    };
    builtFrom?: {
@@ -465,7 +467,7 @@ for (const tier of databaseTiers) {
             sourceEntityId: parentAddress,
             advancedBy: first.id,
             builtAt: parent.builtAt,
-            coveredThrough: parent.ledger?.coveredThrough,
+            coveredThrough: parent.ledger?.coveredThrough as string,
             coveredThroughType: "timestamp",
          });
       });
