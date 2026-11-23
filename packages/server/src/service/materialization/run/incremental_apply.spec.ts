@@ -1028,6 +1028,76 @@ describe("planIncrementalStep", () => {
       expect(script).toContain("2024-07-01");
    });
 
+   describe("for an extension over its parent's table (upstream)", () => {
+      it("starts no later than the parent's delta start", async () => {
+         const step = await plan({
+            upstream: {
+               startAtMost: { malloyType: "date", value: "2024-05-20" },
+            },
+         });
+         expect(step.mode).toBe("delta");
+         if (step.mode !== "delta") return;
+         expect(step.start.value).toBe("2024-05-20");
+         expect(step.end.value).toBe("2024-07-01");
+         // A later parent start leaves its own lower bound.
+         const later = await plan({
+            upstream: {
+               startAtMost: { malloyType: "date", value: "2024-06-15" },
+            },
+         });
+         expect(later.mode === "delta" && later.start.value).toBe("2024-06-01");
+      });
+
+      it("ends a time range at the parent's coverage, and records it", async () => {
+         const step = await plan({
+            upstream: {
+               endAtMost: { malloyType: "date", value: "2024-06-20" },
+            },
+         });
+         expect(step.mode).toBe("delta");
+         if (step.mode !== "delta") return;
+         expect(step.end.value).toBe("2024-06-20");
+         expect(step.coveredThrough.value).toBe("2024-06-20");
+         // A parent that covers no more than the extension: nothing to do.
+         const behind = await plan({
+            upstream: {
+               endAtMost: { malloyType: "date", value: "2024-06-01" },
+            },
+         });
+         expect(behind.mode).toBe("skip");
+      });
+
+      it("seeds with the run's reason, before any probe", async () => {
+         const { runner, seen } = fakeRunner();
+         const step = await planIncrementalStep({
+            target: warehouseDeltaTarget({
+               dialect: "postgres",
+               runner,
+               quotedTablePath: `"analytics"."daily"`,
+               lineage: LINEAGE,
+               sourceSQL: "SELECT * FROM base",
+            }),
+            lineage: LINEAGE,
+            ledgerEntry: LEDGER,
+            forceRefresh: false,
+            now: NOW,
+            columns: ["order_date", "region", "revenue"],
+            upstream: {
+               reseed: {
+                  reasonCode: "upstream_generation_skipped",
+                  reason: "missed one",
+               },
+            },
+         });
+         expect(step).toEqual({
+            mode: "seed",
+            reasonCode: "upstream_generation_skipped",
+            reason: "missed one",
+         });
+         expect(seen).toEqual([]);
+      });
+   });
+
    it("seeds on forceRefresh, before touching the warehouse", async () => {
       const { runner, seen } = fakeRunner();
       const step = await planIncrementalStep({

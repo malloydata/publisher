@@ -71,7 +71,10 @@ import {
    type MaterializePairBlocks,
    type MaterializePlan,
    type InlineUniquenessCheck,
+   type ChainMode,
 } from "../domain/table_plans";
+import { UPSTREAM_TABLE_UNUSABLE_REASON } from "./downstream_upstreams";
+import { pairLeafContractKeys } from "./pair_reroot";
 import {
    currentTimeFields,
    givenReadingFields,
@@ -81,6 +84,7 @@ import {
 import { callerIndependent, type FieldDependence } from "../../probe_compiler";
 import {
    declarationOf,
+   givenWhereNotOwnReason,
    readTimeTermsOf,
    withDeclaration,
 } from "./materialize_read_time";
@@ -135,6 +139,18 @@ const PLANNED_KEYS = ["inline"] as const;
  * not honoured: the table is rebuilt in full on every refresh, and served.
  */
 const MATERIALIZE_PAIR_FULL_REFRESH_CODE = "materialize-pair-full-refresh";
+/**
+ * The code on the warning for an incremental extension that rebuilds in full
+ * whenever its parent's table changes ({@link extensionFullRefreshFinding}).
+ */
+const MATERIALIZE_EXTENSION_FULL_REFRESH_CODE =
+   "materialize-extension-full-refresh";
+/**
+ * The code on the warning for a range-replace extension of a `merge_key=`
+ * parent ({@link extensionKeepsMovedRowsFinding}).
+ */
+const MATERIALIZE_EXTENSION_KEEPS_MOVED_ROWS_CODE =
+   "materialize-extension-keeps-moved-rows";
 
 /**
  * Every key the generator reads, which must be the route's closed set in the
@@ -1272,8 +1288,9 @@ export function planModelMaterialize(
          plans.push(planned);
       }
    }
-   chainExtensionTables(plans, map);
-   return { plans, refused };
+   const chained = chainExtensionTables(plans, map);
+   refused.push(...chained.refused);
+   return { plans: chained.plans, refused };
 }
 
 /** What planning one source reads beyond the source itself. */
@@ -1762,7 +1779,9 @@ function readTermsOf(
          { refused: "current_time" },
       );
    }
-   const readTime = readTimeTermsOf(def, classified, columns, givens);
+   const readTime = readTimeTermsOf(def, classified, columns, givens, {
+      deferInherited: true,
+   });
    if (!readTime.ok) {
       return new Declined(readTime.reason, { refused: readTime.refusal });
    }
@@ -2026,31 +2045,29 @@ function storedFieldOf(
 }
 
 /**
- * The `#(materialize)` keys that make a table incremental. A chained build
- * reads its parent's table, whose rows an incremental refresh moves on its
- * own schedule, so neither side of a chain may carry one.
+ * The `#(materialize)` keys that make a table incremental.
  */
 const INCREMENTAL_KEYS = ["refresh", "watermark", "merge_key", "lookback"];
 
 /**
- * Give each plan that can build over its nearest materialized ancestor's build
- * source its `buildsOver`. The ancestor is the first planned source up
+ * Give each plan that extends a materialized ancestor in its own file its
+ * `buildsOver`, or refuse it. The ancestor is the first planned source up
  * the chain, reached through `extend` and renames only (a query-shaped hop
  * starts a new segment, which the build cannot re-root on a table), declared
  * in the same file (the build copy re-roots it in that file's text; one in
  * another file is the companion compiler's, `crossFileEntries`), as is
- * every declaration between them (`path`). Both must be on one tier (both
- * database, or both `storage=` the same destination), carry no incremental
- * key, and the parent no given-reading `where:` (its build source's own
- * `extend` re-applies that term, which would scope the extension's build to
- * one caller) and no current-time `where:` its build leaves out (the
- * re-rooted parent keeps it as written). A plan that does not qualify
- * builds over the raw chain: the same rows.
+ * every declaration between them (`path`). Whether the pair links, and how,
+ * is {@link chainVerdict}'s: a pair it refuses is refused here
+ * (`upstream_table_unusable`), never built over the raw chain.
  */
-function chainExtensionTables(plans: MaterializePlan[], map: SourceMap): void {
+function chainExtensionTables(
+   plans: MaterializePlan[],
+   map: SourceMap,
+): { plans: MaterializePlan[]; refused: MaterializeRefusal[] } {
    const byID = new Map(plans.map((p) => [p.sourceID, p]));
    const declarationOfID = (sourceID: string) =>
       declarationOf(map.node(sourceID)?.def as SourceDefLike);
+   const refused: MaterializeRefusal[] = [];
    for (const plan of plans) {
       let node = map.node(plan.sourceID);
       let parent: MaterializePlan | undefined;
@@ -2074,45 +2091,289 @@ function chainExtensionTables(plans: MaterializePlan[], map: SourceMap): void {
       ) {
          continue;
       }
-      if (!chainsOver(plan, parent)) continue;
+      const verdict = chainVerdict(plan, parent);
+      if ("refuse" in verdict) {
+         refused.push(
+            extensionRefusal(plan, parent.sourceName, verdict.refuse),
+         );
+         continue;
+      }
       plan.buildsOver = {
          sourceID: parent.sourceID,
          sourceName: parent.sourceName,
          declaration,
+         mode: verdict.link,
          path: path as TermUse[],
       };
    }
+   // A given-reading term inherited by a source with no materialized parent
+   // is refused, as it always was: nothing re-applies it at read.
+   for (const plan of plans) {
+      if (
+         plan.buildsOver ||
+         refused.some((r) => r.sourceID === plan.sourceID)
+      ) {
+         continue;
+      }
+      const stray = givenReadTerms(plan).find((t) => t.inherited);
+      if (!stray) continue;
+      refused.push({
+         sourceName: plan.sourceName,
+         sourceID: plan.sourceID,
+         reason: givenWhereNotOwnReason(`\`where: ${stray.code}\``),
+         outcome: {
+            refused: {
+               reason: "inherited_where_with_given",
+               tier: tierOf(plan.persist.storage),
+            },
+         },
+      });
+   }
+   const ids = new Set(refused.map((r) => r.sourceID));
+   return { plans: plans.filter((p) => !ids.has(p.sourceID)), refused };
 }
 
 /**
- * Whether an extension's plan may build over its parent's build source
- *, whichever file declares the parent: both on one tier (both
- * database, whose build reads the parent's build source in its own
- * warehouse, or one storage destination, whose build reads the parent's
- * table there, see `overStored`), neither incremental, neither a table of
- * several inlined paths, the parent no pair table, and the parent with no
- * given-reading `where:` and no current-time `where:` its build leaves out.
+ * Whether an extension's plan links to its materialized parent's table, and
+ * how ({@link ChainMode}), or why it is refused: there is no third outcome,
+ * so an extension is never built by recomputing its parent from raw.
+ * Whichever file declares the parent.
  */
-export function chainsOver(
+type ChainVerdict = { link: ChainMode } | { refuse: string };
+
+/**
+ * {@link ChainVerdict} for one extension and its parent. Linked today: a
+ * pair on one tier (both database, whose build reads the parent's build
+ * source in its own warehouse, or one storage destination, whose build reads
+ * the parent's table there, see `overStored`), or a `storage=` extension of
+ * a database parent or of a parent in another destination, an incremental
+ * side as {@link chainIncremental} coordinates it, and the parent with no
+ * given-reading `where:` and no current-time `where:` its build leaves out.
+ * A pair-table parent (an inlined join_many, a path, or blocks) links with
+ * `pair`: the build reads it back one row per parent (plan/pair_reroot.ts),
+ * relying on its leaf key checks; it stays refused with an incremental side,
+ * as does a `storage=` extension of several inlined paths. Every other pair
+ * is refused, each with why.
+ */
+export function chainVerdict(
    plan: MaterializePlan,
    parent: MaterializePlan,
+): ChainVerdict {
+   const tiers = chainTiers(plan, parent);
+   if ("refuse" in tiers) return tiers;
+   const incrementalMode = chainIncremental(plan, parent);
+   if ("refuse" in incrementalMode) return incrementalMode;
+   const pairParent =
+      parent.pair !== undefined || parent.pairBlocks !== undefined;
+   // A table of several inlined paths unions its blocks with a `conn.sql`
+   // on the source connection, which a build in a destination over the
+   // parent's stored table cannot run.
+   if (plan.pairBlocks && plan.persist.storage !== undefined) {
+      return {
+         refuse:
+            "and a storage= table of several inlined paths is not built over " +
+            "another table in its destination",
+      };
+   }
+   const terms = parentTermsLeftOut(plan, parent);
+   if ("refuse" in terms) return terms;
+   return {
+      link: {
+         ...tiers.link,
+         ...(incrementalMode.incremental
+            ? { incremental: incrementalMode.incremental }
+            : {}),
+         ...(terms.leftOut.length > 0
+            ? { leftOutParentTerms: terms.leftOut }
+            : {}),
+         // The build re-roots a pair parent on its join put back, which
+         // counts each level by its key: it relies on the leaf checks.
+         ...(pairParent
+            ? { pair: { leafKeys: pairLeafContractKeys(parent) } }
+            : {}),
+      },
+   };
+}
+
+/**
+ * The terms the parent's build leaves out, which the extension's re-root of
+ * the parent leaves out too (`ChainMode.leftOutParentTerms`), or why the
+ * extension is refused: the parent's current-time terms holding an upper
+ * bound, wherever its build finds them (the re-root edits those inside the
+ * parent's declaration; one a base of the parent writes is not in the
+ * re-root at all), each applied again at read from its parts.
+ *
+ * A parent whose `where:` reads a given refuses the extension. The
+ * extension's own rows depend on the caller's given: built over the parent's
+ * unfiltered table with the term applied again at read, it would be right
+ * only where its table keeps every column the term reads, and one that
+ * aggregates such a column away would give every caller the all-values
+ * answer. One shared table cannot serve every caller, so it answers live.
+ */
+function parentTermsLeftOut(
+   plan: MaterializePlan,
+   parent: MaterializePlan,
+): { leftOut: { code: string; at: TermUse[] }[] } | { refuse: string } {
+   // The parent's own term, or one the extension inherits from a source
+   // between them: either way its rows depend on the caller's given.
+   const given =
+      givenReadTerms(parent)[0] ??
+      givenReadTerms(plan).find((t) => t.inherited);
+   if (given) {
+      return {
+         refuse:
+            `whose \`where: ${given.code}\` reads a given, so the extension's ` +
+            `own rows depend on the caller's given and one shared table cannot ` +
+            `serve every caller; it answers live`,
+      };
+   }
+   return { leftOut: leftOutWindowTerms(parent.readTimeTerms) };
+}
+
+/** Whether a materialized plan declares an incremental refresh. */
+function isIncremental(p: MaterializePlan): boolean {
+   return Object.keys(p.persist).some((k) => INCREMENTAL_KEYS.includes(k));
+}
+
+/**
+ * How an incremental extension's refresh follows its parent's table, decided
+ * at plan ({@link ChainMode.incremental}), or why the pair is refused. A
+ * full extension of an incremental parent needs nothing recorded: the run
+ * rebuilds a reader whenever its parent's table moves (`rebuildReaders`).
+ *  - `delta`: the extension's watermark is its parent's, the same stored
+ *    column, or the parent is refreshed in full: its delta reads the
+ *    parent's table, starting no later than the parent's own delta this run.
+ *  - `reseed_on_parent_change`: both incremental on different watermarks,
+ *    so a range of the extension's cannot be told which rows of the parent's
+ *    moved: it is rebuilt in full over the parent's table whenever that
+ *    table changed, and the package warns.
+ * The same on every tier the chain links (`ChainMode.tier`): a `storage=`
+ * extension of a database parent computes its delta in the warehouse over
+ * the parent's table and applies it in its destination, as any `storage=`
+ * table does; one of a parent in its own or another destination runs its
+ * delta in the destination session over the parent's table, attached
+ * read-only when it is another destination's.
+ */
+function chainIncremental(
+   plan: MaterializePlan,
+   parent: MaterializePlan,
+): { incremental?: ChainMode["incremental"] } | { refuse: string } {
+   const own = isIncremental(plan);
+   const theirs = isIncremental(parent);
+   if (!own && !theirs) return {};
+   // A pair delta replaces whole parents and is open above; a watermark range
+   // through a pair's re-root is unproven (extension chains, cases 3 and 4).
+   if (parent.pair || parent.pairBlocks || plan.pair || plan.pairBlocks) {
+      return {
+         refuse:
+            "and a pair table (an inlined join_many) on either side cannot " +
+            "have its incremental refresh coordinated with the other, so " +
+            "neither may be incremental",
+      };
+   }
+   if (!own) return {};
+   if (!theirs) return { incremental: { coordinate: "delta" } };
+   const parentWatermark = parent.persist.watermark;
+   const ownWatermark = plan.persist.watermark;
+   const parentMergeKey = parent.persist.merge_key?.trim() || undefined;
+   return {
+      incremental: {
+         coordinate:
+            parentWatermark !== undefined &&
+            sameStoredColumn(plan, parent, ownWatermark, parentWatermark)
+               ? "delta"
+               : "reseed_on_parent_change",
+         ...(parentWatermark !== undefined ? { parentWatermark } : {}),
+         ...(parentMergeKey !== undefined ? { parentMergeKey } : {}),
+      },
+   };
+}
+
+/**
+ * Whether the extension's field `own` is its parent's field `theirs` read
+ * through: one name, stored under it on both tables, computed on both or
+ * neither (an extension that renames the parent's field away and declares
+ * another of the name computes it). A watermark renamed on the way is not
+ * proven the same column, so it reseeds: correct, at a full rebuild's cost.
+ */
+function sameStoredColumn(
+   plan: MaterializePlan,
+   parent: MaterializePlan,
+   own: string | undefined,
+   theirs: string,
 ): boolean {
-   if (plan.persist.storage !== parent.persist.storage) return false;
-   const incremental = (p: MaterializePlan) =>
-      Object.keys(p.persist).some((k) => INCREMENTAL_KEYS.includes(k));
-   if (incremental(plan) || incremental(parent)) return false;
-   // A table that stacks several inlined paths is a SQL source over the
-   // author's model: neither builds over the other's build source.
-   if (plan.pairBlocks || parent.pairBlocks) return false;
-   // A pair table holds its source once per child of the inlined
-   // join_many, not once per row: an extension built over it would store
-   // (and its served copy count) each parent once per child.
-   if (parent.pair) return false;
-   if (givenReadTerms(parent).length > 0) return false;
-   // The re-rooted parent keeps its `where:` as written, so a term its
-   // table leaves out would be applied to the extension's build.
-   if (leftOutWindowTerms(parent.readTimeTerms).length > 0) return false;
-   return true;
+   if (own !== theirs) return false;
+   const ours = plan.columns.find((c) => c.dimension === own && !c.join);
+   const parents = parent.columns.find(
+      (c) => c.dimension === theirs && !c.join,
+   );
+   return (
+      ours !== undefined &&
+      parents !== undefined &&
+      ours.column === parents.column &&
+      ours.computed === parents.computed
+   );
+}
+
+/**
+ * Where the parent's table is, seen from the extension's build, or why the
+ * extension cannot read it there:
+ *
+ *  - one tier: the build reads the parent's table where both are;
+ *  - a `storage=` extension of a database parent: its build runs in the
+ *    warehouse over the parent's table, as any `storage=` build reads a
+ *    database upstream, and is copied into its destination;
+ *  - a `storage=` extension of a parent in another destination: its build
+ *    runs in its own destination's session with the parent's destination
+ *    attached read-only, both DuckDB;
+ *  - a database extension of a `storage=` parent: refused, since a warehouse
+ *    cannot read a destination and nothing copies a stored table back.
+ */
+function chainTiers(
+   plan: MaterializePlan,
+   parent: MaterializePlan,
+): ChainVerdict {
+   const own = plan.persist.storage;
+   const theirs = parent.persist.storage;
+   if (own === theirs) return { link: { tier: "same" } };
+   if (theirs === undefined) return { link: { tier: "storage_over_database" } };
+   if (own !== undefined) {
+      return {
+         link: { tier: "across_destinations", parentDestination: theirs },
+      };
+   }
+   return {
+      refuse:
+         `whose table is in storage destination '${theirs}', which a ` +
+         `database build cannot read (declare the extension with ` +
+         `storage=, or its parent without it)`,
+   };
+}
+
+/**
+ * The refusal of an extension table `plan` that cannot be built over its
+ * parent's table (`parentName`, when known), as `upstream_table_unusable`
+ * with `why`: it answers live and is never built over the raw chain.
+ */
+export function extensionRefusal(
+   plan: Pick<MaterializePlan, "sourceName" | "sourceID" | "persist">,
+   parentName: string | undefined,
+   why: string,
+): MaterializeRefusal {
+   return {
+      sourceName: plan.sourceName,
+      sourceID: plan.sourceID,
+      reason:
+         `it extends ${parentName ? `'${parentName}'` : "a #(materialize) parent"}, ${why}; ` +
+         `an extension table is built over its parent's table or not at all, ` +
+         `never by recomputing its parent from the warehouse`,
+      outcome: {
+         refused: {
+            reason: UPSTREAM_TABLE_UNUSABLE_REASON,
+            tier: tierOf(plan.persist.storage),
+         },
+      },
+   };
 }
 
 /**
@@ -2129,12 +2390,18 @@ export function chainsOver(
 export function crossFileEntries(
    plans: readonly MaterializePlan[],
    contents: Record<string, unknown>,
+   /**
+    * The rest of the model's compile: an imported base of a table-backed
+    * source is resolved through its source registry and imports (Malloy
+    * records no `extends` for one, see `inferredExtendedSource`).
+    */
+   model: ModelContext = {},
 ): {
    plan: MaterializePlan;
    entry: { sourceID: string; url: string };
    path: TermUse[];
 }[] {
-   const map = SourceMap.of({ contents });
+   const map = SourceMap.of({ ...model, contents });
    const declarationOfID = (sourceID: string) => {
       const def = map.node(sourceID)?.def as SourceDefLike | undefined;
       return def ? declarationOf(def) : undefined;
@@ -2172,6 +2439,43 @@ export function crossFileEntries(
       }
    }
    return out;
+}
+
+/** A compiled model's source registry and imports, beside its contents. */
+export interface ModelContext {
+   sourceRegistry?: unknown;
+   imports?: unknown;
+}
+
+/**
+ * Whether the chain from `fromSourceID` (itself included), through `extend`
+ * and renames in any file, reaches a source that declares `#(materialize)`
+ * or its own `#@ persist`: a persisted upstream an extension of it would
+ * otherwise recompute. Read in the importing model's compile (`contents`),
+ * which holds every source on the chain.
+ */
+export function chainReachesPersisted(
+   contents: Record<string, unknown>,
+   fromSourceID: string,
+   model: ModelContext = {},
+): boolean {
+   const map = SourceMap.of({ ...model, contents });
+   let sourceID: string | undefined = fromSourceID;
+   for (let hops = 0; sourceID !== undefined && hops < 64; hops++) {
+      const def = map.node(sourceID)?.def as PlannedDef | undefined;
+      if (!def) return false;
+      if (
+         declaresMaterialize(map, contents, sourceID) ||
+         declaresOwnPersist(def, contents)
+      ) {
+         return true;
+      }
+      const base: { hop: string; sourceID: string | undefined } | undefined =
+         map.node(sourceID)?.base;
+      if (!base || base.hop === "query") return false;
+      sourceID = base.sourceID;
+   }
+   return true;
 }
 
 /**
@@ -2317,6 +2621,78 @@ export function pairFullRefreshFinding(
          `#(materialize) on source "${plan.sourceName}" declares ` +
          `refresh="incremental", but its pair table is rebuilt in full on ` +
          `every refresh: ${reason}.`,
+      subject: plan.sourceName,
+      model,
+   };
+}
+
+/**
+ * An incremental extension that refreshes by range replace (no `merge_key=`)
+ * over a parent that merges by key, following it by delta, as a package
+ * warning: a row whose watermark the parent's merge moves leaves its old copy
+ * in the extension, whose range replace deletes only the range it reads. Not
+ * refused: it is the extension's own contract over raw, which keeps a moved
+ * row's old copy the same way.
+ */
+export function extensionKeepsMovedRowsFinding(
+   plan: Pick<MaterializePlan, "sourceName" | "persist" | "buildsOver">,
+   model: string,
+): PackageAnnotationFinding | undefined {
+   const parent = plan.buildsOver;
+   const incremental = parent?.mode.incremental;
+   if (
+      incremental?.coordinate !== "delta" ||
+      incremental.parentMergeKey === undefined ||
+      plan.persist.merge_key?.trim()
+   ) {
+      return undefined;
+   }
+   return {
+      route: MATERIALIZE_ROUTE,
+      tier: "unservable",
+      code: MATERIALIZE_EXTENSION_KEEPS_MOVED_ROWS_CODE,
+      message:
+         `#(materialize) on source "${plan.sourceName}" refreshes by range ` +
+         `replace (it declares no merge_key=), over its parent ` +
+         `"${parent!.sourceName}", which merges by merge_key="` +
+         `${incremental.parentMergeKey}": a row whose watermark the parent's ` +
+         `merge moves keeps its old copy in "${plan.sourceName}", since a ` +
+         `range replace deletes only the range it reads. That is its own ` +
+         `contract over raw too; declare merge_key="` +
+         `${incremental.parentMergeKey}" on it to replace such a row instead.`,
+      subject: plan.sourceName,
+      model,
+   };
+}
+
+/**
+ * An incremental extension whose watermark is not its incremental parent's,
+ * as a package warning: its refresh cannot tell which of its rows a parent's
+ * delta moved, so it is rebuilt in full over the parent's table whenever
+ * that table changed (`reseed_on_parent_change`), and served.
+ */
+export function extensionFullRefreshFinding(
+   plan: Pick<MaterializePlan, "sourceName" | "persist" | "buildsOver">,
+   model: string,
+): PackageAnnotationFinding | undefined {
+   const parent = plan.buildsOver;
+   const incremental = parent?.mode.incremental;
+   if (incremental?.coordinate !== "reseed_on_parent_change") return undefined;
+   const own = plan.persist.watermark;
+   return {
+      route: MATERIALIZE_ROUTE,
+      tier: "unservable",
+      code: MATERIALIZE_EXTENSION_FULL_REFRESH_CODE,
+      message:
+         `#(materialize) on source "${plan.sourceName}" declares ` +
+         `refresh="incremental", but it is rebuilt in full over its parent ` +
+         `"${parent!.sourceName}"'s table whenever that table changes: its ` +
+         `watermark ${own !== undefined ? `"${own}"` : "(none)"} is not the ` +
+         `same stored column as the parent's watermark ` +
+         `"${incremental.parentWatermark ?? "(none)"}", so a delta of its own ` +
+         `cannot tell which of its rows the parent's refresh moved. Declare ` +
+         `the parent's watermark on the extension, unrenamed, to refresh it ` +
+         `by delta.`,
       subject: plan.sourceName,
       model,
    };

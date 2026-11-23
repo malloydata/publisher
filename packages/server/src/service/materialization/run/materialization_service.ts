@@ -73,6 +73,7 @@ import {
    incrementalRunContext,
    type IncrementalRunContext,
 } from "./incremental_build";
+import { boundParentReads, incrementalEntriesOf } from "./incremental_upstream";
 import {
    INLINE_UNIQUENESS_KEY,
    rollupKeyRecordsIn,
@@ -1129,6 +1130,13 @@ export class MaterializationService {
          // a delta or skip carries it until a rebuild.
          if (incremental) {
             incremental.priorLateRows = pkg.boundLateRows?.();
+            incremental.boundEntries = pkg.boundIncrementalEntries?.();
+            // Standalone only: which build of its parent's table each
+            // incremental extension last read, when the local ledger store
+            // cannot say. A caller's ledger carries it (incremental_build.ts).
+            if (opts.ledger === undefined) {
+               incremental.boundParentReads = pkg.boundParentReads?.();
+            }
          }
 
          const derived = await this.deriveRunInstructions(
@@ -1177,6 +1185,12 @@ export class MaterializationService {
             state,
          );
          const committed = await this.commitRun(run, target, derived, built);
+         // The extensions this run rebuilt for want of a record of their
+         // parent's build, which the package warns about until a run proves
+         // them again.
+         if (incremental) {
+            pkg.setUnprovenGenerations?.(incremental.unprovenGenerations ?? []);
+         }
          await this.finishCommittedRun(run, target, derived, committed, state);
       } catch (err) {
          const outcome = outcomeFor(signal);
@@ -1420,6 +1434,28 @@ export class MaterializationService {
             id,
             reader,
          );
+         if (incremental) {
+            // Each incremental source's newest entry, over the bound
+            // manifest's: a run of some sources binds a manifest naming only
+            // those, while an extension's last read and its parent's last
+            // build are on the newest entry of each (incremental_upstream.ts).
+            const newest = Object.entries(
+               await this.committer.newestIncrementalEntries(
+                  environmentId,
+                  packageName,
+                  id,
+                  reader,
+               ),
+            );
+            incremental.boundParentReads = new Map([
+               ...(incremental.boundParentReads ?? []),
+               ...boundParentReads(newest),
+            ]);
+            incremental.boundEntries = new Map([
+               ...(incremental.boundEntries ?? []),
+               ...incrementalEntriesOf(newest),
+            ]);
+         }
          let recheck: Record<string, BuildInstruction>;
          let confirmExists: Record<string, BuildInstruction>;
          const freshness = declaredFreshnessIndex(pkg.getBuildPlan());

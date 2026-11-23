@@ -26,6 +26,7 @@ import { errMessage } from "../../../utils";
 import { parseEnvironmentName } from "../../identity";
 import { resolveEnvironmentId } from "../../resolve_environment";
 import {
+   newestIncrementalEntries,
    ServingReader,
    storageBindingResolverFor,
    storedServingEntries,
@@ -392,6 +393,22 @@ export class ManifestCommitter {
       return storedServingEntries(list, reader, excludeId);
    }
 
+   /** See materialization_scope.ts, `newestIncrementalEntries`. */
+   async newestIncrementalEntries(
+      environmentId: string,
+      packageName: string,
+      excludeId: string,
+      reader: ServingReader = {},
+   ): Promise<Record<string, ManifestEntry>> {
+      const list =
+         (await this.repository.listMaterializations(
+            environmentId,
+            packageName,
+            reader.owned !== undefined ? { version: reader.owned } : undefined,
+         )) ?? [];
+      return newestIncrementalEntries(list, reader, excludeId);
+   }
+
    /**
     * The entries a rebind binds, read as a package load reads them
     * (`storageBindingResolverFor`): each with the key checks the newest run
@@ -457,7 +474,10 @@ export class ManifestCommitter {
             freshnessFallback: _fallback,
             ...unstamped
          } = local;
-         const merged: ManifestEntry = { ...unstamped };
+         const merged: ManifestEntry = withoutForeignBuild(
+            { ...unstamped },
+            ref,
+         );
          for (const [key, value] of Object.entries(ref)) {
             if (value !== undefined) {
                (merged as Record<string, unknown>)[key] = value;
@@ -505,6 +525,10 @@ export class ManifestCommitter {
                sourceEntityId: eid,
                physicalTableName: e.tableName,
                connectionName: e.connectionName,
+               // Which build of an incremental table it is, for an extension
+               // over it (incremental_upstream.ts).
+               ...(e.builtAt ? { builtAt: e.builtAt } : {}),
+               ...(e.ledger ? { ledger: e.ledger } : {}),
             };
          }
       }
@@ -517,7 +541,10 @@ export class ManifestCommitter {
             continue;
          }
          // Explicit reference wins; the bound entry fills the gaps it left.
-         const merged: ManifestEntry = { ...entry };
+         const merged: ManifestEntry = withoutForeignBuild(
+            { ...entry },
+            existing,
+         );
          for (const [key, value] of Object.entries(existing)) {
             if (value !== undefined) {
                (merged as Record<string, unknown>)[key] = value;
@@ -690,9 +717,42 @@ export function referenceManifestToEntries(
          ...(ref.builtAt ? { builtAt: ref.builtAt } : {}),
          // Its column contract, as the host stored it.
          ...(ref.contract !== undefined ? { contract: ref.contract } : {}),
+         // Its ledger entry, as the host stored it: which build of the table
+         // it is, and its history since its seed, for an incremental
+         // extension over it (incremental_upstream.ts). Over the bound
+         // manifest's and this worker's, as every reference field is.
+         ...(ref.ledger ? { ledger: ref.ledger } : {}),
       };
    }
    return entries;
+}
+
+/**
+ * `base` without the facts that name one build of the table when `ref` names
+ * another: its `ledger` when `ref` carries another `builtAt`, and its
+ * `builtAt` when `ref` carries a ledger entry another run advanced. The
+ * merged entry would otherwise carry one build's boundary beside another's
+ * `builtAt`, and an extension over it would read that boundary as the build
+ * it is (incremental_upstream.ts).
+ */
+function withoutForeignBuild(
+   base: ManifestEntry,
+   ref: ManifestEntry,
+): ManifestEntry {
+   const out = { ...base };
+   if (out.ledger && ref.builtAt !== undefined && ref.builtAt !== out.builtAt) {
+      delete out.ledger;
+   }
+   if (
+      out.builtAt !== undefined &&
+      ref.ledger !== undefined &&
+      ref.builtAt === undefined &&
+      (ref.ledger.advancedBy === undefined ||
+         ref.ledger.advancedBy !== base.ledger?.advancedBy)
+   ) {
+      delete out.builtAt;
+   }
+   return out;
 }
 
 /** An entry's freshness facts, each only when set (manifest_loader.ts reads the same). */

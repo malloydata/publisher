@@ -168,3 +168,15 @@ export type BoundStorageContract = (
    sourceID: string,
    destination: string,
 ) => ColumnContract | undefined;
+
+/**
+ * The column contract the package has bound for the table of `sourceID`: in
+ * storage destination `storage` when one is given, else its database table;
+ * undefined when none is bound there (or it records none). What a plan
+ * judges an extension table's build over a pair-table parent by (the
+ * parent's leaf key checks, `ColumnContract.keys`) before any run.
+ */
+export type BoundTableContract = (
+   sourceID: string,
+   storage: string | undefined,
+) => ColumnContract | undefined;

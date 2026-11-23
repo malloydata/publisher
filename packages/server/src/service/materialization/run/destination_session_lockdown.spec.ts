@@ -311,3 +311,53 @@ describe("a destination's local data path", () => {
       expect(existsSync(creatable)).toBe(true);
    });
 });
+
+describe("a build session that reads another destination", () => {
+   it("attaches it read-only beside its own: its tables read, never written", async () => {
+      await withDestinationSession(
+         destination,
+         { purpose: "build", build: true },
+         async (session) => {
+            await session.runSQL(
+               "CREATE OR REPLACE TABLE lake.main.parent_t AS SELECT 1 AS id",
+            );
+         },
+      );
+      const other = {
+         destinationName: "other",
+         destinationConnection: { name: "other", type: "duckdb" } as never,
+         environmentPath,
+      };
+      await withDestinationSession(
+         other,
+         {
+            purpose: "build",
+            build: true,
+            alsoRead: [
+               {
+                  destinationName: "lake",
+                  destinationConnection: destination.destinationConnection,
+               },
+            ],
+         },
+         async (session) => {
+            const read = (await session.runSQL(
+               "SELECT count(*) AS n FROM lake.main.parent_t",
+            )) as unknown as { rows: { n: unknown }[] };
+            expect(Number(read.rows[0]?.n)).toBe(1);
+            await session.runSQL(
+               "CREATE TABLE other.main.ext_t AS SELECT id FROM lake.main.parent_t",
+            );
+            let refused = false;
+            try {
+               await session.runSQL(
+                  "INSERT INTO lake.main.parent_t VALUES (2)",
+               );
+            } catch {
+               refused = true;
+            }
+            expect(refused).toBe(true);
+         },
+      );
+   });
+});

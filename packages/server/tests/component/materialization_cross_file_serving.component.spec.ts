@@ -329,10 +329,14 @@ describe("sources in an importing file, served from their bases' file's tables",
       it("a cross-file #(materialize) extension over a #(materialize) source, filtered on a big integer, is served from its own table", async () => {
          const [model, query] = QUERIES[0];
          const answer = await served(model, query);
+         // Built over `y`'s table, as `long_same` in base.malloy is, with the
+         // same SQL: the two share one address, so one table, written under
+         // `long_same`'s name, serves both.
+         expect(entryOf("long_other")).toBeUndefined();
          expect(answer.servedBy).toMatchObject({
             kind: "materialized",
             via: "served_copy",
-            tableId: entryOf("long_other")!.sourceEntityId,
+            tableId: entryOf("long_same")!.sourceEntityId,
          });
       });
 

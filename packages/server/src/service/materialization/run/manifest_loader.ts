@@ -204,6 +204,11 @@ export function splitManifestEntries(
          ...boundSchemaOf(entry.schema),
          ...boundNativeSchemaOf(entry.nativeSchema),
          ...(entry.lateRows ? { lateRows: entry.lateRows } : {}),
+         // Every incremental entry's: which build of its table it describes
+         // (`advancedBy`, `seededBy`, `advances`), what an extension over it
+         // compares with the build it last read (incremental_upstream.ts).
+         ...(entry.ledger ? { ledger: entry.ledger } : {}),
+         ...(entry.builtFrom?.length ? { builtFrom: entry.builtFrom } : {}),
          ...(entry.contract !== undefined ? { contract: entry.contract } : {}),
          ...(entry.builtAt ? { builtAt: entry.builtAt } : {}),
          // Set only by a bind from the local store (withRollupKeyRecords);

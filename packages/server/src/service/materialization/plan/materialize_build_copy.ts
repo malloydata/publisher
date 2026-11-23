@@ -268,6 +268,13 @@ export function ownAndParentEdits(
 ): { edits: TextEdit[] } | { reason: string } {
    const edits: TextEdit[] = [];
    const given = givenReadTerms(plan);
+   const range = parent ? plan.buildsOver?.declaration.range : undefined;
+   const parentFrom = range ? offsetOf(text, range.start) : -1;
+   const parentTo = range ? offsetOf(text, range.end) : -1;
+   // A window the parent writes is left out of its re-root instead
+   // (`leftOutParentTerms`).
+   const inParent = (span: { start: number; end: number }) =>
+      parentFrom >= 0 && span.start >= parentFrom && span.end <= parentTo;
    if (given.length > 0) {
       const found = termSpans(text, plan, given);
       if ("reason" in found) return found;
@@ -275,6 +282,7 @@ export function ownAndParentEdits(
    }
    for (const term of leftOutWindowTerms(plan.readTimeTerms)) {
       const span = writtenSpan(text, term);
+      if (span !== undefined && inParent(span)) continue;
       if (
          span === undefined ||
          edits.some((e) => e.start < span.end && span.start < e.end)
@@ -329,13 +337,38 @@ export function parentRerootEdit(
    parent: MaterializePlan,
    joinRecords = false,
 ): TextEdit | undefined {
-   const range = plan.buildsOver?.declaration.range;
+   const over = plan.buildsOver;
+   const range = over?.declaration.range;
    const from = range ? offsetOf(text, range.start) : -1;
    const to = range ? offsetOf(text, range.end) : -1;
-   const rerooted =
-      from >= 0 && to >= from
-         ? rerootOnBuildSource(text.slice(from, to), parent, { joinRecords })
-         : undefined;
+   if (from < 0 || to < from) return undefined;
+   // The terms the parent's build leaves out, left out of its re-root too,
+   // so the extension's table holds every caller's and window's rows; one
+   // a base of the parent writes is not in the declaration, nor the re-root.
+   const leftOut: TextEdit[] = [];
+   for (const term of over?.mode.leftOutParentTerms ?? []) {
+      const span = writtenSpan(text, term);
+      if (span === undefined) return undefined;
+      if (span.start < from || span.end > to) continue;
+      leftOut.push({
+         start: span.start - from,
+         end: span.end - from,
+         insert: "true",
+      });
+   }
+   const declaration = applyEdits(text.slice(from, to), leftOut);
+   if (declaration === undefined) return undefined;
+   // A pair parent is re-rooted on its join put back, so the extension
+   // reads one row per parent (case 3), as a view over it does.
+   const pair = parent.pair !== undefined || parent.pairBlocks !== undefined;
+   const pairBase = pair ? pairRerootBase(parent) : undefined;
+   if (pair && pairBase === undefined) return undefined;
+   const rerooted = rerootOnBuildSource(declaration, parent, {
+      joinRecords,
+      ...(pairBase === undefined
+         ? {}
+         : { base: pairBase, dropJoinManys: pairRerootJoins(parent) }),
+   });
    return rerooted === undefined
       ? undefined
       : { start: from, end: to, insert: rerooted };
@@ -577,13 +610,15 @@ function rerootOnBuildSource(
 /**
  * The join_ones a parent's table stores inline (`inline=`), each with its
  * stored columns and the join's modifier, as {@link inlinedJoinStatements}
- * writes their records. A pair table's join_many is not one: its table is
- * a row per pair, never chained on as the parent's rows.
+ * writes their records. A pair table's join_manys are not: its re-root puts
+ * each back as a join over the table's own rows (plan/pair_reroot.ts).
  */
 function parentJoinRecords(parent: MaterializePlan): InlinedJoinText[] {
    const out: InlinedJoinText[] = [];
+   // A pair table's join_manys are put back by its re-root, not recorded.
+   const pairJoins = new Set(pairRerootJoins(parent));
    for (const join of parent.inline ?? []) {
-      if (join === parent.pair?.join) continue;
+      if (pairJoins.has(join.split(".")[0])) continue;
       const columns = parent.columns.filter((c) => c.join === join);
       if (columns.length === 0) continue;
       const access = columns[0].access;

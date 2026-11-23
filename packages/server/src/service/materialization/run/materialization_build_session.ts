@@ -49,6 +49,10 @@ import {
 import type { TableCollations } from "../domain/collation";
 import { collationCatalogBatches } from "./warehouse_sql";
 import { ContractCaptureFailedError } from "../../../errors";
+import {
+   classifySelect,
+   containsStatementSeparator,
+} from "../../single_select";
 import { fakedCollations } from "./column_contract_capture";
 import { fromSubselect } from "../subselect";
 import {
@@ -399,6 +403,17 @@ export async function withDestinationSession<T>(
        * bind's read of its tables). Never with `build`.
        */
       readOnly?: boolean;
+      /**
+       * Other destinations attached read-only beside this one, before the
+       * session is confined, each under its own name: a build that reads a
+       * table in another destination. Never written: their attach is
+       * read-only, and the confinement allows only their own paths besides
+       * this destination's.
+       */
+      alsoRead?: readonly {
+         destinationName: string;
+         destinationConnection: ApiConnection;
+      }[];
    },
    fn: (session: DuckDBConnection) => Promise<T>,
 ): Promise<T> {
@@ -452,15 +467,69 @@ export async function withDestinationSession<T>(
          // before the session is locked, whoever locks it.
          createLocalDataPaths(session, destinationAllowlist(destination));
       }
-      if (options.lockdown !== "caller") {
-         // Setup done (the destination attached): confine the session to it
-         // (duckdb_lockdown.ts) before any of its work runs.
-         await lockDownDestinationSession(
+      const others = options.alsoRead ?? [];
+      for (const other of others) {
+         assertSupportedDestination(
+            other.destinationName,
+            other.destinationConnection,
+         );
+         await attachDestinationReadOnly(
             session,
-            destinationAllowlist(destination),
+            {
+               alias: other.destinationName,
+               destinationName: other.destinationName,
+            },
+            other.destinationConnection,
+            environmentPath,
          );
       }
+      if (options.lockdown !== "caller") {
+         // Setup done (the destinations attached): confine the session to
+         // them (duckdb_lockdown.ts) before any of its work runs. Each
+         // `alsoRead` destination's data path is allowed too, so the build
+         // can read its files: DuckDB's `allowed_directories` cannot allow a
+         // path for reading alone, so writes there are kept out by the
+         // catalog's READ_ONLY attach and by the one statement such a build
+         // runs that a model shapes, which must be a single SELECT
+         // ({@link assertSingleSelect}): a SELECT cannot `COPY ... TO`. That
+         // SELECT is compiled in a session without them
+         // (buildDownstreamIntoStorage), so the compile's reads never run
+         // with them attached either.
+         await lockDownDestinationSession(session, [
+            ...destinationAllowlist(destination),
+            ...others.flatMap((other) =>
+               destinationAllowlist({
+                  destinationConnection: other.destinationConnection,
+                  environmentPath,
+               }),
+            ),
+         ]);
+      }
       return fn(session);
+   }
+}
+
+/**
+ * Throws unless `sql` is exactly one SELECT, by DuckDB's own parser and as
+ * the connector would split it: what a build in a session that also reads
+ * another destination may run from a model. Its data path is in the
+ * session's allowlist, which DuckDB cannot make read-only, so a statement
+ * that writes files (`COPY ... TO`, `EXPORT DATABASE`) must never reach the
+ * session; one SELECT writes nothing.
+ */
+export async function assertSingleSelect(sql: string): Promise<void> {
+   const verdict = containsStatementSeparator(sql)
+      ? { refused: "it holds the connector's statement separator" }
+      : await classifySelect(sql);
+   if ("refused" in verdict || verdict.selects !== 1) {
+      throw new Error(
+         `A build that reads another storage destination runs one SELECT ` +
+            `from its model, and this SQL is not one (${
+               "refused" in verdict
+                  ? verdict.refused
+                  : `${verdict.selects} statements`
+            }), so it is not run`,
+      );
    }
 }
 
@@ -652,6 +721,22 @@ export interface StorageIncrementalRefresh {
       session: DuckDBConnection;
       quotedTablePath: string;
    }) => Promise<WatermarkBound | undefined>;
+}
+
+/**
+ * {@link StorageIncrementalRefresh} for a table stacked on stored upstreams
+ * in its own destination (an incremental extension table over its parent's
+ * table): the session holds the destination alone, and the rows a delta
+ * reads are the stacked build's own SQL (`storedSQL`) run there.
+ */
+export interface StackedIncrementalRefresh {
+   plan: (deps: {
+      session: DuckDBConnection;
+      quotedTablePath: string;
+      /** The stacked build's SQL, projected to the stored columns. */
+      storedSQL: string;
+   }) => Promise<StorageRefreshOutcome | undefined>;
+   afterSeed: StorageIncrementalRefresh["afterSeed"];
 }
 
 /** See `buildSourceIntoStorage`'s `deps`. */
@@ -1323,6 +1408,19 @@ export async function buildDownstreamIntoStorage(params: {
    environmentPath: string;
    /** See StorageBuildRequest.replacesView. */
    replacesView?: string[];
+   /**
+    * Other destinations the build reads (an extension's parent in another
+    * destination), each attached read-only under its own name.
+    */
+   readOnly?: readonly {
+      destinationName: string;
+      destinationConnection: ApiConnection;
+   }[];
+   /**
+    * An incremental table's in-place refresh: a delta of the stacked SQL in
+    * the destination, or undefined to have it rebuilt.
+    */
+   incremental?: StackedIncrementalRefresh;
 }): Promise<StorageBuildResult> {
    const {
       destinationName,
@@ -1333,25 +1431,81 @@ export async function buildDownstreamIntoStorage(params: {
       environmentPath,
    } = params;
 
+   const connectionName = params.connectionName ?? destinationName;
+   const compile = (session: DuckDBConnection) =>
+      planChainedDownstream({
+         model,
+         downstreamName,
+         virtualMap,
+         ...(params.recomputes ? { recomputes: params.recomputes } : {}),
+         ...(params.sameDeclaredTypes ? { sameDeclaredTypes: true } : {}),
+         ...(params.givenFree ? { givenFree: true } : {}),
+         connections: new FixedConnectionMap(
+            new Map([[connectionName, session]]),
+            connectionName,
+         ),
+      });
+   // A build that reads another destination compiles first, in a session of
+   // its own destination alone (confined to it), so
+   // nothing the compile reads ever runs with the other destination
+   // attached; the session that attaches it runs only the checked SELECT.
+   const precompiled = params.readOnly?.length
+      ? await withDestinationSession(
+           { destinationName, destinationConnection, environmentPath },
+           { purpose: "build_compile" },
+           compile,
+        )
+      : undefined;
+   if (precompiled) await assertSingleSelect(precompiled.sql);
+
    return withDestinationSession(
       { destinationName, destinationConnection, environmentPath },
-      { purpose: "build", build: true },
+      {
+         purpose: "build",
+         build: true,
+         ...(params.readOnly ? { alsoRead: params.readOnly } : {}),
+      },
       async (session) => {
-         const connectionName = params.connectionName ?? destinationName;
-         const { sql, downstream } = await planChainedDownstream({
-            model,
-            downstreamName,
-            virtualMap,
-            ...(params.recomputes ? { recomputes: params.recomputes } : {}),
-            ...(params.sameDeclaredTypes ? { sameDeclaredTypes: true } : {}),
-            ...(params.givenFree ? { givenFree: true } : {}),
-            connections: new FixedConnectionMap(
-               new Map([[connectionName, session]]),
-               connectionName,
+         const { sql, downstream } = precompiled ?? (await compile(session));
+         const incremental = params.incremental;
+         if (!incremental) {
+            return writeStackedTable(session, params, sql, downstream);
+         }
+         const target = quoteManifestTablePath(
+            storageTablePath(
+               destinationName,
+               params.physicalTableName,
+               destinationSchemaOf(destinationConnection),
             ),
+            STORAGE_DIALECT,
+         );
+         const refreshed = await incremental.plan({
+            session,
+            quotedTablePath: target,
+            storedSQL: sql,
          });
-
-         return writeStackedTable(session, params, sql, downstream);
+         if (refreshed) {
+            return {
+               storageDestinationName: destinationName,
+               schema: await describeTable(session, target),
+               rowCount: await countStoredRows(session, target),
+               collations: await readCollationsOrFail(session, target),
+               readCost: null,
+               upstreamReuse: "reused",
+               refresh: refreshed,
+            };
+         }
+         const written = await writeStackedTable(
+            session,
+            params,
+            sql,
+            downstream,
+         );
+         const seededThrough = await incremental.afterSeed({
+            session,
+            quotedTablePath: target,
+         });
+         return { ...written, seededThrough };
       },
    );
 }
