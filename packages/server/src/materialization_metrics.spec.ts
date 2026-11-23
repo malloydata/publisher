@@ -240,7 +240,7 @@ describe("materialization_metrics", () => {
          "failed",
          "cancelled",
       ]);
-      expect(INCREMENTAL_STEP_REASONS).toHaveLength(16);
+      expect(INCREMENTAL_STEP_REASONS).toHaveLength(18);
 
       // build_total: failure_class is none for the four other outcomes, and
       // one of the four failure classes when failed: 6 x 2 x (4 + 4) = 96.

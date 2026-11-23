@@ -14,6 +14,7 @@
  * not keep. Never writes the source or serve connection.
  */
 
+import type { ExtensionParent } from "./incremental_apply";
 import { splitSourceID, type StoredInDestination } from "../domain/table_plans";
 import {
    plannedModelDefOf,
@@ -81,13 +82,15 @@ import type {
 import { runRollupKeyCheck } from "./inline_uniqueness";
 import { storedKeyCheckSql } from "../text/key_check_text";
 import {
-   carriedLedgerExtensions,
    ledgerFields,
    lateRowsFields,
    refreshFields,
    reportIncrementalStep,
    resetLedger,
    sourceIncrementalRefresh,
+   advancedByOf,
+   ledgerExtensionKeys,
+   stackedRefreshFor,
    storageRefreshFor,
    type IncrementalRunContext,
 } from "./incremental_build";
@@ -99,6 +102,7 @@ import {
    oneFileModel,
    withDestinationSession,
    type StorageBuildResult,
+   type StackedIncrementalRefresh,
    type StorageIncrementalRefresh,
 } from "./materialization_build_session";
 import { BilledReadNotCapturedError } from "./passthrough/bigquery";
@@ -204,6 +208,11 @@ export interface StorageBuildRequest {
    incremental?: IncrementalRunContext;
    /** The source's CONTENT address — see buildOneSource's parameter of the same name. */
    contentSourceEntityId?: string;
+   /**
+    * For an incremental extension table: the parent its refresh follows
+    * (incremental_upstream.ts), as this run holds it.
+    */
+   extensionParent?: ExtensionParent;
    /** The plan's stored-table facts — see buildOneSource's parameter of the same name. */
    planFacts?: ChainedPlanFacts;
    /** The author-model lift context `buildOneSource` built for this source. */
@@ -265,6 +274,11 @@ interface StorageBuildContext {
    destinationConnection: ApiConnection;
    declaredColumns: ReturnType<typeof storageBuildCasts>["declaredColumns"];
    castOptions: ReturnType<typeof storageBuildCasts>["castOptions"];
+   /**
+    * An incremental extension stacked on its parent's table in this
+    * destination: its delta, run in the destination over that table.
+    */
+   stackedRefresh?: StackedIncrementalRefresh;
 }
 
 /**
@@ -761,10 +775,8 @@ export class StorageBuildStrategy
          destinationConnection,
       );
 
-      const { incrementalRefresh, refresh } = await this.refreshOf(
-         params,
-         destinationConnection,
-      );
+      const { incrementalRefresh, refresh, stackedRefresh } =
+         await this.refreshOf(params, destinationConnection);
 
       // Store each column as the type Malloy declares where one DuckDB type
       // is faithful to it; checked again below.
@@ -779,6 +791,7 @@ export class StorageBuildStrategy
          destinationConnection,
          declaredColumns,
          castOptions,
+         ...(stackedRefresh ? { stackedRefresh } : {}),
       };
 
       const startTime = performance.now();
@@ -872,7 +885,19 @@ export class StorageBuildStrategy
          ...ledgerFields(
             incrementalRefresh?.lineage,
             result.refresh?.coveredThrough ?? result.seededThrough,
-            carriedLedgerExtensions(incrementalRefresh, instruction.reseed),
+            ledgerExtensionKeys(
+               incrementalRefresh,
+               instruction.reseed,
+               incrementalRefresh &&
+                  advancedByOf(
+                     incrementalRefresh.context,
+                     incrementalRefresh.lineage,
+                     result.refresh?.refresh ?? "full",
+                  ),
+               incrementalRefresh
+                  ? (result.refresh?.refresh ?? "full")
+                  : undefined,
+            ),
          ),
          ...refreshFields(
             result.refresh?.refresh ??
@@ -916,6 +941,7 @@ export class StorageBuildStrategy
    ): Promise<{
       incrementalRefresh: ReturnType<typeof sourceIncrementalRefresh>;
       refresh: StorageIncrementalRefresh | undefined;
+      stackedRefresh?: StackedIncrementalRefresh;
    }> {
       const {
          persistSource,
@@ -936,8 +962,35 @@ export class StorageBuildStrategy
             physicalTableName,
             storageDestinationName: destinationName,
             sourceEntityId: params.contentSourceEntityId,
+            ...(params.extensionParent
+               ? { parent: params.extensionParent }
+               : {}),
          },
       );
+      // An incremental extension stacked on its parent's table here: its
+      // delta runs over that table in the destination, following the
+      // parent's step (extension chains, case 2).
+      if (
+         incrementalRefresh !== undefined &&
+         dependsOnStorageUpstream &&
+         params.extensionParent !== undefined &&
+         storedExtensionOf(
+            params.planFacts?.materializePlans?.[persistSource.sourceID],
+         ) !== undefined
+      ) {
+         return {
+            incrementalRefresh,
+            refresh: undefined,
+            stackedRefresh: stackedRefreshFor({
+               ...incrementalRefresh,
+               persistSource,
+               instruction,
+               destinationName,
+               destinationSchema: destinationSchemaOf(destinationConnection),
+               physicalTableName,
+            }),
+         };
+      }
       // A CHAINED stored source always rebuilds: an incremental parent's delta
       // can restate rows BELOW this source's frontier, which a half-open range
       // never revisits. Reported under its own reason code.
@@ -1024,9 +1077,8 @@ export class StorageBuildStrategy
                        environment,
                        physicalTableName,
                        planFacts,
-                       ...(params.replacesView
-                          ? ([params.replacesView] as const)
-                          : []),
+                       params.replacesView,
+                       ctx.stackedRefresh,
                     )
                   : (
                        this.seams.buildDownstreamViaParents ??
@@ -1486,22 +1538,31 @@ export class StorageBuildStrategy
       planFacts: ChainedPlanFacts,
       /** See StorageBuildRequest.replacesView. */
       replacesView?: string[],
+      /** An incremental extension's delta over the parent's table. */
+      incremental?: StackedIncrementalRefresh,
    ): Promise<StorageBuildResult> {
       const { plan, parent, chain } = extension;
       const address = planFacts.addressBySourceId[parent.sourceID];
       const entry = address === undefined ? undefined : builtEntries[address];
+      // The destination the parent's table is in: this build's own, or,
+      // for a parent in another destination, that one, attached read-only.
+      const parentDestination =
+         parent.mode.tier === "across_destinations"
+            ? parent.mode.parentDestination
+            : destinationName;
       if (
          address === undefined ||
          entry === undefined ||
+         parentDestination === undefined ||
          !upstreamEntryIsCurrent(address, entry, planFacts) ||
-         entry.storageDestinationName !== destinationName ||
+         entry.storageDestinationName !== parentDestination ||
          !entry.schema?.length
       ) {
          const detail = upstreamPlacement(
             parent.sourceName,
             address,
             entry,
-            destinationName,
+            parentDestination ?? destinationName,
             planFacts,
          );
          throw new ChainedUpstreamMissingError(
@@ -1512,16 +1573,20 @@ export class StorageBuildStrategy
             [{ name: parent.sourceName, detail }],
          );
       }
+      const parentConnection =
+         parentDestination === destinationName
+            ? destinationConnection
+            : environment.getStorageDestination(parentDestination);
       const binding: Binding = {
          kind: "persist",
          tier: "storage",
          sourceName: chain.parentBuildSourceName,
-         destinationName,
+         destinationName: parentDestination,
          virtualHandle: address,
          tablePath: storageTablePath(
-            destinationName,
+            parentDestination,
             entry.physicalTableName,
-            destinationSchemaOf(destinationConnection),
+            destinationSchemaOf(parentConnection),
          ),
          schema: entry.schema
             .filter((c) => c.name && c.type)
@@ -1569,6 +1634,17 @@ export class StorageBuildStrategy
                physicalTableName,
                environmentPath: environment.getEnvironmentPath(),
                ...(replacesView ? { replacesView } : {}),
+               ...(parentDestination !== destinationName
+                  ? {
+                       readOnly: [
+                          {
+                             destinationName: parentDestination,
+                             destinationConnection: parentConnection,
+                          },
+                       ],
+                    }
+                  : {}),
+               ...(incremental ? { incremental } : {}),
             }),
          );
       } catch (err) {

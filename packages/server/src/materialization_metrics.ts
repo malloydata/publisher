@@ -112,6 +112,12 @@ export const INCREMENTAL_STEP_REASONS = [
    "chained_storage",
    "pair_parent_row",
    "merge_key_not_unique",
+   // An incremental extension that could not prove it last read its
+   // incremental parent's immediately prior table, so it rebuilds.
+   "upstream_generation_skipped",
+   // An incremental extension on another watermark than its incremental
+   // parent's, rebuilt whenever the parent's table changed.
+   "upstream_watermark_differs",
    // Skips.
    "frontier_unreadable",
    "not_advanced",

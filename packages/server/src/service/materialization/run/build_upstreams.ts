@@ -919,6 +919,11 @@ export function builtFromAddresses(
             ? { storageDestinationName: entry.storageDestinationName }
             : {}),
          ...(entry.builtAt ? { builtAt: entry.builtAt } : {}),
+         // An incremental upstream's boundary as read: an extension's range
+         // ends no later (incremental_upstream.ts).
+         ...(entry.ledger
+            ? { coveredThrough: entry.ledger.coveredThrough }
+            : {}),
       });
    }
    out.sort((a, b) =>

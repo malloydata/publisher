@@ -19,7 +19,11 @@ import type { ServingReader } from "../versions/materialization_scope";
 import type { BuildPlanPackage } from "./domain/plan_input";
 import type { ChainBuildRequest, ChainBuildText } from "./domain/chain_build";
 import type { KeptTable, LateRows } from "./domain/types";
-import type { IncrementalCheckFinding } from "./domain/incremental";
+import type {
+   IncrementalCheckFinding,
+   LedgerParent,
+   UnprovenGeneration,
+} from "./domain/incremental";
 import type {
    BuildPlan,
    FreshnessManifest,
@@ -94,6 +98,27 @@ interface MaterializationPackage extends BuildPlanPackage {
       sourceEntityId: string,
       finding: IncrementalCheckFinding,
    ): void;
+   /**
+    * Which build of each parent's table each bound entry was reached over, by
+    * the entry's address (incremental_upstream.ts, `boundParentReads`): what
+    * a standalone run's incremental extension last read.
+    */
+   boundParentReads?(): ReadonlyMap<string, readonly LedgerParent[]>;
+   /**
+    * Each bound manifest entry's `builtAt` and `ledger`, by content address:
+    * the build an incremental source's step starts from, as the bound entry
+    * names it (incremental_build.ts, `boundEntries`).
+    */
+   boundIncrementalEntries?(): ReadonlyMap<
+      string,
+      Pick<ManifestEntry, "builtAt" | "ledger">
+   >;
+   /**
+    * The incremental extensions the newest run rebuilt because no record
+    * said which build of their parent's table they last read, which the
+    * package warns about.
+    */
+   setUnprovenGenerations?(list: readonly UnprovenGeneration[]): void;
    /**
     * The physical names of the database tables this copy is bound to now,
     * as the bind wrote them (possibly quoted): a caller's drop refuses any of

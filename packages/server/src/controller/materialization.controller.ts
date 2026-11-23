@@ -255,7 +255,7 @@ export class MaterializationController {
             );
          }
          result.referenceManifest = obj.referenceManifest.map((ref) =>
-            this.validateManifestReference(ref),
+            this.validateManifestReference(ref, context),
          );
       }
       if (obj.strictUpstreams !== undefined) {
@@ -324,7 +324,10 @@ export class MaterializationController {
       return result;
    }
 
-   private validateManifestReference(raw: unknown): ManifestReference {
+   private validateManifestReference(
+      raw: unknown,
+      context: { environmentName: string; packageName: string },
+   ): ManifestReference {
       if (typeof raw !== "object" || raw === null) {
          throw new BuildInstructionsInvalidError(
             "Each manifest reference must be an object",
@@ -383,7 +386,50 @@ export class MaterializationController {
          ...(ref.contract !== undefined && ref.contract !== null
             ? { contract: ref.contract as ManifestReference["contract"] }
             : {}),
+         // The upstream's ledger entry, for an incremental extension over it
+         // (incremental_upstream.ts). Null reads as absent.
+         ...this.validateReferenceLedger(ref, context),
       };
+   }
+
+   /**
+    * A reference's `ledger`, checked as an echoed ledger entry is
+    * ({@link validateLedgerEntry}) and held to the reference's own table. A
+    * malformed or mismatched one is dropped with a warning, never a 400: the
+    * extensions over that upstream then rebuild in full, as with no entry.
+    * Returned whole, keys this release does not know included.
+    */
+   private validateReferenceLedger(
+      ref: Record<string, unknown>,
+      context: { environmentName: string; packageName: string },
+   ): { ledger?: LedgerEntry } {
+      if (ref.ledger === undefined || ref.ledger === null) return {};
+      const checked = this.validateLedgerEntry(ref.ledger);
+      let defect: string;
+      if ("defect" in checked) {
+         defect = checked.defect;
+      } else if (
+         checked.entry.connectionName !== ref.connectionName ||
+         checked.entry.physicalTableName !== ref.physicalTableName ||
+         checked.entry.storageDestinationName !==
+            referenceDestination(ref.storageDestinationName)
+      ) {
+         defect =
+            "it names another table than the reference (connectionName, " +
+            "physicalTableName, storageDestinationName)";
+      } else {
+         return { ledger: checked.entry };
+      }
+      logger.warn(
+         "Dropped a referenceManifest entry's ledger; extensions over it rebuild in full",
+         {
+            ...context,
+            table: ref.physicalTableName,
+            defect,
+            reasonCode: "reference_ledger_dropped",
+         },
+      );
+      return {};
    }
 
    private validateInstruction(raw: unknown): BuildInstruction {

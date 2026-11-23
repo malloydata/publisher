@@ -97,6 +97,14 @@ export interface GivenReadTerm {
    columns: string[];
    /** Where it reads each field and given, in the declaring file. */
    at: TermUse[];
+   /**
+    * Written outside this source's own declaration: a base's or a
+    * materialized parent's. Never planned: the planner keeps it only to
+    * refuse the source, as `inherited_where_with_given`, or, for an
+    * extension of a `#(materialize)` parent, as `upstream_table_unusable`
+    * (`chainVerdict`).
+    */
+   inherited?: true;
 }
 
 /**
