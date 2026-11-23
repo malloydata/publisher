@@ -1114,6 +1114,12 @@ export class MaterializationService {
          // a delta or skip carries it until a rebuild.
          if (incremental) {
             incremental.priorLateRows = pkg.boundLateRows?.();
+            // Standalone only: which build of its parent's table each
+            // incremental extension last read, when the local ledger store
+            // cannot say. A caller's ledger carries it (incremental_build.ts).
+            if (opts.ledger === undefined) {
+               incremental.boundParentReads = pkg.boundParentReads?.();
+            }
          }
 
          const derived = await this.deriveRunInstructions(
@@ -1162,6 +1168,12 @@ export class MaterializationService {
             state,
          );
          const committed = await this.commitRun(run, target, derived, built);
+         // The extensions this run rebuilt for want of a record of their
+         // parent's build, which the package warns about until a run proves
+         // them again.
+         if (incremental) {
+            pkg.setUnprovenGenerations?.(incremental.unprovenGenerations ?? []);
+         }
          await this.finishCommittedRun(run, target, derived, committed, state);
       } catch (err) {
          const outcome = outcomeFor(signal);

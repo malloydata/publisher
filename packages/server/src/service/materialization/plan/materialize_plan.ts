@@ -141,7 +141,7 @@ const MATERIALIZE_PAIR_FULL_REFRESH_CODE = "materialize-pair-full-refresh";
  * The code on the warning for an incremental extension that rebuilds in full
  * whenever its parent's table changes ({@link extensionFullRefreshFinding}).
  */
-export const MATERIALIZE_EXTENSION_FULL_REFRESH_CODE =
+const MATERIALIZE_EXTENSION_FULL_REFRESH_CODE =
    "materialize-extension-full-refresh";
 
 /**
@@ -2242,7 +2242,9 @@ function sameStoredColumn(
 ): boolean {
    if (own !== theirs) return false;
    const ours = plan.columns.find((c) => c.dimension === own && !c.join);
-   const parents = parent.columns.find((c) => c.dimension === theirs && !c.join);
+   const parents = parent.columns.find(
+      (c) => c.dimension === theirs && !c.join,
+   );
    return (
       ours !== undefined &&
       parents !== undefined &&

@@ -112,6 +112,11 @@ import { type DeploymentFacts, ServeVerdicts } from "./serve_verdicts";
 import { SourceMap } from "./text/source_map";
 import type { KeptTable } from "./domain/types";
 import type { LateRows } from "./domain/types";
+import type { LedgerParent } from "./run/incremental_apply";
+import {
+   boundParentReads,
+   type UnprovenGeneration,
+} from "./run/incremental_upstream";
 import { isRollupOrigin, originOfTable } from "./domain/table_plans";
 import { queryTimezoneOf } from "../governance/ir/compiled_model";
 import type {
@@ -287,6 +292,8 @@ export class PackageMaterialization {
     * shape. The database entries carry theirs on {@link databaseEntries}.
     */
    private storageLateRows: ReadonlyMap<string, LateRows> = new Map();
+   /** See {@link setUnprovenGenerations}. */
+   private unprovenGenerations: readonly UnprovenGeneration[] = [];
    /** {@link snapshot}, keyed on every fact it is made from. */
    private snapshotMemo:
       | { key: readonly unknown[]; snapshot: Snapshot; signature: string }
@@ -1854,6 +1861,27 @@ export class PackageMaterialization {
          if (entry.lateRows) bound.set(id, entry.lateRows);
       }
       return bound;
+   }
+
+   /** See incremental_upstream.ts, `boundParentReads`. */
+   boundParentReads(): ReadonlyMap<string, readonly LedgerParent[]> {
+      return boundParentReads([
+         ...Object.entries(this.storageEntries),
+         ...Object.entries(this.databaseEntries ?? {}),
+      ]);
+   }
+
+   /** The extensions the newest run could not prove a parent build for. */
+   setUnprovenGenerations(list: readonly UnprovenGeneration[]): void {
+      this.unprovenGenerations = list;
+   }
+
+   /** See package_warnings.ts, `unprovenGenerationWarnings`. */
+   unprovenGenerationWarnings(): ApiPackageWarning[] {
+      return warnings.unprovenGenerationWarnings(
+         this.plan.buildPlan,
+         this.unprovenGenerations,
+      );
    }
 
    /** See package_warnings.ts, `lateRowWarnings`. */

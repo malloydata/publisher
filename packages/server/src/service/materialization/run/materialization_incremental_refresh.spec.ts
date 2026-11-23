@@ -238,6 +238,8 @@ describe("buildOneSource: incremental refresh", () => {
          watermark: "order_date",
          strategy: "range_replace",
          sourceEntityId: "abcdef1234567890",
+         // The run that changed the table.
+         advancedBy: "run-1",
       });
    });
 
@@ -550,6 +552,7 @@ describe("buildOneSource: incremental refresh", () => {
          expect(entry.ledger).toEqual({
             ...ENTRY,
             coveredThrough: "2024-07-01",
+            advancedBy: "run-1",
          });
       });
 

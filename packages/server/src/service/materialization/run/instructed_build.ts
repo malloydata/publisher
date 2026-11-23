@@ -2596,6 +2596,7 @@ function withBuiltProvenance(
             ? { storageDestinationName: read.storageDestinationName }
             : {}),
          ...(read.builtAt ? { builtAt: read.builtAt } : {}),
+         ...(read.ledger ? { coveredThrough: read.ledger.coveredThrough } : {}),
       });
    }
    const { builtFrom: _unset, ...rest } = entry;

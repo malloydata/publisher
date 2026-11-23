@@ -124,6 +124,10 @@ import type {
    ChainBuildText,
 } from "./materialization/domain/chain_build";
 import type { KeptTable, LateRows } from "./materialization/domain/types";
+import type {
+   LedgerParent,
+   UnprovenGeneration,
+} from "./materialization/domain/incremental";
 import { underCompilerKeys } from "./materialization/domain/binding";
 import {
    confinedPackagePath,
@@ -1724,6 +1728,16 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       return this.mz.boundLateRows();
    }
 
+   /** The host port's `boundParentReads` (PackageMaterialization.boundParentReads). */
+   public boundParentReads(): ReadonlyMap<string, readonly LedgerParent[]> {
+      return this.mz.boundParentReads();
+   }
+
+   /** The host port's `setUnprovenGenerations`. */
+   public setUnprovenGenerations(list: readonly UnprovenGeneration[]): void {
+      this.mz.setUnprovenGenerations(list);
+   }
+
    public forgetKeyUniqueness(sourceEntityIds: Iterable<string>): void {
       this.mz.forgetKeyUniqueness(sourceEntityIds);
    }
@@ -2210,6 +2224,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          ...this.mz.servedCopyWarnings(),
          ...this.mz.repeatedJoinOneKeyWarnings(),
          ...this.mz.lateRowWarnings(),
+         ...this.mz.unprovenGenerationWarnings(),
          ...this.mz.keptTableWarnings(),
          ...this.mz.annotationFindingWarnings(),
          ...this.annotationNearMissWarnings(),

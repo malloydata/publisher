@@ -263,7 +263,11 @@ export class DatabaseTier
          physicalTableName,
          connectionName: persistSource.connectionName,
          realization: "COPY",
-         ...ledgerFields(incrementalRefresh?.lineage, seededThrough),
+         ...ledgerFields(
+            incrementalRefresh?.lineage,
+            seededThrough,
+            incrementalRefresh?.context.materializationId,
+         ),
          // Reported for any incremental source that rebuilt, so a full rebuild
          // is distinguishable from a delta.
          ...refreshFields(incrementalRefresh ? "full" : undefined),
