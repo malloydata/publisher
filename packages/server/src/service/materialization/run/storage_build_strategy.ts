@@ -70,7 +70,7 @@ import {
    storedColumnTypeMismatches,
 } from "../stored_column_types";
 import { BuildInstruction, ManifestEntry } from "../domain/types";
-import type { ChainCollationRequest } from "../domain/chain_build";
+import { type StringReads, stringReadsRefusal } from "../domain/string_reads";
 import type {
    DroppedTable,
    KeyCheck,
@@ -222,6 +222,8 @@ export interface StorageBuildRequest {
    storedBase?: StoredRollupBase;
    /** See SourceBuildOptions.storedInDestination. */
    storedInDestination?: StoredInDestination;
+   /** See SourceBuildOptions.stringReads. */
+   stringReads?: StringReads;
    /**
     * How each of the given string columns compares where live reads this
     * source, for the column contract of a table built from its source
@@ -610,23 +612,20 @@ function storedParentsReached(
 }
 
 /**
- * Why a chained build must not be computed over its stored upstreams in the
- * destination (the host port's `chainCollationRefusal`), or undefined when it
- * may: the destination compares strings byte-exact, its source may not. Fails
- * closed: no port, or a port that throws, refuses.
+ * Why a build over stored upstreams must not be computed in the destination,
+ * or undefined when it may: the destination compares strings byte-exact, so
+ * each string the build compares (its plan's `stringReads`) must compare as
+ * live does by the contract each upstream's build recorded, which may be
+ * this run's own (string_reads.ts). Nothing is probed.
  */
-async function stackCollationRefusal(
-   environment: BuildEnvironment,
-   request: ChainCollationRequest,
-): Promise<string | undefined> {
-   if (!environment.chainCollationRefusal) {
-      return "this package cannot read its source's collation";
-   }
-   try {
-      return await environment.chainCollationRefusal(request);
-   } catch {
-      return "its source's collation could not be read";
-   }
+function stackCollationRefusal(
+   stringReads: StringReads | undefined,
+   upstreams: readonly (ManifestEntry | undefined)[],
+): string | undefined {
+   return stringReadsRefusal(
+      stringReads,
+      upstreams.map((e) => parseContract(e?.contract)),
+   );
 }
 
 /**
@@ -1036,11 +1035,14 @@ export class StorageBuildStrategy
                        params.contentSourceEntityId ??
                           instruction.sourceEntityId,
                        lift,
-                       // Passed only when set, so a seam's recorded call
-                       // is unchanged.
-                       ...(params.replacesView
-                          ? ([params.replacesView] as const)
-                          : []),
+                       {
+                          ...(params.replacesView
+                             ? { replacesView: params.replacesView }
+                             : {}),
+                          ...(params.stringReads
+                             ? { stringReads: params.stringReads }
+                             : {}),
+                       },
                     ),
          );
          recordChainedStorageBuild("parent_reuse");
@@ -1080,23 +1082,11 @@ export class StorageBuildStrategy
       if (!environment.chainBuildText) {
          throw refused("this host compiles no served copy to build it over");
       }
-      if (
-         await stackCollationRefusal(environment, {
-            downstream: {
-               sourceID: persistSource.sourceID,
-               name: persistSource.name,
-            },
-            rollup: {
-               baseSourceID: base.baseSourceID,
-               baseName: base.baseName,
-               grain: base.grain,
-               measures: base.measures,
-            },
-            stored: [base.baseSourceID],
-         })
-      ) {
+      const collation = stackCollationRefusal(params.stringReads, [base.entry]);
+      if (collation !== undefined) {
          throw refused(
-            "it compares a string by a collation the destination cannot reproduce",
+            `it compares a string by a collation the destination cannot ` +
+               `reproduce: ${collation}`,
          );
       }
       const text = environment.chainBuildText({
@@ -1180,9 +1170,10 @@ export class StorageBuildStrategy
       /** The content address being built; a walk stop sharing it is this source's own table. */
       rootAddress: string,
       lift: ReturnType<typeof authorModelLiftContext>,
-      /** See StorageBuildRequest.replacesView. */
-      replacesView?: string[],
+      /** See StorageBuildRequest's fields of the same names. */
+      options: { replacesView?: string[]; stringReads?: StringReads } = {},
    ): Promise<StorageBuildResult> {
+      const { replacesView } = options;
       const { upstreams, currentEntries } = storedUpstreamsIn(
          destinationName,
          builtEntries,
@@ -1261,16 +1252,17 @@ export class StorageBuildStrategy
       if (!environment.chainBuildText) {
          throw notCarried("this package has no served copy to write it from");
       }
-      const collation = await stackCollationRefusal(environment, {
-         downstream: {
-            sourceID: persistSource.sourceID,
-            name: persistSource.name,
-         },
-         stored: upstreams.flatMap((b) => b.sourceIDs ?? []),
-      });
-      // No build over the parents gives live's rows, as for a downstream
-      // that reaches the warehouse: the one recompute strict permits
-      // (`warehouseReach` decides), reported with this reason.
+      // The upstreams it reads: their recorded contracts judge the strings
+      // it compares (this run's own when it built them).
+      const read = upstreams.filter((b) =>
+         (b.sourceIDs ?? []).some((id) => stops.some((p) => p.sourceID === id)),
+      );
+      const collation = stackCollationRefusal(
+         options.stringReads,
+         read.map((b) => currentEntries[b.virtualHandle]),
+      );
+      // No build over the parents gives live's rows: refused, never
+      // recomputed from raw.
       if (collation !== undefined) {
          throw new MaterializationEligibilityError({
             message:
@@ -1415,6 +1407,19 @@ export class StorageBuildStrategy
             ),
          );
          addresses.push(address);
+      }
+      const collation = stackCollationRefusal(
+         params.stringReads,
+         addresses.map((a) => builtEntries[a]),
+      );
+      if (collation !== undefined) {
+         throw new ChainedShapeNotCarriedError(
+            `'${persistSource.name}' was not built over its upstreams' ` +
+               `tables in '${destinationName}': it compares a string by a ` +
+               `collation the destination cannot reproduce (${collation}), ` +
+               `and a view or query is never built by recomputing its ` +
+               `upstreams from raw`,
+         );
       }
       return await withReadFrom(
          { readFrom: addresses },

@@ -15,6 +15,7 @@
  * manifest; the committer does.
  */
 
+import type { StringReads } from "../domain/string_reads";
 import { tableNamesFoldCase } from "../domain/storage_table_path";
 import { errorCodeOf } from "../../../error_code";
 import { parseContract } from "../domain/column_contract";
@@ -1200,6 +1201,7 @@ export class InstructedBuild {
             ...(storedBase ? { storedBase } : {}),
             ...(overStoredUpstreams ? { overStoredUpstreams } : {}),
             ...storedInDestinationOf(compiled.tables[persistSource.sourceID]),
+            ...stringReadsOf(compiled.tables[persistSource.sourceID]),
             ...(compiled.tables[persistSource.sourceID]?.kind === "rollup"
                ? { rollup: true }
                : {}),
@@ -2684,6 +2686,16 @@ function withDeclinedViewUpstreamReuse(
          `a measure or view of an inlined join's joined source); recomputed ` +
          `from its definition in the warehouse`,
    };
+}
+
+/**
+ * The strings a `storage=` build over stored tables compares, as its plan
+ * recorded them, as a build option.
+ */
+function stringReadsOf(
+   table: InstructedRun["compiled"]["tables"][string] | undefined,
+): { stringReads?: StringReads } {
+   return table?.stringReads ? { stringReads: table.stringReads } : {};
 }
 
 /** A view's or query's proven build in its destination, as a build option. */

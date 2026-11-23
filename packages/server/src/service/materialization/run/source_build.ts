@@ -12,6 +12,7 @@
  * miss by the author's source. Counts each chained storage build.
  */
 
+import type { StringReads } from "../domain/string_reads";
 import type { StoredInDestination } from "../domain/table_plans";
 import { errorCodeOf } from "../../../error_code";
 import { instructionTier } from "../domain/placement";
@@ -710,6 +711,8 @@ export interface SourceBuildOptions {
     * text the plan proved it builds from there (storage_over_stored.ts).
     */
    storedInDestination?: StoredInDestination;
+   /** The strings its `storage=` build compares, as its plan recorded them. */
+   stringReads?: StringReads;
    /**
     * The source is a rollup: a `storage=` build reports `upstreamReuse`
     * only when it stacked on a stored table, never from the manifest's
@@ -759,6 +762,7 @@ export async function buildSource(
       replacesView,
       storedBase,
       storedInDestination,
+      stringReads,
       rollup,
       signal,
       builtThisRun,
@@ -869,10 +873,22 @@ export async function buildSource(
          ...(replacesView ? { replacesView } : {}),
          ...(storedBase ? { storedBase } : {}),
          ...(storedInDestination ? { storedInDestination } : {}),
+         ...(stringReads ? { stringReads } : {}),
          ...(rollup ? { rollup } : {}),
          ...(signal ? { signal } : {}),
          // How its source's strings compare live, for its column contract.
-         liveCollations: liveCollationsOf(connection, buildSQL),
+         liveCollations: liveCollationsOf(
+            connection,
+            buildSQL,
+            environment.bigqueryBuildCompareBinary
+               ? () =>
+                    environment.bigqueryBuildCompareBinary!({
+                       connection,
+                       source: persistSource,
+                       sql: buildSQL,
+                    })
+               : undefined,
+         ),
       });
       return built;
    }

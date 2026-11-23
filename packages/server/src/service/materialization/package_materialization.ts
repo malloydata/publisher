@@ -26,15 +26,10 @@
  * Effects: logs, and the bind metrics.
  */
 
-import { parseContract } from "./domain/column_contract";
+import { type ColumnContract, parseContract } from "./domain/column_contract";
 import type { Connection, MalloyConfig } from "@malloydata/malloy";
 import { components } from "../../api";
-import type {
-   ChainBuildRequest,
-   ChainBuildText,
-   ChainCollationRequest,
-} from "./domain/chain_build";
-import { chainBuildCollationRefusal } from "./serve/gate_collation";
+import type { ChainBuildRequest, ChainBuildText } from "./domain/chain_build";
 import {
    getMaterializeEnabled,
    getPersistCollisionEnforce,
@@ -525,6 +520,24 @@ export class PackageMaterialization {
    }
 
    /**
+    * The column contract bound for the upstream `sourceID` in
+    * `destination`, or undefined: what a plan judges a stacked build's
+    * compared strings against (domain/string_reads.ts).
+    */
+   boundStorageContract(
+      sourceID: string,
+      destination: string,
+   ): ColumnContract | undefined {
+      const binding = this.storageBindings.find(
+         (b) =>
+            b.destinationName === destination &&
+            (b.sourceIDs ?? []).includes(sourceID),
+      );
+      const entry = binding && this.storageEntries[binding.virtualHandle];
+      return entry ? parseContract(entry.contract) : undefined;
+   }
+
+   /**
     * A build's report that an upstream's table is not what the plan it was
     * planned from recorded (SchemaIncompatibleError): the drift handler.
     */
@@ -785,44 +798,6 @@ export class PackageMaterialization {
          if (text !== undefined) return text;
       }
       return { declined: "no model of this package declares the downstream" };
-   }
-
-   /**
-    * The host port's `chainCollationRefusal` for this package version: why a
-    * chained `storage=` build must not be computed over its stored upstreams
-    * in its destination, judged in the model that declares the downstream
-    * (a rollup's base), with that model's live connections. Refuses when no
-    * model of the package declares it.
-    */
-   async chainCollationRefusal(
-      request: ChainCollationRequest,
-   ): Promise<string | undefined> {
-      const declared =
-         request.rollup?.baseSourceID ?? request.downstream.sourceID;
-      const declaringURL = declared.split("@").slice(1).join("@");
-      // The declaring file: the longest model path the URL ends with, so
-      // `m.malloy` never stands in for `sub/m.malloy`.
-      const declaring = [...this.owner.models()]
-         .filter(([modelPath]) => declaringURL.endsWith(`/${modelPath}`))
-         .sort(([a], [b]) => b.length - a.length)[0]?.[1];
-      const load = declaring?.authorQueryLoader();
-      if (load !== undefined) {
-         return chainBuildCollationRefusal({
-            load,
-            downstream: request.downstream.name,
-            ...(request.rollup
-               ? {
-                    rollup: {
-                       baseName: request.rollup.baseName,
-                       grain: request.rollup.grain,
-                       measures: request.rollup.measures,
-                    },
-                 }
-               : {}),
-            stored: new Set(request.stored),
-         });
-      }
-      return "no model of this package declares the downstream";
    }
 
    /**

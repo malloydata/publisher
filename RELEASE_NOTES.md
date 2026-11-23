@@ -21,6 +21,16 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — a stacked `storage=` build's collation guard reads its upstreams' contracts, decided at plan
+
+**Changed: whether a `storage=` build over its upstreams' tables in its destination compares its strings as live does is decided from the column contracts those tables recorded, never by probing the source's collation at build.** The plan reads the strings the build groups, compares or orders (a chained `#@ persist` source, a view or named query built in its destination, a rollup over its base's table) and records them on the table's plan. When the package has bound its upstreams' tables, the plan judges them there: a column the build orders must be recorded `compare: exact`, one it groups or compares for equality `exact` or `equality`. A build that fails the check is refused at plan as `upstream_table_unusable`, with a `message` naming the string, and answered live. An upstream built in the same run is judged at build against the contract it has just recorded, with the same verdict and no probe. Verdicts are the ones #1996's probe gave for Postgres and DuckDB sources.
+
+**Changed: a `storage=` view or named query built in its destination is held to the same check.** Before, only chained `#@ persist` sources and rollups over a stored base were.
+
+**Changed: a `storage=` build reading BigQuery records how its strings compare live, from the catalog reads an answer's collation check makes** (complete reads only). Before, every BigQuery string column was recorded `compare: none`, so no build could stack on it. A read that fails or is incomplete still records `none`, which fails closed.
+
+**Fixed: the check now covers the destination's own collation**, which the contract's stored side records; #1996's probe read only the source's.
+
 ## [Unreleased] — breaking: every build is strict, and a run of named sources builds the upstreams it cannot carry
 
 **Changed: every build is strict, standalone or a host's, whatever `strictUpstreams` says.** A downstream whose persisted upstream has no table in the run fails rather than recomputing the upstream from raw. `strictUpstreams` and `warehouseReach` are deprecated: both are accepted and ignored (`warehouseReach` values are still validated), since nothing recomputes a stored upstream any more.

@@ -17,11 +17,7 @@ import type { EnvironmentName, PackageName, VersionRef } from "../identity";
 import type { ApiConnection } from "../model";
 import type { ServingReader } from "../versions/materialization_scope";
 import type { BuildPlanPackage } from "./domain/plan_input";
-import type {
-   ChainBuildRequest,
-   ChainBuildText,
-   ChainCollationRequest,
-} from "./domain/chain_build";
+import type { ChainBuildRequest, ChainBuildText } from "./domain/chain_build";
 import type { KeptTable, LateRows } from "./domain/types";
 import type {
    BuildPlan,
@@ -79,15 +75,6 @@ interface MaterializationPackage extends BuildPlanPackage {
     * its plan recorded it: read the tables and derive the plan again.
     */
    reportIncompatible?(handles: readonly string[]): void;
-   /**
-    * Why a chained `storage=` build must not be computed over its stored
-    * upstreams in its destination, which compares strings byte-exact, or
-    * undefined when it may: what it groups, compares or orders of a string
-    * compares there as its source compares it live.
-    */
-   chainCollationRefusal(
-      request: ChainCollationRequest,
-   ): Promise<string | undefined>;
    /**
     * The tables the newest auto-run of this package lists as kept after a
     * rename, which its warnings name (`table-kept`).

@@ -12,7 +12,12 @@
  * Types only.
  */
 
-import type { BoundStorageColumns, PlanChainBuildText } from "./chain_build";
+import type {
+   BoundStorageColumns,
+   BoundStorageContract,
+   PlanChainBuildText,
+   PlanChainStringReads,
+} from "./chain_build";
 import type {
    Connection as MalloyConnection,
    MalloyConfig,
@@ -74,4 +79,15 @@ export interface BuildPlanPackage {
     * Absent (the load worker, a spec's package): the defaults.
     */
    boundStorageColumns?: BoundStorageColumns;
+   /**
+    * Reads the strings a `storage=` build over stored upstreams compares
+    * (serve/chain_string_reads.ts). Absent (a spec's package), every such
+    * build is refused at plan.
+    */
+   planChainStringReads?: PlanChainStringReads;
+   /**
+    * The contract bound for an upstream, which a plan judges those strings
+    * against. Absent (the load worker, a spec's package): judged at build.
+    */
+   boundStorageContract?: BoundStorageContract;
 }

@@ -12,7 +12,10 @@
  * Bundled separately by `build.ts` as `dist/package_load_worker.mjs` so
  * `new Worker(...)` does not load the whole server module graph.
  */
-import { planChainBuildText } from "../service/materialization/serve/served_copy_serve";
+import {
+   chainBuildStringReads,
+   planChainBuildText,
+} from "../service/materialization/serve/served_copy_serve";
 import {
    type CacheManager,
    contextOverlay,
@@ -1349,6 +1352,7 @@ async function prepareForMainThread(
             crossFileCompanions: (load.crossFileCompanions ??=
                newCrossFileCompanions()),
             chainBuildText: planChainBuildText(job.packagePath, malloyConfig),
+            stringReads: { read: chainBuildStringReads },
          });
          load.planParts?.set(modelPath, parts);
       } catch (error) {

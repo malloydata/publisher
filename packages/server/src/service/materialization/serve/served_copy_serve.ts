@@ -4812,6 +4812,13 @@ function zonedElsewhere(
 }
 
 /**
+ * The plan's reader of a stacked build's compared strings, beside
+ * {@link planChainBuildText}: the package-load worker's one door into
+ * serve/, which must not load the barrel.
+ */
+export { chainBuildStringReads } from "./chain_string_reads";
+
+/**
  * {@link chainBuildText} as the plan is handed it, for the package at
  * `packagePath` read through `config` (plan/storage_over_stored.ts).
  */

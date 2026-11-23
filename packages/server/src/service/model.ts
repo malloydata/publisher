@@ -3303,22 +3303,6 @@ export class Model {
    }
 
    /**
-    * Compiles a query in this model as it serves, with its live connections:
-    * how a chained `storage=` build's collation check reads what the build
-    * compares (`chainCollationRefusal`). Undefined when this model has no
-    * compile to query.
-    */
-   public authorQueryLoader():
-      | ((query: string) => QueryMaterializer)
-      | undefined {
-      const materializer = this.modelMaterializer;
-      if (this.modelType !== "model" || this.isNotebook() || !materializer) {
-         return undefined;
-      }
-      return (query) => materializer.loadQuery(query);
-   }
-
-   /**
     * The v1 cutover's preview (dry run): the sources this model's served copy
     * would re-root over `bindings` (declared from the plan's output columns,
     * so no table is read), and why it leaves the others as written. Compiled

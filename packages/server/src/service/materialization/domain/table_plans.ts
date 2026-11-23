@@ -18,6 +18,7 @@
  * Pure.
  */
 
+import type { StringReads } from "./string_reads";
 import type { TableKind as StoredTableKind } from "./vocabulary";
 import type { BuildTarget, PersistSource } from "@malloydata/malloy";
 import type {
@@ -730,6 +731,15 @@ interface TablePlanFacts {
     * leg in a destination). Absent: no such leg, so no check.
     */
    storedKeyCheck?: string;
+   /**
+    * A `storage=` table built over its upstreams' stored tables in its
+    * destination (a chained source, a view or query there, a rollup over
+    * its base's table): the strings that build compares, read at plan, which
+    * each upstream's recorded contract must compare as live does
+    * (`string_reads.ts`). A `refused` one is refused at plan; otherwise the
+    * build judges them against the contracts of the tables it reads.
+    */
+   stringReads?: StringReads;
 }
 
 /**

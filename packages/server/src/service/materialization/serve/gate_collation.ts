@@ -57,6 +57,7 @@ import {
    EMPTY_BUILD_MANIFEST,
    type ModelDef,
    type ModelMaterializer,
+   type PersistSource,
    type QueryMaterializer,
 } from "@malloydata/malloy";
 import { runAsInternalStatement } from "../../duckdb_lockdown";
@@ -65,8 +66,8 @@ import {
    readPreparedQuery,
    resolveStructRefSource,
 } from "../../governance/ir/prepared_query";
-import { identifier, quotedIdentifier, quotedPath } from "../../malloy_text";
-import { queryTableReads } from "../../governance/ir/source_reads";
+import { identifier } from "../../malloy_text";
+import { queryTableReads, sourceReads } from "../../governance/ir/source_reads";
 
 import type { CollationProbe, GateReads } from "./gate_reads_types";
 import {
@@ -86,8 +87,7 @@ import {
    TABLE_TYPES,
 } from "./collation/bigquery";
 import { fieldPathsIn } from "./gate_paths";
-import { entryGates, queryFilterReadsOfQuery } from "./gate_reads";
-import { chainBuildBaseOf, chainBuildReadsOfQuery } from "./result_reads";
+import { entryGates } from "./gate_reads";
 
 /** What the probe reads through: the author's compile and its connections. */
 interface ProbeRuntime {
@@ -262,78 +262,6 @@ export const collationProbe: CollationProbe = {
 };
 
 /**
- * Why a chained `storage=` build must not be computed over its stored
- * upstreams' tables, or undefined when it may. The build runs in the DuckLake
- * destination, which compares strings byte-exact, so each string it groups,
- * compares, counts distinct or orders (a later stage's `limit`, a `min`) must
- * compare there as the base's source compares it live, by the rules a stored
- * answer's result is judged by: an equality under a binary or deterministic
- * collation, anything else under a binary one only. Otherwise the stored
- * table would hold other groups or rows than live, and an answer that reads
- * none of those strings would be served from it. Fail closed: what cannot be
- * read refuses, and the build then reads the warehouse.
- *
- * `load` compiles a query in the author's model, with the live connections.
- * The build is a query-shaped `downstream`'s own query, or a rollup's
- * grouping of its base by `grain` with its `measures`; `stored` names, by
- * sourceID, the upstreams whose tables it reads.
- */
-export async function chainBuildCollationRefusal(args: {
-   load: (query: string) => QueryMaterializer;
-   downstream: string;
-   rollup?: {
-      baseName: string;
-      grain: readonly string[];
-      measures: readonly string[];
-   };
-   stored: ReadonlySet<string>;
-}): Promise<string | undefined> {
-   const { load, rollup, stored } = args;
-   let base: string | undefined = rollup?.baseName;
-   if (base === undefined) {
-      base = await chainBuildBaseOf(
-         load(`run: ${quotedIdentifier(args.downstream)} -> { select: * }`),
-         args.downstream,
-      );
-   }
-   if (base === undefined) return "a downstream whose base is not named";
-   const clauses: string[] = [];
-   if (rollup && rollup.grain.length > 0) {
-      clauses.push(`group_by: ${rollup.grain.map(quotedPath).join(", ")}`);
-   }
-   if (rollup) {
-      clauses.push(`aggregate: ${rollup.measures.map(quotedPath).join(", ")}`);
-   } else {
-      clauses.push("select: *");
-   }
-   const runnable = load(
-      `run: ${quotedIdentifier(base)} -> { ${clauses.join("; ")} }`,
-   );
-   const reads = await chainBuildReadsOfQuery(
-      runnable,
-      stored,
-      rollup ? undefined : args.downstream,
-   );
-   if (reads === undefined) return "a build whose string reads are unread";
-   // What its stages' filters compare: a `where:`, a `having:`, a filtered
-   // measure's own or one it names.
-   const filters = await queryFilterReadsOfQuery(runnable, stored, {
-      fromStage: 0,
-      namedMeasures: true,
-      pipeline: reads.stages,
-   });
-   if (filters === undefined) return "a build whose filters are unread";
-   for (const comparison of [reads.ordered, reads.grouped, filters]) {
-      const refusal = await stringGateCollationRefusal({
-         authorRunnable: runnable,
-         reads: comparison,
-      });
-      if (refusal !== undefined) return refusal;
-   }
-   return undefined;
-}
-
-/**
  * The BigQuery catalog reads, by the loaded model's runtime, then the bind
  * (the serving snapshot the query was pinned to), then what each reads.
  * Each query compiles a model of its own, so a compiled model would read the
@@ -435,20 +363,78 @@ async function bigquerySource(args: {
       const { sql } = await args.authorRunnable.getPreparedResult(
          (args.givens ? { givens: args.givens } : {}) as never,
       );
-      if (/\bcollate\b/i.test(sql)) return unknown;
       const connectionName =
          typeof struct?.connection === "string" ? struct.connection : undefined;
-      const catalog = new BigQueryCatalog(
-         bigqueryReadsOf(runtime, args.bind ?? NO_BIND),
-         probeIO(await runtime.connections.lookupConnection(connectionName)),
+      return await bigqueryCollatedPaths({
+         reads: bigqueryReadsOf(runtime, args.bind ?? NO_BIND),
+         io: probeIO(
+            await runtime.connections.lookupConnection(connectionName),
+         ),
          connectionName,
-      );
+         sql,
+         tables: queryTableReads(
+            prepared.compositeResolvedSourceDef ?? struct,
+            prepared.pipeline,
+         ),
+      });
+   } catch {
+      return unknown;
+   }
+}
+
+/**
+ * Whether a `storage=` build's warehouse SQL on BigQuery reads only strings
+ * compared byte-exact: `sql`, the build of `source`, reading the tables its
+ * definition reads (unknown: every project the SQL names is read instead),
+ * judged by the catalog reads an answer's check makes
+ * ({@link bigqueryCollatedPaths}), complete or not at all. False whenever a
+ * read fails or is incomplete: the build's column contract then records its
+ * strings compared `none`, which fails closed.
+ */
+export async function bigqueryBuildCompareBinary(args: {
+   connection: Connection;
+   source: PersistSource;
+   sql: string;
+}): Promise<boolean> {
+   try {
+      const read = await bigqueryCollatedPaths({
+         reads: new Map(),
+         io: probeIO(args.connection),
+         connectionName: args.source.connectionName,
+         sql: args.sql,
+         tables: sourceReads(args.source),
+      });
+      return read.known && read.collated.size === 0;
+   } catch {
+      return false;
+   }
+}
+
+/**
+ * The collated column paths of the tables BigQuery `sql` reads, from the
+ * catalog through `io`, or unknown when they cannot be read whole.
+ */
+async function bigqueryCollatedPaths(args: {
+   reads: Map<string, Promise<unknown>>;
+   io: ProbeIO;
+   connectionName: string | undefined;
+   sql: string;
+   tables: ReturnType<typeof sourceReads>;
+}): Promise<
+   | { known: false }
+   | {
+        known: true;
+        collated: ReadonlyMap<string, ReadonlySet<string>>;
+        catalog: BigQueryCatalog;
+     }
+> {
+   const unknown = { known: false } as const;
+   const { sql, tables, connectionName } = args;
+   try {
+      if (/\bcollate\b/i.test(sql)) return unknown;
+      const catalog = new BigQueryCatalog(args.reads, args.io, connectionName);
       const { job } = catalog;
       if (job.projects.length === 0) return unknown;
-      const tables = queryTableReads(
-         prepared.compositeResolvedSourceDef ?? struct,
-         prepared.pipeline,
-      );
       const placed: PlacedTable[] = [];
       for (const t of tables ?? []) {
          // A table on another connection is not this query's to place.

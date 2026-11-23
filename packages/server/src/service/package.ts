@@ -1,10 +1,16 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { planChainBuildText } from "./materialization";
+import {
+   bigqueryBuildCompareBinary,
+   chainBuildStringReads,
+   planChainBuildText,
+} from "./materialization";
 import type {
    BoundStorageColumns,
+   BoundStorageContract,
    PlanChainBuildText,
+   PlanChainStringReads,
 } from "./materialization/domain/chain_build";
 import { quotedIdentifier, quotedPath, stringLiteral } from "./malloy_text";
 import { INCREMENTAL_NO_MERGE_KEY_CODE } from "./materialization/plan/incremental_policy";
@@ -116,7 +122,6 @@ import {
 import type {
    ChainBuildRequest,
    ChainBuildText,
-   ChainCollationRequest,
 } from "./materialization/domain/chain_build";
 import type { KeptTable, LateRows } from "./materialization/domain/types";
 import { underCompilerKeys } from "./materialization/domain/binding";
@@ -1762,12 +1767,8 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       return this.mz.chainBuildText(request);
    }
 
-   /** The host port's `chainCollationRefusal` (see PackageMaterialization.chainCollationRefusal). */
-   public chainCollationRefusal(
-      request: ChainCollationRequest,
-   ): Promise<string | undefined> {
-      return this.mz.chainCollationRefusal(request);
-   }
+   /** See {@link BuildEnvironment.bigqueryBuildCompareBinary}. */
+   public readonly bigqueryBuildCompareBinary = bigqueryBuildCompareBinary;
 
    /** The persist build plan, or null when the package declares no persist source. */
    public getBuildPlan(): BuildPlan | null {
@@ -2975,6 +2976,16 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       sourceID,
       destination,
    ) => this.mz.boundStorageColumns(sourceID, destination);
+
+   /** See {@link BuildPlanPackage.boundStorageContract}. */
+   public readonly boundStorageContract: BoundStorageContract = (
+      sourceID,
+      destination,
+   ) => this.mz.boundStorageContract(sourceID, destination);
+
+   /** See {@link BuildPlanPackage.planChainStringReads}. */
+   public readonly planChainStringReads: PlanChainStringReads =
+      chainBuildStringReads;
 
    /** See {@link BuildPlanPackage.planChainBuildText}. */
    public readonly planChainBuildText: PlanChainBuildText = (request, model) =>
