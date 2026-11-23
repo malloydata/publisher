@@ -21,6 +21,20 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — breaking: no downstream is built from its definition over a persisted upstream
+
+**Breaking: every persisted view, named query and rollup that would have been built from its definition, recomputing a persisted upstream from raw, is now refused when the package is planned, as `upstream_table_unusable`, with a `message` naming the upstream and why.** It answers live, and is never built from raw. Newly refused:
+
+- a persisted view or named query whose compile over its upstream's table fails (for example a view over a pair table that reads the joined source's own measures). Before, it was built from its definition and reported `upstreamReuse: "recomputed"`;
+- a persisted view or named query that reaches several `#(materialize)` sources;
+- a persisted view or named query whose `#(materialize)` upstream is declared in another file, or has no table it can build from there (a pair table it cannot re-root over, a source that filters its rows again at read, a table in a `storage=` destination);
+- a persisted view or named query that reads its `#(materialize)` upstream in another time zone than the upstream's table was built in;
+- a rollup over a pair table, over an extension of a `#(materialize)` source in another file, or over any persisted base whose build over the base's table did not compile to the planned table at plan.
+
+**Changed: a `storage=` rollup over a gated base stored in its destination is built over that base's table.** The gates apply at read and the base's table holds every caller's rows, as its source does, so a rollup grouped from it holds what one grouped from the warehouse would. Before, it was built from the warehouse.
+
+**Who is affected:** packages with such views, queries or rollups; each `upstream_table_unusable` refusal names the upstream. **What to do:** move the downstream next to its upstream (one file, one zone), or declare it over a source its build can read in place.
+
 ## [Unreleased] — breaking: `strictUpstreams` and `warehouseReach` do nothing, and their last traces are retired
 
 **Changed: `buildInstructions.strictUpstreams` and `buildInstructions.warehouseReach` are accepted and ignored.** Both are still validated (a non-boolean `strictUpstreams`, or a `warehouseReach` other than `recompute` or `refuse`, is a 400), and a request that sends either logs one warning, `buildInstructions options are deprecated and ignored`, naming them. A later release removes them from the API. **What to do:** stop sending them.

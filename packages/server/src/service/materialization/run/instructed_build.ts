@@ -43,7 +43,6 @@ import type {
    RollupKeyCheck,
 } from "../domain/table_plans";
 import type { InlineUniquenessCheck } from "../domain/table_plans";
-import { splitSourceID } from "../domain/table_plans";
 import {
    assertPlacementNamed,
    assertTierEligible,
@@ -915,16 +914,7 @@ export class InstructedBuild {
          withBuiltProvenance(
             run,
             sourceEntityId,
-            withDeclinedViewUpstreamReuse(
-               run,
-               persistSource,
-               withRollupUpstreamReuse(
-                  run,
-                  persistSource,
-                  sourceEntityId,
-                  built,
-               ),
-            ),
+            withRollupUpstreamReuse(run, persistSource, sourceEntityId, built),
          ),
          leafChecks,
       );
@@ -2648,42 +2638,6 @@ function withRollupUpstreamReuse(
    return run.readFrom?.has(address)
       ? { ...rest, upstreamReuse: "reused" }
       : rest;
-}
-
-/**
- * A view's or query's entry, when its build over its upstreams' tables did
- * not compile at plan (`overStoredDeclined`) and it built from its
- * definition: `upstreamReuse: recomputed`, naming the upstreams, never
- * `reused` and never unlabelled. Any other entry is returned as built.
- */
-function withDeclinedViewUpstreamReuse(
-   run: InstructedRun,
-   persistSource: PersistSource,
-   entry: ManifestEntry,
-): ManifestEntry {
-   const table = run.compiled.tables[persistSource.sourceID];
-   // A build that already says it recomputed keeps its own reason.
-   if (
-      table?.kind !== "view" ||
-      !table.overStoredDeclined ||
-      entry.upstreamReuse === "recomputed"
-   ) {
-      return entry;
-   }
-   const names = table.overStoredDeclined.upstreamSourceIDs.map(
-      (id) =>
-         run.compiled.tables[id]?.source.name ?? splitSourceID(id)?.name ?? id,
-   );
-   const named = names.map((n) => `'${n}'`).join(", ");
-   return {
-      ...entry,
-      upstreamReuse: "recomputed",
-      upstreamRecomputeReason:
-         `its build over the stored table of persisted upstream ${named} ` +
-         `does not compile (it reads what that table does not hold, such as ` +
-         `a measure or view of an inlined join's joined source); recomputed ` +
-         `from its definition in the warehouse`,
-   };
 }
 
 /**

@@ -168,6 +168,7 @@ import type {
 } from "../domain/table_plans";
 import { type StorageOverStored, storedColumnsOf } from "./storage_over_stored";
 import { deletingWindowsOf } from "./rolling_window";
+import { storedMaterializeUpstream } from "./stored_base_copy";
 import {
    tryCompileRollupCompanion,
    type MaterializedBases,
@@ -1084,23 +1085,25 @@ async function collectGeneratedRollups(
                  plan.storage,
               )
             : undefined;
+      // Proven at plan, and recorded.
+      const overStored = provenRollupOverStored(
+         source,
+         plan,
+         generated.overStoredBases.get(source.sourceID),
+         parts.tables,
+      );
       const unusableUpstream =
          storedBase && plan.storage !== undefined
             ? storedBaseDecline(args, source, plan, storedBase, plan.storage)
-            : undefined;
+            : !storedBase && !overStored.overStoredBase
+              ? rollupOverDefinition(args, plan)
+              : undefined;
       parts.tables[source.sourceID] = {
          kind: "rollup",
          ...(unusableUpstream ? { unusableUpstream } : {}),
          ...plannedFacts(source, args.modelPath),
          rollup: plan,
-         // Proven at plan, and recorded: any other rollup builds from the
-         // warehouse, and keeps its place in the order.
-         ...provenRollupOverStored(
-            source,
-            plan,
-            generated.overStoredBases.get(source.sourceID),
-            parts.tables,
-         ),
+         ...overStored,
          ...(storedBase ? { storedBase } : {}),
          ...(stringReads ? { stringReads } : {}),
          gate: await classifyPersistSourceGate(
@@ -1189,6 +1192,78 @@ async function planStringReads(
    if (contracts.some((c) => c === undefined)) return reads;
    const why = stringReadsRefusal(reads, contracts);
    return why === undefined ? reads : { refused: why };
+}
+
+/**
+ * Why a persisted view or query is refused at plan: it reads a
+ * `#(materialize)` upstream's table it cannot build from, or it was offered
+ * the build over its upstreams' tables and that compile failed (unless
+ * `proven`). A view or query is never built from its definition over a
+ * persisted upstream.
+ */
+function viewUnusableUpstream(
+   generated: {
+      overStoredUnusable: ReadonlyMap<string, string>;
+      overStoredCandidates: ReadonlySet<string>;
+      overStoredUpstreams: ReadonlyMap<string, readonly string[]>;
+   },
+   sourceID: string,
+   proven: boolean,
+): string | undefined {
+   const unusable = generated.overStoredUnusable.get(sourceID);
+   if (unusable !== undefined) return unusable;
+   const declined =
+      !proven && generated.overStoredCandidates.has(sourceID)
+         ? (generated.overStoredUpstreams.get(sourceID) ?? [])
+         : [];
+   if (declined.length === 0) return undefined;
+   const names = declined
+      .map((id) => `'${splitSourceID(id)?.name ?? id}'`)
+      .join(", ");
+   return (
+      `its build over the table of persisted upstream ${names} does not ` +
+      `compile (it reads what that table does not hold, such as a measure ` +
+      `or view of an inlined join's joined source)`
+   );
+}
+
+/**
+ * Why a rollup whose base reads a persisted upstream is refused when no
+ * build over that upstream's table is planned for it (none was offered, or
+ * its compile did not prove the planned table): it would be built from its
+ * base's definition, recomputing the upstream from raw. Undefined for a
+ * rollup over a base no persisted source is under, which builds from its
+ * rows as planned.
+ */
+function rollupOverDefinition(
+   args: {
+      modelPath: string;
+      packagePath: string;
+      modelDef: unknown;
+      materialized?: MaterializedBases;
+   },
+   plan: RollupPlan,
+): string | undefined {
+   if (plan.baseSourceID === undefined) return undefined;
+   const map = SourceMap.of(args.modelDef);
+   const base = map.node(plan.baseSourceID)?.def;
+   if (base === undefined) return undefined;
+   const upstreams = reachedUpstreams(base, args.modelDef, map);
+   if (upstreams.length === 0) return undefined;
+   const materialize = storedMaterializeUpstream(
+      map,
+      base,
+      args.modelDef,
+      path.join(args.packagePath, args.modelPath),
+      args.materialized,
+   );
+   const why =
+      materialize && "unusable" in materialize
+         ? materialize.unusable
+         : `no build over its upstream ` +
+           `${upstreams.map((u) => `'${u.name}'`).join(", ")}'s table ` +
+           `compiled to the planned table`;
+   return `its base reads a persisted upstream, and ${why}`;
 }
 
 /**
@@ -1511,19 +1586,16 @@ async function collectGeneratedPersistedViews(
             : undefined;
       // A persisted query's table is a view's, built from the same
       // companion and read by an exact call.
-      // Offered the build over its upstreams' tables, which did not
-      // compile: built from its definition, and its entry says so.
-      const declined =
-         !overStoredBase && generated.overStoredCandidates.has(source.sourceID)
-            ? generated.overStoredUpstreams.get(source.sourceID)
-            : undefined;
+      const unusableUpstream = viewUnusableUpstream(
+         generated,
+         source.sourceID,
+         overStoredBase !== undefined,
+      );
       parts.tables[source.sourceID] = {
          kind: "view",
          ...plannedFacts(source, args.modelPath),
          ...(overStoredBase ? { overStoredBase } : {}),
-         ...(declined && declined.length > 0
-            ? { overStoredDeclined: { upstreamSourceIDs: declined } }
-            : {}),
+         ...(unusableUpstream ? { unusableUpstream } : {}),
          ...(inDestination && "stored" in inDestination
             ? { storedInDestination: inDestination.stored }
             : {}),
@@ -2144,12 +2216,21 @@ async function planV1PersistSources(
          modelDef: modelDefOf(malloyModel),
          deps: gateDepsFor(malloyModel, modelPath),
       };
-      const stringReads = await chainedStringReads(
-         source,
-         classificationCtx.modelDef,
-         materializer,
-         args.stringReads,
-      );
+      // Read in the declaring model, where the source's names are its own;
+      // a model importing it keeps that reading.
+      const stringReads =
+         declaringModelPath(
+            sourceIDFileURL(sourceID),
+            packagePath,
+            modelPath,
+         ) === modelPath
+            ? await chainedStringReads(
+                 source,
+                 classificationCtx.modelDef,
+                 materializer,
+                 args.stringReads,
+              )
+            : parts.tables[sourceID]?.stringReads;
       parts.tables[sourceID] = {
          kind: "persist",
          ...(stringReads ? { stringReads } : {}),
@@ -2582,11 +2663,32 @@ function refuseUncomparableStrings<
 >(compiled: T): T {
    const findings: PackageAnnotationFinding[] = [];
    const dropped = new Set<string>();
+   const edges = new Map<string, string[]>();
+   for (const build of compiled.builds) {
+      for (const [id, reads] of Object.entries(build.dependsOn)) {
+         edges.set(id, [...(edges.get(id) ?? []), ...reads]);
+      }
+   }
    for (const [sourceID, table] of Object.entries(compiled.tables)) {
       const reads = table.stringReads;
+      // A persisted source stacks only when its build reads the table of
+      // an upstream in its own destination (a join only its read applies,
+      // or a warehouse upstream its build reads there, does not).
+      const placed = declaredStorage(table.source)?.trim() || undefined;
+      const stacks =
+         table.kind !== "persist" ||
+         (edges.get(sourceID) ?? []).some((id) => {
+            const upstream = compiled.tables[id];
+            return (
+               upstream !== undefined &&
+               placed !== undefined &&
+               declaredStorage(upstream.source)?.trim() === placed &&
+               buildReadsTable(compiled, table, id)
+            );
+         });
       const why =
          table.unusableUpstream ??
-         (reads !== undefined && "refused" in reads
+         (stacks && reads !== undefined && "refused" in reads
             ? `it is built over its upstreams' tables in its storage= ` +
               `destination, which compares strings byte-exact, and ` +
               reads.refused

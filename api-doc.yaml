@@ -12568,12 +12568,15 @@ components:
             neither reports `upstreamReuse`.
 
 
-            `recomputed`: the one build left that reads a persisted upstream's
-            definition rather than its table, a persisted view or named query
-            whose compile over its upstream's table failed at plan; its
-            `upstreamRecomputeReason` names the upstream. Such a table
-            reflects the warehouse at THIS build's time rather than the
-            upstream's snapshot.
+            `recomputed`: retained, and no longer planned. No build is
+            planned to read a persisted upstream's definition rather than its
+            table: a persisted view, named query or rollup that cannot be
+            built over its upstream's table is refused at plan. The value
+            stays for the run's own check, which labels a build whose SQL
+            inlined an upstream it should have read (with
+            `upstreamRecomputeReason` naming it); a strict build refuses such
+            a build before writing it, so an entry is not expected to carry
+            it.
 
 
             Not a location: it does not name the table the rows came from

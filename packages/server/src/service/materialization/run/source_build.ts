@@ -810,7 +810,9 @@ export async function buildSource(
       contentSourceEntityId,
       planFacts,
       rendered,
-      overStoredUpstreams === true,
+      // A view or query built in its destination over its upstreams'
+      // tables reads them, as one compiled over them does.
+      overStoredUpstreams === true || storedInDestination !== undefined,
    );
 
    // Every statement of this build carries the same metadata so query history

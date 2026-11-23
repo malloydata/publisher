@@ -4,10 +4,6 @@
 ##! experimental { persistence access_modifiers }
 
 ##! experimental { virtual_source }
-type: west_spend__served is {
-   segment::string,
-   west_total::number
-}
 type: customers_hidden__served is {
    id::number,
    segment::string,
@@ -33,4 +29,9 @@ source: customers_hidden is __served_copy_alias_of_lake.virtual('e201ceaf6812d2e
 // A chained child over the parent's table that reads the hidden and the
 // renamed column through the parent's own text.
 #@ persist name="west_spend" storage=lake
-source: west_spend is __served_copy_alias_of_lake.virtual('f00b9c12fbf1334a5f57a674598c3026223c7009fb28793e4a1b12e121aa4572')::west_spend__served
+source: west_spend is customers_hidden extend {
+  measure: west_total is spend.sum() { where: home_region = 'west' }
+} -> {
+  group_by: segment
+  aggregate: west_total
+}

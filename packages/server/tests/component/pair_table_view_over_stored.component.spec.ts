@@ -640,7 +640,7 @@ source: s is orders extend {
 `;
 
 for (const tier of tiers) {
-   describe(`a view reading the joined source's own measure is built from its definition, and says so (${tier.label})`, () => {
+   describe(`a view reading the joined source's own measure is refused at plan (${tier.label})`, () => {
       const f = new Fixture(tier, CHILD_MEASURE);
       let run: Materialization;
 
@@ -650,14 +650,23 @@ for (const tier of tiers) {
       }, 300_000);
       afterAll(() => f.close());
 
-      it("labels the view recomputed, never reused, and names no pair table in builtFrom", () => {
+      it("refuses the view as upstream_table_unusable, naming the pair table's source, and never builds it from its definition", () => {
          expect(run.status).toBe("MANIFEST_FILE_READY");
          const view = Object.values(entriesOf(run)).find((e) =>
             /^s__by_cust__view$/.test(e.sourceName ?? ""),
-         )!;
-         expect(view).toBeDefined();
-         expect(view.upstreamReuse).toBe("recomputed");
-         expect(view.builtFrom ?? []).toEqual([]);
+         );
+         expect(view).toBeUndefined();
+         const plan = f.pkg.getBuildPlan() as unknown as {
+            refusedSources?: Record<
+               string,
+               { name: string; reason: string; message: string }
+            >;
+         };
+         const refusal = Object.values(plan?.refusedSources ?? {}).find(
+            (r) => r.name === "s__by_cust__view",
+         );
+         expect(refusal?.reason).toBe("upstream_table_unusable");
+         expect(refusal?.message).toMatch(/'orders'.*does not compile/);
       });
    });
 }

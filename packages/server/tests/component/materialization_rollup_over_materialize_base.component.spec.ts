@@ -444,10 +444,11 @@ describe("a database rollup over a database #(materialize) base", () => {
       expect(createdBy(rollup.physicalTableName)).toContain(RAW_MARK);
    });
 
-   it("leaves out only a base whose stored copy does not compile: the other rollups still read their bases' tables", async () => {
+   it("refuses only the rollup whose base's stored copy does not compile: the other rollups still read their bases' tables", async () => {
       // `tagged` renames `mark` to `tag` and then excludes `tag`: its table
       // stores neither, so its re-rooted copy cannot rename `mark` and does
-      // not compile. Its rollup builds from the warehouse, while the
+      // not compile. Its rollup is refused at plan (upstream_table_unusable)
+      // and answered live, never built from the warehouse, while the
       // `#@ persist` and the other `#(materialize)` rollups still read their
       // bases' tables.
       await setUp(`##! experimental.persistence
@@ -489,14 +490,9 @@ extend {
          expect(create).not.toContain(RAW_MARK);
       }
 
-      const tagged = rollupOf(m, "tagged");
-      expect(tagged.upstreamReuse).toBeUndefined();
-      expect(createdBy(tagged.physicalTableName)).toContain(RAW_MARK);
-      expect(await rowsOf(`SELECT * FROM ${tagged.physicalTableName}`)).toEqual(
-         await rowsOf(await plannedSQL(tagged)),
-      );
+      expect(() => rollupOf(m, "tagged")).toThrow("no rollup of tagged");
       const served = await answer(query("tagged", "tgrand"));
-      expect(served.servedBy).toBe("rollup");
+      expect(served.servedBy).not.toBe("rollup");
       expect(served.rows).toEqual(live.rows);
    });
 

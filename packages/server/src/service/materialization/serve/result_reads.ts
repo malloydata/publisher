@@ -1119,10 +1119,13 @@ export async function chainBuildReadsOfQuery(
                | { query?: { structRef?: unknown; pipeline?: unknown } }
                | undefined
          )?.query;
-         // The downstream's query must run on the runnable's entry point.
+         // The downstream's query must run on the runnable's entry point,
+         // named, or handed as its struct (a source imported from another
+         // file is).
+         const entryName = baseNameOf(prepared.structRef, contents);
          if (
-            typeof prepared.structRef !== "string" ||
-            baseNameOf(query?.structRef, contents) !== prepared.structRef
+            entryName === undefined ||
+            baseNameOf(query?.structRef, contents) !== entryName
          ) {
             return undefined;
          }

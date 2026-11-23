@@ -124,7 +124,7 @@ source: t is b extend {
       ).toBeDefined();
    });
 
-   it("re-roots a database #(materialize) source, and declines one read in another zone", async () => {
+   it("re-roots a database #(materialize) source, and refuses one read in another zone", async () => {
       const { c } = await packages.plan({
          "m.malloy": `${RAW}
 #(materialize)
@@ -155,10 +155,16 @@ source: z is a extend {
       const s = tableOf("s__by_cat__view")!.overStoredBase!;
       expect(s.baseBuildSource).toBeDefined();
       expect(s.rerootedSourceID).toBe(a.source.sourceID);
-      // Another zone would truncate the stored values again: it builds from
-      // its definition.
-      expect(tableOf("z__by_cat__view")).toBeDefined();
-      expect(tableOf("z__by_cat__view")!.overStoredBase).toBeUndefined();
+      // Another zone would truncate the stored values again: refused at
+      // plan, never built from its definition.
+      expect(tableOf("z__by_cat__view")).toBeUndefined();
+      expect(
+         (c.annotationFindings ?? []).some(
+            (f: { refused?: { reason?: string }; message: string }) =>
+               f.refused?.reason === "upstream_table_unusable" &&
+               /another time zone/.test(f.message),
+         ),
+      ).toBe(true);
    });
 
    it("re-roots a #(materialize) pair table (an inlined join_many) with its join put back, and records the leaf key it relies on", async () => {
@@ -240,7 +246,7 @@ source: rolled is a extend {
       if (rollup) expect(rollup.overStoredBase).toBeUndefined();
    });
 
-   it("decides each query alone: one declined does not stop another reading the table", async () => {
+   it("decides each query alone: one refused does not stop another reading the table", async () => {
       const { c } = await packages.plan({
          "m.malloy": `${RAW}
 #(materialize)
@@ -264,11 +270,17 @@ query: q2 is s -> { timezone: 'America/New_York'; group_by: cat; aggregate: tota
                | undefined
          )?.overStoredBase;
       expect(over("q1__query")).toBeDefined();
-      // Another zone: declined alone, built from its definition.
+      // Another zone: refused alone at plan, never built from its definition.
       expect(
          Object.values(c.tables).some((t) => t.source.name === "q2__query"),
+      ).toBe(false);
+      expect(
+         (c.annotationFindings ?? []).some(
+            (f: { refused?: { reason?: string }; message: string }) =>
+               f.refused?.reason === "upstream_table_unusable" &&
+               /another time zone/.test(f.message),
+         ),
       ).toBe(true);
-      expect(over("q2__query")).toBeUndefined();
    });
 
    it("decides each view alone: a storage= view first on the same source leaves a database view over the table", async () => {

@@ -431,20 +431,23 @@ const SHAPES: Shape[] = [
       query: "run: r -> { group_by: cat; aggregate: rn; order_by: cat }",
       want: { live: "ROW_LEVEL_GATE" },
    },
+   // A view over a `storage=` #(materialize) source has no build over that
+   // source's table, so it is refused at plan (upstream_table_unusable) and
+   // its queries read the source's own table, or live.
    {
-      name: "persisted view: ordered by its measure",
+      name: "persisted view (refused at plan): ordered by its measure",
       query: "run: m -> by_cat_counted",
-      want: { served: "view" },
+      want: { served: "materialized" },
    },
    {
-      name: "persisted view: ordered by the string",
+      name: "persisted view (refused at plan): ordered by the string",
       query: "run: m -> by_cat_ordered",
-      want: { live: "MISSING_FIELD" },
+      want: { live: "NOT_SERVED" },
    },
    {
-      name: "persisted view: a later stage ordered by the string",
+      name: "persisted view (refused at plan): a later stage ordered by the string",
       query: "run: m -> by_cat_counted -> { select: cat, n; order_by: cat }",
-      want: { live: "MISSING_FIELD" },
+      want: { live: "NOT_SERVED" },
    },
    {
       name: "persisted query: ordered by its measure",
