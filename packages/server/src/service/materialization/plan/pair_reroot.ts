@@ -104,7 +104,7 @@ export function pairRerootBase(plan: MaterializePlan): string | undefined {
    for (const [k, pair] of pairs.entries()) {
       const join = levelJoin(plan, pair, 1, parentKey, laneTerm(k), mat);
       if (join === undefined) return undefined;
-      joins.push(join);
+      joins.push(...indented(join));
    }
    // malloy-text: every name through identifier
    return (
@@ -154,17 +154,22 @@ function levelJoin(
          ? levelJoin(plan, pair, level + 1, keyField, laneTerms, mat)
          : "";
    if (inner === undefined) return undefined;
-   const pad = "  ".repeat(level);
    const name = identifier(names[level - 1]);
    // malloy-text: every name through identifier
-   return (
-      `${pad}join_many: ${name} is ${mat} -> {\n` +
-      `${pad}  where: ${where.join(" and ")}\n` +
-      `${pad}  select: ${select.join(", ")}\n` +
-      `${pad}} extend {\n${pad}  primary_key: ${identifier(keyField)}` +
-      `${inner ? `\n${inner}` : ""}\n` +
-      `${pad}} on ${name}.${identifier(PAIR_PARENT_KEY_FIELD)} = ${identifier(parentField)}`
-   );
+   const head = [
+      `join_many: ${name} is ${mat} -> {`,
+      `  where: ${where.join(" and ")}`,
+      `  select: ${select.join(", ")}`,
+      "} extend {",
+      `  primary_key: ${identifier(keyField)}`,
+   ];
+   const tail = `} on ${name}.${identifier(PAIR_PARENT_KEY_FIELD)} = ${identifier(parentField)}`;
+   return [...head, ...indented(inner), tail].join("\n");
+}
+
+/** Each line of `text` (none when empty) two spaces further in. */
+function indented(text: string): string[] {
+   return text === "" ? [] : text.split("\n").map((line) => "  " + line);
 }
 
 /** The joins from the source down to a joined column's level. */
