@@ -320,7 +320,7 @@ describe("incremental refresh fallback reasons", () => {
          mergeKeys: ["id"],
          strategy: "merge",
       } as unknown as typeof LINEAGE;
-      const noted: [string, boolean][] = [];
+      const noted: [string, string][] = [];
       const step = {
          mode: "delta",
          start: { malloyType: "date", value: "2024-06-01" },
@@ -330,8 +330,10 @@ describe("incremental refresh fallback reasons", () => {
       } as never;
       const withNotes = {
          ...context(),
-         noteMergeKeyUniqueness: (id: string, unique: boolean) =>
-            noted.push([id, unique]),
+         noteIncrementalCheck: (
+            id: string,
+            f: { check: string; outcome: string },
+         ) => noted.push([id, `${f.check}:${f.outcome}`]),
       };
       const applied = await applyIncrementalStep({
          context: withNotes,
@@ -349,7 +351,7 @@ describe("incremental refresh fallback reasons", () => {
       });
       expect(applied).toEqual({ applied: false });
       expect(await counted("seed", "merge_key_not_unique")).toBe(1);
-      expect(noted).toEqual([["sid", false]]);
+      expect(noted).toEqual([["sid", "merge_key:not_unique"]]);
       const logged = warn
          .getCalls()
          .find(
@@ -371,8 +373,9 @@ describe("incremental refresh fallback reasons", () => {
          sourceName: "daily",
       });
       expect(noted).toEqual([
-         ["sid", false],
-         ["sid", true],
+         ["sid", "merge_key:not_unique"],
+         ["sid", "merge_key:passed"],
+         ["sid", "delta_types:passed"],
       ]);
    });
 
@@ -388,7 +391,7 @@ describe("incremental refresh fallback reasons", () => {
             scopeColumns: ["org"],
             strategy: "merge",
          } as unknown as typeof LINEAGE;
-         const noted: [string, boolean][] = [];
+         const noted: [string, string][] = [];
          const upserted: unknown[] = [];
          const probes: string[] = [];
          const bound = await advanceLedgerAfterSeed({
@@ -399,8 +402,10 @@ describe("incremental refresh fallback reasons", () => {
                      return e as never;
                   },
                }),
-               noteMergeKeyUniqueness: (id: string, u: boolean) =>
-                  noted.push([id, u]),
+               noteIncrementalCheck: (
+                  id: string,
+                  f: { check: string; outcome: string },
+               ) => noted.push([id, `${f.check}:${f.outcome}`]),
             },
             lineage: merge,
             quotedTablePath: `"analytics"."daily"`,
@@ -416,11 +421,79 @@ describe("incremental refresh fallback reasons", () => {
          expect(probes[0]).toContain(
             'GROUP BY "id", "org" HAVING COUNT(*) > 1',
          );
-         expect(noted).toEqual([["sid", unique]]);
+         expect(noted).toEqual([
+            ["sid", unique ? "merge_key:passed" : "merge_key:not_unique"],
+         ]);
          expect(bound === undefined).toBe(!unique);
          expect(upserted.length).toBe(unique ? 1 : 0);
       },
    );
+
+   it("tells the package when the repeated-key check after a rebuild fails, and records no boundary", async () => {
+      const merge = {
+         ...LINEAGE,
+         mergeKeys: ["payload"],
+         strategy: "merge",
+      } as unknown as typeof LINEAGE;
+      const noted: unknown[] = [];
+      const upserted: unknown[] = [];
+      const bound = await advanceLedgerAfterSeed({
+         context: {
+            ...context({
+               upsertIncrementalLedgerEntry: async (e: unknown) => {
+                  upserted.push(e);
+                  return e as never;
+               },
+            }),
+            noteIncrementalCheck: (id: string, f: unknown) =>
+               noted.push([id, f]),
+         },
+         lineage: merge,
+         quotedTablePath: `"analytics"."daily"`,
+         dialect: "postgres",
+         runner: async () => {
+            // As Postgres answers a GROUP BY on a json column.
+            throw Object.assign(
+               new Error(
+                  "could not identify an equality operator for type json",
+               ),
+               { code: "42883" },
+            );
+         },
+      });
+      expect(bound).toBeUndefined();
+      expect(upserted).toEqual([]);
+      expect(noted).toEqual([
+         ["sid", { check: "merge_key", outcome: "failed", errorCode: "42883" }],
+      ]);
+   });
+
+   it("tells the package when a delta's column types cannot be read", async () => {
+      const noted: unknown[] = [];
+      const applied = await applyIncrementalStep({
+         context: {
+            ...context(),
+            noteIncrementalCheck: (id: string, f: unknown) =>
+               noted.push([id, f]),
+         },
+         lineage: LINEAGE,
+         step: {
+            mode: "seed",
+            reasonCode: "shape_mismatch",
+            reason: "the delta's column types could not be read",
+            failedCheck: { check: "delta_types", errorCode: "42501" },
+         },
+         target: target(),
+         sourceName: "daily",
+      });
+      expect(applied).toEqual({ applied: false });
+      expect(noted).toEqual([
+         [
+            "sid",
+            { check: "delta_types", outcome: "failed", errorCode: "42501" },
+         ],
+      ]);
+   });
 
    it("fails, rather than rebuilding, when a pair delta fails for any other reason", async () => {
       const pair = {

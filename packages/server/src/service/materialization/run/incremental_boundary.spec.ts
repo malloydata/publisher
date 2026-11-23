@@ -35,10 +35,7 @@ import {
 } from "./incremental_apply";
 import { durationSeconds } from "../domain/freshness";
 import type { BuildPlan } from "../domain/types";
-import {
-   lateRowWarnings,
-   mergeKeyNotUniqueWarnings,
-} from "../package_warnings";
+import { lateRowWarnings, incrementalCheckWarnings } from "../package_warnings";
 import { sessionRunner } from "./incremental_storage";
 import { watermarkTextSql, withStatementTimeout } from "./warehouse_sql";
 
@@ -761,9 +758,14 @@ describe("the late-row warning", () => {
    });
 
    it("names a merge key found not unique, and only that source", () => {
-      const [w, ...rest] = mergeKeyNotUniqueWarnings(
+      const [w, ...rest] = incrementalCheckWarnings(
          plan("persist", { refresh: "incremental", merge_key: "id" }),
-         new Set(["sid"]),
+         new Map([
+            [
+               "sid",
+               { merge_key: { check: "merge_key", outcome: "not_unique" } },
+            ],
+         ]),
       );
       expect(rest).toEqual([]);
       expect(w).toMatchObject({
@@ -775,10 +777,48 @@ describe("the late-row warning", () => {
       expect(w.message).toContain('merge_key="id" is not unique');
       expect(w.message).toContain("merge_key_not_unique");
       expect(
-         mergeKeyNotUniqueWarnings(
+         incrementalCheckWarnings(
             plan("persist", { merge_key: "id" }),
-            new Set(["other"]),
+            new Map([
+               [
+                  "other",
+                  { merge_key: { check: "merge_key", outcome: "not_unique" } },
+               ],
+            ]),
          ),
       ).toEqual([]);
+   });
+
+   it("names a check that keeps failing, by its error's code, so a rebuild every run is seen", () => {
+      const warned = incrementalCheckWarnings(
+         plan("persist", { refresh: "incremental", merge_key: "payload" }),
+         new Map([
+            [
+               "sid",
+               {
+                  merge_key: {
+                     check: "merge_key",
+                     outcome: "failed",
+                     errorCode: "42883",
+                  },
+                  delta_types: {
+                     check: "delta_types",
+                     outcome: "failed",
+                     errorCode: "42501",
+                  },
+               },
+            ],
+         ]),
+      );
+      expect(warned.map((w) => [w.code, w.subject])).toEqual([
+         ["persist-incremental-check-failed", "events"],
+         ["persist-incremental-check-failed", "events"],
+      ]);
+      expect(warned[0].message).toContain(
+         "holds each merge_key= value once (42883)",
+      );
+      expect(warned[0].message).toContain("rebuilt in full on every refresh");
+      expect(warned[1].message).toContain("column types of its delta");
+      expect(warned[1].message).toContain("(42501)");
    });
 });

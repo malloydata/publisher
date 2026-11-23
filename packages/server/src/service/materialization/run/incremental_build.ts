@@ -82,6 +82,7 @@ import { capturedNativeSchema } from "./database_native_types";
 import {
    INCREMENTAL_LATE_ROWS_CODE,
    INCREMENTAL_MERGE_KEY_NOT_UNIQUE_CODE,
+   type IncrementalCheckFinding,
    type IncrementalDeclaration,
 } from "../domain/incremental";
 
@@ -147,12 +148,16 @@ export interface IncrementalRunContext {
     */
    priorLateRows?: ReadonlyMap<string, LateRows>;
    /**
-    * Told what a merge's delta found of its source's `merge_key=`, by content
-    * address: not unique (its key guard rolled the delta back, and the source
-    * is rebuilt in full), or unique (a delta committed). The package warns
-    * of a key found not unique until a delta of that source commits.
+    * Told what a refresh found of a source's checks, by content address: a
+    * `merge_key=` repeated in the source (its delta rolled back, or its
+    * rebuilt table repeating a key), a check that failed (the source is
+    * rebuilt in full every refresh until it runs), or a check passed. The
+    * package warns of the first two until the check passes.
     */
-   noteMergeKeyUniqueness?: (sourceEntityId: string, unique: boolean) => void;
+   noteIncrementalCheck?: (
+      sourceEntityId: string,
+      finding: IncrementalCheckFinding,
+   ) => void;
 }
 
 /** The `LedgerEntry` keys this release reads; any other key is an extension. */
@@ -558,6 +563,11 @@ async function seededKeyIsUnique(params: {
             "the next refresh will rebuild again",
          { ...at, errorCode: found.errorCode },
       );
+      context.noteIncrementalCheck?.(lineage.sourceEntityId, {
+         check: "merge_key",
+         outcome: "failed",
+         errorCode: found.errorCode ?? "unknown",
+      });
       return false;
    }
    if (found.repeated) {
@@ -571,7 +581,10 @@ async function seededKeyIsUnique(params: {
          },
       );
    }
-   context.noteMergeKeyUniqueness?.(lineage.sourceEntityId, !found.repeated);
+   context.noteIncrementalCheck?.(lineage.sourceEntityId, {
+      check: "merge_key",
+      outcome: found.repeated ? "not_unique" : "passed",
+   });
    return !found.repeated;
 }
 
@@ -664,7 +677,15 @@ export async function applyIncrementalStep(params: {
          physicalTableName: lineage.physicalTableName,
       });
    }
-   if (step.mode === "seed") return { applied: false };
+   if (step.mode === "seed") {
+      if (step.failedCheck) {
+         context.noteIncrementalCheck?.(lineage.sourceEntityId, {
+            ...step.failedCheck,
+            outcome: "failed",
+         });
+      }
+      return { applied: false };
+   }
    if (step.mode === "skip") {
       // No duration (reported as null, not 0, which would skew the
       // build-duration series).
@@ -709,13 +730,24 @@ export async function applyIncrementalStep(params: {
                mergeKeys: lineage.mergeKeys,
             },
          );
-         context.noteMergeKeyUniqueness?.(lineage.sourceEntityId, false);
+         context.noteIncrementalCheck?.(lineage.sourceEntityId, {
+            check: "merge_key",
+            outcome: "not_unique",
+         });
       }
       return { applied: false };
    }
+   // A committed delta passed every check its plan ran.
    if (lineage.strategy === "merge" && !lineage.pair) {
-      context.noteMergeKeyUniqueness?.(lineage.sourceEntityId, true);
+      context.noteIncrementalCheck?.(lineage.sourceEntityId, {
+         check: "merge_key",
+         outcome: "passed",
+      });
    }
+   context.noteIncrementalCheck?.(lineage.sourceEntityId, {
+      check: "delta_types",
+      outcome: "passed",
+   });
    await advanceLedger({
       context,
       lineage,

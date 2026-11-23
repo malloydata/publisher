@@ -33,6 +33,7 @@ import type { FederatedSourceType } from "../../dialects";
 import type { QueryMetadata } from "../../query_metadata";
 import { quoteIdentifier } from "../../quoting";
 import { errMessage } from "../../../utils";
+import { errorCodeOf } from "../../../error_code";
 import { storageTablePath } from "../domain/storage_table_path";
 import { capabilitiesOf, STORAGE_DIALECT } from "../domain/dialect";
 import {
@@ -224,7 +225,7 @@ function describedTypes(
             ),
          };
       } catch (err) {
-         return { error: errMessage(err) };
+         return { error: errMessage(err), errorCode: errorCodeOf(err) };
       }
    };
 }

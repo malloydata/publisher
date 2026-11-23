@@ -147,3 +147,25 @@ export const INCREMENTAL_LATE_ROWS_CODE = "persist-incremental-late-rows";
  */
 export const INCREMENTAL_MERGE_KEY_NOT_UNIQUE_CODE =
    "persist-incremental-merge-key-not-unique";
+
+/**
+ * The code on the warning for an incremental source a check of its refresh
+ * could not run on, so it is rebuilt in full on every refresh until it can:
+ * the repeated-key check after a merge source's full rebuild, or the read of
+ * a delta's column types.
+ */
+export const INCREMENTAL_CHECK_FAILED_CODE = "persist-incremental-check-failed";
+
+/** A check an incremental refresh runs whose failure rebuilds in full. */
+export type IncrementalCheck = "merge_key" | "delta_types";
+
+/**
+ * What a run found of one source's incremental check (see
+ * IncrementalRunContext.noteIncrementalCheck): passed, a merge key repeated
+ * in the source, or the check failed with an error's code (errorCodeOf,
+ * never its message).
+ */
+export type IncrementalCheckFinding =
+   | { check: IncrementalCheck; outcome: "passed" }
+   | { check: "merge_key"; outcome: "not_unique" }
+   | { check: IncrementalCheck; outcome: "failed"; errorCode: string };

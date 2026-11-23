@@ -1214,6 +1214,11 @@ export type IncrementalStep =
         reasonCode: IncrementalStepReasonCode;
         /** Why a full rebuild, for the log. */
         reason: string;
+        /**
+         * A check that could not run, which rebuilds in full on every
+         * refresh until it can: the package warns of it.
+         */
+        failedCheck?: { check: "delta_types"; errorCode: string };
      }
    | {
         mode: "skip";
@@ -1357,7 +1362,12 @@ export interface DeltaTarget {
    deltaColumnTypes?(
       deltaSQL: string,
       columns: readonly string[],
-   ): Promise<{ types?: ReadonlyMap<string, string>; error?: string }>;
+   ): Promise<{
+      types?: ReadonlyMap<string, string>;
+      error?: string;
+      /** The error's code (errorCodeOf), for a warning. */
+      errorCode?: string;
+   }>;
    /**
     * The SOURCE's watermark frontier, for a number or string watermark (see
     * resolveDeltaEnd).
@@ -1421,7 +1431,7 @@ export function warehouseDeltaTarget(params: {
                types: read.typesOf(probeRows((await runner(read.sql)).rows)),
             };
          } catch (err) {
-            return { error: errMessage(err) };
+            return { error: errMessage(err), errorCode: errorCodeOf(err) };
          }
       },
       probeSourceFrontier: () =>
@@ -1600,9 +1610,8 @@ export async function planIncrementalStep(inputs: {
       inputs.columns,
       probe.types,
    );
-   if (narrower) {
-      return { mode: "seed", reasonCode: "shape_mismatch", reason: narrower };
-   }
+   if (narrower)
+      return { mode: "seed", reasonCode: "shape_mismatch", ...narrower };
    const column = (field: string) => target.storedColumn?.(field) ?? field;
    const statements = deltaStatements({
       dialect,
@@ -1644,30 +1653,44 @@ export async function planIncrementalStep(inputs: {
  * undefined when it can: a column whose stored type is narrower than the
  * delta's (an upstream widened after the table was built, which Malloy's
  * types do not show; see delta_type_widening.ts), or a delta whose types
- * could not be read, which is not proven to fit. Either rebuilds the table in
- * full, at the source's types. Not judged when the target reads no types.
+ * could not be read, which is not proven to fit (`failedCheck`, which the
+ * package warns of). Either rebuilds the table in full, at the source's
+ * types. Not judged when the target reads no types.
  */
 async function storedColumnsNarrower(
    target: DeltaTarget,
    deltaSQL: string,
    columns: readonly string[],
    storedTypes: ReadonlyMap<string, string> | undefined,
-): Promise<string | undefined> {
+): Promise<
+   | {
+        reason: string;
+        failedCheck?: { check: "delta_types"; errorCode: string };
+     }
+   | undefined
+> {
    if (!target.deltaColumnTypes || !storedTypes || storedTypes.size === 0) {
       return undefined;
    }
    const delta = await target.deltaColumnTypes(deltaSQL, columns);
    if (delta.error !== undefined) {
-      return `the delta's column types could not be read (${delta.error}), so they are not proven to fit the table's columns`;
+      return {
+         reason: `the delta's column types could not be read (${delta.error}), so they are not proven to fit the table's columns`,
+         failedCheck: {
+            check: "delta_types",
+            errorCode: delta.errorCode ?? "unknown",
+         },
+      };
    }
    if (!delta.types) return undefined;
    const widened = widenedColumns(storedTypes, delta.types);
    if (widened.length === 0) return undefined;
-   return (
-      `the table's columns cannot hold the delta's values exactly: ` +
-      `${widened.join(", ")} (stored → source). The source's column was ` +
-      `widened after the table was built, so the table is rebuilt at its type`
-   );
+   return {
+      reason:
+         `the table's columns cannot hold the delta's values exactly: ` +
+         `${widened.join(", ")} (stored → source). The source's column was ` +
+         `widened after the table was built, so the table is rebuilt at its type`,
+   };
 }
 
 /**

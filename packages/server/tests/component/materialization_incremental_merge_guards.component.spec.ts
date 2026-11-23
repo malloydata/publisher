@@ -102,6 +102,11 @@ source: ev is pg.table('public.ev')
 source: events is ev -> { select: id, loaded_at, amt }
 
 source: live_events is ev -> { select: id, loaded_at, amt }
+
+source: evj is pg.table('public.evj')
+
+#@ persist name="events_json" refresh="incremental" watermark="loaded_at" merge_key="payload"${tier.storage}
+source: events_json is evj -> { select: payload, loaded_at, amt }
 `;
 
             async function build(
@@ -148,10 +153,13 @@ source: live_events is ev -> { select: id, loaded_at, amt }
                }
             }
 
-            const refreshOf = (m: Materialization): string | undefined =>
+            const refreshOf = (
+               m: Materialization,
+               source = "events",
+            ): string | undefined =>
                Object.values(
                   (m.manifest as { entries: Record<string, Entry> }).entries,
-               ).find((e) => e.sourceName === "events")?.refresh;
+               ).find((e) => e.sourceName === source)?.refresh;
 
             /** Every row, served from the table and live, and what served it. */
             async function servedAndLive(): Promise<{
@@ -181,9 +189,9 @@ source: live_events is ev -> { select: id, loaded_at, amt }
                };
             }
 
-            async function warned(): Promise<
-               { code?: string; subject?: string; message: string }[]
-            > {
+            async function warned(
+               code = WARNING,
+            ): Promise<{ code?: string; subject?: string; message: string }[]> {
                const pkg = await env!.getPackage(parsePackageName(PKG), false);
                return (
                   ((await pkg.getPackageMetadata()).warnings ?? []) as {
@@ -191,7 +199,7 @@ source: live_events is ev -> { select: id, loaded_at, amt }
                      subject?: string;
                      message: string;
                   }[]
-               ).filter((w) => w.code === WARNING);
+               ).filter((w) => w.code === code);
             }
 
             /** Insert rows, then let the clock pass a whole second. */
@@ -247,6 +255,14 @@ source: live_events is ev -> { select: id, loaded_at, amt }
                });
                await wh.runSQL(
                   `CREATE TABLE ev (id integer, loaded_at timestamp, amt integer)`,
+               );
+               // A json merge key: Postgres has no equality for json, so the
+               // repeated-key check after a rebuild cannot run there.
+               await wh.runSQL(
+                  `CREATE TABLE evj (payload json, loaded_at timestamp, amt integer)`,
+               );
+               await wh.runSQL(
+                  `INSERT INTO evj VALUES ('{"a":1}', LOCALTIMESTAMP(0) - INTERVAL '90 minutes', 1)`,
                );
                await wh.runSQL(
                   `INSERT INTO ev VALUES ${stamped([
@@ -361,6 +377,26 @@ source: live_events is ev -> { select: id, loaded_at, amt }
                await insert([[2, 10, 22]]);
                expect(refreshOf(await build())).toBe("full");
                await expectEqualsLive();
+            });
+
+            it("warns, naming the source and the failure, when the repeated-key check cannot run", async () => {
+               const failed = (
+                  await warned("persist-incremental-check-failed")
+               ).filter((w) => w.subject === "events_json");
+               if (tier.storage) {
+                  // DuckDB groups json: the check runs, and the source deltas.
+                  expect(failed).toEqual([]);
+                  await insert([[8, 5, 80]]);
+                  expect(refreshOf(await build(), "events_json")).toBe("delta");
+                  return;
+               }
+               expect(failed.length).toBe(1);
+               expect(failed[0].message).toContain("42883");
+               // No boundary was recorded: every refresh rebuilds, still warned.
+               expect(refreshOf(await build(), "events_json")).toBe("full");
+               expect(
+                  (await warned("persist-incremental-check-failed")).length,
+               ).toBe(1);
             });
 
             it("rebuilds a delta that repeats a key at one watermark (a tie), equal to live", async () => {

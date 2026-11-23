@@ -124,6 +124,7 @@ import type {
    ChainBuildText,
 } from "./materialization/domain/chain_build";
 import type { KeptTable, LateRows } from "./materialization/domain/types";
+import type { IncrementalCheckFinding } from "./materialization/domain/incremental";
 import { underCompilerKeys } from "./materialization/domain/binding";
 import {
    confinedPackagePath,
@@ -1743,14 +1744,14 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    }
 
    /**
-    * The host port's `noteMergeKeyUniqueness`: what a run's merge found of a
-    * source's `merge_key=` (see PackageMaterialization.noteMergeKeyUniqueness).
+    * The host port's `noteIncrementalCheck`: what a run found of a source's
+    * incremental checks (see PackageMaterialization.noteIncrementalCheck).
     */
-   public noteMergeKeyUniqueness(
+   public noteIncrementalCheck(
       sourceEntityId: string,
-      unique: boolean,
+      finding: IncrementalCheckFinding,
    ): void {
-      this.mz.noteMergeKeyUniqueness(sourceEntityId, unique);
+      this.mz.noteIncrementalCheck(sourceEntityId, finding);
    }
 
    /**
@@ -2221,7 +2222,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          ...this.mz.servedCopyWarnings(),
          ...this.mz.repeatedJoinOneKeyWarnings(),
          ...this.mz.lateRowWarnings(),
-         ...this.mz.mergeKeyNotUniqueWarnings(),
+         ...this.mz.incrementalCheckWarnings(),
          ...this.mz.keptTableWarnings(),
          ...this.mz.annotationFindingWarnings(),
          ...this.annotationNearMissWarnings(),

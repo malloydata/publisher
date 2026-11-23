@@ -19,6 +19,7 @@ import type { ServingReader } from "../versions/materialization_scope";
 import type { BuildPlanPackage } from "./domain/plan_input";
 import type { ChainBuildRequest, ChainBuildText } from "./domain/chain_build";
 import type { KeptTable, LateRows } from "./domain/types";
+import type { IncrementalCheckFinding } from "./domain/incremental";
 import type {
    BuildPlan,
    FreshnessManifest,
@@ -86,10 +87,13 @@ interface MaterializationPackage extends BuildPlanPackage {
     */
    boundLateRows?(): ReadonlyMap<string, LateRows>;
    /**
-    * What a run's merge found of an incremental source's `merge_key=`, by
-    * content address: not unique, which the package warns of, or unique.
+    * What a run found of an incremental source's checks, by content address
+    * (IncrementalRunContext.noteIncrementalCheck), which the package warns of.
     */
-   noteMergeKeyUniqueness?(sourceEntityId: string, unique: boolean): void;
+   noteIncrementalCheck?(
+      sourceEntityId: string,
+      finding: IncrementalCheckFinding,
+   ): void;
    /**
     * The physical names of the database tables this copy is bound to now,
     * as the bind wrote them (possibly quoted): a caller's drop refuses any of
