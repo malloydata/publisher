@@ -11898,6 +11898,28 @@ components:
             strings compare with live, and, for a pair table, whether its leaf
             key check passed; without it those columns are unknown, and a
             downstream that needs them is refused. Optional and additive.
+        ledger:
+          allOf:
+            - $ref: "#/components/schemas/LedgerEntry"
+          description: >-
+            The referenced upstream's ledger entry (`ManifestEntry.ledger`),
+            exactly as the publisher reported it, sent back whole: opaque, like
+            an entry in `BuildInstructions.ledger`. Absent means unknown.
+
+            An incremental `#(materialize)` extension built in this run over a
+            referenced incremental parent reads the parent's history from it
+            (`seededBy`, `advances`, `advancedBy`) to prove it may refresh by
+            delta. Without it, on a worker whose bound manifest and own store
+            do not name the parent's current build, the extension rebuilds in
+            full (`upstream_generation_skipped`). It is preferred over both.
+
+            It must name the reference's table (the same `connectionName`,
+            `physicalTableName` and `storageDestinationName`). One that does
+            not, or whose own shape is malformed (see `LedgerEntry`), is dropped
+            with a logged warning and the request proceeds as if it were
+            absent; it is never a 400. Keys this release does not know are
+            kept. Unlike `BuildInstructions.ledger`, it names a table this run
+            does not build, and is never written to. Optional and additive.
 
     BuildInstruction:
       type: object

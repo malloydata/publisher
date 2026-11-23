@@ -474,7 +474,7 @@ export class ManifestCommitter {
             freshnessFallback: _fallback,
             ...unstamped
          } = local;
-         const merged: ManifestEntry = withoutForeignLedger(
+         const merged: ManifestEntry = withoutForeignBuild(
             { ...unstamped },
             ref,
          );
@@ -541,7 +541,7 @@ export class ManifestCommitter {
             continue;
          }
          // Explicit reference wins; the bound entry fills the gaps it left.
-         const merged: ManifestEntry = withoutForeignLedger(
+         const merged: ManifestEntry = withoutForeignBuild(
             { ...entry },
             existing,
          );
@@ -717,30 +717,42 @@ export function referenceManifestToEntries(
          ...(ref.builtAt ? { builtAt: ref.builtAt } : {}),
          // Its column contract, as the host stored it.
          ...(ref.contract !== undefined ? { contract: ref.contract } : {}),
+         // Its ledger entry, as the host stored it: which build of the table
+         // it is, and its history since its seed, for an incremental
+         // extension over it (incremental_upstream.ts). Over the bound
+         // manifest's and this worker's, as every reference field is.
+         ...(ref.ledger ? { ledger: ref.ledger } : {}),
       };
    }
    return entries;
 }
 
 /**
- * `base` without its `ledger` when `ref` names another build of the table
- * (another `builtAt`): the merged entry would otherwise carry one build's
- * boundary beside another's `builtAt`, and an extension over it would read
- * that boundary as the build it is (incremental_upstream.ts).
+ * `base` without the facts that name one build of the table when `ref` names
+ * another: its `ledger` when `ref` carries another `builtAt`, and its
+ * `builtAt` when `ref` carries a ledger entry another run advanced. The
+ * merged entry would otherwise carry one build's boundary beside another's
+ * `builtAt`, and an extension over it would read that boundary as the build
+ * it is (incremental_upstream.ts).
  */
-function withoutForeignLedger(
+function withoutForeignBuild(
    base: ManifestEntry,
    ref: ManifestEntry,
 ): ManifestEntry {
-   if (
-      !base.ledger ||
-      ref.builtAt === undefined ||
-      ref.builtAt === base.builtAt
-   ) {
-      return base;
+   const out = { ...base };
+   if (out.ledger && ref.builtAt !== undefined && ref.builtAt !== out.builtAt) {
+      delete out.ledger;
    }
-   const { ledger: _foreign, ...rest } = base;
-   return rest as ManifestEntry;
+   if (
+      out.builtAt !== undefined &&
+      ref.ledger !== undefined &&
+      ref.builtAt === undefined &&
+      (ref.ledger.advancedBy === undefined ||
+         ref.ledger.advancedBy !== base.ledger?.advancedBy)
+   ) {
+      delete out.builtAt;
+   }
+   return out;
 }
 
 /** An entry's freshness facts, each only when set (manifest_loader.ts reads the same). */

@@ -17,7 +17,9 @@
  *    one reached from exactly that build by deltas alone, in this run or in
  *    earlier ones the parent's ledger lists (`advances`), starting no later
  *    than the lowest of their starts; otherwise it rebuilds in full over the
- *    parent's table (`upstream_generation_skipped`).
+ *    parent's table (`upstream_generation_skipped`). The parent's ledger is
+ *    its echoed entry when this run refreshes it, else the one its
+ *    reference carries, else the bound manifest's or this worker's.
  *
  * Pure.
  */
@@ -191,6 +193,13 @@ function judgeGeneration(
    // Built in full this run though declared incremental (a fallback rebuild
    // the step map did not see): a fresh build from raw, as a seed.
    if (parent.builtThisRun) return { proven: true, changed: true };
+   // Not built this run: the parent's entry as carried, whose ledger is, in
+   // order, the one its `referenceManifest` entry sent, then the bound
+   // manifest's, then this worker's newest (manifest_committer.ts). Its
+   // `buildInstructions.ledger` entry cannot name it: that is for tables the
+   // run instructs, and an instructed parent has a `step`. A host is no more
+   // trusted here than in an echoed entry: a forged reference ledger can do
+   // what a forged echo can.
    const entry = parent.entry;
    if (
       read !== undefined &&

@@ -33,6 +33,7 @@ import { DuckDBConnection as MalloyDuckDBConnection } from "@malloydata/db-duckd
 import * as fs from "fs";
 import * as path from "path";
 import { MaterializationController } from "../../src/controller/materialization.controller";
+import { BadRequestError } from "../../src/errors";
 import { unrecordedAudit } from "../../src/service/access_record";
 import { Environment } from "../../src/service/environment";
 import { parsePackageName } from "../../src/service/identity";
@@ -255,6 +256,8 @@ class Fixture {
    /** Each "rebuild in full" warn's reason, by table. */
    seeds: { physicalTableName?: string; reasonCode?: string }[] = [];
    private unwrap?: () => void;
+   /** The storage of each fresh worker the build moved to. */
+   private workers: { db: DuckDBConnection; root: string }[] = [];
 
    constructor(private readonly tier: Tier) {}
 
@@ -333,9 +336,30 @@ class Fixture {
       this.pkg = await this.env.getPackage(parsePackageName(PKG), true);
    }
 
+   /**
+    * Move the build onto a fresh worker: its own empty storage, so no run
+    * it recorded names any table, and a service that has seen none.
+    */
+   async freshWorker(): Promise<void> {
+      const storage = await openTempStorage("xc-w-", {
+         id: "env-1",
+         name: ENV,
+      });
+      this.workers.push(storage);
+      this.repo = storage.repo;
+      this.service = serviceOverEnvironment(
+         () => this.repo,
+         () => this.env,
+      );
+   }
+
    async close(): Promise<void> {
       this.unwrap?.();
       await this.env?.closeAllConnections().catch(() => undefined);
+      for (const w of this.workers) {
+         await w.db.close();
+         fs.rmSync(w.root, { recursive: true, force: true });
+      }
       await this.db?.close();
       await this.drop?.();
       if (this.root) fs.rmSync(this.root, { recursive: true, force: true });
@@ -1224,6 +1248,207 @@ source: ext_rr is ev extend { dimension: big is amt > 5 }
             total: sumOf(want),
             ids: [1, 2, 3, 4, 5, 6],
          });
+      });
+   });
+}
+
+for (const tier of databaseTiers) {
+   describe(`an extension refreshed alone on a fresh worker, its parent's ledger on its reference (${tier.label})`, () => {
+      const f = new Fixture(tier);
+      const ORCH = `##! experimental { persistence }
+source: raw is warehouse.table('__RAW__')
+
+#(materialize) refresh="incremental" watermark="ts" merge_key="id" lookback="7 days"
+source: ev is raw
+
+#(materialize) refresh="incremental" watermark="ts"
+source: ext_rr is ev extend { dimension: big is amt > 5 }
+`;
+      const host = (name: string) => `${tier.prefix}host_${name}`;
+      const runs: Materialization[] = [];
+      /** Each table's ledger entry from the newest run that reported one. */
+      const newestLedger = (table: string) =>
+         [...runs]
+            .reverse()
+            .map(
+               (r) =>
+                  Object.values(entriesOf(r)).find(
+                     (e) => e.physicalTableName === table && e.ledger,
+                  )?.ledger,
+            )
+            .find((l) => l !== undefined);
+      /**
+       * The parent's entry from the newest run that built it, as a host
+       * references it: every field it stored, and its ledger entry as
+       * `ledger` says (`omit` leaves it off).
+       */
+      const parentReference = (
+         ledger: (l: Record<string, unknown>) => unknown = (l) => l,
+      ) => {
+         const [address, built] = [...runs]
+            .reverse()
+            .map((r) => entryNamed(r, "ev"))
+            .find((e) => e !== undefined && e[1].refresh !== undefined)!;
+         const stored = built as Entry & Record<string, unknown>;
+         const sent = built.ledger ? ledger(built.ledger) : undefined;
+         return {
+            sourceEntityId: address,
+            physicalTableName: built.physicalTableName,
+            connectionName: "warehouse",
+            ...(built.builtAt ? { builtAt: built.builtAt } : {}),
+            ...(stored.dataAsOf ? { dataAsOf: stored.dataAsOf } : {}),
+            ...(stored.nativeSchema
+               ? { nativeSchema: stored.nativeSchema }
+               : {}),
+            ...(stored.contract ? { contract: stored.contract } : {}),
+            ...(sent !== undefined ? { ledger: sent } : {}),
+         };
+      };
+      /** A host's request: the named sources, their echoed entries, `refs`. */
+      const body = (names: string[], refs: unknown[] = []) => ({
+         buildInstructions: {
+            sources: Object.values(f.pkg.getBuildPlan()!.sources)
+               .filter((s) => names.includes(s.name))
+               .map((s) => ({
+                  sourceEntityId: s.sourceEntityId,
+                  sourceID: s.sourceID,
+                  materializedTableId: `mt-${s.name}`,
+                  physicalTableName: host(s.name),
+                  realization: "COPY",
+               })),
+            ...(refs.length ? { referenceManifest: refs } : {}),
+            // A host echoes only the entries of the tables it instructs.
+            ledger: names
+               .map((n) => newestLedger(host(n)))
+               .filter((l) => l !== undefined),
+         },
+      });
+      /** Run `names`, and the seeds it logged. */
+      const call = async (names: string[], refs: unknown[] = []) => {
+         const before = f.seeds.length;
+         runs.push(await f.buildOverHttp(body(names, refs)));
+         return f.seeds.slice(before);
+      };
+      const ext = (i: number) => entryNamed(runs[i], "ext_rr")![1];
+      let seedsWithLedger: typeof f.seeds = [];
+      let seedsWithout: typeof f.seeds = [];
+      let seedsMismatched: typeof f.seeds = [];
+      let droppedWarnings: unknown[] = [];
+      let heldWithLedger: Awaited<ReturnType<Fixture["stored"]>>;
+      let heldWithout: Awaited<ReturnType<Fixture["stored"]>>;
+      const rows: Row[] = [...FIRST, ...SECOND];
+
+      beforeAll(async () => {
+         await f.open(ORCH);
+         await call(["ev", "ext_rr"]); // 0: both seed
+         await f.insert(SECOND);
+         await call(["ev"]); // 1: the parent alone, by delta
+         // 2: the extension alone, on a worker that never saw either table,
+         // the parent carried only as a reference with its ledger entry.
+         await f.freshWorker();
+         seedsWithLedger = await call(["ext_rr"], [parentReference()]);
+         heldWithLedger = await f.stored(ext(2));
+
+         const late = { id: 6, ts: at(2 * DAY), amt: 19 };
+         rows.push(late);
+         await f.insert([late]);
+         await call(["ev"]); // 3
+         // 4: the same, the reference without its ledger.
+         await f.freshWorker();
+         seedsWithout = await call(
+            ["ext_rr"],
+            [parentReference(() => undefined)],
+         );
+         heldWithout = await f.stored(ext(4));
+
+         // 5: both, so the extension's read names the parent's build again
+         // (a reference without a ledger left it only the build's time).
+         await call(["ev", "ext_rr"]);
+         const later = { id: 7, ts: at(1_800_000), amt: 23 };
+         rows.push(later);
+         await f.insert([later]);
+         await call(["ev"]); // 6
+         // 7: the reference's ledger names another table: dropped.
+         await f.freshWorker();
+         const warn = spyOn(logger, "warn");
+         try {
+            seedsMismatched = await call(
+               ["ext_rr"],
+               [
+                  parentReference((l) => ({
+                     ...l,
+                     physicalTableName: `${host("ev")}_elsewhere`,
+                  })),
+               ],
+            );
+            droppedWarnings = warn.mock.calls.filter((c) =>
+               String(c[0]).includes("referenceManifest entry's ledger"),
+            );
+         } finally {
+            warn.mockRestore();
+         }
+      }, 600_000);
+      afterAll(() => f.close());
+
+      it("deltas from the parent's ledger on its reference, equal to live", async () => {
+         for (const run of runs) {
+            expect([run.status, (run as { error?: unknown }).error]).toEqual([
+               "MANIFEST_FILE_READY",
+               null,
+            ]);
+         }
+         expect(entryNamed(runs[1], "ev")![1].refresh).toBe("delta");
+         expect(entryNamed(runs[1], "ext_rr")).toBeUndefined();
+         // Nothing bound, and a store that records no run but its own.
+         expect(
+            Object.keys(f.pkg.materialization().boundDatabaseEntries() ?? {}),
+         ).toEqual([]);
+         expect(ext(2).refresh).toBe("delta");
+         expect(seedsWithLedger).toEqual([]);
+         expect(ext(2).ledger?.parent?.advancedBy).toBe(runs[1].id);
+         expect(heldWithLedger).toEqual({
+            n: 5,
+            total: sumOf([...FIRST, ...SECOND]),
+            ids: [1, 2, 3, 4, 5],
+         });
+      });
+
+      it("rebuilds when the reference carries no ledger", async () => {
+         expect(ext(4).refresh).toBe("full");
+         expect(seedsWithout.map((s) => s.reasonCode)).toEqual([
+            "upstream_generation_skipped",
+         ]);
+         expect(heldWithout.total).toBe(
+            sumOf([...FIRST, ...SECOND, { id: 6, ts: "", amt: 19 }]),
+         );
+      });
+
+      it("drops a ledger naming another table, with a warning, and rebuilds", async () => {
+         // The extension's read names the parent's build again, so only
+         // the dropped ledger keeps it from a delta (as in call 2).
+         expect(ext(5).ledger?.parent?.advancedBy).toBe(runs[5].id);
+         expect(ext(5).ledger?.parent?.seededBy).toBe(runs[0].id);
+         expect(droppedWarnings).toHaveLength(1);
+         expect(ext(7).refresh).toBe("full");
+         expect(seedsMismatched.map((s) => s.reasonCode)).toEqual([
+            "upstream_generation_skipped",
+         ]);
+         expect((await f.stored(ext(7))).total).toBe(sumOf(rows));
+      });
+
+      it("still refuses an echoed ledger entry for a table the run does not instruct", async () => {
+         const controller = new MaterializationController(f.service);
+         const request = body(["ext_rr"], [parentReference()]);
+         request.buildInstructions.ledger.push(newestLedger(host("ev"))!);
+         const err = await controller
+            .createMaterialization(
+               ENV,
+               PKG,
+               JSON.parse(JSON.stringify(request)) as Record<string, unknown>,
+            )
+            .catch((e: unknown) => e);
+         expect(err).toBeInstanceOf(BadRequestError);
+         expect(String((err as Error).message)).toContain(host("ev"));
       });
    });
 }

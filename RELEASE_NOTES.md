@@ -21,6 +21,10 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — a referenced parent carries its ledger entry
+
+**Added: `ManifestReference.ledger`, the referenced upstream's ledger entry (`ManifestEntry.ledger`) exactly as Publisher reported it, sent back whole.** An incremental `#(materialize)` extension refreshed in a call that references its incremental parent rather than rebuilding it reads the parent's history (`seededBy`, `advances`, `advancedBy`) from there first, then from the bound manifest, then from the worker's own newest entry, so it deltas on a worker that has never seen the parent instead of rebuilding in full (`upstream_generation_skipped`). It must name the reference's table (`connectionName`, `physicalTableName`, `storageDestinationName`); a mismatched or malformed one is dropped with a warning, never a 400, and that parent's extensions rebuild in full. Optional and additive; absent means unknown. `buildInstructions.ledger` is unchanged: an entry for a table not instructed is still a 400. **What to do:** a host that dispatches across workers should attach each referenced upstream's stored ledger entry to its reference.
+
 ## [Unreleased] — the incremental ledger entry is opaque, and a malformed one seeds
 
 **Changed: a `LedgerEntry` (`ManifestEntry.ledger`, echoed back as `buildInstructions.ledger`) is opaque to hosts, and declares `additionalProperties: true`.** A host stores each entry whole and echoes it back unchanged; the publisher may add keys at any time. From this release it keeps any key it does not know on an echoed entry and carries it, unchanged, onto the entry the next run reports, where a key the publisher sets itself wins; an older release dropped such keys. The required fields are unchanged.
