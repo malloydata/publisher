@@ -28,6 +28,7 @@ import { requireUnique, verdictOf } from "../domain/key_check";
 import {
    hiddenAccess,
    modelDefOf,
+   primaryKeyOf,
    queryStageZone,
    queryTimezoneOf,
    sameZone,
@@ -108,6 +109,7 @@ import {
 import {
    type Binding,
    bindingServesModelSource,
+   checkedKeyIs,
    deriveServeBindings,
    EMPTY_SNAPSHOT,
    isDatabase,
@@ -168,6 +170,8 @@ import type {
    AnswerAttempt,
    Compiled,
    ServedCopyProblem,
+   SourceDecline,
+   SourceDeclines,
    VirtualMap,
 } from "./served_copy_types";
 import {
@@ -179,12 +183,18 @@ import {
    checkZonedColumns,
    inlineBaseZoneOf,
    leftAsWritten,
+   optOutDeclineOf,
+   readsOptOuts,
+   SOURCE_ZONE_DECLINE,
+   sourceZoneDiffers,
    readsInAnotherZone,
    readsRerootedTables,
    readZonesOf,
    recordJoinsRead,
    ZONED_TRUNCATION_REASON,
 } from "./served_copy_checks";
+import { admissionMode, reportQueryWalk, shadowFact } from "./admission_parity";
+import type { ScopeLane } from "./scope_facts";
 
 export type { ServedCopyProblem } from "./served_copy_types";
 
@@ -554,6 +564,20 @@ export class ServedCopyServe {
    }
 
    /**
+    * Lane 0's stored and re-rooted sources, for the scope facts a bind
+    * records (`scope_facts.ts`): the sources whose tables the copy reads,
+    * and those its answers report re-rooted. Undefined before a compile.
+    */
+   scopeLane(): ScopeLane | undefined {
+      const compiled = this.lanes.kept(0);
+      if (!compiled?.materializer) return undefined;
+      return {
+         stored: new Set(compiled.rerooted.flatMap((b) => b.sourceIDs ?? [])),
+         rerooted: compiled.rerootedSourceIDs ?? new Set(),
+      };
+   }
+
+   /**
     * The author `sourceID`s the compiled copy re-rooted on a database table
     * and on no storage table; undefined before the first compile.
     */
@@ -878,11 +902,10 @@ export class ServedCopyServe {
    ): Promise<Awaited<ReturnType<ServedCopyServe["loadQuery"]>>> {
       const attempt = await this.beginAttempt(compiled, queryString, givens);
       const { runnable, virtualMap, prepared, decline } = attempt;
-      await this.checkGateGraft(attempt);
-      await checkOptOut(attempt);
+      await this.checkSourceDeclines(attempt, "chain");
       const { sql, tablesRead } = await readsRerootedTables(attempt);
       await checkGateColumnsKept(attempt, tablesRead);
-      await checkSourceZone(attempt);
+      await this.checkSourceDeclines(attempt, "zone");
       await this.checkResultShape(attempt, tablesRead);
       const pairsRead = await pairsReadPerTable(
          attempt,
@@ -932,6 +955,89 @@ export class ServedCopyServe {
    }
 
    /**
+    * The declines that depend only on the queried source and this compile,
+    * in the order the walks run them: `chain`, a gate the copy cannot graft
+    * then an opted-out or unsafe source on its chain; `zone`, the zone it
+    * computes in. Under `lookup` they are read from what the copy's compile
+    * recorded for a named source; a source written inline walks. Under
+    * `probe` they walk; under `shadow` both run, and the walk decides.
+    */
+   private async checkSourceDeclines(
+      attempt: AnswerAttempt,
+      which: "chain" | "zone",
+   ): Promise<void> {
+      const walk = () =>
+         which === "chain"
+            ? (async () => {
+                 await this.checkGateGraft(attempt);
+                 await checkOptOut(attempt);
+              })()
+            : checkSourceZone(attempt);
+      const mode = admissionMode();
+      if (mode === "probe") return walk();
+      const recorded = await this.recordedDeclines(attempt, which);
+      if (mode === "lookup") {
+         if (recorded === "unrecorded") {
+            reportQueryWalk("served_copy_declines");
+            return walk();
+         }
+         if (recorded) attempt.decline(recorded.reason, recorded.code);
+         return;
+      }
+      let walked: unknown;
+      try {
+         await walk();
+      } catch (err) {
+         walked = err;
+      }
+      if (recorded !== "unrecorded") {
+         shadowFact("served_copy_declines", walked, recorded, (d) =>
+            d === undefined
+               ? undefined
+               : d instanceof LegDecline
+                 ? d.code
+                 : d instanceof Error
+                   ? `error: ${d.message}`
+                   : (d as SourceDecline).code,
+         );
+      }
+      if (walked !== undefined) throw walked;
+   }
+
+   /**
+    * The decline the copy's compile recorded for the queried source, at
+    * `which`; undefined for none, `unrecorded` for a source written inline
+    * or one the compile did not record.
+    */
+   private async recordedDeclines(
+      attempt: AnswerAttempt,
+      which: "chain" | "zone",
+   ): Promise<SourceDecline | undefined | "unrecorded"> {
+      const { compiled, compiling, prepared } = attempt;
+      const declines = compiled.sourceDeclines;
+      if (declines === undefined) return "unrecorded";
+      let structRef: unknown;
+      if (which === "chain") {
+         // Read the query's compile only where the walks would.
+         if (!this.mayHaveRowLevelGates(compiled) && !readsOptOuts(compiled)) {
+            return undefined;
+         }
+         structRef = (await compiling(prepared)).structRef;
+      } else {
+         if (compiled.authorModelDef === undefined) return undefined;
+         try {
+            structRef = (await prepared()).structRef;
+         } catch {
+            return SOURCE_ZONE_DECLINE;
+         }
+      }
+      if (typeof structRef !== "string") return "unrecorded";
+      const d = declines.get(structRef);
+      if (d === undefined) return "unrecorded";
+      return which === "chain" ? (d.graft ?? d.optOut) : d.zone;
+   }
+
+   /**
     * A row-level gate is grafted on this compile when the answer runs, and
     * the graft must find the source that declared it. A re-root that
     * replaced that source (a stored source over a same-file gated base)
@@ -975,6 +1081,17 @@ export class ServedCopyServe {
          const live = await this.host
             .authorResultShape?.(queryString, givens)
             .catch(() => undefined);
+         // The author's compile failed: with these givens (one required and
+         // missing, one of the wrong type), not with every caller's. The
+         // decline is this caller's alone, so it is not remembered for the
+         // query's text, which the memo is keyed by; every other decline
+         // here compares result shapes, which no given's value changes.
+         if (live === undefined) {
+            throw new LegDecline("served_copy_not_served", undefined, {
+               message:
+                  "the author's compile of the query, which the served copy's result shape is checked against, failed",
+            });
+         }
          const served = resultShapeOf(
             await compiling(() =>
                runnable.getPreparedResult({
@@ -983,7 +1100,7 @@ export class ServedCopyServe {
                }),
             ),
          );
-         if (live === undefined || live !== served) {
+         if (live !== served) {
             // Only a zoned truncation left out of each table read: that is
             // the column the result lacks.
             const zonedOnly = tablesRead.every((b) => {
@@ -1002,8 +1119,7 @@ export class ServedCopyServe {
             const leaving = tablesRead.filter((b) =>
                compiled.leftOutTables?.has(b.tablePath),
             );
-            const lacking =
-               live === undefined ? [] : namesLacking(live, served);
+            const lacking = namesLacking(live, served);
             const why = [
                ...new Set(
                   leaving.flatMap((b) =>
@@ -1375,9 +1491,16 @@ export class ServedCopyServe {
                   bigIntegerOptionsOf(def, binding),
                ),
             // The leaf's key check, as the run that wrote the table recorded
-            // it beside the table (`pairLeafKeyChecks`).
+            // it beside the table (`pairLeafKeyChecks`), read only while it
+            // checked the key the leaf declares now: the plan a reload keeps
+            // names the key at load, and nothing re-addresses the table when
+            // the leaf's primary key moves.
             (sourceID) =>
-               requireUnique(verdictOf(binding.primaryKeys?.[sourceID])),
+               checkedKeyIs(
+                  binding.primaryKeyColumns,
+                  sourceID,
+                  primaryKeyOf(map.node(sourceID)?.def),
+               ) && requireUnique(verdictOf(binding.primaryKeys?.[sourceID])),
          );
          if (!pair) {
             problems.push({
@@ -2574,7 +2697,7 @@ export class ServedCopyServe {
          servedMap,
          problems,
       );
-      return {
+      const compiled: Compiled = {
          key,
          generation,
          over,
@@ -2703,8 +2826,69 @@ export class ServedCopyServe {
          files,
          config,
       };
+      compiled.sourceDeclines = this.sourceDeclinesOf(compiled);
+      return compiled;
+   }
+
+   /**
+    * The declines that depend only on the source a query runs on and this
+    * compile, for each source the copy names: a gate it cannot graft, an
+    * opted-out or unsafe source on its chain, a zone it computes in that
+    * differs from the author's. Recorded at the copy's compile, so a query
+    * on a named source looks its declines up; only one on a source written
+    * inline (`orders extend { … }`) walks.
+    */
+   private sourceDeclinesOf(
+      compiled: Compiled,
+   ): ReadonlyMap<string, SourceDeclines> {
+      const out = new Map<string, SourceDeclines>();
+      const contents = (compiled.modelDef as ModelDef | undefined)?.contents;
+      for (const name of Object.keys(contents ?? {})) {
+         const struct = resolveStructRefSource<{ as?: string; name?: string }>(
+            name,
+            compiled.modelDef as never,
+         );
+         if (struct === undefined) continue;
+         out.set(name, this.declinesFor(compiled, name));
+      }
+      return out;
+   }
+
+   /** {@link sourceDeclinesOf} for the source `structRef` names: the walk. */
+   private declinesFor(compiled: Compiled, structRef: unknown): SourceDeclines {
+      const struct = resolveStructRefSource<{ as?: string; name?: string }>(
+         structRef,
+         compiled.modelDef as never,
+      );
+      const name = struct?.as ?? struct?.name;
+      const graft =
+         this.mayHaveRowLevelGates(compiled) &&
+         name !== undefined &&
+         this.gateCannotGraft(compiled, name)
+            ? GATE_GRAFT_DECLINE
+            : undefined;
+      const optOut = readsOptOuts(compiled)
+         ? optOutDeclineOf(compiled, structRef)
+         : undefined;
+      const zone =
+         compiled.authorModelDef !== undefined &&
+         sourceZoneDiffers(compiled, structRef)
+            ? SOURCE_ZONE_DECLINE
+            : undefined;
+      return {
+         ...(graft ? { graft } : {}),
+         ...(optOut ? { optOut } : {}),
+         ...(zone ? { zone } : {}),
+      };
    }
 }
+
+/** The decline for a row-level gate the copy cannot graft (checkGateGraft). */
+const GATE_GRAFT_DECLINE: SourceDecline = {
+   reason:
+      "a row-level gate on the queried source was declared on a source the served copy re-roots, so it cannot be grafted here",
+   code: "served_copy_not_served",
+};
 
 /** A served copy's text, as {@link buildServedCopy} writes it. */
 type ServedCopyText = ReturnType<typeof buildServedCopy>;

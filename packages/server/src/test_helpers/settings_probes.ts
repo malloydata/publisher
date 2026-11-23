@@ -8,6 +8,7 @@ import {
 } from "../authorize_bypass_header";
 import {
    assertDuckDBResourceConfig,
+   getAdmissionMode,
    getDefaultQueryRowLimit,
    getDuckDBMemoryLimit,
    getDuckDBThreads,
@@ -169,6 +170,7 @@ export const PROBES: Record<string, (context: SettingsContext) => unknown> = {
    "persist.collisionEnforcementEnabled": () => getPersistCollisionEnforce(),
    "materialize.enabled": () => getMaterializeEnabled(),
    "materialize.gatedSources": () => settings.get("materialize.gatedSources"),
+   "materialize.admissionMode": () => getAdmissionMode(),
    "materialization.schedulerEnabled": () =>
       getMaterializationSchedulerConfig() !== null,
    "materialization.schedulerIntervalMs": () =>

@@ -64,6 +64,163 @@ export interface UpstreamTable {
    table: string;
 }
 
+/**
+ * A column of a table a build reads: what a stored column is a plain copy
+ * of, when it is one (`TablePlan.columnOrigins`).
+ */
+export interface UpstreamColumn extends UpstreamTable {
+   /** The column's name in that table. */
+   column: string;
+}
+
+/**
+ * The warehouse column each stored column of a source is a plain copy of,
+ * from its compiled `SourceDef` (`def`), by the name its build SQL emits the
+ * column under (the field's `name`, which a rename keeps beside its `as`):
+ * every column of a `.table()` source's own relation, and every column a
+ * query-shaped source selects unchanged, in one `select:` stage, from such
+ * a column of the source it runs on (`src -> { select: a, b }`, the shape
+ * of a `#(materialize)` build source). A field with an expression or a
+ * join, a grouping or aggregating stage, a `.sql()` source and a source
+ * named by reference rather than inlined have none.
+ */
+export function columnOriginsOf(
+   def: unknown,
+): ReadonlyMap<string, UpstreamColumn> {
+   return new Map(plainColumns(def, 0).map((c) => [c.name, c.origin]));
+}
+
+/** One stored column that copies a warehouse column, and the name the source reads it by. */
+interface PlainColumn {
+   name: string;
+   active: string;
+   origin: UpstreamColumn;
+}
+
+/** A field definition, as {@link plainColumns} reads it. */
+interface FieldDefLike {
+   name?: unknown;
+   as?: unknown;
+   e?: unknown;
+   join?: unknown;
+}
+
+/** {@link columnOriginsOf}'s walk, with the name each column is read by. */
+function plainColumns(def: unknown, depth: number): PlainColumn[] {
+   const d = def as {
+      type?: unknown;
+      tablePath?: unknown;
+      connection?: unknown;
+      fields?: unknown;
+      query?: { structRef?: unknown; pipeline?: unknown };
+   } | null;
+   if (depth > 16 || !d || !Array.isArray(d.fields)) return [];
+   const plain = (d.fields as FieldDefLike[]).filter(
+      (f): f is FieldDefLike & { name: string } =>
+         typeof f.name === "string" &&
+         f.e === undefined &&
+         f.join === undefined,
+   );
+   const named = (
+      f: { name: string; as?: unknown },
+      origin: UpstreamColumn,
+   ) => ({
+      name: f.name,
+      active: typeof f.as === "string" ? f.as : f.name,
+      origin,
+   });
+   if (d.type === "table") {
+      const { tablePath, connection } = d;
+      if (typeof tablePath !== "string" || typeof connection !== "string") {
+         return [];
+      }
+      return plain.map((f) =>
+         named(f, {
+            connectionName: connection,
+            table: tablePath,
+            column: f.name,
+         }),
+      );
+   }
+   const stages = d.query?.pipeline;
+   const stage =
+      Array.isArray(stages) && stages.length === 1 ? stages[0] : undefined;
+   const ref = d.query?.structRef;
+   if (
+      d.type !== "query_source" ||
+      (stage as { type?: unknown } | undefined)?.type !== "project" ||
+      !ref ||
+      typeof ref !== "object"
+   ) {
+      return [];
+   }
+   const base = new Map(
+      plainColumns(ref, depth + 1).map((c) => [c.active, c.origin]),
+   );
+   const selected = new Map<string, UpstreamColumn>();
+   for (const qf of ((stage as { queryFields?: unknown }).queryFields ??
+      []) as {
+      type?: unknown;
+      path?: unknown;
+   }[]) {
+      const path = qf.path;
+      if (qf.type !== "fieldref" || !Array.isArray(path) || path.length !== 1) {
+         continue;
+      }
+      const origin = base.get(path[0] as string);
+      if (origin) selected.set(path[0] as string, origin);
+   }
+   return plain.flatMap((f) => {
+      const origin = selected.get(f.name);
+      return origin ? [named(f, origin)] : [];
+   });
+}
+
+/**
+ * The warehouse type of each stored column in `origins`, by its stored
+ * name, from `readings` ({@link upstreamColumnType}); undefined when none is
+ * known. What a `storage=` build judges each column's `gateExact` by.
+ */
+export function upstreamTypesOf(
+   origins: ReadonlyMap<string, UpstreamColumn> | undefined,
+   readings: UpstreamSchemaReadings | undefined,
+): ReadonlyMap<string, { dialect: string; nativeType: string }> | undefined {
+   if (!origins || !readings) return undefined;
+   const types = new Map<string, { dialect: string; nativeType: string }>();
+   for (const [name, origin] of origins) {
+      const type = upstreamColumnType(origin, readings);
+      if (type) types.set(name, type);
+   }
+   return types.size > 0 ? types : undefined;
+}
+
+/**
+ * The type `column` has in its table's reading, with the dialect the type is
+ * named in, or undefined: the table holds no reading, an unread one or one
+ * with no dialect, or not exactly one column of that name (matched exactly,
+ * else case-blind).
+ */
+function upstreamColumnType(
+   column: UpstreamColumn,
+   readings: UpstreamSchemaReadings | undefined,
+): { dialect: string; nativeType: string } | undefined {
+   const reading = readings?.[upstreamTableKey(column)];
+   if (!reading || "unread" in reading || !reading.dialect) return undefined;
+   const exact = reading.columns.filter((c) => c.name === column.column);
+   const folded = reading.columns.filter(
+      (c) => c.name.toLowerCase() === column.column.toLowerCase(),
+   );
+   const found =
+      exact.length === 1
+         ? exact[0]
+         : folded.length === 1
+           ? folded[0]
+           : undefined;
+   return found
+      ? { dialect: reading.dialect, nativeType: found.nativeType }
+      : undefined;
+}
+
 /** The key of one table's reading: its connection and its path. */
 export function upstreamTableKey(table: UpstreamTable): string {
    return JSON.stringify([table.connectionName, table.table]);

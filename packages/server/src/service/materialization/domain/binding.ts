@@ -36,6 +36,7 @@ import type {
    ManifestEntry,
 } from "./types";
 import type { UpstreamTableSchema } from "./upstream_schemas";
+import type { ColumnContract } from "./column_contract";
 
 /** What a stored table holds, from the plan: never read off a name. */
 export type BindingKind = Exclude<TableKind, "pair">;
@@ -75,6 +76,8 @@ export interface Binding {
     * is NULL. Internal: absent on every binding a host's manifest makes.
     */
    primaryKeys?: Record<string, boolean>;
+   /** The key column each of {@link primaryKeys} checked, by sourceID. */
+   primaryKeyColumns?: Record<string, string>;
    /**
     * A stored rollup's own key check, as the run that
     * wrote or carried the table found it: whether its base held the grain's
@@ -218,6 +221,12 @@ export interface Snapshot {
     * files a manifest handed to Malloy under.
     */
    readonly compilerKeys?: Readonly<Record<string, string>>;
+   /**
+    * Each served table's column contract, as its build recorded it and the
+    * bind held its table to, by content address: what read admission looks
+    * a stored column's collation up in (`serve/admission_lookup.ts`).
+    */
+   readonly contracts?: ReadonlyMap<string, ColumnContract>;
 }
 
 /**
@@ -229,6 +238,7 @@ export function makeSnapshot(
    entries: Readonly<FreshnessManifest> = {},
    withdrawn?: ReadonlySet<string>,
    compilerKeys?: Readonly<Record<string, string>>,
+   contracts?: ReadonlyMap<string, ColumnContract>,
 ): Snapshot {
    return Object.freeze({
       bindings,
@@ -237,6 +247,7 @@ export function makeSnapshot(
       ...(compilerKeys && Object.keys(compilerKeys).length > 0
          ? { compilerKeys }
          : {}),
+      ...(contracts && contracts.size > 0 ? { contracts } : {}),
    });
 }
 
@@ -534,6 +545,31 @@ export function primaryKeysOf(entry: {
    return Object.keys(out).length > 0 ? out : undefined;
 }
 
+/** The key column each of {@link primaryKeysOf}'s checks read, by sourceID. */
+export function primaryKeyColumnsOf(entry: {
+   keyUniqueness?: { parentKeyColumns?: unknown };
+}): Record<string, string> | undefined {
+   const columns = entry.keyUniqueness?.parentKeyColumns;
+   if (!columns || typeof columns !== "object") return undefined;
+   const out = Object.fromEntries(
+      Object.entries(columns).filter(([, v]) => typeof v === "string"),
+   ) as Record<string, string>;
+   return Object.keys(out).length > 0 ? out : undefined;
+}
+
+/**
+ * Whether `columns` records `sourceID`'s primary key check as one of `key`:
+ * a check of another column, or one with no column recorded, says nothing,
+ * so a primary key moved since the check reads as unchecked.
+ */
+export function checkedKeyIs(
+   columns: Readonly<Record<string, string>> | undefined,
+   sourceID: string,
+   key: string | undefined,
+): boolean {
+   return key !== undefined && columns?.[sourceID] === key;
+}
+
 /** A rollup's own key check a local run recorded on a stored entry, as {@link primaryKeysOf}. */
 function rollupKeyOf(entry: {
    keyUniqueness?: { keyColumn?: unknown; unique?: unknown };
@@ -542,6 +578,35 @@ function rollupKeyOf(entry: {
    return typeof k?.keyColumn === "string" && typeof k.unique === "boolean"
       ? { keyColumn: k.keyColumn, unique: k.unique }
       : undefined;
+}
+
+/**
+ * `binding` with the key checks `entry` records now (its stored sources'
+ * primary keys, and a rollup's own key), in place of the ones it was made
+ * with: what a reload that moves a primary key gives a `storage=` binding
+ * without binding its entries again.
+ */
+export function withEntryKeyChecks(
+   binding: Binding,
+   entry: ManifestEntry,
+): Binding {
+   const {
+      primaryKeys: _was,
+      primaryKeyColumns: _wasColumns,
+      rollupKey: _wasKey,
+      ...rest
+   } = binding;
+   const primaryKeys = primaryKeysOf(entry as never);
+   const primaryKeyColumns = primaryKeyColumnsOf(entry as never);
+   const rollupKey = isRollupOrigin(entry.origin)
+      ? rollupKeyOf(entry as never)
+      : undefined;
+   return {
+      ...rest,
+      ...(primaryKeys ? { primaryKeys } : {}),
+      ...(primaryKeyColumns ? { primaryKeyColumns } : {}),
+      ...(rollupKey ? { rollupKey } : {}),
+   };
 }
 
 /**
@@ -589,6 +654,7 @@ export function deriveServeBindings(
          ),
       ].filter((name, i, all) => all.indexOf(name) === i);
       const primaryKeys = primaryKeysOf(entry as never);
+      const primaryKeyColumns = primaryKeyColumnsOf(entry as never);
       const rollupKey = isRollupOrigin(entry.origin)
          ? rollupKeyOf(entry as never)
          : undefined;
@@ -615,6 +681,7 @@ export function deriveServeBindings(
             freshnessWindowSeconds: entry.freshnessWindowSeconds,
             freshnessFallback: entry.freshnessFallback,
             ...(primaryKeys ? { primaryKeys } : {}),
+            ...(primaryKeyColumns ? { primaryKeyColumns } : {}),
             ...(rollupKey ? { rollupKey } : {}),
             ...(entry.upstreamSchemas?.length
                ? { upstreamSchemas: entry.upstreamSchemas }

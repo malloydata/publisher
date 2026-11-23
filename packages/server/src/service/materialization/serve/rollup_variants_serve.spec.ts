@@ -590,7 +590,10 @@ describe("RollupVariantServe (a joined source's rollup, read through the join)",
       expect(
          await outcomeOf(
             attempt(query, {
-               segments: { parentKeys: { [flightsID]: false } },
+               segments: {
+                  parentKeys: { [flightsID]: false },
+                  parentKeyColumns: { [flightsID]: "id" },
+               },
             }),
          ),
       ).toMatchObject({
@@ -598,9 +601,29 @@ describe("RollupVariantServe (a joined source's rollup, read through the join)",
          detail:
             "the query source holds a value of its primary key `id` more than once or NULL, so a row of the rollup of `segments` would be read once per row that shares it",
       });
+      // A check of the key `flights` declared at build, not now, says nothing.
       expect(
          await outcomeOf(
-            attempt(query, { segments: { parentKeys: { [flightsID]: true } } }),
+            attempt(query, {
+               segments: {
+                  parentKeys: { [flightsID]: true },
+                  parentKeyColumns: { [flightsID]: "old_id" },
+               },
+            }),
+         ),
+      ).toMatchObject({
+         code: "rollup_count_semantics",
+         detail:
+            "the query source's primary key `id` was not checked unique and never NULL when the rollup of `segments` was built, so a row of it could be read once per row that shares it",
+      });
+      expect(
+         await outcomeOf(
+            attempt(query, {
+               segments: {
+                  parentKeys: { [flightsID]: true },
+                  parentKeyColumns: { [flightsID]: "id" },
+               },
+            }),
          ),
       ).toMatchObject({
          code: "rollup_count_semantics",
@@ -608,7 +631,10 @@ describe("RollupVariantServe (a joined source's rollup, read through the join)",
             "`segments`'s primary key `seg_id` was not checked unique and never NULL when its rollup was built, and live counts and sums `segments.seg_miles` once per non-NULL key where its rollup reads every row",
       });
       const answer = await attempt(query, {
-         segments: { parentKeys: { [flightsID]: true, [segmentsID]: true } },
+         segments: {
+            parentKeys: { [flightsID]: true, [segmentsID]: true },
+            parentKeyColumns: { [flightsID]: "id", [segmentsID]: "seg_id" },
+         },
       });
       expect(answer.rollupSourceName).toStartWith("segments__rollup__");
    });

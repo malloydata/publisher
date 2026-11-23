@@ -44,12 +44,12 @@
  * locale, never by name), whatever the operator. A column altered after the
  * build to another collation answers live.
  *
- * When it is read: the source side once per compiled model (a reload or a
- * rebind compiles a new one, which reads it again), and for a DuckDB
- * instance once per query SQL, so a source altered in place is read again
- * only after a reload; the stored side on every answer, since a stored
- * table is the one place altered after Publisher built it, once per answer
- * however many comparisons (the gates, the filters, the result) ask.
+ * These are the probes: they read the warehouse while a query is answered,
+ * and run only under `materialize.admissionMode` `probe` or `shadow`. By
+ * default read admission answers the same port from what load, bind and
+ * build recorded (`admission_lookup.ts`, `source_capability.ts`), which
+ * these rules are the reference for; the probes go once the lookups have
+ * replaced them everywhere (PR D).
  */
 
 import {
@@ -68,6 +68,11 @@ import {
 } from "../../governance/ir/prepared_query";
 import { identifier } from "../../malloy_text";
 import { queryTableReads, sourceReads } from "../../governance/ir/source_reads";
+import {
+   type AdmissionReadSite as QueryAdmissionReadSite,
+   reportCatalogRead as recordQueryCatalogRead,
+   reportProbeCompile as recordQueryProbeCompile,
+} from "./admission_parity";
 
 import type { CollationProbe, GateReads } from "./gate_reads_types";
 import {
@@ -147,7 +152,7 @@ export async function stringGateCollationRefusal(args: {
    ).runtime;
    if (!runtime) return "no runtime";
    const connect = async (name: string | undefined = connectionName) =>
-      probeIO(await runtime.connections.lookupConnection(name));
+      probeIO(await runtime.connections.lookupConnection(name), "source_probe");
    const reader = collationReaderOf(dialect);
    if (reader === undefined) return "a dialect whose collation is not read";
    if (reader.scope === "dataset") {
@@ -168,6 +173,7 @@ export async function stringGateCollationRefusal(args: {
       // however far from the entry point.
       let sql: string;
       try {
+         recordQueryProbeCompile("source_probe");
          ({ sql } = await args.authorRunnable.getPreparedResult(
             (args.givens ? { givens: args.givens } : {}) as never,
          ));
@@ -242,6 +248,7 @@ export async function stringGateCollationRefusal(args: {
                         modelDef,
                         entryName,
                         path,
+                        site: "source_probe",
                         ...(args.givens ? { givens: args.givens } : {}),
                      }),
                   ),
@@ -265,18 +272,10 @@ export const collationProbe: CollationProbe = {
  * The BigQuery catalog reads, by the loaded model's runtime, then the bind
  * (the serving snapshot the query was pinned to), then what each reads.
  * Each query compiles a model of its own, so a compiled model would read the
- * catalog per query. A read is repeated:
- *
- * - under another runtime (the package reloaded its models) or another bind
- *   (a build, a rebind, or any other change to what is served);
- * - five minutes after a read that answered, so a source changed in place
- *   (a `CREATE OR REPLACE` with a collation) is seen within that window with
- *   no rebind;
- * - a minute after a read that failed or was denied, which answers live
- *   until then without being issued again.
- *
- * The scope is held here; the timers that drop an entry are the BigQuery
- * reader's (`collation/bigquery.ts`).
+ * catalog per query. A read is repeated only under another runtime (the
+ * package reloaded its models) or another bind (a build, a rebind, or any
+ * other change to what is served); a failed or denied one answers live until
+ * then. Nothing expires on a clock.
  */
 const bigqueryProbes = new WeakMap<
    object,
@@ -307,7 +306,7 @@ function bigqueryReadsOf(
 /**
  * What a BigQuery query's strings compare under. `known: false` (answer
  * live): its SQL names a `COLLATE`; a read failed or was denied (and is
- * then not issued again for a minute (`BIGQUERY_FAILURE_TTL_MS`)); a table it
+ * then not issued again until the next bind); a table it
  * reads is not one a read saw; a view (or a materialized view, an external
  * table) it reads is in a project holding a collated column; it holds
  * author SQL (an `.sql()` source, a raw SQL expression) and a project it
@@ -360,6 +359,7 @@ async function bigquerySource(args: {
          args.authorRunnable as unknown as { runtime?: ProbeRuntime }
       ).runtime;
       if (!runtime) return unknown;
+      recordQueryProbeCompile("source_probe");
       const { sql } = await args.authorRunnable.getPreparedResult(
          (args.givens ? { givens: args.givens } : {}) as never,
       );
@@ -369,6 +369,7 @@ async function bigquerySource(args: {
          reads: bigqueryReadsOf(runtime, args.bind ?? NO_BIND),
          io: probeIO(
             await runtime.connections.lookupConnection(connectionName),
+            "source_probe",
          ),
          connectionName,
          sql,
@@ -638,7 +639,7 @@ function probeOnce(
  * lists them), and a field of a query-shaped source, whose stage output may
  * be computed from fields no path names, fails closed unless it is a string.
  */
-function stringPaths(
+export function stringPaths(
    struct: unknown,
    paths: readonly (readonly string[])[],
 ): string[][] | undefined {
@@ -697,7 +698,10 @@ async function probeSql(args: {
    entryName: string;
    path: readonly string[];
    givens?: Record<string, unknown>;
+   /** Where on a query's path it is compiled, for the counter. */
+   site: QueryAdmissionReadSite;
 }): Promise<string> {
+   recordQueryProbeCompile(args.site);
    const ref = args.path.map((p) => identifier(p)).join(".");
    const { sql } = await args.runtime
       ._loadModelFromModelDef(args.modelDef)
@@ -730,9 +734,10 @@ async function probe(args: {
    if (args.path.some((p) => malloyIdentifiers(p).length !== 1)) {
       return "unknown";
    }
-   const sql = await probeSql(args);
+   const sql = await probeSql({ ...args, site: "source_probe" });
    const io = probeIO(
       await args.runtime.connections.lookupConnection(args.connectionName),
+      "source_probe",
    );
    try {
       return await reader.sourceColumns(io, sql);
@@ -766,13 +771,22 @@ async function catalogRead(
  * client's `datasets.list`, its projects and location), read duck-typed
  * here and nowhere else.
  */
-export function probeIO(connection: Connection): ProbeIO {
+export function probeIO(
+   connection: Connection,
+   /** Where on a query's path it reads, for the counter; absent, off it. */
+   site?: QueryAdmissionReadSite,
+): ProbeIO {
+   const counted = () => {
+      if (site !== undefined) recordQueryCatalogRead(site);
+   };
    return {
       dialectName: connection.dialectName,
       async rows(sql) {
+         counted();
          return (await catalogRead(connection, sql)).rows ?? [];
       },
       async completeRows(sql) {
+         counted();
          const result = await catalogRead(connection, sql, {
             rowLimit: CATALOG_ROW_LIMIT,
          });
@@ -1057,6 +1071,7 @@ async function databaseCollationRefusal(args: {
    if (!runtime) return "no runtime";
    const source = probeIO(
       await runtime.connections.lookupConnection(connectionName),
+      "stored_probe",
    );
    const sourceDefault = await memoized(
       memo,
@@ -1064,14 +1079,16 @@ async function databaseCollationRefusal(args: {
       () => reader.defaultIdentity(source),
    );
    if (sourceDefault === undefined) return "the source's default unread";
-   // Every column the stored tables hold, by name: its collation's identity.
-   const held = new Map<string, string | null>();
+   // Every column the stored tables hold, by name: each identity any table
+   // holds it under (a read names its column, not its table; fail closed).
+   const held = new Map<string, Set<string | null>>();
    let listedTables = 0;
    for (const t of args.tables) {
       if (t.tablePath === undefined) return "a table with no path";
       const storedName = t.destinationName ?? connectionName;
       const connection = probeIO(
          await args.storedRuntime.connections.lookupConnection(storedName),
+         "stored_probe",
       );
       const path = t.tablePath;
       if (
@@ -1099,7 +1116,7 @@ async function databaseCollationRefusal(args: {
          ["columns", storedName, tablePath],
          () => reader.columnIdentities(connection, tablePath),
       )) {
-         held.set(col, id);
+         holdColumn(held, col, id);
       }
    }
    // Every table unlisted: nothing stored is read (each read fails).
@@ -1132,6 +1149,7 @@ async function databaseCollationRefusal(args: {
                   modelDef,
                   entryName,
                   path,
+                  site: "stored_probe",
                   ...(args.givens ? { givens: args.givens } : {}),
                }),
             ),
@@ -1154,16 +1172,31 @@ async function databaseCollationRefusal(args: {
          return "a scope column no stored table holds";
       }
       for (const n of found) {
-         const id = held.get(n);
-         if (id === null || id === undefined) continue;
-         storedStrings++;
-         compared.add(id);
+         for (const id of held.get(n) ?? []) {
+            if (id === null) continue;
+            storedStrings++;
+            compared.add(id);
+         }
       }
    }
    if (storedStrings > 0 && paths.length === 0) {
       return "a stored string column with no compared source path";
    }
    return compared.size <= 1 ? undefined : "a column under another collation";
+}
+
+/** Record that a table read holds `name` under `collation`. */
+export function holdColumn(
+   held: Map<string, Set<string | null>>,
+   name: string,
+   collation: string | null,
+): void {
+   let set = held.get(name);
+   if (!set) {
+      set = new Set();
+      held.set(name, set);
+   }
+   set.add(collation);
 }
 
 /** The dialect of the source a compiled query runs on, or "" when unread. */
@@ -1225,6 +1258,7 @@ async function storedSide(
             DUCKDB_COLLATION.storedTable(
                probeIO(
                   await runtime.connections.lookupConnection(connectionName),
+                  "stored_probe",
                ),
                tablePath,
             ),
@@ -1236,6 +1270,7 @@ async function storedSide(
       t.destinationName ?? (await entryConnectionOf(args.authorRunnable));
    const connection = probeIO(
       await runtime.connections.lookupConnection(connectionName),
+      "stored_probe",
    );
    if (reader.scope === "dataset") {
       return bigqueryDatabaseTableCollation(

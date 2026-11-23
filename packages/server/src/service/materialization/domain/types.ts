@@ -237,6 +237,12 @@ export interface KeyUniqueness {
     * source known true here.
     */
    parentKeys?: Record<string, boolean>;
+   /**
+    * The primary key column each of {@link parentKeys} checked, by sourceID.
+    * A check is read only while the source still declares that key: one with
+    * no column recorded, or another, is unknown, and its joins answer live.
+    */
+   parentKeyColumns?: Record<string, string>;
 }
 
 /**
