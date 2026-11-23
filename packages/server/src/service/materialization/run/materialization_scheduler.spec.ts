@@ -527,7 +527,9 @@ describe("MaterializationScheduler: published versions", () => {
          let release: () => void = () => {};
          const held = new Promise<void>((resolve) => (release = resolve));
          const fire = service.createMaterialization;
-         service.createMaterialization = ((...args: Parameters<typeof fire>) => {
+         service.createMaterialization = ((
+            ...args: Parameters<typeof fire>
+         ) => {
             fire(...args);
             return held.then(() => ({}));
          }) as typeof fire;
