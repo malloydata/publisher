@@ -30,6 +30,7 @@ import {
    collationProbe,
    lookupProbe,
    observeAdmission,
+   readAdmissionModeFrom,
    ReadAdmission,
    shadowProbe,
 } from "./materialization/serve/read_admission";
@@ -37,6 +38,7 @@ import {
    recordAdmissionParityDrift,
    recordQueryCatalogRead,
    recordQueryProbeCompile,
+   recordQueryWalk,
 } from "../materialization_metrics";
 import { logger } from "../logger";
 import { SourceMap, sourceChain } from "./materialization/text/source_map";
@@ -192,10 +194,15 @@ export function variantsOf(
 observeAdmission({
    catalogRead: recordQueryCatalogRead,
    probeCompile: recordQueryProbeCompile,
+   queryWalk: recordQueryWalk,
    drift(d) {
       recordAdmissionParityDrift(
          d.side,
-         d.probe !== undefined ? "probe_refuses" : "lookup_refuses",
+         d.probe !== undefined && d.lookup !== undefined
+            ? "differs"
+            : d.probe !== undefined
+              ? "probe_refuses"
+              : "lookup_refuses",
       );
       logger.warn("admission parity drift", {
          side: d.side,
@@ -206,6 +213,8 @@ observeAdmission({
       });
    },
 });
+
+readAdmissionModeFrom(getAdmissionMode);
 
 /**
  * The collation port `materialize.admissionMode` picks, read once per query:

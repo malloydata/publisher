@@ -16,7 +16,10 @@ import {
 
 export {
    clearParityDrifts,
+   clearQueryWalks,
    holdParityAllowance,
+   queryWalks,
+   withAdmissionMode,
    withParityAllowance,
 } from "../service/materialization/serve/admission_parity";
 

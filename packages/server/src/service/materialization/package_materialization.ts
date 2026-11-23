@@ -34,6 +34,7 @@ import {
 } from "./domain/column_contract";
 import { packageRelativeSourceID } from "./text/read_text";
 import { refreshStringCapabilities } from "./serve/source_capability";
+import { recordScopeFacts } from "./serve/scope_facts";
 import type { Connection, MalloyConfig } from "@malloydata/malloy";
 import { components } from "../../api";
 import type { ChainBuildRequest, ChainBuildText } from "./domain/chain_build";
@@ -952,6 +953,7 @@ export class PackageMaterialization {
             await Promise.all(
                [...this.owner.models().values()].map((model) => {
                   model.setStringCapabilityReader(refreshStringCapabilities);
+                  model.setScopeFactsRecorder(recordScopeFacts);
                   return model.refreshStringCapabilities();
                }),
             );
@@ -965,6 +967,14 @@ export class PackageMaterialization {
                }),
             );
             this.bindTypeFindings(next.bindings);
+         }
+         // What each source's gates and row scope read, over this commit's
+         // tables: a commit that changes only the manifest entries (a
+         // database table) is a new snapshot too.
+         if (next.bindings.length > 0 || Object.keys(next.entries).length > 0) {
+            for (const model of this.owner.models().values()) {
+               model.recordScopeFactsOver(next);
+            }
          }
       } finally {
          this.committing = undefined;
@@ -1844,6 +1854,7 @@ export class PackageMaterialization {
 
    private setServedCopyContextOn(model: Model): void {
       model.setStringCapabilityReader(refreshStringCapabilities);
+      model.setScopeFactsRecorder(recordScopeFacts);
       model.setServedCopyContext(
          this.owner.packagePath(),
          this.owner.malloyConfig(),

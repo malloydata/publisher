@@ -384,6 +384,29 @@ export class Model {
       this.stringCapabilityReader = reader;
    }
 
+   /**
+    * What records this model's scope facts for read admission
+    * (`serve/scope_facts.ts`), set by the package beside the string
+    * capability reader; absent, {@link recordScopeFactsOver} records none.
+    */
+   private scopeFactsRecorder:
+      | ((
+           runtime: object,
+           args: {
+              modelDef: ModelDef;
+              snapshot: Snapshot;
+              lane?: ReturnType<ServedCopyServe["scopeLane"]>;
+           },
+        ) => void)
+      | undefined;
+
+   /** Set what {@link recordScopeFactsOver} records through. */
+   public setScopeFactsRecorder(
+      recorder: NonNullable<Model["scopeFactsRecorder"]>,
+   ): void {
+      this.scopeFactsRecorder = recorder;
+   }
+
    /** The contracts of the tables set directly ({@link setServeBindings}). */
    private contractsOverride: ReadonlyMap<string, ColumnContract> | undefined;
    /** {@link storageTables}, for the snapshot bindings it was read from. */
@@ -3122,7 +3145,9 @@ export class Model {
     */
    public async prepareServedCopy(): Promise<void> {
       await this.refreshStringCapabilities();
-      await this.prepareServedCopyOver(this.servingSnapshot());
+      const snapshot = this.servingSnapshot();
+      await this.prepareServedCopyOver(snapshot);
+      this.recordScopeFactsOver(snapshot);
    }
 
    /**
@@ -3167,6 +3192,41 @@ export class Model {
                error: err instanceof Error ? err.message : String(err),
             },
          );
+      }
+   }
+
+   /**
+    * Record, for read admission's lookups, what each named source's gates
+    * and row scope read over the tables `snapshot` binds, and its gate and
+    * composite flags (`serve/scope_facts.ts`): every bind commit, so a
+    * query pinned to `snapshot` walks none of it. The served copy's lane is
+    * the one compiled last, over the same bindings when its compile ran.
+    */
+   public recordScopeFactsOver(
+      snapshot: Snapshot = this.servingSnapshot(),
+   ): void {
+      const lane = this.servedCopyEnabled()
+         ? this.servedCopy.scopeLane()
+         : undefined;
+      const runtime = (
+         this.modelMaterializer as unknown as { runtime?: object } | undefined
+      )?.runtime;
+      const modelDef = this.modelDef;
+      const record = this.scopeFactsRecorder;
+      if (!record || !runtime || !modelDef || this.modelType !== "model") {
+         return;
+      }
+      try {
+         record(runtime, {
+            modelDef,
+            snapshot,
+            ...(lane ? { lane } : {}),
+         });
+      } catch (err) {
+         logger.warn("Could not record this model's scope facts", {
+            modelPath: this.modelPath,
+            error: err instanceof Error ? err.message : String(err),
+         });
       }
    }
 

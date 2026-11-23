@@ -49,7 +49,7 @@ import {
    keepsGatesWhenReadExact,
    type ReadFacts,
 } from "./domain/admission";
-import type { TableRead } from "./domain/gate_policy";
+import { gateColumnTypeExact, type TableRead } from "./domain/gate_policy";
 import { keptTableAddresses, ungatedTableAddresses } from "./serve/bind";
 import * as gateReads from "./serve/gate_reads";
 import { type LegContext, makeLegs } from "./serve/leg";
@@ -230,7 +230,18 @@ function contractsOf(args: {
                nativeType: c.type,
                collation: c.type === "VARCHAR" ? collation : null,
                compare: "exact" as const,
-               gateExact: true,
+               // As a build records it (`deriveContract`): a `storage=`
+               // column is exact by its type and the warehouse column it
+               // copies (none here); a database column unless held as a
+               // double.
+               gateExact:
+                  t.tier === "storage"
+                     ? gateColumnTypeExact(c.type, undefined)
+                     : !(t.retypedColumns ?? []).some(
+                          (r) =>
+                             r.name === c.name &&
+                             !gateColumnTypeExact(r.type, undefined),
+                       ),
             })),
          },
       ]),

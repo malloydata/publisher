@@ -483,8 +483,26 @@ const admissionParityDriftCounter = lazyCounter(
    "publisher_admission_parity_drift_total",
    "Shadow admission's disagreements (materialize.admissionMode=shadow): a " +
       "query whose probe and lookup judged a stored answer's string " +
-      "comparisons differently. The probe decided. Labels: side " +
-      "('source'|'stored'), direction ('probe_refuses'|'lookup_refuses').",
+      "comparisons differently, or whose walk and recorded fact differ. The " +
+      "probe or walk decided. Labels: side ('source'|'stored'|" +
+      "'served_copy_declines'|'scope'|'rollup_candidates'|'gate_exact'), direction ('probe_refuses'|" +
+      "'lookup_refuses'|'differs').",
+);
+/**
+ * Where a query walks the IR for a fact a compile or bind records, because
+ * the record does not cover it (an inline `extend`, an unrecorded lane or
+ * stored set) or admission is not in `lookup` mode.
+ */
+export type QueryWalkSite =
+   | "served_copy_declines"
+   | "scope"
+   | "rollup_candidates";
+const queryWalkCounter = lazyCounter(
+   "publisher_query_walks_total",
+   "IR walks a query made for a fact the served copy's compile or the bind " +
+      "records, because the record did not cover the query (an inline " +
+      "extend, an unrecorded lane or stored set). Labels: site " +
+      "('served_copy_declines'|'scope'|'rollup_candidates').",
 );
 const storageTableRetainedCounter = lazyCounter(
    "publisher_storage_tables_retained_total",
@@ -858,10 +876,15 @@ export function recordQueryProbeCompile(site: QueryAdmissionReadSite): void {
 
 /** Record one disagreement shadow admission found. */
 export function recordAdmissionParityDrift(
-   side: "source" | "stored",
-   direction: "probe_refuses" | "lookup_refuses",
+   side: "source" | "stored" | QueryWalkSite | "gate_exact",
+   direction: "probe_refuses" | "lookup_refuses" | "differs",
 ): void {
    admissionParityDriftCounter().add(1, { side, direction });
+}
+
+/** Record one query-path walk for a recorded fact. */
+export function recordQueryWalk(site: QueryWalkSite): void {
+   queryWalkCounter().add(1, { site });
 }
 
 /** Record one column contract capture (run/column_contract_capture.ts). */

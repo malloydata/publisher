@@ -23,6 +23,32 @@ import type { CollationProbe, ProbedTable } from "./gate_reads_types";
 export type AdmissionReadSite = "source_probe" | "stored_probe";
 
 /**
+ * Where a query walks the IR for a fact a compile or bind records, because
+ * the record did not cover it (an inline `extend`, a lane or a stored set
+ * the record does not hold) or because admission runs in `probe` or
+ * `shadow`: the served copy's per-source declines (`served_copy_declines`),
+ * the gates' and row scope's reads and flags (`scope`), the rollups a
+ * query's source could read (`rollup_candidates`).
+ */
+type QueryWalkSite = "served_copy_declines" | "scope" | "rollup_candidates";
+
+/** Which way admission judges: `materialize.admissionMode`. */
+type AdmissionMode = "probe" | "lookup" | "shadow";
+
+/**
+ * The comparisons shadow admission runs: the collation ports' two sides,
+ * and each recorded fact against the walk it replaces.
+ */
+type ParitySide = "source" | "stored" | FactSide;
+
+/**
+ * The recorded facts shadow admission compares with the walks they replace:
+ * each walk site, and `gate_exact`, a stored gate column's exactness read
+ * from its column contract against the one judged from the bind's types.
+ */
+export type FactSide = QueryWalkSite | "gate_exact";
+
+/**
  * What admission reports as it judges, for the shell to count and log: this
  * layer reads no telemetry and writes no log of its own, so the query
  * pipeline (`query_serving.ts`) installs it once.
@@ -30,10 +56,60 @@ export type AdmissionReadSite = "source_probe" | "stored_probe";
 interface AdmissionObserver {
    catalogRead(site: AdmissionReadSite): void;
    probeCompile(site: AdmissionReadSite): void;
+   queryWalk?(site: QueryWalkSite): void;
    drift(drift: ParityDrift): void;
 }
 
 let observer: AdmissionObserver | undefined;
+
+let modeReader: () => AdmissionMode = () => "lookup";
+
+/**
+ * Install how the serve layer reads `materialize.admissionMode` (the shell
+ * reads settings; this layer does not). Read once per use, so a spec that
+ * sets the mode sees it at once.
+ */
+export function readAdmissionModeFrom(read: () => AdmissionMode): void {
+   modeReader = read;
+}
+
+/** The admission mode in force. */
+export function admissionMode(): AdmissionMode {
+   return modeReader();
+}
+
+/** Run `fn` under `mode`, whatever settings say: for specs. */
+export async function withAdmissionMode<T>(
+   mode: AdmissionMode,
+   fn: () => Promise<T>,
+): Promise<T> {
+   const before = modeReader;
+   modeReader = () => mode;
+   try {
+      return await fn();
+   } finally {
+      modeReader = before;
+   }
+}
+
+/** Every query-path walk reported in this process, by site, for specs. */
+const walks = new Map<QueryWalkSite, number>();
+
+/** Report one query-path walk for a fact a compile or bind records. */
+export function reportQueryWalk(site: QueryWalkSite): void {
+   walks.set(site, (walks.get(site) ?? 0) + 1);
+   observer?.queryWalk?.(site);
+}
+
+/** The query-path walks reported so far, by site (a copy). */
+export function queryWalks(): ReadonlyMap<QueryWalkSite, number> {
+   return new Map(walks);
+}
+
+/** Forget the query-path walks reported so far. */
+export function clearQueryWalks(): void {
+   walks.clear();
+}
 
 /** Install what admission reports to; the last one installed wins. */
 export function observeAdmission(o: AdmissionObserver): void {
@@ -59,17 +135,22 @@ export function reportProbeCompile(site: AdmissionReadSite): void {
  * - `r10_binary64_orchestrated`: a stored binary64 gate column the probe's
  *   inputs cannot prove (no `upstreamSchemas`, as a host's manifest carries
  *   none) and the build's contract does;
+ * - `r10_binary64_pending_origins`: a stored binary64 gate column the
+ *   bind's types and the warehouse types it copies prove exact, which its
+ *   build's contract does not yet (until builds record `gateExact` from a
+ *   column's origin);
  * - `bigquery_ttl`: a BigQuery catalog the probe re-read and the load did
  *   not.
  */
 export type ParityAllowance =
    | "bind_detects_alter"
    | "r10_binary64_orchestrated"
+   | "r10_binary64_pending_origins"
    | "bigquery_ttl";
 
 /** One disagreement shadow admission found. */
 export interface ParityDrift {
-   readonly side: "source" | "stored";
+   readonly side: ParitySide;
    /** The probe's refusal, or undefined when it admitted. */
    readonly probe: string | undefined;
    /** The lookup's refusal, or undefined when it admitted. */
@@ -138,6 +219,25 @@ function record(drift: Omit<ParityDrift, "allowed">): void {
 /** Whether two refusals disagree on whether the comparison is refused. */
 function disagree(a: string | undefined, b: string | undefined): boolean {
    return (a === undefined) !== (b === undefined);
+}
+
+/**
+ * Shadow one recorded fact against the walk it replaces: record a
+ * disagreement when `show` renders the two differently, and answer the
+ * walk's. `show` renders a fact as the verdict it leads to (undefined for
+ * none), so two facts that lead to the same verdict agree.
+ */
+export function shadowFact<T>(
+   side: FactSide,
+   walked: T,
+   recorded: T,
+   show: (fact: T) => string | undefined,
+   tables: readonly string[] = [],
+): T {
+   const old = show(walked);
+   const now = show(recorded);
+   if (old !== now) record({ side, probe: old, lookup: now, tables });
+   return walked;
 }
 
 /** A lookup that threw: a refusal, so it never admits what it could not judge. */
