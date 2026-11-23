@@ -18,6 +18,7 @@
 import { tableNamesFoldCase } from "../domain/storage_table_path";
 import { errorCodeOf } from "../../../error_code";
 import { parseContract } from "../domain/column_contract";
+import { assertPairLeafKeysPassed } from "./pair_leaf_gate";
 import { instructionTier } from "../domain/placement";
 import {
    instructedTable,
@@ -41,6 +42,7 @@ import type {
    RollupKeyCheck,
 } from "../domain/table_plans";
 import type { InlineUniquenessCheck } from "../domain/table_plans";
+import { splitSourceID } from "../domain/table_plans";
 import {
    assertPlacementNamed,
    assertTierEligible,
@@ -914,7 +916,16 @@ export class InstructedBuild {
          withBuiltProvenance(
             run,
             sourceEntityId,
-            withRollupUpstreamReuse(run, persistSource, sourceEntityId, built),
+            withDeclinedViewUpstreamReuse(
+               run,
+               persistSource,
+               withRollupUpstreamReuse(
+                  run,
+                  persistSource,
+                  sourceEntityId,
+                  built,
+               ),
+            ),
          ),
          leafChecks,
       );
@@ -1134,6 +1145,13 @@ export class InstructedBuild {
                  connection,
               )
             : undefined;
+
+         // A view or query over a pair table relies on the leaf key check
+         // its upstream's table recorded: refused before anything is
+         // written when it failed or is not recorded (pair_leaf_gate.ts).
+         if (overStoredUpstreams) {
+            assertPairLeafKeysOfUpstream(run, persistSource);
+         }
 
          // An inlined join_one must match at most one row: checked on
          // the source's own connection before anything is written.
@@ -2329,6 +2347,49 @@ function overStoredUpstreamSource(
 }
 
 /**
+ * Refuse a view or query planned over a pair table with its join put back
+ * (`OverStoredBase.pairLeafKeys`) unless the upstream's current entry in the
+ * run records each leaf key check it relies on as passed
+ * ({@link assertPairLeafKeysPassed}). A view over any other table passes.
+ */
+function assertPairLeafKeysOfUpstream(
+   run: InstructedRun,
+   persistSource: PersistSource,
+): void {
+   const { compiled } = run;
+   const table = compiled.tables[persistSource.sourceID];
+   if (table?.kind !== "view" || !table.overStoredBase?.pairLeafKeys) return;
+   const { pairLeafKeys, rerootedSourceID } = table.overStoredBase;
+   const upstream =
+      rerootedSourceID === undefined
+         ? undefined
+         : compiled.tables[rerootedSourceID];
+   let entry: ManifestEntry | undefined;
+   if (upstream) {
+      try {
+         entry =
+            run.entries[
+               computeSourceEntityId(
+                  upstream.source,
+                  compiled.connectionDigests,
+                  upstream.target,
+                  compiled.tableFolds,
+                  compiled.upstreamSchemas,
+               )
+            ];
+      } catch {
+         entry = undefined;
+      }
+   }
+   assertPairLeafKeysPassed(
+      persistSource.name,
+      upstream?.source.name ?? rerootedSourceID ?? "its upstream",
+      pairLeafKeys,
+      entry,
+   );
+}
+
+/**
  * The source a rollup builds from when this run holds its base's
  * table: the rollup compiled over that table (rollup_compile.ts), so its
  * build reads the table rather than the warehouse, through the build
@@ -2587,6 +2648,42 @@ function withRollupUpstreamReuse(
    return run.readFrom?.has(address)
       ? { ...rest, upstreamReuse: "reused" }
       : rest;
+}
+
+/**
+ * A view's or query's entry, when its build over its upstreams' tables did
+ * not compile at plan (`overStoredDeclined`) and it built from its
+ * definition: `upstreamReuse: recomputed`, naming the upstreams, never
+ * `reused` and never unlabelled. Any other entry is returned as built.
+ */
+function withDeclinedViewUpstreamReuse(
+   run: InstructedRun,
+   persistSource: PersistSource,
+   entry: ManifestEntry,
+): ManifestEntry {
+   const table = run.compiled.tables[persistSource.sourceID];
+   // A build that already says it recomputed keeps its own reason.
+   if (
+      table?.kind !== "view" ||
+      !table.overStoredDeclined ||
+      entry.upstreamReuse === "recomputed"
+   ) {
+      return entry;
+   }
+   const names = table.overStoredDeclined.upstreamSourceIDs.map(
+      (id) =>
+         run.compiled.tables[id]?.source.name ?? splitSourceID(id)?.name ?? id,
+   );
+   const named = names.map((n) => `'${n}'`).join(", ");
+   return {
+      ...entry,
+      upstreamReuse: "recomputed",
+      upstreamRecomputeReason:
+         `its build over the stored table of persisted upstream ${named} ` +
+         `does not compile (it reads what that table does not hold, such as ` +
+         `a measure or view of an inlined join's joined source); recomputed ` +
+         `from its definition in the warehouse`,
+   };
 }
 
 /** A view's or query's proven build in its destination, as a build option. */

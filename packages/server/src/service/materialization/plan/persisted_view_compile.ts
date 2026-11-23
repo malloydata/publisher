@@ -108,6 +108,7 @@ import {
    type StorageOverStored,
 } from "./storage_over_stored";
 import type { RefusedReason } from "../domain/types";
+import { pairLeafContractKeys } from "./pair_reroot";
 import { gateRefusalReason } from "../domain/gate_refusal";
 
 interface GeneratedPersistedViews {
@@ -132,6 +133,8 @@ interface GeneratedPersistedViews {
    overStoredSources: ReadonlyMap<string, OverStoredBase>;
    /** The build sourceIDs offered the compile: the candidates. */
    overStoredCandidates: ReadonlySet<string>;
+   /** By candidate: the persisted upstreams whose tables it would read. */
+   overStoredUpstreams: ReadonlyMap<string, readonly string[]>;
    /**
     * The `storage=` views and queries over upstreams stored in their own
     * destination, by build sourceID: each compiled over its upstreams'
@@ -703,6 +706,7 @@ export async function tryCompilePersistedViewCompanion(args: {
             text,
             overStoredSources,
             overStoredCandidates: overStored.candidates,
+            overStoredUpstreams: overStored.upstreams,
             storageOverStored,
          },
          refused,
@@ -784,6 +788,7 @@ function overStoredUpstreamNotes(
          modelDef,
          modelFile,
          materialized,
+         { pairs: true },
       );
       if (!chainable || base === "unusable") continue;
       if (spans.length === 0 && base === undefined) continue;
@@ -975,6 +980,9 @@ async function compileOverStoredGroup(
                     baseBuildSource,
                     rerootedSourceID: base.plan.sourceID,
                     upstreamSourceIDs,
+                    ...(base.plan.pair || base.plan.pairBlocks
+                       ? { pairLeafKeys: pairLeafContractKeys(base.plan) }
+                       : {}),
                  }
                : { source, upstreamSourceIDs },
          );

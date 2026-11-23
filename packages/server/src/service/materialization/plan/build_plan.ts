@@ -1223,7 +1223,10 @@ async function collectGeneratedPersistedViews(
             !overStoredProven(
                source,
                overStoredBase,
-               rerooted?.kind === "materialize" ? rerooted.source : undefined,
+               // A pair table is re-rooted with its join put back.
+               rerooted?.kind === "materialize" || rerooted?.kind === "pair"
+                  ? rerooted.source
+                  : undefined,
             )
          ) {
             const reason =
@@ -1277,10 +1280,19 @@ async function collectGeneratedPersistedViews(
       kept++;
       // A persisted query's table is a view's, built from the same
       // companion and read by an exact call.
+      // Offered the build over its upstreams' tables, which did not
+      // compile: built from its definition, and its entry says so.
+      const declined =
+         !overStoredBase && generated.overStoredCandidates.has(source.sourceID)
+            ? generated.overStoredUpstreams.get(source.sourceID)
+            : undefined;
       parts.tables[source.sourceID] = {
          kind: "view",
          ...plannedFacts(source, args.modelPath),
          ...(overStoredBase ? { overStoredBase } : {}),
+         ...(declined && declined.length > 0
+            ? { overStoredDeclined: { upstreamSourceIDs: declined } }
+            : {}),
          ...(inDestination && "stored" in inDestination
             ? { storedInDestination: inDestination.stored }
             : {}),
