@@ -220,6 +220,15 @@ describe("dropJoinDefinition", () => {
       expect(out).not.toContain("The join.");
    });
 
+   it("keeps the space before a join that shares its line with code", () => {
+      expect(
+         dropJoinDefinition(
+            "extend { dimension: d is id join_one: c is x on (c.id = id)dimension: e is 2 }",
+            "c",
+         ),
+      ).toBe("extend { dimension: d is id dimension: e is 2 }");
+   });
+
    it("leaves the text unchanged when it declares no such join, or only a field of that name", () => {
       expect(dropJoinDefinition(TEXT, "nope")).toBe(TEXT);
       expect(

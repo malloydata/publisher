@@ -234,9 +234,11 @@ export function dropJoinDefinition(
       // its only definition, and stays on the others when it is not; the
       // record carries the join's own modifier, read off the compiled source
       // ({@link InlinedJoin.access}), not this text.
-      // The indentation before it goes too, so no line of spaces is left.
+      // Its indentation goes too, so no line of spaces is left; spaces after
+      // code on its line stay, or the tokens either side would join.
       let start = cut.start;
       while (text[start - 1] === " " || text[start - 1] === "\t") start--;
+      if (start > 0 && text[start - 1] !== "\n") start = cut.start;
       return text.slice(0, start) + text.slice(cut.end);
    }
    return text;

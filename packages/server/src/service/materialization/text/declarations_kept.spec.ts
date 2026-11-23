@@ -80,8 +80,8 @@ source: weekly is daily -> { aggregate: n is count() }
    });
 
    describe("a block annotation goes with the statement it tags", () => {
-      // Each case keeps the statement directly above the one under test: a
-      // blanked one would sweep the next one's annotations along with it.
+      // Each case keeps the statement directly above the one under test, so a
+      // line walker that swept the next statement's annotations can't pass it.
       const REPRO = `##! experimental.persistence
 
 #@ persist
