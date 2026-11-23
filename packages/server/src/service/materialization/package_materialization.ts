@@ -26,14 +26,10 @@
  * Effects: logs, and the bind metrics.
  */
 
+import { type ColumnContract, parseContract } from "./domain/column_contract";
 import type { Connection, MalloyConfig } from "@malloydata/malloy";
 import { components } from "../../api";
-import type {
-   ChainBuildRequest,
-   ChainBuildText,
-   ChainCollationRequest,
-} from "./domain/chain_build";
-import { chainBuildCollationRefusal } from "./serve/gate_collation";
+import type { ChainBuildRequest, ChainBuildText } from "./domain/chain_build";
 import {
    getMaterializeEnabled,
    getPersistCollisionEnforce,
@@ -41,10 +37,12 @@ import {
 } from "../../config";
 import { logger } from "../../logger";
 import {
+   recordIncompatibleDetected,
    recordSourceBound,
    recordSourceDeclined,
    recordStoredColumnTypeMismatch,
 } from "../../materialization_metrics";
+import { errorCodeOf } from "../../error_code";
 import type { LoadPackageOutcome } from "../../package_load/package_load_pool";
 import type { Model } from "../model";
 import type { PackageModelPolicy } from "../model_policy";
@@ -67,19 +65,35 @@ import {
    type Snapshot,
    underCompilerKeys,
 } from "./domain/binding";
-import { observedDatabaseColumns } from "./run/database_column_read";
+import {
+   observedDatabaseColumns,
+   readTableCollations,
+   readTableColumns,
+   withCollations,
+} from "./run/database_column_read";
+import {
+   destinationSchemaOf,
+   storageTablePath,
+} from "./domain/storage_table_path";
+import {
+   readStoredTables,
+   type StoredTableSite,
+} from "./run/stored_table_read";
 import {
    applyObservedColumns,
    type DriftDeclaration,
    bindDatabaseEntries,
    bindStorageEntries,
    deriveDatabaseServeBindings,
+   holdStorageToContracts,
+   type IncompatibleTable,
    type ObservedDrift,
    type UnreadTable,
    kindFromPlan,
    v1StoredColumnsOf,
 } from "./serve/bind";
 import {
+   type ContractVerdict,
    MATERIALIZATION_TYPES_UNRECORDED_CODE,
    type ServeVerdict,
    type ViewServeVerdict,
@@ -215,7 +229,56 @@ export class PackageMaterialization {
       drifted: ObservedDrift[];
       unread: UnreadTable[];
       uncaptured: string[];
-   } = { drifted: [], unread: [], uncaptured: [] };
+      /** Bound tables whose entry carries no column contract (both tiers). */
+      contractMissing: string[];
+      /** Bound tables that no longer match their contract (both tiers). */
+      incompatible: IncompatibleTable[];
+   } = {
+      drifted: [],
+      unread: [],
+      uncaptured: [],
+      contractMissing: [],
+      incompatible: [],
+   };
+   /** {@link contractVerdicts}, for the snapshot it was read from. */
+   private contractVerdictsMemo:
+      | { snapshot: Snapshot; verdicts: ReadonlyMap<string, ContractVerdict> }
+      | undefined;
+   /** Where the last bind read its `storage=` tables (readStorageColumns). */
+   private storageSite: StoredTableSite | undefined;
+   /**
+    * Tables a stored read failed on, by address: failed closed (unread,
+    * answered live) until the rebind {@link onIncompatible} starts reads
+    * them again. Only that rebind's catalog read, held to each contract,
+    * may find one incompatible.
+    */
+   private readFailed: ReadonlySet<string> = new Set();
+   /**
+    * Tables a build found altered since their build (reportIncompatible), by
+    * address, each with the generation it was judged at
+    * (`physicalTableName@builtAt`), bound by the first run that reads it
+    * ({@link incompatibleTables}): rebuilt rather than carried until a new
+    * generation replaces it. A rebind does not clear them, since a table
+    * this package has no binding for is never judged by one; so one
+    * generation never fails `schema_incompatible` twice in a row.
+    */
+   private buildFound = new Map<string, string | undefined>();
+   /** The rebind {@link onIncompatible} runs, and whether another is due after it. */
+   private rebinding: { again: boolean } | undefined;
+   /** The commits in order ({@link commit}): each starts after the last ends. */
+   private commitChain: Promise<void> = Promise.resolve();
+   /** The snapshot from before a bind that is compiling ({@link servedSnapshot}). */
+   private committing: Snapshot | undefined;
+   /** The pending re-read of the `storage=` tables the last bind left unread. */
+   private storageRetry: ReturnType<typeof setTimeout> | undefined;
+   /** The `storage=` entries {@link storageBindings} were made from, by address. */
+   private storageEntries: Readonly<Record<string, ManifestEntry>> = {};
+   /**
+    * What {@link readStorageColumns} read of the bound `storage=` tables, by
+    * address: each is then held to its contract. Absent: not read (a spec's
+    * bind), and each table with a contract is bound as it is.
+    */
+   private storageObserved: ReadonlyMap<string, ObservedColumns> | undefined;
    /** The `storage=` bindings a host's or a run's manifest made. */
    private storageBindings: readonly Binding[] = [];
    /**
@@ -272,6 +335,7 @@ export class PackageMaterialization {
             this.snapshot();
             return this.observedOutcome.uncaptured;
          },
+         contractVerdicts: () => this.contractVerdicts(),
          deploymentFacts: () => this.deploymentFacts,
          destinationSchema: (name) => this.serveDestinationSchema?.(name),
          declarationOf: this.declarationLookup,
@@ -412,10 +476,168 @@ export class PackageMaterialization {
    /** Point every model's policy at this package's snapshot; idempotent. */
    wireServingResolvers(): void {
       this.owner.modelPolicy().setServingResolvers({
-         snapshot: () => this.snapshot(),
+         snapshot: () => this.servedSnapshot(),
          preaggregateEntityIds: () => this.getPreaggregateEntityIds(),
          materializedTables: () => this.verdicts.tableCatalog(),
+         reportIncompatible: (handles) => this.onIncompatible(handles),
       });
+   }
+
+   /**
+    * The drift handler, for a stored read that found its tables not as their
+    * bind found them (a column or the table gone), or a build that found an
+    * upstream not as its plan recorded it: fail them closed at once,
+    * so every leg declines them and their queries answer live, then read
+    * and bind every bound table again, where the one comparator judges each
+    * against its contract (an incompatible one stays out, `incompatible`),
+    * and derive the build plan again from what that bind holds.
+    * One rebind at a time; reports during it start one more after it.
+    * Per replica: each finds drift at its own next bind or failed read.
+    */
+   /**
+    * The stored columns bound for the upstream `sourceID` in `destination`
+    * (its contract's native types, else its schema), or undefined: what a
+    * plan stands in for its table (plan/storage_over_stored.ts).
+    */
+   boundStorageColumns(
+      sourceID: string,
+      destination: string,
+   ): { name: string; type: string }[] | undefined {
+      const binding = this.storageBindings.find(
+         (b) =>
+            b.destinationName === destination &&
+            (b.sourceIDs ?? []).includes(sourceID),
+      );
+      const entry = binding && this.storageEntries[binding.virtualHandle];
+      if (!entry) return undefined;
+      const contract = parseContract(entry.contract);
+      const columns = contract
+         ? contract.columns.map((c) => ({ name: c.name, type: c.nativeType }))
+         : (entry.schema ?? []).flatMap((c) =>
+              c.name && c.type ? [{ name: c.name, type: c.type }] : [],
+           );
+      return columns.length > 0 ? columns : undefined;
+   }
+
+   /**
+    * The column contract bound for the upstream `sourceID` in
+    * `destination`, or undefined: what a plan judges a stacked build's
+    * compared strings against (domain/string_reads.ts).
+    */
+   boundStorageContract(
+      sourceID: string,
+      destination: string,
+   ): ColumnContract | undefined {
+      const binding = this.storageBindings.find(
+         (b) =>
+            b.destinationName === destination &&
+            (b.sourceIDs ?? []).includes(sourceID),
+      );
+      const entry = binding && this.storageEntries[binding.virtualHandle];
+      return entry ? parseContract(entry.contract) : undefined;
+   }
+
+   /**
+    * A build's report that an upstream's table is not what the plan it was
+    * planned from recorded (SchemaIncompatibleError): the drift handler.
+    */
+   reportIncompatible(handles: readonly string[]): void {
+      for (const h of handles) {
+         if (!this.buildFound.has(h)) this.buildFound.set(h, undefined);
+      }
+      this.onIncompatible(handles);
+   }
+
+   private onIncompatible(handles: readonly string[]): void {
+      if (this.disposed) return;
+      // The plan was derived from the tables as they were: derived again
+      // after the rebind, from what it then binds.
+      this.plan.markStale();
+      const known = handles.filter((h) => !this.readFailed.has(h));
+      if (known.length > 0) {
+         this.readFailed = new Set([...this.readFailed, ...known]);
+         this.publish();
+      }
+      if (this.rebinding) {
+         this.rebinding.again = true;
+         return;
+      }
+      const run = { again: false };
+      this.rebinding = run;
+      void (async () => {
+         try {
+            do {
+               run.again = false;
+               // Again when the read was discarded, or a read failed since
+               // it began: every failed-closed table is read.
+               if (!(await this.rebindFromCatalog())) run.again = true;
+               await this.plan.refresh(async () => undefined);
+            } while (run.again && !this.disposed);
+         } catch (err) {
+            logger.warn(
+               "Could not read the bound tables again after a stored read failed; they stay answered live until the next bind",
+               {
+                  packageName: this.owner.packageName(),
+                  code: errorCodeOf(err),
+               },
+            );
+         } finally {
+            this.rebinding = undefined;
+         }
+      })();
+   }
+
+   /**
+    * Read every bound table again, on both tiers, and bind what it finds as
+    * one commit, clearing the tables {@link onIncompatible} had failed closed
+    * when the reads began. False when another rebind is due: the read was
+    * discarded (a bind replaced the entries) or a read failed since.
+    */
+   private async rebindFromCatalog(): Promise<boolean> {
+      // Only the tables failed closed before these reads began are judged
+      // by them: one a read failed on since is read by the next rebind.
+      const judged = this.readFailed;
+      const database = this.databaseEntries;
+      const observed =
+         database && Object.keys(database).length > 0
+            ? await this.readDatabaseColumns(database)
+            : undefined;
+      const storage = this.storageEntries;
+      const storageObserved =
+         Object.keys(storage).length > 0
+            ? await this.readStorageColumns(storage, this.storageSite)
+            : undefined;
+      if (this.disposed) return true;
+      // A bind that replaced the entries meanwhile discards what was read
+      // of them: the tables stay failed closed, for another rebind.
+      const applied =
+         (!observed || this.databaseEntries === database) &&
+         (!storageObserved || this.storageEntries === storage);
+      if (!applied) return false;
+      await this.commit(() => {
+         if (observed) this.observedColumns = observed;
+         if (storageObserved) this.storageObserved = storageObserved;
+         this.readFailed = new Set(
+            [...this.readFailed].filter((h) => !judged.has(h)),
+         );
+      });
+      this.logObservedOutcome();
+      // A table still unread (a swap's rename window outlasting the read) is
+      // read again with backoff, as a bind's are, and serves once it is.
+      if (observed) this.scheduleUnreadRetry(1);
+      if (storageObserved) this.scheduleStorageRetry(1);
+      return this.readFailed.size === 0;
+   }
+
+   /**
+    * The snapshot the models read: {@link snapshot}, except while a bind
+    * commits ({@link bindCompiled}), when it is the one from before the
+    * bind, until every model's served copy has compiled over the new one.
+    * So a query never meets tables its served copy has not compiled for, and
+    * no verdict read after a bind is pending.
+    */
+   private servedSnapshot(): Snapshot {
+      return this.committing ?? this.snapshot();
    }
 
    /**
@@ -429,6 +651,8 @@ export class PackageMaterialization {
       const plan = this.plan;
       const key = [
          this.storageBindings,
+         this.storageObserved,
+         this.readFailed,
          this.databaseEntries,
          this.observedColumns,
          plan.buildPlan,
@@ -453,23 +677,58 @@ export class PackageMaterialization {
          observed: this.observedColumns,
          declared: (id) => this.driftDeclaration(id),
       });
+      // Each `storage=` table held to its contract, as a database one is.
+      const stored = holdStorageToContracts({
+         bindings: this.storageBindings,
+         entries: this.storageEntries,
+         observed: this.storageObserved,
+      });
       this.observedOutcome = {
          drifted: observed.drifted,
-         unread: observed.unread,
+         // A table a stored read failed on is unread until the rebind reads
+         // it: a failed read is never a verdict on the table (a swap's
+         // rename window, a permission, a live table it joined).
+         unread: [
+            ...observed.unread,
+            ...stored.unread,
+            ...[...this.readFailed].map((id) => ({
+               sourceEntityId: id,
+               reason: "not_read" as const,
+               detail: "a query's read of it failed; it is read again",
+            })),
+         ],
          uncaptured: observed.uncaptured,
+         contractMissing: [
+            ...observed.contractMissing,
+            ...stored.contractMissing,
+         ],
+         incompatible: [...observed.incompatible, ...stored.incompatible],
       };
       const { addresses, binding: asOfBuild } = this.asOfBuildTables();
       const bindings = [
-         ...this.storageBindings.map((b) => {
+         ...stored.bindings.map((b) => {
             const kind = kindOf(b);
             return kind === b.kind ? b : { ...b, kind };
          }),
          ...observed.bindings,
       ].map((b) => (asOfBuild(b) ? { ...b, asOfBuild: true } : b));
+      // A table a stored read failed on serves nothing until the rebind
+      // judges it again.
+      const failed = this.readFailed;
+      const served =
+         failed.size === 0
+            ? bindings
+            : bindings.filter((b) => !failed.has(b.virtualHandle));
+      bindings.splice(0, bindings.length, ...served);
       const signature = JSON.stringify(bindings);
-      const entries = this.observedColumns
-         ? observed.entries
-         : (this.databaseEntries ?? {});
+      const entries =
+         failed.size === 0
+            ? observed.entries
+            : Object.fromEntries(
+                 Object.entries(observed.entries).filter(
+                    ([id]) => !failed.has(id),
+                 ),
+              );
       const snapshot = makeSnapshot(
          memo && memo.signature === signature
             ? memo.snapshot.bindings
@@ -539,44 +798,6 @@ export class PackageMaterialization {
          if (text !== undefined) return text;
       }
       return { declined: "no model of this package declares the downstream" };
-   }
-
-   /**
-    * The host port's `chainCollationRefusal` for this package version: why a
-    * chained `storage=` build must not be computed over its stored upstreams
-    * in its destination, judged in the model that declares the downstream
-    * (a rollup's base), with that model's live connections. Refuses when no
-    * model of the package declares it.
-    */
-   async chainCollationRefusal(
-      request: ChainCollationRequest,
-   ): Promise<string | undefined> {
-      const declared =
-         request.rollup?.baseSourceID ?? request.downstream.sourceID;
-      const declaringURL = declared.split("@").slice(1).join("@");
-      // The declaring file: the longest model path the URL ends with, so
-      // `m.malloy` never stands in for `sub/m.malloy`.
-      const declaring = [...this.owner.models()]
-         .filter(([modelPath]) => declaringURL.endsWith(`/${modelPath}`))
-         .sort(([a], [b]) => b.length - a.length)[0]?.[1];
-      const load = declaring?.authorQueryLoader();
-      if (load !== undefined) {
-         return chainBuildCollationRefusal({
-            load,
-            downstream: request.downstream.name,
-            ...(request.rollup
-               ? {
-                    rollup: {
-                       baseName: request.rollup.baseName,
-                       grain: request.rollup.grain,
-                       measures: request.rollup.measures,
-                    },
-                 }
-               : {}),
-            stored: new Set(request.stored),
-         });
-      }
-      return "no model of this package declares the downstream";
    }
 
    /**
@@ -655,6 +876,53 @@ export class PackageMaterialization {
     *   definition of their source. The host knows WHICH table backs a source,
     *   not WHETHER a frozen table may serve it: only a compile knows that.
     */
+   /**
+    * {@link bind}, as a bind's commit: every model's served copy is compiled
+    * over the new tables before they are swapped in, and the models read
+    * the tables from before the bind until then. Every server bind commits
+    * this way; a spec's direct {@link bind} compiles after the swap, as it
+    * always has.
+    */
+   async bindCompiled(update: Parameters<PackageMaterialization["bind"]>[0]) {
+      await this.commit(() => this.applyBind(update), update.models);
+      this.afterBind(update);
+   }
+
+   /**
+    * Make `change` to the bound state and publish it as one commit: every
+    * model's served copy compiles over the new snapshot while the models go
+    * on reading the one from before (`servedSnapshot`), then the two swap.
+    */
+   private commit(change: () => void, models?: "installed"): Promise<void> {
+      // One commit at a time: a second, started while the first's served
+      // copies compile, would snapshot the first's new state, skip its own
+      // compile, and clear `committing` before the first's copies exist.
+      const run = this.commitChain.then(() => this.commitNow(change, models));
+      this.commitChain = run.catch(() => undefined);
+      return run;
+   }
+
+   private async commitNow(change: () => void, models?: "installed") {
+      const before = this.snapshot();
+      this.committing = before;
+      try {
+         change();
+         const next = this.snapshot();
+         if (next.bindings !== this.publishedBindings || models) {
+            this.publishedBindings = next.bindings;
+            await Promise.all(
+               [...this.owner.models().values()].map(async (model) => {
+                  this.setServedCopyContextOn(model);
+                  await model.prepareServedCopyOver(next);
+               }),
+            );
+            this.bindTypeFindings(next.bindings);
+         }
+      } finally {
+         this.committing = undefined;
+      }
+   }
+
    bind(update: {
       database?: FreshnessManifest;
       databaseAsGiven?: boolean;
@@ -665,9 +933,23 @@ export class PackageMaterialization {
        */
       observed?: ReadonlyMap<string, ObservedColumns>;
       storage?: Record<string, ManifestEntry>;
+      /**
+       * What {@link readStorageColumns} read of `storage`'s tables: each is
+       * then held to its contract. Every server bind passes it.
+       */
+      storageObserved?: ReadonlyMap<string, ObservedColumns>;
+      /** Where `storageObserved` was read, for its retry. */
+      storageSite?: StoredTableSite;
       /** Models a reload just installed: publish to them even when the bindings did not move. */
       models?: "installed";
    }): void {
+      this.applyBind(update);
+      this.publish(update.models);
+      this.afterBind(update);
+   }
+
+   /** {@link bind}'s change of the bound state, before any publish. */
+   private applyBind(update: Parameters<PackageMaterialization["bind"]>[0]) {
       if (update.database) {
          this.adoptDatabase(
             update.databaseAsGiven
@@ -678,6 +960,10 @@ export class PackageMaterialization {
          this.cancelUnreadRetry();
       }
       if (update.storage) {
+         this.storageEntries = update.storage;
+         this.storageObserved = update.storageObserved;
+         this.storageSite = update.storageSite;
+         this.cancelStorageRetry();
          this.storageBindings = this.admitStorage(update.storage);
          this.storageLateRows = new Map(
             Object.entries(update.storage).flatMap(([id, entry]) =>
@@ -685,7 +971,13 @@ export class PackageMaterialization {
             ),
          );
       }
-      this.publish(update.models);
+   }
+
+   /** {@link bind}'s logs and retries, once the bound state is published. */
+   private afterBind(update: Parameters<PackageMaterialization["bind"]>[0]) {
+      if (update.storage && update.storageObserved) {
+         this.scheduleStorageRetry(1);
+      }
       if (update.database && update.observed) {
          this.logObservedOutcome();
          this.scheduleUnreadRetry(1);
@@ -695,10 +987,11 @@ export class PackageMaterialization {
    /**
     * Whether the bound database tables include one the bind could not read
     * (it answers live): a poll that finds the manifest unchanged binds again
-    * rather than skip, so the table is read once it can be.
+    * rather than skip, so the table is read once it can be. A bind still
+    * committing counts as unread: its tables are not yet the ones read.
     */
    hasUnreadDatabaseTables(): boolean {
-      return this.knownUnread().length > 0;
+      return this.committing !== undefined || this.knownUnread().length > 0;
    }
 
    /**
@@ -729,6 +1022,59 @@ export class PackageMaterialization {
    dispose(): void {
       this.disposed = true;
       this.cancelUnreadRetry();
+      this.cancelStorageRetry();
+   }
+
+   private cancelStorageRetry(): void {
+      if (this.storageRetry) clearTimeout(this.storageRetry);
+      this.storageRetry = undefined;
+   }
+
+   /**
+    * Read again, with the database tier's backoff, the `storage=` tables the
+    * last bind left unread (a destination read that failed), so a transient
+    * failure does not keep a table live until something else binds. Stops
+    * when every table reads, when a bind replaces these entries, or after
+    * {@link UNREAD_RETRY_ATTEMPTS} tries.
+    */
+   private scheduleStorageRetry(attempt: number): void {
+      this.cancelStorageRetry();
+      const observed = this.storageObserved;
+      const entries = this.storageEntries;
+      if (this.disposed || !observed || attempt > UNREAD_RETRY_ATTEMPTS) {
+         return;
+      }
+      const unread = Object.keys(entries).filter((id) => {
+         const o = observed.get(id);
+         return o !== undefined && "unread" in o;
+      });
+      if (unread.length === 0) return;
+      const delay = Math.min(
+         UNREAD_RETRY_BASE_MS * 2 ** (attempt - 1),
+         UNREAD_RETRY_MAX_MS,
+      );
+      const timer = setTimeout(() => {
+         void (async () => {
+            const current = () =>
+               !this.disposed &&
+               this.storageEntries === entries &&
+               this.storageObserved === observed;
+            if (!current()) return;
+            const reread = await this.readStorageColumns(
+               Object.fromEntries(unread.map((id) => [id, entries[id]])),
+               this.storageSite,
+            );
+            if (!current()) return;
+            const next = new Map(observed);
+            for (const [id, o] of reread) next.set(id, o);
+            await this.commit(() => {
+               this.storageObserved = next;
+            });
+            this.scheduleStorageRetry(attempt + 1);
+         })();
+      }, delay);
+      (timer as { unref?: () => void }).unref?.();
+      this.storageRetry = timer;
    }
 
    private cancelUnreadRetry(): void {
@@ -787,8 +1133,9 @@ export class PackageMaterialization {
       if (!current()) return;
       const next = new Map(observed);
       for (const [id, o] of reread) next.set(id, o);
-      this.observedColumns = next;
-      this.publish();
+      await this.commit(() => {
+         this.observedColumns = next;
+      });
       // Only what this retry read: the rest was logged and counted already.
       this.logObservedOutcome(new Set(unread));
       this.scheduleUnreadRetry(attempt + 1);
@@ -815,6 +1162,180 @@ export class PackageMaterialization {
             entries[id]?.connectionName ?? planConnections.get(id),
          connection: (name) => this.owner.connection(name),
       });
+   }
+
+   /**
+    * The tables a standalone run rebuilds in full rather than carry, by
+    * address: each a bind found incompatible with its contract or a stored
+    * read failed closed, and each a build found altered since its build
+    * while `prior` (the entries the run would carry) still holds that
+    * generation. The first run to read a build's report binds it to the
+    * generation it would have carried.
+    */
+   incompatibleTables(
+      prior?: Readonly<Record<string, ManifestEntry>>,
+   ): ReadonlySet<string> {
+      const out = new Set(
+         [...this.contractVerdicts()]
+            .filter(([, v]) => v.reason === "incompatible")
+            .map(([id]) => id),
+      );
+      for (const [id, judged] of [...this.buildFound]) {
+         const entry = prior?.[id];
+         if (!prior) {
+            out.add(id);
+            continue;
+         }
+         const generation =
+            entry && `${entry.physicalTableName}@${entry.builtAt ?? ""}`;
+         if (generation === undefined) {
+            this.buildFound.delete(id);
+         } else if (judged === undefined || judged === generation) {
+            this.buildFound.set(id, generation);
+            out.add(id);
+         } else {
+            this.buildFound.delete(id);
+         }
+      }
+      return out;
+   }
+
+   /**
+    * The bound tables the bind held to their contracts and left out, by
+    * address, with the generation judged: the `contract_missing` and
+    * `incompatible` serve verdicts. Memoized on the snapshot, so the serve
+    * verdicts' own memo keys on it.
+    */
+   private contractVerdicts(): ReadonlyMap<string, ContractVerdict> {
+      const snapshot = this.snapshot();
+      if (this.contractVerdictsMemo?.snapshot === snapshot) {
+         return this.contractVerdictsMemo.verdicts;
+      }
+      const tableOf = (id: string) => {
+         const database = this.databaseEntries?.[id];
+         const stored = this.storageEntries[id];
+         return {
+            physicalTableName:
+               stored?.physicalTableName ?? database?.tableName ?? "",
+            builtAt: stored?.builtAt ?? database?.builtAt,
+         };
+      };
+      const verdicts = new Map<string, ContractVerdict>();
+      for (const id of this.observedOutcome.contractMissing) {
+         const t = tableOf(id);
+         verdicts.set(id, {
+            reason: "contract_missing",
+            physicalTableName: t.physicalTableName,
+            ...(t.builtAt ? { builtAt: t.builtAt } : {}),
+         });
+      }
+      // A table withdrawn because an upstream it was built from changed
+      // since (a load or publish that could not recompile): incompatible,
+      // its upstream altered.
+      for (const id of this.plan.withdrawn) {
+         const t = tableOf(id);
+         if (!t.physicalTableName) continue;
+         verdicts.set(id, {
+            reason: "incompatible",
+            physicalTableName: t.physicalTableName,
+            ...(t.builtAt ? { builtAt: t.builtAt } : {}),
+            incompatibility: { code: "upstream_altered", columns: [] },
+         });
+      }
+      for (const i of this.observedOutcome.incompatible) {
+         verdicts.set(i.sourceEntityId, {
+            reason: "incompatible",
+            physicalTableName:
+               this.storageEntries[i.sourceEntityId]?.physicalTableName ??
+               i.tableName,
+            ...(i.builtAt ? { builtAt: i.builtAt } : {}),
+            incompatibility: { code: i.code, columns: i.columns },
+         });
+      }
+      this.contractVerdictsMemo = { snapshot, verdicts };
+      return verdicts;
+   }
+
+   /**
+    * Read each `storage=` table's columns and collations through its
+    * destination, as its build's session read them (its `DESCRIBE`, no
+    * DuckLake rewrite, and its definition's collations), for a bind of
+    * `entries` ({@link bind}'s `storageObserved`). A table whose read fails
+    * is unread: answered live, never judged incompatible.
+    */
+   async readStorageColumns(
+      entries: Record<string, ManifestEntry>,
+      /**
+       * The environment's destinations: each table is read on a destination
+       * session of its own, the catalog as it is now, as its build's session
+       * read it. Absent (a spec's package), through the serve connection.
+       */
+      site?: StoredTableSite,
+   ): Promise<ReadonlyMap<string, ObservedColumns>> {
+      if (site) {
+         return readStoredTables(
+            site,
+            Object.entries(entries).flatMap(([key, entry]) => {
+               const destinationName = entry.storageDestinationName;
+               if (!destinationName) return [];
+               let schema: string | undefined;
+               try {
+                  schema = destinationSchemaOf(
+                     site.getStorageDestination(destinationName),
+                  );
+               } catch {
+                  schema = undefined;
+               }
+               return [
+                  {
+                     key,
+                     destinationName,
+                     tablePath: storageTablePath(
+                        destinationName,
+                        entry.physicalTableName,
+                        schema,
+                     ),
+                  },
+               ];
+            }),
+         );
+      }
+      const config = this.serveDestinationConfig?.();
+      const tables = Object.entries(entries).flatMap(([id, entry]) =>
+         entry.storageDestinationName
+            ? [
+                 {
+                    key: id,
+                    connectionName: entry.storageDestinationName,
+                    tableName: storageTablePath(
+                       entry.storageDestinationName,
+                       entry.physicalTableName,
+                       this.serveDestinationSchema?.(
+                          entry.storageDestinationName,
+                       ),
+                    ),
+                 },
+              ]
+            : [],
+      );
+      if (tables.length === 0) return new Map();
+      const connection = async (name: string) => {
+         if (!config) throw new Error("no storage destinations configured");
+         return config.connections.lookupConnection(name);
+      };
+      // One after the other: one connection runs one statement at a time.
+      const columns = await readTableColumns({
+         tables,
+         connection,
+         asDescribed: true,
+         concurrency: 1,
+      });
+      const collations = await readTableCollations({
+         tables,
+         connection,
+         concurrency: 1,
+      });
+      return withCollations(tables, columns, collations);
    }
 
    /**
@@ -857,6 +1378,31 @@ export class PackageMaterialization {
                packageName: this.owner.packageName(),
                sourceEntityId: drift.sourceEntityId,
                columns: reported,
+            },
+         );
+      }
+      for (const id of this.observedOutcome.contractMissing) {
+         if (!read(id)) continue;
+         logger.warn(
+            "A bound table's entry carries no column contract, so it is not served from; its sources answer live until a build rebuilds it in full",
+            {
+               packageName: this.owner.packageName(),
+               sourceEntityId: id,
+               reason: "contract_missing",
+            },
+         );
+      }
+      for (const table of this.observedOutcome.incompatible) {
+         if (!read(table.sourceEntityId)) continue;
+         recordIncompatibleDetected("bind", table.code);
+         logger.warn(
+            "A bound table no longer matches the column contract its build recorded, so it is not served from; its sources answer live until a build rebuilds it",
+            {
+               packageName: this.owner.packageName(),
+               sourceEntityId: table.sourceEntityId,
+               reason: "incompatible",
+               code: table.code,
+               columns: table.columns,
             },
          );
       }

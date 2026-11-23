@@ -3074,7 +3074,16 @@ export class Model {
     * compile.
     */
    public async prepareServedCopy(): Promise<void> {
-      const pinned = this.pinNow();
+      await this.prepareServedCopyOver(this.servingSnapshot());
+   }
+
+   /**
+    * {@link prepareServedCopy} over `snapshot`, the tables a bind is about
+    * to swap in (`PackageMaterialization.bindCompiled`): the copy is then
+    * current the moment the swap makes `snapshot` the one this model reads.
+    */
+   public async prepareServedCopyOver(snapshot: Snapshot): Promise<void> {
+      const pinned = pin(snapshot, new Date());
       this.storageTables(pinned.snapshot);
       if (!this.servedCopyEnabled()) return;
       await this.servedCopy.prepare(pinned);
@@ -3294,22 +3303,6 @@ export class Model {
    }
 
    /**
-    * Compiles a query in this model as it serves, with its live connections:
-    * how a chained `storage=` build's collation check reads what the build
-    * compares (`chainCollationRefusal`). Undefined when this model has no
-    * compile to query.
-    */
-   public authorQueryLoader():
-      | ((query: string) => QueryMaterializer)
-      | undefined {
-      const materializer = this.modelMaterializer;
-      if (this.modelType !== "model" || this.isNotebook() || !materializer) {
-         return undefined;
-      }
-      return (query) => materializer.loadQuery(query);
-   }
-
-   /**
     * The v1 cutover's preview (dry run): the sources this model's served copy
     * would re-root over `bindings` (declared from the plan's output columns,
     * so no table is read), and why it leaves the others as written. Compiled
@@ -3509,6 +3502,8 @@ export class Model {
          sources: () => this.sources,
          givens: () => this.givens,
          snapshot: () => this.servingSnapshot(),
+         reportIncompatible: (handles) =>
+            this.policy.reportIncompatible?.(handles),
          servedCopy: () => this.servedCopy,
          legs: (pinned, servedCopy) =>
             makeLegs(pinned, {

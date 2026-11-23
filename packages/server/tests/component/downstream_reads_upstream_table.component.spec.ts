@@ -488,6 +488,39 @@ for (const [tier, mechanism] of tiers.flatMap((t) =>
          ]);
       });
 
+      it("records a column contract on every table it built, each string compared exact on its own engine", () => {
+         for (const e of [
+            ...Object.values(entriesOf(first)),
+            ...Object.values(entriesOf(second)),
+         ]) {
+            const contract = (e as { contract?: unknown }).contract as {
+               v: number;
+               columns: { collation: string | null; compare: string }[];
+            };
+            expect(contract.v).toBe(1);
+            expect(contract.columns.length).toBeGreaterThan(0);
+            for (const c of contract.columns) {
+               expect(c.compare).toBe("exact");
+            }
+         }
+      });
+
+      it("binds every table a build wrote as its contract recorded it: none incompatible or missing its contract", async () => {
+         // The bind every run's commit, a manifest bind and a restart take.
+         await pkg.reloadAllModels(
+            pkg.materialization().boundDatabaseEntries() ?? {},
+         );
+         const judged = pkg
+            .materialization()
+            .serveVerdicts()
+            .filter(
+               (v) =>
+                  v.reason === "incompatible" ||
+                  v.reason === "contract_missing",
+            );
+         expect(judged).toEqual([]);
+      });
+
       it("serves its table, equal to live before the drop, as text", () => {
          // On Postgres the router may answer from the upstream's served
          // copy instead, at its read cost; the stored rows are compared
@@ -609,7 +642,6 @@ describe("a host's instructions listing a view before its upstream", () => {
       order = instructions.map((i) => i.physicalTableName);
       const created = await service.createMaterialization(ENV, PKG, {
          buildInstructions: instructions,
-         strictUpstreams: true,
       });
       const deadline = Date.now() + 120_000;
       for (;;) {

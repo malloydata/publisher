@@ -1,0 +1,5 @@
+{
+   "name": "mixed",
+   "version": "1.0.0",
+   "description": "Mixed-version fixture: built by this checkout, served by the last release from the manifest it wrote"
+}

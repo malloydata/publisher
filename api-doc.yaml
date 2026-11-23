@@ -4973,16 +4973,61 @@ components:
             another source), `destination_missing` (`storage=` names a
             destination the environment does not configure),
             `connection_cannot_hold_table` (database, on a connection whose
-            type creates no tables), `types_unrecorded` (database, bound, but
-            its manifest entry records no column types, neither `schema` nor
-            `nativeSchema`, so a change since the build cannot be ruled out;
-            rebuild it), `materialization_off` (a `#(materialize)`
+            type creates no tables), `types_unrecorded` (retained, no longer
+            produced: an entry with no recorded types reads
+            `contract_missing` now), `materialization_off` (a `#(materialize)`
             source, which only the served copy reads, and the served copy is
             off: `PUBLISHER_MATERIALIZE`, and for `storage=`
             `PERSIST_STORAGE_MODE`), `served_copy` (a source the served copy
             reads, `#(materialize)` or `#@ persist`, whose table is bound and
             built, but no model's served copy re-roots it, so its queries are
-            answered live; `notServedIn` says where and why). An open set.
+            answered live; `notServedIn` says where and why),
+            `contract_missing` (bound, but its manifest entry carries no
+            column contract, `ManifestEntry.contract`: built before contracts
+            were recorded, or by an older worker), `incompatible` (bound, but
+            the table no longer matches the contract its build recorded: a
+            column gone, retyped or recollated since, or the source of a
+            substituted table now declaring another type; `incompatibility`
+            says what). Both judge the table itself, never anything local to
+            one worker: a catalog read that failed or timed out leaves the
+            table unread (answered live, read again), never `incompatible`.
+            Both are non-terminal and never a plan-time refusal: a rebuild
+            fixes them, and a source with either counts as stale, so the next
+            build rebuilds it in full. Each names the generation it judged in
+            `table`, so a consumer drops a verdict about a table it has since
+            replaced. An open set.
+        table:
+          type: object
+          required: [physicalTableName]
+          description: >-
+            With `contract_missing` or `incompatible`: the table generation
+            the verdict judged, its `physicalTableName` and the `builtAt` its
+            entry carried (absent when the entry carried none).
+          properties:
+            physicalTableName:
+              type: string
+            builtAt:
+              type: string
+              format: date-time
+        incompatibility:
+          type: object
+          required: [code, columns]
+          description: >-
+            With `incompatible`: what changed (`column_gone`,
+            `column_retyped`, `collation_changed`, `declared_moved`, or
+            `upstream_altered`: a table an upstream it was built from
+            changed under, found when a reload could not recompile; an open
+            set) and the columns it changed (none for `upstream_altered`). A
+            query's failed read of a table never makes it `incompatible`: it
+            leaves the table unread, answered live, until the package's
+            rebind reads its catalog and holds it to its contract.
+          properties:
+            code:
+              type: string
+            columns:
+              type: array
+              items:
+                type: string
         notServedIn:
           type: array
           items:
@@ -5004,15 +5049,15 @@ components:
             running a query.
         servedCopyPending:
           type: boolean
+          deprecated: true
           description: >-
-            Present, and always `true`, while some model that holds this source,
-            which its served copy reads (`#(materialize)` or `#@ persist`), has
-            yet to compile its served copy over the tables bound now. A bind
-            returns before that compile, so the verdict carries no served-copy
-            judgement yet: it may read `serves` for a table the compile will
-            leave unread. A host must re-read the verdict while it is present;
-            it is absent once every such model's copy is current, and then
-            `notServedIn` and a `served_copy` reason are final for the bind.
+            DEPRECATED, removed in a later release: a bind now compiles every
+            model's served copy over the new tables before they are swapped
+            in, and models read the previous tables until then, so a verdict
+            read after a bind returns is never pending. Present, and `true`,
+            only while some model holding this source has yet to compile its
+            copy over the tables bound now, which a server's own binds never
+            leave behind.
         message:
           type: string
           description: What the verdict means for this source, in a sentence.
@@ -6007,7 +6052,9 @@ components:
                   `storage-column-type-mismatch`: a `storage=` table of any
                   kind (`#@ persist`, `#(materialize)`, a rollup, a persisted
                   view or query) stores a column as a type other than the one
-                  its build declares. It is read through a cast to the
+                  its build declares, as its build wrote it (a change after
+                  the build is `materialization-table-incompatible`). It is
+                  read through a cast to the
                   declared type where that is faithful, and otherwise
                   answered live, never read as its stored type (one per
                   source and column, `model` the model
@@ -6015,12 +6062,24 @@ components:
                   view's or query's build source, the message naming the
                   column, both types and which applies; `warn`; see
                   docs/materialization.md).
-                  `database-column-type-mismatch`: a bound table in a source's
-                  own database whose column was altered, or dropped, outside a
-                  build, so it no longer stores the declared type; it is read
-                  through a cast where that is faithful, and otherwise answered
-                  live, until the table is rebuilt (one per source and column,
-                  `subject` the source; `warn`).
+                  `database-column-type-mismatch` is retained, no longer
+                  produced: a bound table altered outside a build is now
+                  `materialization-table-incompatible`, answered live whole
+                  until it is rebuilt, never read through a cast.
+                  `materialization-table-incompatible`: a bound table, on
+                  either tier, that no longer matches the column contract its
+                  build recorded (a column gone, retyped or recollated since,
+                  or its source now declaring another type than it was built
+                  for); it is answered live until a build rebuilds it (one per
+                  source, `subject` the source; `warn`; the serve verdict's
+                  `incompatible` names the table and what changed).
+                  `materialization-contract-missing`: a bound table whose
+                  entry carries no column contract (built before contracts
+                  were recorded); it is answered live until a build rebuilds
+                  it in full (one per source, `subject` the source; `warn`).
+                  `materialization-types-unrecorded` is retained, no longer
+                  produced: a table with no recorded types is
+                  `materialization-contract-missing` now.
                   `table-kept`: a table an auto-run replaced
                   when its source's table was renamed or moved, which
                   Publisher keeps rather than drops: one at an author's exact
@@ -7177,8 +7236,7 @@ components:
             $ref: "#/components/schemas/NotebookCell"
         annotations:
           type: array
-          description:
-            Array of file-level (##) annotations attached to the notebook.
+          description: Array of file-level (##) annotations attached to the notebook.
           items:
             type: string
         startingGivens:
@@ -11003,15 +11061,17 @@ components:
             and a host's instruction for it is refused, until a reload or a
             plan refresh reads the catalog and plans it at its address; the
             `*-not-built` warning names the table).
-            `upstream_table_unusable` (a database persisted view, named query
+            `upstream_table_unusable` (a persisted source, view, named query
             or rollup that is built from its upstream's stored table, and
             never by recomputing the upstream from raw, in any build, when
-            that table cannot be read: an upstream declared `storage=`, whose
-            table lives in a storage destination a build in the warehouse
-            cannot read; or an upstream that declares a persisted table but is
-            itself refused, or not planned, so it has none. `message` names the
-            upstream and why. Terminal until the model changes; the
-            declaration is answered live).
+            that table cannot be read where it is built: a database one over
+            an upstream declared `storage=`, whose table lives in a storage
+            destination a build in the warehouse cannot read; a `storage=` one
+            over an upstream stored in another destination; or one over an
+            upstream that declares a persisted table but is itself refused,
+            or not planned, so it has none. `message` names the upstream and
+            why. Terminal until the model changes; the declaration is
+            answered live).
 
 
             A persisted view or named query: `materialization_off` (persisted
@@ -11688,30 +11748,25 @@ components:
         strictUpstreams:
           type: boolean
           default: false
+          deprecated: true
           description: >-
-            When true, a persist upstream that is neither built here nor present
-            in referenceManifest fails the build (compiler strict mode) instead
-            of silently recomputing it live. Per-unit dispatch should set this
-            true.
+            Deprecated: accepted and ignored. Every build is strict: a persist
+            upstream that is neither built here nor present in
+            referenceManifest (nor carried by a standalone run, which builds
+            the upstreams a named source reads when it cannot carry them)
+            fails the build, and a downstream is never built by recomputing
+            its upstreams from raw.
         warehouseReach:
           type: string
           default: recompute
+          deprecated: true
           description: >-
-            What a strict build (`strictUpstreams: true`) does with a
-            `storage=` source whose only build recomputes a stored upstream
-            from the source warehouse: the source reaches the warehouse through
-            an intermediate that no stored table can stand in for, so no build
-            over the stored tables exists for it. `recompute` (the default,
-            and what an absent or null value means) builds it and reports
-            `upstreamReuse: recomputed` with the reason; `refuse` fails the
-            source instead, with that reason in its `SourceFailure.reason` and
-            `retryable: false`, and nothing reads the warehouse. Non-strict
-            builds ignore it, as they ignore `strictUpstreams`.
-
-
-            An open string, not an enum, so a later value needs no client
-            change; today's values are `recompute` and `refuse`, and any other
-            is a 400.
+            Deprecated: accepted and ignored. No build recomputes a stored
+            upstream from the source warehouse, so there is nothing for it to
+            choose; a request that sends it (or `strictUpstreams`) logs one
+            deprecation warning. The values are still validated: `recompute`
+            and `refuse` are accepted, null reads as absent, and any other
+            value is a 400.
         ledger:
           type: array
           items:
@@ -11793,6 +11848,43 @@ components:
             it there. Optional and additive.
           items:
             $ref: "#/components/schemas/Column"
+        schema:
+          type: array
+          description: >-
+            For a `storage=` upstream: the `schema` its build reported on its
+            manifest entry, sent back as it came. A `storage=` build stacked
+            on the referenced table declares exactly these columns, so without
+            it (and without this worker's own record of the table) that build
+            is refused rather than recomputing the upstream. Optional and
+            additive.
+          items:
+            $ref: "#/components/schemas/Column"
+        dataAsOf:
+          type: string
+          format: date-time
+          description: >-
+            The upstream entry's `dataAsOf`, sent back as it came: how fresh
+            the referenced table is. A downstream with a freshness window
+            reads a referenced table only when it is fresh enough by this
+            instant; without it the table is of unknown age, and such a
+            downstream is refused rather than built from raw. Optional and
+            additive.
+        builtAt:
+          type: string
+          format: date-time
+          description: >-
+            The upstream entry's `builtAt`, sent back as it came, so a
+            downstream's `builtFrom` names which build of the table it read.
+            Optional and additive.
+        contract:
+          allOf:
+            - $ref: "#/components/schemas/ColumnContract"
+          description: >-
+            The upstream entry's `contract`, sent back unparsed. A downstream
+            built over the referenced table reads it to know how the table's
+            strings compare with live, and, for a pair table, whether its leaf
+            key check passed; without it those columns are unknown, and a
+            downstream that needs them is refused. Optional and additive.
 
     BuildInstruction:
       type: object
@@ -11981,6 +12073,111 @@ components:
             The upstream entry's own `builtAt`: which build of that table was
             read. Absent when its entry carries none (a reference, or an entry
             written before 0.17.2).
+        contractDigest:
+          type: string
+          description: >-
+            A digest of the upstream table's column contract
+            (`ManifestEntry.contract`: each column's name, native type and
+            collation) as this build read it. A downstream is carried forward
+            only while its upstream's current entry still has this digest, so
+            a rebuilt or altered upstream rebuilds its readers. Absent when
+            the upstream carried no contract.
+
+    ColumnContract:
+      type: object
+      additionalProperties: true
+      description: >-
+        What a materialized table's build recorded about each of its columns,
+        so a stored read is judged against facts recorded once at build rather
+        than probed per query. A host that stores entries keeps it as written
+        (as text is fine) and sends it back unparsed. Readers ignore keys they
+        do not know, at every level, so later releases may add keys. An entry
+        with no `contract`, an empty one, or one without `v` has no contract:
+        its table is not served from until it is rebuilt (serve verdict
+        reason `contract_missing`). A column the contract does not list is
+        treated as unknown: `compare` `none`, `gateExact` false.
+      properties:
+        v:
+          type: integer
+          description: The contract's shape version. `1`.
+        producer:
+          type: string
+          description: The Publisher version whose build wrote it; diagnostic only.
+        dialect:
+          type: string
+          description: >-
+            The dialect of the engine holding the table: the warehouse's for a
+            database table, the destination's (`duckdb`) for a `storage=` one.
+        defaultCollation:
+          type: string
+          description: >-
+            The holding engine's default collation as the build read it,
+            normalised (`binary` for a byte-wise default). Absent when unread.
+        columns:
+          type: array
+          description: The table's columns, in table order.
+          items:
+            $ref: "#/components/schemas/ContractColumn"
+        keys:
+          type: object
+          description: >-
+            For a pair table (an `inline=` join_many), the key checks its build
+            ran, by stored key column: whether the key held one row per value
+            and no NULL. A view built over a pair table needs its leaf key's
+            check recorded as passed.
+          additionalProperties:
+            type: object
+            required: [unique]
+            properties:
+              unique:
+                type: boolean
+              level:
+                type: string
+                description: "`parent`, `middle` or `leaf`. An open set."
+
+    ContractColumn:
+      type: object
+      additionalProperties: true
+      required: [name, nativeType]
+      description: One column of a `ColumnContract`.
+      properties:
+        name:
+          type: string
+        nativeType:
+          type: string
+          description: >-
+            The column's type as the holding engine's catalog names it, read
+            from the table the build wrote, by the same catalog read a bind
+            makes.
+        collation:
+          type: [string, "null"]
+          description: >-
+            For a string column, the stored column's collation identity as the
+            holding engine's catalog reports it (normalised; `binary` for
+            byte-wise). Null or absent for a non-string column.
+        compare:
+          type: string
+          description: >-
+            What a stored read of this column may answer in place of live:
+            `exact` (equality, grouping, filters and ordering all match live),
+            `equality` (equality, grouping, equality filters and joins match;
+            ordering and ranges may not), or `none` (no string comparison is
+            known to match). Every non-string column is `exact`. An open set:
+            read an unknown value as `none`.
+        gateExact:
+          type: boolean
+          description: >-
+            Whether a row-level gate comparing this column reads the same rows
+            from the stored table as live (a binary64 double read from a
+            binary64 source, never a DECIMAL or float4 stored as a double, nor
+            a 128-bit integer).
+        declaredType:
+          type: string
+          description: >-
+            The Malloy type the build source declared for this column when the
+            table was built. A bind whose source now declares another type
+            finds the table incompatible (`declared_moved`): its values are of
+            the type it was built for.
 
     BuildManifest:
       type: object
@@ -12084,9 +12281,26 @@ components:
           description: >-
             A bounded code for a failure a client may branch on, beside
             `reason`'s prose: `table-owned-elsewhere` (the build's `name=` is
-            held by a table this package does not own) or
-            `table-ownership-unverified` (who holds it could not be read). An
-            open set; absent for a failure that has none.
+            held by a table this package does not own),
+            `table-ownership-unverified` (who holds it could not be read), or
+            `contract_capture_failed` (the build wrote its table but could not
+            read back its column contract, `ManifestEntry.contract`, which a
+            table must carry to be served from). `contract_capture_failed` is
+            non-terminal, never a refusal: a rebuild fixes it, and the source
+            is `retryable`. The read runs before the write is swapped in or
+            committed wherever the build has a staging table or a transaction,
+            so the previous table is left as it was; an incremental delta,
+            which writes in place, fails after its write, and its previous
+            entry then understates the table's freshness, never its rows.
+            `schema_incompatible` (a build whose upstream's stored table is
+            not what it was planned or built over: a `storage=` view's or
+            named query's upstream whose columns differ from its plan's, or
+            any upstream table altered since its build). It
+            is non-terminal, never a refusal: the package reads its tables and
+            derives its plan again at once, and the next build either builds
+            the source over the upstream's table as it is or the plan refuses
+            it (`upstream_table_unusable`); the source is `retryable`. An open
+            set; absent for a failure that has none.
         refused:
           type: boolean
           description: >-
@@ -12108,14 +12322,13 @@ components:
             eligibility refusal (always, beside `refused`), a Malloy or SQL
             compile defect (a syntax or parser error), a rejected credential or
             missing grant (a message that says permission or access denied), a
-            warehouse's own data or syntax error, and a source refused under
-            `strictUpstreams` because a persisted upstream it reads failed
-            deterministically earlier in the same run. That last source
+            warehouse's own data or syntax error, and a source that fails
+            because a persisted upstream it reads failed deterministically
+            earlier in the same run (every build is strict, so it is never
+            recomputed from raw instead). That last source
             inherits its upstream's classification (`true` when any such
             upstream's failure is transient) and its `reason` names the
-            upstream's own failure. Also `false` for a source a strict build
-            refused under `warehouseReach: refuse`, whose only build would
-            recompute its stored upstreams from the warehouse.
+            upstream's own failure.
 
 
             A warehouse's own data or syntax error is one the warehouse names
@@ -12343,35 +12556,35 @@ components:
             For a source that reads another persisted source, how this table's
             rows were computed from it. `reused`: every persisted upstream was
             read from its already-materialized table, so the rows are a
-            function of those snapshots and consistent with them. `recomputed`:
-            at least one persisted upstream was recomputed from its definition
-            and inlined into this build, because its table could not be read --
-            on either tier, an upstream this build neither materialized nor was
-            handed by reference; for a database build, an upstream that
-            landed in a `storage=` destination; for a `storage=` build, a
-            source that reaches the warehouse through a non-persisted source,
-            or whose shape does not compile in the destination; on the
-            database tier, an upstream whose table holds other columns than
-            its build recorded (retyped or dropped since), could not be read,
-            or whose build recorded no column types; and always, for a
-            persisted view or named query, which builds from its source's
-            definition. `upstreamRecomputeReason` says which. Such a table reflects the
-            warehouse at THIS build's time rather than the upstream's
-            snapshot, so the two can disagree when their refresh cadences
-            differ.
+            function of those snapshots and consistent with them.
 
-            Not a location: it does not name the table the rows came from.
-            Absent for a source that reads no persisted upstream, which has one
-            way to build and no choice to report.
 
-            A database rollup reports what its build actually read: `reused`
-            only when it built from its base's materialized table, `recomputed`
-            when it could not because that table holds other columns than its
-            build recorded, could not be read, or recorded no column types,
-            and absent when it built from the warehouse for any other reason. Before
-            0.15.0 every rollup over a persisted base reported `reused`. A
-            `storage=` rollup reports `reused` only when it stacked on a stored
-            table.
+            Every build is strict: a downstream is built over its upstreams'
+            tables or not at all, and is never built by recomputing an
+            upstream from raw. A downstream the plan cannot build over its
+            upstreams' tables is refused when the package is planned
+            (`upstream_table_unusable`), and one whose upstream's table a run
+            cannot read fails that build (a missing upstream, a moved table
+            as `schema_incompatible`, a shape the destination cannot carry);
+            neither reports `upstreamReuse`.
+
+
+            `recomputed`: retained, and no longer planned. No build is
+            planned to read a persisted upstream's definition rather than its
+            table: a persisted view, named query or rollup that cannot be
+            built over its upstream's table is refused at plan. The value
+            stays for the run's own check, which labels a build whose SQL
+            inlined an upstream it should have read (with
+            `upstreamRecomputeReason` naming it); a strict build refuses such
+            a build before writing it, so an entry is not expected to carry
+            it.
+
+
+            Not a location: it does not name the table the rows came from
+            (`builtFrom` does). Absent for a source that reads no persisted
+            upstream, which has one way to build and no choice to report. A
+            rollup reports `reused` when it built from its base's table, and
+            nothing otherwise.
         builtAt:
           type: string
           format: date-time
@@ -12386,16 +12599,30 @@ components:
           description: >-
             The stored tables of other persisted sources this table's build
             read in place of their definitions, each named as the run's
-            manifest held it, with that table's `builtAt`. Recorded for a
-            database build whose SQL read an upstream's table (a chained
-            `#@ persist` source, a persisted view or named query, or a rollup
-            built over its base's table) and for a `storage=` rollup that
-            grouped its base's stored table. Provenance, not a location the
+            manifest held it, with that table's `builtAt`. Recorded for every
+            build that read an upstream's table: a database or `storage=`
+            build whose warehouse SQL read it (a chained `#@ persist` source,
+            a persisted view or named query, or a rollup built over its
+            base's table), and a `storage=` build that read its upstreams'
+            tables in its destination (a chained source, an extension, or a
+            rollup that grouped its base's stored table). Provenance, not a location the
             entry is served from: the entry's own table is
             `physicalTableName`. Absent, or empty (read the same), when the
             build read no upstream's table.
           items:
             $ref: "#/components/schemas/BuiltFromTable"
+        contract:
+          allOf:
+            - $ref: "#/components/schemas/ColumnContract"
+          description: >-
+            The table's column contract, written by the build that produced
+            it on both tiers: each column's native type, collation, how a
+            stored read of it compares with live, and whether a gate over it
+            is exact. A host that stores entries keeps it as written, as text
+            if it likes, and returns it unparsed. A table whose entry has no
+            contract (built before this field existed, or whose capture
+            failed) is never served from: it answers live, with serve verdict
+            reason `contract_missing`, and the next build rebuilds it in full.
         upstreamRecomputeReason:
           type: string
           description: >-

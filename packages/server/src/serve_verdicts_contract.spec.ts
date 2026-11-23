@@ -74,13 +74,14 @@ describe("the serveVerdicts contract", () => {
       );
    });
 
-   // A verdict read between a bind and the served copy's compile at bind
-   // says so, and tells a host to read it again.
-   it("declares the served copy's pending marker", () => {
-      const pending = schemas.ServeVerdict.properties?.servedCopyPending;
+   // A bind compiles every model's served copy before its tables are swapped
+   // in, so the pending marker is deprecated: never left behind by a bind.
+   it("deprecates the served copy's pending marker", () => {
+      const pending = schemas.ServeVerdict.properties?.servedCopyPending as
+         | { type?: string; deprecated?: boolean; description?: string }
+         | undefined;
       expect(pending?.type).toBe("boolean");
-      expect(pending?.description).toContain("always `true`");
-      expect(pending?.description).toContain("must re-read");
-      expect(pending?.description).toContain("#@ persist");
+      expect(pending?.deprecated).toBe(true);
+      expect(pending?.description).toContain("never pending");
    });
 });

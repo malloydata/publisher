@@ -2,11 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * A `storage=` rollup is never stacked on a gated base: planned over the same
- * `#@ persist storage=` base with and without a row-level gate, with gated
- * sources switched on so the rollup is planned either way, it builds from its base's stored table only when the
- * base carries no gate (`storedBaseBuilds`). Fails when the plan's
- * `baseGated` guard is removed.
+ * A `storage=` rollup is stacked on its base's stored table whether or not
+ * the base carries a row-level gate: gates apply at read, and the base's
+ * table holds every caller's rows, as its source does, so a rollup grouped
+ * from it holds what one grouped from the warehouse would
+ * (`storedBaseBuilds`).
  */
 
 import { afterEach, describe, expect, it } from "bun:test";
@@ -23,19 +23,19 @@ given: CAT :: string
 source: raw is duckdb.sql("""SELECT 1 AS id, 'a' AS cat, 1.5::DOUBLE AS amt""")
 
 ${gate}#@ persist storage="lake"
-source: orders is raw extend {
+source: orders is raw -> { select: * } extend {
   #(rollup) grain=["cat"] storage="lake"
   measure: grand is amt.sum()
 }
 `;
 
-describe("a storage= rollup over a gated base is never stacked", () => {
+describe("a storage= rollup over a gated base is stacked as over an ungated one", () => {
    const restores: (() => void)[] = [];
    afterEach(() => {
       while (restores.length) restores.pop()!();
    });
    for (const gated of [false, true]) {
-      it(`${gated ? "a gated base: built from the warehouse" : "an ungated base: stacked on its table"}`, async () => {
+      it(`${gated ? "a gated base" : "an ungated base"}: stacked on its table`, async () => {
          restores.push(
             installSettings({
                env: {
@@ -74,7 +74,7 @@ describe("a storage= rollup over a gated base is never stacked", () => {
          expect(out.generated?.plans.length).toBe(1);
          expect(out.generated?.plans[0].baseGated).toBe(gated);
          const stacked = out.generated!.storedBaseBuilds.size;
-         expect(stacked).toBe(gated ? 0 : 1);
+         expect(stacked).toBe(1);
          await duckdb.close();
       });
    }

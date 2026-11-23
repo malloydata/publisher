@@ -10,45 +10,18 @@
  * for a database table judged against its source.
  */
 
-import type { Collation, CollationReader, ProbeIO } from "./probe_io";
+import {
+   type Collation,
+   PG_COLLATION_COLUMNS,
+   PG_COLLATION_IDENTITY,
+   postgresJudged,
+} from "../../domain/collation";
+import type { CollationReader, ProbeIO } from "./probe_io";
 
 /** Postgres rows, which Malloy's Postgres connection reads from a `row` column. */
 function pgRows(io: ProbeIO, sql: string): Promise<Record<string, unknown>[]> {
    return io.rows(`SELECT row_to_json(t) AS row FROM (${sql}) t`);
 }
-
-/**
- * A Postgres collation row, judged: the database default by the database's
- * own collation and locale provider (an ICU default is deterministic, never
- * binary, whatever `datcollate` says), any other by its own row. Binary under
- * a libc `C`, `POSIX` or `C.UTF-8`, and under the builtin provider (Postgres 17+:
- * `pg_c_utf8`, `ucs_basic`, `pg_unicode_fast`, or a database created with
- * it), which orders and compares by code point, as UTF-8 bytes do.
- */
-export function postgresJudged(
-   row: Record<string, unknown> | undefined,
-): Collation {
-   if (!row) return "unknown";
-   // libc `C`, `POSIX`, and `C.UTF-8` (its codeset spelled any way; the
-   // locale name itself compares exactly),
-   // which glibc orders by code point, as UTF-8 bytes do.
-   const binaryName = (c: unknown) =>
-      typeof c === "string" &&
-      (c === "C" || c === "POSIX" || /^C\.[Uu][Tt][Ff]-?8$/.test(c));
-   if (row.name === "default") {
-      if (row.dbp === "b") return "binary";
-      return row.dbp !== "i" && binaryName(row.dbc)
-         ? "binary"
-         : "deterministic";
-   }
-   if (row.det !== true) return "unknown";
-   if (row.prov === "b") return "binary";
-   return row.prov === "c" && binaryName(row.cc) ? "binary" : "deterministic";
-}
-
-/** The columns {@link postgresJudged} reads, from `pg_collation c, pg_database d`. */
-const PG_COLLATION_COLUMNS =
-   "c.collname AS name, c.collisdeterministic AS det, c.collcollate AS cc, c.collprovider AS prov, d.datcollate AS dbc, to_jsonb(d) ->> 'datlocprovider' AS dbp";
 
 /** The Postgres database's default collation, as {@link postgresJudged} reads it. */
 async function postgresDefaultCollation(io: ProbeIO): Promise<Collation> {
@@ -86,18 +59,6 @@ async function postgresCollation(io: ProbeIO, sql: string): Promise<Collation> {
    );
    return postgresJudged(row);
 }
-
-/**
- * The resolved identity of a Postgres collation, from `pg_collation c` and
- * `pg_database d`: the database default by the database's own provider and
- * locale, any other by its provider, determinism and locale, each with the
- * library version it was recorded under (two clusters on different ICU or
- * libc versions do not match). Never by name, since `default` and a
- * same-named collation mean other things in other databases. An explicit
- * column collation equal to the database default reads as another identity:
- * that over-blocks, never under-blocks.
- */
-const PG_COLLATION_IDENTITY = `CASE WHEN c.collname = 'default' AND c.collnamespace = 'pg_catalog'::regnamespace THEN concat_ws('|', 'db', coalesce(to_jsonb(d) ->> 'datlocprovider', ''), d.datcollate, d.datctype, coalesce(to_jsonb(d) ->> 'daticulocale', ''), coalesce(to_jsonb(d) ->> 'datlocale', ''), coalesce(to_jsonb(d) ->> 'daticurules', ''), coalesce(to_jsonb(d) ->> 'datcollversion', '')) ELSE concat_ws('|', 'coll', c.collprovider, c.collisdeterministic::text, coalesce(c.collcollate, ''), coalesce(c.collctype, ''), coalesce(to_jsonb(c) ->> 'colliculocale', ''), coalesce(to_jsonb(c) ->> 'colllocale', ''), coalesce(to_jsonb(c) ->> 'collicurules', ''), coalesce(to_jsonb(c) ->> 'collversion', '')) END`;
 
 /** The identity of the collation `sql`'s `probe_value` compares under. */
 async function postgresCollationIdentity(

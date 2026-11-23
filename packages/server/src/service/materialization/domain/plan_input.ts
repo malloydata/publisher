@@ -13,6 +13,12 @@
  */
 
 import type {
+   BoundStorageColumns,
+   BoundStorageContract,
+   PlanChainBuildText,
+   PlanChainStringReads,
+} from "./chain_build";
+import type {
    Connection as MalloyConnection,
    MalloyConfig,
 } from "@malloydata/malloy";
@@ -61,4 +67,27 @@ export interface BuildPlanPackage {
       tables: UpstreamTable[],
       use: "load" | "run",
    ): Promise<UpstreamSchemaReadings>;
+   /**
+    * The served copy's chain text, for a `storage=` view or query over
+    * upstreams in its own destination (plan/storage_over_stored.ts). Absent
+    * (a spec's package), such a view or query is refused at plan.
+    */
+   planChainBuildText?: PlanChainBuildText;
+   /**
+    * The stored columns bound for an upstream, which a plan stands in for
+    * its table in place of the ones its build would write by default.
+    * Absent (the load worker, a spec's package): the defaults.
+    */
+   boundStorageColumns?: BoundStorageColumns;
+   /**
+    * Reads the strings a `storage=` build over stored upstreams compares
+    * (serve/chain_string_reads.ts). Absent (a spec's package), every such
+    * build is refused at plan.
+    */
+   planChainStringReads?: PlanChainStringReads;
+   /**
+    * The contract bound for an upstream, which a plan judges those strings
+    * against. Absent (the load worker, a spec's package): judged at build.
+    */
+   boundStorageContract?: BoundStorageContract;
 }

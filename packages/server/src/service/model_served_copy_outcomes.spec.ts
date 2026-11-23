@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * `Model.prepareServedCopy` counts the served copy's sources once per
+ * `Model.prepareServedCopyOver` counts the served copy's sources once per
  * compile, through `servedCopyOutcomes`: a source still re-rooted with a
  * join read as written is `partial`, and one dropped after that is `declined`
  * only. Driven on the method itself with its collaborators faked.
@@ -18,10 +18,9 @@ import { Model } from "./model";
 
 type Problem = { sourceID?: string; reason: string };
 
-/** Runs the real `prepareServedCopy` over a fake served copy. */
+/** Runs the real `prepareServedCopyOver` over a fake served copy. */
 async function prepare(problems: Problem[], rerooted: string[]): Promise<void> {
    const fake = {
-      pinNow: () => ({ snapshot: { bindings: [], entries: {} } }),
       storageTables: () => undefined,
       servedCopyEnabled: () => true,
       servedCopy: {
@@ -32,9 +31,9 @@ async function prepare(problems: Problem[], rerooted: string[]): Promise<void> {
    };
    await (
       Model.prototype as unknown as {
-         prepareServedCopy(this: unknown): Promise<void>;
+         prepareServedCopyOver(this: unknown, snapshot: unknown): Promise<void>;
       }
-   ).prepareServedCopy.call(fake);
+   ).prepareServedCopyOver.call(fake, { bindings: [], entries: {} });
 }
 
 describe("prepareServedCopy's bind counts", () => {

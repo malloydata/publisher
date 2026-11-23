@@ -72,6 +72,7 @@ import {
    type Answer,
    canDegradeToLive,
    isDestinationCatalogUnavailableError,
+   isStoredSchemaError,
    isStoredDecimalArithmeticError,
    liveFallbackAnswer,
    type Leg,
@@ -227,6 +228,8 @@ export interface ModelServingHost {
    givens(): ApiGiven[] | undefined;
    /** Every table the model serves now; pinned once per query. */
    snapshot(): Snapshot;
+   /** See ModelPolicy.reportIncompatible. */
+   reportIncompatible(handles: readonly string[]): void;
    /** The model's served copy now (captured once per query). */
    servedCopy(): ServedCopyServe;
    /** The legs for one pin (`makeLegs`), around `servedCopy`. */
@@ -932,6 +935,15 @@ export class ModelServing {
          //  - the retry re-supplies the REAL givens, or the live source could
          //    serve unfiltered rows.
          const failed = answer;
+         // A stored table that no longer holds what the query reads: fail it
+         // closed, and have its package read and bind its tables again
+         // (the drift handler's failed-read trigger).
+         if (answer.leg !== "live" && isStoredSchemaError(error)) {
+            this.host.reportIncompatible([
+               ...(answer.answer.tablesRead ?? []).map((b) => b.virtualHandle),
+               ...answer.databaseRead,
+            ]);
+         }
          if (
             !canDegradeToLive(failed, error, {
                hasLiveRunnable: !!prepared.liveRunnable,

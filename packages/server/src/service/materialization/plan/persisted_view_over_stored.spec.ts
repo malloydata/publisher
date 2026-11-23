@@ -7,8 +7,8 @@
  * kept, so its build reads the source's table. Its content address is
  * unchanged by the kept line (Malloy keys a target on its fully inlined
  * SQL), and its build SQL reads the upstream's table once the manifest
- * holds it. A view in a `storage=` destination, or over a `storage=`
- * source, is not offered the compile.
+ * holds it. A view in a `storage=` destination is offered it too (its build
+ * runs in the warehouse); one over a `storage=` source is not.
  */
 
 import { describe, expect, it } from "bun:test";
@@ -85,7 +85,7 @@ query: q is a -> { group_by: cat; aggregate: total is amt.sum() }
       }
    });
 
-   it("is not offered for a storage= view", async () => {
+   it("is offered for a storage= view over a database table, whose build runs in the warehouse", async () => {
       packages.settings({
          PUBLISHER_MATERIALIZE: "true",
          PERSIST_STORAGE_MODE: "on",
@@ -121,10 +121,10 @@ source: t is b extend {
       expect(table).toBeDefined();
       expect(
          (table as { overStoredBase?: unknown }).overStoredBase,
-      ).toBeUndefined();
+      ).toBeDefined();
    });
 
-   it("re-roots a database #(materialize) source, and declines one read in another zone", async () => {
+   it("re-roots a database #(materialize) source, and refuses one read in another zone", async () => {
       const { c } = await packages.plan({
          "m.malloy": `${RAW}
 #(materialize)
@@ -155,13 +155,73 @@ source: z is a extend {
       const s = tableOf("s__by_cat__view")!.overStoredBase!;
       expect(s.baseBuildSource).toBeDefined();
       expect(s.rerootedSourceID).toBe(a.source.sourceID);
-      // Another zone would truncate the stored values again: it builds from
-      // its definition.
-      expect(tableOf("z__by_cat__view")).toBeDefined();
-      expect(tableOf("z__by_cat__view")!.overStoredBase).toBeUndefined();
+      // Another zone would truncate the stored values again: refused at
+      // plan, never built from its definition.
+      expect(tableOf("z__by_cat__view")).toBeUndefined();
+      expect(
+         (c.annotationFindings ?? []).some(
+            (f: { refused?: { reason?: string }; message: string }) =>
+               f.refused?.reason === "upstream_table_unusable" &&
+               /another time zone/.test(f.message),
+         ),
+      ).toBe(true);
    });
 
-   it("declines a #(materialize) pair table (an inlined join_many): it holds a row per pair, not the source's rows", async () => {
+   it("re-roots a #(materialize) pair table (an inlined join_many) with its join put back, and records the leaf key it relies on", async () => {
+      const { c } = await packages.plan({
+         "m.malloy": `${RAW}
+source: picks is duckdb.sql("""select 'a' as cat, 1 as pick_id, 2.0 as w""") extend {
+  primary_key: pick_id
+}
+
+#(materialize) inline=["p"]
+source: a is raw extend {
+  primary_key: cat
+  join_many: p is picks on p.cat = cat
+}
+
+source: s is a extend {
+  #@ persist name="os_v"
+  view: by_cat is {
+    group_by: cat
+    aggregate: total is amt.sum(), picks is p.count(), w is p.w.sum()
+  }
+}
+`,
+      });
+      const a = Object.values(c.tables).find((t) => t.source.name === "a")!;
+      expect(a.kind).toBe("pair");
+      const view = Object.values(c.tables).find(
+         (t) => t.source.name === "s__by_cat__view",
+      ) as
+         | {
+              overStoredBase?: {
+                 source: Parameters<typeof buildSQLOf>[0];
+                 rerootedSourceID?: string;
+                 pairLeafKeys?: string[];
+              };
+           }
+         | undefined;
+      // Decided and recorded at plan time: over the pair table, never
+      // recomputed from raw.
+      const variant = view!.overStoredBase!;
+      expect(variant.rerootedSourceID).toBe(a.source.sourceID);
+      expect(variant.pairLeafKeys).toEqual(["p.pick_id"]);
+      const aAddress = computeSourceEntityId(a.source, c.connectionDigests);
+      const manifest = new Manifest();
+      manifest.update(aAddress, { tableName: "os_pair_table" });
+      manifest.update(compilerBuildId(a.source), {
+         tableName: "os_pair_table",
+      });
+      const sql = buildSQLOf(variant.source, manifest.buildManifest);
+      // The parent rows and the join both read the one stored table.
+      expect(sql.match(/os_pair_table/g)?.length).toBe(2);
+      expect(sql).toContain("__parent_row");
+      // Neither raw source is read.
+      expect(sql).not.toMatch(/values|as pick_id/i);
+   });
+
+   it("leaves a rollup over a pair table on its definition: only views and queries put the join back", async () => {
       const { c } = await packages.plan({
          "m.malloy": `${RAW}
 source: picks is duckdb.sql("""select 'a' as cat, 1 as pick_id""") extend {
@@ -174,23 +234,19 @@ source: a is raw extend {
   join_many: p is picks on p.cat = cat
 }
 
-source: s is a extend {
-  #@ persist name="os_v"
-  view: by_cat is { group_by: cat; aggregate: total is amt.sum() }
+source: rolled is a extend {
+  #(rollup) grain=["cat"]
+  measure: total is amt.sum()
 }
 `,
       });
-      const a = Object.values(c.tables).find((t) => t.source.name === "a");
-      expect(a?.kind).toBe("pair");
-      const view = Object.values(c.tables).find(
-         (t) => t.source.name === "s__by_cat__view",
+      const rollup = Object.values(c.tables).find(
+         (t) => t.kind === "rollup",
       ) as { overStoredBase?: unknown } | undefined;
-      // Built from its definition, as before, never over the pair table.
-      expect(view).toBeDefined();
-      expect(view!.overStoredBase).toBeUndefined();
+      if (rollup) expect(rollup.overStoredBase).toBeUndefined();
    });
 
-   it("decides each query alone: one declined does not stop another reading the table", async () => {
+   it("decides each query alone: one refused does not stop another reading the table", async () => {
       const { c } = await packages.plan({
          "m.malloy": `${RAW}
 #(materialize)
@@ -214,11 +270,17 @@ query: q2 is s -> { timezone: 'America/New_York'; group_by: cat; aggregate: tota
                | undefined
          )?.overStoredBase;
       expect(over("q1__query")).toBeDefined();
-      // Another zone: declined alone, built from its definition.
+      // Another zone: refused alone at plan, never built from its definition.
       expect(
          Object.values(c.tables).some((t) => t.source.name === "q2__query"),
+      ).toBe(false);
+      expect(
+         (c.annotationFindings ?? []).some(
+            (f: { refused?: { reason?: string }; message: string }) =>
+               f.refused?.reason === "upstream_table_unusable" &&
+               /another time zone/.test(f.message),
+         ),
       ).toBe(true);
-      expect(over("q2__query")).toBeUndefined();
    });
 
    it("decides each view alone: a storage= view first on the same source leaves a database view over the table", async () => {

@@ -5,11 +5,12 @@
  * Every materialization mechanism over a warehouse column retyped after the
  * build: the table is as built, and its content address does not move (the
  * build's SQL is the same), so the bind finds it, but the source now declares
- * another type than the one the table holds. A query that reads the column is
- * answered live, equal to live, with the reason on its path report, and the
- * package warns `database-column-type-mismatch` for each table; a query that
- * does not read it is still served. Never served from the table, whose values
- * Malloy would read as the type it no longer holds (before this, the query
+ * another type than the one the table holds. The bind's declared-versus-
+ * stored check finds it (`declared_moved`): the table no longer matches its
+ * contract and is left out, never cast. Every query on it, whatever column it
+ * reads, is answered live, equal to live, with `incompatible` on its path
+ * report and serve verdict. Never served from the table, whose values Malloy
+ * would read as the type it no longer holds (before contracts, the query
  * failed: `Invalid string 1`).
  *
  * Mechanisms: a persisted view and a persisted named query (read by Malloy's
@@ -290,25 +291,16 @@ describe("every materialization over a column retyped upstream after its build",
       }
    });
 
-   for (const [name, { kind, reads }] of Object.entries(READS)) {
-      if (reads) {
-         it(`${name}: reads \`${reads}\`, so answered live, equal to live, with the reason on its path report`, () => {
-            expect(after[name].kind).toBe("live");
-            expect(after[name].rows).toEqual(live[name]);
-            expect(after[name].considered).toEqual([
-               expect.objectContaining({
-                  outcome: "skipped",
-                  reason: "MISSING_FIELD",
-                  detail: expect.stringContaining(`\`${reads}\``),
-               }),
-            ]);
-         });
-      } else {
-         it(`${name}: reads no retyped column, so still served from its table, equal to live`, () => {
-            expect(after[name].kind).toBe(kind);
-            expect(after[name].rows).toEqual(live[name]);
-         });
-      }
+   for (const name of Object.keys(READS)) {
+      it(`${name}: its table incompatible with its contract, so answered live, equal to live, with the reason on its path report`, () => {
+         expect(after[name].kind).toBe("live");
+         expect(after[name].rows).toEqual(live[name]);
+         expect(
+            (after[name].considered ?? []).map(
+               (c) => (c as { code?: string }).code,
+            ),
+         ).toContain("incompatible");
+      });
    }
 
    it("served the retyped table's queries from their tables before the retype", () => {
@@ -324,28 +316,24 @@ describe("every materialization over a column retyped upstream after its build",
    });
 
    for (const name of Object.keys(CAST_QUERIES)) {
-      it(`${name}: a timestamp now a date and an integer now a boolean read through the cast, equal to live`, () => {
+      it(`${name}: a timestamp now a date and an integer now a boolean: answered live, equal to live`, () => {
          expect(after[name].rows).toEqual(live[name]);
+         expect(after[name].kind).toBe("live");
       });
    }
 
-   it("warns for each table, naming the column and the forced rebuild that clears it", () => {
-      const warnings = (pkg.getPackageMetadata().warnings ?? []).filter(
-         (w) => w.code === "database-column-type-mismatch",
-      );
-      expect(warnings.map((w) => w.subject).sort()).toEqual([
-         "mat",
-         "per",
-         "q__query",
-         "rolled",
-         "viewed__v__view",
-      ]);
-      for (const w of warnings) {
-         expect(w.message).toContain("not its declared Malloy type `string`");
-         expect(w.message).toContain(
-            "what its source reads changed type since the build",
-         );
-         expect(w.message).toContain("forceRefresh");
+   it("says why on each table's verdict: incompatible, its source's declaration moved", () => {
+      const incompatible = pkg
+         .materialization()
+         .serveVerdicts()
+         .filter((v) => v.reason === "incompatible");
+      expect(incompatible.length).toBeGreaterThan(0);
+      for (const v of incompatible) {
+         expect(v.incompatibility?.code).toBe("declared_moved");
       }
+      const warnings = (pkg.getPackageMetadata().warnings ?? []).filter(
+         (w) => w.code === "materialization-table-incompatible",
+      );
+      expect(warnings.length).toBeGreaterThan(0);
    });
 });

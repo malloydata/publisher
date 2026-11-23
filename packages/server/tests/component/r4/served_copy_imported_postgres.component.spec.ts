@@ -6,8 +6,10 @@
  * `storage=` destination, through the production path (Environment, Package,
  * MaterializationService's build and bind): `crm.malloy` stores
  * `crm_current` and an unrelated `crm_unrelated`; `deals.malloy` imports it,
- * joins `crm_current` from an unpersisted `d_raw`, stores `deals11` over a
- * `->` stage that reads the join, and stores an unrelated `d_unrelated`;
+ * joins `crm_current` from an unpersisted `d_raw`, declares `deals11` stored
+ * over a `->` stage that reads the join (refused: no build reads both the
+ * stored table and the warehouse, and none recomputes it from raw), and
+ * stores an unrelated `d_unrelated`;
  * `pipeline.malloy` imports `deals.malloy`. A second shape adds the
  * gtm-funnel package's own: the `->` stage reached through
  * `include { public: … }` and a join keyed through the stored join.
@@ -354,9 +356,32 @@ for (const [shape, deals] of Object.entries(SHAPES)) {
          const served: [string, string, string][] = [
             ["an unrelated stored source", ...queries[0]],
             ["a stored source imported into the model", ...queries[1]],
-            ["the stored source over the joining stage", ...queries[2]],
             ["a stored source through an importing model", ...queries[3]],
          ];
+
+         // `deals11` joins the stored `crm_current` to the warehouse's rows:
+         // no engine reads both, and it is never built by recomputing
+         // `crm_current` from raw, so it is refused and answered live.
+         it("refuses the stored source over the joining stage, and answers it live, equal to live", async () => {
+            const entry = Object.values(
+               (
+                  run!.manifest as {
+                     entries: Record<
+                        string,
+                        { sourceName?: string; error?: string }
+                     >;
+                  }
+               ).entries,
+            ).find((e) => e.sourceName === "deals11");
+            expect(entry?.error ?? "").toContain(
+               "a downstream is never built by recomputing its upstreams from raw",
+            );
+            const [model, q] = queries[2];
+            const l = live.get(key(model, q))!;
+            const s = await ask(model, q);
+            expect(asStrings(s.rows)).toEqual(asStrings(l.rows));
+            expect(s.servedFrom).toBeNull();
+         });
          for (const [name, model, q] of served) {
             it(`serves ${name} from storage, equal to live`, async () => {
                const l = live.get(key(model, q))!;

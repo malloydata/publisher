@@ -12,6 +12,8 @@
  * miss by the author's source. Counts each chained storage build.
  */
 
+import type { StringReads } from "../domain/string_reads";
+import type { StoredInDestination } from "../domain/table_plans";
 import { errorCodeOf } from "../../../error_code";
 import { instructionTier } from "../domain/placement";
 import { plannedModelDefOf } from "../../governance/ir/compiled_model";
@@ -20,7 +22,10 @@ import type {
    Manifest,
    PersistSource,
 } from "@malloydata/malloy";
-import { ChainedUpstreamMissingError } from "../../../errors";
+import {
+   ChainedUpstreamMissingError,
+   SchemaIncompatibleError,
+} from "../../../errors";
 import { logger } from "../../../logger";
 import {
    recordChainedStorageBuild,
@@ -69,6 +74,7 @@ import type {
 } from "./storage_build_strategy";
 import { compiledTextReader } from "../../../utils";
 import { movedSinceBuild, type UpstreamMove } from "./database_column_read";
+import { liveCollationsOf } from "./column_contract_capture";
 
 /**
  * The persisted sources `persistSource` reads, from the author's model
@@ -423,21 +429,21 @@ function renderBuildSQL(
 }
 
 /**
- * A strict build that reads a moved upstream is refused, naming each and
- * why: recomputing it from raw is what strict upstreams forbid.
+ * A build that reads an upstream whose table moved since its build is
+ * refused, naming each and why ({@link SchemaIncompatibleError}, for the
+ * drift handler): it is never recomputed from raw.
  */
 function refuseMovedRead(sourceName: string, movedRead: MovedUpstreams): void {
    if (movedRead.size === 0) return;
-   const details = [...movedRead.values()].map(({ name, reason }) => ({
-      name,
-      detail: movedDetail(name, reason),
-   }));
-   throw new ChainedUpstreamMissingError(
-      details.map((d) => d.name),
+   const details = [...movedRead.values()].map(({ name, reason }) =>
+      movedDetail(name, reason),
+   );
+   throw new SchemaIncompatibleError(
       `Failed to materialize source '${sourceName}': ` +
-         details.map((d) => d.detail).join("; ") +
-         `, and strict upstreams forbid recomputing it from raw`,
-      details,
+         details.join("; ") +
+         `, and a downstream is never built by recomputing its upstreams ` +
+         `from raw. The package reads its tables and derives its plan again.`,
+      [...movedRead.keys()],
    );
 }
 
@@ -701,6 +707,13 @@ export interface SourceBuildOptions {
     */
    storedBase?: StoredRollupBase;
    /**
+    * A `storage=` view or query over upstreams in its own destination: the
+    * text the plan proved it builds from there (storage_over_stored.ts).
+    */
+   storedInDestination?: StoredInDestination;
+   /** The strings its `storage=` build compares, as its plan recorded them. */
+   stringReads?: StringReads;
+   /**
     * The source is a rollup: a `storage=` build reports `upstreamReuse`
     * only when it stacked on a stored table, never from the manifest's
     * classification of its author's text (which names the base).
@@ -748,6 +761,8 @@ export async function buildSource(
       planFacts = NO_PLAN_FACTS,
       replacesView,
       storedBase,
+      storedInDestination,
+      stringReads,
       rollup,
       signal,
       builtThisRun,
@@ -765,14 +780,16 @@ export async function buildSource(
       rootAddress: contentSourceEntityId ?? instruction.sourceEntityId,
       sourceName: persistSource.name,
    });
-   const rendered = renderBuildSQL(
-      persistSource,
-      instruction,
-      manifest,
-      builtEntries,
-      planFacts,
-      reach,
-      moved,
+   const rendered = reportingDrift(environment, () =>
+      renderBuildSQL(
+         persistSource,
+         instruction,
+         manifest,
+         builtEntries,
+         planFacts,
+         reach,
+         moved,
+      ),
    );
    const { isStorageBuild, buildSQL } = rendered;
    // Strict refused these above: here each is recomputed. A rollup's own
@@ -793,7 +810,9 @@ export async function buildSource(
       contentSourceEntityId,
       planFacts,
       rendered,
-      overStoredUpstreams === true,
+      // A view or query built in its destination over its upstreams'
+      // tables reads them, as one compiled over them does.
+      overStoredUpstreams === true || storedInDestination !== undefined,
    );
 
    // Every statement of this build carries the same metadata so query history
@@ -834,7 +853,7 @@ export async function buildSource(
       // included (`private:`, `internal:`), which the served copy hides
       // again; a column `except:` drops is left out. Refuses the build
       // (422) if the column surface can't be determined.
-      return storage({
+      const built = await storage({
          persistSource,
          instruction,
          manifest,
@@ -855,9 +874,25 @@ export async function buildSource(
          lift,
          ...(replacesView ? { replacesView } : {}),
          ...(storedBase ? { storedBase } : {}),
+         ...(storedInDestination ? { storedInDestination } : {}),
+         ...(stringReads ? { stringReads } : {}),
          ...(rollup ? { rollup } : {}),
          ...(signal ? { signal } : {}),
+         // How its source's strings compare live, for its column contract.
+         liveCollations: liveCollationsOf(
+            connection,
+            buildSQL,
+            environment.bigqueryBuildCompareBinary
+               ? () =>
+                    environment.bigqueryBuildCompareBinary!({
+                       connection,
+                       source: persistSource,
+                       sql: buildSQL,
+                    })
+               : undefined,
+         ),
       });
+      return built;
    }
 
    // Incremental refresh: a source with `refresh="incremental"` and a usable
@@ -925,4 +960,16 @@ function buildRunSQLOptions(
       });
    }
    return resolved.metadata ? { queryMetadata: resolved.metadata } : {};
+}
+
+/** `render`, handing a moved upstream's tables to the drift handler. */
+function reportingDrift<T>(environment: BuildEnvironment, render: () => T): T {
+   try {
+      return render();
+   } catch (err) {
+      if (err instanceof SchemaIncompatibleError && err.handles.length > 0) {
+         environment.reportIncompatible?.(err.handles);
+      }
+      throw err;
+   }
 }

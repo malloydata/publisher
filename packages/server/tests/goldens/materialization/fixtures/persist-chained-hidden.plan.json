@@ -1,25 +1,35 @@
 {
   "internal": {
-    "annotationFindings": [],
+    "annotationFindings": [
+      {
+        "code": "persist-not-built",
+        "message": "#@ persist source \"west_spend\" is not built, so it is answered live: it is built over its upstreams' tables in its storage= destination, which compares strings byte-exact, and the base its strings are read on is not named; a downstream is never built by recomputing its upstreams from raw.",
+        "model": "chained_hidden.malloy",
+        "refused": {
+          "name": "west_spend",
+          "reason": "upstream_table_unusable",
+          "sourceID": "west_spend@<pkg>/chained_hidden.malloy",
+          "tier": "storage"
+        },
+        "route": "@",
+        "subject": "west_spend",
+        "tier": "unservable"
+      }
+    ],
     "builds": [
       {
         "connectionName": "duckdb",
         "dependsOn": {
-          "customers_hidden@<pkg>/chained_hidden.malloy": [],
-          "west_spend@<pkg>/chained_hidden.malloy": [
-            "customers_hidden@<pkg>/chained_hidden.malloy"
-          ]
+          "customers_hidden@<pkg>/chained_hidden.malloy": []
         },
         "order": [
-          "customers_hidden@<pkg>/chained_hidden.malloy",
-          "west_spend@<pkg>/chained_hidden.malloy"
+          "customers_hidden@<pkg>/chained_hidden.malloy"
         ]
       }
     ],
     "droppedPersistSources": [],
     "kinds": {
-      "customers_hidden@<pkg>/chained_hidden.malloy": "persist",
-      "west_spend@<pkg>/chained_hidden.malloy": "persist"
+      "customers_hidden@<pkg>/chained_hidden.malloy": "persist"
     },
     "materializePlans": {},
     "rollupPlans": {},
@@ -27,18 +37,22 @@
       "customers_hidden@<pkg>/chained_hidden.malloy": {
         "attributed": true,
         "classification": "row_level"
-      },
-      "west_spend@<pkg>/chained_hidden.malloy": {
-        "attributed": true,
-        "classification": "row_level"
       }
     },
     "sourceModelPaths": {
-      "customers_hidden@<pkg>/chained_hidden.malloy": "chained_hidden.malloy",
-      "west_spend@<pkg>/chained_hidden.malloy": "chained_hidden.malloy"
+      "customers_hidden@<pkg>/chained_hidden.malloy": "chained_hidden.malloy"
     }
   },
-  "loadWarnings": [],
+  "loadWarnings": [
+    {
+      "code": "persist-not-built",
+      "message": "#@ persist source \"west_spend\" is not built, so it is answered live: it is built over its upstreams' tables in its storage= destination, which compares strings byte-exact, and the base its strings are read on is not named; a downstream is never built by recomputing its upstreams from raw.",
+      "model": "chained_hidden.malloy",
+      "reason": "upstream_table_unusable",
+      "severity": "warn",
+      "subject": "west_spend"
+    }
+  ],
   "wirePlan": {
     "graphs": [
       {
@@ -48,12 +62,6 @@
             {
               "dependsOn": [],
               "sourceID": "customers_hidden@<pkg>/chained_hidden.malloy"
-            },
-            {
-              "dependsOn": [
-                "customers_hidden@<pkg>/chained_hidden.malloy"
-              ],
-              "sourceID": "west_spend@<pkg>/chained_hidden.malloy"
             }
           ]
         ]
@@ -61,7 +69,17 @@
     ],
     "omittedFiles": [],
     "omittedSources": [],
-    "refusedSources": {},
+    "refusedSources": {
+      "west_spend@<pkg>/chained_hidden.malloy": {
+        "message": "#@ persist source \"west_spend\" is not built, so it is answered live: it is built over its upstreams' tables in its storage= destination, which compares strings byte-exact, and the base its strings are read on is not named; a downstream is never built by recomputing its upstreams from raw.",
+        "modelPath": "chained_hidden.malloy",
+        "name": "west_spend",
+        "origin": "persist",
+        "reason": "upstream_table_unusable",
+        "sourceID": "west_spend@<pkg>/chained_hidden.malloy",
+        "tier": "storage"
+      }
+    },
     "sources": {
       "customers_hidden@<pkg>/chained_hidden.malloy": {
         "annotationFields": {
@@ -98,34 +116,6 @@
         "sourceEntityId": "e201ceaf6812d2eb1a1fd36a43cee466300f3540098013c0d0eb24d60a75f064",
         "sourceID": "customers_hidden@<pkg>/chained_hidden.malloy",
         "sql": "sha256:f8fc3b178b70beaa"
-      },
-      "west_spend@<pkg>/chained_hidden.malloy": {
-        "annotationFields": {
-          "name": "west_spend",
-          "storage": "lake"
-        },
-        "columns": [
-          {
-            "name": "segment",
-            "type": "string"
-          },
-          {
-            "name": "west_total",
-            "type": "number"
-          }
-        ],
-        "connectionName": "duckdb",
-        "dialect": "duckdb",
-        "freshness": null,
-        "modelPath": "chained_hidden.malloy",
-        "name": "west_spend",
-        "origin": "persist",
-        "preaggregate": null,
-        "queryMetadata": null,
-        "refresh": null,
-        "sourceEntityId": "f00b9c12fbf1334a5f57a674598c3026223c7009fb28793e4a1b12e121aa4572",
-        "sourceID": "west_spend@<pkg>/chained_hidden.malloy",
-        "sql": "sha256:7e134eecb7e475cf"
       }
     }
   }

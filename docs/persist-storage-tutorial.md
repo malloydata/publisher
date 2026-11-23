@@ -605,26 +605,21 @@ over the upstream — are carried into the build, in dependency order and under
 the `##!` flags of the files that declare them, so the downstream still reads
 the upstream's stored table through them.
 
-If the downstream can't be built that way — it reads the warehouse through a
-source between them (one that joins a live, non-materialized table), or it
-reaches a field defined on the parent that isn't a stored column — Publisher
-falls back to **recomputing the upstream from raw** (inlining it into the
-downstream's build query). That still produces a correct table, but two
-independently-timed builds can then drift; rebuild the whole package together
-(`forceRefresh`) to keep them aligned. Under `strictUpstreams` (orchestrated
-builds) only the first kind is recomputed, because no build over the stored
-tables exists for a source that reaches the warehouse (an orchestrator that
-must never read the warehouse sets `warehouseReach: refuse` in its build
-instructions, and the source fails instead, not retryable); everything else strict
-refuses, since recomputing it would rebuild a table the orchestrator meant to
-pin — an upstream the build neither materialized nor was handed by reference,
-one whose table lives in a _different_ destination, or a shape over stored
-upstreams the build could not carry. Each entry says which happened: `upstreamReuse` is `reused` when
+If the downstream can't be built that way, it is **refused, never built by
+recomputing its upstreams from raw**, in every build. Where the plan can tell
+(it reads the warehouse through a source between them, its upstream lives in a
+_different_ destination, or it compares a string its upstream's table records
+as compared otherwise than live), it is refused when the package is planned,
+as `upstream_table_unusable`; what only a run finds (an upstream the build
+neither materialized nor was handed by reference, or a shape over stored
+upstreams the build could not carry) fails that build. The source answers live
+until it can be built. `strictUpstreams` and `warehouseReach` are accepted and
+ignored. Each entry says which happened: `upstreamReuse` is `reused` when
 every persisted upstream was read from its table and `recomputed` when one was
 inlined, with `upstreamRecomputeReason` naming it. The
 `publisher_storage_chained_build_total` counter (labeled `parent_reuse` /
-`inline_fallback` / `strict_shape_fallback` / `strict_refused`) reports which
-path each chained build took.
+`strict_refused` / `infra_failure`) reports which path each chained build
+took.
 
 ### Eligibility refusals (refused at build time)
 
@@ -809,13 +804,12 @@ Everything you need is on the package status and the logs:
     counts nothing, and a database `#@ persist` table that Malloy substitutes
     into a live run is not a routing decision, so it is not counted here (read
     `servedFrom: "database"` on the result, or the attribute below).
-  - `publisher_storage_chained_build_total{outcome=parent_reuse|inline_fallback|strict_shape_fallback|strict_refused|infra_failure}`
+  - `publisher_storage_chained_build_total{outcome=parent_reuse|strict_refused|infra_failure}`
     — for a chained source, whether it built by reading its parent's stored table
-    (`parent_reuse`) or fell back to recompute-from-raw (`inline_fallback`
-    non-strict, `strict_shape_fallback` under `strictUpstreams`, where only a
-    shape the destination cannot express is recomputed). `strict_refused` is an
-    upstream strict would not recompute, or a warehouse recompute that
-    `warehouseReach: refuse` refused. `infra_failure` is a destination that
+    (`parent_reuse`) or was refused because no build over its stored upstreams
+    exists (`strict_refused`); it never recomputes them from raw. The former
+    `inline_fallback` and `strict_shape_fallback` values are retained but no
+    longer produced. `infra_failure` is a destination that
     was unreachable, kept distinct from the shape limits so a store outage is not
     read as an un-carriable query.
   - `malloy_model_query_duration` carries `malloy.model.query.served_from`,

@@ -445,11 +445,31 @@ export function canDegradeToLive(
    ) {
       return false;
    }
+   // A stored table that no longer holds what the query reads (a column or
+   // the table gone since the bind): the table is the incompatible one, and
+   // live answers, on every leg.
+   if (isStoredSchemaError(error)) return true;
    if (!answer.answer.virtualMap) return answer.leg === "rollup";
    return (
       bindingsAllowDegradeToLive(answer.answer.shapeBindings) ||
       isStoredDecimalArithmeticError(error) ||
       isDestinationCatalogUnavailableError(error)
+   );
+}
+
+/**
+ * Whether `error` is a stored read finding the table not as its bind found it:
+ * a column or the table itself missing (DuckDB's binder and catalog errors,
+ * Postgres 42703 and 42P01, BigQuery's unrecognized name and not-found
+ * table, Snowflake's invalid identifier and missing object). The failed-read
+ * trigger of the drift handler (`reportIncompatible`).
+ */
+export function isStoredSchemaError(error: unknown): boolean {
+   const code = String((error as { code?: unknown })?.code ?? "");
+   if (code === "42703" || code === "42P01") return true;
+   const message = error instanceof Error ? error.message : String(error);
+   return /Binder Error: (Referenced column|Table)|Catalog Error: Table with name .* does not exist|column "[^"]+" does not exist|relation "[^"]+" does not exist|Unrecognized name:|Not found: Table|invalid identifier|does not exist or not authorized/i.test(
+      message,
    );
 }
 

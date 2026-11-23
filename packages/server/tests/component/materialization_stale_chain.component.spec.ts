@@ -24,11 +24,11 @@ import { serviceOverEnvironment } from "../../src/test_helpers/materialization_s
  * source ranges of the model the package serves. A package that serves a
  * model older than its files (a reload that did not load) must not stack:
  * those ranges describe other text, so the rewrite could re-root or blank the
- * wrong declaration. The downstream is recomputed, as the run's plan
- * defines it, and the entry says why.
+ * wrong declaration. The downstream is refused, never recomputed from raw,
+ * and the entry says why.
  *
  * A package already stale is not run at all (a 409 at creation, #1786), so
- * the recompute is reached by a package that goes stale while its run is
+ * the refusal is reached by a package that goes stale while its run is
  * past those checks: the save and the failed reload land just before the
  * build (a test hook).
  *
@@ -225,9 +225,9 @@ describe.skipIf(!url)("a chained storage= build of a stale package", () => {
    // A package that goes stale after a run's guards (at its creation, and
    // once its plan is compiled) and before its chained build: the chained
    // build is not written from the files, which no longer describe the model
-   // the run planned from, and the downstream is recomputed as the plan
-   // defines it.
-   it("recomputes the downstream, with a coded reason, when the package goes stale mid-run, rather than rewrite its files at the served model's ranges", async () => {
+   // the run planned from, and the downstream is never recomputed from raw
+   // instead: it is refused, with the coded reason.
+   it("refuses the downstream, with a coded reason, when the package goes stale mid-run, rather than rewrite its files at the served model's ranges or recompute it", async () => {
       const first = await build();
       expect([first.status, first.error]).toEqual([
          "MANIFEST_FILE_READY",
@@ -253,11 +253,10 @@ describe.skipIf(!url)("a chained storage= build of a stale package", () => {
          "MANIFEST_FILE_READY",
          null,
       ]);
-      const summed = entryOf(second, "summed");
-      expect(summed.upstreamReuse).toBe("recomputed");
-      expect(summed.upstreamRecomputeReason).toContain(PACKAGE_STALE_MARKER);
-      // The recompute holds the definition the run planned, from the files
-      // before the save: both categories.
-      expect(summed.rowCount).toBe(2);
+      const summed = entryOf(second, "summed") as Entry & { error?: string };
+      expect(summed.error ?? "").toContain(PACKAGE_STALE_MARKER);
+      expect(summed.error ?? "").toContain(
+         "a downstream is never built by recomputing its upstreams from raw",
+      );
    });
 });

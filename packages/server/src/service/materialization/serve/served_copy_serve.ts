@@ -64,7 +64,11 @@ import {
    rollupBuildFileSet,
    withPersistenceFlag,
 } from "../text/chain_build_files";
-import type { ChainBuildRequest, ChainBuildText } from "../domain/chain_build";
+import type {
+   ChainBuildRequest,
+   ChainBuildText,
+   PlanChainBuildText,
+} from "../domain/chain_build";
 import type { ManifestEntry } from "../domain/types";
 import { givenReadingFilterTerms } from "../plan/persist_dynamic_terms";
 import type { MaterializePair, MaterializePlan } from "../domain/table_plans";
@@ -1635,6 +1639,14 @@ export class ServedCopyServe {
    chainBuildFiles(
       downstreamSourceID: string,
       bindings: readonly Binding[],
+      /**
+       * A persisted view's or named query's build: the author's declaration
+       * it runs, kept by name, and its generated build file as the entry,
+       * declaring `view.downstreamName`.
+       */
+      view?: NonNullable<ChainBuildRequest["view"]> & {
+         downstreamName: string;
+      },
    ): ChainBuildText {
       const modelDef = this.host.modelDef();
       const map = SourceMap.of(modelDef);
@@ -1673,6 +1685,12 @@ export class ServedCopyServe {
       const set = chainBuildFileSet({
          lift,
          downstreamSourceID,
+         ...(view
+            ? {
+                 downstreamName: view.authorName,
+                 ...(view.keepAlso ? { keepAlso: view.keepAlso } : {}),
+              }
+            : {}),
          bindings,
          reroots: candidates.map((c) => c.reroot),
          importsOf: compiledImports(modelDef),
@@ -1700,14 +1718,15 @@ export class ServedCopyServe {
          })),
       );
       withPersistenceFlag(files, set.entry, rerootedSpans);
+      if (view) files.set(view.companion.url, view.companion.text);
       const aliased = candidates.map((c) => ({
          ...c.binding,
          destinationName: servedConnectionOf(c.binding),
       }));
       return {
          files,
-         entry: set.entry,
-         downstreamName: set.downstreamName,
+         entry: view ? view.companion.url : set.entry,
+         downstreamName: view ? view.downstreamName : set.downstreamName,
          connection: aliased[0].destinationName,
          virtualMap: buildVirtualMap(aliased),
          rerooted: candidates.map((c) => c.reroot.sourceName),
@@ -4792,6 +4811,29 @@ function zonedElsewhere(
       .map((c) => c.reroot.sourceName);
 }
 
+/**
+ * The plan's reader of a stacked build's compared strings, beside
+ * {@link planChainBuildText}: the package-load worker's one door into
+ * serve/, which must not load the barrel.
+ */
+export { chainBuildStringReads } from "./chain_string_reads";
+
+/**
+ * {@link chainBuildText} as the plan is handed it, for the package at
+ * `packagePath` read through `config` (plan/storage_over_stored.ts).
+ */
+export function planChainBuildText(
+   packagePath: string,
+   config: ModelConnectionInput,
+): PlanChainBuildText {
+   return (request, model) =>
+      chainBuildText(request, {
+         modelPath: model.modelPath,
+         modelDef: model.modelDef,
+         context: [packagePath, config, model.materializePlans ?? {}],
+      });
+}
+
 /** What the chained build's text is written from, for one model. */
 interface ChainBuildModel {
    modelPath: string;
@@ -4818,9 +4860,11 @@ export function chainBuildText(
       compiledTextReader(model.modelDef, model.context[0]),
    );
    if (
-      !lift.sourceNameById.has(
-         request.rollup?.baseSourceID ?? request.downstream.sourceID,
-      )
+      request.view
+         ? lift.contents[request.view.authorName] === undefined
+         : !lift.sourceNameById.has(
+              request.rollup?.baseSourceID ?? request.downstream.sourceID,
+           )
    ) {
       return undefined;
    }
@@ -4876,7 +4920,13 @@ export function chainBuildText(
    copy.setContext(...model.context);
    return request.rollup
       ? copy.rollupBuildFiles(request.rollup, request.downstream.name, bindings)
-      : copy.chainBuildFiles(request.downstream.sourceID, bindings);
+      : copy.chainBuildFiles(
+           request.downstream.sourceID,
+           bindings,
+           request.view
+              ? { ...request.view, downstreamName: request.downstream.name }
+              : undefined,
+        );
 }
 
 /**

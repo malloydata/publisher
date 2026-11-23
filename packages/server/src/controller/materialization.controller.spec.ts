@@ -1,9 +1,10 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
 import * as sinon from "sinon";
 import { BadRequestError } from "../errors";
+import { logger } from "../logger";
 import type { MaterializationService } from "../service/materialization/run/materialization_service";
 import { MaterializationController } from "./materialization.controller";
 
@@ -166,7 +167,7 @@ describe("MaterializationController.createMaterialization validation", () => {
       expect(await parse({ buildInstructions: null })).toEqual({});
    });
 
-   it("parses referenceManifest and strictUpstreams alongside sources", async () => {
+   it("parses referenceManifest alongside sources, and drops the deprecated strictUpstreams", async () => {
       const parsed = await parse({
          buildInstructions: {
             sources: [
@@ -196,7 +197,6 @@ describe("MaterializationController.createMaterialization validation", () => {
          referenceManifest: [
             { sourceEntityId: "b1", physicalTableName: "upstream_table" },
          ],
-         strictUpstreams: true,
       });
    });
 
@@ -250,6 +250,67 @@ describe("MaterializationController.createMaterialization validation", () => {
          expect(err).toBeInstanceOf(BadRequestError);
          expect(String((err as Error).message)).toContain(
             "Manifest reference 'nativeSchema'",
+         );
+      }
+   });
+
+   it("carries a reference's schema, dataAsOf, builtAt and contract, and refuses a malformed schema or instant", async () => {
+      const body = (ref: Record<string, unknown>) => ({
+         buildInstructions: {
+            sources: [
+               {
+                  sourceEntityId: "b2",
+                  materializedTableId: "mt-2",
+                  physicalTableName: "downstream_v1",
+               },
+            ],
+            referenceManifest: [
+               {
+                  sourceEntityId: "b1",
+                  physicalTableName: "upstream_table",
+                  storageDestinationName: "lake",
+                  ...ref,
+               },
+            ],
+         },
+      });
+      const schema = [{ name: "cat", type: "VARCHAR" }];
+      // A host's contract, as it stored it: carried unparsed, unknown keys too.
+      const contract = { v: 1, columns: [], later: { x: 1 } };
+      const parsed = (await parse(
+         body({
+            schema,
+            dataAsOf: "2026-11-20T00:00:00.000Z",
+            builtAt: "2026-11-20T00:05:00.000Z",
+            contract,
+         }),
+      )) as { referenceManifest: unknown[] };
+      expect(parsed.referenceManifest).toEqual([
+         {
+            sourceEntityId: "b1",
+            physicalTableName: "upstream_table",
+            storageDestinationName: "lake",
+            schema,
+            dataAsOf: "2026-11-20T00:00:00.000Z",
+            builtAt: "2026-11-20T00:05:00.000Z",
+            contract,
+         },
+      ]);
+      for (const [bad, field] of [
+         [{ schema: [{ name: "cat" }] }, "schema"],
+         [{ dataAsOf: "yesterday" }, "dataAsOf"],
+         [{ builtAt: 7 }, "builtAt"],
+      ] as const) {
+         const { controller } = build();
+         let err: unknown;
+         try {
+            await controller.createMaterialization("env", "pkg", body(bad));
+         } catch (e) {
+            err = e;
+         }
+         expect(err).toBeInstanceOf(BadRequestError);
+         expect(String((err as Error).message)).toContain(
+            `Manifest reference '${field}'`,
          );
       }
    });
@@ -556,19 +617,37 @@ describe("MaterializationController.createMaterialization validation", () => {
          realization: "COPY",
       };
 
-      it("passes recompute and refuse through", async () => {
-         for (const warehouseReach of ["recompute", "refuse"]) {
-            const parsed = await parse({
-               buildInstructions: {
-                  sources: [SOURCE],
-                  strictUpstreams: true,
-                  warehouseReach,
-               },
-            });
-            expect(parsed).toMatchObject({
-               strictUpstreams: true,
-               warehouseReach,
-            });
+      it("accepts recompute and refuse, ignores both, and warns once per request", async () => {
+         const warn = spyOn(logger, "warn");
+         try {
+            for (const warehouseReach of ["recompute", "refuse"]) {
+               warn.mockClear();
+               const parsed = await parse({
+                  buildInstructions: {
+                     sources: [SOURCE],
+                     strictUpstreams: true,
+                     warehouseReach,
+                  },
+               });
+               expect("warehouseReach" in parsed).toBe(false);
+               expect("strictUpstreams" in parsed).toBe(false);
+               const deprecations = warn.mock.calls.filter((c) =>
+                  String(c[0]).includes("deprecated and ignored"),
+               );
+               expect(deprecations).toHaveLength(1);
+               expect((deprecations[0] as unknown[])[1]).toMatchObject({
+                  options: ["strictUpstreams", "warehouseReach"],
+               });
+            }
+            warn.mockClear();
+            await parse({ buildInstructions: { sources: [SOURCE] } });
+            expect(
+               warn.mock.calls.some((c) =>
+                  String(c[0]).includes("deprecated and ignored"),
+               ),
+            ).toBe(false);
+         } finally {
+            warn.mockRestore();
          }
       });
 

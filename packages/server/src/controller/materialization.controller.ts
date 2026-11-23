@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { logger } from "../logger";
 import type { components } from "../api";
 import { BuildInstructionsInvalidError, PackageVersionError } from "../errors";
 import { Materialization } from "../storage/DatabaseInterface";
@@ -10,16 +11,16 @@ import {
    ManifestReference,
 } from "../service/materialization/domain/types";
 import { MaterializationService } from "../service/materialization/run/materialization_service";
-import { type WarehouseReach } from "../service/materialization/run/build_upstreams";
 import { VersionRef } from "../service/identity";
 import { isUsableTableName } from "../service/materialization";
 import { queryMetadataViolations } from "../service/query_metadata";
 
-/** The values `buildInstructions.warehouseReach` accepts (ms2data/service#6756). */
-const WAREHOUSE_REACH_VALUES: readonly WarehouseReach[] = [
-   "recompute",
-   "refuse",
-];
+/**
+ * The values `buildInstructions.warehouseReach` accepts (ms2data/service#6756).
+ * Accepted and ignored: every build is strict, and none recomputes a stored
+ * upstream from the warehouse.
+ */
+const WAREHOUSE_REACH_VALUES: readonly string[] = ["recompute", "refuse"];
 
 type RunContext = components["schemas"]["RunContext"];
 
@@ -48,7 +49,7 @@ export class MaterializationController {
          await this.materializationService.createMaterialization(
             environmentName,
             packageName,
-            this.validateCreateBody(body),
+            this.validateCreateBody(body, { environmentName, packageName }),
          ),
       );
    }
@@ -56,14 +57,15 @@ export class MaterializationController {
    // Whitelist of client body fields. Never accept `trigger` here: only the
    // in-process scheduler (which calls the service directly) sets `scheduler`,
    // and accepting it would let an API caller forge a scheduled run.
-   private validateCreateBody(body: Record<string, unknown>): {
+   private validateCreateBody(
+      body: Record<string, unknown>,
+      context: { environmentName: string; packageName: string },
+   ): {
       forceRefresh?: boolean;
       reseed?: boolean;
       sourceNames?: string[];
       buildInstructions?: BuildInstruction[];
       referenceManifest?: ManifestReference[];
-      strictUpstreams?: boolean;
-      warehouseReach?: WarehouseReach;
       ledger?: LedgerEntry[];
       runContext?: RunContext;
       versionId?: VersionRef;
@@ -74,8 +76,6 @@ export class MaterializationController {
          sourceNames?: string[];
          buildInstructions?: BuildInstruction[];
          referenceManifest?: ManifestReference[];
-         strictUpstreams?: boolean;
-         warehouseReach?: WarehouseReach;
          ledger?: LedgerEntry[];
          runContext?: RunContext;
          versionId?: VersionRef;
@@ -106,11 +106,13 @@ export class MaterializationController {
          if (parsed.referenceManifest !== undefined) {
             result.referenceManifest = parsed.referenceManifest;
          }
-         if (parsed.strictUpstreams !== undefined) {
-            result.strictUpstreams = parsed.strictUpstreams;
-         }
-         if (parsed.warehouseReach !== undefined) {
-            result.warehouseReach = parsed.warehouseReach;
+         const deprecated = parsed.deprecatedOptions;
+         if (deprecated.length > 0) {
+            // Once per request that sends either; neither changes the run.
+            logger.warn(
+               "buildInstructions options are deprecated and ignored: every build is strict",
+               { ...context, options: deprecated },
+            );
          }
          if (parsed.ledger !== undefined) {
             result.ledger = parsed.ledger;
@@ -202,8 +204,8 @@ export class MaterializationController {
    private validateBuildInstructions(raw: unknown): {
       sources: BuildInstruction[];
       referenceManifest?: ManifestReference[];
-      strictUpstreams?: boolean;
-      warehouseReach?: WarehouseReach;
+      /** The deprecated options the payload sent, which are ignored. */
+      deprecatedOptions: ("strictUpstreams" | "warehouseReach")[];
       ledger?: LedgerEntry[];
    } {
       if (typeof raw !== "object" || raw === null) {
@@ -221,13 +223,13 @@ export class MaterializationController {
       const result: {
          sources: BuildInstruction[];
          referenceManifest?: ManifestReference[];
-         strictUpstreams?: boolean;
-         warehouseReach?: WarehouseReach;
+         deprecatedOptions: ("strictUpstreams" | "warehouseReach")[];
          ledger?: LedgerEntry[];
       } = {
          sources: sources.map((instruction) =>
             this.validateInstruction(instruction),
          ),
+         deprecatedOptions: [],
       };
       if (
          obj.referenceManifest !== undefined &&
@@ -248,22 +250,20 @@ export class MaterializationController {
                "buildInstructions.strictUpstreams must be a boolean",
             );
          }
-         result.strictUpstreams = obj.strictUpstreams;
+         result.deprecatedOptions.push("strictUpstreams");
       }
-      // Null is read as absent (the default, `recompute`): Credible's clients
-      // drop null fields, so null and absent must mean the same.
+      // Null is read as absent: Credible's clients drop null fields, so null
+      // and absent must mean the same.
       if (obj.warehouseReach !== undefined && obj.warehouseReach !== null) {
          if (
             typeof obj.warehouseReach !== "string" ||
-            !WAREHOUSE_REACH_VALUES.includes(
-               obj.warehouseReach as WarehouseReach,
-            )
+            !WAREHOUSE_REACH_VALUES.includes(obj.warehouseReach)
          ) {
             throw new BuildInstructionsInvalidError(
                `buildInstructions.warehouseReach must be one of ${WAREHOUSE_REACH_VALUES.join(" | ")}`,
             );
          }
-         result.warehouseReach = obj.warehouseReach as WarehouseReach;
+         result.deprecatedOptions.push("warehouseReach");
       }
       // Null is read as absent ("use the local store"), not as an empty ledger:
       // the two mean opposite things, and a caller that means "I own the ledger
@@ -323,6 +323,22 @@ export class MaterializationController {
          ...(ref.nativeSchema !== undefined &&
          validReferenceSchema(ref.nativeSchema).length > 0
             ? { nativeSchema: validReferenceSchema(ref.nativeSchema) }
+            : {}),
+         // A stored upstream's columns, as its build reported them.
+         ...(ref.schema !== undefined &&
+         validReferenceSchema(ref.schema, "schema").length > 0
+            ? { schema: validReferenceSchema(ref.schema, "schema") }
+            : {}),
+         ...(ref.dataAsOf !== undefined
+            ? { dataAsOf: referenceInstant(ref.dataAsOf, "dataAsOf") }
+            : {}),
+         ...(ref.builtAt !== undefined
+            ? { builtAt: referenceInstant(ref.builtAt, "builtAt") }
+            : {}),
+         // Carried unparsed, as a host stores it: a contract that does not
+         // read is none (domain/column_contract.ts).
+         ...(ref.contract !== undefined && ref.contract !== null
+            ? { contract: ref.contract as ManifestReference["contract"] }
             : {}),
       };
    }
@@ -565,7 +581,10 @@ function assertUsableTableName(name: string, what: string): void {
  * each a name and a type, both non-empty strings. Anything else is refused
  * (400), so a malformed list never reads as "no types recorded".
  */
-function validReferenceSchema(raw: unknown): { name: string; type: string }[] {
+function validReferenceSchema(
+   raw: unknown,
+   field: "nativeSchema" | "schema" = "nativeSchema",
+): { name: string; type: string }[] {
    if (
       !Array.isArray(raw) ||
       !raw.every(
@@ -579,13 +598,27 @@ function validReferenceSchema(raw: unknown): { name: string; type: string }[] {
       )
    ) {
       throw new BuildInstructionsInvalidError(
-         "Manifest reference 'nativeSchema' must be an array of { name, type } objects with non-empty string fields",
+         `Manifest reference '${field}' must be an array of { name, type } objects with non-empty string fields`,
       );
    }
    return raw.map((c: { name: string; type: string }) => ({
       name: c.name,
       type: c.type,
    }));
+}
+
+/**
+ * A reference's instant (`dataAsOf`, `builtAt`): a string `Date` reads as
+ * an instant, refused otherwise (400), so a malformed one never reads as
+ * "of unknown age".
+ */
+function referenceInstant(raw: unknown, field: string): string {
+   if (typeof raw !== "string" || Number.isNaN(Date.parse(raw))) {
+      throw new BuildInstructionsInvalidError(
+         `Manifest reference '${field}' must be a date-time string when present`,
+      );
+   }
+   return raw;
 }
 
 /**

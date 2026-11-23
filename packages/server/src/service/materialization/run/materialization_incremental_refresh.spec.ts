@@ -9,6 +9,10 @@ import { NATIVE_SCHEMA_ROW_LIMIT } from "./database_native_types";
 import { indexCallerLedger } from "./incremental_build";
 import { fakeSource } from "../../../test_helpers/materialization_test_fixtures";
 import { createMocks } from "../../../test_helpers/materialization_service_harness";
+import { fakeContractReads } from "../../../test_helpers/contract_fixture";
+
+// Builds over fake connections, which answer no catalog query.
+fakeContractReads();
 
 // ── Incremental dispatch inside buildOneSource ────────────────────────────
 //

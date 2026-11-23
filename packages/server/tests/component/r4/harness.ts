@@ -27,6 +27,7 @@
  * through {@link R4Fixture.duckdb} reaches the origin instead under the switch.
  */
 
+import { captureTableContract } from "../../../src/service/materialization/run/column_contract_capture";
 import { storedKeyCheckSql } from "../../../src/service/materialization/text/key_check_text";
 import { expect, it } from "bun:test";
 import { tryCompileMaterializeCompanion } from "../../../src/service/materialization/plan/materialize_compile";
@@ -357,6 +358,12 @@ export interface R4Fixture {
    rollupRefusals: { reason: string; sourceName: string }[];
    /** For a `#(materialize)` scenario: each source's plan, by its name. */
    materializePlans: Record<string, MaterializePlan>;
+   /** For a `#(materialize)` scenario: each source the plan refused, and why. */
+   materializeRefusals: {
+      sourceName: string;
+      reason: string;
+      message: string;
+   }[];
    /**
     * Read every database table's columns from the scenario's database, as a
     * package's bind reads them, and hold the bindings and the build manifest
@@ -366,6 +373,12 @@ export interface R4Fixture {
    observeDatabaseColumns(): Promise<{
       drifted: ObservedDrift[];
       unread: { sourceEntityId: string; reason: string }[];
+      /** Tables that no longer match their column contracts, left out. */
+      incompatible: {
+         sourceEntityId: string;
+         code: string;
+         columns: string[];
+      }[];
    }>;
    /** Rows of a stored table, by its physical name, with SQL over it. */
    storedSQL(
@@ -564,6 +577,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
    const plan: Record<string, { name: string; sourceEntityId: string }> = {};
    // eslint-disable-next-line @typescript-eslint/no-explicit-any
    const authorDef = (compiled as any)._modelDef;
+   const materializeRefusals: R4Fixture["materializeRefusals"] = [];
    const companion = scenario.materialize
       ? await tryCompileMaterializeCompanion({
            packagePath: dir,
@@ -586,7 +600,19 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
            }),
            // P9's probes, against the author's model, as the build plan runs them.
            probe: materializer,
-        }).then((c) => c.generated)
+        }).then((c) => {
+           for (const r of c.refused) {
+              materializeRefusals.push({
+                 sourceName: r.sourceName,
+                 reason:
+                    "refused" in r.outcome
+                       ? r.outcome.refused.reason
+                       : r.outcome.malformed,
+                 message: r.reason,
+              });
+           }
+           return c.generated;
+        })
       : undefined;
    if (scenario.materialize && !companion) {
       throw new Error("the #(materialize) companion did not compile");
@@ -657,6 +683,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
          schema?: { name: string; type: string }[];
          heldRead?: FreshnessAwareManifestEntry["heldRead"];
          leftOutColumns?: string[];
+         contract?: unknown;
       }
    > = {};
    // The join_ones a package's build reads the rollups' key checks for.
@@ -704,6 +731,12 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
          databaseEntries[target.buildId] = {
             tableName: table,
             ...(rollupSchema ? { schema: rollupSchema } : {}),
+            // Its column contract, as a build records it.
+            contract: await captureTableContract({
+               connection: duckdb,
+               tableName: table,
+               tier: "database",
+            }),
          };
          const check = plan.keyCheck;
          const checks = scenario.rollupKeyChecks ?? true;
@@ -863,6 +896,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
          schema?: { name: string; type: string }[];
          nativeSchema?: { name: string; type: string }[];
          keyUniqueness?: KeyUniqueness;
+         contract?: unknown;
       }
    > = {};
    // A pair table's leaf key checks, run on the source's own connection once
@@ -948,6 +982,12 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
             ...(schema ? { schema } : {}),
             ...(nativeSchema ? { nativeSchema } : {}),
             ...(leafKeys ? { keyUniqueness: { parentKeys: leafKeys } } : {}),
+            // Its column contract, as a build records it.
+            contract: await captureTableContract({
+               connection: builder,
+               tableName: table,
+               tier: "database",
+            }),
          };
          continue;
       }
@@ -974,6 +1014,12 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
          });
          databaseServeEntries[entityIdOf(source, i)] = {
             tableName: table,
+            // Its column contract, as a build records it.
+            contract: await captureTableContract({
+               connection: duckdb,
+               tableName: table,
+               tier: "database",
+            }),
             // The connection the build wrote it on, as a build's entry
             // records it, so the bind's connection check runs.
             connectionName: source.connectionName,
@@ -1415,6 +1461,7 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
       materializePlans: Object.fromEntries(
          Object.values(materializePlans).map((p) => [p.sourceName, p]),
       ),
+      materializeRefusals,
       setClock(at) {
          if (!pinned) throw new Error("the scenario's clock is not pinned");
          pinned.clock = at;
@@ -1455,7 +1502,11 @@ export async function buildScenario(scenario: R4Scenario): Promise<R4Fixture> {
                ...(leftOutColumns ? { leftOutColumns } : {}),
             });
          }
-         return { drifted: applied.drifted, unread: applied.unread };
+         return {
+            drifted: applied.drifted,
+            unread: applied.unread,
+            incompatible: applied.incompatible,
+         };
       },
       async storedSQL(sql) {
          const text = sql((sourceName) => {

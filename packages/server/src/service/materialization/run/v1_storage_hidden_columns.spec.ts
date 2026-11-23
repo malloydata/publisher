@@ -144,7 +144,6 @@ async function scenario() {
          strict: false,
          priorRefusals: [],
          hostInstructed: false,
-         warehouseReach: "recompute",
       });
    const columns = async (table: string) =>
       (

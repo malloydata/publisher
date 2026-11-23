@@ -5,6 +5,7 @@ import { Manifest } from "@malloydata/malloy";
 import { describe, expect, it } from "bun:test";
 import type { ManifestEntry } from "../domain/types";
 import {
+   builtFromOf,
    ChainedPackageStaleError,
    chainedPlanFacts,
    currentUpstreamEntries,
@@ -851,29 +852,9 @@ describe("withChainBuildText", () => {
    it("asks the package for the text while it is current", () => {
       const scoped = withChainBuildText({} as never, {
          chainBuildText: () => text,
-         chainCollationRefusal: async () => undefined,
          getPackagePath: () => "/pkg",
       }) as { chainBuildText(r: unknown): unknown };
       expect(scoped.chainBuildText(request)).toBe(text);
-   });
-
-   it("asks the package whether the build may stack over its stored upstreams", async () => {
-      const asked: unknown[] = [];
-      const scoped = withChainBuildText({} as never, {
-         chainBuildText: () => text,
-         chainCollationRefusal: async (r) => {
-            asked.push(r);
-            return "the package's own refusal";
-         },
-         getPackagePath: () => "/pkg",
-      }) as {
-         chainCollationRefusal(r: unknown): Promise<string | undefined>;
-      };
-      const collation = { downstream: request.downstream, stored: ["u@m"] };
-      expect(await scoped.chainCollationRefusal(collation)).toBe(
-         "the package's own refusal",
-      );
-      expect(asked).toEqual([collation]);
    });
 
    it("declines with package_stale, asking nothing of the package, while it serves an older model", () => {
@@ -887,7 +868,6 @@ describe("withChainBuildText", () => {
                asked++;
                return text;
             },
-            chainCollationRefusal: async () => undefined,
          },
          () => stale,
       ) as { chainBuildText(r: unknown): { declined: string; code?: string } };
@@ -904,5 +884,35 @@ describe("withChainBuildText", () => {
       expect(errorCodeOf(new ChainedPackageStaleError("x"))).toBe(
          "package_stale",
       );
+   });
+});
+
+describe("builtFromOf", () => {
+   it("names no upstream for a build given no manifest", () => {
+      expect(builtFromOf("SELECT 1", undefined, {}, "a")).toBeUndefined();
+   });
+
+   it("names each stored table the build SQL reads, but its own", () => {
+      const built = builtFromOf(
+         'SELECT * FROM "up_t"',
+         {
+            entries: { u1: { tableName: '"up_t"' }, me: { tableName: '"me"' } },
+         } as never,
+         {
+            u1: {
+               sourceEntityId: "u1",
+               physicalTableName: "up_t",
+               builtAt: "2026-11-01T00:00:00.000Z",
+            } as never,
+         },
+         "me",
+      );
+      expect(built).toEqual([
+         {
+            sourceEntityId: "u1",
+            physicalTableName: "up_t",
+            builtAt: "2026-11-01T00:00:00.000Z",
+         },
+      ]);
    });
 });

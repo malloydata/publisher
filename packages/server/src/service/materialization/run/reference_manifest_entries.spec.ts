@@ -42,4 +42,18 @@ describe("referenceManifestToEntries", () => {
       ]);
       expect(entries.up.nativeSchema).toEqual(nativeSchema);
    });
+
+   it("carries a reference's schema, dataAsOf, builtAt and contract onto the seeded entry", () => {
+      const ref = {
+         sourceEntityId: "up",
+         physicalTableName: "up_t",
+         storageDestinationName: "lake",
+         schema: [{ name: "cat", type: "VARCHAR" }],
+         dataAsOf: "2026-11-20T00:00:00.000Z",
+         builtAt: "2026-11-20T00:05:00.000Z",
+         contract: { v: 1, dialect: "duckdb", columns: [] },
+      };
+      const { up } = referenceManifestToEntries([ref]);
+      expect(up).toEqual(ref);
+   });
 });

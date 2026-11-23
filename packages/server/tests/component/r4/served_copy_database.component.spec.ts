@@ -429,7 +429,7 @@ source: gated is orders_raw extend {
          // A database bind alone (no storage bind after it) reaches the
          // served copy: unbound, the query is live; bound again, served.
          const entries =
-            fixture.pkg.materialization().getBuildManifestEntries() ?? {};
+            fixture.pkg.materialization().boundDatabaseEntries() ?? {};
          fixture.pkg.materialization().bind({ database: {} });
          const unbound = await fixture.run("m.malloy", QUERY, {
             REGIONS: CALLERS[0],

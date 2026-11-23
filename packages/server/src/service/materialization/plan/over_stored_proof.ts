@@ -85,6 +85,31 @@ export function overStoredProven(
  * Whether two sources output the same columns, by name, type and numeric
  * subtype, in order: an integer column where the plan has a float is drift.
  */
+/**
+ * Whether `variant`, compiled over stand-ins of its upstreams' stored tables
+ * (storage_over_stored.ts), outputs `planned`'s columns: the same names and
+ * types, and each numeric subtype the same or unknown. A stand-in declares a
+ * stored number as `number`, so what it computes from one has no subtype
+ * there; the stored column's own type decides it, which a run checks against
+ * the upstream's recorded contract before it builds.
+ */
+export function sameColumnsOverStandIn(
+   variant: PersistSource,
+   planned: PersistSource,
+): boolean {
+   const got = outputColumnsOf(variant);
+   const want = outputColumnsOf(planned);
+   return (
+      got.length === want.length &&
+      got.every(
+         (c, i) =>
+            c[0] === want[i][0] &&
+            c[1] === want[i][1] &&
+            (c[2] == null || c[2] === want[i][2]),
+      )
+   );
+}
+
 function sameColumns(a: PersistSource, b: PersistSource): boolean {
    return (
       JSON.stringify(outputColumnsOf(a)) === JSON.stringify(outputColumnsOf(b))

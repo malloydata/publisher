@@ -19,6 +19,7 @@ import {
 } from "../../test_helpers/materialization_test_fixtures";
 import type { FreshnessManifest, ObservedColumns } from "./domain/types";
 import { PackageMaterialization } from "./package_materialization";
+import { contractFor } from "../../test_helpers/contract_fixture";
 
 const ADDRESS = "build-orders";
 
@@ -27,6 +28,7 @@ const entries = (): FreshnessManifest =>
    ({
       [ADDRESS]: {
          tableName: "public.orders_t",
+         contract: contractFor(),
          connectionName: "duckdb",
          schema: [{ name: "id", type: "INTEGER" }],
       },
@@ -54,8 +56,9 @@ async function facade() {
    };
    const connection = {
       dialectName: "postgres",
-      runSQL: async () => {
-         state.reads++;
+      runSQL: async (sql: string) => {
+         // Counts the column reads; the collation read beside each is not one.
+         if (!sql.includes("attcollation")) state.reads++;
          if (state.hold) await state.hold;
          if (!state.readable) throw new Error("the catalog read failed");
          return { rows: [{ key: ADDRESS, name: "id", type: "integer" }] };

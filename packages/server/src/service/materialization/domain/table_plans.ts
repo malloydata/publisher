@@ -18,6 +18,7 @@
  * Pure.
  */
 
+import type { StringReads } from "./string_reads";
 import type { TableKind as StoredTableKind } from "./vocabulary";
 import type { BuildTarget, PersistSource } from "@malloydata/malloy";
 import type {
@@ -730,6 +731,22 @@ interface TablePlanFacts {
     * leg in a destination). Absent: no such leg, so no check.
     */
    storedKeyCheck?: string;
+   /**
+    * A `storage=` table built over its upstreams' stored tables in its
+    * destination (a chained source, a view or query there, a rollup over
+    * its base's table): the strings that build compares, read at plan, which
+    * each upstream's recorded contract must compare as live does
+    * (`string_reads.ts`). A `refused` one is refused at plan; otherwise the
+    * build judges them against the contracts of the tables it reads.
+    */
+   stringReads?: StringReads;
+   /**
+    * Why the plan found this table cannot be built over its upstreams'
+    * tables, as it must be (a downstream is never built by recomputing its
+    * upstreams from raw): it is refused at plan as `upstream_table_unusable`
+    * with this as its message.
+    */
+   unusableUpstream?: string;
 }
 
 /**
@@ -755,6 +772,15 @@ export type TablePlan = TablePlanFacts &
             * its upstreams' tables, which a run reads (instructed_build.ts).
             */
            overStoredBase?: OverStoredBase;
+           /**
+            * A `storage=` persisted view or named query over upstreams stored
+            * in its own destination: the text it builds from there, each
+            * upstream re-rooted on a stand-in of its table, compiled and
+            * proven to build the planned table at plan time
+            * (plan/storage_over_stored.ts). A run builds it from this text
+            * over the upstreams' real tables, or not at all.
+            */
+           storedInDestination?: StoredInDestination;
         }
       | {
            kind: Extract<TableKind, "materialize" | "pair">;
@@ -796,6 +822,33 @@ export type TablePlan = TablePlanFacts &
  * and `baseBuildSource` is that build source as the same compile holds it:
  * the table the rollup reads, which a run checks is the base's table.
  */
+/**
+ * The text a `storage=` view or named query builds from in its destination,
+ * over its upstreams' stored tables there, as the plan proved it
+ * (plan/storage_over_stored.ts). Plain data.
+ */
+export interface StoredInDestination {
+   /** Every file the build compiles, by URL. */
+   files: readonly (readonly [string, string])[];
+   /** The generated build file, which declares {@link downstreamName}. */
+   entry: string;
+   downstreamName: string;
+   /** The connection the re-rooted upstreams read the destination by. */
+   connection: string;
+   /** Where each re-rooted upstream's declaration lies in `files`. */
+   rerootedSpans: readonly { url: string; start: number; end: number }[];
+   /**
+    * Each upstream it reads: its author sourceID, the virtual handle its
+    * table is read by, and the stored columns the proof stood in for it.
+    * A run builds only over a table whose recorded columns read as these.
+    */
+   upstreams: readonly {
+      sourceID: string;
+      handle: string;
+      columns: readonly { name: string; type: string }[];
+   }[];
+}
+
 export interface OverStoredBase {
    source: PersistSource;
    baseBuildSource?: PersistSource;
@@ -812,6 +865,14 @@ export interface OverStoredBase {
     * the downstream is refused at plan (build_plan.ts).
     */
    upstreamSourceIDs?: readonly string[];
+   /**
+    * With `rerootedSourceID` a pair table (an inlined join_many, re-rooted
+    * with its join put back, pair_reroot.ts): the contract keys of the leaf
+    * key checks the build relies on (`items.item_id`). A build refuses
+    * unless the upstream's table records each as passed (unique and never
+    * null), and never builds from raw instead.
+    */
+   pairLeafKeys?: readonly string[];
 }
 
 /** A `#(materialize)` plan's kind: `pair` when it stores an inlined join_many. */

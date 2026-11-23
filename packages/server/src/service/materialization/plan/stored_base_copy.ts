@@ -17,7 +17,7 @@ import { ownLevelNotes, type AnnotationsDef } from "../../annotations";
 import type { SourceMap } from "../text/source_map";
 import { reachedSourceIDsOf } from "./downstream_upstreams";
 import { overlayKey } from "../../overlay_key";
-import type { MaterializePlan } from "../domain/table_plans";
+import { type MaterializePlan, splitSourceID } from "../domain/table_plans";
 import type { TermUse } from "../domain/read_time_terms";
 import { rollupStoredBaseCopyName } from "../text/read_text";
 import {
@@ -50,11 +50,13 @@ export interface StoredMaterializeBase {
 
 /**
  * The base `baseSourceID` as a `#(materialize)` base whose stored table a
- * rollup may build from, or undefined: its own notes declare a database
+ * downstream may build from, or undefined: its own notes declare a database
  * `#(materialize)` (read by declaration.ts), and the companion planned it as
- * a plain table in its own warehouse, declared in this model. A pair table
- * holds a row per pair, not the base's rows, and a table with read-time
- * terms holds rows its source filters again at read: neither is read.
+ * a table in its own warehouse, declared in this model. A table with
+ * read-time terms holds rows its source filters again at read, and is not
+ * read. A pair table holds a row per pair, not the base's rows: it is read
+ * only with `pairs` (a persisted view or query, whose copy puts the join
+ * back, pair_reroot.ts), never by a rollup.
  */
 function storedMaterializeBase(
    notes: readonly { text: string }[],
@@ -62,30 +64,36 @@ function storedMaterializeBase(
    baseSourceID: string,
    modelFile: string,
    materialized: MaterializedBases | undefined,
-): StoredMaterializeBase | undefined {
-   if (!materialized) return undefined;
+   pairs: boolean,
+): StoredMaterializeBase | string {
+   if (!materialized) return "no #(materialize) table is planned in its model";
    const own = notes.filter((n) => routeOfNote(n.text) === "materialize");
-   if (own.length === 0) return undefined;
+   if (own.length === 0) return "it declares no #(materialize) of its own";
    const tag = readNotesIfAny(own, "materialize");
    const placed = tag ? placementOf(tag) : undefined;
-   if (!placed || !("placement" in placed)) return undefined;
-   if (placed.placement.tier !== "database") return undefined;
+   if (!placed || !("placement" in placed)) {
+      return "its #(materialize) cannot be placed";
+   }
+   if (placed.placement.tier !== "database") {
+      return "its table is in a storage= destination";
+   }
    const plan = materialized.plans.find((p) => p.sourceID === baseSourceID);
-   if (
-      !plan ||
-      plan.pair ||
-      plan.pairBlocks ||
-      plan.persist.storage !== undefined ||
-      (plan.readTimeTerms ?? []).length > 0
-   ) {
-      return undefined;
+   if (!plan) return "it is not planned in its model";
+   if (!pairs && (plan.pair || plan.pairBlocks)) {
+      return "its table is a pair table, one row per pair of an inlined join_many";
+   }
+   if (plan.persist.storage !== undefined) {
+      return "its table is in a storage= destination";
+   }
+   if ((plan.readTimeTerms ?? []).length > 0) {
+      return "its source filters its table's rows again at read";
    }
    const declaration = declarationOf(
       def as Parameters<typeof declarationOf>[0],
    );
    const modelHref = pathToFileURL(modelFile).href;
    if (!declaration || overlayKey(declaration.url) !== overlayKey(modelHref)) {
-      return undefined;
+      return "it is declared in another file";
    }
    // Where the build source is declared: the companion, or, with a chain
    //, its level's file (build_file_generator.ts).
@@ -97,7 +105,9 @@ function storedMaterializeBase(
    const declaring = pathToFileURL(
       path.join(path.dirname(modelFile), importFrom),
    ).href;
-   if (!materialized.files.has(declaring)) return undefined;
+   if (!materialized.files.has(declaring)) {
+      return "its build source was not generated";
+   }
    return { plan, declaration, importFrom };
 }
 
@@ -139,10 +149,10 @@ export function storedBaseCopies(
 /**
  * The one database `#(materialize)` upstream `root` (a downstream's source)
  * reaches whose stored table it may build from ({@link storedMaterializeBase}),
- * undefined when it reaches none, or `unusable` when it reaches several, or
- * one that does not qualify, or one whose zone a stage between differs from
- * (its stored truncations would be read in another zone, and truncated
- * again).
+ * undefined when it reaches none, or `unusable` with why when it reaches
+ * several, or one that does not qualify, or one whose zone a stage between
+ * differs from (its stored truncations would be read in another zone, and
+ * truncated again).
  */
 export function storedMaterializeUpstream(
    map: SourceMap,
@@ -150,7 +160,8 @@ export function storedMaterializeUpstream(
    modelDef: unknown,
    modelFile: string,
    materialized: MaterializedBases | undefined,
-): StoredMaterializeBase | "unusable" | undefined {
+   options: { pairs?: boolean } = {},
+): StoredMaterializeBase | { unusable: string } | undefined {
    // A `#(materialize)` source planned as one: an extension carries its
    // base's notes as its own, but its base's plan is the one it reads.
    const planned = new Set(materialized?.plans.map((p) => p.sourceID) ?? []);
@@ -172,7 +183,15 @@ export function storedMaterializeUpstream(
    const own = (root as { sourceID?: unknown } | undefined)?.sourceID;
    if (typeof own === "string" && ids.includes(own))
       ids.splice(0, ids.length, own);
-   if (ids.length > 1) return "unusable";
+   const nameOf = (id: string) => splitSourceID(id)?.name ?? id;
+   if (ids.length > 1) {
+      return {
+         unusable:
+            `it reaches several #(materialize) sources ` +
+            `(${ids.map((id) => `'${nameOf(id)}'`).join(", ")}), and its ` +
+            `build reads one upstream's table`,
+      };
+   }
    const def = map.node(ids[0])?.def as
       | { annotations?: AnnotationsDef }
       | undefined;
@@ -182,10 +201,22 @@ export function storedMaterializeUpstream(
       ids[0],
       modelFile,
       materialized,
+      options.pairs ?? false,
    );
-   if (!base) return "unusable";
+   if (typeof base === "string") {
+      return {
+         unusable: `its #(materialize) upstream '${nameOf(ids[0])}' has no table it can build from: ${base}`,
+      };
+   }
    const zone = zoneOf(def);
-   if ([...timezonesIn(root)].some((z) => z !== zone)) return "unusable";
+   if ([...timezonesIn(root)].some((z) => z !== zone)) {
+      return {
+         unusable:
+            `it reads its #(materialize) upstream '${nameOf(ids[0])}' in ` +
+            `another time zone than its table was built in, so a stored ` +
+            `truncation would be truncated again`,
+      };
+   }
    return base;
 }
 
