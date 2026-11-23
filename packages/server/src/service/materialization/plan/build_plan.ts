@@ -1186,10 +1186,10 @@ async function planStringReads(
       return { refused: "the strings it compares could not be read" };
    }
    if ("refused" in reads || !ports.boundContract) return reads;
-   const contracts = request.stored.map((id) =>
-      ports.boundContract!(id, destination),
+   const contracts = new Map(
+      request.stored.map((id) => [id, ports.boundContract!(id, destination)]),
    );
-   if (contracts.some((c) => c === undefined)) return reads;
+   if ([...contracts.values()].some((c) => c === undefined)) return reads;
    const why = stringReadsRefusal(reads, contracts);
    return why === undefined ? reads : { refused: why };
 }

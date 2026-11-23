@@ -124,7 +124,7 @@ import {
    storageTablePath,
 } from "../domain/storage_table_path";
 import { STORAGE_DIALECT } from "../domain/dialect";
-import { parseContract } from "../domain/column_contract";
+import { type ColumnContract, parseContract } from "../domain/column_contract";
 import type { Collation } from "../domain/collation";
 import { storageContract } from "./column_contract_capture";
 import { ContractCaptureFailedError } from "../../../errors";
@@ -620,12 +620,17 @@ function storedParentsReached(
  */
 function stackCollationRefusal(
    stringReads: StringReads | undefined,
-   upstreams: readonly (ManifestEntry | undefined)[],
+   upstreams: readonly {
+      sourceIDs: readonly string[];
+      entry: ManifestEntry | undefined;
+   }[],
 ): string | undefined {
-   return stringReadsRefusal(
-      stringReads,
-      upstreams.map((e) => parseContract(e?.contract)),
-   );
+   const contracts = new Map<string, ColumnContract | undefined>();
+   for (const { sourceIDs, entry } of upstreams) {
+      const contract = parseContract(entry?.contract);
+      for (const id of sourceIDs) contracts.set(id, contract);
+   }
+   return stringReadsRefusal(stringReads, contracts);
 }
 
 /**
@@ -1089,7 +1094,9 @@ export class StorageBuildStrategy
       if (!environment.chainBuildText) {
          throw refused("this host compiles no served copy to build it over");
       }
-      const collation = stackCollationRefusal(params.stringReads, [base.entry]);
+      const collation = stackCollationRefusal(params.stringReads, [
+         { sourceIDs: [base.baseSourceID], entry: base.entry },
+      ]);
       if (collation !== undefined) {
          throw refused(
             `it compares a string by a collation the destination cannot ` +
@@ -1266,7 +1273,10 @@ export class StorageBuildStrategy
       );
       const collation = stackCollationRefusal(
          options.stringReads,
-         read.map((b) => currentEntries[b.virtualHandle]),
+         read.map((b) => ({
+            sourceIDs: b.sourceIDs ?? [],
+            entry: currentEntries[b.virtualHandle],
+         })),
       );
       // No build over the parents gives live's rows: refused, never
       // recomputed from raw.
@@ -1359,6 +1369,7 @@ export class StorageBuildStrategy
       const planFacts = params.planFacts ?? NO_PLAN_FACTS;
       const handles = new Map<string, string>();
       const addresses: string[] = [];
+      const judged: { sourceIDs: string[]; entry: ManifestEntry }[] = [];
       for (const u of stored.upstreams) {
          const address = planFacts.addressBySourceId[u.sourceID];
          const entry =
@@ -1414,11 +1425,9 @@ export class StorageBuildStrategy
             ),
          );
          addresses.push(address);
+         judged.push({ sourceIDs: [u.sourceID], entry });
       }
-      const collation = stackCollationRefusal(
-         params.stringReads,
-         addresses.map((a) => builtEntries[a]),
-      );
+      const collation = stackCollationRefusal(params.stringReads, judged);
       if (collation !== undefined) {
          throw new ChainedShapeNotCarriedError(
             `'${persistSource.name}' was not built over its upstreams' ` +

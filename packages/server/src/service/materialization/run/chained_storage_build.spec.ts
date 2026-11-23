@@ -632,7 +632,13 @@ source: mixed is daily extend {
             };
          }
          const refused = await stack(chain, "monthly", entries, {
-            reads: [{ names: ["cat"], need: "equality" }],
+            reads: [
+               {
+                  upstream: chain.byName("daily").id,
+                  names: ["cat"],
+                  need: "equality",
+               },
+            ],
          });
          // A shape no build over the parents gives live's rows for: refused
          // as a shape it could not carry (recomputeAfterStackFailure), never

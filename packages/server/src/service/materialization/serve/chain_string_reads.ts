@@ -93,5 +93,20 @@ function readsOf(
 ): StringRead[] | undefined {
    if (reads.unresolved) return undefined;
    if (reads.comparesNoString) return [];
-   return reads.columns.map((names) => ({ names: [...names], need }));
+   // Each read is judged against its own upstream's contract: one not
+   // followed to a stored upstream refuses there.
+   return [
+      ...reads.columns.map((names, i) => ({
+         upstream: reads.columnUpstreams?.[i],
+         names: [...names],
+         need,
+      })),
+      // A read through a query computed when the tables are read (an inner
+      // query's base): its column is compared by the build all the same.
+      ...(reads.elsewhereColumns ?? []).map((c) => ({
+         upstream: c.upstream,
+         names: [...c.names],
+         need,
+      })),
+   ];
 }
