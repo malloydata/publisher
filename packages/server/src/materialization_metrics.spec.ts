@@ -19,6 +19,7 @@ import {
    KEY_CHECK_KINDS,
    KEY_CHECK_OUTCOMES,
    recordAdmissionParityDrift,
+   recordQueryWalk,
    recordAnnotationFindings,
    recordAttributionSkipped,
    recordAutoLoadOutcome,
@@ -420,6 +421,7 @@ const EMISSIONS: Record<string, () => void> = {
       recordQueryProbeCompile("stored_probe"),
    publisher_admission_parity_drift_total: () =>
       recordAdmissionParityDrift("source", "lookup_refuses"),
+   publisher_query_walks_total: () => recordQueryWalk("scope"),
    publisher_materialization_runs_total: () =>
       recordMaterializationRun("auto", "success", 1),
    publisher_materialization_run_duration_ms: () =>

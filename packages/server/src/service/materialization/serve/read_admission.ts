@@ -60,7 +60,11 @@ import { type ResultReads, resultReadsOfQuery } from "./result_reads";
 export type { CollationProbe } from "./gate_reads_types";
 export { collationProbe } from "./gate_collation";
 export { lookupProbe } from "./admission_lookup";
-export { observeAdmission, shadowProbe } from "./admission_parity";
+export {
+   observeAdmission,
+   readAdmissionModeFrom,
+   shadowProbe,
+} from "./admission_parity";
 
 /** What admission decided about one answer, in the router's terms. */
 type AdmissionOutcome =

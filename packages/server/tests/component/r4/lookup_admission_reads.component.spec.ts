@@ -6,7 +6,8 @@
  * beyond its own to judge a stored answer's string comparisons: what the
  * source compares under was read at the bind, and what the stored table
  * holds was recorded by its build. Under probe admission the same queries
- * read the warehouse on every answer. Both answer every caller as live does:
+ * read the warehouse on every answer. Nor does a lookup query walk the IR for
+ * what the served copy's compile and the bind record per source. Both answer every caller as live does:
  * a gate over a byte-exact string column is served from the stored table,
  * one over a NOCASE column answers live.
  */
@@ -119,8 +120,18 @@ for (const mode of ["lookup", "probe"] as const) {
             const compiles = await metrics.collectCounter(
                "publisher_query_probe_compiles_total",
             );
+            // Nor walks the IR for what the served copy's compile and the
+            // bind record per source: its declines, the gates' and the row
+            // scope's reads.
+            const walks = await metrics.collectCounter(
+               "publisher_query_walks_total",
+            );
             if (mode === "lookup") {
-               expect({ reads, compiles }).toEqual({ reads: 0, compiles: 0 });
+               expect({ reads, compiles, walks }).toEqual({
+                  reads: 0,
+                  compiles: 0,
+                  walks: 0,
+               });
             } else {
                expect(reads).toBeGreaterThan(0);
             }

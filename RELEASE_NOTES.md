@@ -35,6 +35,8 @@ Two consequences worth knowing. A section merged to `main` ships in the **next**
 
 **Added: counters `publisher_query_catalog_reads_total{site}` and `publisher_query_probe_compiles_total{site}`,** the catalog reads and extra compiles read admission makes while answering a query.
 
+**Changed: the served copy decides, at its compile, the declines that depend only on the source a query runs on:** a row-level gate it cannot graft, an opted-out or unsafe source on the chain, and a zone that differs from the author's model. A query on a named source looks them up; only a source written inline (`orders extend { … }`) is walked per query. **Added: counter `publisher_query_walks_total{site}`,** the walks a query still makes for a fact the served copy's compile or the bind records, because the record did not cover it.
+
 ## [Unreleased] — a plain DuckDB destination's file is named from its configured name
 
 **Changed: a plain DuckDB `storage=` destination's database file is named from the destination's configured name, not the session's attach alias,** through one guarded path that refuses a name with a separator or `..` and keeps the file under the destinations root.
