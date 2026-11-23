@@ -119,6 +119,7 @@ interface Entry {
       parent?: {
          sourceEntityId: string;
          advancedBy?: string;
+         seededBy?: string;
          builtAt?: string;
          coveredThrough?: string;
          coveredThroughType?: string;
