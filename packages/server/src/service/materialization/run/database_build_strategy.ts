@@ -268,7 +268,8 @@ export class DatabaseTier
             incrementalRefresh?.lineage,
             seededThrough,
             ledgerExtensionKeys(
-               incrementalRefresh?.lineage,
+               incrementalRefresh,
+               instruction.reseed,
                incrementalRefresh?.context.materializationId,
             ),
          ),

@@ -59,6 +59,7 @@ import { compileRunPlan, type RunPlan, runPlanGateText } from "./run_plan";
 import {
    BuildInstruction,
    LedgerEntry,
+   MalformedLedgerEntry,
    ManifestEntry,
    ManifestReference,
    RefusedSource,
@@ -128,6 +129,8 @@ export interface RunBuildOptions {
    reseed: boolean;
    buildInstructions: BuildInstruction[] | undefined;
    ledger: LedgerEntry[] | undefined;
+   /** The caller's ledger entries the controller dropped as malformed. */
+   malformedLedger?: MalformedLedgerEntry[];
    referenceManifest: ManifestReference[] | undefined;
    trigger: "on_demand" | "scheduler";
    runContext?: components["schemas"]["RunContext"];
@@ -202,6 +205,12 @@ interface CreateMaterializationOptions {
     * Orchestrated-only; validated at create time.
     */
    ledger?: LedgerEntry[];
+   /**
+    * The `ledger` entries dropped as malformed, each by the table it named:
+    * its source seeds under `ledger_entry_malformed`. Not validated against
+    * the plan, since a dropped entry is as good as absent.
+    */
+   malformedLedger?: MalformedLedgerEntry[];
    /**
     * What initiated this run: `on_demand` (default, manual/API) or
     * `scheduler` (the standalone scheduler). Recorded on the run metadata.
@@ -1015,6 +1024,9 @@ export class MaterializationService {
                         // Orchestrated-only: an auto-run depends on the
                         // local store, which a supplied ledger would replace.
                         ledger: orchestrated ? options.ledger : undefined,
+                        ...(orchestrated && options.malformedLedger?.length
+                           ? { malformedLedger: options.malformedLedger }
+                           : {}),
                         referenceManifest: options.referenceManifest,
                         trigger,
                         runContext: options.runContext ?? undefined,
@@ -1108,6 +1120,9 @@ export class MaterializationService {
                forceRefresh: opts.reseed ?? false,
                now: new Date(startedAt),
                ledger: opts.ledger,
+               ...(opts.malformedLedger
+                  ? { malformedLedger: opts.malformedLedger }
+                  : {}),
             },
          );
          // What earlier deltas found missing, from the manifest bound now;

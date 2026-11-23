@@ -885,15 +885,16 @@ export class StorageBuildStrategy
          ...ledgerFields(
             incrementalRefresh?.lineage,
             result.refresh?.coveredThrough ?? result.seededThrough,
-            incrementalRefresh &&
-               ledgerExtensionKeys(
-                  incrementalRefresh.lineage,
+            ledgerExtensionKeys(
+               incrementalRefresh,
+               instruction.reseed,
+               incrementalRefresh &&
                   advancedByOf(
                      incrementalRefresh.context,
                      incrementalRefresh.lineage,
                      result.refresh?.refresh ?? "full",
                   ),
-               ),
+            ),
          ),
          ...refreshFields(
             result.refresh?.refresh ??

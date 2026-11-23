@@ -9,6 +9,7 @@
 import { describe, expect, it } from "bun:test";
 import { makeDigest } from "@malloydata/malloy";
 import {
+   ledgerExtensionKeys,
    incrementalLineage,
    indexCallerLedger,
    ledgerFields,
@@ -362,6 +363,100 @@ describe("indexCallerLedger and ledgerFields: the entry is opaque to hosts", () 
       // Without extensions, the entry is exactly the known fields.
       expect(ledgerFields(lineage as never, bound as never)).toEqual({
          ledger: { ...ENTRY, coveredThrough: "2024-07-01" },
+      });
+   });
+
+   describe("ledgerExtensionKeys", () => {
+      const lineage = {
+         connectionName: "wh",
+         physicalTableName: "orders_v1",
+         sourceEntityId: "addr",
+         watermarkName: "order_date",
+         watermarkType: "date",
+         mergeKeys: [] as string[],
+         scopeColumns: [] as string[],
+         strategy: "range_replace" as const,
+      };
+      const bound = { value: "2024-07-01", malloyType: "date" };
+      function refresh(
+         ledger: Record<string, unknown>[] | undefined,
+         forceRefresh = false,
+      ) {
+         return {
+            context: {
+               forceRefresh,
+               ...(ledger
+                  ? { callerLedger: indexCallerLedger(ledger as never) }
+                  : {}),
+            } as unknown as IncrementalRunContext,
+            lineage: lineage as never,
+         };
+      }
+
+      it("carries the echoed entry's unknown keys for the source's table", () => {
+         const r = refresh([{ ...ENTRY, future: "g1" }]);
+         expect(ledgerExtensionKeys(r, undefined, undefined)).toEqual({
+            future: "g1",
+         });
+      });
+
+      it("amends the carried keys with the ones this run computes, never an echoed one", () => {
+         const echoed = {
+            ...ENTRY,
+            future: "g1",
+            advancedBy: "old-run",
+            parent: { sourceEntityId: "p", advancedBy: "old-run" },
+         };
+         const r = refresh([echoed]);
+         expect(
+            ledgerFields(
+               lineage as never,
+               bound as never,
+               ledgerExtensionKeys(r, undefined, "this-run"),
+            ),
+         ).toEqual({
+            ledger: {
+               ...ENTRY,
+               coveredThrough: "2024-07-01",
+               future: "g1",
+               advancedBy: "this-run",
+            },
+         });
+         // A computed key the run has no value for is dropped, not carried.
+         expect(ledgerExtensionKeys(r, undefined, undefined)).toEqual({
+            future: "g1",
+         });
+         // The run's index is untouched, for any other reader.
+         expect(
+            [...(r.context.callerLedger?.values() ?? [])][0]?.extensions,
+         ).toEqual({
+            future: "g1",
+            advancedBy: "old-run",
+            parent: { sourceEntityId: "p", advancedBy: "old-run" },
+         });
+      });
+
+      it("carries nothing for a reseed, a forced run, the local store, or another table", () => {
+         const echoed = [{ ...ENTRY, future: "g1" }];
+         expect(
+            ledgerExtensionKeys(refresh(echoed), true, undefined),
+         ).toBeUndefined();
+         expect(
+            ledgerExtensionKeys(refresh(echoed, true), undefined, undefined),
+         ).toBeUndefined();
+         expect(
+            ledgerExtensionKeys(refresh(undefined), undefined, undefined),
+         ).toBeUndefined();
+         expect(
+            ledgerExtensionKeys(
+               refresh([{ ...echoed[0], physicalTableName: "other" }]),
+               undefined,
+               undefined,
+            ),
+         ).toBeUndefined();
+         expect(
+            ledgerExtensionKeys(undefined, undefined, undefined),
+         ).toBeUndefined();
       });
    });
 });
