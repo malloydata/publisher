@@ -16,7 +16,9 @@ reads `daily` through `daily_wide`. From `far`, `daily`'s table does not exist.
 
 The table exists, but not where `rollup`'s build could read it, and no build
 recomputes a stored upstream from raw. So `rollup` is refused when the package
-is planned, never built, and answers live, equal to the warehouse.
+is planned, naming both destinations, and never built. Its own query is then
+answered over `daily`, which still serves its stored snapshot: `rollup` agrees
+with `daily`, not with the warehouse, until `daily` is rebuilt.
 
 ## Connection far (type=ducklake)
 
@@ -75,7 +77,7 @@ Expect:
 
 ## Warns
 
-cites: persist-not-built
+cites: its upstream 'daily' is stored in the storage= destination 'lake', and it is built into the storage= destination 'far', which cannot read that table
 
 ## Query rollup
 
@@ -97,8 +99,9 @@ Expect:
 
 ## Query rollup (again)
 
-`rollup` answers through `daily`, which still serves its snapshot: the 1000
-is not in it.
+`rollup` is not stored, but it is answered over `daily`'s stored table, which
+still holds its snapshot: the 1000 is not in it. (A live `daily` would say
+1300.)
 
 Expect:
 

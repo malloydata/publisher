@@ -106,3 +106,23 @@ Without strict: refused the same way, since the flag is ignored.
   reference: daily_counts
 
 cites: materialized outside destination 'lake'
+
+## Mutate orders_pg.sjs_orders
+
+A new order on a date `daily` already holds.
+
+| order_id:int | order_date:date | amount:num |
+| ------------ | --------------- | ---------- |
+| 99           | 2026-01-02      | 1000       |
+
+## Query rollup (again)
+
+`rollup` was never built, and the host's runs left the package serving its
+host's (empty) manifest, so `daily` and `daily_counts` answer live too: both
+measures follow the warehouse, the new order included.
+
+Expect:
+
+| grand_total:num | orders:num |
+| --------------- | ---------- |
+| 1375            | 5          |
