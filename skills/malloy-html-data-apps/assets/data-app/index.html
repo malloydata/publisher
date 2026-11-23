@@ -1,0 +1,46 @@
+<!doctype html>
+<!-- Copyright (c) Credible Data Inc. SPDX-License-Identifier: MIT -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Rats in New York: 311 rodent complaints explorer</title>
+  <link rel="stylesheet" href="./fonts.css">
+  <link rel="stylesheet" href="./styles.css">
+  <link rel="stylesheet" href="./charts.css">
+  <!-- d3 downloads while the first queries run; app.js loads it and waits for it before drawing. -->
+  <link rel="preload" href="./vendor/d3.min.js" as="script">
+</head>
+<!-- The app's look: attributes from reference/app-frame.md's "Look and colour", chosen for this app; none is the Band look. -->
+<body data-masthead="bar" data-numbers="rules" data-sections="numbered" data-buttons="square" data-cards="headline">
+  <header class="app-header">
+    <div class="wrap">
+      <a class="app-name" href="#/">
+        <!-- ADAPT: an optional credit line above the name, such as "Made by <your team>"; delete it for none. -->
+        <span class="app-name__eyebrow">Made by your team</span>
+        <span class="app-name__title">Rats in New York</span>
+        <span class="data-through" id="data-through"></span>
+      </a>
+      <nav class="app-nav" aria-label="Views">
+        <a data-view="overview" href="#/">Overview</a>
+        <a data-view="explore" href="#/explore">Explore</a>
+        <a data-view="records" href="#/records">Records</a>
+        <a data-view="compare" href="#/compare">Compare</a>
+        <a data-view="about" href="#/about">About the data</a>
+      </nav>
+      <div class="search" role="search">
+        <label class="visually-hidden" for="search">Find a ZIP code</label>
+        <input id="search" type="search" placeholder="Find a ZIP code" autocomplete="off" role="combobox"
+          aria-expanded="false" aria-controls="search-list" aria-autocomplete="list">
+        <ul id="search-list" role="listbox" hidden></ul>
+      </div>
+    </div>
+  </header>
+  <div class="scope" id="scope" hidden><div class="wrap" id="scope-bar"></div></div>
+  <main id="main" tabindex="-1"></main>
+  <footer class="app-footer"><div class="wrap" id="footer"></div></footer>
+  <script src="/sdk/publisher.js"></script>
+  <!-- In an app that draws a boundary map (reference/maps.md): <script src="./vendor/topojson-client.min.js"></script> -->
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

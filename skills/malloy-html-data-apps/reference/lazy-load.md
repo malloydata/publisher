@@ -9,7 +9,7 @@ SPDX-License-Identifier: MIT
 
 Three parts, all required: drop any one and you get a subtle bug rather than an obvious one:
 
-1. **`IntersectionObserver`** with a `rootMargin` (~240px) so a tile starts loading just *before* it scrolls into view, not the instant it appears.
+1. **`IntersectionObserver`** with a `rootMargin` (~240px) so a tile starts loading just *before* it scrolls into view, not the instant it appears. In a cross-origin frame, or inside a scrolling container, the browser ignores the margin and the tile starts as it enters the screen: reserve its height so that still reads as loading, not as a jump. The frame template uses 400px and four in flight.
 2. **A small concurrency cap** so a fast scroll to the bottom doesn't fire twenty queries at once.
 3. **Reserve each tile's height** while its skeleton shows, so lazy-loaded tiles don't reflow the page and retrigger the observer.
 

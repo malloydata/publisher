@@ -301,3 +301,7 @@ Compare screen coordinates against the host's *visible* area, not against the wi
 - **A missing fixture is a test bug, not empty data.** Reject on an unknown `(model, query)` key so a drifted query string fails loudly, instead of returning `[]` and masquerading as a real empty state.
 - **Assert on the rendered DOM, not on `Publisher.query` return values.** The bugs live in the render path (NaN formatting, wrong column read, `|| 0` faking a zero). Reading the query result back proves nothing the model didn't already prove.
 - Match the selectors (`.tile .value`, `.is-error`, `.kit-skeleton`, `canvas`) to whatever your app actually emits.
+- **Shoot a lazy page with a viewport taller than the view** (1280x6000, 390x12000) and wait for a marker the page sets once drawn (the frame template sets `data-loaded` on each card). A normal viewport shoots the tiles below the fold as skeletons. This is the opposite of the lazy-load check, which wants a small viewport; do both.
+- **`document.fonts.check` is true when the face is missing.** To prove a font loaded, look for it in `[...document.fonts]` with `status === 'loaded'`.
+- **Check a module as a module.** `node --check app.js` on a `.js` file misses a name declared twice in an ES module, which leaves the page blank; `node --input-type=module --check < app.js` catches it.
+- **An SVG chart has no pixels to read.** For the frame template's d3 module, count the marks (`svg path`, `svg rect`, `svg circle`) and read their labels instead of sampling a canvas.

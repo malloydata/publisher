@@ -113,6 +113,8 @@ Two traps worth naming, because they produce charts that are *readable and wrong
 - **Diverging bars on disjoint vocabularies.** If the positive and negative sides are drawn from different taxonomies (an NLP model whose praise labels and complaint labels do not overlap), a diverging chart keyed on a shared label renders nearly every row one-sided and implies a balance the data does not contain. Use two ranked lists side by side.
 - **A shared axis across different scales.** Mixing a 0-7 rating with a 0-10 rating on one radar, or two measures with different units on one y-axis, silently lets the larger scale dominate. Normalize, use a second axis explicitly labeled, or split the chart.
 
+Three more rules from apps built this way. Each finding gets its own form: never the same form for two questions next to each other. Pick the form a specialist in the field would draw, and give the app one form native to its field (an hour-by-weekday grid for calls, an epidemic curve, a calendar heatmap for seasons). A map earns its place only when the pattern in space is the finding. With the frame template, `reference/charts.md` has a longer catalogue, each form with what the model must give it.
+
 Pie and donut are absent from that table on purpose. They answer "what is the composition" worse than a ranked bar or a waffle at almost every n. Use one only when parts-of-whole is the entire message and there are two or three parts.
 
 ## 4. Plan the depth

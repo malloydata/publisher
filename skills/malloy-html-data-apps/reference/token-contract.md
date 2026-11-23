@@ -15,7 +15,7 @@ There is no shipped component library, so visual consistency across apps comes f
 | Surfaces | page background, card surface, a raised and a sunken variant, border, strong border |
 | Text | strong, default, muted, soft - a real ramp, not one color at three opacities |
 | Semantic | positive, negative, warning, each with a soft background variant for fills and badges |
-| Chart palette | a categorical ramp of 6-8, ordered so the first is the brand accent, plus grid and axis-tick colors |
+| Chart palette | a categorical ramp, ordered so the first is the brand accent, plus grid and axis-tick colors. Six is the most a reader tells apart; the frame template's `palette.py` checks up to six |
 | **Type** | a **closed** size scale of exactly 8 steps, plus the weights, line-heights and letter-spacings you actually use |
 | **Spacing** | a scale (4 / 8 / 12 / 16 / 24 / 32 / 48), not a single step that gets multiplied and divided in place |
 | Structure | a radius scale (small, default, large), a shadow for cards and a deeper one for popovers |

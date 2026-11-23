@@ -163,6 +163,15 @@ Publisher does not serve or bundle `<malloy-render>`; you must obtain a built co
 
 Validate every query before wiring it into render code, using whatever query tool your environment provides, or by POSTing the query to a running Publisher at `/api/v0/environments/<env>/packages/<pkg>/models/<modelPath>/query` with body `{"compactJson":true,"query":"..."}`, or by running `Publisher.query` once and logging the rows. Malloy names result columns after the `group_by` / `aggregate` field names (`group_by: plan` gives a `plan` column; `aggregate: account_count` gives an `account_count` column), so confirm those names against real output before you read them.
 
+Four more that each cost a real build a debugging cycle:
+
+- **Drop nulls from a distinct-value list.** A null becomes a blank option that matches "nothing selected".
+- **Codes are strings.** A ZIP or FIPS code that is a number loses its leading zero and never matches the address,
+  which holds strings. Make it a string dimension in the model.
+- **Give every list query a `limit`.** A query without one stops at the server's default row cap, which looks like
+  data that ends early. A refinement that adds `limit` to a view should repeat the view's `order_by` beside it.
+- **Quote a CSV cell that starts with `=`, `+`, `-` or `@`.** A spreadsheet runs it as a formula.
+
 If you validate the rendered page in a headless browser (Playwright or Puppeteer), do not wait for network idle: `publisher.js` holds the live-reload SSE stream open, so the page never reaches it. Wait on `domcontentloaded` or `load` plus a content selector instead.
 
 ## Context, auth, live reload (all automatic)

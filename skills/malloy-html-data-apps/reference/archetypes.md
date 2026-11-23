@@ -43,6 +43,8 @@ Anything below that says "drawer", "drill", or "cross-filter" has its mechanics 
 [ comparison tray: collected entities, side by side      ]
 ```
 
+In a frame as tall as its content, the drawer and tray float over a page that never scrolls (`reference/overlays.md`). The frame template (`reference/app-frame.md`) builds the same Explorer without them: the entity is a page at its own address, and Compare is a view that holds the picks in the address.
+
 **Leads with:** the ranked population, not a total. A total is the one number an explorer's user already knows.
 
 **Depth:** deep, and this is where it is the point. Drill-down, entity detail, comparison, cross-filtering, all backed by parameterised detail sources so every panel inherits one definition.
