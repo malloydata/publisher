@@ -274,7 +274,7 @@ source: older is ev extend {
    );
 
    it(
-      "refuses an extension over a parent whose build leaves an upper bound out, never building it over the raw chain",
+      "builds an extension over a parent whose build leaves an upper bound out over the parent's table, its re-root leaving the bound out too",
       async () => {
          const text = `source: ev is duckdb.table('rwu_ev')
 #(materialize) storage="lake"
@@ -283,14 +283,27 @@ source: older is ev extend { where: ts < now - 30 days }
 source: older_big is older extend { where: amount > 100 }
 `;
          const { c } = await compiled(text);
+         const plans = Object.values(materializePlansIn(c) ?? {});
+         expect(plans.map((p) => p.sourceName).sort()).toEqual([
+            "older",
+            "older_big",
+         ]);
+         const ext = plans.find((p) => p.sourceName === "older_big")!;
          expect(
-            Object.values(materializePlansIn(c) ?? {}).map((p) => p.sourceName),
-         ).toEqual(["older"]);
+            ext.buildsOver?.mode.leftOutParentTerms?.map((t) => t.code),
+         ).toEqual(["ts < now - 30 days"]);
+         // The parent re-rooted on its table in the destination, its bound
+         // left out, so the extension's table holds every row; the
+         // extension's plan keeps the inherited bound for its read.
+         expect(ext.buildsOver?.overStored?.declarations).toContain(
+            "source: older is older__mat extend { where: true }",
+         );
+         expect(leftOutWindowTerms(ext.readTimeTerms)).toHaveLength(1);
          expect(
-            (c.annotationFindings ?? [])
-               .filter((f) => f.code === "materialize-not-built")
-               .map((f) => [f.subject, f.refused?.reason]),
-         ).toEqual([["older_big", "upstream_table_unusable"]]);
+            (c.annotationFindings ?? []).filter(
+               (f) => f.code === "materialize-not-built",
+            ),
+         ).toEqual([]);
       },
       { timeout: 30000 },
    );

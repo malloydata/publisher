@@ -437,6 +437,15 @@ export interface ChainMode {
     * one, else at build (run/pair_leaf_gate.ts, `schema_incompatible`).
     */
    pair?: { leafKeys: string[] };
+   /**
+    * Set when the parent's build leaves terms out (a current-time `where:`
+    * holding an upper bound): its re-root in the extension's build leaves
+    * those in its declaration out too, each found by its verbatim text and
+    * where the compiler says it reads, so the extension's table holds every
+    * window's rows, as the parent's does. The served copy applies each
+    * again at read, from its parts.
+    */
+   leftOutParentTerms?: { code: string; at: TermUse[] }[];
 }
 
 /** The parent an extension table builds over. */

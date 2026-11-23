@@ -84,6 +84,7 @@ import {
 import { callerIndependent, type FieldDependence } from "../../probe_compiler";
 import {
    declarationOf,
+   givenWhereNotOwnReason,
    readTimeTermsOf,
    withDeclaration,
 } from "./materialize_read_time";
@@ -1766,7 +1767,9 @@ function readTermsOf(
          { refused: "current_time" },
       );
    }
-   const readTime = readTimeTermsOf(def, classified, columns, givens);
+   const readTime = readTimeTermsOf(def, classified, columns, givens, {
+      deferInherited: true,
+   });
    if (!readTime.ok) {
       return new Declined(readTime.reason, { refused: readTime.refusal });
    }
@@ -2091,6 +2094,29 @@ function chainExtensionTables(
          path: path as TermUse[],
       };
    }
+   // A given-reading term inherited by a source with no materialized parent
+   // is refused, as it always was: nothing re-applies it at read.
+   for (const plan of plans) {
+      if (
+         plan.buildsOver ||
+         refused.some((r) => r.sourceID === plan.sourceID)
+      ) {
+         continue;
+      }
+      const stray = givenReadTerms(plan).find((t) => t.inherited);
+      if (!stray) continue;
+      refused.push({
+         sourceName: plan.sourceName,
+         sourceID: plan.sourceID,
+         reason: givenWhereNotOwnReason(`\`where: ${stray.code}\``),
+         outcome: {
+            refused: {
+               reason: "inherited_where_with_given",
+               tier: tierOf(plan.persist.storage),
+            },
+         },
+      });
+   }
    const ids = new Set(refused.map((r) => r.sourceID));
    return { plans: plans.filter((p) => !ids.has(p.sourceID)), refused };
 }
@@ -2152,25 +2178,14 @@ export function chainVerdict(
             "another table in its destination",
       };
    }
-   // TODO(extension chains, case 4: given and window terms): leave the
-   // parent's left-out terms out of the re-root.
-   if (givenReadTerms(parent).length > 0) {
-      return {
-         refuse:
-            "whose given-reading `where:` its re-root would apply to the " +
-            "extension's build, scoping its table to one caller",
-      };
-   }
-   if (leftOutWindowTerms(parent.readTimeTerms).length > 0) {
-      return {
-         refuse:
-            "whose current-time `where:` its build leaves out, which its " +
-            "re-root would apply to the extension's build",
-      };
-   }
+   const terms = parentTermsLeftOut(plan, parent);
+   if ("refuse" in terms) return terms;
    return {
       link: {
          ...tiers.link,
+         ...(terms.leftOut.length > 0
+            ? { leftOutParentTerms: terms.leftOut }
+            : {}),
          // The build re-roots a pair parent on its join put back, which
          // counts each level by its key: it relies on the leaf checks.
          ...(pairParent
@@ -2178,6 +2193,41 @@ export function chainVerdict(
             : {}),
       },
    };
+}
+
+/**
+ * The terms the parent's build leaves out, which the extension's re-root of
+ * the parent leaves out too (`ChainMode.leftOutParentTerms`), or why the
+ * extension is refused: the parent's current-time terms holding an upper
+ * bound, wherever its build finds them (the re-root edits those inside the
+ * parent's declaration; one a base of the parent writes is not in the
+ * re-root at all), each applied again at read from its parts.
+ *
+ * A parent whose `where:` reads a given refuses the extension. The
+ * extension's own rows depend on the caller's given: built over the parent's
+ * unfiltered table with the term applied again at read, it would be right
+ * only where its table keeps every column the term reads, and one that
+ * aggregates such a column away would give every caller the all-values
+ * answer. One shared table cannot serve every caller, so it answers live.
+ */
+function parentTermsLeftOut(
+   plan: MaterializePlan,
+   parent: MaterializePlan,
+): { leftOut: { code: string; at: TermUse[] }[] } | { refuse: string } {
+   // The parent's own term, or one the extension inherits from a source
+   // between them: either way its rows depend on the caller's given.
+   const given =
+      givenReadTerms(parent)[0] ??
+      givenReadTerms(plan).find((t) => t.inherited);
+   if (given) {
+      return {
+         refuse:
+            `whose \`where: ${given.code}\` reads a given, so the extension's ` +
+            `own rows depend on the caller's given and one shared table cannot ` +
+            `serve every caller; it answers live`,
+      };
+   }
+   return { leftOut: leftOutWindowTerms(parent.readTimeTerms) };
 }
 
 /**

@@ -165,8 +165,17 @@ source: inc_ext is o2 extend { dimension: big is amount > 10 }
 source: older is ev extend { where: ts < now - 30 days }
 #(materialize)
 source: ext is older extend { dimension: big is amount > 1 }
+#(materialize) storage="lake"
+source: solder is ev extend { where: ts < now - 30 days }
+#(materialize) storage="lake"
+source: sext is solder extend { dimension: big is amount > 1 }
+source: windowed is ev extend { where: ts < now - 30 days }
+#(materialize)
+source: on_base is windowed extend { dimension: tag is 'x' }
+#(materialize)
+source: ext_of_base is on_base extend { dimension: big is amount > 1 }
 `,
-      extensions: ["ext"],
+      extensions: ["ext", "sext", "ext_of_base"],
    },
    {
       label: "given-reading parent",
@@ -261,6 +270,157 @@ source: ext is orders extend { dimension: big is amount > 10 }`,
    );
 });
 
+describe("an extension's build copy over a parent whose build leaves a term out", () => {
+   it(
+      "re-roots the parent with its upper-bound window left out, and keeps the extension's own text",
+      async () => {
+         const files = `${DATED}
+#(materialize)
+source: older is ev extend { where: ts < now - 30 days }
+#(materialize)
+source: ext is older extend { dimension: big is amount > 1 }
+`;
+         const { c } = await packages.plan(files);
+         const plans = generatedPlans(c);
+         const ext = plans.find((p) => p.sourceName === "ext")!;
+         const parent = plans.find((p) => p.sourceName === "older")!;
+         expect(ext.buildsOver?.mode).toEqual({
+            tier: "same",
+            leftOutParentTerms: [
+               { code: "ts < now - 30 days", at: expect.any(Array) },
+            ],
+         });
+         const copy = buildCopyText(files, ext, {
+            parent,
+            importFrom: "lvl.malloy",
+         });
+         expect("copy" in copy && copy.copy).toContain(
+            `source: older is older__mat extend { where: true }
+#(materialize)
+source: ext is older extend { dimension: big is amount > 1 }`,
+         );
+      },
+      { timeout: 60000 },
+   );
+});
+
+describe("an extension of a given-reading parent", () => {
+   for (const [label, text] of [
+      [
+         "the parent's own term",
+         `#(materialize)
+source: orders is orders_raw extend { where: region = $REGION }
+#(materialize)
+source: ext is orders extend { dimension: big is amount > 10 }`,
+      ],
+      [
+         "a term on a source between them",
+         `#(materialize)
+source: orders is orders_raw extend { dimension: x is 1 }
+source: mid is orders extend { where: region = $REGION }
+#(materialize)
+source: ext is mid extend { dimension: big is amount > 10 }`,
+      ],
+   ] as const) {
+      it(
+         `is refused at plan as upstream_table_unusable: ${label}`,
+         async () => {
+            const { c } =
+               await packages.plan(`##! experimental { persistence givens }
+given: REGION :: string
+${BASE}
+${text}
+`);
+            expect(generatedPlans(c).map((p) => p.sourceName)).toEqual([
+               "orders",
+            ]);
+            const refusal = (c.annotationFindings ?? []).find(
+               (f) => f.code === "materialize-not-built" && f.subject === "ext",
+            );
+            expect(refusal?.refused?.reason).toBe("upstream_table_unusable");
+            expect(refusal?.message).toContain(
+               "one shared table cannot serve every caller",
+            );
+         },
+         { timeout: 60000 },
+      );
+   }
+
+   it(
+      "keeps inherited_where_with_given for a source with no materialized parent",
+      async () => {
+         const { c } =
+            await packages.plan(`##! experimental { persistence givens }
+given: REGION :: string
+${BASE}
+source: b is orders_raw extend { where: region = $REGION }
+#(materialize)
+source: ext is b extend { dimension: big is amount > 10 }
+`);
+         const refusal = (c.annotationFindings ?? []).find(
+            (f) => f.code === "materialize-not-built" && f.subject === "ext",
+         );
+         expect(refusal?.refused?.reason).toBe("inherited_where_with_given");
+      },
+      { timeout: 60000 },
+   );
+});
+
+describe("every persisted downstream of a given-reading #(materialize) parent is refused at plan", () => {
+   const head = `##! experimental { persistence givens }
+given: REGION :: string
+${BASE}
+#(materialize)
+source: orders is orders_raw extend { where: region = $REGION }
+`;
+   for (const [label, text, subject, code, reason] of [
+      [
+         "a persisted view",
+         `source: s is orders extend {
+  #@ persist name="v"
+  view: by_region is { group_by: region; aggregate: n is count() }
+}`,
+         "s -> by_region",
+         "persist-view-not-built",
+         "upstream_table_unusable",
+      ],
+      [
+         "a persisted query",
+         `#@ persist name="q"
+query: q is orders -> { group_by: region; aggregate: n is count() }`,
+         "q",
+         "persist-query-not-built",
+         "reads_given",
+      ],
+      [
+         "a rollup",
+         `source: rolled is orders extend {
+  #(rollup) grain=["region"]
+  measure: n is count()
+}`,
+         "rolled.n",
+         "rollup-not-built",
+         "inherited_where_with_given",
+      ],
+   ] as const) {
+      it(
+         `${label}, with no companion failure and the parent still planned`,
+         async () => {
+            const { c } = await packages.plan(`${head}\n${text}\n`);
+            expect(c.omittedSources).toEqual([]);
+            expect(generatedPlans(c).map((p) => p.sourceName)).toEqual([
+               "orders",
+            ]);
+            const finding = (c.annotationFindings ?? []).find(
+               (f) => f.code === code && f.subject === subject,
+            );
+            expect(finding?.refused?.reason).toBe(reason);
+         },
+         { timeout: 60000 },
+      );
+   }
+});
+
 describe("chainVerdict", () => {
    const parent = examplePlan({ sourceID: "p@file:///pkg/m.malloy" });
    const ext = examplePlan({
@@ -317,6 +477,62 @@ describe("chainVerdict", () => {
       );
       expect("refuse" in verdict && verdict.refuse).toContain(
          "several inlined paths",
+      );
+   });
+
+   const window = {
+      kind: "current_time",
+      code: "ts < now - 30 days",
+      columns: ["ts"],
+      window: {
+         field: "ts",
+         op: "<",
+         offset: { sign: -1, amount: 30, unit: "day" },
+      },
+      leftOut: [
+         {
+            url: "file:///pkg/m.malloy",
+            range: {
+               start: { line: 3, character: 30 },
+               end: { line: 3, character: 32 },
+            },
+         },
+      ],
+   } as const;
+
+   it("links an extension of a parent whose build leaves a window out, naming the term its re-root leaves out", () => {
+      expect(
+         chainVerdict(ext, {
+            ...parent,
+            readTimeTerms: [
+               { ...window, window: { ...window.window } } as never,
+            ],
+         }),
+      ).toEqual({
+         link: {
+            tier: "same",
+            leftOutParentTerms: [
+               { code: window.code, at: window.leftOut as never },
+            ],
+         },
+      });
+   });
+
+   it("refuses an extension of a parent whose where: reads a given", () => {
+      const verdict = chainVerdict(ext, {
+         ...parent,
+         readTimeTerms: [
+            {
+               kind: "given",
+               code: "region = $R",
+               givens: ["R"],
+               columns: ["region"],
+               at: [],
+            },
+         ],
+      });
+      expect("refuse" in verdict && verdict.refuse).toContain(
+         "one shared table cannot serve every caller",
       );
    });
 
