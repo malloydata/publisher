@@ -348,7 +348,14 @@ export async function loadFixture(
    /** The temporary directory the environment and the lake live in. */
    root: string;
    /** The storage destination the `storage=` tables are built in. */
-   lake: DuckDBConnection;
+   readonly lake: DuckDBConnection;
+   /**
+    * Reopen the destination (a `duckdb` fixture's) with `setupSQL` as its
+    * configuration, which every session it opens runs, as an operator's
+    * changed destination configuration does after a restart; undefined
+    * restores none. The served copy and every bind read it from then on.
+    */
+   reconfigureLake(setupSQL: string | undefined): Promise<void>;
    /**
     * The connection the fixture's models read and its database tables are
     * built on: `duckdb` (the sandbox), or the origin a `parquet` fixture or
@@ -421,7 +428,8 @@ export async function loadFixture(
            ]
          : []),
    ];
-   const lake =
+   const lakePath = path.join(root, `${LAKE}.duckdb`);
+   let lake =
       format === "parquet"
          ? // The catalog is attached under the destination's name, which a
            // served read qualifies its table with.
@@ -430,7 +438,7 @@ export async function loadFixture(
               databasePath: ":memory:",
               setupSQL: parquetLakeSQL(root, LAKE),
            })
-         : new DuckDBConnection(LAKE, path.join(root, `${LAKE}.duckdb`));
+         : new DuckDBConnection(LAKE, lakePath);
    let env: Environment | undefined;
    let releaseSandbox = (): void => {};
    const dispose = async () => {
@@ -455,11 +463,26 @@ export async function loadFixture(
       await dispose();
       throw error;
    }
-   const lakeConfig = new MalloyConfig({ connections: {} });
-   lakeConfig.wrapConnections(
-      () => new FixedConnectionMap(new Map([[LAKE, lake]]), LAKE),
-   );
-   pkg.materialization().setServeDestinationConfig(() => lakeConfig);
+   const wireLake = () => {
+      const lakeConfig = new MalloyConfig({ connections: {} });
+      lakeConfig.wrapConnections(
+         () => new FixedConnectionMap(new Map([[LAKE, lake]]), LAKE),
+      );
+      pkg.materialization().setServeDestinationConfig(() => lakeConfig);
+   };
+   wireLake();
+   const reconfigureLake = async (setupSQL: string | undefined) => {
+      if (format !== "duckdb") {
+         throw new Error("only a duckdb fixture's destination is reopened");
+      }
+      await lake.close();
+      lake = new DuckDBConnection({
+         name: LAKE,
+         databasePath: lakePath,
+         ...(setupSQL !== undefined ? { setupSQL } : {}),
+      });
+      wireLake();
+   };
    // The environment configures no destinations of its own (the lake is wired
    // straight to the package above), so its deployment facts would call `lake`
    // unconfigured and every unbuilt `storage=` source `destination_missing`
@@ -553,7 +576,10 @@ export async function loadFixture(
       dispose,
       pkg,
       root,
-      lake,
+      get lake() {
+         return lake;
+      },
+      reconfigureLake,
       origin: strict
          ? STRICT_ORIGIN_NAME
          : format === "parquet"

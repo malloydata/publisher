@@ -174,13 +174,15 @@ export async function captureTableContract(args: {
    if (args.tier === "database") {
       return deriveContract({ tier: "database", stored: read.stored });
    }
-   const live = await args.live?.(
-      read.stored.columns.filter((c) => c.isString).map((c) => c.name),
-   );
-   return deriveContract({
-      tier: "storage",
-      stored: read.stored,
-      ...(live ? { live } : {}),
+   // As a storage build records it, its session's default collation with it.
+   return storageContract({
+      table: args.tableName,
+      schema: read.stored.columns.map((c) => ({
+         name: c.name,
+         type: c.nativeType,
+      })),
+      collations: read.stored.collations,
+      ...(args.live ? { live: args.live } : {}),
    });
 }
 

@@ -401,7 +401,9 @@ for (const gatedSources of [false, true]) {
       });
 
       it("answers live under a destination default_collation", async () => {
-         await loader.lake.runSQL("SET default_collation = 'nocase'");
+         // Set in the destination's configuration, which every session it
+         // opens runs (a bind's own read among them), after the build.
+         await loader.reconfigureLake(NOCASE_DESTINATION);
          // Seen at the next bind, which holds the table to its contract.
          await fixture.rebind();
          try {
@@ -413,7 +415,7 @@ for (const gatedSources of [false, true]) {
                expect("answer" in got && got.answer.servedBy).toBe("live");
             }
          } finally {
-            await loader.lake.runSQL("SET default_collation = ''");
+            await loader.reconfigureLake(undefined);
          }
       });
    });
@@ -488,6 +490,12 @@ describe("a collated table elsewhere in the warehouse leaves an unrelated databa
 });
 
 /**
+ * A destination configuration whose every session compares strings
+ * case-insensitively, as an operator sets one (`setupSQL`).
+ */
+const NOCASE_DESTINATION = "SET default_collation = 'nocase'";
+
+/**
  * A warehouse whose session compares strings case-insensitively, configured
  * as an operator would: an environment DuckDB connection whose `setupSQL`
  * sets the collation before the lockdown locks its configuration (the
@@ -508,7 +516,7 @@ function onNocaseWarehouse(model: string): string {
  * A comparison that makes a string of something else (a cast, a `pick`)
  * compares under a collation too, though no field it reads is a string: a
  * NOCASE session on either side changes what it admits. On the destination
- * (its `default_collation` set after the build) and on the source (the
+ * (its configured `default_collation` changed after the build) and on the source (the
  * warehouse session's), every caller of a scope or gate written that way, on
  * the served copy and on a `storage=` rollup, gets live's answer.
  */
@@ -606,19 +614,14 @@ for (const side of ["destination", "source"] as const) {
             }
             fixture = await loader.bind({ includeRollups: true });
             if (side === "destination") {
-               await loader.lake.runSQL("SET default_collation = 'nocase'");
-               // Seen at the next bind, which holds the tables to their
-               // contracts.
+               // The destination reconfigured after the build; seen at the
+               // next bind, which holds the tables to their contracts.
+               await loader.reconfigureLake(NOCASE_DESTINATION);
                await fixture.rebind();
             }
          }, 900_000);
 
          afterAll(async () => {
-            if (side === "destination") {
-               await loader?.lake
-                  .runSQL("SET default_collation = ''")
-                  .catch(() => {});
-            }
             await fixture?.dispose();
             await loader?.dispose().catch(() => {});
             restore?.();
@@ -739,19 +742,14 @@ for (const side of ["destination", "source"] as const) {
             }
             fixture = await loader.bind({ includeRollups: true });
             if (side === "destination") {
-               await loader.lake.runSQL("SET default_collation = 'nocase'");
-               // Seen at the next bind, which holds the tables to their
-               // contracts.
+               // The destination reconfigured after the build; seen at the
+               // next bind, which holds the tables to their contracts.
+               await loader.reconfigureLake(NOCASE_DESTINATION);
                await fixture.rebind();
             }
          }, 900_000);
 
          afterAll(async () => {
-            if (side === "destination") {
-               await loader?.lake
-                  .runSQL("SET default_collation = ''")
-                  .catch(() => {});
-            }
             await fixture?.dispose();
             await loader?.dispose().catch(() => {});
             restore?.();
@@ -768,7 +766,7 @@ for (const side of ["destination", "source"] as const) {
             });
          }
 
-         if (side === "destination") {
+         if (side === "source") {
             it("m_lock: a lock alone is decided in Publisher, so the source stays served", async () => {
                const got = await fixture.run(
                   "m.malloy",
@@ -776,6 +774,18 @@ for (const side of ["destination", "source"] as const) {
                   ROLE_CALLERS[0],
                );
                expect("answer" in got && got.answer.via).toBe("served_copy");
+            });
+         } else {
+            // A destination whose configured default is not the one its
+            // tables were built under no longer holds them to their
+            // contracts: the bind unbinds each, a lock-only source's too.
+            it("m_lock: its table, built under another destination default, answers live", async () => {
+               const got = await fixture.run(
+                  "m.malloy",
+                  sel("m_lock"),
+                  ROLE_CALLERS[0],
+               );
+               expect("answer" in got && got.answer.servedBy).toBe("live");
             });
          }
       });
